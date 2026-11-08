@@ -138,6 +138,9 @@ async function promote(p: PromotedDto): Promise<void> {
     tools: p.tools,
     // As it ran in the background, which its folder decided.
     hooksUnasked: p.settings.hooksUnasked === true,
+    // A helper always runs with the wait guard; the chat keeps it until the
+    // person turns it off in its panel, rather than losing it on the handover.
+    guard: true,
     name: p.name ?? undefined,
     inWorktree: p.worktreePath ?? undefined,
     fromHelper: true,

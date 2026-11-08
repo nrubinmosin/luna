@@ -1,0 +1,411 @@
+/* ------------------------------------------------------------------------
+   Settings: a dialog as wide as its rows need, the page list on the left and
+   one page of grouped cards on the right. Only the page scrolls; the title
+   bar, the list and the page's title stay put. Help text is never below
+   --fs-4 (12px at the default --ui) and never --faint: that pair was the
+   unreadable part of the dialog before.
+   ------------------------------------------------------------------------ */
+[data-app] .settings {
+  /* A failure's red, dark enough on the light card and light enough on the
+     dark one for 4.5:1 (6.3 and 6.2); the app's one red read 3.2 on dark. */
+  --set-error: oklch(0.5 0.19 27);
+  display: flex;
+  flex-direction: column;
+  width: min(920px, calc(100vw - 32px));
+  /* As tall as the page, so most pages fit whole, up to 720px or the window;
+     never shorter than the page list. Its top stays put (see SettingsDialog),
+     so a page of another height moves only its bottom edge. */
+  max-height: min(720px, calc(100vh - 48px));
+  min-height: min(420px, calc(100vh - 48px));
+  box-shadow: var(--shadow), var(--border-window-outer), var(--border-window-inner);
+}
+[data-app] .settings > .title-bar {
+  flex: none;
+}
+[data-app] .settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* The page list: Explorer's selection, one row per page. */
+[data-app] .settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--line);
+  background: var(--card);
+  overflow-y: auto;
+}
+[data-app] .settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-app] .settings-nav [role="tab"] {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-5);
+  text-align: left;
+  justify-content: flex-start;
+}
+[data-app] .settings-nav [role="tab"]:not(:disabled):hover {
+  background: var(--row-hover);
+  box-shadow: none;
+}
+[data-app] .settings-nav [role="tab"]:not(:disabled):active {
+  transform: none;
+}
+[data-app] .settings-nav [role="tab"][aria-selected="true"] {
+  background: var(--row-sel);
+  color: var(--row-sel-ink);
+  font-weight: 600;
+}
+[data-app] .settings-nav-foot {
+  margin-top: auto;
+  padding: 8px 10px 2px;
+  font-size: var(--fs-4);
+  color: var(--dim);
+}
+
+[data-app] .settings-page {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* The pages not shown stay mounted (their drafts with them), out of the layout. */
+[data-app] .settings-page[hidden] {
+  display: none;
+}
+/* xp.css frames every [role="tabpanel"] as XP's tab control: a white sheet
+   with a border and a margin. The page is the dialog's own ground. */
+[data-app] .settings-page[role="tabpanel"] {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: var(--surface);
+}
+[data-app] .settings-page-title {
+  flex: none;
+  margin: 0;
+  padding: 14px 22px 10px;
+  font-size: calc(var(--ui) * 1.35);
+  font-weight: 600;
+  color: var(--fg);
+}
+[data-app] .settings-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* The bar always takes its room, so a page that grows past the bottom
+     does not shift; focus that moves below the fold scrolls clear of the edge. */
+  scrollbar-gutter: stable;
+  scroll-padding-block: 16px;
+  padding: 2px 12px 22px 22px;
+}
+[data-app][data-theme="dark"] .settings {
+  --set-error: oklch(0.74 0.15 27);
+}
+/* The dark theme's cards are one step off the page, not lost in it. */
+[data-app][data-theme="dark"] .settings-page {
+  background: var(--board);
+}
+[data-app][data-theme="dark"] .set-card {
+  border-color: var(--field-line);
+}
+
+/* ---- groups and rows -------------------------------------------------- */
+[data-app] .set-group + .set-group {
+  margin-top: 18px;
+}
+[data-app] .set-group-title {
+  margin: 0 0 6px 2px;
+  font-size: var(--fs-4);
+  font-weight: 700;
+  color: var(--dim);
+}
+[data-app] .set-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+}
+[data-app] .set-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 20px;
+  padding: 10px 14px;
+}
+[data-app] .set-row + .set-row {
+  border-top: 1px solid var(--line);
+}
+[data-app] .set-text {
+  min-width: 0;
+}
+[data-app] .set-label {
+  display: block;
+  font-size: var(--fs-6);
+  color: var(--fg);
+  cursor: default;
+}
+[data-app] .set-label b {
+  font-weight: 700;
+}
+[data-app] .set-desc,
+[data-app] .set-note {
+  margin-top: 2px;
+  font-size: var(--fs-4);
+  line-height: 1.4;
+  color: var(--dim);
+}
+[data-app] .set-note {
+  display: flex;
+  gap: 6px;
+  margin-top: 5px;
+  max-width: 560px;
+  color: var(--fg);
+}
+[data-app] .set-rail {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+[data-app] .set-below {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin-top: 8px;
+}
+[data-app] .settings code {
+  font-size: 0.95em;
+}
+/* Buttons on a row or in a list stand as tall as the fields beside them. */
+[data-app] .settings .set-rail button,
+[data-app] .settings .set-item button,
+[data-app] .settings .set-below button,
+[data-app] .settings .set-list-actions button {
+  height: calc(var(--ui) * 1.85);
+  min-height: 0;
+}
+/* Disabled: one step clearer than elsewhere, still plainly off. */
+[data-app] .settings button:disabled {
+  opacity: 1;
+}
+/* A checkbox alone on the rail: the box, drawn on its own label. */
+[data-app] .set-box {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+}
+[data-app] .set-box input[type="checkbox"] + label {
+  width: 0;
+  height: 16px;
+  margin-left: 16px;
+}
+[data-app] .set-box input[type="checkbox"]:focus-visible + label::before {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+[data-app] .set-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* rtl so the ellipsis eats the drive letter, not the folder name. */
+  direction: rtl;
+  text-align: left;
+}
+[data-app] .set-field {
+  display: flex;
+  gap: 6px;
+}
+[data-app] .set-field input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+[data-app] .set-mono {
+  font-family: var(--mono, monospace) !important;
+  font-size: var(--fs-4) !important;
+}
+[data-app] .set-error {
+  margin-top: 4px;
+  font-size: var(--fs-4);
+  color: var(--set-error);
+}
+
+/* ---- the folded explanation ------------------------------------------- */
+[data-app] .set-about {
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-4);
+  color: var(--dim);
+}
+[data-app] .set-about > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 14px;
+  color: var(--accent);
+  cursor: default;
+  list-style: none;
+  border-radius: 0 0 6px 6px;
+}
+[data-app] .set-about > summary::-webkit-details-marker {
+  display: none;
+}
+[data-app] .set-about > summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.12s;
+}
+[data-app] .set-about[open] > summary::before {
+  transform: rotate(90deg);
+}
+/* Hover underlines rather than shading the line: the accent on --hover fell
+   under 4.5:1 in both themes. */
+[data-app] .set-about > summary:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+[data-app] .set-about > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+[data-app] .set-about-body {
+  padding: 0 14px 10px 25px;
+  max-width: 560px;
+  line-height: 1.45;
+}
+[data-app] .set-about-body p {
+  margin: 0 0 6px;
+}
+
+/* ---- lists ------------------------------------------------------------ */
+[data-app] .set-list {
+  overflow: hidden;
+}
+[data-app] .set-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 6px 4px 10px;
+  font-size: var(--fs-5);
+}
+[data-app] .set-item + .set-item {
+  border-top: 1px solid var(--line);
+}
+[data-app] .set-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+[data-app] .set-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-app] .set-item-kind {
+  flex: none;
+  width: 60px;
+  font-size: var(--fs-4);
+  color: var(--dim);
+}
+[data-app] .set-item-actions {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+[data-app] .set-item-actions[hidden] {
+  display: none;
+}
+[data-app] .set-cmd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-4);
+  color: var(--dim);
+}
+[data-app] .set-cmd-full {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+[data-app] .set-empty {
+  padding: 9px 10px;
+  font-size: var(--fs-4);
+  color: var(--dim);
+}
+[data-app] .set-list-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+/* Every browser box in Links is one width, and the default's lines up over
+   the exceptions' (each of those has a Remove beside it). */
+[data-app] .settings .set-browser {
+  flex: none;
+  width: 240px;
+  max-width: 100%;
+}
+[data-app] .settings .set-item .set-remove {
+  flex: none;
+  width: 76px;
+}
+[data-app] .set-under-remove {
+  /* Remove's width, the gap before it, the list's padding and border. */
+  margin-right: calc(76px + 8px + 6px + 1px);
+}
+
+/* The exception picker: a menu under its button. */
+[data-app] .set-menu {
+  min-width: 240px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+}
+[data-app] .set-menu-head {
+  padding: 4px 8px 2px;
+  font-size: var(--fs-4);
+  font-weight: 700;
+  color: var(--dim);
+}
+[data-app] .set-menu [role="menuitem"] {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-app] .set-menu [role="menuitem"]:hover,
+[data-app] .set-menu [role="menuitem"]:focus-visible {
+  background: var(--row-sel);
+  color: var(--row-sel-ink);
+  box-shadow: none;
+  outline: none;
+}

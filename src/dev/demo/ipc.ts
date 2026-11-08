@@ -15,7 +15,9 @@ import {
   CORE,
   BACKGROUND,
   HELPER_TRANSCRIPT,
-  AT_STAKE
+  AT_STAKE,
+  APPLIED,
+  BROWSERS
 } from './fixtures';
 
 /** What the stand-in answers with, set when a scene is seeded: until then it
@@ -55,6 +57,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'background_at_stake') {
     return (args.ids as string[]).map(id => AT_STAKE[id] ?? { id }) as unknown as T;
   }
+  if (cmd === 'applied_by_luna') return APPLIED as unknown as T;
   // The Accounts window's own dialogs, so they can be looked at too.
   if (cmd === 'read_account_config') {
     const claudeSide = args.provider === 'claude';
@@ -69,6 +72,9 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'recommended_settings') return RECOMMENDED as unknown as T;
   if (cmd === 'recommendations') return (demoState.showsChecks ? CHECKS : []) as unknown as T;
   if (cmd === 'check_account_config') return null as unknown as T;
+  // Settings' lists, so their shots show rows rather than empty states.
+  if (cmd === 'codex_trusted_roots') return [String.raw`C:\src`, String.raw`D:\work\clients`] as unknown as T;
+  if (cmd === 'browsers') return BROWSERS as unknown as T;
   if (cmd === 'settings_sync_state') return { claude: 'personal', codex: null, onStart: true } as unknown as T;
   return fallback;
 }

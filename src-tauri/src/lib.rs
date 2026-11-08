@@ -5,6 +5,7 @@ mod activity;
 mod admit;
 mod agentlog;
 mod agents;
+mod applied;
 mod asking;
 mod background;
 mod boundary;
@@ -209,7 +210,6 @@ macro_rules! app_handler {
             claude::defaults::claude_defaults,
             claude::limits::account_limits,
             claude::trust::claude_folder_trusted,
-            claude::trust::claude_trust_folder,
             codex::defaults::codex_defaults,
             codex::hooks::codex_hooks_start,
             codex::hooks::set_codex_hooks_default,

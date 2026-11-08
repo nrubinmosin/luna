@@ -63,7 +63,8 @@ export function startSession(chat: Chat, folderPath: string, accountPath: string
         sandbox: chat.sandbox,
         resume: chat.sessionId ?? null,
         tools: chat.tools ?? false,
-        hooksUnasked: chat.hooksUnasked ?? false
+        hooksUnasked: chat.hooksUnasked ?? false,
+        guard: chat.guard ?? false
       })
     : ensureClaudeSession({
         chatId: chat.id,
@@ -77,7 +78,8 @@ export function startSession(chat: Chat, folderPath: string, accountPath: string
         resume: chat.sessionId ?? null,
         tools: chat.tools ?? false,
         readOnly: chat.readOnly ?? false,
-        agent: chat.agent ?? null
+        agent: chat.agent ?? null,
+        guard: chat.guard ?? false
       });
 }
 

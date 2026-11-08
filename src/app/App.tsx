@@ -17,6 +17,7 @@ import { useUpdates } from '../features/updates/updates.store';
 import { useCli } from '../features/updates/cli.store';
 import { UpdateConfirm } from '../features/updates/UpdateConfirm';
 import { CoreBanner } from '../features/core/CoreBanner';
+import { GuardNotice } from '../features/chats/GuardNotice';
 import { useCore } from '../features/core/core.store';
 import { useKeymap } from './keymap';
 import { useAltPeek } from '../features/panes/altPeek';
@@ -243,6 +244,7 @@ export function App() {
             <Dock />
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
               <CoreBanner />
+              <GuardNotice />
               <PaneGrid />
             </div>
           </div>

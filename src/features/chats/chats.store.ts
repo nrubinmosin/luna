@@ -15,6 +15,12 @@ interface ChatsState {
    */
   folders: Folder[];
   active: string | null;
+  /** Chats that had the wait guard without asking, before it became each
+   *  chat's choice (0.11.0), until the notice saying so is dismissed. */
+  guardNotice: string[];
+  dismissGuardNotice: () => void;
+  /** The chat's wait guard, from its CLI's next start. */
+  setGuard: (chatId: string, on: boolean) => void;
   /** `byPerson`: launched by the user from the new-chat dialog, which makes
    *  the folder one the dialog offers; a helper opened as a chat is not. */
   addChat: (folderPath: string, chat: Chat, byPerson: boolean) => void;
@@ -121,6 +127,27 @@ interface Spawned {
 let seq = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
 
+/**
+ * Chats stored before the wait guard was each chat's choice, which had it
+ * without asking because they had Luna's tools, given `guard: false` as
+ * every chat now starts: their ids come back, for the one notice that says
+ * so (`guardNotice`). A row an earlier Luna nested under the chat whose
+ * agent spawned it had the guard as a helper; it is the person's own chat
+ * now (`merge`) and starts without it like the rest, so it is named too.
+ */
+export function decideGuard(folders: Folder[]): { folders: Folder[]; unguarded: string[] } {
+  const unguarded: string[] = [];
+  const decided = folders.map(f => ({
+    ...f,
+    chats: (f.chats ?? []).map(c => {
+      if (c.guard !== undefined) return c;
+      if (c.tools || (c as Chat & Spawned).parentId) unguarded.push(c.id);
+      return { ...c, guard: false };
+    })
+  }));
+  return { folders: decided, unguarded };
+}
+
 export const useChats = create<ChatsState>()(
   persist(
     (set, get) => ({
@@ -223,6 +250,17 @@ export const useChats = create<ChatsState>()(
           }))
         })),
 
+      guardNotice: [],
+      dismissGuardNotice: () => set({ guardNotice: [] }),
+
+      setGuard: (chatId, guard) =>
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c => (c.id === chatId ? { ...c, guard } : c))
+          }))
+        })),
+
       setColor: (chatId, color) =>
         set(s => ({
           folders: s.folders.map(f => ({
@@ -299,14 +337,16 @@ export const useChats = create<ChatsState>()(
         version < 2 ? { folders: [], active: null } : (persisted as Partial<ChatsState>),
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<ChatsState>;
+        const guarded = decideGuard(p.folders ?? []);
         return {
           ...current,
           ...p,
+          guardNotice: [...new Set([...(p.guardNotice ?? []), ...guarded.unguarded])],
           // Group is what decides whether a chat is listed at all, so a stored
           // chat without one would be invisible in every group.
           // `last` was what the folder's newest chat started with, learned
           // rather than chosen; a folder now keeps only a start it was given.
-          folders: (p.folders ?? []).map(({ last: _learned, ...f }: Folder & { last?: unknown }) => {
+          folders: guarded.folders.map(({ last: _learned, ...f }: Folder & { last?: unknown }) => {
             const stored = (f.chats ?? []) as Array<Chat & Spawned>;
             return {
               ...f,

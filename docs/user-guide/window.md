@@ -38,7 +38,7 @@
   what that pane shows; with more panes a chat not on the board comes up on the
   peek sheet, so a click never rewrites an arrangement. Dragging seats a chat in a
   particular pane; panes swap by dragging one title bar onto another.
-- **Auto-tile** (on by default, Settings → Board): a new chat with no free pane
+- **Auto-tile** (on by default, Settings → General → Board): a new chat with no free pane
   grows the board by one pane, up to four, and lands there; nothing already on
   the board moves. Taking a chat off the board or deleting it shrinks the board
   by one. Off, a new chat with nowhere to go comes up on the sheet.
