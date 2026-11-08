@@ -39,6 +39,10 @@ pub struct Spec {
     /// `command_for` runs under this module's lock.
     #[serde(default)]
     pub parent: Option<String>,
+    /// Keeps the MCP servers and connectors of its account, as spawned with
+    /// `connectors`; else it has Luna's server alone.
+    #[serde(default)]
+    pub connectors: bool,
     /// The bearer token of its MCP config: Luna's tools when `tools`, and
     /// `luna_permission` for every Claude Code helper. Never saved: a core
     /// started later issues its own.

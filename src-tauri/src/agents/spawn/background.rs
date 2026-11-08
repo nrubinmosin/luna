@@ -72,6 +72,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 read_only: params.read_only.unwrap_or(false),
                 agent: params.agent.clone(),
                 parent: None,
+                connectors: params.connectors.unwrap_or(false),
                 token: None,
             })
         }
@@ -138,6 +139,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 read_only: false,
                 agent: None,
                 parent: None,
+                connectors: params.connectors.unwrap_or(false),
                 token: None,
             })
         }
@@ -184,6 +186,9 @@ pub(in crate::agents) fn spawn_background(
     }
     if let Some(budget) = params.budget_tokens {
         settings["budgetTokens"] = serde_json::json!(budget);
+    }
+    if spec.connectors {
+        settings["connectors"] = serde_json::json!(true);
     }
     let tools = spec.tools;
     let auto_delete = params.auto_delete.unwrap_or(true);

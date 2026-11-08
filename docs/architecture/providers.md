@@ -184,8 +184,10 @@ live registry.
   `model_context_window`, as Codex counts it); `turn_context.model` → model;
   `token_count.rate_limits` → limits fallback; `session_meta.cwd` → where a
   `--worktree` session went (`rollout_cwd`). The conversation is `response_item`
-  messages with role user / assistant; developer messages, `# AGENTS.md
-  instructions` and `<environment_context>` are not.
+  messages with role user / assistant; developer messages and the blocks
+  Codex injects in the user's place (`injected`: `# AGENTS.md instructions`,
+  `<environment_context>`, `<turn_aborted>` and the rest it recognizes as its
+  own) are not. A prompt that opens with a tag of its own is a prompt.
 - Approval requests are not in the rollout, so "waiting" for Codex is a turn in
   flight with a screen unchanged for 3 s (Codex draws its spinner continuously),
   or an approval dialog recognized on screen. The rollout appears only with the
