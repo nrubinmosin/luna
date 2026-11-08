@@ -8,78 +8,86 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
-A refactoring campaign on the `refactor/phase-*` branches: no intended change to
-user-facing behavior.
+## [0.10.0] - 2026-11-08
 
-### Phase 0: tooling and repository hygiene
+A security and engineering release. Agent tools now follow least privilege,
+Luna's files are private from the moment they are created, and the build, tests
+and releases run in CI. Everyday behavior is otherwise unchanged, apart from the
+fixes below.
 
-- One local gate, `scripts/gate.ps1`, running the same steps as CI; CI split into
-  frontend, Linux Rust, Windows build and Windows test jobs, on every branch push.
-- Rust and Node toolchains pinned (`rust-toolchain.toml`, `.node-version`), base
-  images pinned by digest, every build step's exit code checked.
-- Build scripts moved into `scripts/` with shared plumbing in `scripts/lib.ps1`.
-- Prettier, ESLint, rustfmt and clippy configured and applied; stricter
-  TypeScript checks; Vitest for the frontend.
-- The repository is in US English, enforced by `pnpm check:text`.
-- Generated schemas untracked, formatting commits skipped by blame, a pre-commit
-  hook for skill symlinks.
+### Security
 
-### Phase 1: security
+- A helper session can never hold more privilege than the session that started
+  it, and only a session's own helpers accept its approvals and raw keystrokes.
+- Text that a CLI would run as a command (a line starting with `/` or `!`)
+  reaches a helper, visible or in the background, only when a full-access
+  session sends it to its own helper.
+- The app window runs under a strict Content Security Policy instead of none.
+- Luna's data folder is made private when Luna is installed and checked again at
+  every start, and files holding secrets are private from the moment they are
+  created.
+- A file in the data folder that someone else planted or replaced with a link
+  is moved aside instead of being written to.
+- On Windows, the install folder and the folders holding secrets get protected
+  permissions of their own, and the installer resets only the permissions it
+  owns.
+- Secrets come from the operating system's secure random generator and are
+  compared in constant time, and each chat's hook URLs carry a secret of their
+  own.
+- Claude Code receives its token for Luna's tools through the environment
+  instead of a config file.
+- Luna's local listeners cap connections before authentication, parse requests
+  strictly and enforce time limits.
+- A worktree path containing a line break can no longer forge a worktree
+  record, and a Codex worktree is removed only from a Codex account's worktrees
+  folder.
 
-- A threat model (`docs/security/threat-model.md`) and a vulnerability reporting
-  policy (`SECURITY.md`).
-- Secrets from the OS's CSPRNG, compared in constant time; per-chat HMAC secrets
-  on hook and guard URLs; Claude Code's MCP token passed by environment only.
-- Bounded loopback listeners before authentication; the hub's request head parsed
-  by `httparse`, with deadlines.
-- A least-privilege contract for agent tools: helpers capped at their caller's
-  privilege, `allow` and raw keys only on the caller's own helpers, command text
-  only from full access.
-- Private data folder and secret files from creation; Windows DACLs verified at
-  every start; installer hardening.
-- A strict Content Security Policy replaces `csp: null`.
-- Worktree records read from `git worktree list -z`; a Codex worktree removed
-  only from a Codex account's worktrees folder.
-- Commit messages carry no AI attribution: commit-msg hook and CI check.
+### Added
 
-### Phase 2: Rust module structure
+- A threat model and a vulnerability reporting policy (`SECURITY.md`).
+- Documentation in `docs/`: a user guide by topic, architecture pages, decision
+  records, notes on how each CLI behaves, and a development guide.
+- A contributing guide, issue and pull request templates, and this changelog.
 
-- Large files split into module folders along their seams: `agents/` (registry,
-  owed, privilege, delivery, spawn, notifier, ...), `background/`, `library/`,
-  `pty/`, `worktree/`, `activity/`, `power/`, `procs/`, `keeper/`,
-  `account_settings/`, `claude/session/`, `codex/session/`.
-- Golden tests of how both CLIs are started, in a pane and headless.
+### Changed
 
-### Phase 3: frontend structure and tests
+- Luna is dual-licensed under MIT OR Apache-2.0.
+- Releases are built, signed and attested by GitHub Actions from a version tag,
+  behind a maintainer's approval, with SBOMs and checksums published beside the
+  installer; `docs/releasing.md` explains how to verify a download.
+- CI runs on every push on Linux and Windows: formatting, lints, type checks,
+  the frontend's tests and build, and the Rust unit tests on both systems.
+- Toolchains and build images are pinned to exact versions, and every build
+  step's result is checked.
+- The Rust code and the frontend are split into smaller modules along their
+  natural seams, with no change in behavior.
+- Test coverage grows: frontend tests, golden tests of how both CLIs are
+  started, and a live suite against the real CLIs on throwaway accounts.
+- The repository is written in US English, which a check enforces, and commit
+  messages carry no AI attribution, which a hook and CI enforce.
 
-- IPC split into a transport (`ipc/core.ts`) and one module per domain.
-- Styles split into app-wide sheets and the features' own; settings, library and
-  the demo fixture split by section.
-- Tests for stores, keymap, agent bridge, IPC layer, dialogs and the terminal
-  pool.
+### Fixed
 
-### Phase 4: test window and the live suite
+- Worktrees in a folder written with 8.3 short names, such as a temp or profile
+  folder under a long user name, are recognized, so helpers return to their
+  worktree and Codex chats keep their history.
+- Running Luna as the built-in Windows Administrator no longer finds the data
+  folder open to others on every start.
+- An elevated Luna no longer moves aside the logs and lock files it created
+  itself.
+- Enter in the account picker acts on the highlighted account, even after the
+  list is reordered or that account is removed.
+- A line break typed into an answer or note no longer submits it early and sends
+  the rest as a separate prompt.
+- Text sent to a background helper after its turn was stopped now starts the
+  next turn instead of waiting indefinitely.
+- A background helper whose queued messages were all refused no longer starts
+  an empty turn, and the sender is told that its text was refused.
 
-- The test build can run its window in the background (`-Background`, implied by
-  `-DevCaller`): off screen, unfocused, off the taskbar.
-- A live suite on today's real CLIs (`scripts/live-tests.ps1`), on throwaway
-  accounts cloned by `scripts/test-accounts.ps1`; by hand only, never in CI.
-  Test levels in `docs/testing.md`.
+### Removed
 
-### Phase 6: release pipeline
-
-- Releases built, signed and attested by `.github/workflows/release.yml` on a
-  `v*` tag, behind a `release` environment, with CycloneDX SBOMs and
-  `SHA256SUMS`, left as a draft to publish; `scripts/release.ps1` bumps the
-  version and tags (`-Local` still releases from this machine). Flow and setup
-  in `docs/releasing.md`.
-
-### Phase 5: documentation
-
-- `docs/` with a user guide, architecture pages, ADRs, CLI compatibility notes and
-  a development guide; `ARCHITECTURE.md` retired.
-- Dual license, MIT OR Apache-2.0; `CONTRIBUTING.md`, this changelog, issue and
-  pull request templates.
+- `ARCHITECTURE.md`, replaced by the architecture pages in `docs/`.
+- The Russian README; the repository's text is in English only.
 
 ## [0.9.0] - 2026-11-04
 
@@ -130,7 +138,8 @@ user-facing behavior.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.9.10...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.10.0
 [0.9.0]: https://github.com/nrubinmosin/luna/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/nrubinmosin/luna/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/nrubinmosin/luna/compare/v0.6.0...v0.7.0
