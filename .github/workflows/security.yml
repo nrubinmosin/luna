@@ -1,0 +1,145 @@
+# The supply-chain checks (scripts/supply-chain.ps1, the same script and pins as
+# a local run) and CodeQL's code scanning. Kept out of ci.yml: their answer can
+# change with no change to the repo, as a new advisory or a new query lands, so
+# they also run weekly against master, and the gate stays hermetic.
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  # Mondays, so an advisory published against an unchanged tree still surfaces.
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# As in ci.yml: a newer push to a pull request makes its running checks moot;
+# every other run keeps its own.
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  # The checks' own tests: the ignore rules, and gitleaks' output kept free of
+  # the secrets it finds (scripts/supply-chain-lib.test.ps1).
+  supply-chain-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ./scripts/supply-chain.ps1 -Check tests
+
+  cargo-deny:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ./scripts/supply-chain.ps1 -Check deny
+
+  pnpm-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ./scripts/supply-chain.ps1 -Check audit
+
+  # A pull request's own commits; on master, by schedule or by hand, the whole
+  # history. A push to master scans what it brought.
+  gitleaks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Scan for secrets
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $range = $env:HEAD
+          if ($env:EVENT -eq 'pull_request') {
+            $range = "$env:BASE..$env:HEAD"
+          } elseif ($env:EVENT -eq 'push' -and $env:BEFORE -notmatch '^0+$') {
+            git cat-file -e "$env:BEFORE^{commit}" 2>$null
+            if (-not $LASTEXITCODE) { $range = "$env:BEFORE..$env:HEAD" }
+          }
+          ./scripts/supply-chain.ps1 -Check secrets -Range $range
+
+  # build-mode none for each language: nothing is built, and for JavaScript and
+  # the workflows nothing of the project runs. Rust's extraction loads the tree
+  # through cargo, which fetches every crate and can run its build scripts and
+  # proc macros, dependency code: so these jobs hold no write permission, and
+  # the results go up from a job of its own that runs none of it.
+  codeql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, rust]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # CodeQL drives the toolchain through rustup; this installs the one the
+      # crate pins (src-tauri/rust-toolchain.toml) up front.
+      - if: matrix.language == 'rust'
+        working-directory: src-tauri
+        run: rustup toolchain install
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+          upload: never
+          output: ${{ runner.temp }}/codeql
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codeql-${{ matrix.language }}
+          path: ${{ runner.temp }}/codeql/*.sarif
+          if-no-files-found: error
+          retention-days: 3
+
+  codeql-upload:
+    needs: codeql
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, rust]
+    steps:
+      # The sources, for the alerts' line fingerprints; nothing here runs them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: codeql-${{ matrix.language }}
+          path: ${{ runner.temp }}/codeql
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: ${{ runner.temp }}/codeql
+          category: /language:${{ matrix.language }}

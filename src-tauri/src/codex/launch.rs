@@ -23,9 +23,12 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) approval: &'a str,
     /// The sandbox it runs in: `AUTO_REVIEW_SANDBOX` under the reviewer.
     pub(crate) sandbox: &'a str,
-    /// The `read-only-net` profile's name, new on every start
-    /// (`read_only_net_args`); in any other sandbox, None.
+    /// The name of Luna's profile for that sandbox, new on every start
+    /// (`profile_args`); None where Codex's own mode serves (`takes_profile`).
     pub(crate) profile: Option<&'a str>,
+    /// Luna's `core/`, for the profile to keep the session from reading
+    /// (`denies_core`), or None.
+    pub(crate) deny: Option<&'a str>,
     /// PATH for the sandbox (pty/start.rs `codex_sandbox_path`), where it
     /// takes one.
     pub(crate) sandbox_path: Option<&'a str>,
@@ -87,8 +90,8 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             args.push(CODEX_PERSON_REVIEWS.into());
             // Without its profile, `--sandbox read-only-net`, which Codex
             // refuses: never a sandbox looser than the one asked for.
-            match s.profile.filter(|_| sandbox == READ_ONLY_NET) {
-                Some(profile) => args.extend(read_only_net_args(profile)),
+            match s.profile.filter(|_| takes_profile(sandbox, cfg!(windows))) {
+                Some(profile) => args.extend(profile_args(profile, sandbox == READ_ONLY_NET, s.deny)),
                 None => {
                     args.push("--sandbox".into());
                     args.push(sandbox.to_string());
@@ -159,30 +162,53 @@ pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";
 const CODEX_TITLE: &str = "tui.terminal_title=[\"thread-id\"]";
 
 /// Luna's own sandbox value: Codex's read-only with the network on, which
-/// `sandbox_mode` cannot say (see `read_only_net_args`).
+/// `sandbox_mode` cannot say (see `profile_args`).
 pub(crate) const READ_ONLY_NET: &str = "read-only-net";
 
-/// `read-only-net` as `-c` overrides: a permission profile of Luna's that
-/// extends Codex's `:read-only`, with direct network, and nothing written to
-/// the account's config.toml. Codex's docs say not to set `sandbox_mode` beside
-/// `default_permissions`; this override beats one in the account's or the
-/// project's config, so the disk stays read-only either way. The name,
-/// `profile`, is new on every start (pty/start.rs `codex_profile`): Codex lays
-/// the rules any config has for a profile's name over the ones given here, so
-/// a project's `.codex/config.toml` saying `":root" = "write"` for a name it
-/// could know would make this writable. It need not last: a resume takes a new
-/// one. On Windows TLS through schannel still fails under the sandbox's
-/// restricted token, as it does in `workspace-write` with its network on (see
-/// `git_ssl_backend_envs`, luna_guide.md).
-pub(crate) fn read_only_net_args(profile: &str) -> Vec<String> {
-    [
-        format!("default_permissions=\"{profile}\""),
-        format!("permissions.{profile}.extends=\":read-only\""),
-        format!("permissions.{profile}.network.enabled=true"),
-    ]
-    .into_iter()
-    .flat_map(|value| ["-c".to_string(), value])
-    .collect()
+/// Whether a session in `sandbox` is kept from reading Luna's `core/`, whose
+/// `core.json` holds the token to the whole core (`profile_args`); `windows`,
+/// whether it runs there. The read-only sandboxes only: Codex's `:workspace`
+/// profile drops what an account's `[sandbox_workspace_write]` adds, its roots
+/// and its network, so `workspace-write` stays Codex's own mode, without the
+/// deny. And not on Windows, where Codex's unelevated sandbox refuses every
+/// command under a profile with a deny (0.167.0: "requires the elevated
+/// Windows sandbox backend"); its write-restricted token reads whatever the
+/// user can, `core/` under its private DACL included (threat model F3).
+pub(crate) fn denies_core(sandbox: &str, windows: bool) -> bool {
+    !windows && matches!(sandbox, "read-only" | READ_ONLY_NET)
+}
+
+/// Whether a session in `sandbox` runs under a profile of Luna's
+/// (`profile_args`) rather than under Codex's own mode.
+pub(crate) fn takes_profile(sandbox: &str, windows: bool) -> bool {
+    sandbox == READ_ONLY_NET || denies_core(sandbox, windows)
+}
+
+/// A read-only sandbox as `-c` overrides: a permission profile of Luna's that
+/// extends Codex's `:read-only`, with direct network for `read-only-net`
+/// (which `sandbox_mode` cannot say) and with `deny`, Luna's `core/`, out of
+/// reach, nothing written to the account's config.toml. Codex's docs say not
+/// to set `sandbox_mode` beside `default_permissions`; this override beats one
+/// in the account's or the project's config, so the disk stays read-only
+/// either way. The name, `profile`, is new on every start (pty/start.rs
+/// `codex_profile`): Codex lays the rules any config has for a profile's name
+/// over the ones given here, so a project's `.codex/config.toml` saying
+/// `":root" = "write"` for a name it could know would make this writable. It
+/// need not last: a resume takes a new one. On Windows TLS through schannel
+/// still fails under the sandbox's restricted token, as it does in
+/// `workspace-write` with its network on (see `git_ssl_backend_envs`,
+/// luna_guide.md).
+pub(crate) fn profile_args(profile: &str, network: bool, deny: Option<&str>) -> Vec<String> {
+    let mut values = vec![format!("default_permissions=\"{profile}\""), format!("permissions.{profile}.extends=\":read-only\"")];
+    if network {
+        values.push(format!("permissions.{profile}.network.enabled=true"));
+    }
+    if let Some(dir) = deny {
+        // The path in the value, as a TOML string: Codex splits a `-c` key at
+        // every dot, and a path may hold one.
+        values.push(format!("permissions.{profile}.filesystem={{{}=\"deny\"}}", toml_edit::Value::from(dir)));
+    }
+    values.into_iter().flat_map(|value| ["-c".to_string(), value]).collect()
 }
 
 /// What `read-only-net` needs for git on Windows, whose https goes through
@@ -207,11 +233,11 @@ pub(crate) fn git_ssl_backend_envs(count: Option<&str>, key: impl Fn(usize) -> O
     ]
 }
 
-/// A sandbox as `-c` overrides, for `codex exec`, which asks nobody;
-/// `read-only-net` by its `profile`.
-pub(crate) fn sandbox_args(sandbox: &str, profile: Option<&str>) -> Vec<String> {
-    match profile.filter(|_| sandbox == READ_ONLY_NET) {
-        Some(profile) => read_only_net_args(profile),
+/// A sandbox as `-c` overrides, for `codex exec`, which asks nobody; one that
+/// takes Luna's profile by its name, `profile`, `deny` kept from it.
+pub(crate) fn sandbox_args(sandbox: &str, profile: Option<&str>, deny: Option<&str>) -> Vec<String> {
+    match profile.filter(|_| takes_profile(sandbox, cfg!(windows))) {
+        Some(profile) => profile_args(profile, sandbox == READ_ONLY_NET, deny),
         None => vec!["-c".into(), format!("sandbox_mode=\"{sandbox}\"")],
     }
 }
@@ -273,7 +299,7 @@ mod tests {
             excluded: vec!["E:/acc/work/CLAUDE.md".to_string()],
             ..Default::default()
         };
-        let chat = claude_settings(Some("http://h/hook/c/s"), Some("http://h/guard/c/s"), &library);
+        let chat = claude_settings(Some("http://h/hook/c/s"), Some("http://h/guard/c/s"), &library, "/d/core");
         let pre = chat["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2);
         assert_eq!(pre[0]["matcher"], "AskUserQuestion");
@@ -283,12 +309,12 @@ mod tests {
         assert_eq!(chat["skillOverrides"]["deploy"], "off");
         assert_eq!(chat["claudeMdExcludes"], serde_json::json!(["E:/acc/work/CLAUDE.md"]));
         let none = crate::library::SessionSkills::default();
-        let unguarded = claude_settings(Some("http://h/hook/c/s"), None, &none);
+        let unguarded = claude_settings(Some("http://h/hook/c/s"), None, &none, "/d/core");
         assert_eq!(unguarded["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
-        let helper = claude_settings(None, Some("http://h/guard/c/s"), &none);
+        let helper = claude_settings(None, Some("http://h/guard/c/s"), &none, "/d/core");
         let hooks = helper["hooks"].as_object().unwrap();
         assert_eq!(hooks.keys().collect::<Vec<_>>(), ["PreToolUse"], "no hooks of its own: its stream says it all");
-        assert!(claude_settings(None, None, &none).is_empty());
+        assert_eq!(claude_settings(None, None, &none, "/d/core").keys().collect::<Vec<_>>(), ["permissions"], "the core's deny alone");
         let curl = crate::pty::curl_program();
         let guard = guard_override("http://h/guard/c/s", &curl);
         assert!(guard.starts_with(r#"hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command='"#), "{guard}");
@@ -305,10 +331,51 @@ mod tests {
         let profile = args[1].strip_prefix("default_permissions=\"").and_then(|p| p.strip_suffix('"')).expect("the profile is named first");
         assert!(args.contains(&format!("permissions.{profile}.extends=\":read-only\"")));
         assert!(args.contains(&format!("permissions.{profile}.network.enabled=true")));
-        assert_eq!(args.iter().filter(|a| *a == "-c").count(), 3);
+        assert_eq!(args.iter().filter(|a| *a == "-c").count(), if cfg!(windows) { 3 } else { 4 }, "and the core's deny off Windows");
         assert_ne!(crate::pty::codex_sandbox_args(READ_ONLY_NET)[1], args[1], "no config can have rules ready for the next one's name");
-        assert_eq!(crate::pty::codex_sandbox_args("read-only"), ["-c", "sandbox_mode=\"read-only\""]);
+        if cfg!(windows) {
+            assert_eq!(crate::pty::codex_sandbox_args("read-only"), ["-c", "sandbox_mode=\"read-only\""]);
+        }
         assert_eq!(codex_windows_sandbox(READ_ONLY_NET), codex_windows_sandbox("read-only"), "it runs in the same sandbox");
+    }
+
+    /// The folder a profile's `-c` overrides deny, read back as Codex parses
+    /// the value; None without one.
+    fn denied(args: &[String]) -> Option<String> {
+        let value = args.iter().find_map(|a| a.split_once(".filesystem=").map(|(_, v)| v))?;
+        let doc: toml_edit::DocumentMut = format!("filesystem = {value}").parse().unwrap();
+        let entries: Vec<_> =
+            doc["filesystem"].as_inline_table().unwrap().iter().map(|(k, v)| (k.to_string(), v.as_str().map(str::to_owned))).collect();
+        match entries.as_slice() {
+            [(dir, Some(access))] if access == "deny" => Some(dir.clone()),
+            other => panic!("one folder denied, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_read_only_sandboxes_are_kept_out_of_the_core_folder_but_on_windows() {
+        for windows in [false, true] {
+            for sandbox in ["read-only", READ_ONLY_NET] {
+                assert_eq!(denies_core(sandbox, windows), !windows, "{sandbox}, windows {windows}");
+                assert_eq!(takes_profile(sandbox, windows), !windows || sandbox == READ_ONLY_NET, "{sandbox}, windows {windows}");
+            }
+            for sandbox in ["workspace-write", "danger-full-access"] {
+                assert!(!denies_core(sandbox, windows) && !takes_profile(sandbox, windows), "{sandbox}: Codex's own mode");
+            }
+        }
+        // A path with what a `-c` key or TOML would split on comes back whole.
+        for dir in ["/home/u/.local/share/lu.na/core", r"C:\Users\a.b\Lu na\core", "/x/\"q\"/core"] {
+            let args = profile_args("luna-p", false, Some(dir));
+            assert!(args.iter().any(|a| a.starts_with("permissions.luna-p.filesystem={")), "{args:?}");
+            assert_eq!(denied(&args).as_deref(), Some(dir));
+        }
+        assert_eq!(denied(&profile_args("luna-p", true, None)), None);
+        // This machine's own: Luna's `core/`, wherever Codex can keep it out.
+        let core = crate::ipc::core_dir().to_string_lossy().into_owned();
+        for sandbox in ["read-only", READ_ONLY_NET, "workspace-write", "danger-full-access"] {
+            let want = denies_core(sandbox, cfg!(windows)).then(|| core.clone());
+            assert_eq!(denied(&crate::pty::codex_sandbox_args(sandbox)), want, "{sandbox}");
+        }
     }
 
     #[test]

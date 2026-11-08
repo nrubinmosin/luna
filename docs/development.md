@@ -61,6 +61,8 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
 | `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
+| `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny, `pnpm audit` and gitleaks ([below](#supply-chain)) |
+| `./scripts/third-party-notices.ps1 -Out <file>` | the third-party notices the installer carries (`build-windows.ps1 -Installer` makes them first) and the release publishes: each crate the exe links and each npm package the interface bundles, with its license texts and source; the Rust standard library with the inventory its toolchain carries; and, from `third-party-licenses/components.json`, the helpers the build tools write into the bundle and what the installer carries beside (NSIS, its Tauri plug-in, the WebView2 loader, the VC runtime). The WebView2 runtime is downloaded by the installer when missing, not shipped. Texts a package does not publish are kept in `third-party-licenses/` (its README); the script fails on a shipped package without one, and the gate on a components entry that the lockfiles or the bundle have moved past |
 
 With Node installed locally, `pnpm install` and `pnpm dev` serve the frontend
 alone in a browser (Tauri commands are no-ops; `?demo` loads the fixture).
@@ -128,10 +130,57 @@ hand, with the same scripts:
 and by hand, keeping only what one finds as an artifact (see
 [testing.md](testing.md#fuzzing)).
 
+`.github/workflows/security.yml` runs the supply-chain checks and CodeQL on
+every pull request, every push to master, weekly and by hand
+([Supply chain](#supply-chain)).
+
 `.github/workflows/release.yml` runs only on `v*` tags and by hand
 ([Releases](#releases)). Actions are pinned by commit; Dependabot (`.github/dependabot.yml`) moves them,
 the crates, the npm packages and the images monthly, one grouped PR per ecosystem; a new
 Node or Rust major is left to a hand-made migration (`.github/dependabot.yml` says why).
+
+## Supply chain
+
+`./scripts/supply-chain.ps1` runs, each in Docker on a pinned tool:
+
+| Check | What fails it |
+| --- | --- |
+| `tests` | the tests of the checks themselves (`scripts/supply-chain-lib.test.ps1`): the ignore rules, `deny.toml` read as TOML, gitleaks' output kept free of secrets |
+| `deny` | cargo-deny 0.20.2 (release binary, SHA-256 pinned in the script) with `src-tauri/deny.toml`: a RustSec advisory anywhere in the tree (vulnerable, unmaintained, unsound), a license outside the allowlist, a wildcard requirement, a crate from anywhere but crates.io. Duplicate versions and yanked crates are warnings |
+| `audit` | `pnpm audit`, production and dev packages: a high or critical advisory. Moderate and low ones are listed |
+| `secrets` | gitleaks 8.30.1 (image by digest) over the history reachable from `HEAD`, or `-Range <base>..<head>`. A finding prints its rule, file, line and commit only, never the text it matched: gitleaks' own redaction covers each finding's secret, not the rest of its line |
+
+```powershell
+./scripts/supply-chain.ps1                     # all four; exit 1 if any fails
+./scripts/supply-chain.ps1 -Check deny,audit   # some of them
+```
+
+They need the network (the advisory databases, the registries), and their answer
+changes with no change to the repo, so the gate does not run them and stays
+hermetic. In CI, `security.yml` runs each check as a job of its own (`gitleaks`
+over a pull request's commits, or master's whole history on schedule and by
+hand) and CodeQL over the workflows, the TypeScript and the Rust, build-mode
+none. CodeQL's analysis jobs hold no write permission, since Rust's extraction
+loads the tree through cargo, which can run its build scripts and proc macros; a
+separate `codeql-upload` job, which runs no project code, uploads the results to
+the Security tab. The runner is Linux, so the Windows-only modules are parsed
+without macro expansion or the semantic analysis the rest gets.
+
+An advisory with no fix to take yet is ignored only with a reason and an
+expiry, which the script enforces; it fails once the date has passed:
+
+- a crate: an entry in `deny.toml`'s `[advisories] ignore`,
+  `{ id = "RUSTSEC-...", reason = "... Expires YYYY-MM-DD" }`, whose reason
+  names who pulls the crate in and why it cannot go. The file is read as TOML,
+  so an entry in any form cargo-deny takes (a bare id included) is held to this;
+- an npm package: an entry in `pnpm-audit-ignores.json`'s `ignores`:
+  `{ "id": "GHSA-...", "package": "...", "reason": "...", "expires": "YYYY-MM-DD" }`.
+
+A reason of a few words, or only whitespace, is refused. An ignore goes in through a pull request like any change, with the advisory and
+why it does not reach Luna in its description; three months is the usual
+expiry. The licenses `deny.toml` allows are the ones the tree needs, each
+unusual one justified there; a new license in the tree is decided there, not
+allowed in bulk.
 
 ## Releases
 
