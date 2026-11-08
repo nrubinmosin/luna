@@ -413,6 +413,9 @@ fn update_in(
     fetch: &mut dyn FnMut(&Path) -> Result<Package, String>,
 ) -> Result<(String, bool), String> {
     if let Some(c) = current_in(root, bin_rel).filter(|c| c.recorded && c.version == latest) {
+        // `current` names a recorded install, so this code installed here:
+        // a marker missing is one a crash or a cleanup took after the fact.
+        mark_recorded(root)?;
         prune_in(root, bin_rel);
         return Ok((c.dir, false));
     }
@@ -420,10 +423,7 @@ fn update_in(
         Some(dir) => dir,
         None => install_in(root, bin_rel, latest, fetch)?,
     };
-    if fs::symlink_metadata(root.join(RECORDED)).is_err() {
-        crate::secret::write_private_synced(&root.join(RECORDED), b"versions here are installed with completion records\n")
-            .map_err(|e| format!("write {RECORDED}: {e}"))?;
-    }
+    mark_recorded(root)?;
     // The flip is the last step, so a crash anywhere above leaves `current`
     // pointing at a directory that is known to be complete.
     // Through a temp file: the core reads `current` for every spawn, and a
@@ -435,6 +435,15 @@ fn update_in(
     crate::secret::write_private_synced(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))?;
     prune_in(root, bin_rel);
     Ok((dir, true))
+}
+
+/// Writes the `RECORDED` marker where it is not there yet.
+fn mark_recorded(root: &Path) -> Result<(), String> {
+    if fs::symlink_metadata(root.join(RECORDED)).is_ok() {
+        return Ok(());
+    }
+    crate::secret::write_private_synced(&root.join(RECORDED), b"versions here are installed with completion records\n")
+        .map_err(|e| format!("write {RECORDED}: {e}"))
 }
 
 /// Fetches `version` into a fresh staging directory, holds it to what the
@@ -880,6 +889,11 @@ mod tests {
         let root = scratch("unrecorded");
         update_in(&root, BIN, "1.2.0", &mut whole).unwrap();
         assert!(root.join(RECORDED).is_file(), "the tree is marked before `current` names anything");
+        // A marker lost after the fact comes back on the next pass, even one
+        // with nothing to fetch.
+        fs::remove_file(root.join(RECORDED)).unwrap();
+        let (_, flipped) = update_in(&root, BIN, "1.2.0", &mut |_: &Path| panic!("fetched again")).unwrap();
+        assert!(!flipped && root.join(RECORDED).is_file());
         fs::remove_file(root.join("versions").join("1.2.0").join(RECORD)).unwrap();
         assert!(current_in(&root, BIN).is_none());
         let _ = remove_tree(&root);
