@@ -21,9 +21,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - Sessions are denied the folder that holds the key to Luna's core, wherever
   their CLI can enforce it: Claude Code's file tools everywhere, and Codex's
-  `read-only` and `read-only-net` sandboxes on Linux and macOS. Codex's
-  `workspace-write` and every Codex sandbox on Windows can still read it; the
-  threat model (F3) says why.
+  `read-only` and `read-only-net` sandboxes on Linux and macOS.
+- On Windows, where a Codex sandbox can still read that file, the core instead
+  refuses the connection: it checks which process is at the other end of each
+  loopback connection and turns away one running in a CLI sandbox (a restricted
+  or contained token, or a lower integrity level) before it can present the
+  key. A normal window is unaffected. Codex's `workspace-write` on Linux and
+  macOS remains able to read the file; the threat model (F3) says why.
 
 ## [0.10.0] - 2026-11-08
 

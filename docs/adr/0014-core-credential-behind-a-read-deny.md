@@ -47,8 +47,25 @@ is denied the folder wherever its CLI can enforce that:
   `codex exec`, run under a profile of Luna's, named afresh at every start,
   that extends `:read-only` and denies `core/` (`codex/launch.rs`
   `denies_core`, `profile_args`; `pty/start.rs` `codex_core_deny`).
-- Codex `workspace-write` (and `auto-review`) and every Codex sandbox on
-  Windows get no deny, for the reasons above. They stay open, as F3 says.
+- Codex `workspace-write` (and `auto-review`) get no deny, for the reasons
+  above: the read deny is not the Windows measure, and off Windows
+  `workspace-write` stays open.
+
+On Windows, where no deny can be given, the core closes the gap at the port
+instead of at the file. On each loopback connection, before the hello, it
+finds the process that owns the connection's client end
+(`GetExtendedTcpTable`, the client endpoint matched exactly, IPv4 and IPv6)
+and refuses it when that process's token is restricted, an AppContainer, or of
+a lower integrity than the core's, and when the owner cannot be found — fail
+closed (`coreproc.rs` `serve`, `peer.rs` `verdict`). The unelevated sandbox's
+token is restricted for `read-only` and `workspace-write` alike (measured: its
+write access is an ACL grant on the workspace, not a looser token), so a
+sandboxed Codex is turned away whatever its mode, while a window and the test
+build — a plain token of the core's integrity — are let through. It relies on
+Luna never running Codex elevated, so a sandboxed peer is never above the
+core. An equivalent peer check is not taken off Windows: Codex's Linux sandbox
+is Landlock, the same uid and namespaces as the core, so a connecting process
+cannot be told from the window there; macOS is untried.
 
 Considered and deferred, **protocol v2**: no credential on disk. The core
 alone creates windows and hands each one an inherited channel (a socketpair,
@@ -59,19 +76,24 @@ recognized and not trusted as protected.
 
 ## Consequences
 
-- Small and local: launch arguments and a settings entry, covered by unit
-  and golden tests, and a live test (`live.rs`
-  `codex_sandboxes_reach_the_core_folder_as_the_threat_model_says`) that
-  checks each sandbox's reach with Codex's own runner and fails when either
-  side changes.
-- Only the read-only Codex sandboxes off Windows are closed by the OS.
-  Claude's deny is a rule its Bash does not obey, and any unconfined process
-  of the user's still reads the file (R3).
+- Small and local: launch arguments, a settings entry, and a peer check in the
+  core listener. Covered by unit and golden tests, the peer decision through a
+  pure function fed the facts a connection would carry (`peer.rs` `verdict`),
+  and two live tests (`live.rs`): one checks each Codex sandbox's reach of
+  `core/` with Codex's own runner; the other that a sandboxed Codex connecting
+  to a test port is refused while a plain process is let in. Each fails when
+  its side changes.
+- Windows is closed by the OS (the sandbox's token betrays it at the port);
+  the read-only Codex sandboxes off Windows are closed by the OS (the deny);
+  the rest are not. Claude's deny is a rule its Bash does not obey; Codex
+  `workspace-write` off Windows has no deny; any unconfined process of the
+  user's still reads the file and connects (R3).
 - Protocol v2 is deferred because it rebuilds the window–core handshake, the
-  installer's stop and every core start, while the deny covers the case the
-  audit put first (a read-only sandbox with the network) on Linux and macOS
-  at the cost of an argument. It comes back when a supported sandbox is found
-  able to read `core/` despite the deny, or when any core surface is exposed
-  beyond loopback. Codex's unelevated Windows sandbox meets the first
-  condition today, as does `workspace-write` everywhere: whether that brings
-  v2 forward is an open decision, recorded in the threat model's F3.
+  installer's stop and every core start, while the read deny and the Windows
+  peer check together close the case the audit put first — a read-only sandbox
+  with the network — on every platform Luna is tested on, at the cost of an
+  argument and a per-connection lookup. It comes back when a supported sandbox
+  is found able to both read `core/` and connect unrefused (Codex
+  `workspace-write` off Windows is the nearest residual), or when any core
+  surface is exposed beyond loopback. That decision is recorded in the threat
+  model's F3.

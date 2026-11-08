@@ -329,6 +329,14 @@ fn hello(stream: &TcpStream, _slot: Slot, token: &str, within: Duration) -> io::
 
 /// One connection: the hello, then requests until the other end goes.
 fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Result<()> {
+    // On Windows, who owns the client end decides before the hello: a CLI in
+    // its sandbox reads the token and connects, so the core turns a restricted,
+    // contained or lower-integrity peer away (peer.rs, threat model F3). Fail
+    // closed, and say nothing back, as a bad hello gets nothing.
+    if let Some(why) = crate::peer::refuse_reason(&stream) {
+        crate::log::warn("core", &format!("refused a loopback connection: {why}"));
+        return Ok(());
+    }
     let (first_id, hello) = hello(&stream, slot, token, HELLO_DEADLINE)?;
     if hello.proto != ipc::PROTO {
         let err = format!("protocol {} spoken here, {} asked for", ipc::PROTO, hello.proto);

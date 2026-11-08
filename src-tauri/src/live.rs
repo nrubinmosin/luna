@@ -435,6 +435,108 @@ fn codex_sandboxes_reach_the_core_folder_as_the_threat_model_says() {
     }
 }
 
+/// Accepts one connection on `listener` (nonblocking) within `secs`, or None.
+#[cfg(windows)]
+fn accept_within(listener: &std::net::TcpListener, secs: u64) -> Option<std::net::TcpStream> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return Some(stream),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() > deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// The Windows peer check (peer.rs) turns a connection from a Codex session in
+/// its sandbox away before the hello, while a plain local process — as a
+/// window is — is let through. Proven against the real Codex sandbox: a
+/// sandboxed `curl` owns a restricted token, an unsandboxed one and the test
+/// process own the user's own. `read-only` and `workspace-write` both, since
+/// the unelevated sandbox restricts the token for either (its write access is
+/// an ACL grant, not a looser token). No account, no login.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and the Codex CLI"]
+#[cfg(windows)]
+fn the_windows_peer_check_refuses_a_sandboxed_codex() {
+    use std::net::{TcpListener, TcpStream};
+    use std::process::Stdio;
+    if std::env::var("LUNA_LIVE").as_deref() != Ok("1") {
+        eprintln!("skipped: LUNA_LIVE is not 1");
+        return;
+    }
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("a loopback listener");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let port = listener.local_addr().unwrap().port();
+
+    // A plain local process, as a window is: let through. The test process
+    // owns the client end, an unrestricted token of the core's integrity.
+    let mine = TcpStream::connect(("127.0.0.1", port)).expect("the self connection");
+    let server = accept_within(&listener, 5).expect("the self connection is accepted");
+    assert_eq!(crate::peer::refuse_reason(&server), None, "a plain local process is let in");
+    drop((mine, server));
+
+    let home = crate::paths::data_dir().join("live-peer-home");
+    std::fs::create_dir_all(&home).expect("a Codex home");
+    // The `workspace-write` profile for the runner's `-P`, defined in a config
+    // file rather than a `-c` inline table: nested quotes in a table value do
+    // not survive the argv on Windows, where a `permissions.<p>.extends=…`
+    // key, as Luna's own profiles pass it, does.
+    std::fs::write(home.join("config.toml"), "[permissions.luna-peer]\nextends = \":workspace\"\n").expect("the Codex config");
+    let codex = crate::cli::binary(Provider::Codex);
+    let url = format!("http://127.0.0.1:{port}/");
+    let sandbox_path = crate::pty::codex_sandbox_path("read-only");
+
+    // `--noproxy *`: the sandbox's "no network" only points proxy variables at
+    // a dead port, which curl would otherwise follow instead of the listener;
+    // a raw socket to loopback the sandbox still allows (cli-compatibility.md).
+    let client = ["curl.exe", "--noproxy", "*", "-s", "-m", "3", &url];
+
+    // Runs `codex sandbox <overrides> -- curl <url>`: curl owns the socket
+    // under the sandbox's restricted token. Returns the peer check's verdict
+    // on the connection it makes, or panics if none came.
+    let probe = |overrides: Vec<String>, label: &str| -> Option<String> {
+        let mut cmd = std::process::Command::new(&codex);
+        cmd.arg("sandbox").args(&overrides).arg("--").args(client);
+        cmd.env("CODEX_HOME", &home).current_dir(&home);
+        if let Some(p) = &sandbox_path {
+            cmd.env("PATH", p);
+        }
+        let mut child = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("codex sandbox runs");
+        let got = accept_within(&listener, 20).map(|s| crate::peer::refuse_reason(&s));
+        let _ = child.wait();
+        got.unwrap_or_else(|| panic!("the {label} sandbox never connected"))
+    };
+
+    let dir = home.to_string_lossy().into_owned();
+    let read_only =
+        probe(vec!["-c".into(), "windows.sandbox=\"unelevated\"".into(), "-c".into(), "sandbox_mode=\"read-only\"".into()], "read-only");
+    assert!(read_only.is_some(), "read-only sandbox is refused; verdict was allow");
+    eprintln!("read-only sandbox: {}", read_only.as_deref().unwrap_or("allowed"));
+
+    // workspace-write through the runner names the config's profile with `-P`.
+    let ws = probe(
+        vec!["-c".into(), "windows.sandbox=\"unelevated\"".into(), "-P".into(), "luna-peer".into(), "-C".into(), dir],
+        "workspace-write",
+    );
+    assert!(ws.is_some(), "workspace-write sandbox is refused; verdict was allow");
+    eprintln!("workspace-write sandbox: {}", ws.as_deref().unwrap_or("allowed"));
+
+    // An unsandboxed curl, the user's own token, as any local process: let in.
+    let mut child =
+        std::process::Command::new(client[0]).args(&client[1..]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("curl runs");
+    let plain = accept_within(&listener, 10).map(|s| crate::peer::refuse_reason(&s));
+    let _ = child.wait();
+    assert_eq!(plain, Some(None), "an unsandboxed local process is let in");
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// What the suite takes for a test account, checked without one: the guard
 /// is what keeps a live run off the accounts a person uses.
 #[test]
