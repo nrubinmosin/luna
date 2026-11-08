@@ -63,14 +63,17 @@ vt100 = "0.18"
 # the System log), for keep-awake and shutdown-when-done
 # (src/power/machine.rs); the exit watcher's wait, exit code and
 # boot time (src/lifecycle.rs); the DACLs on the folders holding secrets
-# and on the private files made with one (src/secret.rs); the core started
-# with the desktop user's token and profile environment from a window run as
-# administrator (src/elevation.rs). Pinned to the version tauri already
+# and on the private files made with one (src/secret.rs); the process at the
+# other end of a loopback connection to the core, and its token (src/peer.rs);
+# the core started with the desktop user's token and profile environment from
+# a window run as administrator (src/elevation.rs). Pinned to the version tauri already
 # resolves, so this adds features to a crate in the tree rather than a second
 # copy of it.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",

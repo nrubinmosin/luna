@@ -29,6 +29,39 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   dependencies for advisories, licenses and sources (cargo-deny, `pnpm audit`),
   the history for committed secrets (gitleaks), and the code and workflows with
   CodeQL. `scripts/supply-chain.ps1` runs the same checks locally.
+- The updater's signing key no longer reaches the release build. `tauri build`
+  runs every dependency's build scripts, proc-macros and frontend tooling, and
+  any of them could have read the key it was handed; the installer is now
+  built unsigned and signed afterwards in a job of its own, which runs only the
+  Tauri CLI pinned by `pnpm-lock.yaml`, without network, and checks the
+  signature against the updater's public key before publishing it. The release
+  still takes one approval, now given to the signing job. `release.ps1 -Local`
+  signs the same way, builds an export of the commit rather than the checkout
+  it signs from, and no longer runs the built exe to ask its core fingerprint.
+  A key rotation's bridge release is checked against the old public key, given
+  as `UPDATER_TRUSTED_PUBKEY`.
+- Claude Code's release manifest is verified against its detached OpenPGP
+  signature and Anthropic's release key, pinned in Luna, before the exe's
+  checksum from it is trusted: whoever serves the download bucket can no
+  longer hand Luna an exe of their own with a matching manifest. Codex is
+  still checked only against the checksums of its own release.
+- The signed manifest must name the version it was fetched for, and no Claude
+  Code version below the highest signed one Luna has accepted (or below
+  2.1.319 on a fresh install) is installed, so an old signed release cannot be
+  replayed under the unsigned `latest` pointer. A signature is held to its
+  signed creation and expiration times, and the release key to its expiry
+  where the signature gives one.
+- Sessions are denied the folder that holds the key to Luna's core, wherever
+  their CLI can enforce it: Claude Code's file tools everywhere, and Codex's
+  `read-only` and `read-only-net` sandboxes on Linux and macOS. A Claude Code
+  session whose deny cannot be written does not start, rather than run without
+  it.
+- On Windows, where a Codex sandbox can still read that file, the core instead
+  refuses the connection: it checks which process is at the other end of each
+  loopback connection and turns away one running in a CLI sandbox (a restricted
+  or contained token, or a lower integrity level) before it can present the
+  key. A normal window is unaffected. Codex's `workspace-write` on Linux and
+  macOS remains able to read the file; the threat model (F3) says why.
 
 ### Added
 
@@ -103,31 +136,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   had moved to 2.8 while `@tauri-apps/plugin-notification` stayed at 2.7. The
   package is on 2.8 now, and the gate checks every such pair in the lockfiles
   (`pnpm check:tauri`), so a bump to one side alone fails there.
-
-### Security
-
-- The updater's signing key no longer reaches the release build. `tauri build`
-  runs every dependency's build scripts, proc-macros and frontend tooling, and
-  any of them could have read the key it was handed; the installer is now
-  built unsigned and signed afterwards in a job of its own, which runs only the
-  Tauri CLI pinned by `pnpm-lock.yaml`, without network, and checks the
-  signature against the updater's public key before publishing it. The release
-  still takes one approval, now given to the signing job. `release.ps1 -Local`
-  signs the same way, builds an export of the commit rather than the checkout
-  it signs from, and no longer runs the built exe to ask its core fingerprint.
-  A key rotation's bridge release is checked against the old public key, given
-  as `UPDATER_TRUSTED_PUBKEY`.
-- Claude Code's release manifest is verified against its detached OpenPGP
-  signature and Anthropic's release key, pinned in Luna, before the exe's
-  checksum from it is trusted: whoever serves the download bucket can no
-  longer hand Luna an exe of their own with a matching manifest. Codex is
-  still checked only against the checksums of its own release.
-- The signed manifest must name the version it was fetched for, and no Claude
-  Code version below the highest signed one Luna has accepted (or below
-  2.1.319 on a fresh install) is installed, so an old signed release cannot be
-  replayed under the unsigned `latest` pointer. A signature is held to its
-  signed creation and expiration times, and the release key to its expiry
-  where the signature gives one.
 
 ## [0.10.0] - 2026-11-08
 

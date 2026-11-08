@@ -248,7 +248,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         if e.run.as_ref().is_some_and(|run| run.stopped) {
             return Err(STOPPED.into());
         }
-        let (args, dir, envs) = command_for(e, id);
+        let (args, dir, envs) = command_for(e, id)?;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
         (args, dir, envs, e.spec.provider, stdin_text(e, prompt), line, e.spec.account_path.clone())

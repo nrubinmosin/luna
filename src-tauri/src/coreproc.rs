@@ -340,6 +340,14 @@ fn hello(stream: &TcpStream, _slot: Slot, token: &str, within: Duration) -> io::
 
 /// One connection: the hello, then requests until the other end goes.
 fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Result<()> {
+    // On Windows, who owns the client end decides before the hello: a CLI in
+    // its sandbox reads the token and connects, so the core turns a restricted,
+    // contained or lower-integrity peer away (peer.rs, threat model F3). Fail
+    // closed, and say nothing back, as a bad hello gets nothing.
+    if let Some(why) = crate::peer::refuse_reason(&stream) {
+        crate::log::warn("core", &format!("refused a loopback connection: {why}"));
+        return Ok(());
+    }
     let (first_id, hello) = hello(&stream, slot, token, HELLO_DEADLINE)?;
     if hello.proto != ipc::PROTO {
         let err = format!("protocol {} spoken here, {} asked for", ipc::PROTO, hello.proto);
@@ -376,6 +384,18 @@ fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Re
     let result = requests(&mut stream, &replies, started);
     WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| w.id != id);
     result
+}
+
+/// Runs the real `serve` on one accepted connection, for the live integration
+/// test of the peer check (`live.rs`): the test owns the listener and mints
+/// the token, so removing the peer check from `serve` is seen here. A
+/// refused peer returns `Ok(())` before the hello; an accepted one goes on to
+/// the hello against `token`. Windows only: the integration test drives a
+/// sandboxed peer, which is a Windows notion.
+#[cfg(all(test, windows))]
+pub(crate) fn serve_for_test(stream: TcpStream, token: &str) -> io::Result<()> {
+    let slots = Slots::new(STRANGERS);
+    serve(stream, slots.take().expect("a slot"), token, now_ms())
 }
 
 /// Where a connection's answers go: its queue, and its socket, closed when an
