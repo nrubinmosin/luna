@@ -35,7 +35,14 @@ fallback until a copy exists. Each channel is checked every six hours. Claude
 Code's `manifest.json` is verified against its detached signature
 (`manifest.json.sig`) and Anthropic's release key, pinned in
 `claude/manifest_sig.rs`; the exe then against that manifest's sha256 and
-size. A new key reaches Luna only with a Luna release. Codex comes as the
+size. A new key reaches Luna only with a Luna release. The manifest must name
+the version it was fetched for (a signed older manifest served under a newer
+version's URLs is a relabel), and no version below the floor is taken: the
+highest one whose signed manifest Luna has accepted (`<root>/signed-floor`), or
+`MIN_VERSION` (2.1.319, the one last checked live) on a fresh tree. The
+`latest` pointer is not signed, so this is what keeps an old signed release
+from being replayed; a release Anthropic itself pulls back is refused as well,
+logged, until a newer one comes. Codex comes as the
 package tarball, the only asset with a line in `codex-package_SHA256SUMS`, which
 also carries `codex-command-runner.exe` and the other Windows sandbox helpers; it
 is unpacked whole into the version folder.
