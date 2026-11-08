@@ -19,39 +19,171 @@ use std::sync::Mutex;
 /// its stdin to Luna's loopback listener (hub.rs) and prints nothing — a
 /// hook's stdout is added to the model's context, silence is free — while
 /// the listener is on. `guard`: a PreToolUse hook on its shell tools that
-/// refuses a command waiting forever (guard.rs), for a session with Luna's
-/// tools or a helper. `library`: what the library's folders keep from the
-/// session (library/folders.rs `SessionSkills`) — skills off in `skillOverrides`,
-/// which settings of this source beat whatever the account's or the
-/// project's say, and the account's instructions in `claudeMdExcludes`.
+/// refuses a command waiting forever (guard.rs), as the item saying why it is
+/// there: a chat whose person ticked it, or a helper. `library`: what the
+/// library's folders keep from the session (library/folders.rs
+/// `SessionSkills`) — skills off in `skillOverrides`, which settings of this
+/// source beat whatever the account's or the project's say, and the
+/// account's instructions and the other memory in `claudeMdExcludes`.
 /// Always: Luna's `core/` denied to its file tools (`claude_read_deny`), so
 /// there is always a file to write. Written to a file under the data dir
 /// (`hooks/`, named for what it first held) rather than passed inline, so the
 /// command line stays readable and quoting is not a concern. Err if it cannot
 /// be written: a session carries the core-folder deny or does not start
 /// (threat model F3), so the caller refuses the launch rather than run without
-/// it.
+/// it. With the file, what it holds as applied (claude/launch.rs
+/// `settings_applied`).
 pub(crate) fn claude_settings_file(
     chat_id: &str,
     hooks: bool,
-    guard: bool,
+    guard: Option<crate::applied::Item>,
     library: &crate::library::SessionSkills,
     helper: Option<HelperSettings>,
-) -> Result<std::path::PathBuf, String> {
-    let settings = claude_settings(
-        crate::hub::hook_url(chat_id).filter(|_| hooks).as_deref(),
-        crate::hub::guard_url(chat_id).filter(|_| guard).as_deref(),
-        library,
-        &crate::ipc::core_dir().to_string_lossy(),
-        helper,
-    );
+) -> Result<(std::path::PathBuf, Vec<crate::applied::Applied>), String> {
+    let core = crate::ipc::core_dir().to_string_lossy().into_owned();
+    let hook_url = crate::hub::hook_url(chat_id).filter(|_| hooks);
+    let guard_url = crate::hub::guard_url(chat_id).filter(|_| guard.is_some());
+    let settings = claude_settings(hook_url.as_deref(), guard_url.as_deref(), library, &core, helper);
     // Owner-only: the hook URLs in it carry the hub's secret.
     let dir = crate::paths::data_dir().join("hooks");
     crate::secret::private_dir(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
     let path = dir.join(format!("{chat_id}.json"));
     let json = serde_json::to_string_pretty(&settings).map_err(|e| format!("the settings do not serialize: {e}"))?;
     crate::secret::write_private(&path, json.as_bytes()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-    Ok(path)
+    let mut applied =
+        claude_launch::settings_applied(&path.to_string_lossy(), hook_url.is_some(), guard.filter(|_| guard_url.is_some()), library, &core);
+    applied.extend(helper.map(|h| claude_launch::helper_settings_applied(h, &path.to_string_lossy())).unwrap_or_default());
+    Ok((path, applied))
+}
+
+/// The folders a Claude Code session in `folder` on `account_path` would be
+/// given by the user's own settings (`permissions.additionalDirectories` in
+/// the account's, the project's and the project's local settings), each made
+/// absolute against `folder`: for `memory_excludes`, as the library's
+/// instructions have the memory of every added folder read.
+pub(crate) fn claude_settings_dirs(account_path: &str, folder: &str) -> Vec<String> {
+    let base = std::path::Path::new(folder);
+    let files = [
+        std::path::Path::new(account_path).join("settings.json"),
+        base.join(".claude").join("settings.json"),
+        base.join(".claude").join("settings.local.json"),
+    ];
+    let mut dirs = Vec::new();
+    for file in files {
+        let Some(v) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
+            continue;
+        };
+        for d in v["permissions"]["additionalDirectories"].as_array().into_iter().flatten().filter_map(|d| d.as_str()) {
+            dirs.push(base.join(d).to_string_lossy().into_owned());
+        }
+    }
+    dirs
+}
+
+/// What `memory_excludes` leaves out of a Claude Code session in `folder`
+/// given the library's instructions (in `instructions`): every other folder
+/// it is added, by Luna (`luna_dirs`) or by the user's settings. Fail-safe:
+/// a pattern that could also match one of this session's own instruction
+/// files (`keep_own_memory`) is dropped, and said in the second list.
+pub(crate) fn claude_memory_off(
+    luna_dirs: &[String],
+    account_path: &str,
+    folder: &str,
+    instructions: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
+    use claude_launch::OwnMemory;
+    let mut added = luna_dirs.to_vec();
+    added.extend(claude_settings_dirs(account_path, folder));
+    let added: Vec<_> = added.iter().map(|d| added_dir(d)).collect();
+    let resolved = resolved_path(folder);
+    let patterns = claude_launch::memory_excludes(&added, &resolved);
+    // The session's own: where it works and below, every folder above, the
+    // added folders it reads as ever, the library's instructions; each by
+    // every spelling it may be met by.
+    let mut own = Vec::new();
+    for spelled in [lexical_path(folder), resolved] {
+        let mut dir = Some(std::path::Path::new(&spelled));
+        let mut nested = true;
+        while let Some(d) = dir {
+            own.push(OwnMemory { root: d.to_string_lossy().replace('\\', "/"), nested });
+            nested = false;
+            dir = d.parent();
+        }
+    }
+    for dir in &added {
+        let left_alone =
+            dir.spellings.iter().all(|s| !patterns.iter().any(|p| p.contains(&claude_launch::glob_literal(&s.replace('\\', "/")))));
+        if left_alone {
+            own.extend(dir.spellings.iter().map(|s| OwnMemory { root: s.replace('\\', "/"), nested: true }));
+        }
+    }
+    own.extend(instructions.map(|i| OwnMemory { root: i.replace('\\', "/"), nested: false }));
+    claude_launch::keep_own_memory(patterns, &own)
+}
+
+/// `dir` as `memory_excludes` takes it: as given with `.` and `..` worked out,
+/// and as the disk resolves it (links followed), each a spelling Claude Code
+/// may load its files by.
+fn added_dir(dir: &str) -> claude_launch::AddedDir {
+    let lexical = lexical_path(dir);
+    let resolved = resolved_path(dir);
+    let mut spellings = vec![lexical];
+    if !spellings.contains(&resolved) {
+        spellings.push(resolved.clone());
+    }
+    claude_launch::AddedDir { spellings, resolved }
+}
+
+/// `path` as the disk resolves it — links, junctions, `..`, short names and
+/// case — as far as it is there, the rest as written with `.` and `..` worked
+/// out; without Windows' `\\?\` prefix, which no path Claude Code reports
+/// carries.
+fn resolved_path(path: &str) -> String {
+    let lexical = std::path::PathBuf::from(lexical_path(path));
+    let mut base = lexical.as_path();
+    let mut rest = Vec::new();
+    let canonical = loop {
+        if let Ok(c) = std::fs::canonicalize(base) {
+            break Some(c);
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(up), Some(name)) => {
+                rest.push(name.to_owned());
+                base = up;
+            }
+            _ => break None,
+        }
+    };
+    let Some(mut full) = canonical else {
+        return lexical.to_string_lossy().into_owned();
+    };
+    full.extend(rest.iter().rev());
+    let p = full.to_string_lossy().into_owned();
+    match p.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => p.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(p),
+    }
+}
+
+/// `path` with `.` and `..` worked out on the text alone.
+fn lexical_path(path: &str) -> String {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in std::path::Path::new(path).components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out.to_string_lossy().into_owned()
+}
+
+/// The folders of `--add-dir`s in `args`.
+fn added_dirs(args: &[String]) -> Vec<String> {
+    args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect()
 }
 
 /// The instructions a folder of the library gives a Claude Code session in
@@ -207,6 +339,21 @@ pub(crate) fn codex_sandbox_path(sandbox: &str) -> Option<String> {
     Some(codex_launch::without_windows_apps(&path))
 }
 
+/// The `-c` trusting `folder` for one Codex run on `account_path`, and what
+/// it comes of (codex/trust.rs): a helper's, for the run it was sent on; a
+/// folder under a trusted root; one trusted while the account was in use.
+/// None: Codex goes by the account's config, and asks if that says nothing.
+pub(crate) fn codex_trust(account_path: &str, folder: &str, helper: bool) -> Option<([String; 2], crate::applied::Item)> {
+    use crate::applied::Item;
+    use crate::codex::trust;
+    if helper {
+        return Some((trust::trust_override(folder), Item::HelperTrust));
+    }
+    trust::root_override(folder)
+        .map(|t| (t, Item::TrustedRoot))
+        .or_else(|| trust::session_override(account_path, folder).map(|t| (t, Item::SessionTrust)))
+}
+
 /// Luna's MCP server as Codex's `-c` overrides (codex/launch.rs `mcp_args`),
 /// while it is up.
 pub(crate) fn codex_mcp_args() -> Vec<String> {
@@ -318,6 +465,9 @@ pub async fn ensure_claude_session(
     agent: Option<String>,
     // The spawn this is the session of, if an agent's (agents/spawn/mod.rs `spawn_is`).
     spawn_request: Option<u64>,
+    // The guard against endless waits, as the chat's person chose it in the
+    // new-chat dialog; a helper has it whatever this says.
+    guard: Option<bool>,
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -351,23 +501,39 @@ pub async fn ensure_claude_session(
         // them, at every start (library/folders.rs `session_args`); not to a login
         // session.
         let login = same_dir(&folder, &account_path);
-        let skills = if login {
+        let mut skills = if login {
             crate::library::SessionSkills::default()
         } else {
             crate::library::lay_out("before a session starts");
             crate::library::session_args(Provider::Claude, &account_path, &folder)
         };
+        let notes = (parent.is_some() || tools.unwrap_or(false))
+            .then(crate::agents::notes_dir)
+            .filter(|notes| std::fs::create_dir_all(notes).is_ok());
+        let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
+        // The library's instructions are read as memory of a folder added to
+        // the session, which has every added folder's read: not the others'.
+        if instructions.is_some() {
+            let mut luna_dirs = added_dirs(&skills.args);
+            luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
+            let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
+            (skills.memory_off, skills.memory_kept) = claude_memory_off(&luna_dirs, &account_path, &folder, dir.as_deref());
+        }
         // Rewritten at every spawn: the listener's port is new with every Luna run.
-        // The guard against endless waits (guard.rs): a chat with Luna's tools
-        // and a helper, which only such a chat starts.
-        let guard = tools.unwrap_or(false) || parent.is_some();
+        // The guard against endless waits (guard.rs): a helper's, or a chat's
+        // whose person asked for it.
+        let guard = if parent.is_some() {
+            Some(crate::applied::Item::HelperGuard)
+        } else {
+            guard.unwrap_or(false).then_some(crate::applied::Item::Guard)
+        };
         // A helper, the window's or not, starts with none of its account's
         // reach out of Luna but what it was spawned with (`HelperSettings`).
         let helper = parent.is_some().then(|| HelperSettings { connectors: crate::agents::keeps_connectors(&id, spawn_request) });
         // Mandatory: it carries the core-folder deny (threat model F3). If it
         // cannot be written, the session does not start rather than run
         // without it.
-        let settings_file = claude_settings_file(&id, true, guard, &skills, helper)?;
+        let (settings_file, settings_applied) = claude_settings_file(&id, true, guard, &skills, helper)?;
         let tools = tools.unwrap_or(false);
         let read_only = read_only.unwrap_or(false);
         let agent = agent.filter(|a| !a.is_empty());
@@ -391,9 +557,7 @@ pub async fn ensure_claude_session(
             None => {}
         }
         let mcp = token.and_then(|t| Some((claude_mcp_file(&id)?, t)));
-        let notes = (parent.is_some() || tools).then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
-        let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
-        let (args, envs) = claude_launch::chat_args(&claude_launch::ChatStart {
+        let (args, envs, applied) = claude_launch::chat_args(&claude_launch::ChatStart {
             id: &id,
             account_path: &account_path,
             model: &model,
@@ -401,7 +565,7 @@ pub async fn ensure_claude_session(
             permission_mode: &permission_mode,
             resume: resume.as_deref(),
             worktree: worktree.then_some(worktree_name.as_deref()),
-            settings_file: Some(&settings_file),
+            settings_file: Some((&settings_file, &settings_applied)),
             agent: agent.as_deref(),
             read_only,
             parent: parent.as_deref(),
@@ -420,6 +584,7 @@ pub async fn ensure_claude_session(
             envs,
             resume,
             describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
+            applied,
         })
     })
     .await
@@ -448,6 +613,9 @@ pub async fn ensure_codex_session(
     parent: Option<String>,
     prompt: Option<String>,
     spawn_request: Option<u64>,
+    // The guard against endless waits, as the chat's person chose it in the
+    // new-chat dialog; a helper has it whatever this says.
+    guard: Option<bool>,
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -470,12 +638,17 @@ pub async fn ensure_codex_session(
         if login {
             let envs = vec![("CODEX_HOME", account_path.clone())];
             let args = vec!["login".to_string()];
-            return Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume: None, describe: "login".into() });
+            let applied = vec![crate::applied::Item::Account.with(format!("CODEX_HOME={account_path}"))];
+            let describe = "login".into();
+            return Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume: None, describe, applied });
         }
         // A project under a folder trusted on this machine starts trusted
         // without an entry in the account's config, and so does one
-        // trusted while the account was in use (codex/trust.rs).
-        let trust = crate::codex::trust::root_override(&folder).or_else(|| crate::codex::trust::session_override(&account_path, &folder));
+        // trusted while the account was in use (codex/trust.rs). A helper,
+        // with nobody to answer Codex's trust screen, is trusted where it was
+        // sent for the run alone: nothing of an agent's spawn is written into
+        // the account.
+        let trust = codex_trust(&account_path, &folder, parent.is_some());
         let chosen_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
         let sandbox: &str = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX } else { &sandbox };
         let hooks_unasked = hooks_unasked.unwrap_or(false);
@@ -487,7 +660,7 @@ pub async fn ensure_codex_session(
         let deny = codex_core_deny(sandbox);
         let sandbox_path = codex_sandbox_path(sandbox);
         let git_envs = codex_git_envs(sandbox);
-        let guard = codex_guard_args(&id, tools.unwrap_or(false) || parent.is_some(), hooks_unasked);
+        let guard = codex_guard_args(&id, guard.unwrap_or(false) || parent.is_some(), hooks_unasked);
         let tools = tools.unwrap_or(false);
         let settings = serde_json::json!({
             "model": chosen_model,
@@ -511,12 +684,13 @@ pub async fn ensure_codex_session(
         // from them, at every start (library/folders.rs `session_args`).
         crate::library::lay_out("before a session starts");
         let skills = crate::library::session_args(Provider::Codex, &account_path, &folder);
-        let (args, envs) = codex_launch::chat_args(&codex_launch::ChatStart {
+        let (args, envs, applied) = codex_launch::chat_args(&codex_launch::ChatStart {
             id: &id,
             folder: &folder,
             account_path: &account_path,
             resume: resume.as_deref(),
             trust,
+            own_windows_sandbox: crate::codex::config::windows_sandbox_set(&account_path),
             worktree: worktree.unwrap_or(false),
             model: chosen_model,
             effort: &effort,
@@ -535,7 +709,7 @@ pub async fn ensure_codex_session(
             prompt: prompt.as_deref(),
         });
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
-        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe })
+        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied })
     })
     .await
 }
@@ -619,6 +793,17 @@ mod tests {
         settings: Option<serde_json::Value>,
         mcp: Option<serde_json::Value>,
         instructions: Option<String>,
+        /// What Luna applied, as (key, class, value), placeholders in.
+        applied: Vec<(String, crate::applied::Class, String)>,
+    }
+
+    impl Started {
+        fn keys(&self) -> Vec<&str> {
+            self.applied.iter().map(|(k, _, _)| k.as_str()).collect()
+        }
+        fn value(&self, key: &str) -> Option<&str> {
+            self.applied.iter().find(|(k, _, _)| k == key).map(|(_, _, v)| v.as_str())
+        }
     }
 
     fn started(id: &str, r: &Redact, start: impl std::future::Future<Output = Result<String, String>>) -> Started {
@@ -630,7 +815,12 @@ mod tests {
         let envs = launch.as_ref().map(|l| r.envs(&l.envs));
         crate::agents::forget(id);
         assert_eq!(built, Ok(String::new()));
-        let (l, envs) = (launch.expect("the start was caught"), envs.unwrap());
+        let (l, mut envs) = (launch.expect("the start was caught"), envs.unwrap());
+        Redact::assert_shown(&l.args, &l.envs, &l.cwd, &l.applied);
+        // Every pane's CLI ends its environment on the terminal it draws into
+        // (`Launch::finished`); the cases below leave it out.
+        assert_eq!(envs.pop(), Some(("TERM".to_string(), "xterm-256color".to_string())));
+        let applied = r.applied(&l.applied, &l.envs);
         let args = r.args(&l.args);
         let data = crate::paths::data_dir();
         let read = |sub: &str, placeholder: &str| {
@@ -641,7 +831,7 @@ mod tests {
         };
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
         let instructions = golden::instructions(id, &args);
-        Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, args }
+        Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, args, applied }
     }
 
     /// The window's ask for a Claude Code chat; each case changes what it is about.
@@ -659,6 +849,7 @@ mod tests {
         prompt: Option<&'static str>,
         read_only: Option<bool>,
         agent: Option<&'static str>,
+        guard: Option<bool>,
     }
 
     impl ClaudeAsk {
@@ -677,6 +868,7 @@ mod tests {
                 prompt: None,
                 read_only: None,
                 agent: None,
+                guard: None,
             }
         }
 
@@ -701,9 +893,15 @@ mod tests {
                     self.read_only,
                     s(self.agent),
                     None,
+                    self.guard,
                 ),
             )
         }
+    }
+
+    /// The variables every start goes without, as applied.
+    fn removed() -> String {
+        format!("unset {}", super::super::spawn::removed_env().join(", "))
     }
 
     fn claude_envs(id: &str, account: &str) -> Vec<(String, String)> {
@@ -720,10 +918,44 @@ mod tests {
             strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
         );
         assert_eq!(s.envs, claude_envs(ID, "/golden/acc-claude"));
-        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)));
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)), "no guard unless the person asks for it");
         assert_eq!(s.mcp, None);
         assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
         assert_eq!(s.describe, "model opus perm default worktree false");
+        use crate::applied::Class::*;
+        let want = [
+            ("account", Runtime, "CLAUDE_CONFIG_DIR=/golden/acc-claude"),
+            ("no-self-update", Runtime, "DISABLE_AUTOUPDATER=1"),
+            ("session-id", Runtime, "LUNA_SESSION_ID=golden-claude-chat"),
+            ("model", UserAction, "--model opus"),
+            ("effort", UserAction, "--effort high"),
+            ("permission-mode", UserAction, "--permission-mode default"),
+            ("activity-hooks", Runtime, "hooks in --settings <settings-file>"),
+            ("core-read-deny", Boundary, "permissions.deny Read(//<core-dir>/**) in --settings <settings-file>"),
+            ("terminal", Runtime, "TERM=xterm-256color"),
+            ("cwd", Runtime, "cwd /golden/project"),
+        ];
+        let mut want: Vec<_> = want.into_iter().map(|(k, c, v)| (k.to_string(), c, v.to_string())).collect();
+        want.push(("inherited-env-cleared".into(), Runtime, removed()));
+        assert_eq!(s.applied, want);
+    }
+
+    #[test]
+    fn golden_claude_chat_guarded_only_when_its_person_asks() {
+        const ID: &str = "golden-claude-guarded";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk { guard: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
+        assert_eq!(s.value("guard"), Some("a PreToolUse hook on Bash, PowerShell, Monitor in --settings <settings-file>"));
+        assert!(!s.keys().contains(&"helper.guard"));
+        // Luna's tools alone do not bring it.
+        let s = ClaudeAsk { tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)));
+        assert!(!s.keys().iter().any(|k| k.ends_with("guard")), "{:?}", s.keys());
+        assert_eq!(
+            s.value("luna-tools"),
+            Some("--mcp-config <mcp-file>, --allowedTools mcp__luna; its token in LUNA_MCP_TOKEN, not shown")
+        );
     }
 
     #[test]
@@ -839,7 +1071,7 @@ mod tests {
             ])
         );
         assert_eq!(s.envs, claude_envs(ID, ACC), "no token: not a chat agents may reach");
-        assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)), "no guard: its person did not ask");
         assert_eq!(s.mcp, None);
         assert_eq!(s.cwd, ACC);
     }
@@ -903,12 +1135,40 @@ mod tests {
         assert_eq!(s.settings, Some(golden::claude_helper_settings(golden::claude_chat_settings(true))));
         assert_eq!(s.mcp, Some(golden::claude_mcp_config()), "the token stays in the environment");
         assert_eq!(s.describe, "model sonnet perm bypassPermissions worktree false");
+        assert_eq!(
+            s.keys(),
+            [
+                "account",
+                "no-self-update",
+                "session-id",
+                "model",
+                "effort",
+                "permission-mode",
+                "activity-hooks",
+                "helper.guard",
+                "core-read-deny",
+                "helper.no-auto-memory",
+                "helper.luna-mcp-alone",
+                "agent",
+                "read-only",
+                "helper.identity",
+                "luna-tools",
+                "notes-dir",
+                "terminal",
+                "cwd",
+                "inherited-env-cleared",
+            ]
+        );
+        assert_eq!(s.value("session-id"), Some("LUNA_SESSION_ID=golden-claude-helper, LUNA_PARENT_ID=golden-parent"));
+        assert_eq!(s.value("notes-dir"), Some("--add-dir <notes-dir>"));
     }
 
     /// The placeholders for a start in a library's folder on `account`.
     fn library_redact(id: &str, lib: &crate::library::GoldenLibrary, account: &str) -> Redact {
         Redact::for_chat(id)
             .with(lib.claude_skills(), "<library-dir>")
+            // As `claudeMdExcludes` names it, on every OS.
+            .with(lib.claude_skills().replace('\\', "/"), "<library-dir>")
             .with(lib.folder.clone(), "<project>")
             .with(account, "<acc>")
             // As `claudeMdExcludes` names a file, on every OS.
@@ -951,11 +1211,25 @@ mod tests {
         );
         let mut settings = golden::claude_chat_settings(false);
         settings["skillOverrides"] = serde_json::json!({ "review": "off" });
-        settings["claudeMdExcludes"] = serde_json::json!(["<acc>/CLAUDE.md"]);
-        assert_eq!(s.settings, Some(settings), "the folder keeps review and the account's instructions from it");
+        settings["claudeMdExcludes"] = serde_json::json!(["<acc>/CLAUDE.md"].into_iter().chain(LIBRARY_MEMORY_OFF).collect::<Vec<_>>());
+        assert_eq!(
+            s.settings,
+            Some(settings),
+            "the folder keeps review and the account's instructions from it, and the skills folder's memory files"
+        );
         assert_eq!(s.instructions.as_deref(), Some(crate::library::GoldenLibrary::INSTRUCTIONS), "the library's, word for word");
         assert_eq!(s.cwd, "<project>");
+        assert_eq!(s.value("library.instructions"), Some("--add-dir <instructions-dir>, CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1"));
+        assert_eq!(s.value("library.skills"), Some("--add-dir <library-dir>"));
+        assert_eq!(s.value("library.hidden-skills"), Some("skillOverrides off: review"));
+        assert_eq!(s.value("library.account-instructions-off"), Some("claudeMdExcludes <acc>/CLAUDE.md"));
+        assert_eq!(s.value("library.memory-narrowed"), Some(format!("claudeMdExcludes {}", LIBRARY_MEMORY_OFF.join(", ")).as_str()));
     }
+
+    /// What reading the library's instructions as memory would also have read,
+    /// left out: the memory files of the skills folder it adds.
+    const LIBRARY_MEMORY_OFF: [&str; 4] =
+        ["<library-dir>/CLAUDE.md", "<library-dir>/CLAUDE.local.md", "<library-dir>/.claude/CLAUDE.md", "<library-dir>/.claude/rules/**"];
 
     /// The window's ask for a Codex chat; each case changes what it is about.
     struct CodexAsk {
@@ -972,6 +1246,7 @@ mod tests {
         hooks_unasked: Option<bool>,
         parent: Option<&'static str>,
         prompt: Option<&'static str>,
+        guard: Option<bool>,
     }
 
     const CODEX_ACC: &str = "/golden/acc-codex";
@@ -992,6 +1267,7 @@ mod tests {
                 hooks_unasked: None,
                 parent: None,
                 prompt: None,
+                guard: None,
             }
         }
 
@@ -1016,6 +1292,7 @@ mod tests {
                     s(self.parent),
                     s(self.prompt),
                     None,
+                    self.guard,
                 ),
             )
         }
@@ -1027,13 +1304,13 @@ mod tests {
         let mut args = strings(head);
         args.extend(strings(&["-C", FOLDER, "--no-daemon"]));
         args.extend(flags);
-        args.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
+        args.extend(strings(&["-c", "check_for_update_on_startup=false", "-c", "tui.terminal_title=[\"thread-id\"]"]));
         args.extend(tail);
         args
     }
 
-    /// The model and effort a chat asks for, then `--ask-for-approval` with a
-    /// person answering, and the sandbox as a flag.
+    /// The model and effort a chat asks for, then `--ask-for-approval`, and
+    /// the sandbox as a flag.
     fn codex_flags(model: Option<&str>, effort: &str, approval: &str, sandbox: &str) -> Vec<String> {
         let mut args = model.map_or_else(Vec::new, |m| strings(&["--model", m]));
         args.extend(strings(&["-c", &format!("model_reasoning_effort=\"{effort}\"")]));
@@ -1041,8 +1318,22 @@ mod tests {
         args
     }
 
+    /// `codex_flags` for a helper: trusted for the run where it was sent, a
+    /// person (its parent) answering whatever reviewer the account names.
+    fn codex_helper_flags(model: Option<&str>, effort: &str, approval: &str, sandbox: &str) -> Vec<String> {
+        let mut args: Vec<String> = crate::codex::trust::trust_override(FOLDER).into();
+        let flags = codex_flags(model, effort, approval, sandbox);
+        let at = flags.iter().position(|a| a == "--ask-for-approval").expect("asks") + 2;
+        args.extend(flags[..at].iter().cloned());
+        args.extend(strings(&["-c", "approvals_reviewer=\"user\""]));
+        args.extend(flags[at..].iter().cloned());
+        args
+    }
+
+    /// `--ask-for-approval` and the sandbox: whatever reviewer the account
+    /// or the project names stands.
     fn codex_asks(approval: &str, sandbox: &str) -> Vec<String> {
-        let mut args = strings(&["--ask-for-approval", approval, "-c", "approvals_reviewer=\"user\""]);
+        let mut args = strings(&["--ask-for-approval", approval]);
         if sandbox == "read-only" {
             args.extend(golden::codex_read_only(&["--sandbox", sandbox]));
         } else {
@@ -1069,9 +1360,63 @@ mod tests {
         let r = Redact::for_chat(ID);
         let s = CodexAsk::chat().start(ID, &r);
         assert_eq!(s.args, codex_args(&[], codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"), Vec::new()));
+        assert!(!s.args.iter().any(|a| a.starts_with("approvals_reviewer")), "the account's reviewer, if it names one, stands");
+        assert!(!s.args.iter().any(|a| a.starts_with("projects=")), "no trust Luna was not asked for");
         assert_eq!(s.envs, codex_envs(ID, true));
         assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
         assert_eq!(s.describe, "model gpt-5.5 effort medium approval on-request sandbox workspace-write");
+        use crate::applied::Class::*;
+        let mut want = vec![
+            ("account", Runtime, "CODEX_HOME=/golden/acc-codex".to_string()),
+            ("session-id", Runtime, "LUNA_SESSION_ID=golden-codex-chat".into()),
+            ("folder", Runtime, "-C /golden/project".into()),
+            ("codex.no-daemon", Runtime, "--no-daemon".into()),
+            ("model", UserAction, "--model gpt-5.5".into()),
+            ("effort", UserAction, "-c model_reasoning_effort=\"medium\"".into()),
+            ("approval", UserAction, "--ask-for-approval on-request".into()),
+            ("sandbox", UserAction, "--sandbox workspace-write".into()),
+        ];
+        if cfg!(windows) {
+            want.push(("codex.windows-sandbox", Workaround, "-c windows.sandbox=\"unelevated\"".into()));
+            want.push(("codex.sandbox-path", Workaround, "PATH without …\\Microsoft\\WindowsApps".into()));
+        }
+        want.push(("no-self-update", Runtime, "-c check_for_update_on_startup=false".into()));
+        want.push(("codex.thread-title", Runtime, "-c tui.terminal_title=[\"thread-id\"]".into()));
+        want.push(("terminal", Runtime, "TERM=xterm-256color".into()));
+        want.push(("cwd", Runtime, "cwd /golden/project".into()));
+        want.push(("inherited-env-cleared", Runtime, removed()));
+        assert_eq!(s.applied, want.into_iter().map(|(k, c, v)| (k.to_string(), c, v)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn golden_codex_chat_keeps_a_windows_sandbox_its_user_chose() {
+        const ID: &str = "golden-codex-own-sandbox";
+        let account = std::env::temp_dir().join(format!("luna-golden-winsandbox-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join("config.toml"), "[windows]\nsandbox = \"elevated\"\n").unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
+        let s = CodexAsk { account: acc, ..CodexAsk::chat() }.start(ID, &r);
+        assert!(!s.args.iter().any(|a| a.starts_with("windows.sandbox")), "{:?}", s.args);
+        assert!(!s.keys().contains(&"codex.windows-sandbox"));
+        let _ = std::fs::remove_dir_all(&account);
+        // None set: Luna's, where Windows needs one.
+        let s = CodexAsk::chat().start(ID, &r);
+        assert_eq!(s.args.iter().any(|a| a == "windows.sandbox=\"unelevated\""), cfg!(windows));
+    }
+
+    #[test]
+    fn golden_codex_chat_guarded_only_when_its_person_asks() {
+        const ID: &str = "golden-codex-guarded";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk { guard: Some(true), hooks_unasked: Some(true), ..CodexAsk::chat() }.start(ID, &r);
+        let mut flags = codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write");
+        flags.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
+        assert_eq!(s.args, codex_args(&[], flags, Vec::new()));
+        assert_eq!(s.value("guard"), Some("-c hooks.PreToolUse on the shell (Bash)"));
+        // Tools and hooks unasked alone do not bring it.
+        let s = CodexAsk { tools: Some(true), hooks_unasked: Some(true), ..CodexAsk::chat() }.start(ID, &r);
+        assert!(!s.args.iter().any(|a| a.starts_with("hooks.PreToolUse")), "{:?}", s.args);
     }
 
     #[test]
@@ -1124,7 +1469,7 @@ mod tests {
             ..CodexAsk::chat()
         }
         .start(ID, &r);
-        let mut flags = codex_flags(None, "high", "never", "workspace-write");
+        let mut flags = codex_helper_flags(None, "high", "never", "workspace-write");
         flags.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
         // Its account's apps off (the golden account names no server).
         flags.extend(strings(&["-c", "features.apps=false"]));
@@ -1135,6 +1480,12 @@ mod tests {
         envs.extend(pairs(&[("LUNA_PARENT_ID", PARENT), ("LUNA_MCP_TOKEN", "<token>")]));
         assert_eq!(s.envs, envs);
         assert_eq!(s.describe, "model default effort high approval never sandbox workspace-write");
+        assert_eq!(s.value("helper.trust").map(|v| v.starts_with("-c projects=")), Some(true), "trusted for the run, nothing written");
+        assert_eq!(s.value("helper.reviewer"), Some("-c approvals_reviewer=\"user\""));
+        assert_eq!(s.value("helper.guard"), Some("-c hooks.PreToolUse on the shell (Bash)"));
+        assert_eq!(s.value("luna-tools"), Some(crate::codex::launch::LUNA_TOOLS_VALUE));
+        assert!(s.keys().contains(&"helper.identity"));
+        assert_eq!(s.value("helper.luna-mcp-alone"), Some("-c features.apps=false"), "its account's apps off, a boundary");
 
         // Hooks' trust asked for: Codex would drop the guard, and it is given none.
         let s = CodexAsk { tools: Some(true), ..CodexAsk::chat() }.start(ID, &r);
@@ -1147,7 +1498,7 @@ mod tests {
             a.extend(golden::codex_windows_sandbox());
             a
         };
-        let mut read_only_net = strings(&["--ask-for-approval", "on-request", "-c", "approvals_reviewer=\"user\""]);
+        let mut read_only_net = strings(&["--ask-for-approval", "on-request"]);
         read_only_net.extend(golden::codex_read_only_net());
         // (approval, sandbox, the flags for them, PATH cut for the sandbox, the sandbox it runs in)
         let cases: [(&str, &str, Vec<String>, bool, &str); 5] = [
@@ -1186,6 +1537,8 @@ mod tests {
         want.extend(codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"));
         want.extend(strings(&[
             "-c",
+            "check_for_update_on_startup=false",
+            "-c",
             "tui.terminal_title=[\"thread-id\"]",
             "-c",
             &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
@@ -1201,5 +1554,189 @@ mod tests {
         assert_eq!(s.envs, envs);
         assert_eq!(s.instructions, None, "Codex has no way to take other instructions");
         assert_eq!(s.cwd, "<project>");
+        let plugin = format!("-c plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG);
+        assert_eq!(s.value("library.skills"), Some(plugin.as_str()));
+        assert_eq!(s.value("library.hidden-skills"), Some("-c skills.config=[{name=\"review\",enabled=false}]"));
+    }
+
+    #[test]
+    fn memory_excludes_leave_out_only_folders_beside_the_one_worked_in() {
+        use crate::claude::launch::{memory_excludes, AddedDir};
+        let at = |d: &str| AddedDir { spellings: vec![d.to_string()], resolved: d.to_string() };
+        let added = [at("/data/notes"), at("/work"), at("/work/app/sub"), at("/other/")];
+        assert_eq!(
+            memory_excludes(&added, "/work/app"),
+            [
+                "/data/notes/CLAUDE.md",
+                "/data/notes/CLAUDE.local.md",
+                "/data/notes/.claude/CLAUDE.md",
+                "/data/notes/.claude/rules/**",
+                "/other/CLAUDE.md",
+                "/other/CLAUDE.local.md",
+                "/other/.claude/CLAUDE.md",
+                "/other/.claude/rules/**",
+            ],
+            "a folder above the one worked in, or below it, is read as ever"
+        );
+        assert!(memory_excludes(&[at("/work/application")], "/work/app").len() == 4, "a sibling sharing a prefix is beside it");
+        assert_eq!(memory_excludes(&[at(r"C:\Data\notes")], r"C:\Work")[0], "C:/Data/notes/CLAUDE.md", "as Claude Code matches a path");
+        if cfg!(windows) {
+            assert!(memory_excludes(&[at(r"E:\Work")], r"e:\work\app").is_empty(), "Windows paths in any case");
+        }
+        // Each spelling of a folder outside gets its patterns; inside, none.
+        let linked = AddedDir { spellings: vec!["/link/shared".into(), "/real/shared".into()], resolved: "/real/shared".into() };
+        assert_eq!(memory_excludes(&[linked], "/work/app").len(), 8);
+        let into_project = AddedDir { spellings: vec!["/link/app".into()], resolved: "/work/app/sub".into() };
+        assert!(memory_excludes(&[into_project], "/work/app").is_empty(), "judged where it resolves to");
+    }
+
+    #[test]
+    fn a_folder_name_goes_into_claude_md_excludes_literally() {
+        use crate::claude::launch::{glob_literal, memory_excludes, AddedDir};
+        assert_eq!(glob_literal("E:/work/[ab]"), "E:/work/[[]ab[]]");
+        assert_eq!(glob_literal("C:/Program Files (x86)/a*b?{c,d}|\"q\""), "C:/Program Files [(]x86[)]/a[*]b[?][{]c,d[}][|][\"]q[\"]");
+        // Literal where nothing next to them makes them more: an escape
+        // there would match a folder spelled like it as well.
+        assert_eq!(glob_literal("E:/w/a!b/@c/d+e,f/!(x)"), "E:/w/a!b/@c/d+e,f/![(]x[)]");
+        assert_eq!(
+            glob_literal("/home/u/.notes dir/é \u{65e5} 😀#$%&'~^`=;:<>"),
+            "/home/u/.notes dir/é \u{65e5} 😀#$%&'~^`=;:<>",
+            "nothing else changes"
+        );
+        let dir = AddedDir { spellings: vec!["E:/work/[ab]".into()], resolved: "E:/work/[ab]".into() };
+        let patterns = memory_excludes(&[dir], "E:/work/a");
+        assert_eq!(patterns[0], "E:/work/[[]ab[]]/CLAUDE.md", "not a class that matches E:/work/a/CLAUDE.md");
+        assert!(patterns.iter().all(|p| p.starts_with("E:/work/[[]ab[]]/")), "{patterns:?}");
+        // The account's instructions file, a path too, goes in literally.
+        let library = crate::library::SessionSkills { excluded: vec!["E:/acc/[x]/CLAUDE.md".into()], ..Default::default() };
+        let settings = claude_settings(None, None, &library, "/d/core", None);
+        assert_eq!(settings["claudeMdExcludes"], serde_json::json!(["E:/acc/[[]x[]]/CLAUDE.md"]));
+    }
+
+    /// The patterns `memory_excludes` makes for folders named with every
+    /// printable ASCII character, a space and non-ASCII ones, in the places
+    /// picomatch reads differently, written as JSON to `LUNA_GLOB_TABLE`: for
+    /// checking them with Claude Code's own matcher, which only its binary
+    /// has (docs/cli-compatibility.md, `claudeMdExcludes`). Run by hand on a
+    /// Claude Code upgrade.
+    #[test]
+    #[ignore = "writes a table for an outside check; run with LUNA_GLOB_TABLE set"]
+    fn claude_md_exclude_patterns_for_the_matcher_check() {
+        use crate::claude::launch::{memory_excludes, AddedDir};
+        let Ok(out) = std::env::var("LUNA_GLOB_TABLE") else { return };
+        let mut chars: Vec<String> = "!\"#$%&'()*+,-.:;<=>?@[]^_`{|}~ ".chars().map(String::from).collect();
+        chars.extend(["é", "\u{65e5}", "😀"].map(String::from));
+        let mut rows = Vec::new();
+        for c in &chars {
+            for name in [
+                format!("x{c}y"),
+                format!("{c}y"),
+                format!("x{c}"),
+                c.clone(),
+                format!("x{c}(y)"),
+                format!("x{c}(y|z)"),
+                format!("{c}{c}y"),
+                format!("x{c}{{a,b}}"),
+                format!("x{c}[ab]"),
+                format!("x{c}*"),
+            ] {
+                for base in ["E:/w", "/home/u"] {
+                    let dir = format!("{base}/{name}");
+                    let added = AddedDir { spellings: vec![dir.clone()], resolved: dir.clone() };
+                    let patterns = memory_excludes(&[added], "/elsewhere");
+                    rows.push(serde_json::json!({ "dir": dir, "char": c, "name": name, "base": base, "patterns": patterns }));
+                }
+            }
+        }
+        std::fs::write(out, serde_json::to_string_pretty(&rows).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn an_exclude_that_could_match_the_projects_own_instructions_is_not_used() {
+        use crate::claude::launch::{keep_own_memory, memory_excludes, AddedDir, OwnMemory};
+        let at = |d: &str| AddedDir { spellings: vec![d.to_string()], resolved: d.to_string() };
+        let own = |roots: &[(&str, bool)]| roots.iter().map(|(r, n)| OwnMemory { root: r.to_string(), nested: *n }).collect::<Vec<_>>();
+        // An added folder [ab]: its pattern E:/w/[[]ab[]]/CLAUDE.md is also,
+        // in picomatch's shortcut, the CLAUDE.md of a folder named [[]ab[]].
+        let patterns = memory_excludes(&[at("E:/w/[ab]")], "E:/w/[[]ab[]]");
+        assert_eq!(patterns.len(), 4);
+        let (kept, notes) = keep_own_memory(patterns.clone(), &own(&[("E:/w/[[]ab[]]", true), ("E:/w", false), ("E:", false)]));
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(notes, ["could not exclude E:/w/[ab]: its name collides with this project's instruction path E:/w/[[]ab[]]"]);
+        // Nor below the project, where Claude Code loads memory on demand.
+        let (kept, _) = keep_own_memory(patterns.clone(), &own(&[("E:/w", true)]));
+        assert!(kept.is_empty(), "a folder [[]ab[]] under E:/w is the project's");
+        // A normal case: nothing of the project's is touched, all are used.
+        let normal = memory_excludes(&[at("/data/notes"), at("E:/w/[ab]")], "/work/app");
+        let (kept, notes) = keep_own_memory(normal.clone(), &own(&[("/work/app", true), ("/work", false), ("/", false)]));
+        assert_eq!((kept, notes.len()), (normal, 0));
+        // Through the start: the Workaround is what Luna applied.
+        let library = crate::library::SessionSkills {
+            memory_kept: vec!["could not exclude E:/w/[ab]: its name collides with this project's instruction path E:/w/[[]ab[]]".into()],
+            ..Default::default()
+        };
+        let applied = crate::claude::launch::settings_applied("/s.json", false, None, &library, "/d/core");
+        let item = applied.iter().find(|a| a.key == "library.memory-not-narrowed").expect("said");
+        assert_eq!(item.class, crate::applied::Class::Workaround);
+        assert!(item.value.starts_with("could not exclude E:/w/[ab]"), "{}", item.value);
+    }
+
+    #[test]
+    fn a_real_project_named_like_an_escape_keeps_its_instructions() {
+        let root = std::env::temp_dir().join(format!("luna-collide-{}", std::process::id()));
+        let (project, added) = (root.join("[[]ab[]]"), root.join("[ab]"));
+        std::fs::create_dir_all(project.join(".claude")).unwrap();
+        std::fs::create_dir_all(&added).unwrap();
+        let account = root.join("acc");
+        std::fs::create_dir_all(&account).unwrap();
+        let settings = serde_json::json!({ "permissions": { "additionalDirectories": [added.to_string_lossy()] } });
+        std::fs::write(project.join(".claude").join("settings.json"), settings.to_string()).unwrap();
+        let (off, kept) = claude_memory_off(&[], &account.to_string_lossy(), &project.to_string_lossy(), None);
+        assert!(off.is_empty(), "no pattern that is also this project's CLAUDE.md: {off:?}");
+        assert!(!kept.is_empty() && kept.iter().all(|k| k.contains("collides with this project's instruction path")), "{kept:?}");
+        // Another project beside them: [ab] is left out as usual.
+        let other = root.join("plain");
+        std::fs::create_dir_all(other.join(".claude")).unwrap();
+        std::fs::write(other.join(".claude").join("settings.json"), settings.to_string()).unwrap();
+        let (off, kept) = claude_memory_off(&[], &account.to_string_lossy(), &other.to_string_lossy(), None);
+        // Four memory files for each spelling of [ab].
+        assert!(!off.is_empty() && off.len() % 4 == 0 && kept.is_empty(), "{off:?} {kept:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_folder_above_the_project_by_dot_dot_is_beside_it_and_left_out() {
+        let root = std::env::temp_dir().join(format!("luna-dotdot-{}", std::process::id()));
+        let (project, shared) = (root.join("proj"), root.join("shared"));
+        std::fs::create_dir_all(project.join(".claude")).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        let account = root.join("acc");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(project.join(".claude").join("settings.json"), r#"{"permissions":{"additionalDirectories":["../shared"]}}"#)
+            .unwrap();
+        let (off, _) = claude_memory_off(&[], &account.to_string_lossy(), &project.to_string_lossy(), None);
+        let shared = resolved_path(&shared.to_string_lossy()).replace('\\', "/");
+        assert!(off.contains(&format!("{}/CLAUDE.md", crate::claude::launch::glob_literal(&shared))), "{off:?}");
+        assert!(off.iter().all(|p| !p.contains("..")), "resolved, not `<project>/../shared`: {off:?}");
+        // Nested in the project instead: read as ever.
+        std::fs::write(project.join(".claude").join("settings.json"), r#"{"permissions":{"additionalDirectories":["./docs/../sub"]}}"#)
+            .unwrap();
+        assert!(claude_memory_off(&[], &account.to_string_lossy(), &project.to_string_lossy(), None).0.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_users_own_added_folders_are_read_from_their_settings() {
+        let root = std::env::temp_dir().join(format!("luna-added-dirs-{}", std::process::id()));
+        let (account, folder) = (root.join("acc"), root.join("proj"));
+        std::fs::create_dir_all(folder.join(".claude")).unwrap();
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join("settings.json"), r#"{"permissions":{"additionalDirectories":["/shared/docs"]}}"#).unwrap();
+        std::fs::write(folder.join(".claude").join("settings.local.json"), r#"{"permissions":{"additionalDirectories":["../sibling"]}}"#)
+            .unwrap();
+        let dirs = claude_settings_dirs(&account.to_string_lossy(), &folder.to_string_lossy());
+        assert_eq!(dirs.len(), 2, "{dirs:?}");
+        assert!(dirs[0].ends_with("docs") && dirs[1].ends_with("sibling"), "{dirs:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

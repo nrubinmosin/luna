@@ -7,6 +7,7 @@ import { CHAT_COLORS, chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, limitColor, shortSessionId, tail2, tint } from '../../shared/lib/format';
 import { BackgroundChip } from '../agents/BackgroundChip';
 import { useChats } from '../chats/chats.store';
+import { AppliedPanel } from '../chats/AppliedPanel';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { draftTag, useDrafts } from '../chats/drafts.store';
 import { CLEAR_WAITING_TITLE, clearWaiting, useMarked } from '../chats/marked.store';
@@ -116,6 +117,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const tag = draftTag(drafts);
   const marked = useMarked(s => (chatId ? !!s.by[chatId] : false));
   const [confirming, setConfirming] = useState(false);
+  const [showApplied, setShowApplied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [picking, setPicking] = useState<HTMLElement | null>(null);
   const [copied, setCopied] = useState(false);
@@ -263,6 +265,15 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   e.stopPropagation();
                   setDraft(chat.name);
                   setEditing(true);
+                }}
+              />
+              <button
+                data-glyph="info"
+                aria-label="What Luna applied"
+                title="What Luna applied — everything Luna added to this chat's CLI, and why"
+                onClick={e => {
+                  e.stopPropagation();
+                  setShowApplied(true);
                 }}
               />
               <button
@@ -418,6 +429,7 @@ ${chat.worktreePath}`
             </span>
           </div>
           {confirming && <DeleteChatDialog chat={chat} onClose={() => setConfirming(false)} />}
+          {showApplied && <AppliedPanel chat={chat} onClose={() => setShowApplied(false)} />}
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
             <Terminal chat={chat} folderPath={folder.path} />
             {/* Keyed on the chat: a pane handed a new chat fades it in. */}
