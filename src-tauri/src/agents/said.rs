@@ -423,6 +423,35 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_prompt_in_tags_starts_a_turn() {
+        // Two turns of a Codex helper, each prompted in tags of the caller's own,
+        // with what Codex injects around them.
+        let line = |role: &str, kind: &str, text: &str| {
+            serde_json::json!({ "type": "response_item", "payload": { "type": "message", "role": role,
+                "content": [{ "type": kind, "text": text }] } })
+            .to_string()
+        };
+        let first = format!("REPORT one: {}", "Details. ".repeat(60));
+        let lines = [
+            line("user", "input_text", "<environment_context>\n<cwd>E:\\p</cwd>\n</environment_context>"),
+            line("user", "input_text", "<task>Fix the build</task>"),
+            line("assistant", "output_text", &first),
+            line("user", "input_text", "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>"),
+            line("user", "input_text", "<task>Now the docs</task>"),
+            line("assistant", "output_text", "Docs done."),
+        ];
+        let path = std::env::temp_dir().join(format!("luna-said-tags-{}.jsonl", std::process::id()));
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let messages = messages_at(&path, Provider::Codex, 0);
+        let _ = std::fs::remove_file(&path);
+        let users: Vec<&str> = messages.iter().filter(|m| m.role == "user").map(|m| m.text.as_str()).collect();
+        assert_eq!(users, ["<task>Fix the build</task>", "<task>Now the docs</task>"]);
+        let said = own_words(messages, false);
+        assert_eq!(said.last_turn, 1, "the second prompt starts the turn that answers it");
+        assert_eq!(said[report_of(&said)], "Docs done.", "not the longer report of the turn before");
+    }
+
+    #[test]
     fn the_same_answer_is_the_same_file() {
         let path = |replies: &[String]| {
             answer_file("same", &Said::one_turn(replies.to_vec()))
