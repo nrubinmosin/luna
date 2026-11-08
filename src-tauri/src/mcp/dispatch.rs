@@ -8,6 +8,16 @@ use super::{content, Call};
 use crate::agents;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+/// The tools a caller may retry with a `requestKey` without making their change
+/// twice: a spawn can take 90 s, and a client that gave up on it would start a
+/// second helper.
+const KEYED: [&str; 3] = ["luna_session_spawn", "luna_session_send", "luna_session_delete"];
+
+/// How long a keyed call's result is kept for a retry.
+const KEY_KEEP: Duration = Duration::from_secs(60 * 60);
 
 /// The most of a past run's prompt and last reply `luna_run_list` passes on: a
 /// row is a pointer to the run, whose transcript has it whole.
@@ -119,8 +129,6 @@ fn failure(text: String) -> Value {
 fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
-    let id = a["id"].as_str().unwrap_or("").to_string();
-    let scope = a["scope"].as_str();
     // A background helper without tools holds a token for its permission
     // handler only.
     if name == "luna_permission" {
@@ -138,6 +146,70 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     if let Err(e) = arguments_fit(name, a) {
         return failure(e);
     }
+    let key = a["requestKey"].as_str().filter(|k| !k.is_empty() && KEYED.contains(&name));
+    let Some(key) = key else { return act(caller, name, a, this) };
+    let slot = (caller.to_string(), name.to_string(), key.to_string());
+    match keyed(&slot) {
+        Keyed::Done(v) => v,
+        Keyed::Running => failure(format!("a {name} with requestKey {key:?} is still under way; its result comes to that call")),
+        Keyed::New => {
+            let out = act(caller, name, a, this);
+            settle_key(slot, &out);
+            out
+        }
+    }
+}
+
+/// Where a keyed call stands (`keyed`).
+enum Keyed {
+    /// Never made, or it failed: made now.
+    New,
+    Running,
+    /// Made: its result again.
+    Done(Value),
+}
+
+/// Keyed calls by caller, tool and key: running (None) or done, and since when.
+fn key_slots() -> &'static Mutex<HashMap<(String, String, String), (Instant, Option<Value>)>> {
+    static K: OnceLock<Mutex<HashMap<(String, String, String), (Instant, Option<Value>)>>> = OnceLock::new();
+    K.get_or_init(Default::default)
+}
+
+/// Takes `slot` for a call about to be made, unless one made or under way has it.
+fn keyed(slot: &(String, String, String)) -> Keyed {
+    let mut slots = key_slots().lock().unwrap_or_else(|e| e.into_inner());
+    slots.retain(|_, (at, _)| at.elapsed() < KEY_KEEP);
+    match slots.get(slot) {
+        Some((_, Some(v))) => Keyed::Done(v.clone()),
+        Some((_, None)) => Keyed::Running,
+        None => {
+            slots.insert(slot.clone(), (Instant::now(), None));
+            Keyed::New
+        }
+    }
+}
+
+/// Keeps a keyed call's result for its retries; one that failed made nothing,
+/// and a retry makes it anew.
+fn settle_key(slot: (String, String, String), out: &Value) {
+    let mut slots = key_slots().lock().unwrap_or_else(|e| e.into_inner());
+    if out["isError"] == true {
+        slots.remove(&slot);
+    } else {
+        slots.insert(slot, (Instant::now(), Some(out.clone())));
+    }
+}
+
+/// Whether any keyed call of `caller` with `key` is kept, for the tests.
+#[cfg(test)]
+pub(super) fn key_held(caller: &str, key: &str) -> bool {
+    key_slots().lock().unwrap_or_else(|e| e.into_inner()).keys().any(|(c, _, k)| c == caller && k == key)
+}
+
+/// The tool itself, its arguments checked.
+fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
+    let id = a["id"].as_str().unwrap_or("").to_string();
+    let scope = a["scope"].as_str();
     let out: Result<Value, String> = match name {
         "luna_session_list" => serde_json::from_value::<agents::SessionQuery>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))

@@ -722,6 +722,38 @@ mod tests {
     }
 
     #[test]
+    fn a_change_retried_with_its_request_key_is_made_once() {
+        tooled("rk-me");
+        agents::register("rk-kid", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("rk-me"), false, json!({ "background": true }));
+        crate::background::take_up_for_test("rk-kid", "C:/p", 1, &[], None);
+        crate::background::set_running_for_test("rk-kid");
+        let send = |key: &str, text: &str| {
+            let body = json!({ "jsonrpc": "2.0", "id": 24, "method": "tools/call",
+                "params": { "name": "luna_session_send", "arguments": { "id": "rk-kid", "text": text, "requestKey": key } } });
+            handle("rk-me", &body.to_string()).unwrap()["result"].clone()
+        };
+        let first = send("k1", "Fix it.");
+        assert!(first.get("isError").is_none(), "{first}");
+        assert_eq!(send("k1", "Fix it."), first, "the first call's result, again");
+        assert_eq!(crate::background::queued_for_test("rk-kid"), ["Fix it."], "and the text went in once");
+        // Another key is another call.
+        assert!(send("k2", "And the docs.").get("isError").is_none());
+        assert_eq!(crate::background::queued_for_test("rk-kid").len(), 2);
+        // A failed call made nothing: a retry makes it anew.
+        let body = json!({ "jsonrpc": "2.0", "id": 25, "method": "tools/call",
+            "params": { "name": "luna_session_send", "arguments": { "id": "rk-nobody", "text": "hi", "requestKey": "k3" } } });
+        assert_eq!(handle("rk-me", &body.to_string()).unwrap()["result"]["isError"], true);
+        assert!(!key_slots_hold("rk-me", "k3"));
+        crate::background::remove("rk-kid");
+        agents::forget("rk-kid");
+    }
+
+    /// Whether a keyed call of `caller` with `key` is kept.
+    fn key_slots_hold(caller: &str, key: &str) -> bool {
+        super::dispatch::key_held(caller, key)
+    }
+
+    #[test]
     fn a_delete_of_one_gone_already_answers_already() {
         tooled("da-me");
         // Never Luna's: an error, as a typo is.
