@@ -60,6 +60,7 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
 | `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
 | `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny, `pnpm audit` and gitleaks ([below](#supply-chain)) |
+| `./scripts/third-party-notices.ps1 -Out <file>` | the third-party notices the installer carries (`build-windows.ps1 -Installer` makes them first) and the release publishes: each crate the exe links and each npm package the interface bundles, with its license texts and source. Texts a package does not publish are kept in `third-party-licenses/` (its README); the script fails on a shipped package without one |
 
 With Node installed locally, `pnpm install` and `pnpm dev` serve the frontend
 alone in a browser (Tauri commands are no-ops; `?demo` loads the fixture).

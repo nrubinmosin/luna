@@ -12,13 +12,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - Dependencies with published vulnerabilities are updated: rustls 0.23.46 and
   rustls-webpki 0.103.16 (TLS handshake fixes), webpki-roots 1.0.11 (distrusted
-  emSign roots removed), and zip 9 under the updater (tauri-plugin-updater
-  2.14.1), and tokio 1.53.3 (an unsound `AsyncFd` constructor); among the build
+  emSign roots removed), zip 9 under the updater (tauri-plugin-updater
+  2.14.1) and tokio 1.53.3 (an unsound `AsyncFd` constructor); among the build
   tools, Vite 7.3.7 and source-map-js 1.2.2.
 - Every pull request, every change to master and a weekly run check the
   dependencies for advisories, licenses and sources (cargo-deny, `pnpm audit`),
   the history for committed secrets (gitleaks), and the code and workflows with
   CodeQL. `scripts/supply-chain.ps1` runs the same checks locally.
+
+### Added
+
+- The installer puts `THIRD-PARTY-NOTICES.txt` beside Luna, and each release
+  publishes it too: the license texts of every crate and npm package Luna is
+  built from, and where their source is.
 
 ### Changed
 
@@ -86,6 +92,12 @@ fixes below.
 - Documentation in `docs/`: a user guide by topic, architecture pages, decision
   records, notes on how each CLI behaves, and a development guide.
 - A contributing guide, issue and pull request templates, and this changelog.
+
+### Added
+
+- The installer puts `THIRD-PARTY-NOTICES.txt` beside Luna, and each release
+  publishes it too: the license texts of every crate and npm package Luna is
+  built from, and where their source is.
 
 ### Changed
 

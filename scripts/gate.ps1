@@ -97,6 +97,15 @@ $steps = @(
             Invoke-Checked 'release-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/release-lib.test.ps1') }
         }
     }
+    @{
+        # What the third-party notices are made of (notices-lib.ps1), on a
+        # made-up tree: the notices script itself needs the registries.
+        Name  = 'notices-lib tests'
+        Group = 'frontend'
+        Run   = {
+            Invoke-Checked 'notices-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/notices-lib.test.ps1') }
+        }
+    }
     New-ScriptStep 'test'
     New-ScriptStep 'build'
     @{
