@@ -449,10 +449,11 @@ mod tests {
     fn a_turn_is_not_started_as_administrator() {
         // Refused before the helper is even looked up: no such helper is what
         // a process that may start one says.
-        crate::elevation::force(Some(crate::elevation::ADMIN));
+        crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
+        let why = crate::elevation::refusal().map(String::from);
         let refused = spawn_turn("no-such-helper", "hi");
-        crate::elevation::force(None);
-        assert_eq!(refused, Err(crate::elevation::ADMIN.to_string()));
+        crate::elevation::refuse_here(None);
+        assert_eq!(refused.err(), why);
     }
 
     #[test]

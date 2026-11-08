@@ -189,19 +189,33 @@ another program's and is left alone.
   token checked to be this user's and not elevated, duplicated as a primary
   token and used with `CreateProcessWithTokenW` (the SeImpersonatePrivilege an
   elevated admin holds, and the Secondary Logon service), suspended until the
-  new process's own token is seen to be ordinary. The environment block is the
-  window's, the working folder the data dir. No shell, a shell of another
+  new process's own token is seen to be ordinary. Its environment is the
+  user's own from their profile (`CreateEnvironmentBlock` with that token, not
+  the window's, whose PATH or TEMP an elevated start may point at an
+  administrator's places), with the window's `LUNA_*` variables alone on top
+  (a test build's dev caller); the working folder is the data dir. It is
+  asked out of the window's job (`CREATE_BREAKAWAY_FROM_JOB`, retried
+  without where a job forbids it); whether it landed in the window's job is
+  checked while it is suspended and logged, not assumed: Secondary Logon
+  creates it, and that path has not been run elevated here. No shell, a shell of another
   user (over-the-shoulder credentials) or an elevated one (UAC off, the
   built-in Administrator) and no core is started: link state `elevated`, the
   banner without a restart button. The core reads its own token too: elevated,
   it starts nothing of its own (no hub, no restored helpers), answers `info`
   and `shutdown` only, and says why in `Welcome.refused`; `pty::spawn`, a
   helper's turn and `codex debug models` (which the window runs too) refuse
-  in an elevated process whatever asked. A running core whose token reads
-  elevated, or unreadable from here (`ERROR_ACCESS_DENIED`: above this
-  window's integrity), is never attached (`verdict`): replaced with no session,
-  else the banner asks for a restart. Off Windows, euid 0 is refused the same
-  way, with no de-elevation.
+  in an elevated process whatever asked; so do the unit and live tests, which
+  read the OS's answer too (a test may add a refusal, never lift one; only a
+  launch a test captures, never run, goes past). A running core whose token
+  reads elevated or cannot be read at all (`ERROR_ACCESS_DENIED`: above this
+  window's integrity; off Windows its effective uid, from `/proc/<pid>/status`
+  or `ps`) is never attached (`verdict`): replaced with no session, else the
+  banner asks for a restart. One that can be neither reached nor stopped (it
+  turns away a window of lower integrity, as a core that checks its peer's
+  integrity does) has no session,
+  being of a build that refuses them, and leaves ten minutes after its last
+  window; the banner says so. Off Windows, euid 0 is refused the same way,
+  with no de-elevation.
 - **Restart window** (tray) starts a new window as `--after <pid>`, the core left
   running. `watchdog.rs` rebuilds a window whose WebView died.
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
@@ -243,6 +257,7 @@ text), notices, the awake hold. Sessions are named by id and chat name
 | Keeper gone with its core | the next core ends tied jobs from `tied-jobs/` (`end_last_ties`) |
 | WebView2 dies | `watchdog.rs` rebuilds the window; sessions untouched |
 | Luna started as administrator, and the shell's token cannot be had (no shell, another user's, elevated) or `CreateProcessWithTokenW` fails (Secondary Logon disabled) | no core started; the banner says why; nothing runs elevated |
+| An elevated core runs that this window can neither reach nor stop | the banner says so; it has no session and leaves ten minutes after its last window, or an elevated `luna --stop-core` or a sign-out ends it |
 | The OS refuses the shutdown or restart | nothing closed; the Win32 error logged and shown; a restart's RunOnce value removed |
 | The shutdown is taken back after the sessions closed | the System log's User32 1074 then 1075 after the mark, read 60 s past the grace; RunOnce value removed, helpers' jobs tied again and the stopped ones resumed, every chat started over from its transcript |
 | The shutdown has neither begun nor been recorded as canceled 60 s past the grace | nothing undone: RunOnce kept, chats closed; a notification says how to bring them back (restart the core, or Luna) |
