@@ -214,7 +214,8 @@ pub(super) fn answered_model_in(text: &str, from: Option<u64>) -> Option<String>
         if !usage.is_object() {
             continue;
         }
-        let now = usage["input_tokens"].as_u64().unwrap_or(0) + usage["output_tokens"].as_u64().unwrap_or(0);
+        // Saturating: two counts the rollout makes up may overflow the sum.
+        let now = usage["input_tokens"].as_u64().unwrap_or(0).saturating_add(usage["output_tokens"].as_u64().unwrap_or(0));
         if total.is_some_and(|before| now > before) && asked.is_some() {
             answered = asked.clone();
         }
@@ -236,6 +237,8 @@ pub fn due_ms(path: &Path) -> Option<u64> {
 }
 
 pub(super) fn due_in(text: &str) -> Option<u64> {
+    // A bound past any clock (`as` saturates) is a deadline never reached, so
+    // the sums with it saturate too rather than wrap round to one long past.
     let ms = |v: &Value| v.as_f64().filter(|t| *t > 0.0).map(|t| t as u64);
     // A call is back by the first of its bounds.
     let bound = |args: &Value| ["timeout_ms", "yield_time_ms", "duration_ms"].iter().filter_map(|k| ms(&args[*k])).min();
@@ -265,7 +268,7 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
                     .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                     .map(|t| t.timestamp_millis().max(0) as u64);
                 if let (Some(by), Some(at), Some(id)) = (by, at, payload["call_id"].as_str()) {
-                    open.push((id.to_string(), at + by));
+                    open.push((id.to_string(), at.saturating_add(by)));
                 }
             }
             (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
@@ -580,5 +583,19 @@ mod tests {
         assert_eq!(due(&[&shell]), Some(40 * min));
         let next = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_started"}}"#;
         assert_eq!(due(&[&lane, next]), None, "an earlier turn's call");
+    }
+
+    /// Found by the codex_rollout fuzz target: a bound past any clock, added
+    /// to its call's start, overflowed (a panic with overflow checks, a
+    /// deadline long past without them), and so did two token counts past
+    /// u64 in a total.
+    #[test]
+    fn numbers_past_any_clock_or_count_saturate() {
+        let call = r#"{"timestamp":"2026-11-04T13:15:19.533Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"./lane.sh\",\"yield_time_ms\":9223372036854775807599999}","call_id":"c3"}}"#;
+        assert_eq!(due_in(call), Some(u64::MAX), "due never, not before the call");
+        let asked = r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#;
+        let counted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":18446744073709551615,"output_tokens":1}}}}"#;
+        assert_eq!(answered_model_in(&[asked, counted].join("\n"), Some(0)).as_deref(), Some("gpt-6.1-sol"));
+        assert!(read_rollout([call, asked, counted].join("\n").as_bytes(), 0).due_ms.is_some());
     }
 }

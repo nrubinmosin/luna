@@ -35,6 +35,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   requires of a CycloneDX file. Both SBOMs now carry one and are checked for it
   as soon as they are made, and the attestations use `actions/attest` in place
   of the deprecated `actions/attest-sbom`.
+- A command call whose timeout is past any clock (a Claude Code `Bash`,
+  `PowerShell` or `Monitor` call, a Codex call's bound) made the time it is due
+  wrap round to one long before the call, so a caller waiting on a quiet turn
+  heard of it as hung without the call's own deadline holding the notice back;
+  it is now due never, as an open call with a long timeout is. Codex token
+  counts past 2^64 no longer overflow the total the answering model is found
+  by. Both found by fuzzing.
 
 ### Security
 
