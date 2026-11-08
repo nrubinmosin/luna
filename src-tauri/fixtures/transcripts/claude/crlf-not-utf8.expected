@@ -1,0 +1,60 @@
+Seen {
+    consumed: 344,
+    messages: [
+        (
+            "user",
+            false,
+            "caf� in Latin-1",
+        ),
+        (
+            "user",
+            false,
+            "written on Windows",
+        ),
+        (
+            "assistant",
+            false,
+            "CRLF endings",
+        ),
+    ],
+    with_tools: [
+        (
+            "user",
+            false,
+            "caf� in Latin-1",
+        ),
+        (
+            "user",
+            false,
+            "written on Windows",
+        ),
+        (
+            "assistant",
+            false,
+            "CRLF endings",
+        ),
+    ],
+    first_prompt: None,
+    title: Some(
+        (
+            "Line endings",
+            false,
+        ),
+    ),
+    context: Some(
+        (
+            7.0,
+            1000000.0,
+        ),
+    ),
+    model: Some(
+        "claude-opus-5-5",
+    ),
+    last_said: Some(
+        "CRLF endings",
+    ),
+    last_said_at: None,
+    api_error: None,
+    pending_tool: None,
+    due_ms: None,
+}

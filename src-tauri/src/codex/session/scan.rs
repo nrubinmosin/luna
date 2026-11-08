@@ -28,10 +28,10 @@ pub(super) struct Scan {
     pub(super) working: Option<bool>,
     /// The question the model last put to the user that nothing has answered
     /// yet, with the call id it came in.
-    ask: Option<(String, crate::agents::Ask)>,
+    pub(super) ask: Option<(String, crate::agents::Ask)>,
     /// Why the last turn stopped short, if it did: `task_complete` carries the
     /// error it ended on (Codex 0.166), `turn_aborted` why it was cut off.
-    failed: Option<String>,
+    pub(super) failed: Option<String>,
     /// What the model last said, as the last turn's end has it; None while a
     /// turn is on.
     pub(super) last_said: Option<String>,

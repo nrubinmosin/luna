@@ -34,6 +34,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(test)]
+mod fixtures;
 mod read;
 mod rollouts;
 mod scan;

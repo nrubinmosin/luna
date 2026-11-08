@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 mod ending;
+#[cfg(test)]
+mod fixtures;
 mod registry;
 mod titles;
 mod transcript;

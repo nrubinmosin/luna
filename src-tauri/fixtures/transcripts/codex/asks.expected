@@ -1,0 +1,78 @@
+Seen {
+    consumed: 1885,
+    messages: [],
+    first_prompt: None,
+    cwd: None,
+    spawned_by: None,
+    tail_model: None,
+    context_tokens: None,
+    context_window: None,
+    rate_limits: None,
+    last_model: None,
+    answered_model: None,
+    due_ms: None,
+    scan_from_epoch: Scanned {
+        completed: 1,
+        working: Some(
+            true,
+        ),
+        ask: Some(
+            (
+                "call_b",
+                Ask {
+                    id: None,
+                    kind: "question",
+                    blocking: true,
+                    questions: [
+                        AskQuestion {
+                            text: "Which color?",
+                            options: [
+                                "Red (Recommended)",
+                                "Blue",
+                            ],
+                            multi: false,
+                            list_at: None,
+                        },
+                    ],
+                    tool: None,
+                    detail: None,
+                },
+            ),
+        ),
+        failed: None,
+        last_said: None,
+        last_said_at: None,
+    },
+    scan_from_now: Scanned {
+        completed: 0,
+        working: Some(
+            false,
+        ),
+        ask: Some(
+            (
+                "call_b",
+                Ask {
+                    id: None,
+                    kind: "question",
+                    blocking: true,
+                    questions: [
+                        AskQuestion {
+                            text: "Which color?",
+                            options: [
+                                "Red (Recommended)",
+                                "Blue",
+                            ],
+                            multi: false,
+                            list_at: None,
+                        },
+                    ],
+                    tool: None,
+                    detail: None,
+                },
+            ),
+        ),
+        failed: None,
+        last_said: None,
+        last_said_at: None,
+    },
+}
