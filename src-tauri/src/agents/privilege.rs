@@ -8,6 +8,7 @@ use crate::agents::registry::{is_descendant, reg, DEV_CALLER};
 use crate::agents::spawn::background::{asked, CLAUDE_MODES};
 use crate::agents::spawn::SpawnParams;
 use crate::provider::Provider;
+use std::sync::Mutex;
 
 /// An agent's name as Claude Code takes one, a plugin's `plugin:name` too, and
 /// a guard against one being read as a flag.
@@ -369,15 +370,65 @@ fn confirm_above<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
         .blocking_show()
 }
 
-/// The setting, changed to `on`, where `confirm` (the person, in the window)
-/// agrees to a change that lifts the cap; unchanged otherwise.
+/// The setting, changed to `on` where that keeps the cap or `confirm` (the
+/// person, in the window) agrees to lifting it; as it was otherwise.
 fn set_above(on: bool, confirm: impl FnOnce() -> bool) -> Result<bool, String> {
-    if on && !helpers_above_caller() && !confirm() {
-        crate::log::info("agents", "helpers above their caller: not confirmed, left off");
-        return Ok(false);
+    static GATE: AboveGate = AboveGate::new();
+    GATE.set(on, helpers_above_caller, |v| crate::settings::update(|s| s.helpers_above_caller = v), confirm)
+}
+
+/// How `helpersAboveCaller` changes. Turning it off is written at once.
+/// Turning it on writes nothing where it is on already (a turn-off between
+/// that look and a write would otherwise be undone), and otherwise only after
+/// a yes, one dialog at a time, and only if no change was written while the
+/// dialog was open: a yes applies to the state it was asked about, never to
+/// one that came after. `writes` counts this process's writes, under its lock.
+struct AboveGate {
+    writes: Mutex<u64>,
+    asking: Mutex<()>,
+}
+
+impl AboveGate {
+    const fn new() -> Self {
+        Self { writes: Mutex::new(0), asking: Mutex::new(()) }
     }
-    crate::settings::update(|s| s.helpers_above_caller = on)?;
-    Ok(on)
+
+    fn set(
+        &self,
+        on: bool,
+        read: impl Fn() -> bool,
+        write: impl Fn(bool) -> Result<(), String>,
+        confirm: impl FnOnce() -> bool,
+    ) -> Result<bool, String> {
+        let writes = || self.writes.lock().unwrap_or_else(|e| e.into_inner());
+        if !on {
+            let mut n = writes();
+            write(false)?;
+            *n += 1;
+            return Ok(false);
+        }
+        // Held across the dialog; a turn-off does not wait for it.
+        let _asking = self.asking.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = {
+            let n = writes();
+            if read() {
+                return Ok(true);
+            }
+            *n
+        };
+        if !confirm() {
+            crate::log::info("agents", "helpers above their caller: not confirmed, left off");
+            return Ok(read());
+        }
+        let mut n = writes();
+        if *n != seen {
+            crate::log::info("agents", "helpers above their caller: changed while asking, the yes not applied");
+            return Ok(read());
+        }
+        write(true)?;
+        *n += 1;
+        Ok(true)
+    }
 }
 
 /// Whether `id` is one of the caller's helpers, and the caller's privilege for
@@ -472,6 +523,41 @@ mod tests {
         assert_eq!(answer, Ok(false));
         assert!(asked, "turning it on must ask");
         assert!(!helpers_above_caller());
+    }
+
+    #[test]
+    fn a_yes_never_lands_on_a_state_it_was_not_asked_about() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+        let gate = AboveGate::new();
+        let (stored, written) = (AtomicBool::new(true), AtomicUsize::new(0));
+        let read = || stored.load(SeqCst);
+        let write = |v: bool| {
+            stored.store(v, SeqCst);
+            written.fetch_add(1, SeqCst);
+            Ok(())
+        };
+
+        // A finds it on already: no dialog and no write, so a turn-off by B
+        // right after has nothing of A's to undo it.
+        assert_eq!(gate.set(true, read, write, || panic!("asked although on")), Ok(true));
+        assert_eq!(written.load(SeqCst), 0, "A wrote the relaxation back without a yes");
+        assert_eq!(gate.set(false, read, write, || unreachable!()), Ok(false));
+        assert!(!read());
+
+        // A asks; while its dialog is open B turns it off; A's yes then
+        // finds a change it was not asked about and is not applied.
+        let answer = gate.set(true, read, write, || {
+            assert_eq!(gate.set(false, read, write, || unreachable!()), Ok(false));
+            true
+        });
+        assert_eq!(answer, Ok(false));
+        assert!(!read(), "a stale yes lifted the cap");
+
+        // A no leaves it off; an uninterrupted yes turns it on.
+        assert_eq!(gate.set(true, read, write, || false), Ok(false));
+        assert!(!read());
+        assert_eq!(gate.set(true, read, write, || true), Ok(true));
+        assert!(read());
     }
 
     #[test]
