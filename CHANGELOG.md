@@ -168,14 +168,6 @@ fixes below.
   records, notes on how each CLI behaves, and a development guide.
 - A contributing guide, issue and pull request templates, and this changelog.
 
-### Added
-
-- The installer puts `THIRD-PARTY-NOTICES.txt` beside Luna, and each release
-  publishes it too: the license texts of every crate and npm package Luna is
-  built from, and where their source is; the Rust standard library's own
-  inventory; and what the build tools and the installer add: Vite's helpers,
-  NSIS and its Tauri plug-in, the WebView2 loader and the Visual C++ runtime.
-
 ### Changed
 
 - Luna is dual-licensed under MIT OR Apache-2.0.
