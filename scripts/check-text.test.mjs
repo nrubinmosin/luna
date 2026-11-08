@@ -1,6 +1,6 @@
 // Tests for check-text.mjs, on fixture files under test-build/ (ignored by git).
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { after, test } from 'node:test';
 
@@ -128,4 +128,17 @@ test('the checker and its tests are skipped by their exact paths from the root',
   mkdirSync(join(dir, 'scripts'), { recursive: true });
   assert.equal(check('scripts/check-text.mjs', 'colour\n').length, 1);
   assert.equal(check('check-text.mjs.md', 'colour\n').length, 1);
+});
+
+test('a symbolic link to a directory, and a directory, are passed over', () => {
+  // As a skill's `.claude/skills/<name>` is: git lists the link as a file.
+  const target = join(dir, 'skill');
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, 'SKILL.md'), 'In colour.\n');
+  const link = join(dir, 'skill-link');
+  // A junction on Windows, which takes no privilege to make; elsewhere the type is ignored.
+  symlinkSync(target, link, 'junction');
+  assert.deepEqual(checkFiles([link, target]), []);
+  // What the directory holds is still checked when it is named.
+  assert.equal(checkFiles([join(link, 'SKILL.md')]).length, 1);
 });

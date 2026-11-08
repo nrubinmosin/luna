@@ -14,13 +14,16 @@
 // a string, or with anything but a comment's close after it, is no marker.
 //
 // A file of a known text type that is not UTF-8 is a finding as well; a file
-// of another type that is not is taken for binary and passed over.
+// of another type that is not is taken for binary and passed over. A symbolic
+// link is passed over too: git keeps it as the path it points at, not as text
+// of its own, and on disk it may stand for a directory (a skill's
+// `.claude/skills/<name>`). So is a directory named as a file.
 //
 //   node scripts/check-text.mjs            check the files git tracks
 //   node scripts/check-text.mjs FILE...    check just these files
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { basename, extname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -144,6 +147,12 @@ export function repoPath(path) {
 const isChecked = path =>
   !SKIP_FILES.has(path) && !SKIP_PATHS.some(re => re.test(path)) && !BINARY_TYPES.has(fileType(path));
 
+/** False for a symbolic link or a directory: neither is a file's text to check. */
+function isPlainEntry(path) {
+  const stat = lstatSync(resolve(ROOT, path), { throwIfNoEntry: false });
+  return !stat || !(stat.isSymbolicLink() || stat.isDirectory());
+}
+
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 /** The file's text, or null when it holds a NUL or is not valid UTF-8. */
@@ -160,7 +169,7 @@ function readText(path) {
 /** Checks the given files and returns each finding as `path:line:col message`, the path from the root. */
 export function checkFiles(paths) {
   const out = [];
-  for (const path of paths.map(repoPath).filter(isChecked)) {
+  for (const path of paths.map(repoPath).filter(path => isChecked(path) && isPlainEntry(path))) {
     const text = readText(path);
     if (text === null) {
       // Binary under a type not listed above, unless its type says text.
