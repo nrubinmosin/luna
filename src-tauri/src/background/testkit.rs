@@ -17,6 +17,12 @@ pub fn place_for_test(id: &str, text: &str, mark: BudgetMark) -> bool {
     place(lock().entries.get_mut(id).unwrap(), Queued::new(None, text.to_string(), vec![mark]), false) != Placed::Started
 }
 
+/// The texts queued for its next turn, in order.
+#[cfg(test)]
+pub fn queued_for_test(id: &str) -> Vec<String> {
+    lock().entries.get(id).map(|e| e.queue.iter().map(|q| q.text.clone()).collect()).unwrap_or_default()
+}
+
 /// A turn of its runs.
 #[cfg(test)]
 pub fn set_running_for_test(id: &str) {

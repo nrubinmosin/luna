@@ -9,11 +9,12 @@
 //! back — and a delete tells the frontend to drop the row after the session
 //! and its worktree are gone. Lineage lives here: every session registered
 //! with a parent is that parent's, and a caller may only reach its own
-//! descendants — except to list every session, type a message into one and
-//! read or wait on its answer, which is how sessions talk to each other;
-//! interrupting, killing and deleting stay with the lineage. Children outlive
-//! their parent: they pass to its parent, or with none stand alone, the
-//! window's to manage (see `forget`).
+//! descendants — except to list every session, and, told `scope: "all"`, to
+//! type a message into one and read or wait on its answer, which is how
+//! sessions talk to each other (the message says whose it is); interrupting,
+//! killing and deleting stay with the lineage. Children outlive their parent:
+//! they pass to its parent, or with none stand alone, the window's to manage
+//! (see `forget`).
 //!
 //! A helper does not report back on its own the way a subagent does: its
 //! answer sits in its own transcript until someone waits for it or reads it.
@@ -55,7 +56,7 @@ pub(crate) use privilege::{command_prefix, command_reach_now};
 pub use read::{read, Message};
 pub(crate) use registry::mint;
 pub use registry::{
-    caller_of, chat_name, chat_names, has_tools, label, parent_of, parent_on_start, promoted, register, register_dev_caller,
+    caller_of, chat_name, chat_names, has_tools, in_scope, label, parent_of, parent_on_start, promoted, register, register_dev_caller,
     resumes_on_restart, session_exited, settings_of, DEV_CALLER,
 };
 pub use resume::agent_resumes;

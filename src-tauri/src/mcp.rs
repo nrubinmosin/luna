@@ -24,7 +24,7 @@ const PROTOCOLS: [&str; 3] = [PROTOCOL, "2025-03-26", "2024-11-05"];
 
 const INSTRUCTIONS: &str = "Luna runs this session. Its luna_* tools start and drive other sessions: \
 another model, another account, Codex or Claude Code, another folder or a worktree, in the background \
-or as a chat the user sees; and they reach every other session in Luna. luna_guide explains them, \
+or as a chat the user sees; and, told scope \"all\", any other session in Luna. luna_guide explains them, \
 accounts and models included: read it whole (topic \"all\") before the first spawn. Once a session you spawned or wrote \
 to answers, asks something, stops on a prompt or exits, Luna types a notice into your session, \
 opening \"[Luna notice\" (Luna's, not the user's words): end your turn to get it, no need to poll. \
@@ -255,6 +255,8 @@ fn tools() -> Value {
     let reads = json!({ "readOnlyHint": true, "openWorldHint": false });
     let acts = json!({ "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false });
     let ends = json!({ "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false });
+    // Past the caller's own helpers only when asked (`agents::in_scope`).
+    let scope = json!({ "type": "string", "enum": ["mine", "all"] });
     json!([
         {
             "name": "luna_list",
@@ -298,11 +300,12 @@ fn tools() -> Value {
         },
         {
             "name": "luna_send",
-            "description": "Send a prompt to a session (any from luna_sessions), read as the user's: name yourself to one you did not spawn. Returns stateBefore, queued (it was working: that turn or the next; Codex helper: next), joined (Claude helper: next tool boundary), held (a user's draft: typed in later), started (false if neither = not taken, see screen), turnsEnded for luna_wait afterTurn.",
+            "description": "Send a prompt to a session you spawned (scope all: any, opened \"[From session <you> via Luna]\"), read as the user's. Returns stateBefore, queued (it was working: that turn or the next; Codex helper: next), joined (Claude helper: next tool boundary), held (a user's draft: typed in later), started (false if neither = not taken, see screen), turnsEnded for luna_wait afterTurn.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "text": { "type": "string" },
-                "interrupt": { "type": "boolean", "description": "stop its current turn first (yours only)" }
+                "interrupt": { "type": "boolean", "description": "stop its current turn first (yours only)" },
+                "scope": scope.clone()
             }), &["id", "text"]),
             "annotations": acts
         },
@@ -321,20 +324,21 @@ fn tools() -> Value {
         },
         {
             "name": "luna_read",
-            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k chars (leftOut): `since` alone goes on from cursor, `last` keeps the newest. `report`: its report alone. Also: state, ask.",
+            "description": "Messages of a session from its transcript (yours; scope all: any). `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k chars (leftOut): `since` alone goes on from cursor, `last` keeps the newest. `report`: its report alone. Also: state, ask.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
                 "last": { "type": "integer" },
                 "tools": { "type": "boolean", "description": "tool call markers" },
                 "screen": { "type": "boolean", "description": "what the terminal shows" },
-                "report": { "type": "boolean" }
+                "report": { "type": "boolean" },
+                "scope": scope.clone()
             }), &["id"]),
             "annotations": reads
         },
         {
             "name": "luna_wait",
-            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked; failed: its error), stops on a question or permission, or exits. Timeout, waiting and no reply come with the screen (screen: false: never). `afterTurn`: wait for a turn past this turnsEnded (default: the answer you are owed, else the last you were shown). `ids`: several, `mode` any (default) or all, no afterTurn. Or end your turn: a notice brings the answer.",
+            "description": "Block until a Luna session (yours, or scope all; no task id, not a timer) ends a turn (reply: all it said since you asked; failed: its error), stops on a question or permission, or exits. Timeout, waiting and no reply come with the screen (screen: false: never). `afterTurn`: wait for a turn past this turnsEnded (default: the answer you are owed, else the last you were shown). `ids`: several, `mode` any (default) or all, no afterTurn. Or end your turn: a notice brings the answer.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "ids": { "type": "array", "items": { "type": "string" } },
@@ -342,7 +346,8 @@ fn tools() -> Value {
                 "until": { "type": "string", "enum": ["turn_done", "waiting", "exit"] },
                 "timeoutS": { "type": "integer", "description": "default 600, max 1800" },
                 "afterTurn": { "type": "integer" },
-                "screen": { "type": "boolean" }
+                "screen": { "type": "boolean" },
+                "scope": scope
             }), &[]),
             "annotations": reads
         },
@@ -445,6 +450,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "last",
         "screen",
         "interrupt",
+        "scope",
         "dropWorktree",
         "group",
         "history",
@@ -499,6 +505,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
     let id = a["id"].as_str().unwrap_or("").to_string();
+    let scope = a["scope"].as_str();
     // A background helper without tools holds a token for its permission
     // handler only.
     if name == "luna_permission" {
@@ -560,31 +567,38 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             })
             .map(|s| json!(s)),
         "luna_send" => crate::power::admit()
-            .and_then(|_admitted| agents::send(caller, &id, a["text"].as_str().unwrap_or(""), a["interrupt"].as_bool().unwrap_or(false)))
+            .and_then(|_admitted| agents::in_scope(caller, &id, scope, "send to"))
+            .and_then(|()| agents::send(caller, &id, a["text"].as_str().unwrap_or(""), a["interrupt"].as_bool().unwrap_or(false)))
             .map(|s| json!(s)),
-        "luna_read" => agents::read(
-            caller,
-            &id,
-            a["since"].as_u64(),
-            // A cursor asks for everything after it; a bare read, for the
-            // last word.
-            a["last"].as_u64().map(|n| n as usize).or(a["since"].as_u64().is_none().then_some(1)),
-            a["tools"].as_bool().unwrap_or(false),
-            a["screen"].as_bool().unwrap_or(false),
-            a["report"].as_bool().unwrap_or(false),
-            this,
-        )
-        .map(|r| json!(r)),
+        "luna_read" => agents::in_scope(caller, &id, scope, "read")
+            .and_then(|()| {
+                agents::read(
+                    caller,
+                    &id,
+                    a["since"].as_u64(),
+                    // A cursor asks for everything after it; a bare read, for the
+                    // last word.
+                    a["last"].as_u64().map(|n| n as usize).or(a["since"].as_u64().is_none().then_some(1)),
+                    a["tools"].as_bool().unwrap_or(false),
+                    a["screen"].as_bool().unwrap_or(false),
+                    a["report"].as_bool().unwrap_or(false),
+                    this,
+                )
+            })
+            .map(|r| json!(r)),
         "luna_wait" if !a["ids"].is_null() => wait_several(caller, a, this).map(|w| screens_as_asked(w, a)),
-        "luna_wait" => agents::wait(
-            caller,
-            &id,
-            a["until"].as_str().unwrap_or("turn_done"),
-            a["timeoutS"].as_u64().unwrap_or(600),
-            a["afterTurn"].as_u64().map(|n| n as u32),
-            this,
-        )
-        .map(|w| screens_as_asked(json!(w), a)),
+        "luna_wait" => agents::in_scope(caller, &id, scope, "wait on")
+            .and_then(|()| {
+                agents::wait(
+                    caller,
+                    &id,
+                    a["until"].as_str().unwrap_or("turn_done"),
+                    a["timeoutS"].as_u64().unwrap_or(600),
+                    a["afterTurn"].as_u64().map(|n| n as u32),
+                    this,
+                )
+            })
+            .map(|w| screens_as_asked(json!(w), a)),
         "luna_kill" => agents::kill(caller, &id).map(|k| json!(k)),
         "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false))
             .map(|r| json!(r)),
@@ -645,6 +659,9 @@ fn wait_several(caller: &str, a: &Value, this: &Call) -> Result<Value, String> {
         );
     }
     let ids = id_list(&a["ids"])?;
+    for id in &ids {
+        agents::in_scope(caller, id, a["scope"].as_str(), "wait on")?;
+    }
     let all = match a["mode"].as_str().unwrap_or("any") {
         "any" => false,
         "all" => true,
@@ -790,6 +807,35 @@ mod tests {
     }
 
     #[test]
+    fn a_session_not_ones_own_is_reached_only_with_scope_all() {
+        tooled("rs-me");
+        agents::register("rs-kid", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("rs-me"), false, json!({}));
+        agents::register("rs-chat", crate::provider::Provider::Codex, "C:/p", "C:/acc/openai/two", None, false, json!({}));
+        let call = |name: &str, args: Value| {
+            let body = json!({ "jsonrpc": "2.0", "id": 16, "method": "tools/call", "params": { "name": name, "arguments": args } });
+            let r = handle("rs-me", &body.to_string()).unwrap()["result"].clone();
+            (r["isError"] == true, r["content"][0]["text"].as_str().unwrap_or("").to_string())
+        };
+        let refused = |(failed, text): (bool, String)| failed && text.contains("scope: \"all\"");
+        assert!(refused(call("luna_read", json!({ "id": "rs-chat" }))));
+        assert!(refused(call("luna_wait", json!({ "id": "rs-chat", "timeoutS": 1 }))));
+        assert!(refused(call("luna_wait", json!({ "ids": ["rs-kid", "rs-chat"], "timeoutS": 1 }))));
+        assert!(refused(call("luna_send", json!({ "id": "rs-chat", "text": "hi" }))));
+        assert!(refused(call("luna_read", json!({ "id": "rs-chat", "scope": "mine" }))));
+        // Told so, the scope lets it by and the tool goes on to its own answer.
+        let (_, text) = call("luna_read", json!({ "id": "rs-chat", "scope": "all" }));
+        assert!(!text.contains("scope"), "{text}");
+        let (_, text) = call("luna_send", json!({ "id": "rs-chat", "text": "hi", "scope": "all" }));
+        assert!(text.contains("not running"), "{text}");
+        // Its own needs nothing said.
+        let (_, text) = call("luna_read", json!({ "id": "rs-kid" }));
+        assert!(!text.contains("scope"), "{text}");
+        for id in ["rs-kid", "rs-chat", "rs-me"] {
+            agents::forget(id);
+        }
+    }
+
+    #[test]
     fn the_tool_text_stays_small() {
         // The whole list is what every tooled session pays for once; keep it
         // under a few thousand characters. The annotations are the client's,
@@ -799,11 +845,11 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 7600, "tools/list is {} chars", text.len());
+        assert!(text.len() < 8000, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read whole once, on request: keep it to a few thousand tokens. Its
         // index, what a bare call gives, to a few hundred.
-        assert!(GUIDE.len() < 16_000, "the guide is {} bytes", GUIDE.len());
+        assert!(GUIDE.len() < 16_500, "the guide is {} bytes", GUIDE.len());
         let index = guide_text(None).unwrap();
         assert!(index.len() < 1_000, "the guide's index is {} bytes: {index}", index.len());
     }
@@ -1006,7 +1052,7 @@ mod tests {
         tooled("me");
         let r = handle(
             "me",
-            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"luna_wait","arguments":{"id":"x","until":"forever"}}}"#,
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"luna_wait","arguments":{"id":"uu-x","until":"forever"}}}"#,
         )
         .unwrap();
         assert_eq!(r["result"]["isError"], true);

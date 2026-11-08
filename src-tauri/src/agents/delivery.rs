@@ -310,6 +310,23 @@ pub(super) fn type_in(
     Ok(await_start(pty, id, text, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY)))
 }
 
+/// What text sent to a session that is not the caller's opens with: whose words
+/// they are, which that session would otherwise take for its user's.
+pub(super) fn from_line(caller: &str) -> String {
+    format!("[From session {caller} via Luna]")
+}
+
+/// Text as it goes into `id`: as written, into the caller's own helper, which
+/// knows its parent's voice; into any other session after `from_line`, on the
+/// same line, so the transcript keeps whose it was too.
+pub(super) fn as_sent(caller: &str, id: &str, text: &str) -> String {
+    if is_mine(caller, id) {
+        text.to_string()
+    } else {
+        format!("{} {text}", from_line(caller))
+    }
+}
+
 /// Types text into the session, presses Enter after it, and reports whether
 /// a turn began. With `interrupt` the turn in flight, and any prompt it is
 /// stopped on, is cut short first (Esc; a background helper's process
@@ -335,6 +352,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // A background helper has no terminal: its queue takes turns by itself.
     plain_text(text)?;
     command_reach_now(caller, id, text)?;
+    // Checked as written: a `/` or `!` the line would hide is refused all the same.
+    let text = &as_sent(caller, id, text);
     let terminal = if crate::background::has(id) { None } else { TypingInto::wait_for(id, TYPING_WAIT) };
     let (state_before, ask) = state_of(id);
     if let Some(a) = ask.as_ref().filter(|a| a.blocking && !interrupt) {
@@ -801,6 +820,32 @@ mod tests {
         }
         crate::background::remove("ir-theirs");
         for id in ["ir-mine-codex", "ir-mine", "ir-theirs", "ir-codex-theirs", "ir-chat", "ir-codex-chat", "ir-me"] {
+            forget(id);
+        }
+    }
+
+    #[test]
+    fn text_to_a_session_not_the_callers_says_whose_it_is() {
+        let (claude, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
+        let background = serde_json::json!({ "background": true });
+        register("ff-me", Provider::Claude, "C:\\p", claude, None, true, none.clone());
+        register("ff-chat", Provider::Claude, "C:\\p", claude, None, true, none);
+        register("ff-theirs", Provider::Claude, "C:\\p", claude, Some("ff-chat"), false, background.clone());
+        register("ff-mine", Provider::Claude, "C:\\p", claude, Some("ff-me"), false, background);
+        for id in ["ff-theirs", "ff-mine"] {
+            crate::background::take_up_for_test(id, "C:\\p", 1, &[], None);
+            crate::background::set_running_for_test(id);
+        }
+        assert!(send("ff-me", "ff-theirs", "the build is green", false).unwrap().queued);
+        assert!(send("ff-me", "ff-mine", "the build is green", false).unwrap().queued);
+        assert_eq!(crate::background::queued_for_test("ff-theirs"), ["[From session ff-me via Luna] the build is green"]);
+        assert_eq!(crate::background::queued_for_test("ff-mine"), ["the build is green"], "its own helper knows its parent");
+        // A command the line would hide is refused as written.
+        assert!(send("ff-me", "ff-theirs", "/permissions", false).is_err());
+        for id in ["ff-theirs", "ff-mine"] {
+            crate::background::remove(id);
+        }
+        for id in ["ff-theirs", "ff-mine", "ff-chat", "ff-me"] {
             forget(id);
         }
     }
