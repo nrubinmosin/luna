@@ -435,13 +435,19 @@ fn codex_sandboxes_reach_the_core_folder_as_the_threat_model_says() {
     }
 }
 
-/// Accepts one connection on `listener` (nonblocking) within `secs`, or None.
-#[cfg(windows)]
+/// Accepts one connection on `listener` within `secs`, or None. The listener
+/// is made nonblocking here, whatever it was, so a client that never comes
+/// cannot block the accept past the deadline; the stream handed back is
+/// blocking again, as the core's own are.
 fn accept_within(listener: &std::net::TcpListener, secs: u64) -> Option<std::net::TcpStream> {
+    listener.set_nonblocking(true).expect("a nonblocking listener");
     let deadline = Instant::now() + Duration::from_secs(secs);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Some(stream),
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).expect("a blocking stream");
+                return Some(stream);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if Instant::now() > deadline {
                     return None;
@@ -451,6 +457,26 @@ fn accept_within(listener: &std::net::TcpListener, secs: u64) -> Option<std::net
             Err(_) => return None,
         }
     }
+}
+
+/// `LUNA_LIVE_STRICT=1`: a sandboxed connection the peer-check tests would
+/// otherwise skip when Codex's sandbox does not reach loopback is required,
+/// and its absence fails the test, so a run can prove the refusal was
+/// exercised (and a mutation run with the check removed must fail).
+#[cfg(windows)]
+fn strict() -> bool {
+    std::env::var("LUNA_LIVE_STRICT").as_deref() == Ok("1")
+}
+
+/// A client that never connects is given up on at the deadline, the listener
+/// blocking or not: the skip the peer-check tests advertise is reachable.
+#[test]
+fn accept_within_gives_up_at_its_deadline() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let begun = Instant::now();
+    assert!(accept_within(&listener, 1).is_none(), "nobody connected");
+    let took = begun.elapsed();
+    assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(3), "ended at its deadline, not after: {took:?}");
 }
 
 /// The Windows peer check (peer.rs) turns a connection from a Codex session in
@@ -471,7 +497,6 @@ fn the_windows_peer_check_refuses_a_sandboxed_codex() {
         return;
     }
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("a loopback listener");
-    listener.set_nonblocking(true).expect("nonblocking");
     let port = listener.local_addr().unwrap().port();
 
     // A plain local process, as a window is: let through. The test process
@@ -547,6 +572,10 @@ fn the_windows_peer_check_refuses_a_sandboxed_codex() {
     );
     let ws = assert_refused(ws, "workspace-write");
     assert!(ro || ws, "neither sandbox reached loopback; run this test on its own");
+    assert!(
+        !strict() || (ro && ws),
+        "LUNA_LIVE_STRICT=1: every sandbox must connect so its refusal is exercised (read-only {ro}, workspace-write {ws})"
+    );
 
     // An unsandboxed curl, the user's own token, as any local process: let in.
     let mut child =
@@ -616,8 +645,9 @@ fn serve_welcomes_a_plain_client_and_refuses_a_sandboxed_one() {
     let sandboxed = accept_within(&listener, 20);
     let _ = child.wait();
     // The sandbox not reaching loopback is a Codex machine-wide-state issue in a
-    // crowded `--ignored` run, not a verdict; skip rather than fail (run this
-    // test on its own to exercise it). The plain-client half above still ran.
+    // crowded `--ignored` run, not a verdict; a routine run skips rather than
+    // fails (run this test on its own to exercise it), and a strict one fails.
+    // The plain-client half above ran either way.
     match sandboxed {
         Some(stream) => {
             let served = crate::coreproc::serve_for_test(stream, &token);
@@ -625,7 +655,9 @@ fn serve_welcomes_a_plain_client_and_refuses_a_sandboxed_one() {
                 served.is_ok(),
                 "serve refuses the sandboxed peer before the hello; with the check gone it reads the HTTP as a frame and errors"
             );
+            eprintln!("the sandboxed half ran: refused before the hello");
         }
+        None if strict() => panic!("LUNA_LIVE_STRICT=1: the sandboxed client never connected, so the refusal was not exercised"),
         None => eprintln!("skipped the sandboxed half: the sandbox did not reach loopback (run this test on its own)"),
     }
 
