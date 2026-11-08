@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a Luna release end to end — version bump, CHANGELOG entry, the annotated tag from scripts/release.ps1, the tag push, watching .github/workflows/release.yml, verifying the draft (assets, SHA256SUMS, gh attestation verify, latest.json) and publishing it. Use it whenever someone asks to release, ship, tag or publish a Luna version, bump the version, check or publish a release draft, verify release assets or attestations, or asks why a release run failed, even if they only say "let's do 1.2.3" or "is the draft good?".
+description: Cut a Luna release end to end — version bump, CHANGELOG entry, the annotated tag from scripts/release.ps1, the tag push, watching .github/workflows/release.yml to the sign job's approval, verifying the draft (installer and its .sig, latest.json, SHA256SUMS, SBOMs, gh attestation verify) and publishing it. Use it whenever someone asks to release, ship, tag or publish a Luna version, bump the version, check or publish a release draft, verify release assets or attestations, asks what to do about a release run waiting for approval, or why a release run failed, even if they only say "let's do 1.2.3" or "is the draft good?".
 ---
 
 # Release
@@ -66,12 +66,48 @@ gh run list --workflow release.yml -L 3
 gh run watch <run-id> --exit-status
 ```
 
-The **build** job waits for a reviewer to approve the `release` environment.
-That is the person's click in GitHub (or `gh` by them); tell them it is
-waiting rather than approving it yourself. On a failure, `gh run view <id>
---log-failed`, find the step, and bring a diagnosis; a re-run on the same tag is
-Actions → Release → Run workflow on the tag with `dry-run` unchecked
-(`docs/releasing.md`, "Dry runs").
+The jobs run `verify`, then `build` and `sbom` side by side, then `sign`, then
+`attest` and `publish` (`docs/releasing.md`, "How a release flows"). The one
+that waits is **sign**: it alone binds the `release` environment and gets the
+signing key, so a reviewer's approval of that environment is the release's
+one approval. `build` holds no secret and needs none, so by the time the run
+waits, the installer and an unsigned `latest.json` are already built.
+
+A run can also look stuck in `verify`: its log repeating `CI on <sha> is
+in_progress; checking again in 30 s` is `release-verify.ps1` waiting for CI on
+the tagged commit (up to 45 minutes, 5 when CI never ran on it). There is
+nothing to approve yet.
+
+The approval is the person's click in GitHub (Review deployments on the run),
+or `gh` run by them; tell them it is waiting rather than approving it
+yourself, and that it should not wait for days: the `unsigned` artifact `sign`
+downloads is kept for 7 days, after which an approved `sign` has nothing to
+download and the tag needs a fresh run. Give them what the approval vouches
+for:
+
+- the run is for tag `v1.2.3` (`gh run view <id>` names the ref) and the tag's
+  commit is the bump on `master`;
+- `verify` and `build` passed, and build's `sums` step lists the installer and
+  `latest.json` with their SHA-256: the files `sign` will hold the artifact to
+  before it signs.
+
+Once approved, `sign` checks the bundle against those sums, signs the
+installer, checks the signature against `plugins.updater.pubkey` in
+`src-tauri/tauri.conf.json` (as installed copies check it) and writes it into
+`latest.json`; `attest` and `publish` then leave the draft.
+
+On a failure, `gh run view <id> --log-failed`, find the step, and bring a
+diagnosis. In `sign` the step says what it means:
+
+- *Check the bundle against the build's checksums*: the artifact `sign`
+  downloaded is not what `build` hashed. Do not re-run past it; find what
+  changed it.
+- *Sign the installer*: the Tauri CLI download did not match the integrity
+  `pnpm-lock.yaml` pins, or the key does not sign for the updater's public
+  key (a wrong or rotated secret). Nothing was signed into `latest.json`.
+
+A re-run on the same tag is Actions → Release → Run workflow on the tag with
+`dry-run` unchecked (`docs/releasing.md`, "Dry runs").
 
 ## 5. Verify the draft
 
@@ -98,6 +134,19 @@ gh release download v1.2.3 -D test-build/release-v1.2.3
   name>`; its `signature` equals the `.sig` file's contents, compared as
   strings by a command, not by eye; `core_fingerprint` is present; `notes` is
   the CHANGELOG section's opening paragraph.
+- **Updater signature**: the `.sig` is not empty (only a dry run off a branch
+  leaves it so) and verifies against the updater's public key for this
+  version and file name, the check every installed Luna makes before it
+  installs. There is no local Node, so run it in the pinned Node image, with
+  no network:
+
+  ```powershell
+  . ./scripts/lib.ps1; . ./scripts/release-lib.ps1
+  $d = (Resolve-Path test-build/release-v1.2.3).Path
+  docker run --rm --network none -v "${d}:/out:ro" `
+    -v "$PWD/scripts/updater-signature.mjs:/s.mjs:ro" (Get-NodeImage) `
+    node /s.mjs verify /out/Luna_1.2.3_x64-setup.exe /out/Luna_1.2.3_x64-setup.exe.sig (Get-UpdaterPubkey) 1.2.3
+  ```
 - **Notes**: the draft's body is the CHANGELOG section, the sections of any
   version since the last published release, the compare link and the Verify
   block whose `SHA256SUMS` match the asset.
@@ -107,7 +156,8 @@ gh release download v1.2.3 -D test-build/release-v1.2.3
 
 Report each check as passed or failed with the evidence (hashes compared,
 `gh attestation verify` result lines). Any failure means no publish: find the
-cause (the run's logs, `scripts/release-bundle.ps1` for `latest.json`) and
+cause (the run's logs; `scripts/release-bundle.ps1` writes `latest.json`,
+`scripts/release-sign.ps1` its signature) and
 propose a fix and a re-run or a new version; never edit an asset of the draft
 by hand, which would break its checksums and attestations.
 
@@ -124,5 +174,9 @@ serves the new version.
 
 `./scripts/release.ps1 -Local` builds, signs and uploads a **published** release
 from this machine (no SBOMs, no attestations), with the key `-UpdaterKey` or
-`LUNA_UPDATER_KEY` names. It is the fallback when the workflow cannot run; use
-it only when the person chose it, and `-Local -DryRun` first.
+`LUNA_UPDATER_KEY` names. The build never sees the key: it is mounted only into
+`release-sign.ps1`'s container, as in the workflow, but the build's container
+has the checkout writable, which only the workflow's fresh `sign` runner rules
+out (`docs/releasing.md`, "Without the workflow"). It is the fallback when the
+workflow cannot run; use it only when the person chose it, and `-Local -DryRun`
+first.
