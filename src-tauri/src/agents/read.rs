@@ -69,6 +69,9 @@ pub struct Reading {
     /// The answer owed for this report was collected (`ack`): no notice follows.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub acked: bool,
+    /// A message was cut to MAX_TEXT (its text says where the whole is).
+    #[serde(skip)]
+    pub cut: bool,
 }
 
 /// The last transcript found for each session: Claude Code drops the
@@ -314,6 +317,7 @@ pub fn read(
         report_guessed: false,
         file: None,
         acked: false,
+        cut: text_cut,
     })
 }
 
@@ -354,13 +358,23 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -
     }
     let replies = crate::agents::said::said_of(found);
     let report_guessed = crate::agents::said::report_guessed(&replies);
+    let mut cut = false;
     // The rest it said is a file away, report first, for a caller that wants it.
     let file = (replies.len() > 1)
         .then(|| crate::agents::said::note_file(id, &crate::agents::said::answer_text(&replies)))
         .flatten()
         .map(|p| p.to_string_lossy().into_owned());
     let messages: Vec<Message> = crate::agents::said::report_text(&replies)
-        .map(|text| Message { role: "assistant".into(), text: cut_to_max(&text).unwrap_or(text), after_cli: false, final_answer: false })
+        .map(|text| {
+            let text = match cut_to_max(&text) {
+                Some(shorter) => {
+                    cut = true;
+                    shorter
+                }
+                None => text,
+            };
+            Message { role: "assistant".into(), text, after_cli: false, final_answer: false }
+        })
         .into_iter()
         .collect();
     let (state, ask) = state_of(id);
@@ -377,35 +391,42 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -
         report_guessed,
         file,
         acked: false,
+        cut,
     }
 }
 
 /// `luna_report_get`: the report of what the session said (`report_read`), as a
-/// look at it that starts its autoDelete count over (`looked`). With `ack`, a
-/// report of all of an owed answer, its turn over, collects that answer as a
-/// whole read would, so no notice follows; whatever else, it stays owed, and
+/// look at it that starts its autoDelete count over (`looked`). With `ack` it
+/// collects the answer owed, so no notice follows, only when this report is
+/// all of it and nothing moved while it was read: the same debt (by revision)
+/// and turn count before and after, the turn over, the read begun where the
+/// question found the transcript and ended at its end (no line still being
+/// written), and the report whole, not cut. Anything else leaves it owed, and
 /// `acked` says which. A cancel after the response puts the debt back.
 pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &crate::mcp::Call) -> Result<Reading, String> {
     let known = authorize_view(caller, id)?;
-    let ts = crate::activity::turn_state(id);
+    let key = (caller.to_string(), id.to_string());
+    let debt = || reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
+    // Taken together, before the read: what an ack would collect.
+    let before = (debt(), crate::activity::turn_state(id), transcript_end(id));
     let mut reading = report_read(caller, id, known.provider, since);
     looked(id);
     if !ack {
         return Ok(reading);
     }
-    let key = (caller.to_string(), id.to_string());
-    let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
+    let (Some(owed), ts, end) = before else { return Ok(reading) };
     let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
+    let unmoved = debt().is_some_and(|now| now.rev == owed.rev)
+        && crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0) == turns_ended
+        && transcript_end(id) == end;
     let done = ts.is_none_or(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
-    // All of it: read from where the question found the transcript, its turn
-    // over, the session's own word last.
-    let whole = owed.is_some_and(|o| {
-        since.is_none_or(|at| at <= o.cursor)
-            && turns_ended > o.baseline
-            && (!o.queued || queue_settled(&key, o, turns_ended))
-            && !reading.messages.is_empty()
-    });
-    if whole && done && call.commit(hand_over(caller, id, turns_ended, None)) {
+    let all_of_it = since.is_none_or(|at| at <= owed.cursor)
+        && turns_ended > owed.baseline
+        && (!owed.queued || queue_settled(&key, owed, turns_ended))
+        && !reading.messages.is_empty()
+        && !reading.cut
+        && reading.cursor == end;
+    if unmoved && done && all_of_it && call.commit(hand_over(caller, id, turns_ended, None)) {
         reading.acked = true;
     }
     Ok(reading)
@@ -462,6 +483,53 @@ mod tests {
     /// `luna_report_get` reads as a read does: the reader's cursor, never past a
     /// line still being written; a long report cut at MAX_TEXT; an explicit
     /// cursor that finds nothing finds nothing.
+    #[test]
+    fn an_ack_collects_only_a_whole_report_of_an_unmoved_debt() {
+        use crate::activity::{on_hook, HookEvent};
+        let (caller, id) = ("ak-caller", "ak-helper");
+        register(caller, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some(caller), false, serde_json::json!({}));
+        let path = std::env::temp_dir().join(format!("luna-ack-{}.jsonl", std::process::id()));
+        transcripts().lock().unwrap().insert(id.to_string(), path.clone());
+        let line = |role: &str, text: &str| {
+            let content = if role == "user" { serde_json::json!(text) } else { serde_json::json!([{ "type": "text", "text": text }]) };
+            format!("{}\n", serde_json::json!({ "type": role, "message": { "role": role, "content": content } }))
+        };
+        let owed = || reg().lock().unwrap().owed.contains_key(&(caller.to_string(), id.to_string()));
+        // Asked, and its turn over with an answer on disk.
+        let asked = |transcript: String| {
+            std::fs::write(&path, transcript).unwrap();
+            owe_from(caller, id, crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0), 0);
+            on_hook(id, HookEvent::Busy);
+            on_hook(id, HookEvent::Idle);
+        };
+        let ack = || report_get(caller, id, None, true, &crate::mcp::Call::new()).unwrap();
+        let done = format!("{}{}", line("user", "Do it."), line("assistant", "Done: all of it."));
+
+        // A line still being written: not all of it.
+        asked(format!("{done}{}", r#"{"type":"assistant","message":{"content":[{"type":"text","text":"and"#));
+        assert!(!ack().acked && owed(), "a partial line is still to come");
+        // A report cut to the limit: not all of it.
+        asked(format!("{}{}", line("user", "Do it."), line("assistant", &"x".repeat(MAX_TEXT + 10))));
+        assert!(!ack().acked && owed(), "a cut report is not the answer");
+        // Asked again since, a turn on the way: the new debt is not this one's.
+        asked(done.clone());
+        owe_from(caller, id, crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0), done.len() as u64);
+        on_hook(id, HookEvent::Busy);
+        assert!(!ack().acked && owed(), "a new question's answer is still to come");
+        on_hook(id, HookEvent::Idle);
+        // All of it, nothing moving: collected, and nothing left owed.
+        asked(done);
+        let got = ack();
+        assert!(got.acked && !owed(), "{:?}", got.messages);
+        assert!(!report_get(caller, id, None, true, &crate::mcp::Call::new()).unwrap().acked, "nothing owed: nothing to collect");
+
+        transcripts().lock().unwrap().remove(id);
+        let _ = std::fs::remove_file(&path);
+        forget(id);
+        forget(caller);
+    }
+
     #[test]
     fn a_report_read_keeps_to_the_reader_its_limit_and_its_cursor() {
         let id = "rr-cursor";
