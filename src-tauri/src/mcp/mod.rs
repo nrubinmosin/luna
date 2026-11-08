@@ -763,6 +763,13 @@ mod tests {
         let first = send("k1", "Fix it.");
         assert!(first.get("isError").is_none(), "{first}");
         assert_eq!(send("k1", "Fix it."), first, "the first call's result, again");
+        // The key stands for that call: other text under it is refused, not passed off.
+        let other = send("k1", "Something else.");
+        assert!(other["isError"] == true && other["content"][0]["text"].as_str().unwrap().contains("other arguments"), "{other}");
+        // The same call in another key order is the same call.
+        let body = json!({ "jsonrpc": "2.0", "id": 26, "method": "tools/call",
+            "params": { "name": "luna_session_send", "arguments": { "requestKey": "k1", "text": "Fix it.", "id": "rk-kid" } } });
+        assert_eq!(handle("rk-me", &body.to_string()).unwrap()["result"], first);
         assert_eq!(crate::background::queued_for_test("rk-kid"), ["Fix it."], "and the text went in once");
         // Another key is another call.
         assert!(send("k2", "And the docs.").get("isError").is_none());

@@ -152,9 +152,12 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let key = a["requestKey"].as_str().filter(|k| !k.is_empty() && KEYED.contains(&name));
     let Some(key) = key else { return act(caller, name, a, this) };
     let slot = (caller.to_string(), name.to_string(), key.to_string());
-    match keyed(&slot) {
+    match keyed(&slot, fingerprint(a)) {
         Keyed::Done(v) => v,
         Keyed::Running => failure(format!("a {name} with requestKey {key:?} is still under way; its result comes to that call")),
+        Keyed::Other => failure(format!(
+            "requestKey {key:?} was given to a {name} with other arguments; a key stands for one call, so a new call takes a new key"
+        )),
         Keyed::New => {
             let out = act(caller, name, a, this);
             settle_key(slot, &out);
@@ -170,23 +173,53 @@ enum Keyed {
     Running,
     /// Made: its result again.
     Done(Value),
+    /// The key stands for a call with other arguments: refused, not that
+    /// call's result passed off as this one's.
+    Other,
 }
 
-/// Keyed calls by caller, tool and key: running (None) or done, and since when.
-fn key_slots() -> &'static Mutex<HashMap<(String, String, String), (Instant, Option<Value>)>> {
-    static K: OnceLock<Mutex<HashMap<(String, String, String), (Instant, Option<Value>)>>> = OnceLock::new();
+/// A keyed call: since when, the arguments it was made with (`fingerprint`),
+/// and its result once it has one. Kept in the core's memory, so a core restart
+/// forgets every key; the guide says so.
+struct Slot {
+    at: Instant,
+    print: String,
+    result: Option<Value>,
+}
+
+/// Keyed calls by caller, tool and key.
+fn key_slots() -> &'static Mutex<HashMap<(String, String, String), Slot>> {
+    static K: OnceLock<Mutex<HashMap<(String, String, String), Slot>>> = OnceLock::new();
     K.get_or_init(Default::default)
 }
 
+/// The call a key stands for: its arguments, the key aside, every object's keys
+/// in order, so the same call spelled in another order is the same call.
+fn fingerprint(a: &Value) -> String {
+    fn sorted(v: &Value) -> Value {
+        match v {
+            Value::Object(o) => {
+                let mut keys: Vec<&String> = o.keys().filter(|k| k.as_str() != "requestKey").collect();
+                keys.sort();
+                Value::Object(keys.into_iter().map(|k| (k.clone(), sorted(&o[k]))).collect())
+            }
+            Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
+            other => other.clone(),
+        }
+    }
+    sorted(a).to_string()
+}
+
 /// Takes `slot` for a call about to be made, unless one made or under way has it.
-fn keyed(slot: &(String, String, String)) -> Keyed {
+fn keyed(slot: &(String, String, String), print: String) -> Keyed {
     let mut slots = key_slots().lock().unwrap_or_else(|e| e.into_inner());
-    slots.retain(|_, (at, _)| at.elapsed() < KEY_KEEP);
+    slots.retain(|_, s| s.at.elapsed() < KEY_KEEP);
     match slots.get(slot) {
-        Some((_, Some(v))) => Keyed::Done(v.clone()),
-        Some((_, None)) => Keyed::Running,
+        Some(s) if s.print != print => Keyed::Other,
+        Some(Slot { result: Some(v), .. }) => Keyed::Done(v.clone()),
+        Some(_) => Keyed::Running,
         None => {
-            slots.insert(slot.clone(), (Instant::now(), None));
+            slots.insert(slot.clone(), Slot { at: Instant::now(), print, result: None });
             Keyed::New
         }
     }
@@ -198,8 +231,9 @@ fn settle_key(slot: (String, String, String), out: &Value) {
     let mut slots = key_slots().lock().unwrap_or_else(|e| e.into_inner());
     if out["isError"] == true {
         slots.remove(&slot);
-    } else {
-        slots.insert(slot, (Instant::now(), Some(out.clone())));
+    } else if let Some(s) = slots.get_mut(&slot) {
+        s.at = Instant::now();
+        s.result = Some(out.clone());
     }
 }
 
