@@ -10,6 +10,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
+- An agent can interrupt only its own helpers and theirs: `luna_send` with
+  `interrupt: true` reached any session, so one agent could stop another
+  chat's helper mid-turn, or a person's chat, and dismiss the question it was
+  waiting on.
+- Reading, waiting on and sending text to a session that is not the agent's
+  own takes `scope: "all"` in the call, and text so sent arrives opened
+  `[From session <id> via Luna]` rather than as the user's own words.
+- Helpers start with Luna's MCP server alone: no MCP servers or connectors of
+  their account (claude.ai's Gmail, Slack and other tools that send and write
+  in the person's name; Codex's apps and its account's `config.toml`
+  servers), unless spawned with `connectors: true`, and Claude Code helpers
+  with auto-memory off. A Codex helper keeps the servers of the project's
+  `.codex/` and of plugins, which Codex gives no way to turn off for a run.
+- Every `luna_*` tool refuses an argument it does not take, or of the wrong
+  type, naming those it takes, instead of running on a default: `read_only`
+  for `readOnly` spawned a helper that could write.
+
 - The window's page reaches only what it calls, so a script injected into it
   would get no more: each app command is granted to the main window by name
   and refused to any other window or a remote page, plugins are cut to the
@@ -60,6 +77,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- A Codex prompt that opens with a tag of its own, such as `<task>…</task>`,
+  is a prompt again: `luna_read` and answers left out every user message
+  starting with `<`, and with it the start of the turn that answered it. Only
+  the blocks Codex itself puts there (its environment, skills, shell commands,
+  interruptions and the like) are left out.
+- `luna_answer` refuses answers to a question with no dialog that are one too
+  few or too many, rather than send them as if they answered it.
 - A command call whose timeout is past any clock (a Claude Code `Bash`,
   `PowerShell` or `Monitor` call, a Codex call's bound) made the time it is due
   wrap round to one long before the call, so a caller waiting on a quiet turn
