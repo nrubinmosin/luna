@@ -655,7 +655,7 @@ mod tests {
         assert!(never_started("never"));
         assert_eq!(undelivered_for("never", "its parent", true), ["the prompt", "then this"], "what it was started on goes first");
         // A first turn again: no conversation to resume, its words as they were.
-        let (args, _, _) = command_for(lock().entries.get("never").unwrap(), "never");
+        let (args, _, _) = command_for(lock().entries.get("never").unwrap(), "never").unwrap();
         assert!(!args.contains(&"--resume".to_string()));
         resume("never");
         let e = lock().entries.remove("never").unwrap();
@@ -742,7 +742,7 @@ mod tests {
         // One that goes on and one that never got started alike.
         for session in [Some("s-1"), None] {
             let e = through_a_core(entry_like(&claude), session);
-            let (args, _, envs) = command_for(&e, "x");
+            let (args, _, envs) = command_for(&e, "x").unwrap();
             assert_eq!(value_of(&args, "--agent"), Some("checker"));
             assert_eq!(value_of(&args, "--disallowedTools"), Some("Edit,Write,NotebookEdit"));
             assert_eq!(value_of(&args, "--resume"), session);
@@ -750,7 +750,7 @@ mod tests {
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
 
             let e = through_a_core(entry_like(&codex), session);
-            let (args, _, envs) = command_for(&e, "x");
+            let (args, _, envs) = command_for(&e, "x").unwrap();
             assert!(args.iter().any(|a| a.starts_with("default_permissions=\"luna-")), "{args:?}");
             assert_eq!(args.get(1).map(String::as_str) == Some("resume"), session.is_some());
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));

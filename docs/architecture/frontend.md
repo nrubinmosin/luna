@@ -36,7 +36,7 @@ fallback. One module per domain holds its commands and DTOs: `accounts`,
 `accountConfig`; `events.ts` wraps `listen`. Tests mock per module.
 
 What the page may call is fixed in Rust, not here
-([ADR-0014](../adr/0014-the-page-gets-only-what-it-calls.md)):
+([ADR-0015](../adr/0015-the-page-gets-only-what-it-calls.md)):
 
 - **App commands.** `src-tauri/capabilities/default.json` grants the `main`
   window each app command by name (`allow-<command>`), and of the plugins only

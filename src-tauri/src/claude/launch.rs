@@ -120,13 +120,18 @@ fn hook_command(url: &str) -> String {
 }
 
 /// `claude_settings_file`'s settings: the session's hooks to `hook_url`, the
-/// guard's to `guard_url`, and the skills and instructions it does not get.
+/// guard's to `guard_url`, the skills and instructions it does not get, and
+/// `core`, Luna's `core/`, denied to its file tools: its `core.json` holds the
+/// token to the whole core. A rule, not a sandbox: Bash, where it runs
+/// unasked, still reads anything (threat model F3).
 pub(crate) fn claude_settings(
     hook_url: Option<&str>,
     guard_url: Option<&str>,
     library: &crate::library::SessionSkills,
+    core: &str,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut settings = serde_json::Map::new();
+    settings.insert("permissions".into(), serde_json::json!({ "deny": [claude_read_deny(core, cfg!(windows))] }));
     let mut hooks = serde_json::Map::new();
     let mut pre_tool_use = Vec::new();
     if let Some(url) = hook_url {
@@ -163,6 +168,23 @@ pub(crate) fn claude_settings(
     settings
 }
 
+/// Claude Code's deny rule for reading `dir` and everything in it, `windows`
+/// saying whether it runs there: `//` and the path from the root, a Windows
+/// drive as a folder of its letter (`E:\x` is `//e/x`), as Claude Code spells
+/// a Windows path for its rules (2.1.318), which it matches without regard to
+/// case.
+pub(crate) fn claude_read_deny(dir: &str, windows: bool) -> String {
+    let path = if windows { dir.replace('\\', "/") } else { dir.to_string() };
+    let path = path.trim_end_matches('/');
+    let path = match path.as_bytes() {
+        [drive, b':', b'/', ..] if windows && drive.is_ascii_alphabetic() => {
+            format!("{}{}", char::from(drive.to_ascii_lowercase()), &path[2..])
+        }
+        _ => path.trim_start_matches('/').to_string(),
+    };
+    format!("Read(//{path}/**)")
+}
+
 /// `helper_line` for Claude Code, added to its system prompt.
 pub(crate) fn claude_helper_args(parent: &str) -> Vec<String> {
     vec!["--append-system-prompt".into(), crate::pty::helper_line(parent)]
@@ -189,3 +211,22 @@ pub(crate) fn with_role(mut settings: serde_json::Value, read_only: bool, agent:
 /// (`CLAUDE_MCP_TOKEN_ENV`), never written to the config file, where any
 /// other session of the user's could read it and act as this one.
 pub(crate) const CLAUDE_MCP_TOKEN_ENV: &str = "LUNA_MCP_TOKEN";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_settings_file_denies_the_core_folder_to_the_file_tools() {
+        assert_eq!(claude_read_deny(r"E:\Programs\Luna\core", true), "Read(//e/Programs/Luna/core/**)");
+        assert_eq!(claude_read_deny("C:/Users/a.b/Lu na/core/", true), "Read(//c/Users/a.b/Lu na/core/**)");
+        assert_eq!(claude_read_deny("/home/u/.local/share/luna/core", false), "Read(//home/u/.local/share/luna/core/**)");
+        assert_eq!(claude_read_deny(r"/home/u/a\b/core", false), r"Read(//home/u/a\b/core/**)", "a backslash is part of a name there");
+        let none = crate::library::SessionSkills::default();
+        for (hook, guard) in [(None, None), (Some("http://h/hook/c/s"), None), (None, Some("http://h/guard/c/s"))] {
+            let settings = claude_settings(hook, guard, &none, "/d/core");
+            let want = claude_read_deny("/d/core", cfg!(windows));
+            assert_eq!(settings["permissions"], serde_json::json!({ "deny": [want] }), "{hook:?} {guard:?}");
+        }
+    }
+}
