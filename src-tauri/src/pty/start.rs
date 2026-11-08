@@ -24,9 +24,10 @@ use std::sync::Mutex;
 /// session (library/folders.rs `SessionSkills`) — skills off in `skillOverrides`,
 /// which settings of this source beat whatever the account's or the
 /// project's say, and the account's instructions in `claudeMdExcludes`.
+/// Always: Luna's `core/` denied to its file tools (`claude_read_deny`).
 /// Written to a file under the data dir (`hooks/`, named for what it first
 /// held) rather than passed inline, so the command line stays readable and
-/// quoting is not a concern. None with nothing to say.
+/// quoting is not a concern. None if it cannot be written.
 pub(crate) fn claude_settings_file(
     chat_id: &str,
     hooks: bool,
@@ -37,10 +38,8 @@ pub(crate) fn claude_settings_file(
         crate::hub::hook_url(chat_id).filter(|_| hooks).as_deref(),
         crate::hub::guard_url(chat_id).filter(|_| guard).as_deref(),
         library,
+        &crate::ipc::core_dir().to_string_lossy(),
     );
-    if settings.is_empty() {
-        return None;
-    }
     // Owner-only: the hook URLs in it carry the hub's secret.
     let dir = crate::paths::data_dir().join("hooks");
     crate::secret::private_dir(&dir).ok()?;
@@ -151,17 +150,24 @@ pub(crate) fn curl_program() -> String {
     if cfg!(windows) { "curl.exe" } else { "curl" }.to_string()
 }
 
-/// A name for a `read-only-net` profile, new on every start, that no config
-/// can have rules ready for (codex/launch.rs `read_only_net_args`).
-fn codex_profile() -> String {
-    format!("luna-{}", &crate::agents::mint()[..16])
+/// A name for Luna's profile of `sandbox`, new on every start, that no config
+/// can have rules ready for (codex/launch.rs `profile_args`); None where
+/// Codex's own mode serves.
+fn codex_profile(sandbox: &str) -> Option<String> {
+    codex_launch::takes_profile(sandbox, cfg!(windows)).then(|| format!("luna-{}", &crate::agents::mint()[..16]))
 }
 
-/// A sandbox as `-c` overrides, for `codex exec`, which asks nobody; a
-/// `read-only-net` one under a profile named afresh.
+/// Luna's `core/`, for a session in `sandbox` to be kept from reading where
+/// Codex can do that (codex/launch.rs `denies_core`).
+fn codex_core_deny(sandbox: &str) -> Option<String> {
+    codex_launch::denies_core(sandbox, cfg!(windows)).then(|| crate::ipc::core_dir().to_string_lossy().into_owned())
+}
+
+/// A sandbox as `-c` overrides, for `codex exec`, which asks nobody; one of
+/// Luna's profiles named afresh.
 pub(crate) fn codex_sandbox_args(sandbox: &str) -> Vec<String> {
-    let profile = (sandbox == READ_ONLY_NET).then(codex_profile);
-    codex_launch::sandbox_args(sandbox, profile.as_deref())
+    let profile = codex_profile(sandbox);
+    codex_launch::sandbox_args(sandbox, profile.as_deref(), codex_core_deny(sandbox).as_deref())
 }
 
 /// codex/launch.rs `git_ssl_backend_envs` for a session in that sandbox.
@@ -427,10 +433,11 @@ pub async fn ensure_codex_session(
         let sandbox: &str = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX } else { &sandbox };
         let hooks_unasked = hooks_unasked.unwrap_or(false);
         // What the sandbox and the guard take from this machine, ahead of the
-        // registration: the profile's new name, PATH and git's entries (each
-        // nothing in a sandbox that takes none), and the guard's hook — or
-        // the log's word that Codex would drop it.
-        let profile = (sandbox == READ_ONLY_NET).then(codex_profile);
+        // registration: the profile's new name and what it denies, PATH and
+        // git's entries (each nothing in a sandbox that takes none), and the
+        // guard's hook — or the log's word that Codex would drop it.
+        let profile = codex_profile(sandbox);
+        let deny = codex_core_deny(sandbox);
         let sandbox_path = codex_sandbox_path(sandbox);
         let git_envs = codex_git_envs(sandbox);
         let guard = codex_guard_args(&id, tools.unwrap_or(false) || parent.is_some(), hooks_unasked);
@@ -462,6 +469,7 @@ pub async fn ensure_codex_session(
             approval: &approval,
             sandbox,
             profile: profile.as_deref(),
+            deny: deny.as_deref(),
             sandbox_path: sandbox_path.as_deref(),
             git_envs: &git_envs,
             hooks_unasked,
@@ -952,7 +960,12 @@ mod tests {
     }
 
     fn codex_asks(approval: &str, sandbox: &str) -> Vec<String> {
-        let mut args = strings(&["--ask-for-approval", approval, "-c", "approvals_reviewer=\"user\"", "--sandbox", sandbox]);
+        let mut args = strings(&["--ask-for-approval", approval, "-c", "approvals_reviewer=\"user\""]);
+        if sandbox == "read-only" {
+            args.extend(golden::codex_read_only(&["--sandbox", sandbox]));
+        } else {
+            args.extend(strings(&["--sandbox", sandbox]));
+        }
         if sandbox != "danger-full-access" {
             args.extend(golden::codex_windows_sandbox());
         }

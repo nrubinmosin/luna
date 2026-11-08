@@ -195,7 +195,10 @@ mod tests {
         let (args, dir, _) = command_for(&e, "x");
         assert_eq!(args[..3], ["exec", "-C", "C:\\p"]);
         assert_eq!(args.last().map(String::as_str), Some("-"), "the prompt comes on stdin");
-        assert!(args.contains(&"sandbox_mode=\"read-only\"".to_string()));
+        assert!(
+            args.iter().any(|a| a == "sandbox_mode=\"read-only\"" || a.starts_with("default_permissions=\"luna-")),
+            "held by its sandbox"
+        );
         assert_eq!(dir, "C:\\p");
         on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "t-1" }));
         let (args, _, _) = command_for(&e, "x");
@@ -502,10 +505,16 @@ mod tests {
         let mut e = entry(Provider::Claude);
         e.spec.mode = "acceptEdits".into();
         let t = turn(&e, ID, &r);
-        assert_eq!(t.args, claude_turn("acceptEdits"));
+        assert_eq!(t.args, with_settings(claude_turn("acceptEdits")));
         assert_eq!(t.dir, "C:\\p");
         assert_eq!(t.envs, claude_turn_envs(ID));
-        assert_eq!((t.settings, t.mcp), (None, None), "no hooks: its stream says it all");
+        assert_eq!((t.settings, t.mcp), (Some(golden::claude_settings_alone()), None), "no hooks: its stream says it all");
+    }
+
+    /// `args`, then the settings file every Claude Code turn is given.
+    fn with_settings(mut args: Vec<String>) -> Vec<String> {
+        args.extend(strings(&["--settings", "<settings-file>"]));
+        args
     }
 
     #[test]
@@ -519,12 +528,13 @@ mod tests {
         e.spec.worktree_name = Some("luna-x".into());
         let mut want = claude_turn("default");
         want.push("--worktree=luna-x".into());
-        assert_eq!(turn(&e, ID, &r).args, want);
+        assert_eq!(turn(&e, ID, &r).args, with_settings(want));
 
         // A conversation, in the folder it was sent to.
         e.session = Some("s-1".into());
         let mut want = claude_turn("default");
         want.extend(strings(&["--resume", "s-1"]));
+        let want = with_settings(want);
         let t = turn(&e, ID, &r);
         assert_eq!((t.args, t.dir.as_str()), (want.clone(), "C:\\p"));
 
@@ -540,7 +550,7 @@ mod tests {
         let t = turn(&e, ID, &r);
         let mut want = claude_turn("default");
         want.extend(strings(&["--worktree=luna-x", "--resume", "s-1"]));
-        assert_eq!((t.args, t.dir.as_str()), (want, "C:\\p"));
+        assert_eq!((t.args, t.dir.as_str()), (with_settings(want), "C:\\p"));
     }
 
     #[test]
@@ -579,7 +589,9 @@ mod tests {
         envs.extend(claude_turn_envs(ID));
         envs.extend(pairs(&[("LUNA_PARENT_ID", "golden-parent")]));
         assert_eq!(t.envs, envs);
-        assert_eq!(t.settings, Some(serde_json::json!({ "hooks": { "PreToolUse": [golden::claude_guard_entry()] } })), "the guard alone");
+        let mut guard = golden::claude_settings_alone();
+        guard["hooks"] = json!({ "PreToolUse": [golden::claude_guard_entry()] });
+        assert_eq!(t.settings, Some(guard), "the guard alone");
         assert_eq!(t.mcp, Some(golden::claude_mcp_config()));
 
         // No tools of its own: Luna's server is there for the permission prompts only.
@@ -597,8 +609,8 @@ mod tests {
             "--disallowedTools",
             "mcp__luna__luna_permission",
         ]));
-        assert_eq!(t.args, want);
-        assert_eq!(t.settings, None, "neither tools nor a parent: no guard");
+        assert_eq!(t.args, with_settings(want));
+        assert_eq!(t.settings, Some(golden::claude_settings_alone()), "neither tools nor a parent: no guard");
         crate::agents::forget(ID);
     }
 
@@ -637,7 +649,7 @@ mod tests {
         let t = turn(&e, ID, &r);
         let mut want = strings(&["exec", "-C", "C:\\p"]);
         want.extend(codex_turn(true));
-        want.extend(codex_held(strings(&["-c", "sandbox_mode=\"read-only\""]), true));
+        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
         want.push("-".into());
         assert_eq!(t.args, want);
         assert_eq!(t.dir, "C:\\p");
@@ -653,7 +665,7 @@ mod tests {
         e.spec.worktree = true;
         let tail = |mut a: Vec<String>| {
             a.extend(codex_turn(false));
-            a.extend(codex_held(strings(&["-c", "sandbox_mode=\"read-only\""]), true));
+            a.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
             a.push("-".into());
             a
         };
@@ -757,7 +769,9 @@ mod tests {
                 ("LUNA_SESSION_ID", ID),
             ])
         );
-        let settings = json!({ "skillOverrides": { "review": "off" }, "claudeMdExcludes": ["<acc>/CLAUDE.md"] });
+        let mut settings = golden::claude_settings_alone();
+        settings["skillOverrides"] = json!({ "review": "off" });
+        settings["claudeMdExcludes"] = json!(["<acc>/CLAUDE.md"]);
         assert_eq!(t.settings, Some(settings), "no hooks, no guard: what the folder keeps from it alone");
         assert_eq!(t.instructions.as_deref(), Some(crate::library::GoldenLibrary::INSTRUCTIONS), "the library's, word for word");
     }
@@ -771,7 +785,7 @@ mod tests {
         let mut want = strings(&["exec", "-C", "<project>", "--json", "--skip-git-repo-check"]);
         want.extend(crate::codex::trust::trust_override(&lib.folder).iter().map(|a| r.text(a)));
         want.extend(strings(&["--model", "haiku", "-c", "model_reasoning_effort=\"low\""]));
-        want.extend(codex_held(strings(&["-c", "sandbox_mode=\"read-only\""]), true));
+        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
         want.extend(strings(&[
             "-c",
             &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),

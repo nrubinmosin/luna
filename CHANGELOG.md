@@ -17,6 +17,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   dirs 6 and toml_edit 0.22 from the build; vt100 0.18 for the screen a helper's
   output is replayed onto.
 
+### Security
+
+- Sessions are denied the folder that holds the key to Luna's core, wherever
+  their CLI can enforce it: Claude Code's file tools everywhere, and Codex's
+  `read-only` and `read-only-net` sandboxes on Linux and macOS. Codex's
+  `workspace-write` and every Codex sandbox on Windows can still read it; the
+  threat model (F3) says why.
+
 ## [0.10.0] - 2026-11-08
 
 A security and engineering release. Agent tools now follow least privilege,

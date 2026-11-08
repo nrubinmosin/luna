@@ -353,6 +353,75 @@ fn codex_an_over_privileged_spawn_is_refused() {
     an_over_privileged_spawn_is_refused(Provider::Codex);
 }
 
+/// What a Codex session in each of Luna's sandboxes can read of Luna's
+/// `core/`, tried in Codex's own sandbox runner (`codex sandbox`, which needs
+/// no login, so no account either) with the overrides a session is given.
+/// Asserted as the threat model has it (F3), so that a change on either side
+/// shows: off Windows the read-only sandboxes are refused it and
+/// `workspace-write` is not; on Windows every sandbox reads it, and the deny
+/// Luna leaves out there is still one Codex refuses to run under. A probe file
+/// stands in for `core.json`; what is read is counted, never shown.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and the Codex CLI"]
+fn codex_sandboxes_reach_the_core_folder_as_the_threat_model_says() {
+    if std::env::var("LUNA_LIVE").as_deref() != Ok("1") {
+        eprintln!("skipped: LUNA_LIVE is not 1");
+        return;
+    }
+    let core = crate::ipc::core_dir();
+    crate::secret::private_dir(&core).expect("core/");
+    let probe = core.join(format!("probe-{}.json", crate::agents::mint()[..8].to_lowercase()));
+    crate::secret::write_private(&probe, b"{\"probe\":\"not a token\"}").expect("the probe file");
+    // A Codex home of its own: only Luna's overrides decide the sandbox.
+    let home = crate::paths::data_dir().join("live-codex-home");
+    std::fs::create_dir_all(&home).expect("the Codex home");
+    let path = probe.to_string_lossy().into_owned();
+    let reader: Vec<String> = if cfg!(windows) {
+        let quoted = path.replace('\'', "''");
+        let script = format!("try {{ 'read ok ' + [IO.File]::ReadAllBytes('{quoted}').Length }} catch {{ 'refused' }}");
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", &script].map(String::from).to_vec()
+    } else {
+        let script = r#"if n=$(wc -c < "$1" 2>/dev/null); then echo "read ok $n"; else echo refused; fi"#;
+        ["sh", "-c", script, "sh", &path].map(String::from).to_vec()
+    };
+    let run = |overrides: Vec<String>, sandbox: &str| {
+        let mut cmd = std::process::Command::new(crate::cli::binary(Provider::Codex));
+        cmd.arg("sandbox")
+            .args(&overrides)
+            .args(crate::codex::launch::codex_windows_sandbox(sandbox).map(|sb| ["-c".to_string(), sb]).into_iter().flatten());
+        cmd.arg("--").args(&reader).env("CODEX_HOME", &home).current_dir(&home);
+        if let Some(p) = crate::pty::codex_sandbox_path(sandbox) {
+            cmd.env("PATH", p);
+        }
+        let out = cmd.output().expect("codex sandbox runs");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    let read = |said: &str| said.lines().any(|l| l.trim().starts_with("read ok "));
+    let refused = |said: &str| said.lines().any(|l| l.trim() == "refused");
+    for sandbox in ["danger-full-access", "read-only", crate::codex::launch::READ_ONLY_NET, "workspace-write"] {
+        let said = run(crate::pty::codex_sandbox_args(sandbox), sandbox);
+        eprintln!(
+            "{sandbox}: {}",
+            if read(&said) {
+                "read"
+            } else if refused(&said) {
+                "refused"
+            } else {
+                "neither"
+            }
+        );
+        let denied = crate::codex::launch::denies_core(sandbox, cfg!(windows));
+        assert!(if denied { refused(&said) } else { read(&said) }, "{sandbox}: {said}");
+    }
+    if cfg!(windows) {
+        let dir = core.to_string_lossy();
+        let said = run(crate::codex::launch::profile_args("luna-live-probe", false, Some(&dir)), "read-only");
+        assert!(!read(&said) && said.contains("elevated"), "Codex runs a deny on Windows now; Luna can give it there: {said}");
+    }
+    let _ = std::fs::remove_file(&probe);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// What the suite takes for a test account, checked without one: the guard
 /// is what keeps a live run off the accounts a person uses.
 #[test]
