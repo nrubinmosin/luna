@@ -752,7 +752,7 @@ mod tests {
             assert!(crate::background::has("dh-s"), "nothing was touched");
 
             // Handed over all the same: never removed as a helper.
-            crate::agents::take_over("dh-s", || Some(Vec::new()));
+            crate::agents::take_over("dh-s", || Some(Vec::new())).unwrap();
             crate::background::promoting_for_test("dh-s", false);
             let known = reg().lock().unwrap().known.get("dh-s").cloned().unwrap();
             let claim = claim_delete("dh-s").unwrap();

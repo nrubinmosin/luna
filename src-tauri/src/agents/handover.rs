@@ -12,6 +12,7 @@
 //! lines put together from that.
 
 use crate::agents::lost::undelivered_text;
+use crate::agents::notifier::hand_off;
 use crate::agents::persist::HELPER_SETTINGS;
 use crate::agents::registry::{chat_name, label, reg};
 use crate::agents::said::note_file;
@@ -28,10 +29,16 @@ struct TakenOver {
 /// once its ownership has changed, and gives back what was queued for it and never
 /// reached it (None: it is gone already, deleted meanwhile, and nothing is left to
 /// tell). Its parent, and every other session that wrote to it, hears once.
-pub fn take_over(id: &str, take_record: impl FnOnce() -> Option<Vec<crate::background::Queued>>) {
+///
+/// All of it under the notifier's hold on `id` (`hand_off`): a notice about it on
+/// its way into a caller is in before anything changes, and none starts after.
+/// Err, with nothing changed and `take_record` not called, if such a notice will
+/// not finish going in.
+pub fn take_over(id: &str, take_record: impl FnOnce() -> Option<Vec<crate::background::Queued>>) -> Result<(), String> {
+    let _held = hand_off(id)?;
     let Some(taken) = change_hands(id) else {
         take_record();
-        return;
+        return Ok(());
     };
     let unsent = take_record().unwrap_or_default();
     drained(id);
@@ -45,6 +52,7 @@ pub fn take_over(id: &str, take_record: impl FnOnce() -> Option<Vec<crate::backg
             taken.parent.as_deref().unwrap_or("nobody")
         ),
     );
+    Ok(())
 }
 
 /// The one hold in which `id` stops being anyone's helper. None if it is not
@@ -235,7 +243,7 @@ mod tests {
                 crate::background::Queued::new(Some(parent.clone()), "and then this".into(), Vec::new()),
                 crate::background::Queued::new(Some(peer.clone()), "the peer's words".into(), Vec::new()),
             ];
-            take_over(&id, || Some(queued));
+            take_over(&id, || Some(queued)).unwrap();
 
             assert_eq!(parent_of(&id), None);
             let e = authorize(&parent, &id).err().unwrap();
@@ -297,7 +305,7 @@ mod tests {
             assert_eq!(placed, crate::background::Placed::Queued, "held while it opens");
             // A debt it had registered by then, which the handover clears.
             owe_from_at(&parent, &id, 1, 0, before);
-            take_over(&id, || Some(Vec::new()));
+            take_over(&id, || Some(Vec::new())).unwrap();
             assert!(!owe_from_at(&parent, &id, 2, 0, before), "the send learns it was taken over");
             assert!(!reg().lock().unwrap().owed.contains_key(&(parent.clone(), id.clone())), "and nothing is owed");
             // Text sent to the person's chat from now on is owed as any chat's.
@@ -344,7 +352,8 @@ mod tests {
         take_over("tg-gone", || {
             took = true;
             None
-        });
+        })
+        .unwrap();
         assert!(took, "its record is still let go of");
         assert!(news_for("tg-parent").is_empty());
         forget("tg-parent");
@@ -359,7 +368,7 @@ mod tests {
         helper("tk-mid", "tk-parent", Provider::Claude);
         helper("tk-low", "tk-mid", Provider::Codex);
         owe_from("tk-mid", "tk-low", 0, 0);
-        take_over("tk-mid", || Some(Vec::new()));
+        take_over("tk-mid", || Some(Vec::new())).unwrap();
         assert_eq!(parent_of("tk-low").as_deref(), Some("tk-mid"));
         assert!(authorize("tk-parent", "tk-low").is_err(), "its former parent reaches them no more");
         assert!(reg().lock().unwrap().owed.contains_key(&("tk-mid".to_string(), "tk-low".to_string())));
