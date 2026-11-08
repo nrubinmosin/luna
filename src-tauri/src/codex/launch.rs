@@ -5,6 +5,7 @@
 //! The start does that under the chat's spawn gate (pty/start.rs) and hands
 //! the results in; a helper's turn, in background/command.rs.
 
+use crate::applied::{Applied, Item};
 use crate::pty::MCP_TOOL_TIMEOUT_MS;
 
 /// A Codex chat's start as `chat_args` lays it out: what the window asked
@@ -16,7 +17,12 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) folder: &'a str,
     pub(crate) account_path: &'a str,
     pub(crate) resume: Option<&'a str>,
-    pub(crate) trust: Option<[String; 2]>,
+    /// A `-c` trusting the folder for this run, and what it comes of: a
+    /// trusted root, a trust asked for while the account was in use, a helper.
+    pub(crate) trust: Option<([String; 2], Item)>,
+    /// The account's or the project's config names a `windows.sandbox` of its
+    /// own (codex/config.rs `windows_sandbox_set`): Luna gives it none.
+    pub(crate) own_windows_sandbox: bool,
     pub(crate) worktree: bool,
     pub(crate) model: Option<&'a str>,
     pub(crate) effort: &'a str,
@@ -46,14 +52,20 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) prompt: Option<&'a str>,
 }
 
-/// The arguments and environment of a Codex chat's start; `codex login`
-/// takes none of them.
-pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, String)>) {
+/// The arguments and environment of a Codex chat's start, and what Luna
+/// applied in them (applied.rs); `codex login` takes none of them.
+pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, String)>, Vec<Applied>) {
     let mut args: Vec<String> = vec![];
     let mut envs = vec![("CODEX_HOME", s.account_path.to_string())];
+    let mut applied = vec![
+        Item::Account.with(format!("CODEX_HOME={}", s.account_path)),
+        crate::claude::launch::session_applied(s.id, s.parent),
+        Item::Folder.with(format!("-C {}", s.folder)),
+    ];
     if let Some(session_id) = s.resume {
         args.push("resume".into());
         args.push(session_id.to_string());
+        applied.push(Item::Resume.with(session_id));
     }
     args.push("-C".into());
     args.push(s.folder.to_string());
@@ -62,21 +74,28 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     // process of its own. The `-c` overrides below need that anyway;
     // saying so keeps Codex from warning about it on every start.
     args.push("--no-daemon".into());
-    if let Some(trust) = &s.trust {
+    applied.push(Item::NoDaemon.with("--no-daemon"));
+    if let Some((trust, item)) = &s.trust {
         args.extend(trust.iter().cloned());
+        applied.push(item.with(format!("-c {}", trust[1])));
     }
     // A resumed thread already has its worktree; Codex refuses the
     // flag on `resume`.
     if s.worktree && s.resume.is_none() {
         args.push("--worktree".into());
+        applied.push(Item::Worktree.with("--worktree"));
     }
     if let Some(m) = s.model {
         args.push("--model".into());
         args.push(m.to_string());
+        applied.push(Item::Model.with(m));
     }
     args.push("-c".into());
     args.push(format!("model_reasoning_effort=\"{}\"", s.effort));
+    applied.push(Item::Effort.with(s.effort));
     let (approval, sandbox) = (s.approval, s.sandbox);
+    applied.push(Item::Approval.with(approval));
+    applied.push(Item::Sandbox.with(sandbox));
     // The pair Codex itself spells as one flag.
     if approval == "never" && sandbox == "danger-full-access" {
         args.push("--dangerously-bypass-approvals-and-sandbox".into());
@@ -86,45 +105,119 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         } else {
             args.push("--ask-for-approval".into());
             args.push(approval.to_string());
-            args.push("-c".into());
-            args.push(CODEX_PERSON_REVIEWS.into());
+            // What a helper would ask goes to the chat that started it; a
+            // person's chat keeps whatever reviewer its account or project
+            // names.
+            if s.parent.is_some() {
+                args.push("-c".into());
+                args.push(CODEX_PERSON_REVIEWS.into());
+                applied.push(Item::HelperReviewer.with(format!("-c {CODEX_PERSON_REVIEWS}")));
+            }
             // Without its profile, `--sandbox read-only-net`, which Codex
             // refuses: never a sandbox looser than the one asked for.
             match s.profile.filter(|_| takes_profile(sandbox, cfg!(windows))) {
-                Some(profile) => args.extend(profile_args(profile, sandbox == READ_ONLY_NET, s.deny)),
+                Some(profile) => {
+                    args.extend(profile_args(profile, sandbox == READ_ONLY_NET, s.deny));
+                    if let Some(dir) = s.deny {
+                        applied.push(core_deny_applied(profile, dir));
+                    }
+                }
                 None => {
                     args.push("--sandbox".into());
                     args.push(sandbox.to_string());
                 }
             }
         }
-        if let Some(sb) = codex_windows_sandbox(sandbox) {
+        if let Some(sb) = codex_windows_sandbox(sandbox).filter(|_| !s.own_windows_sandbox) {
             args.push("-c".into());
-            args.push(sb);
+            args.push(sb.clone());
+            applied.push(Item::WindowsSandbox.with(format!("-c {sb}")));
         }
         if let Some(path) = s.sandbox_path {
             envs.push(("PATH", path.to_string()));
+            applied.push(Item::SandboxPath.with("PATH without …\\Microsoft\\WindowsApps"));
         }
         envs.extend(s.git_envs.iter().cloned());
+        if !s.git_envs.is_empty() {
+            applied.push(git_ssl_applied(s.git_envs));
+        }
     }
     if s.hooks_unasked {
         args.push(HOOKS_UNASKED.into());
+        applied.push(Item::HooksUnasked.with(HOOKS_UNASKED));
     }
     args.extend(s.guard.iter().cloned());
+    if !s.guard.is_empty() {
+        applied.push(guard_applied(s.parent.is_some()));
+    }
+    args.extend(no_update_check());
+    applied.push(Item::NoAutoUpdate.with(format!("-c {NO_UPDATE_CHECK}")));
     args.push("-c".into());
     args.push(CODEX_TITLE.into());
+    applied.push(Item::ThreadTitle.with(format!("-c {CODEX_TITLE}")));
     envs.extend(crate::pty::session_envs(s.id, s.parent));
+    if let Some(parent) = s.parent {
+        applied.push(Item::HelperIdentity.with(format!("a note after its opening prompt: {}", crate::pty::helper_line(parent))));
+    }
     if let Some((url, token)) = s.mcp {
         args.extend(mcp_args(url));
         envs.push(("LUNA_MCP_TOKEN", token.to_string()));
+        applied.push(Item::LunaTools.with(LUNA_TOOLS_VALUE));
     }
     args.extend(s.skill_args.iter().cloned());
+    applied.extend(library_applied(s.skill_args));
     if let Some(p) = s.prompt.map(str::trim).filter(|p| !p.is_empty()) {
         // A prompt that starts with a dash is still a prompt.
         args.push("--".into());
         args.push(p.to_string());
     }
-    (args, envs)
+    (args, envs, applied)
+}
+
+/// Luna's MCP server for Codex as applied: no URL, the token by the variable
+/// it travels in.
+pub(crate) const LUNA_TOOLS_VALUE: &str =
+    "-c mcp_servers.luna.* (Luna's MCP server, its tools approved); its token in LUNA_MCP_TOKEN, not shown";
+
+/// The guard as applied: a helper's, or a chat's whose person ticked it.
+pub(crate) fn guard_applied(helper: bool) -> Applied {
+    (if helper { Item::HelperGuard } else { Item::Guard }).with("-c hooks.PreToolUse on the shell (Bash)")
+}
+
+/// Luna's profile keeping `dir`, its `core/`, from the session, as applied.
+pub(crate) fn core_deny_applied(profile: &str, dir: &str) -> Applied {
+    Item::CoreReadDeny.with(format!("-c permissions.{profile}.filesystem={{{dir}=\"deny\"}}"))
+}
+
+/// git's TLS backend for the sandbox (`git_ssl_backend_envs`), as applied.
+pub(crate) fn git_ssl_applied(envs: &[(&'static str, String)]) -> Applied {
+    Item::GitSslBackend.with(envs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", "))
+}
+
+/// The library's `-c`s for Codex (library/folders.rs `session_args`): its
+/// folders' plugins turned on, and the skills they keep from the session.
+pub(crate) fn library_applied(skill_args: &[String]) -> Vec<Applied> {
+    let values = skill_args.iter().filter(|a| *a != "-c");
+    let (hidden, plugins): (Vec<&String>, Vec<&String>) = values.partition(|v| v.starts_with("skills.config="));
+    let mut applied = Vec::new();
+    if !plugins.is_empty() {
+        applied.push(Item::LibrarySkills.with(plugins.iter().map(|p| format!("-c {p}")).collect::<Vec<_>>().join(", ")));
+    }
+    if !hidden.is_empty() {
+        applied.push(Item::LibraryHidden.with(hidden.iter().map(|p| format!("-c {p}")).collect::<Vec<_>>().join(", ")));
+    }
+    applied
+}
+
+/// Codex's own check for a newer version at its start: Luna updates the CLI
+/// itself, and the check would only announce a version Luna is about to
+/// install. Passed with every start, never written to the account's
+/// config.toml.
+pub(crate) const NO_UPDATE_CHECK: &str = "check_for_update_on_startup=false";
+
+/// `NO_UPDATE_CHECK` as a `-c` override.
+pub(crate) fn no_update_check() -> [String; 2] {
+    ["-c".into(), NO_UPDATE_CHECK.into()]
 }
 
 /// `hooks.PreToolUse` for Codex, posting each shell call to `url` through
@@ -149,9 +242,10 @@ fn hook_command(url: &str, curl: &str) -> String {
 /// in `workspace-write`.
 pub(crate) const AUTO_REVIEW: &str = "auto-review";
 pub(crate) const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
-/// What Codex asks goes to a person, whatever an account's or project's
-/// `approvals_reviewer` says: `auto_review` there would have a reviewer model
-/// answer a session Luna started, and held its helper to, as asking one.
+/// What a helper's Codex asks goes to a person — the chat that started it —
+/// whatever an account's or project's `approvals_reviewer` says:
+/// `auto_review` there would have a reviewer model answer a helper Luna holds
+/// to asking its parent. A person's own chat is given none of it.
 pub(crate) const CODEX_PERSON_REVIEWS: &str = "approvals_reviewer=\"user\"";
 /// Codex runs the project's hooks without asking for trust (codex/hooks.rs).
 pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";

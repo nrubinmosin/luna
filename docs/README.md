@@ -56,6 +56,7 @@
 | [0013](adr/0013-own-cli-binaries.md) | Luna ships and updates its own copies of the CLIs | Accepted |
 | [0014](adr/0014-core-credential-behind-a-read-deny.md) | The core credential stays a bearer token behind a read deny | Accepted |
 | [0015](adr/0015-the-page-gets-only-what-it-calls.md) | The page gets only the commands it calls | Accepted |
+| [0016](adr/0016-luna-is-a-runtime.md) | Luna is a runtime, not a provider configurator | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 

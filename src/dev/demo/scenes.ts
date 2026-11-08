@@ -29,7 +29,7 @@ import { demoState } from './ipc';
 /** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
  *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
  *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
- *  `?demo=library`, `?demo=power`. */
+ *  `?demo=library`, `?demo=power`, `?demo=applied` / `applied-dark` (a chat's What Luna applied). */
 export type Scene =
   | 'main'
   | 'dark'
@@ -46,7 +46,9 @@ export type Scene =
   | 'checks'
   | 'checks-dark'
   | 'checks-bar'
-  | 'checks-bar-dark';
+  | 'checks-bar-dark'
+  | 'applied'
+  | 'applied-dark';
 const SCENES: Scene[] = [
   'dark',
   'peek',
@@ -62,7 +64,9 @@ const SCENES: Scene[] = [
   'checks',
   'checks-dark',
   'checks-bar',
-  'checks-bar-dark'
+  'checks-bar-dark',
+  'applied',
+  'applied-dark'
 ];
 
 export function seedDemo(scene: Scene) {
@@ -126,6 +130,10 @@ export function seedDemo(scene: Scene) {
         [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === 'Differences')?.click(),
       600
     );
+  }
+  // A chat's panel, opened from its title bar the way a click would.
+  if (scene.startsWith('applied')) {
+    setTimeout(() => document.querySelector<HTMLElement>('button[aria-label="What Luna applied"]')?.click(), 300);
   }
   // The two dialogs belong to an account row; open them the way a click would.
   const button = scene === 'recommended' ? 'Recommended settings' : scene === 'editor' ? 'Edit settings.json' : null;

@@ -19,37 +19,77 @@ use std::sync::Mutex;
 /// its stdin to Luna's loopback listener (hub.rs) and prints nothing — a
 /// hook's stdout is added to the model's context, silence is free — while
 /// the listener is on. `guard`: a PreToolUse hook on its shell tools that
-/// refuses a command waiting forever (guard.rs), for a session with Luna's
-/// tools or a helper. `library`: what the library's folders keep from the
-/// session (library/folders.rs `SessionSkills`) — skills off in `skillOverrides`,
-/// which settings of this source beat whatever the account's or the
-/// project's say, and the account's instructions in `claudeMdExcludes`.
+/// refuses a command waiting forever (guard.rs), as the item saying why it is
+/// there: a chat whose person ticked it, or a helper. `library`: what the
+/// library's folders keep from the session (library/folders.rs
+/// `SessionSkills`) — skills off in `skillOverrides`, which settings of this
+/// source beat whatever the account's or the project's say, and the
+/// account's instructions and the other memory in `claudeMdExcludes`.
 /// Always: Luna's `core/` denied to its file tools (`claude_read_deny`), so
 /// there is always a file to write. Written to a file under the data dir
 /// (`hooks/`, named for what it first held) rather than passed inline, so the
 /// command line stays readable and quoting is not a concern. Err if it cannot
 /// be written: a session carries the core-folder deny or does not start
 /// (threat model F3), so the caller refuses the launch rather than run without
-/// it.
+/// it. With the file, what it holds as applied (claude/launch.rs
+/// `settings_applied`).
 pub(crate) fn claude_settings_file(
     chat_id: &str,
     hooks: bool,
-    guard: bool,
+    guard: Option<crate::applied::Item>,
     library: &crate::library::SessionSkills,
-) -> Result<std::path::PathBuf, String> {
-    let settings = claude_settings(
-        crate::hub::hook_url(chat_id).filter(|_| hooks).as_deref(),
-        crate::hub::guard_url(chat_id).filter(|_| guard).as_deref(),
-        library,
-        &crate::ipc::core_dir().to_string_lossy(),
-    );
+) -> Result<(std::path::PathBuf, Vec<crate::applied::Applied>), String> {
+    let core = crate::ipc::core_dir().to_string_lossy().into_owned();
+    let hook_url = crate::hub::hook_url(chat_id).filter(|_| hooks);
+    let guard_url = crate::hub::guard_url(chat_id).filter(|_| guard.is_some());
+    let settings = claude_settings(hook_url.as_deref(), guard_url.as_deref(), library, &core);
     // Owner-only: the hook URLs in it carry the hub's secret.
     let dir = crate::paths::data_dir().join("hooks");
     crate::secret::private_dir(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
     let path = dir.join(format!("{chat_id}.json"));
     let json = serde_json::to_string_pretty(&settings).map_err(|e| format!("the settings do not serialize: {e}"))?;
     crate::secret::write_private(&path, json.as_bytes()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-    Ok(path)
+    let applied =
+        claude_launch::settings_applied(&path.to_string_lossy(), hook_url.is_some(), guard.filter(|_| guard_url.is_some()), library, &core);
+    Ok((path, applied))
+}
+
+/// The folders a Claude Code session in `folder` on `account_path` would be
+/// given by the user's own settings (`permissions.additionalDirectories` in
+/// the account's, the project's and the project's local settings), each made
+/// absolute against `folder`: for `memory_excludes`, as the library's
+/// instructions have the memory of every added folder read.
+pub(crate) fn claude_settings_dirs(account_path: &str, folder: &str) -> Vec<String> {
+    let base = std::path::Path::new(folder);
+    let files = [
+        std::path::Path::new(account_path).join("settings.json"),
+        base.join(".claude").join("settings.json"),
+        base.join(".claude").join("settings.local.json"),
+    ];
+    let mut dirs = Vec::new();
+    for file in files {
+        let Some(v) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
+            continue;
+        };
+        for d in v["permissions"]["additionalDirectories"].as_array().into_iter().flatten().filter_map(|d| d.as_str()) {
+            dirs.push(base.join(d).to_string_lossy().into_owned());
+        }
+    }
+    dirs
+}
+
+/// What `memory_excludes` leaves out of a Claude Code session in `folder`
+/// given the library's instructions: every other folder it is added, by
+/// Luna (`luna_dirs`) or by the user's settings.
+fn claude_memory_off(luna_dirs: &[String], account_path: &str, folder: &str) -> Vec<String> {
+    let mut added = luna_dirs.to_vec();
+    added.extend(claude_settings_dirs(account_path, folder));
+    claude_launch::memory_excludes(&added, folder)
+}
+
+/// The folders of `--add-dir`s in `args`.
+fn added_dirs(args: &[String]) -> Vec<String> {
+    args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect()
 }
 
 /// The instructions a folder of the library gives a Claude Code session in
@@ -205,6 +245,21 @@ pub(crate) fn codex_sandbox_path(sandbox: &str) -> Option<String> {
     Some(codex_launch::without_windows_apps(&path))
 }
 
+/// The `-c` trusting `folder` for one Codex run on `account_path`, and what
+/// it comes of (codex/trust.rs): a helper's, for the run it was sent on; a
+/// folder under a trusted root; one trusted while the account was in use.
+/// None: Codex goes by the account's config, and asks if that says nothing.
+pub(crate) fn codex_trust(account_path: &str, folder: &str, helper: bool) -> Option<([String; 2], crate::applied::Item)> {
+    use crate::applied::Item;
+    use crate::codex::trust;
+    if helper {
+        return Some((trust::trust_override(folder), Item::HelperTrust));
+    }
+    trust::root_override(folder)
+        .map(|t| (t, Item::TrustedRoot))
+        .or_else(|| trust::session_override(account_path, folder).map(|t| (t, Item::SessionTrust)))
+}
+
 /// Luna's MCP server as Codex's `-c` overrides (codex/launch.rs `mcp_args`),
 /// while it is up.
 pub(crate) fn codex_mcp_args() -> Vec<String> {
@@ -282,6 +337,9 @@ pub async fn ensure_claude_session(
     agent: Option<String>,
     // The spawn this is the session of, if an agent's (agents/spawn/mod.rs `spawn_is`).
     spawn_request: Option<u64>,
+    // The guard against endless waits, as the chat's person chose it in the
+    // new-chat dialog; a helper has it whatever this says.
+    guard: Option<bool>,
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -315,20 +373,35 @@ pub async fn ensure_claude_session(
         // them, at every start (library/folders.rs `session_args`); not to a login
         // session.
         let login = same_dir(&folder, &account_path);
-        let skills = if login {
+        let mut skills = if login {
             crate::library::SessionSkills::default()
         } else {
             crate::library::lay_out("before a session starts");
             crate::library::session_args(Provider::Claude, &account_path, &folder)
         };
+        let notes = (parent.is_some() || tools.unwrap_or(false))
+            .then(crate::agents::notes_dir)
+            .filter(|notes| std::fs::create_dir_all(notes).is_ok());
+        let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
+        // The library's instructions are read as memory of a folder added to
+        // the session, which has every added folder's read: not the others'.
+        if instructions.is_some() {
+            let mut luna_dirs = added_dirs(&skills.args);
+            luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
+            skills.memory_off = claude_memory_off(&luna_dirs, &account_path, &folder);
+        }
         // Rewritten at every spawn: the listener's port is new with every Luna run.
-        // The guard against endless waits (guard.rs): a chat with Luna's tools
-        // and a helper, which only such a chat starts.
-        let guard = tools.unwrap_or(false) || parent.is_some();
+        // The guard against endless waits (guard.rs): a helper's, or a chat's
+        // whose person asked for it.
+        let guard = if parent.is_some() {
+            Some(crate::applied::Item::HelperGuard)
+        } else {
+            guard.unwrap_or(false).then_some(crate::applied::Item::Guard)
+        };
         // Mandatory: it carries the core-folder deny (threat model F3). If it
         // cannot be written, the session does not start rather than run
         // without it.
-        let settings_file = claude_settings_file(&id, true, guard, &skills)?;
+        let (settings_file, settings_applied) = claude_settings_file(&id, true, guard, &skills)?;
         let tools = tools.unwrap_or(false);
         let read_only = read_only.unwrap_or(false);
         let agent = agent.filter(|a| !a.is_empty());
@@ -352,9 +425,7 @@ pub async fn ensure_claude_session(
             None => {}
         }
         let mcp = token.and_then(|t| Some((claude_mcp_file(&id)?, t)));
-        let notes = (parent.is_some() || tools).then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
-        let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
-        let (args, envs) = claude_launch::chat_args(&claude_launch::ChatStart {
+        let (args, envs, applied) = claude_launch::chat_args(&claude_launch::ChatStart {
             id: &id,
             account_path: &account_path,
             model: &model,
@@ -362,7 +433,7 @@ pub async fn ensure_claude_session(
             permission_mode: &permission_mode,
             resume: resume.as_deref(),
             worktree: worktree.then_some(worktree_name.as_deref()),
-            settings_file: Some(&settings_file),
+            settings_file: Some((&settings_file, &settings_applied)),
             agent: agent.as_deref(),
             read_only,
             parent: parent.as_deref(),
@@ -380,6 +451,7 @@ pub async fn ensure_claude_session(
             envs,
             resume,
             describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
+            applied,
         })
     })
     .await
@@ -408,6 +480,9 @@ pub async fn ensure_codex_session(
     parent: Option<String>,
     prompt: Option<String>,
     spawn_request: Option<u64>,
+    // The guard against endless waits, as the chat's person chose it in the
+    // new-chat dialog; a helper has it whatever this says.
+    guard: Option<bool>,
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -430,12 +505,17 @@ pub async fn ensure_codex_session(
         if login {
             let envs = vec![("CODEX_HOME", account_path.clone())];
             let args = vec!["login".to_string()];
-            return Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume: None, describe: "login".into() });
+            let applied = vec![crate::applied::Item::Account.with(format!("CODEX_HOME={account_path}"))];
+            let describe = "login".into();
+            return Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume: None, describe, applied });
         }
         // A project under a folder trusted on this machine starts trusted
         // without an entry in the account's config, and so does one
-        // trusted while the account was in use (codex/trust.rs).
-        let trust = crate::codex::trust::root_override(&folder).or_else(|| crate::codex::trust::session_override(&account_path, &folder));
+        // trusted while the account was in use (codex/trust.rs). A helper,
+        // with nobody to answer Codex's trust screen, is trusted where it was
+        // sent for the run alone: nothing of an agent's spawn is written into
+        // the account.
+        let trust = codex_trust(&account_path, &folder, parent.is_some());
         let chosen_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
         let sandbox: &str = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX } else { &sandbox };
         let hooks_unasked = hooks_unasked.unwrap_or(false);
@@ -447,7 +527,7 @@ pub async fn ensure_codex_session(
         let deny = codex_core_deny(sandbox);
         let sandbox_path = codex_sandbox_path(sandbox);
         let git_envs = codex_git_envs(sandbox);
-        let guard = codex_guard_args(&id, tools.unwrap_or(false) || parent.is_some(), hooks_unasked);
+        let guard = codex_guard_args(&id, guard.unwrap_or(false) || parent.is_some(), hooks_unasked);
         let tools = tools.unwrap_or(false);
         let settings = serde_json::json!({
             "model": chosen_model,
@@ -464,12 +544,13 @@ pub async fn ensure_codex_session(
         // from them, at every start (library/folders.rs `session_args`).
         crate::library::lay_out("before a session starts");
         let skills = crate::library::session_args(Provider::Codex, &account_path, &folder);
-        let (args, envs) = codex_launch::chat_args(&codex_launch::ChatStart {
+        let (args, envs, applied) = codex_launch::chat_args(&codex_launch::ChatStart {
             id: &id,
             folder: &folder,
             account_path: &account_path,
             resume: resume.as_deref(),
             trust,
+            own_windows_sandbox: crate::codex::config::windows_sandbox_set(&account_path, &folder),
             worktree: worktree.unwrap_or(false),
             model: chosen_model,
             effort: &effort,
@@ -487,7 +568,7 @@ pub async fn ensure_codex_session(
             prompt: prompt.as_deref(),
         });
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
-        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe })
+        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied })
     })
     .await
 }
@@ -546,6 +627,17 @@ mod tests {
         settings: Option<serde_json::Value>,
         mcp: Option<serde_json::Value>,
         instructions: Option<String>,
+        /// What Luna applied, as (key, class, value), placeholders in.
+        applied: Vec<(String, crate::applied::Class, String)>,
+    }
+
+    impl Started {
+        fn keys(&self) -> Vec<&str> {
+            self.applied.iter().map(|(k, _, _)| k.as_str()).collect()
+        }
+        fn value(&self, key: &str) -> Option<&str> {
+            self.applied.iter().find(|(k, _, _)| k == key).map(|(_, _, v)| v.as_str())
+        }
     }
 
     fn started(id: &str, r: &Redact, start: impl std::future::Future<Output = Result<String, String>>) -> Started {
@@ -558,6 +650,7 @@ mod tests {
         crate::agents::forget(id);
         assert_eq!(built, Ok(String::new()));
         let (l, envs) = (launch.expect("the start was caught"), envs.unwrap());
+        let applied = r.applied(&l.applied, &l.envs);
         let args = r.args(&l.args);
         let data = crate::paths::data_dir();
         let read = |sub: &str, placeholder: &str| {
@@ -568,7 +661,7 @@ mod tests {
         };
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
         let instructions = golden::instructions(id, &args);
-        Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, args }
+        Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, args, applied }
     }
 
     /// The window's ask for a Claude Code chat; each case changes what it is about.
@@ -586,6 +679,7 @@ mod tests {
         prompt: Option<&'static str>,
         read_only: Option<bool>,
         agent: Option<&'static str>,
+        guard: Option<bool>,
     }
 
     impl ClaudeAsk {
@@ -604,6 +698,7 @@ mod tests {
                 prompt: None,
                 read_only: None,
                 agent: None,
+                guard: None,
             }
         }
 
@@ -628,6 +723,7 @@ mod tests {
                     self.read_only,
                     s(self.agent),
                     None,
+                    self.guard,
                 ),
             )
         }
@@ -647,10 +743,40 @@ mod tests {
             strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
         );
         assert_eq!(s.envs, claude_envs(ID, "/golden/acc-claude"));
-        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)));
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)), "no guard unless the person asks for it");
         assert_eq!(s.mcp, None);
         assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
         assert_eq!(s.describe, "model opus perm default worktree false");
+        use crate::applied::Class::*;
+        let want = [
+            ("account", Runtime, "CLAUDE_CONFIG_DIR=/golden/acc-claude"),
+            ("no-self-update", Runtime, "DISABLE_AUTOUPDATER=1"),
+            ("session-id", Runtime, "LUNA_SESSION_ID=golden-claude-chat"),
+            ("model", UserAction, "opus"),
+            ("effort", UserAction, "high"),
+            ("permission-mode", UserAction, "default"),
+            ("activity-hooks", Runtime, "hooks in <settings-file>"),
+            ("core-read-deny", Boundary, "permissions.deny Read(//<core-dir>/**) in <settings-file>"),
+        ];
+        assert_eq!(s.applied, want.map(|(k, c, v)| (k.to_string(), c, v.to_string())));
+    }
+
+    #[test]
+    fn golden_claude_chat_guarded_only_when_its_person_asks() {
+        const ID: &str = "golden-claude-guarded";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk { guard: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
+        assert_eq!(s.value("guard"), Some("a PreToolUse hook on Bash, PowerShell, Monitor in <settings-file>"));
+        assert!(!s.keys().contains(&"helper.guard"));
+        // Luna's tools alone do not bring it.
+        let s = ClaudeAsk { tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)));
+        assert!(!s.keys().iter().any(|k| k.ends_with("guard")), "{:?}", s.keys());
+        assert_eq!(
+            s.value("luna-tools"),
+            Some("--mcp-config <mcp-file>, --allowedTools mcp__luna; its token in LUNA_MCP_TOKEN, not shown")
+        );
     }
 
     #[test]
@@ -766,7 +892,7 @@ mod tests {
             ])
         );
         assert_eq!(s.envs, claude_envs(ID, ACC), "no token: not a chat agents may reach");
-        assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)), "no guard: its person did not ask");
         assert_eq!(s.mcp, None);
         assert_eq!(s.cwd, ACC);
     }
@@ -828,12 +954,35 @@ mod tests {
         assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
         assert_eq!(s.mcp, Some(golden::claude_mcp_config()), "the token stays in the environment");
         assert_eq!(s.describe, "model sonnet perm bypassPermissions worktree false");
+        assert_eq!(
+            s.keys(),
+            [
+                "account",
+                "no-self-update",
+                "session-id",
+                "model",
+                "effort",
+                "permission-mode",
+                "activity-hooks",
+                "helper.guard",
+                "core-read-deny",
+                "agent",
+                "read-only",
+                "helper.identity",
+                "luna-tools",
+                "notes-dir",
+            ]
+        );
+        assert_eq!(s.value("session-id"), Some("LUNA_SESSION_ID=golden-claude-helper, LUNA_PARENT_ID=golden-parent"));
+        assert_eq!(s.value("notes-dir"), Some("--add-dir <notes-dir>"));
     }
 
     /// The placeholders for a start in a library's folder on `account`.
     fn library_redact(id: &str, lib: &crate::library::GoldenLibrary, account: &str) -> Redact {
         Redact::for_chat(id)
             .with(lib.claude_skills(), "<library-dir>")
+            // As `claudeMdExcludes` names it, on every OS.
+            .with(lib.claude_skills().replace('\\', "/"), "<library-dir>")
             .with(lib.folder.clone(), "<project>")
             .with(account, "<acc>")
             // As `claudeMdExcludes` names a file, on every OS.
@@ -876,11 +1025,25 @@ mod tests {
         );
         let mut settings = golden::claude_chat_settings(false);
         settings["skillOverrides"] = serde_json::json!({ "review": "off" });
-        settings["claudeMdExcludes"] = serde_json::json!(["<acc>/CLAUDE.md"]);
-        assert_eq!(s.settings, Some(settings), "the folder keeps review and the account's instructions from it");
+        settings["claudeMdExcludes"] = serde_json::json!(["<acc>/CLAUDE.md"].into_iter().chain(LIBRARY_MEMORY_OFF).collect::<Vec<_>>());
+        assert_eq!(
+            s.settings,
+            Some(settings),
+            "the folder keeps review and the account's instructions from it, and the skills folder's memory files"
+        );
         assert_eq!(s.instructions.as_deref(), Some(crate::library::GoldenLibrary::INSTRUCTIONS), "the library's, word for word");
         assert_eq!(s.cwd, "<project>");
+        assert_eq!(s.value("library.instructions"), Some("--add-dir <instructions-dir>, CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1"));
+        assert_eq!(s.value("library.skills"), Some("--add-dir <library-dir>"));
+        assert_eq!(s.value("library.hidden-skills"), Some("skillOverrides off: review"));
+        assert_eq!(s.value("library.account-instructions-off"), Some("claudeMdExcludes <acc>/CLAUDE.md"));
+        assert_eq!(s.value("library.memory-narrowed"), Some(format!("claudeMdExcludes {}", LIBRARY_MEMORY_OFF.join(", ")).as_str()));
     }
+
+    /// What reading the library's instructions as memory would also have read,
+    /// left out: the memory files of the skills folder it adds.
+    const LIBRARY_MEMORY_OFF: [&str; 4] =
+        ["<library-dir>/CLAUDE.md", "<library-dir>/CLAUDE.local.md", "<library-dir>/.claude/CLAUDE.md", "<library-dir>/.claude/rules/**"];
 
     /// The window's ask for a Codex chat; each case changes what it is about.
     struct CodexAsk {
@@ -897,6 +1060,7 @@ mod tests {
         hooks_unasked: Option<bool>,
         parent: Option<&'static str>,
         prompt: Option<&'static str>,
+        guard: Option<bool>,
     }
 
     const CODEX_ACC: &str = "/golden/acc-codex";
@@ -917,6 +1081,7 @@ mod tests {
                 hooks_unasked: None,
                 parent: None,
                 prompt: None,
+                guard: None,
             }
         }
 
@@ -941,6 +1106,7 @@ mod tests {
                     s(self.parent),
                     s(self.prompt),
                     None,
+                    self.guard,
                 ),
             )
         }
@@ -952,13 +1118,13 @@ mod tests {
         let mut args = strings(head);
         args.extend(strings(&["-C", FOLDER, "--no-daemon"]));
         args.extend(flags);
-        args.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
+        args.extend(strings(&["-c", "check_for_update_on_startup=false", "-c", "tui.terminal_title=[\"thread-id\"]"]));
         args.extend(tail);
         args
     }
 
-    /// The model and effort a chat asks for, then `--ask-for-approval` with a
-    /// person answering, and the sandbox as a flag.
+    /// The model and effort a chat asks for, then `--ask-for-approval`, and
+    /// the sandbox as a flag.
     fn codex_flags(model: Option<&str>, effort: &str, approval: &str, sandbox: &str) -> Vec<String> {
         let mut args = model.map_or_else(Vec::new, |m| strings(&["--model", m]));
         args.extend(strings(&["-c", &format!("model_reasoning_effort=\"{effort}\"")]));
@@ -966,8 +1132,22 @@ mod tests {
         args
     }
 
+    /// `codex_flags` for a helper: trusted for the run where it was sent, a
+    /// person (its parent) answering whatever reviewer the account names.
+    fn codex_helper_flags(model: Option<&str>, effort: &str, approval: &str, sandbox: &str) -> Vec<String> {
+        let mut args: Vec<String> = crate::codex::trust::trust_override(FOLDER).into();
+        let flags = codex_flags(model, effort, approval, sandbox);
+        let at = flags.iter().position(|a| a == "--ask-for-approval").expect("asks") + 2;
+        args.extend(flags[..at].iter().cloned());
+        args.extend(strings(&["-c", "approvals_reviewer=\"user\""]));
+        args.extend(flags[at..].iter().cloned());
+        args
+    }
+
+    /// `--ask-for-approval` and the sandbox: whatever reviewer the account
+    /// or the project names stands.
     fn codex_asks(approval: &str, sandbox: &str) -> Vec<String> {
-        let mut args = strings(&["--ask-for-approval", approval, "-c", "approvals_reviewer=\"user\""]);
+        let mut args = strings(&["--ask-for-approval", approval]);
         if sandbox == "read-only" {
             args.extend(golden::codex_read_only(&["--sandbox", sandbox]));
         } else {
@@ -994,9 +1174,60 @@ mod tests {
         let r = Redact::for_chat(ID);
         let s = CodexAsk::chat().start(ID, &r);
         assert_eq!(s.args, codex_args(&[], codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"), Vec::new()));
+        assert!(!s.args.iter().any(|a| a.starts_with("approvals_reviewer")), "the account's reviewer, if it names one, stands");
+        assert!(!s.args.iter().any(|a| a.starts_with("projects=")), "no trust Luna was not asked for");
         assert_eq!(s.envs, codex_envs(ID, true));
         assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
         assert_eq!(s.describe, "model gpt-5.5 effort medium approval on-request sandbox workspace-write");
+        use crate::applied::Class::*;
+        let mut want = vec![
+            ("account", Runtime, "CODEX_HOME=/golden/acc-codex".to_string()),
+            ("session-id", Runtime, "LUNA_SESSION_ID=golden-codex-chat".into()),
+            ("folder", Runtime, "-C /golden/project".into()),
+            ("codex.no-daemon", Runtime, "--no-daemon".into()),
+            ("model", UserAction, "gpt-5.5".into()),
+            ("effort", UserAction, "medium".into()),
+            ("approval", UserAction, "on-request".into()),
+            ("sandbox", UserAction, "workspace-write".into()),
+        ];
+        if cfg!(windows) {
+            want.push(("codex.windows-sandbox", Workaround, "-c windows.sandbox=\"unelevated\"".into()));
+            want.push(("codex.sandbox-path", Workaround, "PATH without …\\Microsoft\\WindowsApps".into()));
+        }
+        want.push(("no-self-update", Runtime, "-c check_for_update_on_startup=false".into()));
+        want.push(("codex.thread-title", Runtime, "-c tui.terminal_title=[\"thread-id\"]".into()));
+        assert_eq!(s.applied, want.into_iter().map(|(k, c, v)| (k.to_string(), c, v)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn golden_codex_chat_keeps_a_windows_sandbox_its_user_chose() {
+        const ID: &str = "golden-codex-own-sandbox";
+        let account = std::env::temp_dir().join(format!("luna-golden-winsandbox-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join("config.toml"), "[windows]\nsandbox = \"elevated\"\n").unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
+        let s = CodexAsk { account: acc, ..CodexAsk::chat() }.start(ID, &r);
+        assert!(!s.args.iter().any(|a| a.starts_with("windows.sandbox")), "{:?}", s.args);
+        assert!(!s.keys().contains(&"codex.windows-sandbox"));
+        let _ = std::fs::remove_dir_all(&account);
+        // None set: Luna's, where Windows needs one.
+        let s = CodexAsk::chat().start(ID, &r);
+        assert_eq!(s.args.iter().any(|a| a == "windows.sandbox=\"unelevated\""), cfg!(windows));
+    }
+
+    #[test]
+    fn golden_codex_chat_guarded_only_when_its_person_asks() {
+        const ID: &str = "golden-codex-guarded";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk { guard: Some(true), hooks_unasked: Some(true), ..CodexAsk::chat() }.start(ID, &r);
+        let mut flags = codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write");
+        flags.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
+        assert_eq!(s.args, codex_args(&[], flags, Vec::new()));
+        assert_eq!(s.value("guard"), Some("-c hooks.PreToolUse on the shell (Bash)"));
+        // Tools and hooks unasked alone do not bring it.
+        let s = CodexAsk { tools: Some(true), hooks_unasked: Some(true), ..CodexAsk::chat() }.start(ID, &r);
+        assert!(!s.args.iter().any(|a| a.starts_with("hooks.PreToolUse")), "{:?}", s.args);
     }
 
     #[test]
@@ -1049,7 +1280,7 @@ mod tests {
             ..CodexAsk::chat()
         }
         .start(ID, &r);
-        let mut flags = codex_flags(None, "high", "never", "workspace-write");
+        let mut flags = codex_helper_flags(None, "high", "never", "workspace-write");
         flags.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
         let mut tail = golden::codex_mcp();
         tail.extend(strings(&["--", PROMPT]));
@@ -1058,6 +1289,11 @@ mod tests {
         envs.extend(pairs(&[("LUNA_PARENT_ID", PARENT), ("LUNA_MCP_TOKEN", "<token>")]));
         assert_eq!(s.envs, envs);
         assert_eq!(s.describe, "model default effort high approval never sandbox workspace-write");
+        assert_eq!(s.value("helper.trust").map(|v| v.starts_with("-c projects=")), Some(true), "trusted for the run, nothing written");
+        assert_eq!(s.value("helper.reviewer"), Some("-c approvals_reviewer=\"user\""));
+        assert_eq!(s.value("helper.guard"), Some("-c hooks.PreToolUse on the shell (Bash)"));
+        assert_eq!(s.value("luna-tools"), Some(crate::codex::launch::LUNA_TOOLS_VALUE));
+        assert!(s.keys().contains(&"helper.identity"));
 
         // Hooks' trust asked for: Codex would drop the guard, and it is given none.
         let s = CodexAsk { tools: Some(true), ..CodexAsk::chat() }.start(ID, &r);
@@ -1070,7 +1306,7 @@ mod tests {
             a.extend(golden::codex_windows_sandbox());
             a
         };
-        let mut read_only_net = strings(&["--ask-for-approval", "on-request", "-c", "approvals_reviewer=\"user\""]);
+        let mut read_only_net = strings(&["--ask-for-approval", "on-request"]);
         read_only_net.extend(golden::codex_read_only_net());
         // (approval, sandbox, the flags for them, PATH cut for the sandbox, the sandbox it runs in)
         let cases: [(&str, &str, Vec<String>, bool, &str); 5] = [
@@ -1109,6 +1345,8 @@ mod tests {
         want.extend(codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"));
         want.extend(strings(&[
             "-c",
+            "check_for_update_on_startup=false",
+            "-c",
             "tui.terminal_title=[\"thread-id\"]",
             "-c",
             &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
@@ -1124,5 +1362,52 @@ mod tests {
         assert_eq!(s.envs, envs);
         assert_eq!(s.instructions, None, "Codex has no way to take other instructions");
         assert_eq!(s.cwd, "<project>");
+        let plugin = format!("-c plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG);
+        assert_eq!(s.value("library.skills"), Some(plugin.as_str()));
+        assert_eq!(s.value("library.hidden-skills"), Some("-c skills.config=[{name=\"review\",enabled=false}]"));
+    }
+
+    #[test]
+    fn memory_excludes_leave_out_only_folders_beside_the_one_worked_in() {
+        use crate::claude::launch::memory_excludes;
+        let added = ["/data/notes".to_string(), "/work".to_string(), "/work/app/sub".to_string(), "/other/".to_string()];
+        assert_eq!(
+            memory_excludes(&added, "/work/app"),
+            [
+                "/data/notes/CLAUDE.md",
+                "/data/notes/CLAUDE.local.md",
+                "/data/notes/.claude/CLAUDE.md",
+                "/data/notes/.claude/rules/**",
+                "/other/CLAUDE.md",
+                "/other/CLAUDE.local.md",
+                "/other/.claude/CLAUDE.md",
+                "/other/.claude/rules/**",
+            ],
+            "a folder above the one worked in, or below it, is read as ever"
+        );
+        assert!(memory_excludes(&["/work/application".to_string()], "/work/app").len() == 4, "a sibling sharing a prefix is beside it");
+        assert_eq!(
+            memory_excludes(&[r"C:\Data\notes".to_string()], r"C:\Work")[0],
+            "C:/Data/notes/CLAUDE.md",
+            "as Claude Code matches a path"
+        );
+        if cfg!(windows) {
+            assert!(memory_excludes(&[r"E:\Work".to_string()], r"e:\work\app").is_empty(), "Windows paths in any case");
+        }
+    }
+
+    #[test]
+    fn the_users_own_added_folders_are_read_from_their_settings() {
+        let root = std::env::temp_dir().join(format!("luna-added-dirs-{}", std::process::id()));
+        let (account, folder) = (root.join("acc"), root.join("proj"));
+        std::fs::create_dir_all(folder.join(".claude")).unwrap();
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join("settings.json"), r#"{"permissions":{"additionalDirectories":["/shared/docs"]}}"#).unwrap();
+        std::fs::write(folder.join(".claude").join("settings.local.json"), r#"{"permissions":{"additionalDirectories":["../sibling"]}}"#)
+            .unwrap();
+        let dirs = claude_settings_dirs(&account.to_string_lossy(), &folder.to_string_lossy());
+        assert_eq!(dirs.len(), 2, "{dirs:?}");
+        assert!(dirs[0].ends_with("docs") && dirs[1].ends_with("sibling"), "{dirs:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

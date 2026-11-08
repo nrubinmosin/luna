@@ -89,8 +89,8 @@ export const describe = (field: keyof CodexSettings, value: CodexSettings[keyof 
 export const folderTrusted = codexFolderTrusted;
 export const trustFolder = codexTrustFolder;
 export const trustNote =
-  "Creating the chat marks it trusted for this account in config.toml — the same entry Codex's own trust screen writes, " +
-  'so the session opens straight on the prompt (and skips the Windows sandbox setup question that follows it).';
+  "Ticked, Luna writes the same entry in config.toml that Codex's own trust screen writes, and the chat opens on its " +
+  'prompt. Unticked, nothing is written and Codex asks in the chat itself, then on Windows about its sandbox.';
 
 // ----------------------------------------------------------------- login --
 

@@ -25,6 +25,8 @@ export interface ClaudeSessionSpec {
   agent?: string | null;
   /** The agent's spawn this is the session of (agents/spawn/mod.rs `spawn_is`). */
   spawnRequest?: number | null;
+  /** The guard against endless waits, as the chat's person asked. */
+  guard?: boolean;
 }
 
 export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
@@ -46,7 +48,8 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
       prompt: spec.prompt ?? null,
       readOnly: spec.readOnly ?? false,
       agent: spec.agent ?? null,
-      spawnRequest: spec.spawnRequest ?? null
+      spawnRequest: spec.spawnRequest ?? null,
+      guard: spec.guard ?? false
     },
     ''
   );
@@ -72,6 +75,8 @@ export interface CodexSessionSpec {
   prompt?: string | null;
   /** The agent's spawn this is the session of (agents/spawn/mod.rs `spawn_is`). */
   spawnRequest?: number | null;
+  /** The guard against endless waits, as the chat's person asked. */
+  guard?: boolean;
 }
 
 export const ensureCodexSession = (spec: CodexSessionSpec) =>
@@ -92,7 +97,8 @@ export const ensureCodexSession = (spec: CodexSessionSpec) =>
       hooksUnasked: spec.hooksUnasked ?? false,
       parent: spec.parent ?? null,
       prompt: spec.prompt ?? null,
-      spawnRequest: spec.spawnRequest ?? null
+      spawnRequest: spec.spawnRequest ?? null,
+      guard: spec.guard ?? false
     },
     ''
   );

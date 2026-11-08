@@ -92,7 +92,10 @@ export function NewChatDialog() {
   const account = accounts.find(a => accountKey(a.provider, a.name) === accountId) ?? null;
   const provider = account?.provider ?? 'claude';
   const accountPath = account?.path ?? '';
-  const canCreate = !!folder && !!account;
+  // Off unless asked for here: a chat's CLI runs as it would on its own.
+  const [guard, setGuard] = useState(false);
+  // Codex runs a hook Luna gives it only with hooks' trust bypassed.
+  const guardable = provider !== 'codex' || hooks;
 
   // Read on every render rather than kept: keeping the start below changes it.
   const ownStart = folders.find(f => f.path === folder)?.start;
@@ -128,9 +131,11 @@ export function NewChatDialog() {
     folder
   );
 
-  // Neither CLI can show its trust prompt the way Luna runs it; detect the
-  // untrusted case up front so creating the chat can write the bit itself.
+  // A folder the account has not trusted: whether Luna marks it trusted, as
+  // the CLI's own prompt would, is asked here, unticked; left so, the CLI
+  // asks in the chat itself.
   const [trusted, setTrusted] = useState(true);
+  const [trustIt, setTrustIt] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   useEffect(() => {
@@ -142,12 +147,20 @@ export function NewChatDialog() {
     }
     void ui(provider)
       .folderTrusted(accountPath, folder)
-      .then(ok => !stale && setTrusted(ok))
+      .then(ok => {
+        if (stale) return;
+        setTrusted(ok);
+        setTrustIt(false);
+      })
       .catch(() => !stale && setTrusted(true));
     return () => {
       stale = true;
     };
   }, [folder, accountPath, provider]);
+  // Claude Code cannot show its trust prompt in a worktree it makes: such a
+  // chat needs the folder trusted first, or no worktree.
+  const trustNeeded = provider === 'claude' && worktree && !trusted && !trustIt;
+  const canCreate = !!folder && !!account && !trustNeeded;
 
   const browse = async () => {
     const picked = await pickFolder();
@@ -163,7 +176,16 @@ export function NewChatDialog() {
     setCreating(true);
     try {
       if (account.provider === 'claude') {
-        await createChat({ provider: 'claude', folder, account, settings: claudeDraft.settings, worktree, tools });
+        await createChat({
+          provider: 'claude',
+          folder,
+          account,
+          settings: claudeDraft.settings,
+          worktree,
+          tools,
+          guard,
+          trust: trustIt
+        });
       } else {
         await createChat({
           provider: 'codex',
@@ -172,7 +194,9 @@ export function NewChatDialog() {
           settings: codexDraft.settings,
           worktree,
           tools,
-          hooksUnasked: hooks
+          hooksUnasked: hooks,
+          guard: guard && hooks,
+          trust: trustIt
         });
       }
     } catch (e) {
@@ -342,8 +366,18 @@ export function NewChatDialog() {
                   color: 'var(--dim)'
                 }}
               >
-                <span style={{ fontWeight: 600, color: 'var(--fg)' }}>New folder for “{account.name}”.</span>{' '}
+                <div className="field-row" style={{ marginBottom: 3 }}>
+                  <input type="checkbox" id="trust-toggle" checked={trustIt} onChange={() => setTrustIt(t => !t)} />
+                  <label htmlFor="trust-toggle" style={{ fontWeight: 600, color: 'var(--fg)', cursor: 'default' }}>
+                    Trust this folder in “{account.name}”
+                  </label>
+                </div>
                 {ui(provider).trustNote}
+                {trustNeeded && (
+                  <div style={{ marginTop: 4, color: 'var(--fg)' }}>
+                    Claude Code cannot ask about trust in a worktree it makes: tick this, or turn Git worktree off.
+                  </div>
+                )}
               </div>
             )}
             {createError && (
@@ -405,6 +439,28 @@ export function NewChatDialog() {
                   </label>
                 </div>
               )}
+              <div
+                className="field-row"
+                title={
+                  guardable
+                    ? 'Guard against endless waits: a shell command that would wait forever (a server, a watcher, ' +
+                      'a prompt for input) is refused before it runs, with the reason for the model. Off, the CLI ' +
+                      'runs every command as it would on its own.'
+                    : 'Codex runs a hook Luna gives it only with Hooks unasked on'
+                }
+                style={{ height: 'calc(var(--ui) * 1.6)' }}
+              >
+                <input
+                  type="checkbox"
+                  id="guard-toggle"
+                  checked={guard && guardable}
+                  disabled={!guardable}
+                  onChange={() => setGuard(g => !g)}
+                />
+                <label htmlFor="guard-toggle" style={{ whiteSpace: 'nowrap', cursor: 'default' }}>
+                  Wait guard
+                </label>
+              </div>
             </div>
           </div>
           {folder && (

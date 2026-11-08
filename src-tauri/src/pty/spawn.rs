@@ -92,6 +92,8 @@ pub(super) struct Launch {
     pub(super) envs: Vec<(&'static str, String)>,
     pub(super) resume: Option<String>,
     pub(super) describe: String,
+    /// What Luna applied in it (applied.rs), kept for the chat once it runs.
+    pub(super) applied: Vec<crate::applied::Applied>,
 }
 
 /// The starts a test has asked to see (`expect`): `spawn` builds their
@@ -180,7 +182,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let Some(launch) = capture::keep(&id, launch) else {
         return Ok(String::new());
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -234,6 +236,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         e.to_string()
     })?;
     drop(pair.slave);
+    crate::agents::set_applied(&id, applied, &account_path, &cwd);
 
     let pid = child.process_id();
     let spawned_at_ms = now_ms() as u128;

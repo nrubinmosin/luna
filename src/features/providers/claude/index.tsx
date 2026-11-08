@@ -78,8 +78,8 @@ export const describe = (_field: keyof ClaudeSettings, value: ClaudeSettings[key
 export const folderTrusted = claudeFolderTrusted;
 export const trustFolder = claudeTrustFolder;
 export const trustNote =
-  "Creating the chat marks it trusted for this account — the same thing Claude Code's trust prompt does. " +
-  "The prompt can't be shown under an isolated worktree, which is why it otherwise asks you to open the folder without isolation first.";
+  "Ticked, Luna writes the same mark Claude Code's own trust prompt writes, and the chat opens on its prompt. " +
+  'Unticked, nothing is written and Claude Code asks in the chat itself.';
 
 // ----------------------------------------------------------------- login --
 
