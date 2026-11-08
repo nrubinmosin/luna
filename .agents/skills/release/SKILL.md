@@ -94,7 +94,11 @@ for:
 Once approved, `sign` checks the bundle against those sums, signs the
 installer, checks the signature against `plugins.updater.pubkey` in
 `src-tauri/tauri.conf.json` (as installed copies check it) and writes it into
-`latest.json`; `attest` and `publish` then leave the draft.
+`latest.json`; `attest` and `publish` then leave the draft. A key rotation's
+bridge release, which embeds the new public key but is signed with the old
+key, is checked against the old public key instead: the `release`
+environment's variable `UPDATER_TRUSTED_PUBKEY` gives it, set for that
+release only (`docs/releasing.md`, "The signing key: rotation and recovery").
 
 On a failure, `gh run view <id> --log-failed`, find the step, and bring a
 diagnosis. In `sign` the step says what it means:
@@ -104,7 +108,8 @@ diagnosis. In `sign` the step says what it means:
   changed it.
 - *Sign the installer*: the Tauri CLI download did not match the integrity
   `pnpm-lock.yaml` pins, or the key does not sign for the updater's public
-  key (a wrong or rotated secret). Nothing was signed into `latest.json`.
+  key (a wrong or rotated secret, or a bridge release run without
+  `UPDATER_TRUSTED_PUBKEY`). Nothing was signed into `latest.json`.
 
 A re-run on the same tag is Actions → Release → Run workflow on the tag with
 `dry-run` unchecked (`docs/releasing.md`, "Dry runs").
@@ -147,6 +152,9 @@ gh release download v1.2.3 -D test-build/release-v1.2.3
     -v "$PWD/scripts/updater-signature.mjs:/s.mjs:ro" (Get-NodeImage) `
     node /s.mjs verify /out/Luna_1.2.3_x64-setup.exe /out/Luna_1.2.3_x64-setup.exe.sig (Get-UpdaterPubkey) 1.2.3
   ```
+
+  For a bridge release, the key is the old one `UPDATER_TRUSTED_PUBKEY` held,
+  in place of `(Get-UpdaterPubkey)`.
 - **Notes**: the draft's body is the CHANGELOG section, the sections of any
   version since the last published release, the compare link and the Verify
   block whose `SHA256SUMS` match the asset.
@@ -175,8 +183,12 @@ serves the new version.
 `./scripts/release.ps1 -Local` builds, signs and uploads a **published** release
 from this machine (no SBOMs, no attestations), with the key `-UpdaterKey` or
 `LUNA_UPDATER_KEY` names. The build never sees the key: it is mounted only into
-`release-sign.ps1`'s container, as in the workflow, but the build's container
-has the checkout writable, which only the workflow's fresh `sign` runner rules
-out (`docs/releasing.md`, "Without the workflow"). It is the fallback when the
-workflow cannot run; use it only when the person chose it, and `-Local -DryRun`
-first.
+`release-sign.ps1`'s container, as in the workflow. The build runs on an export
+of the commit in `src-tauri/target/release-source`, not on the checkout, and
+nothing it made runs on this machine; `-SkipBuild` signs only an export of the
+same commit, and a `-Local` build starts from a cold target folder. What only
+the workflow's fresh runners rule out are the Docker cache volumes every local
+build shares (`docs/releasing.md`, "Without the workflow"). A bridge release
+of a key rotation takes the old public key as `-TrustedPubkey` (or
+`LUNA_UPDATER_TRUSTED_PUBKEY`). It is the fallback when the workflow cannot
+run; use it only when the person chose it, and `-Local -DryRun` first.
