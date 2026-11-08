@@ -30,8 +30,8 @@ on one of the user's accounts.
     turn stops its CLI; what outlives that (on Windows a Git Bash command's own processes, a
     `run_in_background` job's) shows here after, for a second `luna_kill` to end.
 - `luna_list` `ids: [..]`: those rows alone, of any session (unknown ids in `unknown`), no
-  accounts unless `accounts: true`; `accounts: false` drops them; `ids: []`: accounts alone.
-  Their models only with `models: true`.
+  accounts unless `accounts: true`; `accounts: false` drops them;
+  `ids: []` with `accounts: true`: accounts alone. Their models only with `models: true`.
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
   wait on and send text to. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.

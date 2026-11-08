@@ -965,7 +965,11 @@ mod tests {
         assert!(body(&named).get("accounts").is_none());
         assert_eq!(body(&named)["unknown"], json!(["ls-gone"]));
         assert!(body(&list(json!({ "ids": ["ls-kid"], "accounts": true })))["accounts"].is_array());
-        // Accounts alone.
+        // Accounts alone, when asked for: `ids: []` by itself lists nothing, as
+        // the guide says.
+        let nothing = list(json!({ "ids": [] }));
+        assert!(rows(&nothing).is_empty() && body(&nothing).get("accounts").is_none(), "{nothing}");
+        assert!(GUIDE.contains("`ids: []` with `accounts: true`: accounts alone"), "the guide says what the code does");
         let alone = list(json!({ "ids": [], "accounts": true }));
         assert!(rows(&alone).is_empty() && body(&alone)["accounts"].is_array());
         assert!(body(&alone).get("unknown").is_none());
