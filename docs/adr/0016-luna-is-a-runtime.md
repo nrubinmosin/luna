@@ -73,8 +73,12 @@ The owner's ten decisions on the deviations (2026-11-08):
    patterns for the memory files of every other added folder: Luna's notes
    folder, the library's skills folders, and the folders in the user's own
    `permissions.additionalDirectories`. A folder above or below the one the
-   session works in is left alone, since Claude Code reads those anyway
-   (`claude/launch.rs` `memory_excludes`).
+   session works in is left alone, since Claude Code reads those anyway,
+   judged on resolved paths (`..`, links and short names worked out). Each
+   folder's name goes into the pattern literally: Claude Code turns `\` into
+   `/` in these patterns before picomatch, so every glob character is put in
+   a bracket class of its own (`claude/launch.rs` `memory_excludes`,
+   `glob_literal`).
 10. Library layout: kept as a UserAction, and shown.
 
 Mechanics:
@@ -82,7 +86,12 @@ Mechanics:
 - The pure launch builders (`claude::launch::chat_args`,
   `codex::launch::chat_args`, `background::command::command_for`) return the
   items they applied beside the arguments and environment, as
-  `Vec<Applied { key, class, value, why }>`. A value names a token by the
+  `Vec<Applied { key, class, value, why }>`. The process spec is finished in
+  one place, `pty::finish_spec` (the terminal, the folder it starts in, the
+  variables it goes without), for a pane's start and a helper's turn alike,
+  and every golden checks that what was applied names each flag, `-c` key,
+  variable and the cwd of the process as it runs (`golden.rs`
+  `Redact::assert_shown`). A value names a token by the
   variable it travels in and a hub URL by what it is for, so neither appears.
   A file Luna writes is named by its path, not its content.
 - `Launch` carries them. The registry keeps a session's latest
@@ -90,7 +99,10 @@ Mechanics:
   every turn. The core answers `applied_by_luna(chat_id)`.
 - Writes into an account outside a launch go in a small ledger,
   `<data>/applied-ledger.json` (`applied::record`, under the account
-  settings' lock). For now that is folder trust. The library's layout is read
+  settings' lock). For now that is folder trust. A ledger that will not read
+  is not written over, and a write it missed is said in
+  `applied-ledger.incomplete`; either way the panel says "Accounting
+  incomplete" rather than show the account's part as whole. The library's layout is read
   from the library's own ledger.
 - The window shows them in each chat's "What Luna applied" (the ⓘ button on
   its title bar), grouped by class, each with its why.
@@ -109,7 +121,12 @@ Mechanics:
   for a worktree it makes, so the dialog will not create such a chat until the
   box is ticked or the worktree is turned off. Quick chat opens the dialog for
   an untrusted folder.
-- Existing chats with Luna's tools lose the guard they had by default.
+- Existing chats with Luna's tools lose the guard they had by default. One
+  notice across the board names them until dismissed, and each chat's panel
+  has its own "Wait guard" box, from the CLI's next start.
+- The trust box's tick and the folder's answer belong to one provider,
+  account and folder: another picked voids the tick and holds Create until
+  its own answer comes.
 - A visible Claude Code helper in a folder its account has not trusted shows
   Claude Code's trust prompt. Claude Code has no per-run trust that changes
   nothing else (`CLAUDE_CODE_SANDBOXED` also lifts other checks), so Luna

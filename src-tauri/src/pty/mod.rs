@@ -30,11 +30,11 @@ pub(crate) use probe::{
     ActivityProbe,
 };
 pub(crate) use screen::{sane_title, session_modes, title_from_prompt, CliTitle, Composer, SessionMeta};
-pub(crate) use spawn::clean_env;
+pub(crate) use spawn::{clean_env, finish_spec};
 #[cfg(test)]
 pub(crate) use start::curl_program;
 pub(crate) use start::{
-    claude_instructions_dir, claude_mcp_file, claude_settings_dirs, claude_settings_file, codex_git_envs, codex_guard_args,
+    claude_instructions_dir, claude_mcp_file, claude_memory_off, claude_settings_file, codex_git_envs, codex_guard_args,
     codex_helper_prompt, codex_mcp_args, codex_sandbox_args, codex_sandbox_path, codex_trust, ensure_claude_session, ensure_codex_session,
     helper_line, session_envs, without_note, MCP_TOOL_TIMEOUT_MS,
 };

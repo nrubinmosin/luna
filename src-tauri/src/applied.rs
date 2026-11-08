@@ -57,6 +57,12 @@ items! {
         "The account this chat belongs to: the CLI reads its settings and sign-in from there.";
     Folder = "folder", Runtime,
         "Where the chat works.";
+    Cwd = "cwd", Runtime,
+        "The folder the CLI's process starts in: the chat's own, or the worktree it resumes in.";
+    Terminal = "terminal", Runtime,
+        "The CLI draws into Luna's terminal, which speaks xterm with 256 colors.";
+    InheritedCleared = "inherited-env-cleared", Runtime,
+        "Variables a session that started Luna would pass down are removed: they would make the CLI take itself for that session's child.";
     SessionId = "session-id", Runtime,
         "Tells the session, and what it runs, which Luna chat it is (and a helper which chat started it).";
     Resume = "resume", Runtime,
@@ -164,6 +170,9 @@ pub struct AppliedView {
     pub launch: Vec<Applied>,
     /// Writes into its account outside a launch.
     pub account: Vec<Applied>,
+    /// Why `account` may be missing writes Luna made: its ledger would not
+    /// read, or a write was not noted in it. None when it is whole.
+    pub incomplete: Option<String>,
 }
 
 /// The window's "What Luna applied" for `chat_id`.
@@ -171,7 +180,11 @@ pub fn applied_by_luna(chat_id: String) -> AppliedView {
     let Some((launch, account_path, folder)) = crate::agents::applied_of(&chat_id) else {
         return AppliedView::default();
     };
-    let mut account: Vec<Applied> = recorded(&account_path)
+    let (recorded, incomplete) = match recorded(&account_path) {
+        Ok(r) => (r, missed()),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    let mut account: Vec<Applied> = recorded
         .into_iter()
         .filter(|a| a.key != Item::TrustWritten.key() || crate::paths::path_key(&a.value) == crate::paths::path_key(&folder))
         .collect();
@@ -179,7 +192,7 @@ pub fn applied_by_luna(chat_id: String) -> AppliedView {
     if !laid.is_empty() {
         account.push(Item::LibraryLayout.with(laid.join("\n")));
     }
-    AppliedView { launch, account }
+    AppliedView { launch, account, incomplete }
 }
 
 /// A write into an account outside a launch, as the ledger keeps it.
@@ -209,39 +222,66 @@ thread_local! {
     pub(crate) static LEDGER_AT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-fn load() -> Ledger {
-    std::fs::read_to_string(ledger_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+/// The ledger; an empty one where there is none yet. Err if it is there and
+/// will not read or parse: it is then no inventory, and is not written over.
+fn load() -> Result<Ledger, String> {
+    let path = ledger_path();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{} does not parse: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Ledger::default()),
+        Err(e) => Err(format!("{} does not read: {e}", path.display())),
+    }
+}
+
+/// Where a write the ledger missed is said, beside it: kept until someone
+/// clears it by hand, as the inventory stays short of that write.
+fn missed_path() -> std::path::PathBuf {
+    ledger_path().with_file_name("applied-ledger.incomplete")
+}
+
+/// What `missed_path` says, if it is there.
+fn missed() -> Option<String> {
+    let text = std::fs::read_to_string(missed_path()).ok()?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// Notes a write Luna made into `account_path`. Called under the account
 /// settings' lock (account_settings `editing`), which the window and the core
 /// both take before writing an account's files: the same lock keeps their
-/// ledger writes apart. Once per account, item and value.
+/// ledger writes apart. Once per account, item and value. The account write
+/// it notes has been made already, so a failure here does not undo it: it is
+/// said beside the ledger (`missed_path`), and the window's "What Luna
+/// applied" calls the inventory incomplete rather than show it as whole.
 pub fn record(_editing: &crate::account_settings::Editing, account_path: &str, item: Item, value: &str) {
-    let mut ledger = load();
     let entry = Written { account: account_path.to_string(), key: item.key().to_string(), value: value.to_string() };
-    if ledger.written.contains(&entry) {
-        return;
-    }
-    ledger.written.push(entry);
     let path = ledger_path();
-    let saved = serde_json::to_string_pretty(&ledger)
-        .map_err(|e| e.to_string())
-        .and_then(|text| crate::secret::write_private(&path, text.as_bytes()).map_err(|e| e.to_string()));
-    if let Err(e) = saved {
-        crate::log::warn("applied", &format!("could not note {} in {}: {e}", item.key(), path.display()));
+    let saved = load().and_then(|mut ledger| {
+        if ledger.written.contains(&entry) {
+            return Ok(());
+        }
+        ledger.written.push(entry);
+        let text = serde_json::to_string_pretty(&ledger).map_err(|e| e.to_string())?;
+        crate::secret::write_private(&path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+    });
+    let Err(e) = saved else { return };
+    let line = format!("{} {value} in {account_path} was not noted: {e}", item.key());
+    crate::log::warn("applied", &line);
+    let said = missed().map_or(line.clone(), |before| format!("{before}\n{line}"));
+    if let Err(e) = crate::secret::write_private(&missed_path(), said.as_bytes()) {
+        crate::log::error("applied", &format!("could not say so in {} either: {e}", missed_path().display()));
     }
 }
 
-/// What the ledger has of `account_path`.
-fn recorded(account_path: &str) -> Vec<Applied> {
+/// What the ledger has of `account_path`; Err if it will not read.
+fn recorded(account_path: &str) -> Result<Vec<Applied>, String> {
     let key = crate::paths::path_key(account_path);
-    load()
+    Ok(load()?
         .written
         .into_iter()
         .filter(|w| crate::paths::path_key(&w.account) == key)
         .filter_map(|w| Some(Item::by_key(&w.key)?.with(w.value)))
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -274,9 +314,9 @@ mod tests {
         record(&editing, "/acc/a", Item::TrustWritten, "/p/one");
         record(&editing, "/acc/b", Item::TrustWritten, "/p/two");
         drop(editing);
-        assert_eq!(recorded("/acc/a"), [Item::TrustWritten.with("/p/one")]);
-        assert_eq!(recorded("/acc/b"), [Item::TrustWritten.with("/p/two")]);
-        assert!(recorded("/acc/c").is_empty());
+        assert_eq!(recorded("/acc/a").unwrap(), [Item::TrustWritten.with("/p/one")]);
+        assert_eq!(recorded("/acc/b").unwrap(), [Item::TrustWritten.with("/p/two")]);
+        assert!(recorded("/acc/c").unwrap().is_empty());
         LEDGER_AT.with(|l| *l.borrow_mut() = None);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -305,6 +345,35 @@ mod tests {
     }
 
     #[test]
+    fn a_ledger_that_will_not_read_or_a_write_it_missed_makes_the_inventory_incomplete() {
+        let dir = std::env::temp_dir().join(format!("luna-applied-incomplete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        LEDGER_AT.with(|l| *l.borrow_mut() = Some(dir.clone()));
+        crate::agents::set_applied("applied-incomplete-chat", vec![Item::Model.with("opus")], "/acc/inc", "/p/inc");
+        assert_eq!(applied_by_luna("applied-incomplete-chat".into()).incomplete, None, "no ledger yet: whole");
+        // Corrupt: read as no inventory, and not written over.
+        std::fs::write(dir.join("applied-ledger.json"), "{ not json").unwrap();
+        let view = applied_by_luna("applied-incomplete-chat".into());
+        assert!(view.incomplete.as_deref().is_some_and(|w| w.contains("does not parse")), "{:?}", view.incomplete);
+        assert_eq!(view.launch, [Item::Model.with("opus")], "the start is still shown");
+        let editing = crate::account_settings::editing().unwrap();
+        record(&editing, "/acc/inc", Item::TrustWritten, "/p/inc");
+        assert_eq!(std::fs::read_to_string(dir.join("applied-ledger.json")).unwrap(), "{ not json", "not written over");
+        // A write it could not note is said beside it, and stays said.
+        let _ = std::fs::remove_file(dir.join("applied-ledger.json"));
+        std::fs::create_dir_all(dir.join("applied-ledger.json")).unwrap();
+        record(&editing, "/acc/inc", Item::TrustWritten, "/p/inc");
+        drop(editing);
+        std::fs::remove_dir_all(dir.join("applied-ledger.json")).unwrap();
+        let view = applied_by_luna("applied-incomplete-chat".into());
+        assert!(view.incomplete.as_deref().is_some_and(|w| w.contains("trust /p/inc in /acc/inc was not noted")), "{:?}", view.incomplete);
+        crate::agents::forget("applied-incomplete-chat");
+        LEDGER_AT.with(|l| *l.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_trust_luna_writes_is_noted_and_one_it_does_not_is_not() {
         let dir = std::env::temp_dir().join(format!("luna-applied-trust-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -314,10 +383,10 @@ mod tests {
         let acc = account.to_string_lossy().into_owned();
         crate::claude::trust::trust_folder(&acc, "/p/claude").unwrap();
         crate::codex::trust::codex_trust_folder(acc.clone(), "/p/codex".into()).unwrap();
-        assert_eq!(recorded(&acc), [Item::TrustWritten.with("/p/claude"), Item::TrustWritten.with("/p/codex")]);
+        assert_eq!(recorded(&acc).unwrap(), [Item::TrustWritten.with("/p/claude"), Item::TrustWritten.with("/p/codex")]);
         // Trusted already: nothing written, nothing noted.
         crate::codex::trust::codex_trust_folder(acc.clone(), "/p/codex".into()).unwrap();
-        assert_eq!(recorded(&acc).len(), 2);
+        assert_eq!(recorded(&acc).unwrap().len(), 2);
         LEDGER_AT.with(|l| *l.borrow_mut() = None);
         let _ = std::fs::remove_dir_all(&dir);
     }

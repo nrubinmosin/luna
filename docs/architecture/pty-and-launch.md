@@ -20,7 +20,12 @@ How a session is started, what it is started with, and how its terminal is run.
   (`agents::set_applied`) once the process runs; a helper's turn does the same
   in `background/run.rs`. The core answers `applied_by_luna(chat_id)` with the
   latest, and the trust writes of the chat's folder from
-  `<data>/applied-ledger.json` and the library's layout in its account.
+  `<data>/applied-ledger.json` and the library's layout in its account,
+  saying when that part may be short (`incomplete`).
+- Finish a process's spec in one place, `pty::finish_spec`: `TERM` for a
+  pane's CLI, the folder it starts in, and the variables it goes without
+  (`removed_env`), each as applied. `Launch::finished` runs it before the
+  golden capture, and `command_for` at the end of a helper's turn.
 
 ## Key modules
 
@@ -115,7 +120,9 @@ The goldens run the real start, not the builders alone.
   `<git-ssl-backend>` only if they are exactly this process's plus the backend;
   a `read-only-net` profile's random name becomes `<profile>`. What was applied
   is checked to hold neither the session's token nor a hub URL
-  (`Redact::applied`).
+  (`Redact::applied`), and to name every flag and its value, every `-c` key,
+  every variable set and the cwd of the process as it runs
+  (`Redact::assert_shown`), so the two cannot drift.
 
 Any change to a launch path shows up as a reviewed diff of the expected values.
 

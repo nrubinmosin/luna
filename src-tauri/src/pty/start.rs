@@ -81,10 +81,71 @@ pub(crate) fn claude_settings_dirs(account_path: &str, folder: &str) -> Vec<Stri
 /// What `memory_excludes` leaves out of a Claude Code session in `folder`
 /// given the library's instructions: every other folder it is added, by
 /// Luna (`luna_dirs`) or by the user's settings.
-fn claude_memory_off(luna_dirs: &[String], account_path: &str, folder: &str) -> Vec<String> {
+pub(crate) fn claude_memory_off(luna_dirs: &[String], account_path: &str, folder: &str) -> Vec<String> {
     let mut added = luna_dirs.to_vec();
     added.extend(claude_settings_dirs(account_path, folder));
-    claude_launch::memory_excludes(&added, folder)
+    let added: Vec<_> = added.iter().map(|d| added_dir(d)).collect();
+    claude_launch::memory_excludes(&added, &resolved_path(folder))
+}
+
+/// `dir` as `memory_excludes` takes it: as given with `.` and `..` worked out,
+/// and as the disk resolves it (links followed), each a spelling Claude Code
+/// may load its files by.
+fn added_dir(dir: &str) -> claude_launch::AddedDir {
+    let lexical = lexical_path(dir);
+    let resolved = resolved_path(dir);
+    let mut spellings = vec![lexical];
+    if !spellings.contains(&resolved) {
+        spellings.push(resolved.clone());
+    }
+    claude_launch::AddedDir { spellings, resolved }
+}
+
+/// `path` as the disk resolves it — links, junctions, `..`, short names and
+/// case — as far as it is there, the rest as written with `.` and `..` worked
+/// out; without Windows' `\\?\` prefix, which no path Claude Code reports
+/// carries.
+fn resolved_path(path: &str) -> String {
+    let lexical = std::path::PathBuf::from(lexical_path(path));
+    let mut base = lexical.as_path();
+    let mut rest = Vec::new();
+    let canonical = loop {
+        if let Ok(c) = std::fs::canonicalize(base) {
+            break Some(c);
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(up), Some(name)) => {
+                rest.push(name.to_owned());
+                base = up;
+            }
+            _ => break None,
+        }
+    };
+    let Some(mut full) = canonical else {
+        return lexical.to_string_lossy().into_owned();
+    };
+    full.extend(rest.iter().rev());
+    let p = full.to_string_lossy().into_owned();
+    match p.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => p.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(p),
+    }
+}
+
+/// `path` with `.` and `..` worked out on the text alone.
+fn lexical_path(path: &str) -> String {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in std::path::Path::new(path).components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out.to_string_lossy().into_owned()
 }
 
 /// The folders of `--add-dir`s in `args`.
@@ -649,7 +710,11 @@ mod tests {
         let envs = launch.as_ref().map(|l| r.envs(&l.envs));
         crate::agents::forget(id);
         assert_eq!(built, Ok(String::new()));
-        let (l, envs) = (launch.expect("the start was caught"), envs.unwrap());
+        let (l, mut envs) = (launch.expect("the start was caught"), envs.unwrap());
+        Redact::assert_shown(&l.args, &l.envs, &l.cwd, &l.applied);
+        // Every pane's CLI ends its environment on the terminal it draws into
+        // (`Launch::finished`); the cases below leave it out.
+        assert_eq!(envs.pop(), Some(("TERM".to_string(), "xterm-256color".to_string())));
         let applied = r.applied(&l.applied, &l.envs);
         let args = r.args(&l.args);
         let data = crate::paths::data_dir();
@@ -729,6 +794,11 @@ mod tests {
         }
     }
 
+    /// The variables every start goes without, as applied.
+    fn removed() -> String {
+        format!("unset {}", super::super::spawn::removed_env().join(", "))
+    }
+
     fn claude_envs(id: &str, account: &str) -> Vec<(String, String)> {
         pairs(&[("CLAUDE_CONFIG_DIR", account), ("DISABLE_AUTOUPDATER", "1"), ("LUNA_SESSION_ID", id)])
     }
@@ -752,13 +822,17 @@ mod tests {
             ("account", Runtime, "CLAUDE_CONFIG_DIR=/golden/acc-claude"),
             ("no-self-update", Runtime, "DISABLE_AUTOUPDATER=1"),
             ("session-id", Runtime, "LUNA_SESSION_ID=golden-claude-chat"),
-            ("model", UserAction, "opus"),
-            ("effort", UserAction, "high"),
-            ("permission-mode", UserAction, "default"),
-            ("activity-hooks", Runtime, "hooks in <settings-file>"),
-            ("core-read-deny", Boundary, "permissions.deny Read(//<core-dir>/**) in <settings-file>"),
+            ("model", UserAction, "--model opus"),
+            ("effort", UserAction, "--effort high"),
+            ("permission-mode", UserAction, "--permission-mode default"),
+            ("activity-hooks", Runtime, "hooks in --settings <settings-file>"),
+            ("core-read-deny", Boundary, "permissions.deny Read(//<core-dir>/**) in --settings <settings-file>"),
+            ("terminal", Runtime, "TERM=xterm-256color"),
+            ("cwd", Runtime, "cwd /golden/project"),
         ];
-        assert_eq!(s.applied, want.map(|(k, c, v)| (k.to_string(), c, v.to_string())));
+        let mut want: Vec<_> = want.into_iter().map(|(k, c, v)| (k.to_string(), c, v.to_string())).collect();
+        want.push(("inherited-env-cleared".into(), Runtime, removed()));
+        assert_eq!(s.applied, want);
     }
 
     #[test]
@@ -767,7 +841,7 @@ mod tests {
         let r = Redact::for_chat(ID);
         let s = ClaudeAsk { guard: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
-        assert_eq!(s.value("guard"), Some("a PreToolUse hook on Bash, PowerShell, Monitor in <settings-file>"));
+        assert_eq!(s.value("guard"), Some("a PreToolUse hook on Bash, PowerShell, Monitor in --settings <settings-file>"));
         assert!(!s.keys().contains(&"helper.guard"));
         // Luna's tools alone do not bring it.
         let s = ClaudeAsk { tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
@@ -971,6 +1045,9 @@ mod tests {
                 "helper.identity",
                 "luna-tools",
                 "notes-dir",
+                "terminal",
+                "cwd",
+                "inherited-env-cleared",
             ]
         );
         assert_eq!(s.value("session-id"), Some("LUNA_SESSION_ID=golden-claude-helper, LUNA_PARENT_ID=golden-parent"));
@@ -1185,10 +1262,10 @@ mod tests {
             ("session-id", Runtime, "LUNA_SESSION_ID=golden-codex-chat".into()),
             ("folder", Runtime, "-C /golden/project".into()),
             ("codex.no-daemon", Runtime, "--no-daemon".into()),
-            ("model", UserAction, "gpt-5.5".into()),
-            ("effort", UserAction, "medium".into()),
-            ("approval", UserAction, "on-request".into()),
-            ("sandbox", UserAction, "workspace-write".into()),
+            ("model", UserAction, "--model gpt-5.5".into()),
+            ("effort", UserAction, "-c model_reasoning_effort=\"medium\"".into()),
+            ("approval", UserAction, "--ask-for-approval on-request".into()),
+            ("sandbox", UserAction, "--sandbox workspace-write".into()),
         ];
         if cfg!(windows) {
             want.push(("codex.windows-sandbox", Workaround, "-c windows.sandbox=\"unelevated\"".into()));
@@ -1196,6 +1273,9 @@ mod tests {
         }
         want.push(("no-self-update", Runtime, "-c check_for_update_on_startup=false".into()));
         want.push(("codex.thread-title", Runtime, "-c tui.terminal_title=[\"thread-id\"]".into()));
+        want.push(("terminal", Runtime, "TERM=xterm-256color".into()));
+        want.push(("cwd", Runtime, "cwd /golden/project".into()));
+        want.push(("inherited-env-cleared", Runtime, removed()));
         assert_eq!(s.applied, want.into_iter().map(|(k, c, v)| (k.to_string(), c, v)).collect::<Vec<_>>());
     }
 
@@ -1369,8 +1449,9 @@ mod tests {
 
     #[test]
     fn memory_excludes_leave_out_only_folders_beside_the_one_worked_in() {
-        use crate::claude::launch::memory_excludes;
-        let added = ["/data/notes".to_string(), "/work".to_string(), "/work/app/sub".to_string(), "/other/".to_string()];
+        use crate::claude::launch::{memory_excludes, AddedDir};
+        let at = |d: &str| AddedDir { spellings: vec![d.to_string()], resolved: d.to_string() };
+        let added = [at("/data/notes"), at("/work"), at("/work/app/sub"), at("/other/")];
         assert_eq!(
             memory_excludes(&added, "/work/app"),
             [
@@ -1385,15 +1466,53 @@ mod tests {
             ],
             "a folder above the one worked in, or below it, is read as ever"
         );
-        assert!(memory_excludes(&["/work/application".to_string()], "/work/app").len() == 4, "a sibling sharing a prefix is beside it");
-        assert_eq!(
-            memory_excludes(&[r"C:\Data\notes".to_string()], r"C:\Work")[0],
-            "C:/Data/notes/CLAUDE.md",
-            "as Claude Code matches a path"
-        );
+        assert!(memory_excludes(&[at("/work/application")], "/work/app").len() == 4, "a sibling sharing a prefix is beside it");
+        assert_eq!(memory_excludes(&[at(r"C:\Data\notes")], r"C:\Work")[0], "C:/Data/notes/CLAUDE.md", "as Claude Code matches a path");
         if cfg!(windows) {
-            assert!(memory_excludes(&[r"E:\Work".to_string()], r"e:\work\app").is_empty(), "Windows paths in any case");
+            assert!(memory_excludes(&[at(r"E:\Work")], r"e:\work\app").is_empty(), "Windows paths in any case");
         }
+        // Each spelling of a folder outside gets its patterns; inside, none.
+        let linked = AddedDir { spellings: vec!["/link/shared".into(), "/real/shared".into()], resolved: "/real/shared".into() };
+        assert_eq!(memory_excludes(&[linked], "/work/app").len(), 8);
+        let into_project = AddedDir { spellings: vec!["/link/app".into()], resolved: "/work/app/sub".into() };
+        assert!(memory_excludes(&[into_project], "/work/app").is_empty(), "judged where it resolves to");
+    }
+
+    #[test]
+    fn a_folder_name_goes_into_claude_md_excludes_literally() {
+        use crate::claude::launch::{glob_literal, memory_excludes, AddedDir};
+        assert_eq!(glob_literal("E:/work/[ab]"), "E:/work/[[]ab[]]");
+        assert_eq!(glob_literal("C:/Program Files (x86)/a*b?{c,d}!+@"), "C:/Program Files [(]x86[)]/a[*]b[?][{]c[,]d[}][!][+][@]");
+        assert_eq!(glob_literal("/home/u/.notes dir/x"), "/home/u/.notes dir/x", "nothing else changes");
+        let dir = AddedDir { spellings: vec!["E:/work/[ab]".into()], resolved: "E:/work/[ab]".into() };
+        let patterns = memory_excludes(&[dir], "E:/work/a");
+        assert_eq!(patterns[0], "E:/work/[[]ab[]]/CLAUDE.md", "not a class that matches E:/work/a/CLAUDE.md");
+        assert!(patterns.iter().all(|p| p.starts_with("E:/work/[[]ab[]]/")), "{patterns:?}");
+        // The account's instructions file, a path too, goes in literally.
+        let library = crate::library::SessionSkills { excluded: vec!["E:/acc/[x]/CLAUDE.md".into()], ..Default::default() };
+        let settings = crate::claude::launch::claude_settings(None, None, &library, "/d/core");
+        assert_eq!(settings["claudeMdExcludes"], serde_json::json!(["E:/acc/[[]x[]]/CLAUDE.md"]));
+    }
+
+    #[test]
+    fn a_folder_above_the_project_by_dot_dot_is_beside_it_and_left_out() {
+        let root = std::env::temp_dir().join(format!("luna-dotdot-{}", std::process::id()));
+        let (project, shared) = (root.join("proj"), root.join("shared"));
+        std::fs::create_dir_all(project.join(".claude")).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        let account = root.join("acc");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(project.join(".claude").join("settings.json"), r#"{"permissions":{"additionalDirectories":["../shared"]}}"#)
+            .unwrap();
+        let off = claude_memory_off(&[], &account.to_string_lossy(), &project.to_string_lossy());
+        let shared = resolved_path(&shared.to_string_lossy()).replace('\\', "/");
+        assert!(off.contains(&format!("{}/CLAUDE.md", crate::claude::launch::glob_literal(&shared))), "{off:?}");
+        assert!(off.iter().all(|p| !p.contains("..")), "resolved, not `<project>/../shared`: {off:?}");
+        // Nested in the project instead: read as ever.
+        std::fs::write(project.join(".claude").join("settings.json"), r#"{"permissions":{"additionalDirectories":["./docs/../sub"]}}"#)
+            .unwrap();
+        assert!(claude_memory_off(&[], &account.to_string_lossy(), &project.to_string_lossy()).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
