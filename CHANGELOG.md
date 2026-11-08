@@ -32,6 +32,22 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- A CLI install cut short (Luna killed or the PC off while Codex's package was
+  unpacked) could be taken for a finished one on the next check: the executable
+  being there was enough, so Codex ran without its sandbox helpers or from a
+  truncated file. Both CLIs are now fetched into a staging folder, checked file
+  by file against what their release publishes (Claude Code: sha256 and size;
+  Codex: the package's sha256, then each file's size), given a completion
+  record, and moved into place with one rename under a name no folder has, so a
+  version a session is running is never touched. Only a version with its record
+  counts as installed; ones installed before this are fetched again once. The
+  files, the record and (on Unix) the folders are flushed to disk before the
+  version is named current, and once Luna has installed this way a version
+  without its record is never run. Sweeping old versions deletes nothing
+  through a link or junction below them. Codex's package is unpacked with caps
+  on its entries, its bytes as the tar reader writes them, each metadata record
+  and the decompressed stream, and a link entry or PAX size override in it is
+  refused.
 - Shut down and restart when done turn the PC off again. Luna asks Windows
   itself, with the shutdown privilege turned on, instead of running
   `shutdown.exe`, which had been failing without a word; a refusal is logged
@@ -71,6 +87,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   it signs from, and no longer runs the built exe to ask its core fingerprint.
   A key rotation's bridge release is checked against the old public key, given
   as `UPDATER_TRUSTED_PUBKEY`.
+- Claude Code's release manifest is verified against its detached OpenPGP
+  signature and Anthropic's release key, pinned in Luna, before the exe's
+  checksum from it is trusted: whoever serves the download bucket can no
+  longer hand Luna an exe of their own with a matching manifest. Codex is
+  still checked only against the checksums of its own release.
+- The signed manifest must name the version it was fetched for, and no Claude
+  Code version below the highest signed one Luna has accepted (or below
+  2.1.319 on a fresh install) is installed, so an old signed release cannot be
+  replayed under the unsigned `latest` pointer. A signature is held to its
+  signed creation and expiration times, and the release key to its expiry
+  where the signature gives one.
 
 ## [0.10.0] - 2026-11-08
 
