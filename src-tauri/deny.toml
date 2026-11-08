@@ -5,8 +5,12 @@
 
 [advisories]
 # The RustSec advisory database, fetched fresh on every run. A vulnerability, an
-# unmaintained or unsound crate fails the check; a yanked one is a warning, as a
-# yank is often a packaging mistake rather than a flaw.
+# unmaintained or unsound crate fails the check wherever it is in the tree (the
+# scopes spelled out: cargo-deny's own default for unsound is the workspace's
+# direct dependencies only); a yanked one is a warning, as a yank is often a
+# packaging mistake rather than a flaw.
+unmaintained = "all"
+unsound = "all"
 yanked = "warn"
 # Each ignore names who still pulls the crate in and why it cannot go yet, and
 # ends on "Expires YYYY-MM-DD": scripts/supply-chain.ps1 fails once that date
@@ -22,6 +26,10 @@ ignore = [
     # A proc macro of gtk-rs 0.18 (glib-macros, gtk3-macros), the GTK stack wry
     # and tao build on Linux: it runs at compile time only, and only for Linux.
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: Linux-only, compile-time, through gtk-rs 0.18 under tao and wry. Expires 2027-02-08" },
+    # Unsound iterator impls of glib::VariantStrIter, fixed in glib 0.20. glib
+    # 0.18 is gtk-rs 0.18's, which tao, wry and muda pin for the Linux build;
+    # absent from the Windows build, and Luna's code never touches GVariant.
+    { id = "RUSTSEC-2024-0429", reason = "glib: Linux-only, through gtk-rs 0.18 under tao, wry and muda; Luna never uses VariantStrIter. Expires 2027-02-08" },
 ]
 
 [licenses]
