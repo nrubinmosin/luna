@@ -32,8 +32,10 @@ on one of the user's accounts.
 - `luna_list` `ids: [..]`: those rows alone, of any session (unknown ids in `unknown`), no
   accounts unless `accounts: true`; `accounts: false` drops them;
   `ids: []` with `accounts: true`: accounts alone. Their models only with `models: true`.
-- You interrupt, kill and delete only sessions you spawned and theirs. Any other session you can read,
-  wait on and send text to. A deleted parent's helper passes to its parent; with none, only
+- You interrupt, kill and delete only sessions you spawned and theirs. Any other (the user's own
+  chats, other chats' helpers, your parent) you can read, wait on and send text to with `scope:
+  "all"`, without which those tools refuse it; your text reaches it opened `[From session <your id>
+  via Luna]`. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.

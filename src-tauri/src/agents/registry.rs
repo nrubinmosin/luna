@@ -460,6 +460,27 @@ pub(super) fn is_mine(caller: &str, id: &str) -> bool {
     is_descendant(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, id)
 }
 
+/// What a read, a wait or a send may reach, by its `scope`: the caller's own
+/// helpers and theirs, unless it says `all`. Text read off or typed into a
+/// session no one asked it to touch is the reach a prompt injection wants, so
+/// going past its own takes an argument that says so. An unknown session, or
+/// the caller itself, is left to the tool's own refusal, which says more.
+pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Result<(), String> {
+    let all = match scope {
+        None | Some("mine") => false,
+        Some("all") => true,
+        Some(other) => return Err(format!("unknown scope {other:?}; use mine (the default) or all")),
+    };
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if all || caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
+        return Ok(());
+    }
+    Err(format!(
+        "session {id} is not one you spawned; to {verb} a session that is not yours (the user's own chats, another's \
+         helpers) pass scope: \"all\""
+    ))
+}
+
 /// Text may go to any session Luna runs, the user's own chats included —
 /// that is how one session passes a message to another — but not back into
 /// the caller's own composer.
@@ -547,6 +568,33 @@ mod tests {
         let mut d = descendants(&r, "a");
         d.sort();
         assert_eq!(d, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn reaching_past_ones_own_takes_scope_all() {
+        let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
+        register("sc-me", Provider::Claude, "C:\\p", account, None, true, none.clone());
+        register("sc-kid", Provider::Claude, "C:\\p", account, Some("sc-me"), true, none.clone());
+        register("sc-grand", Provider::Codex, "C:\\p", "C:\\acc\\openai\\two", Some("sc-kid"), false, none.clone());
+        register("sc-chat", Provider::Claude, "C:\\p", account, None, false, none.clone());
+        register("sc-theirs", Provider::Codex, "C:\\p", "C:\\acc\\openai\\two", Some("sc-chat"), false, none);
+        // Its own, by default or said.
+        assert_eq!(in_scope("sc-me", "sc-kid", None, "read"), Ok(()));
+        assert_eq!(in_scope("sc-me", "sc-grand", Some("mine"), "read"), Ok(()));
+        // A person's chat, another chat's helper, and upwards: only when told.
+        for (caller, id) in [("sc-me", "sc-chat"), ("sc-me", "sc-theirs"), ("sc-kid", "sc-me")] {
+            let e = in_scope(caller, id, None, "send to").unwrap_err();
+            assert!(e.contains("not one you spawned") && e.contains("scope: \"all\""), "{caller} -> {id}: {e}");
+            assert!(in_scope(caller, id, Some("mine"), "read").is_err());
+            assert_eq!(in_scope(caller, id, Some("all"), "read"), Ok(()));
+        }
+        // An unknown session and itself are the tool's to refuse, in its words.
+        assert_eq!(in_scope("sc-me", "sc-nobody", None, "read"), Ok(()));
+        assert_eq!(in_scope("sc-me", "sc-me", None, "read"), Ok(()));
+        assert!(in_scope("sc-me", "sc-kid", Some("everything"), "read").unwrap_err().contains("unknown scope"));
+        for id in ["sc-grand", "sc-kid", "sc-theirs", "sc-chat", "sc-me"] {
+            forget(id);
+        }
     }
 
     #[test]
