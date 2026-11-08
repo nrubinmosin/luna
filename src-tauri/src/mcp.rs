@@ -267,7 +267,11 @@ fn tools() -> Value {
         {
             "name": "luna_sessions",
             "description": "Every session in Luna, the user's chats too: group (window group, I=1), folders, transcript path, parent, you/yours, state. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts).",
-            "inputSchema": s(json!({ "group": { "type": "string" }, "q": { "type": "string" }, "history": { "type": "boolean" } }), &[]),
+            "inputSchema": s(json!({
+                "group": { "anyOf": [{ "type": "integer" }, { "type": "string" }] },
+                "q": { "type": "string" },
+                "history": { "type": "boolean" }
+            }), &[]),
             "annotations": reads
         },
         {
@@ -519,6 +523,9 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     if !agents::has_tools(caller) {
         return json!({ "content": [{ "type": "text", "text": format!("{name} is not one of this session's tools") }], "isError": true });
     }
+    if let Err(e) = arguments_fit(name, a) {
+        return json!({ "content": [{ "type": "text", "text": e }], "isError": true });
+    }
     let strings = |v: &Value| -> Vec<String> {
         v.as_array().map(|a| a.iter().map(|x| x.as_str().map(str::to_owned).unwrap_or_else(|| x.to_string())).collect()).unwrap_or_default()
     };
@@ -611,6 +618,91 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     match out {
         Ok(v) => json!({ "content": content(v) }),
         Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
+    }
+}
+
+/// A call's arguments held to its tool's schema (`tools`) before anything runs:
+/// an object, of keys the tool has, each of the type it says (an `integer` a
+/// whole number from 0, an `enum` one of its values), the `required` ones
+/// there and not empty. A key it does not know is refused rather than passed
+/// over, naming those it does: `read_only` for `readOnly` would otherwise
+/// spawn a helper that writes, and `interrupt: "true"` would be no interrupt.
+/// A null is a key left out. Not for an unknown tool, which `run` refuses by
+/// name, nor `luna_permission`, which the CLI calls in its own shape.
+fn arguments_fit(name: &str, a: &Value) -> Result<(), String> {
+    let list = tools();
+    let Some(schema) = list.as_array().and_then(|t| t.iter().find(|t| t["name"] == name)).map(|t| t["inputSchema"].clone()) else {
+        return Ok(());
+    };
+    let empty = serde_json::Map::new();
+    let props = schema["properties"].as_object().unwrap_or(&empty);
+    let given = match a {
+        Value::Null => &empty,
+        Value::Object(o) => o,
+        _ => return Err(format!("{name} takes its arguments as an object")),
+    };
+    let known: Vec<&str> = props.keys().map(String::as_str).collect();
+    for (key, v) in given.iter().filter(|(_, v)| !v.is_null()) {
+        let Some(spec) = props.get(key) else {
+            // `read_only`, `ReadOnly`, `read-only`: the one meant, by its spelling.
+            let loose = |k: &str| k.replace(['_', '-'], "").to_lowercase();
+            let meant = known.iter().find(|k| loose(k) == loose(key)).map(|k| format!(" (did you mean `{k}`?)")).unwrap_or_default();
+            let takes = if known.is_empty() { "no arguments".to_string() } else { known.join(", ") };
+            return Err(format!("{name} has no argument `{key}`{meant}; it takes: {takes}"));
+        };
+        fits(key, spec, v)?;
+    }
+    let present = |k: &str| given.get(k).is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
+    for key in schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if !present(key) {
+            return Err(format!("{key} is required"));
+        }
+    }
+    // `luna_wait` names its session by one or the other.
+    if props.contains_key("id") && props.contains_key("ids") && !present("id") && given.get("ids").is_none_or(Value::is_null) {
+        return Err("id or ids is required".into());
+    }
+    Ok(())
+}
+
+/// Whether `v` is what `spec` (a property of a tool's schema) says `key` takes.
+fn fits(key: &str, spec: &Value, v: &Value) -> Result<(), String> {
+    if let Some(any) = spec["anyOf"].as_array() {
+        if any.iter().any(|one| fits(key, one, v).is_ok()) {
+            return Ok(());
+        }
+        return Err(format!("`{key}` takes {}", any.iter().map(kind_of).collect::<Vec<_>>().join(" or ")));
+    }
+    let ok = match spec["type"].as_str() {
+        Some("string") => v.is_string(),
+        Some("boolean") => v.is_boolean(),
+        Some("integer") => v.is_u64(),
+        Some("object") => v.is_object(),
+        Some("array") => v.as_array().is_some_and(|items| items.iter().all(|x| fits(key, &spec["items"], x).is_ok())),
+        _ => true,
+    };
+    if !ok {
+        return Err(format!("`{key}` takes {}", kind_of(spec)));
+    }
+    if let (Some(allowed), Some(given)) = (spec["enum"].as_array(), v.as_str()) {
+        if !allowed.iter().any(|x| x == given) {
+            let names: Vec<&str> = allowed.iter().filter_map(Value::as_str).collect();
+            return Err(format!("unknown {key} {given:?}; use {}", names.join(", ")));
+        }
+    }
+    Ok(())
+}
+
+/// What a schema's type is, as an error says it.
+fn kind_of(spec: &Value) -> String {
+    match spec["type"].as_str() {
+        Some("string") => "a string".into(),
+        Some("boolean") => "true or false".into(),
+        Some("integer") => "a whole number, 0 or more".into(),
+        Some("object") => "an object".into(),
+        Some("array") if spec["items"]["type"] == "string" => "a list of strings".into(),
+        Some("array") => "a list".into(),
+        _ => "a value".into(),
     }
 }
 
@@ -835,6 +927,58 @@ mod tests {
         for id in ["rs-kid", "rs-chat", "rs-me"] {
             agents::forget(id);
         }
+    }
+
+    #[test]
+    fn every_tool_holds_its_arguments_to_its_schema() {
+        tooled("sa-me");
+        let call = |name: &str, args: Value| {
+            let body = json!({ "jsonrpc": "2.0", "id": 17, "method": "tools/call", "params": { "name": name, "arguments": args } });
+            let r = handle("sa-me", &body.to_string()).unwrap()["result"].clone();
+            (r["isError"] == true, r["content"][0]["text"].as_str().unwrap_or("").to_string())
+        };
+        let list = tools();
+        for tool in list.as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            let props = tool["inputSchema"]["properties"].as_object().unwrap();
+            // A key it does not have, named back with those it does.
+            let (failed, e) = call(name, json!({ "bogus_key": 1 }));
+            assert!(failed && e.contains("no argument `bogus_key`"), "{name}: {e}");
+            for key in props.keys() {
+                assert!(e.contains(key.as_str()), "{name} names {key}: {e}");
+            }
+            // Each of its keys given a value of no type it takes.
+            for (key, spec) in props {
+                let wrong = match spec["type"].as_str() {
+                    Some("string") => json!(7),
+                    None => json!({ "not": "this" }),
+                    Some(_) => json!("7"),
+                };
+                let (failed, e) = call(name, json!({ key.as_str(): wrong }));
+                assert!(failed && e.contains(&format!("`{key}` takes")), "{name}.{key}: {e}");
+            }
+            // An id that names nothing.
+            if props.contains_key("id") {
+                let (failed, e) = call(name, json!({ "id": "", "ids": null }));
+                assert!(failed && e.contains("is required"), "{name}: {e}");
+            }
+            assert!(!call(name, json!("args")).1.is_empty(), "{name}: not an object");
+        }
+        // The cases that cost something when passed over.
+        let (failed, e) = call("luna_spawn", json!({ "prompt": "review it", "read_only": true }));
+        assert!(failed && e.contains("did you mean `readOnly`?"), "{e}");
+        assert!(call("luna_send", json!({ "id": "x", "text": "stop", "interrupt": "true" })).1.contains("`interrupt` takes true or false"));
+        assert!(call("luna_read", json!({ "id": "x", "last": -1 })).1.contains("`last` takes a whole number"));
+        assert!(call("luna_wait", json!({})).1.contains("id or ids is required"));
+        assert!(call("luna_wait", json!({ "id": "" })).1.contains("id or ids is required"));
+        assert!(call("luna_send", json!({ "id": "x" })).1.contains("text is required"));
+        assert!(call("luna_spawn", json!({ "prompt": "go", "account": 3 })).1.contains("`account` takes a string or a list of strings"));
+        assert!(call("luna_power", json!({ "action": "explode" })).1.contains("unknown action"));
+        // What the schema allows still goes through to the tool.
+        let (failed, e) = call("luna_guide", json!({ "topic": null }));
+        assert!(!failed, "a null is a key left out: {e}");
+        let (_, e) = call("luna_wait", json!({ "ids": ["sa-nobody"], "timeoutS": 1 }));
+        assert!(e.contains("unknown session"), "{e}");
     }
 
     #[test]
