@@ -480,6 +480,24 @@ mod acl {
     }
 
     #[test]
+    fn codex_commands_that_may_run_the_cli_take_only_an_account_or_none() {
+        // A catalog miss runs Codex with CODEX_HOME at the path given.
+        let app = app();
+        for (cmd, body) in [
+            ("codex_models", json!({ "accountPath": "/etc" })),
+            ("codex_models", json!({ "accountPath": "relative" })),
+            ("codex_defaults", json!({ "accountPath": "/etc", "folder": "" })),
+            ("codex_defaults", json!({ "accountPath": "", "folder": "/p/../etc" })),
+        ] {
+            let r = ask(&app, "main", LOCAL, cmd, body.clone());
+            assert!(r.as_ref().is_err_and(|e| e.contains("invalid args")), "{cmd} {body}: {r:?}");
+        }
+        // None given: nothing to read or run, and an answer all the same.
+        assert_eq!(ask(&app, "main", LOCAL, "codex_models", json!({ "accountPath": "" })), Ok(json!([])));
+        assert!(ask(&app, "main", LOCAL, "codex_defaults", json!({ "accountPath": "", "folder": "" })).is_ok());
+    }
+
+    #[test]
     fn the_capability_grants_every_command_the_window_registers() {
         // One left out would be refused in the app; one granted and not
         // registered is a stale grant.
