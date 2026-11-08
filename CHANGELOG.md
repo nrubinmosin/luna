@@ -14,6 +14,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   a sentence of at most 72 characters saying what the change does, no type
   prefix, a blank line, then why. The commit-msg hook, the gate and CI refuse
   the rest; past commits stay as they are.
+- Dependabot opens its grouped update PRs monthly instead of weekly, and leaves a
+  new Node or Rust major to a hand-made migration.
+- Tauri 2.12.5 and its plugins' latest releases; base64, dirs, getrandom and
+  toml_edit moved to versions the rest of the tree already carried, which drops
+  dirs 6 and toml_edit 0.22 from the build; vt100 0.18 for the screen a helper's
+  output is replayed onto.
 
 ## [0.10.0] - 2026-11-08
 

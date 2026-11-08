@@ -116,7 +116,8 @@ hand, with the same scripts:
 
 `.github/workflows/release.yml` runs only on `v*` tags and by hand
 ([Releases](#releases)). Actions are pinned by commit; Dependabot (`.github/dependabot.yml`) moves them,
-the crates, the npm packages and the images weekly.
+the crates, the npm packages and the images monthly, one grouped PR per ecosystem; a new
+Node or Rust major is left to a hand-made migration (`.github/dependabot.yml` says why).
 
 ## Releases
 
