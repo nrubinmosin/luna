@@ -6,15 +6,17 @@
 # Every run: the version files agree, and CI (ci.yml) has passed on this very
 # commit, as a push; a run still going is waited for, up to -WaitMinutes, so
 # the tag can be pushed straight after the commit. A signed run, from a v* tag,
-# also needs the tag to name that version, to be annotated (its message becomes
-# the release notes) and to point at a commit on the default branch.
+# also needs the tag to name that version, to be annotated, to point at a
+# commit on the default branch, and CHANGELOG.md to have the version's section,
+# which the release notes are made from.
 #
 #   ./scripts/release-verify.ps1 -Ref refs/tags/v1.2.3 -Sha <commit> -Repo owner/name
 #   ./scripts/release-verify.ps1 -Ref refs/heads/master -Sha <commit> -Repo owner/name -DryRun
 #
 # Reads only, through gh (GH_TOKEN; the job's token needs contents: read and
 # actions: read). Under Actions the answers go to $GITHUB_OUTPUT: version, tag,
-# signed, publish, notes.
+# signed, publish, previous (the latest published release's tag, or empty),
+# notes.
 param(
     [Parameter(Mandatory)][string]$Ref,
     [Parameter(Mandatory)][string]$Sha,
@@ -37,19 +39,38 @@ $version = Get-ReleaseVersion
 $plan = Get-ReleasePlan $Ref $version $DryRun.IsPresent
 Write-Host "v$version from $Ref at $Sha`: $(if ($plan.Signed) { 'signed' } else { 'unsigned' }), $(if ($plan.Publish) { 'drafted on GitHub' } else { 'dry run' })"
 
+# The latest published release, the baseline the notes span from: looked up
+# once here and handed to the publish job, so the two render against the
+# same release even if one is published while the run is going.
+$previous = Get-LatestReleaseTag $Repo
+
+# The notes latest.json carries, which the update chip shows: the CHANGELOG
+# section's intro. The release's own notes are made by the publish job
+# (release-notes.ps1) from the same sections, and are rendered here first so
+# an empty section, or a version behind the latest published release, fails
+# the run before anything is built. A dry run may run on a commit that has
+# no section yet; a release may not.
 $notes = "Luna $version"
+try {
+    $section = Get-ChangelogSection $version
+    if ($section.Intro) { $notes = $section.Intro }
+    New-ReleaseNotes -Version $version -Previous $previous | Out-Null
+} catch {
+    if ($plan.Signed) { throw }
+    Write-Warning "$_; fine for a dry run"
+}
+
 if ($plan.Signed) {
     # The tag as GitHub has it, not as the checkout made it: checking out a tag
     # can leave a lightweight copy of an annotated one.
     $tagRef = Get-Api "repos/$Repo/git/ref/tags/$($plan.Tag)"
     if ($tagRef.object.type -ne 'tag') {
-        throw "$($plan.Tag) is a lightweight tag; ./scripts/release.ps1 makes an annotated one, whose message is the release notes"
+        throw "$($plan.Tag) is a lightweight tag; ./scripts/release.ps1 makes an annotated one"
     }
     $tag = Get-Api "repos/$Repo/git/tags/$($tagRef.object.sha)"
     if ($tag.object.type -ne 'commit' -or $tag.object.sha -ne $Sha) {
         throw "$($plan.Tag) points at $($tag.object.type) $($tag.object.sha), not at the commit this run checked out, $Sha"
     }
-    $notes = Get-TagNotes $tag.message $version
 }
 
 # Contained in the default branch: the compare API calls a commit "behind" (or
@@ -90,8 +111,9 @@ while ($true) {
 $outputs = [ordered]@{
     version = $version
     tag     = $plan.Tag
-    signed  = "$($plan.Signed)".ToLowerInvariant()
-    publish = "$($plan.Publish)".ToLowerInvariant()
+    signed   = "$($plan.Signed)".ToLowerInvariant()
+    publish  = "$($plan.Publish)".ToLowerInvariant()
+    previous = $previous
 }
 if ($env:GITHUB_OUTPUT) {
     $lines = foreach ($key in $outputs.Keys) { "$key=$($outputs[$key])" }

@@ -6,7 +6,8 @@
 # manifest is written one way.
 #
 #   ./scripts/release-bundle.ps1 -Out <dir>                 for the version in the version files
-#   ./scripts/release-bundle.ps1 -Out <dir> -Notes "..."    with release notes of its own
+#   ./scripts/release-bundle.ps1 -Out <dir> -Notes "..."    the notes latest.json carries (the
+#                                                           CHANGELOG section's intro); "Luna <version>" without
 #   ./scripts/release-bundle.ps1 -Out <dir> -Unsigned       after an -Unsigned build: no .sig,
 #                                                           and latest.json with an empty signature
 #
