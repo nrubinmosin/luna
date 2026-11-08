@@ -197,34 +197,49 @@ pub(super) const SHORT_MESSAGE: usize = 400;
 /// longer one, which the newer has moved past — and the short line goes after
 /// it as its last word.
 pub(super) fn report_of(replies: &Said) -> usize {
-    let from = replies.last_turn.min(replies.len().saturating_sub(1));
-    // Its CLI's word for it, where it gives one: the last turn's final answer.
-    if let Some(at) = final_of(replies, from) {
+    let (from, to) = report_turn(replies);
+    // Its CLI's word for it, where it gives one: that turn's final answer.
+    if let Some(at) = final_of(replies, from, to) {
         return at;
     }
     let len = |i: usize| replies[i].chars().count();
-    let longest = (from..replies.len()).max_by_key(|&i| len(i)).unwrap_or(from);
-    if replies.get(longest).map_or(0, |r| r.chars().count()) >= SHORT_MESSAGE {
+    let longest = (from..to).max_by_key(|&i| len(i)).unwrap_or(from);
+    if replies.get(longest).is_some_and(|r| r.chars().count() >= SHORT_MESSAGE) || to < replies.len() {
         return longest;
     }
-    let before = replies.by_cli.then(|| {
+    replies.len().saturating_sub(1)
+}
+
+/// The turn the report comes from, as a range of messages: the last that wrote
+/// any, unless that one its CLI started by itself and every message of it is
+/// short (a background job's end taken up, "nothing else changed"), when the
+/// latest turn before it with a message that is not short. Chosen before any
+/// CLI's mark is looked at: a wakeup marked final answers nobody.
+fn report_turn(replies: &Said) -> (usize, usize) {
+    let from = replies.last_turn.min(replies.len().saturating_sub(1));
+    let len = |i: usize| replies[i].chars().count();
+    let short = (from..replies.len()).all(|i| len(i) < SHORT_MESSAGE);
+    if replies.by_cli && short {
         // Each earlier turn as a range of messages, newest first.
         let mut bounds: Vec<usize> = replies.starts.iter().copied().filter(|&s| s < from).collect();
         bounds.push(from);
-        bounds.windows(2).rev().find_map(|w| (w[0]..w[1]).filter(|&i| len(i) >= SHORT_MESSAGE).max_by_key(|&i| len(i)))
-    });
-    before.flatten().unwrap_or(replies.len().saturating_sub(1))
+        if let Some(w) = bounds.windows(2).rev().find(|w| (w[0]..w[1]).any(|i| len(i) >= SHORT_MESSAGE)) {
+            return (w[0], w[1]);
+        }
+    }
+    (from, replies.len())
 }
 
-/// The last message of the turn from `from` on that its CLI marked final.
-fn final_of(replies: &Said, from: usize) -> Option<usize> {
-    (from..replies.len()).rev().find(|&i| replies.finals.get(i).copied().unwrap_or(false))
+/// The last message of `from..to` that its CLI marked final.
+fn final_of(replies: &Said, from: usize, to: usize) -> Option<usize> {
+    (from..to).rev().find(|&i| replies.finals.get(i).copied().unwrap_or(false))
 }
 
 /// Whether `report_of` picked the report by length, with no CLI's mark on any
-/// message of the last turn to go by: a guess, which a caller is told of.
+/// message of the turn it reports from: a guess, which a caller is told of.
 pub(super) fn report_guessed(replies: &Said) -> bool {
-    !replies.is_empty() && final_of(replies, replies.last_turn.min(replies.len() - 1)).is_none()
+    let (from, to) = report_turn(replies);
+    !replies.is_empty() && final_of(replies, from, to).is_none()
 }
 
 /// A report's first line that says anything, on one line and short, without
@@ -449,7 +464,8 @@ mod tests {
         // As power-fix put it on 2026-11-08: a long report, then a turn its CLI
         // started by itself on a background job's end, short. The report
         // stands; the short line comes next as its last word.
-        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true, final_answer: false };
+        // The CLI marks its own wakeup's line final as it does any: it answers nobody all the same.
+        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true, final_answer: true };
         let said = own_words(
             vec![
                 m("user", "Fix the shutdown.".into()),
