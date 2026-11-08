@@ -72,8 +72,9 @@ pub fn claude_folder_trusted(account_path: AccountPath, folder: AbsPath) -> Resu
 /// Marks the folder trusted for this account — the same bit the CLI's own trust
 /// prompt writes — when the person ticked that in the new-chat dialog. Leaves
 /// every other key in the config untouched, and notes the write in Luna's
-/// ledger of what it applied (applied.rs).
-#[tauri::command]
+/// ledger of what it applied (applied.rs). A core command (corecmd.rs), as
+/// Codex's is: the ledger's notes, and what it may have missed, are kept by
+/// the process that answers "What Luna applied".
 pub fn claude_trust_folder(account_path: AccountPath, folder: AbsPath) -> Result<(), String> {
     trust_folder(&String::from(account_path), &String::from(folder))
 }
