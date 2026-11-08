@@ -82,7 +82,7 @@ in section 6.
 
 - A helper it spawns runs at no more privilege than the caller (Claude Code
   permission mode; Codex sandbox, approval and network) unless the user turns
-  on Settings → Helpers → `helpersAboveCaller` (off by default).
+  on Settings → Agents & trust → `helpersAboveCaller` (off by default).
 - `luna_answer` with `allow`, raw `keys`, or an answer to a list the CLI holds
   its own screen on works only on the caller's own helpers, and only at the
   privilege it would itself need to run the tool unasked.

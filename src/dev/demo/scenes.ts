@@ -23,11 +23,18 @@ import { usePanes } from '../../features/panes/panes.store';
 import { useUpdates } from '../../features/updates/updates.store';
 import { useShell } from '../../app/shell.store';
 import { usePower } from '../../features/power/power.store';
+import { SETTINGS_PAGES, useSettings, type SettingsPage } from '../../features/settings/settings.store';
 import { FOLDERS, ACCOUNTS, filled, parked, BACKGROUND } from './fixtures';
 import { demoState } from './ipc';
 
+/** A Settings page's scene: `settings` is its first page, `settings-links` and
+ *  the like the others, each with a `-dark` twin. */
+type SettingsScene = 'settings' | `settings-${Exclude<SettingsPage, 'general'>}`;
+const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general' ? 'settings' : `settings-${p}`));
+
 /** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
- *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
+ *  account), `?demo=settings` / `settings-dark` and one per page (`settings-chats`, …), `?demo=accounts`,
+ *  `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
  *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
  *  `?demo=library`, `?demo=power`, `?demo=applied` / `applied-dark` (a chat's What Luna applied). */
 export type Scene =
@@ -36,7 +43,8 @@ export type Scene =
   | 'peek'
   | 'newchat'
   | 'codex'
-  | 'settings'
+  | SettingsScene
+  | `${SettingsScene}-dark`
   | 'accounts'
   | 'recommended'
   | 'editor'
@@ -54,7 +62,7 @@ const SCENES: Scene[] = [
   'peek',
   'newchat',
   'codex',
-  'settings',
+  ...SETTINGS_SCENES.flatMap(s => [s, `${s}-dark` as const]),
   'accounts',
   'recommended',
   'editor',
@@ -109,6 +117,8 @@ export function seedDemo(scene: Scene) {
     peek: scene === 'peek' ? 1 : null
   });
 
+  const settings = SETTINGS_SCENES.findIndex(s => s === scene || `${s}-dark` === scene);
+  if (settings >= 0) useSettings.getState().setOpen(true, SETTINGS_PAGES[settings]);
   if (scene === 'codex') useNewChat.setState({ lastAccount: { provider: 'codex', name: 'personal' } });
   if (scene === 'newchat' || scene === 'codex') useNewChat.getState().openDialog('C:\\src\\luna');
   if (scene === 'accounts' || scene === 'recommended' || scene === 'editor') useAccountsWindow.getState().setOpen(true);

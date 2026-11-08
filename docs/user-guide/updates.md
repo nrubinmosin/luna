@@ -34,6 +34,6 @@ nothing depends on a global install.
 
 ## Where to see versions
 
-All three versions live in Settings (the gear in the status bar), each with its
+All three versions live in Settings → Updates (the gear in the status bar), each with its
 "checked … ago" and a check-now button. The status bar speaks up only while there
 is news: an update on offer, a download running, or a failure worth a retry.
