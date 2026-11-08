@@ -4,6 +4,7 @@
 #   src-tauri\target\x86_64-pc-windows-msvc\release\luna.exe                   (the bare exe)
 #   src-tauri\target\x86_64-pc-windows-msvc\release\core-fingerprint.txt       (build.rs, for latest.json)
 #   src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe    (installer + .sig)
+#   src-tauri\target\THIRD-PARTY-NOTICES.txt                                  (with -Installer: what the setup installs beside the exe)
 # The NSIS step downloads a helper DLL from GitHub on every run, and a blip
 # there would otherwise take the bare exe down with it. Pass -Installer
 # when you actually need the setup + updater artifacts.
@@ -31,10 +32,16 @@ if ($Unsigned -and -not $Installer) { throw '-Unsigned is for -Installer; the ba
 $keyArgs = @()
 $signWith = ''
 $configArg = ''
+if ($Installer) {
+    # The installer carries the third-party notices beside the exe, as a bundle
+    # resource of a config of its own: the crate's build copies every resource
+    # its config lists, and a plain build, which has no notices made, lists none.
+    $configArg = '--config src-tauri/tauri.installer.conf.json'
+}
 if ($Installer -and $Unsigned) {
     # Tauri stops on a missing private key while the config asks for updater
     # artifacts; this override turns them off.
-    $configArg = '--config src-tauri/tauri.unsigned.conf.json'
+    $configArg += ' --config src-tauri/tauri.unsigned.conf.json'
 } elseif ($Installer) {
     # Passed on by name, its value from this process's environment, so it never
     # shows on a command line; empty when there is none.
@@ -62,6 +69,13 @@ $clearSigs = if ($Installer) { 'rm -f src-tauri/target/x86_64-pc-windows-msvc/re
 
 $build = Get-BuildStamp
 Write-Host "build stamp: $build"
+
+# Made from the lockfiles before the build, outside the build lock, which the
+# script takes for itself.
+if ($Installer) {
+    Initialize-HostDirs 'src-tauri/target'
+    & "$PSScriptRoot/third-party-notices.ps1" -Out (Join-Path $RepoRoot 'src-tauri/target/THIRD-PARTY-NOTICES.txt')
+}
 
 Use-BuildLock {
     # A failed image build throws, rather than going on to build the app in

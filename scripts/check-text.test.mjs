@@ -130,6 +130,16 @@ test('the checker and its tests are skipped by their exact paths from the root',
   assert.equal(check('check-text.mjs.md', 'colour\n').length, 1);
 });
 
+test('license texts kept for other packages are skipped, the folder they are in is not', () => {
+  // A skipped path is never read, so one that does not exist passes; a checked
+  // one is read, and the read fails.
+  assert.deepEqual(
+    checkFiles(['third-party-licenses/crates/none/LICENSE', 'third-party-licenses/npm/@x/y/LICENSE']),
+    []
+  );
+  assert.throws(() => checkFiles(['third-party-licenses/NONE.md']), /ENOENT/);
+});
+
 test('a symbolic link to a directory, and a directory, are passed over', () => {
   // As a skill's `.claude/skills/<name>` is: git lists the link as a file.
   const target = join(dir, 'skill');

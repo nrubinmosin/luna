@@ -43,11 +43,12 @@ signing step and publishes the draft the workflow leaves.
    - **sbom**: CycloneDX SBOMs of the Rust crates in the Windows build and of the npm
      packages in the frontend (`scripts/sbom.ps1`), each checked to be a file the
      attest step takes (`bomFormat`, `serialNumber` and `specVersion` all set), so a
-     bad SBOM stops the run here rather than after the signed build.
+     bad SBOM stops the run here rather than after the signed build; and the third-party
+     notices (`scripts/third-party-notices.ps1`), the same file the installer carries.
    - **attest**: `SHA256SUMS` over every asset, a build provenance attestation of each,
      and the two SBOMs attested against the installer.
    - **publish** creates a **draft** release with the installer, `.sig`, `latest.json`,
-     the SBOMs and `SHA256SUMS`. Its notes are made from `CHANGELOG.md`
+     the SBOMs, the third-party notices and `SHA256SUMS`. Its notes are made from `CHANGELOG.md`
      (`scripts/release-notes.ps1`): the version's section as written; under a heading
      each, the sections of every version newer than the latest *published* release, so a
      version that was tagged but never published ships its changes here; a link to the
