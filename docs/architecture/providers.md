@@ -32,7 +32,10 @@ and `<data>/codex-cli/versions/<ver>/bin/codex.exe`, with `current` naming the
 active version folder ([ADR-0013](../adr/0013-own-cli-binaries.md)). Versions are
 never overwritten; old ones are swept once nobody holds them; `PATH` is the
 fallback until a copy exists. Each channel is checked every six hours. Claude
-Code is verified against its manifest's sha256 and size. Codex comes as the
+Code's `manifest.json` is verified against its detached signature
+(`manifest.json.sig`) and Anthropic's release key, pinned in
+`claude/manifest_sig.rs`; the exe then against that manifest's sha256 and
+size. A new key reaches Luna only with a Luna release. Codex comes as the
 package tarball, the only asset with a line in `codex-package_SHA256SUMS`, which
 also carries `codex-command-runner.exe` and the other Windows sandbox helpers; it
 is unpacked whole into the version folder.
@@ -44,7 +47,7 @@ An install is all or nothing:
    crash mid-download or mid-unpack) is removed first; a link or junction there,
    or `staging` itself as one, is removed as itself and never gone into.
 2. **Validation.** The source says what it put there (`Package`): Claude Code
-   the one exe with the manifest's sha256 and size; Codex every regular file of
+   the one exe with the signed manifest's sha256 and size; Codex every regular file of
    the tarball at its tar header's size (the release publishes no hash of the
    files inside, so the tarball's sha256 is what pins them). The Codex unpack
    takes files and folders only, refusing a link, device, pipe or sparse

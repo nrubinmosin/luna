@@ -1,9 +1,11 @@
 //! Where Claude Code releases come from: the same bucket the official
 //! installer reads, a plain-text `latest` pointer, a manifest with per-platform
-//! sha256s and sizes, and a bare executable per platform.
+//! sha256s and sizes, signed by Anthropic's release key (`manifest_sig`), and
+//! a bare executable per platform.
 
 use crate::cli::{download_to, sane_version, Package, PackageFile, Source};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 const RELEASES: &str = "https://downloads.claude.ai/claude-code-releases";
@@ -38,16 +40,28 @@ fn latest(agent: &ureq::Agent) -> Result<String, String> {
     sane_version(&text, CHANNEL)
 }
 
-/// The sha256 and the size the manifest gives our platform's exe. Manifests
-/// carry both; the size is taken as optional all the same, the hash being
-/// what pins the file.
+/// A small file off the bucket, whole and as served: the signature is over
+/// the manifest's exact bytes.
+fn get_small(agent: &ureq::Agent, url: &str, what: &str) -> Result<Vec<u8>, String> {
+    const LIMIT: u64 = 1 << 20;
+    let resp = agent.get(url).call().map_err(|e| format!("{what}: {e}"))?;
+    let mut bytes = Vec::new();
+    resp.into_reader().take(LIMIT + 1).read_to_end(&mut bytes).map_err(|e| format!("{what}: {e}"))?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(format!("{what}: larger than {LIMIT} bytes"));
+    }
+    Ok(bytes)
+}
+
+/// The sha256 and the size the manifest gives our platform's exe, once the
+/// manifest's signature has verified against the pinned release key.
+/// Manifests carry both; the size is taken as optional all the same, the
+/// hash being what pins the file.
 fn expected(agent: &ureq::Agent, version: &str) -> Result<(String, Option<u64>), String> {
-    let manifest: serde_json::Value = agent
-        .get(&format!("{RELEASES}/{version}/manifest.json"))
-        .call()
-        .map_err(|e| format!("manifest: {e}"))?
-        .into_json()
-        .map_err(|e| format!("manifest: {e}"))?;
+    let bytes = get_small(agent, &format!("{RELEASES}/{version}/manifest.json"), "manifest")?;
+    let sig = get_small(agent, &format!("{RELEASES}/{version}/manifest.json.sig"), "manifest signature")?;
+    super::manifest_sig::verify(&bytes, &sig)?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("manifest: {e}"))?;
     let entry = &manifest["platforms"][platform()];
     let checksum = entry["checksum"]
         .as_str()
@@ -74,9 +88,10 @@ fn fetch(agent: &ureq::Agent, version: &str, dir: &Path, progress: &mut dyn FnMu
         let _ = fs::set_permissions(&part, fs::Permissions::from_mode(0o755));
     }
     fs::rename(&part, &dest).map_err(|e| format!("rename: {e}"))?;
+    let signed = format!("{version}/manifest.json, signed by the {}", super::manifest_sig::KEY_NAME);
     let (size, verified) = match size {
-        Some(size) => (size, format!("sha256 and size from {version}/manifest.json")),
-        None => (fs::metadata(&dest).map_err(|e| e.to_string())?.len(), format!("sha256 from {version}/manifest.json")),
+        Some(size) => (size, format!("sha256 and size from {signed}")),
+        None => (fs::metadata(&dest).map_err(|e| e.to_string())?.len(), format!("sha256 from {signed}")),
     };
     Ok(Package { files: vec![PackageFile { rel: BIN_NAME.into(), size, sha256: Some(checksum) }], verified })
 }

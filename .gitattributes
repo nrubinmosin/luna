@@ -18,6 +18,10 @@ src-tauri/Cargo.lock         eol=lf
 # agents read it whole: the same bytes from any checkout, and no CR in them.
 src-tauri/src/luna_guide.md  eol=lf
 
+# A release manifest and its detached signature, the signature over the
+# manifest's exact bytes: no line-ending conversion either way.
+src-tauri/src/claude/testdata/*  -text
+
 # Git hooks run under sh, which reads a CR as part of the command.
 .githooks/*                  eol=lf
 scripts/*.sh                 eol=lf
