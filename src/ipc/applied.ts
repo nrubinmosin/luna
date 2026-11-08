@@ -17,7 +17,10 @@ export interface Applied {
 export interface AppliedView {
   launch: Applied[];
   account: Applied[];
+  /** Why `account` may be missing writes Luna made (its ledger would not
+   *  read, or missed one); null when it is whole. */
+  incomplete: string | null;
 }
 
 export const appliedByLuna = (chatId: string) =>
-  call<AppliedView>('applied_by_luna', { chatId }, { launch: [], account: [] });
+  call<AppliedView>('applied_by_luna', { chatId }, { launch: [], account: [], incomplete: null });

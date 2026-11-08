@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { appliedByLuna, type Applied, type AppliedClass, type AppliedView } from '../../ipc/applied';
 import type { Chat } from '../../shared/types';
+import { useChats } from './chats.store';
 
 /** The classes in the order they are shown, each with what it means. */
 export const CLASSES: { cls: AppliedClass; title: string; means: string }[] = [
@@ -48,6 +49,40 @@ function Group({ title, means, items }: { title: string; means: string; items: A
 }
 
 /**
+ * The chat's own "Wait guard", as the new-chat dialog has it: for a chat
+ * made before it was a choice, or to change one's mind. Applies from the
+ * CLI's next start. A helper has the guard whatever this says, so it gets no
+ * box; Codex runs the hook only with its hooks unasked.
+ */
+function GuardBox({ chat }: { chat: Chat }) {
+  const on = useChats(s => s.findChat(chat.id)?.guard ?? false);
+  if (chat.parentId) return null;
+  const able = chat.provider !== 'codex' || !!chat.hooksUnasked;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div
+        className="field-row"
+        title={able ? undefined : 'Codex runs a hook Luna gives it only with Hooks unasked on'}
+      >
+        <input
+          type="checkbox"
+          id={`guard-${chat.id}`}
+          checked={on && able}
+          disabled={!able}
+          onChange={() => useChats.getState().setGuard(chat.id, !on)}
+        />
+        <label htmlFor={`guard-${chat.id}`} style={{ cursor: 'default' }}>
+          Wait guard for this chat
+        </label>
+      </div>
+      <div style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)', marginTop: 2 }}>
+        Refuses a shell command that would wait forever. Takes effect when the chat&apos;s CLI next starts.
+      </div>
+    </div>
+  );
+}
+
+/**
  * What Luna applied to a chat's CLI, read-only: its latest start grouped by
  * why each item is there, and what Luna wrote into its account outside a
  * start. Asked of the core as it opens (applied.rs `applied_by_luna`).
@@ -58,7 +93,7 @@ export function AppliedPanel({ chat, onClose }: { chat: Chat; onClose: () => voi
     let stale = false;
     void appliedByLuna(chat.id)
       .then(v => !stale && setView(v))
-      .catch(() => !stale && setView({ launch: [], account: [] }));
+      .catch(() => !stale && setView({ launch: [], account: [], incomplete: null }));
     return () => {
       stale = true;
     };
@@ -109,6 +144,25 @@ export function AppliedPanel({ chat, onClose }: { chat: Chat; onClose: () => voi
             Luna adds to a CLI only what it needs to run it, what keeps its own secrets safe, and what you chose. Tokens
             and Luna&apos;s local addresses are not shown; files are named by their path.
           </div>
+          <GuardBox chat={chat} />
+          {view?.incomplete && (
+            <div
+              role="alert"
+              style={{
+                marginTop: 10,
+                padding: '6px 8px',
+                border: '1px solid oklch(.62 .17 60)',
+                borderRadius: 2,
+                fontSize: 'var(--fs-3)',
+                color: 'var(--fg)'
+              }}
+            >
+              <b>Accounting incomplete.</b> Luna may have written into this account more than is listed below:{' '}
+              <span style={{ fontFamily: 'ui-monospace, Consolas, monospace', whiteSpace: 'pre-wrap' }}>
+                {view.incomplete}
+              </span>
+            </div>
+          )}
           {view === null ? (
             <div style={{ marginTop: 10, color: 'var(--faint)' }}>Asking the core…</div>
           ) : view.launch.length === 0 && view.account.length === 0 ? (

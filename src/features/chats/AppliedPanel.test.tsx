@@ -10,6 +10,13 @@ vi.mock('../../ipc/applied', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/applied')>()),
   appliedByLuna: vi.fn()
 }));
+// xterm cannot run in jsdom.
+vi.mock('../panes/terminals', () => ({
+  startSession: vi.fn(),
+  focusTerminal: vi.fn(),
+  forget: vi.fn(),
+  forgetAll: vi.fn()
+}));
 
 const item = (key: string, cls: Applied['class'], value = key): Applied => ({
   key,
@@ -41,7 +48,8 @@ describe('AppliedPanel', () => {
   it('shows each item with its value and why, and the account’s writes apart', async () => {
     vi.mocked(ipc.appliedByLuna).mockResolvedValue({
       launch: [item('core-read-deny', 'boundary', 'permissions.deny Read(//e/Luna/core/**)')],
-      account: [item('trust', 'userAction', 'E:\\src\\app')]
+      account: [item('trust', 'userAction', 'E:\\src\\app')],
+      incomplete: null
     });
     render(<AppliedPanel chat={chat} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText('permissions.deny Read(//e/Luna/core/**)')).toBeInTheDocument());
@@ -52,8 +60,19 @@ describe('AppliedPanel', () => {
     expect(screen.getByText('E:\\src\\app')).toBeInTheDocument();
   });
 
+  it('says the account part may be short when the ledger is', async () => {
+    vi.mocked(ipc.appliedByLuna).mockResolvedValue({
+      launch: [item('model', 'userAction', '--model opus')],
+      account: [],
+      incomplete: 'trust /p in /acc was not noted: disk full'
+    });
+    render(<AppliedPanel chat={chat} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Accounting incomplete.'));
+    expect(screen.getByRole('alert')).toHaveTextContent('was not noted: disk full');
+  });
+
   it('says so when the chat has not started, and closes', async () => {
-    vi.mocked(ipc.appliedByLuna).mockResolvedValue({ launch: [], account: [] });
+    vi.mocked(ipc.appliedByLuna).mockResolvedValue({ launch: [], account: [], incomplete: null });
     const onClose = vi.fn();
     const user = userEvent.setup();
     render(<AppliedPanel chat={chat} onClose={onClose} />);
