@@ -10,6 +10,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
+- The window's page reaches only what it calls, so a script injected into it
+  would get no more: each app command is granted to the main window by name
+  and refused to any other window or a remote page, plugins are cut to the
+  calls the page makes (no menus, trays, new webviews or paths), the bridge to
+  the core passes on only the 35 commands the page sends, each on its own lane
+  (never the core's `shutdown`), and account and folder paths are checked
+  where they come in: an account path must be an account folder Luna lists,
+  reached through no link or junction and spelled as on disk, a folder a
+  plain absolute path.
+- Turning on Settings → Helpers → "Let helpers run with more privilege than
+  the chat that spawns them" asks again in a system dialog, which the page's
+  own calls cannot answer, and a yes counts only for the state it was asked
+  about.
 - No CLI runs with administrator rights. Luna started as administrator starts
   its core, and so every session and helper, with the desktop's ordinary
   rights and the user's own environment, not the elevated one's; where there

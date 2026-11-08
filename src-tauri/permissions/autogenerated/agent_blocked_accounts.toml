@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-blocked-accounts"
+description = "Enables the agent_blocked_accounts command without any pre-configured scope."
+commands.allow = ["agent_blocked_accounts"]
+
+[[permission]]
+identifier = "deny-agent-blocked-accounts"
+description = "Denies the agent_blocked_accounts command without any pre-configured scope."
+commands.deny = ["agent_blocked_accounts"]

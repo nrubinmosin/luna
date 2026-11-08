@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-browsers"
+description = "Enables the set_browsers command without any pre-configured scope."
+commands.allow = ["set_browsers"]
+
+[[permission]]
+identifier = "deny-set-browsers"
+description = "Denies the set_browsers command without any pre-configured scope."
+commands.deny = ["set_browsers"]

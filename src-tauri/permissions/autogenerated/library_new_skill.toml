@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-library-new-skill"
+description = "Enables the library_new_skill command without any pre-configured scope."
+commands.allow = ["library_new_skill"]
+
+[[permission]]
+identifier = "deny-library-new-skill"
+description = "Denies the library_new_skill command without any pre-configured scope."
+commands.deny = ["library_new_skill"]

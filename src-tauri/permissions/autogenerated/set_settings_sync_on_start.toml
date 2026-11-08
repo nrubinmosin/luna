@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-settings-sync-on-start"
+description = "Enables the set_settings_sync_on_start command without any pre-configured scope."
+commands.allow = ["set_settings_sync_on_start"]
+
+[[permission]]
+identifier = "deny-set-settings-sync-on-start"
+description = "Denies the set_settings_sync_on_start command without any pre-configured scope."
+commands.deny = ["set_settings_sync_on_start"]

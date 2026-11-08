@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-format-account-config"
+description = "Enables the format_account_config command without any pre-configured scope."
+commands.allow = ["format_account_config"]
+
+[[permission]]
+identifier = "deny-format-account-config"
+description = "Denies the format_account_config command without any pre-configured scope."
+commands.deny = ["format_account_config"]
