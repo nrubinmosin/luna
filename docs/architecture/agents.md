@@ -48,11 +48,16 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 - Tokens are per session and reissued on every spawn. The instruction travels
   in `initialize`; together about 2k tokens once.
 - Every session has `LUNA_SESSION_ID`; a helper also `LUNA_PARENT_ID`. A helper
-  is told what it is and to write in its task's language: Claude Code by
-  `--append-system-prompt`; Codex by a note after each background turn's prompt
-  (a visible one's opening prompt only), because `-c developer_instructions=`
+  is told what it is and to write in its task's language (`pty::helper_line`),
+  naming the words instructions files use for the person (the operator, the
+  user, the person at this machine) so that rules set for that person's chat do
+  not reach it: Claude Code by `--append-system-prompt` and a note after its
+  first prompt (`pty::helper_prompt`), as memory files outweigh an appended
+  system prompt; Codex by the note after each background turn's prompt (a
+  visible one's opening prompt only), because `-c developer_instructions=`
   would replace a value Luna would have to resolve from Codex's config stack.
-  Slash-command prompts go without; a compaction can lose a visible one's.
+  The transcript readers drop the note (`without_note`). Slash-command prompts
+  go without; a compaction can lose a visible one's.
 - The instruction says the CLIs' own subagents cannot use another provider or
   account (without it a Codex orchestrator used its own `spawn_agent`).
 

@@ -216,22 +216,32 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
 /// with nobody there to answer. Its language too: told to speak the user's
 /// language to them, a helper went on in it to the agent that asked in English,
 /// progress notes and all.
+/// Instructions files name the person in their own words — the operator, the
+/// user, the person at this machine — and a helper told only that it is "not
+/// a chat with a person" went on following the rules written for that person's
+/// chat: a helper on 2026-11-08 wrote its progress notes in the language its
+/// account's instructions set for the operator. So the note names those words.
 pub(crate) fn helper_line(parent: &str) -> String {
     format!(
         "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
-         that session. Instructions meant only for the session a person talks to do not apply to you. Write in the \
-         language of the task you were given, progress notes included."
+         that session. You are not the chat of whoever your instructions call the operator, the user or the person at \
+         this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
+         not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
+         where it says none, in the language the task is written in."
     )
 }
 
-/// A Codex helper's opening prompt, with `helper_line` as a note after it.
-/// Codex can only replace `developer_instructions`, not add to them, and what
-/// they come to depends on its whole stack of config files: working that out
-/// here to pass it on would be Codex's resolution done twice, and a long one
-/// would not fit on a command line. After the prompt, not before: the opening
+/// A helper's opening prompt, with `helper_line` as a note after it: every turn
+/// of a Codex helper, and the first of a Claude Code one, whose system prompt
+/// says it too. Codex can only replace `developer_instructions`, not add to them,
+/// and what they come to depends on its whole stack of config files: working that
+/// out here to pass it on would be Codex's resolution done twice, and a long one
+/// would not fit on a command line. Claude Code reads its instructions files as
+/// memory that outweighs an appended system prompt; in the task itself the note
+/// stands beside what it is about. After the prompt, not before: the opening
 /// words are what names the chat, and a slash command has to come first. One
 /// that does goes without the note, which would land in its arguments.
-pub(crate) fn codex_helper_prompt(parent: &str, prompt: &str) -> String {
+pub(crate) fn helper_prompt(parent: &str, prompt: &str) -> String {
     if prompt.trim_start().starts_with('/') {
         return prompt.to_string();
     }
@@ -498,13 +508,16 @@ mod tests {
         let claude = claude_helper_args("p1");
         assert_eq!(claude[0], "--append-system-prompt");
         assert!(claude[1].contains("session p1"));
-        assert!(claude[1].contains("language of the task"), "not the language a person's chat is told to speak");
-        let codex = codex_helper_prompt("p1", "Fix the build.");
+        assert!(claude[1].contains("language the task is written in"), "not the language a person's chat is told to speak");
+        for word in ["the operator", "the user", "the person at this machine"] {
+            assert!(claude[1].contains(word), "names the words instructions use: {word}");
+        }
+        let codex = helper_prompt("p1", "Fix the build.");
         assert!(codex.starts_with("Fix the build.\n\n"), "the opening words name the chat: {codex}");
         assert!(codex.contains(&claude[1]));
         assert_eq!(title_from_prompt(&codex).as_deref(), Some("Fix the build."), "the note is no part of its name");
         for command in ["/review the diff", "  /compact"] {
-            assert_eq!(codex_helper_prompt("p1", command), command, "its arguments are not the place for it");
+            assert_eq!(helper_prompt("p1", command), command, "its arguments are not the place for it");
         }
     }
 
