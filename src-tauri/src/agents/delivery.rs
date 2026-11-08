@@ -10,7 +10,7 @@ use crate::agents::owed::{owe_from, seen, Owed};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::privilege::{answerer, command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{authorize_send, chat_name, label, reg, Registry, DEV_CALLER};
+use crate::agents::registry::{authorize_send, chat_name, is_mine, label, reg, Registry, DEV_CALLER};
 use crate::agents::resume::{call_off_resume, mark_going_in, reconcile_held, resume_chats, resume_pending, unmark_going_in};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -313,9 +313,18 @@ pub(super) fn type_in(
 /// Types text into the session, presses Enter after it, and reports whether
 /// a turn began. With `interrupt` the turn in flight, and any prompt it is
 /// stopped on, is cut short first (Esc; a background helper's process
-/// stopped), and the text is the next turn rather than one queued after it.
+/// stopped), and the text is the next turn rather than one queued after it:
+/// only in the caller's own helpers, as stopping a turn ends work and dismisses
+/// a question that is someone else's to answer.
 pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent, String> {
     let known = authorize_send(caller, id)?;
+    let mine = is_mine(caller, id);
+    if interrupt && !mine {
+        return Err(format!(
+            "interrupt only stops sessions you spawned, directly or through a helper; {id} is not one. Send without \
+             interrupt: the text is queued after its turn"
+        ));
+    }
     let pty = crate::pty::manager();
     if !live(pty, id) {
         return Err(format!("session {id} is not running"));
@@ -329,10 +338,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     let terminal = if crate::background::has(id) { None } else { TypingInto::wait_for(id, TYPING_WAIT) };
     let (state_before, ask) = state_of(id);
     if let Some(a) = ask.as_ref().filter(|a| a.blocking && !interrupt) {
-        return Err(format!(
-            "session {id} is on a {}: typed text would land in its dialog. Answer it with luna_answer, or send with interrupt: true to dismiss it",
-            a.kind
-        ));
+        let way_out = if mine { ", or send with interrupt: true to dismiss it" } else { "; its own chat or the user may" };
+        return Err(format!("session {id} is on a {}: typed text would land in its dialog. Answer it with luna_answer{way_out}", a.kind));
     }
     // Esc is to dismiss a dialog before the text goes in, but text that comes
     // while it is still up lands in it: past a permission or a CLI's own list,
@@ -762,6 +769,40 @@ mod tests {
         assert!(TypingInto::wait_for("tw-other", Duration::from_millis(1)).is_some(), "another terminal is another matter");
         drop(got);
         assert!(!TypingInto::under_way("tw-chat"));
+    }
+
+    #[test]
+    fn an_interrupt_stops_only_the_callers_own() {
+        let (claude, codex, none) = ("C:\\acc\\anthropic\\one", "C:\\acc\\openai\\two", serde_json::json!({}));
+        let background = serde_json::json!({ "background": true });
+        register("ir-me", Provider::Claude, "C:\\p", claude, None, true, none.clone());
+        // A person's chats, one of each provider, and their helpers: one
+        // working in the background and stopped on a question of its own.
+        register("ir-chat", Provider::Claude, "C:\\p", claude, None, true, none.clone());
+        register("ir-codex-chat", Provider::Codex, "C:\\p", codex, None, false, none.clone());
+        register("ir-theirs", Provider::Claude, "C:\\p", claude, Some("ir-chat"), false, background.clone());
+        crate::background::take_up_for_test("ir-theirs", "C:\\p", 1, &[], None);
+        crate::background::set_running_for_test("ir-theirs");
+        crate::background::hold_for_test("ir-theirs");
+        register("ir-codex-theirs", Provider::Codex, "C:\\p", codex, Some("ir-codex-chat"), false, background);
+        for id in ["ir-chat", "ir-codex-chat", "ir-theirs", "ir-codex-theirs"] {
+            let e = send("ir-me", id, "drop that and do this", true).err().unwrap_or_else(|| panic!("{id} was interrupted"));
+            assert!(e.contains("interrupt only stops sessions you spawned"), "{id}: {e}");
+        }
+        // Its turn goes on, and its question still waits for whoever owns it.
+        assert!(crate::background::ask("ir-theirs").is_some(), "its question was dismissed");
+        // Its own helper, either provider, is not refused for being someone else's
+        // (here they are simply not running).
+        register("ir-mine", Provider::Claude, "C:\\p", claude, Some("ir-me"), false, none.clone());
+        register("ir-mine-codex", Provider::Codex, "C:\\p", codex, Some("ir-mine"), false, none);
+        for id in ["ir-mine", "ir-mine-codex"] {
+            let e = send("ir-me", id, "drop that and do this", true).err().unwrap();
+            assert!(e.contains("is not running"), "{id}: {e}");
+        }
+        crate::background::remove("ir-theirs");
+        for id in ["ir-mine-codex", "ir-mine", "ir-theirs", "ir-codex-theirs", "ir-chat", "ir-codex-chat", "ir-me"] {
+            forget(id);
+        }
     }
 
     #[test]

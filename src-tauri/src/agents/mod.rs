@@ -10,10 +10,10 @@
 //! and its worktree are gone. Lineage lives here: every session registered
 //! with a parent is that parent's, and a caller may only reach its own
 //! descendants — except to list every session, type a message into one and
-//! read or wait on its answer, which is how sessions talk to each other; only
-//! killing and deleting stay with the lineage. Children outlive their parent:
-//! they pass to its parent, or with none stand alone, the window's to manage
-//! (see `forget`).
+//! read or wait on its answer, which is how sessions talk to each other;
+//! interrupting, killing and deleting stay with the lineage. Children outlive
+//! their parent: they pass to its parent, or with none stand alone, the
+//! window's to manage (see `forget`).
 //!
 //! A helper does not report back on its own the way a subagent does: its
 //! answer sits in its own transcript until someone waits for it or reads it.

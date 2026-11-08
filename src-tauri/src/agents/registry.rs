@@ -455,6 +455,11 @@ pub(super) fn authorize_view(caller: &str, target: &str) -> Result<Known, String
     r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_sessions lists them"))
 }
 
+/// Whether `id` is the caller's: spawned by it, directly or through a helper.
+pub(super) fn is_mine(caller: &str, id: &str) -> bool {
+    is_descendant(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, id)
+}
+
 /// Text may go to any session Luna runs, the user's own chats included —
 /// that is how one session passes a message to another — but not back into
 /// the caller's own composer.
