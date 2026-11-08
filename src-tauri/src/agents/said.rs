@@ -53,12 +53,15 @@ pub(super) struct Said {
     /// That turn was one its CLI started by itself (a background job's end it
     /// took up), with no prompt of anyone's behind it.
     by_cli: bool,
+    /// Beside `texts`: each one its CLI marked a turn's final answer
+    /// (`Message::final_answer`).
+    finals: Vec<bool>,
 }
 
 impl Said {
     /// Messages of one turn, or of turns that cannot be told apart.
     pub(super) fn one_turn(texts: Vec<String>) -> Said {
-        Said { texts, last_turn: 0, starts: vec![0], by_cli: false }
+        Said { texts, last_turn: 0, starts: vec![0], by_cli: false, finals: Vec::new() }
     }
 }
 
@@ -95,6 +98,7 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
             said.starts.push(said.texts.len());
             prompted = false;
         }
+        said.finals.push(m.final_answer);
         said.texts.push(m.text);
     }
     said
@@ -192,6 +196,10 @@ pub(super) const SHORT_MESSAGE: usize = 400;
 /// it as its last word.
 pub(super) fn report_of(replies: &Said) -> usize {
     let from = replies.last_turn.min(replies.len().saturating_sub(1));
+    // Its CLI's word for it, where it gives one: the last turn's final answer.
+    if let Some(at) = final_of(replies, from) {
+        return at;
+    }
     let len = |i: usize| replies[i].chars().count();
     let longest = (from..replies.len()).max_by_key(|&i| len(i)).unwrap_or(from);
     if replies.get(longest).map_or(0, |r| r.chars().count()) >= SHORT_MESSAGE {
@@ -204,6 +212,17 @@ pub(super) fn report_of(replies: &Said) -> usize {
         bounds.windows(2).rev().find_map(|w| (w[0]..w[1]).filter(|&i| len(i) >= SHORT_MESSAGE).max_by_key(|&i| len(i)))
     });
     before.flatten().unwrap_or(replies.len().saturating_sub(1))
+}
+
+/// The last message of the turn from `from` on that its CLI marked final.
+fn final_of(replies: &Said, from: usize) -> Option<usize> {
+    (from..replies.len()).rev().find(|&i| replies.finals.get(i).copied().unwrap_or(false))
+}
+
+/// Whether `report_of` picked the report by length, with no CLI's mark on any
+/// message of the last turn to go by: a guess, which a caller is told of.
+pub(super) fn report_guessed(replies: &Said) -> bool {
+    !replies.is_empty() && final_of(replies, replies.last_turn.min(replies.len() - 1)).is_none()
 }
 
 /// A report's first line that says anything, on one line and short, without
@@ -334,8 +353,31 @@ mod tests {
     /// As helper B put it on 2026-11-04: a long report at one commit, then text
     /// queued mid-turn, then a shorter report at the commit it moved on to.
     #[test]
+    fn a_final_answer_its_cli_marked_is_the_report_whatever_its_length() {
+        let m = |role: &str, text: String, final_answer: bool| Message { role: role.into(), text, after_cli: false, final_answer };
+        let progress = format!("Working through the files. {}", "Notes. ".repeat(150));
+        let said = own_words(
+            vec![m("user", "Fix it.".into(), false), m("assistant", progress.clone(), false), m("assistant", "Fixed: 3 files.".into(), true)],
+            false,
+        );
+        assert_eq!(said[report_of(&said)], "Fixed: 3 files.", "the CLI's final answer, not the longest message");
+        assert!(!report_guessed(&said));
+        // No mark: the longest, and the caller is told it was picked so.
+        let said = own_words(vec![m("user", "Fix it.".into(), false), m("assistant", progress.clone(), false), m("assistant", "ok".into(), false)], false);
+        assert_eq!(said[report_of(&said)], progress);
+        assert!(report_guessed(&said));
+        // A mark in an earlier turn says nothing of the last one.
+        let said = own_words(
+            vec![m("user", "A?".into(), false), m("assistant", "A.".into(), true), m("user", "B?".into(), false), m("assistant", progress.clone(), false)],
+            false,
+        );
+        assert_eq!(said[report_of(&said)], progress);
+        assert!(report_guessed(&said));
+    }
+
+    #[test]
     fn the_last_turn_reports() {
-        let m = |role: &str, text: String| Message { role: role.into(), text, after_cli: false };
+        let m = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, final_answer: false };
         let first = format!("The new tip is 5ce3b92d2. {}", "Details. ".repeat(120));
         let second = format!("The new tip is cfeb7186f. {}", "Lanes green. ".repeat(40));
         let said = own_words(
@@ -367,7 +409,7 @@ mod tests {
         // As power-fix put it on 2026-11-08: a long report, then a turn its CLI
         // started by itself on a background job's end, short. The report
         // stands; the short line comes next as its last word.
-        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true };
+        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true, final_answer: false };
         let said = own_words(
             vec![
                 m("user", "Fix the shutdown.".into()),
