@@ -1077,7 +1077,7 @@ mod tests {
             })
             .collect();
         std::thread::sleep(std::time::Duration::from_millis(300));
-        crate::agents::take_over("wt-helper", || Some(Vec::new()));
+        crate::agents::take_over("wt-helper", || Some(Vec::new())).unwrap();
         crate::background::test_turn_ended("wt-helper");
         for (w, caller) in waits.into_iter().zip(["wt-top", "wt-mid"]) {
             let e = w.join().unwrap().err().unwrap_or_else(|| panic!("{caller}'s wait handed the person's chat over"));
