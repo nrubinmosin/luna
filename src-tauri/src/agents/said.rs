@@ -125,7 +125,9 @@ pub(super) fn answer_where(file: Option<&std::path::Path>, span: Option<(usize, 
         (Some(path), Some((report, all))) if report < all => {
             format!("the answer is in {}, its report first (lines 1-{report} of {all})", path.display())
         }
-        (Some(path), _) => format!("the answer is in {}, its report first", path.display()),
+        // The report is all there is: nothing to put first.
+        (Some(path), Some(_)) => format!("the answer is in {}", path.display()),
+        (Some(path), None) => format!("the answer is in {}, its report first", path.display()),
         (None, _) => "luna_read gives the answer".into(),
     }
 }
@@ -227,8 +229,32 @@ pub(super) fn report_guessed(replies: &Said) -> bool {
 
 /// A report's first line that says anything, on one line and short, without
 /// its markdown: the verdict, for a caller deciding whether to open the file.
+/// A heading of a few words ("Report", "## Summary") names the report rather
+/// than says what it found: the line after it, where one says anything.
 fn opening_line(report: &str) -> Option<String> {
-    first_words(report, NOTICE_QUOTE)
+    let label = |line: &str| {
+        let t = line.trim_start();
+        t.starts_with('#') && t.trim_start_matches('#').split_whitespace().count() < HEADING_WORDS
+    };
+    let body: Vec<&str> = report.lines().filter(|l| !label(l)).collect();
+    first_words(&body.join("\n"), NOTICE_QUOTE).or_else(|| first_words(report, NOTICE_QUOTE))
+}
+
+/// A heading of fewer words than this is a label (`opening_line`); one of more
+/// may be the verdict itself ("## Done: all tests pass").
+const HEADING_WORDS: usize = 4;
+
+/// Up to this many characters, all a helper said goes into the notice itself
+/// (`inline_answer`), and no file: a "Done." costs its caller no read.
+pub(super) const INLINE_ANSWER: usize = 300;
+
+/// All `replies` say, on one line for a notice, when it is short enough to
+/// go there whole (`INLINE_ANSWER`): messages apart by " / ".
+pub(super) fn inline_answer(replies: &Said) -> Option<String> {
+    let flat: Vec<String> = replies.iter().map(|t| t.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|t| !t.is_empty()).collect();
+    let line = flat.join(" / ");
+    let line: String = line.chars().filter(|c| !c.is_control()).collect();
+    (!line.is_empty() && line.chars().count() <= INLINE_ANSWER).then_some(line)
 }
 
 /// The most of a helper's task `luna_list` gives: it comes with every row.
@@ -269,8 +295,10 @@ pub(super) fn first_words(text: &str, most: usize) -> Option<String> {
 /// What a notice says of the answer beyond where it is. Not for a turn that
 /// stopped short: the first line of what it got to say is no verdict on it.
 pub(super) fn begins(replies: &Said) -> String {
+    // Several messages and no CLI's mark on any: which leads was a guess.
+    let guessed = if replies.len() > 1 && report_guessed(replies) { " (its report picked by length)" } else { "" };
     match replies.get(report_of(replies)).and_then(|r| opening_line(r)) {
-        Some(line) => format!(". It begins: \"{line}\""),
+        Some(line) => format!(". It begins: \"{line}\"{guessed}"),
         None => String::new(),
     }
 }
@@ -297,10 +325,10 @@ mod tests {
         assert!(head[2].starts_with("line three"));
         assert_eq!(whole.lines().count(), 15);
         assert_eq!(report_text(&replies).unwrap().lines().count(), 3);
-        // A file that is the report alone says nothing of lines.
+        // A file that is the report alone says nothing of lines, nor of a report first.
         let one = answer_file("span", &Said::one_turn(vec!["Done.".into()]));
-        assert!(one.ends_with(", its report first"), "{one}");
-        let _ = std::fs::remove_file(one.trim_start_matches("the answer is in ").trim_end_matches(", its report first"));
+        assert!(!one.contains("report first"), "{one}");
+        let _ = std::fs::remove_file(one.trim_start_matches("the answer is in "));
         assert_eq!(report_text(&Said::default()), None);
     }
 
@@ -343,7 +371,7 @@ mod tests {
         let whole = answer_text(&replies);
         assert!(whole.starts_with("R2 DONE FOURTH\nKIWI\n\n---\n\nEverything else it said, in order:\n\nI’ll run the ping"), "{whole}");
         assert!(!whole.contains("Its last message"), "it leads already");
-        assert_eq!(begins(&replies), ". It begins: \"R2 DONE FOURTH\"");
+        assert_eq!(begins(&replies), ". It begins: \"R2 DONE FOURTH\" (its report picked by length)");
         // One that is not short is the report, wherever it is.
         let mut with_report = replies.texts.clone();
         with_report.insert(1, format!("Findings: {}", "a finding. ".repeat(40)));
@@ -538,7 +566,15 @@ mod tests {
 
         let report = format!("# Report\nThe long one, with what was done. {}", "Details. ".repeat(50));
         let replies = Said::one_turn(vec!["Let me look.".to_string(), report, "Nothing else.".to_string()]);
-        assert_eq!(begins(&replies), ". It begins: \"Report\"", "the longest message, as the file leads with it");
+        assert!(begins(&replies).starts_with(". It begins: \"The long one, with what was done."), "a label of a heading is passed over");
+        assert_eq!(opening_line("## Done: all tests pass\nDetails"), Some("Done: all tests pass".into()), "a heading that says it");
+        assert_eq!(opening_line("# Report"), Some("Report".into()), "a heading alone is what there is");
+        assert!(begins(&replies).ends_with("(its report picked by length)"), "{}", begins(&replies));
+        // Short, all of it goes inline; long, none.
+        let short = Said::one_turn(vec!["Done.".into(), "Tests\n  pass.".into()]);
+        assert_eq!(inline_answer(&short).as_deref(), Some("Done. / Tests pass."));
+        assert_eq!(inline_answer(&replies), None);
+        assert_eq!(inline_answer(&Said::default()), None);
         assert!(!begins(&replies).contains('\n'));
         assert_eq!(begins(&Said::one_turn(vec!["---".to_string()])), "", "nothing worth quoting, no clause");
         assert_eq!(begins(&Said::default()), "");
