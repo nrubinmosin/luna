@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Release notes are made from this file: a release's notes are its version's
+  section, the sections of every version since the last published release, a
+  link to the full changes, and the commands and checksums to verify the
+  download. The tag's message no longer carries them, and the update chip
+  shows the section's opening paragraph.
+
 ### Fixed
 
 - The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
