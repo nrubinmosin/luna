@@ -564,7 +564,10 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
                 match f.history {
                     Some(true) => {
                         let all = agents::scope_all(f.scope.as_deref())?;
-                        let mut runs = runs_in_scope(caller, crate::agentlog::runs(f.q.as_deref()), all);
+                        let runs = crate::agentlog::runs(f.q.as_deref());
+                        // Whose each spawner was, from every run: `q` may leave a link out.
+                        let lineage = if all { HashMap::new() } else { lineage_of(&crate::agentlog::runs(None)) };
+                        let mut runs = runs_in_scope(caller, runs, all, &lineage);
                         for last in runs.iter_mut().filter_map(|r| r.last.as_mut()) {
                             if last.chars().count() > HISTORY_LAST {
                                 *last = format!("{}…", last.chars().take(HISTORY_LAST).collect::<String>());
@@ -714,11 +717,39 @@ fn kind_of(spec: &Value) -> String {
     }
 }
 
-/// Past spawns as a caller may have them: its own and its helpers' (by the
-/// session that spawned each), or with `all` everyone's. A run holds its whole
-/// prompt and its last reply.
-fn runs_in_scope(caller: &str, runs: Vec<crate::agentlog::Run>, all: bool) -> Vec<crate::agentlog::Run> {
-    runs.into_iter().filter(|run| all || agents::own_or_self(caller, &run.parent)).collect()
+/// Past spawns as a caller may have them: its own and its helpers' and theirs,
+/// or with `all` everyone's. A run holds its whole prompt and its last reply.
+/// Whose a run is goes by the helper's owner now, where it is still known (one
+/// whose parent was deleted has passed up, `forget`), else by the spawner each
+/// run records (`lineage`, helper to spawner), up the chain: any link of it the
+/// caller or one of its own makes the run the caller's.
+fn runs_in_scope(caller: &str, runs: Vec<crate::agentlog::Run>, all: bool, lineage: &HashMap<String, String>) -> Vec<crate::agentlog::Run> {
+    let owned = |run: &crate::agentlog::Run| {
+        if agents::own_or_self(caller, &run.id) {
+            return true;
+        }
+        let mut link = run.parent.as_str();
+        // As deep as a lineage goes (`registry::depth_of`), and a loop no further.
+        for _ in 0..16 {
+            if link.is_empty() {
+                return false;
+            }
+            if agents::own_or_self(caller, link) {
+                return true;
+            }
+            match lineage.get(link) {
+                Some(spawner) => link = spawner,
+                None => return false,
+            }
+        }
+        false
+    };
+    runs.into_iter().filter(|run| all || owned(run)).collect()
+}
+
+/// Each spawned session's spawner, as the runs record them.
+fn lineage_of(runs: &[crate::agentlog::Run]) -> HashMap<String, String> {
+    runs.iter().map(|run| (run.id.clone(), run.parent.clone())).collect()
 }
 
 /// `luna_list`: every row and the accounts, the costly part of it, unless told;
@@ -1025,8 +1056,21 @@ mod tests {
         };
         let runs = || vec![run("r1", "hs-me"), run("r2", "hs-kid"), run("r3", "someone-else"), run("r4", "")];
         let ids = |runs: Vec<crate::agentlog::Run>| runs.into_iter().map(|r| r.id).collect::<Vec<_>>();
-        assert_eq!(ids(runs_in_scope("hs-me", runs(), false)), ["r1", "r2"], "its own and its helpers'");
-        assert_eq!(ids(runs_in_scope("hs-me", runs(), true)), ["r1", "r2", "r3", "r4"]);
+        let lineage = lineage_of(&runs());
+        assert_eq!(ids(runs_in_scope("hs-me", runs(), false, &lineage)), ["r1", "r2"], "its own and its helpers'");
+        assert_eq!(ids(runs_in_scope("hs-me", runs(), true, &lineage)), ["r1", "r2", "r3", "r4"]);
+        // A -> B -> C, and B deleted: C passed up to A, its run still naming B.
+        agents::register("hs-b", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("hs-me"), true, json!({}));
+        agents::register("hs-c", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("hs-b"), false, json!({}));
+        agents::forget("hs-b");
+        assert_eq!(agents::parent_of("hs-c").as_deref(), Some("hs-me"));
+        let chain = || vec![run("hs-b", "hs-me"), run("hs-c", "hs-b"), run("hs-x", "someone-else")];
+        let lineage = lineage_of(&chain());
+        assert_eq!(ids(runs_in_scope("hs-me", chain(), false, &lineage)), ["hs-b", "hs-c"], "by C's owner now");
+        // And with C gone too: by the lineage the runs record.
+        agents::forget("hs-c");
+        assert_eq!(ids(runs_in_scope("hs-me", chain(), false, &lineage)), ["hs-b", "hs-c"], "by B's run");
+        assert!(runs_in_scope("someone-else", vec![run("hs-c", "hs-b")], false, &lineage).is_empty(), "not another's");
         // Through the tool: a scope it does not know is refused, not taken for mine.
         let body = json!({ "jsonrpc": "2.0", "id": 19, "method": "tools/call",
             "params": { "name": "luna_sessions", "arguments": { "history": true, "scope": "everyone" } } });
