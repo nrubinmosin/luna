@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-08
+
+A security and reliability release; it also carries the changes of 0.10.0,
+which was never published. Claude Code downloads are checked against
+Anthropic's signed release, sessions are kept away from the key to Luna's
+core, an interrupted CLI install is no longer mistaken for a finished one,
+shutting the PC down or restarting it when done works again, and the
+updater's signing key is kept out of the release build.
+
 ### Security
 
 - Dependencies with published vulnerabilities are updated: rustls 0.23.46 and
@@ -257,7 +266,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.10.0
 [0.9.0]: https://github.com/nrubinmosin/luna/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/nrubinmosin/luna/compare/v0.7.0...v0.8.0
