@@ -35,7 +35,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/spawn/` | `luna_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and budget news |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
-| `luna_guide.md` | the full manual `luna_guide` returns |
+| `luna_guide.md` | the full manual `luna_guide` returns: whole (`topic: "all"`), by section (`mcp.rs` `guide_text`: any word of a `## ` title), or with no topic its opening and the sections |
 
 ## How a session gets Luna
 

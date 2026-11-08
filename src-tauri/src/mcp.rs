@@ -25,14 +25,61 @@ const PROTOCOLS: [&str; 3] = [PROTOCOL, "2025-03-26", "2024-11-05"];
 const INSTRUCTIONS: &str = "Luna runs this session. Its luna_* tools start and drive other sessions: \
 another model, another account, Codex or Claude Code, another folder or a worktree, in the background \
 or as a chat the user sees; and they reach every other session in Luna. luna_guide explains them, \
-accounts and models included: read it before the first spawn. Once a session you spawned or wrote \
+accounts and models included: read it whole (topic \"all\") before the first spawn. Once a session you spawned or wrote \
 to answers, asks something, stops on a prompt or exits, Luna types a notice into your session, \
 opening \"[Luna notice\" (Luna's, not the user's words): end your turn to get it, no need to poll. \
 Session ids are Luna's; your CLI's task and subagent ids are not, and a subagent of yours using these \
 tools acts as you.";
 
-/// What `luna_guide` returns: everything the instructions leave out.
+/// What `luna_guide` returns: everything the instructions leave out, whole
+/// (`topic: "all"`) or a section at a time (`guide_text`).
 const GUIDE: &str = include_str!("luna_guide.md");
+
+/// Words of a section's title that name nothing on their own.
+const TITLE_FILLER: [&str; 3] = ["and", "the", "with"];
+
+/// The guide's sections, by title, each with its text (its `## ` line included).
+fn guide_sections() -> Vec<(&'static str, &'static str)> {
+    let mut out = Vec::new();
+    let mut starts: Vec<usize> = GUIDE.match_indices("\n## ").map(|(i, _)| i + 1).collect();
+    starts.push(GUIDE.len());
+    for pair in starts.windows(2) {
+        let text = &GUIDE[pair[0]..pair[1]];
+        let title = text.lines().next().unwrap_or_default().trim_start_matches("## ").trim();
+        out.push((title, text.trim_end()));
+    }
+    out
+}
+
+/// The topics a section answers to: the words of its title.
+fn topics_of(title: &str) -> Vec<String> {
+    title.split_whitespace().map(str::to_lowercase).filter(|w| !TITLE_FILLER.contains(&w.as_str())).collect()
+}
+
+/// What `luna_guide` says for `topic`: none, its opening and the sections to ask
+/// for; "all", the whole of it; else every section whose title has that word.
+/// Read whole once, the guide costs a few thousand tokens; a section looked up
+/// again later costs a few hundred.
+fn guide_text(topic: Option<&str>) -> Result<String, String> {
+    let sections = guide_sections();
+    let names = || sections.iter().map(|(title, _)| format!("{} ({})", title, topics_of(title).join("/"))).collect::<Vec<_>>().join("; ");
+    let Some(topic) = topic.map(str::trim).filter(|t| !t.is_empty()) else {
+        let opening = GUIDE.split("\n## ").next().unwrap_or_default().trim_end();
+        return Ok(format!(
+            "{opening}\n\nSections, by `topic` (any word of the title): {}. `topic: \"all\"` gives the whole guide; read it once before your first spawn.",
+            names()
+        ));
+    };
+    let topic = topic.to_lowercase();
+    if topic == "all" {
+        return Ok(GUIDE.to_string());
+    }
+    let found: Vec<&str> = sections.iter().filter(|(title, _)| topics_of(title).contains(&topic)).map(|(_, text)| *text).collect();
+    if found.is_empty() {
+        return Err(format!("no section of the guide is about \"{topic}\". Sections: {}; or \"all\".", names()));
+    }
+    Ok(found.join("\n\n"))
+}
 
 /// The most of a past run's last message `luna_sessions` history passes on:
 /// thirty runs at length overrun what a client takes in one result, and the
@@ -313,8 +360,8 @@ fn tools() -> Value {
         },
         {
             "name": "luna_guide",
-            "description": "How Luna's sessions, accounts, models and these tools work.",
-            "inputSchema": s(json!({}), &[]),
+            "description": "How Luna's sessions, accounts, models and these tools work. topic: a section, or \"all\"; none: the sections.",
+            "inputSchema": s(json!({ "topic": { "type": "string" } }), &[]),
             "annotations": reads
         },
         {
@@ -468,7 +515,13 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     };
     let out: Result<Value, String> = match name {
         "luna_list" => listing(caller, a),
-        "luna_guide" => return json!({ "content": [{ "type": "text", "text": GUIDE }] }),
+        "luna_guide" => {
+            // Plain text, not a JSON value spelled out.
+            return match guide_text(a["topic"].as_str()) {
+                Ok(text) => json!({ "content": [{ "type": "text", "text": text }] }),
+                Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
+            };
+        }
         "luna_answer" => {
             let entered = crate::power::enter();
             agents::answer(
@@ -746,10 +799,40 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 7500, "tools/list is {} chars", text.len());
+        assert!(text.len() < 7600, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
-        // Read only on request, but whole: keep it to a few thousand tokens.
-        assert!(GUIDE.len() < 15_500, "the guide is {} bytes", GUIDE.len());
+        // Read whole once, on request: keep it to a few thousand tokens. Its
+        // index, what a bare call gives, to a few hundred.
+        assert!(GUIDE.len() < 16_000, "the guide is {} bytes", GUIDE.len());
+        let index = guide_text(None).unwrap();
+        assert!(index.len() < 1_000, "the guide's index is {} bytes: {index}", index.len());
+    }
+
+    #[test]
+    fn the_guide_comes_whole_or_by_section() {
+        assert_eq!(guide_text(Some("all")).unwrap(), GUIDE);
+        assert_eq!(guide_text(Some(" ALL ")).unwrap(), GUIDE);
+        let index = guide_text(None).unwrap();
+        assert!(index.starts_with("# Luna: sessions, accounts and the luna_* tools"), "{index}");
+        assert!(index.contains("`topic: \"all\"`"), "{index}");
+        let sections = guide_sections();
+        assert!(sections.len() >= 6, "{sections:?}");
+        for (title, text) in &sections {
+            assert!(index.contains(title), "the index names {title}");
+            for topic in topics_of(title) {
+                assert!(guide_text(Some(&topic)).unwrap().contains(text), "{topic} reaches {title}");
+            }
+        }
+        // Every line of the guide is in one section or the opening.
+        let opening = GUIDE.split("\n## ").next().unwrap();
+        let parts: usize = sections.iter().map(|(_, text)| text.trim_end().len()).sum::<usize>() + opening.len();
+        assert!(GUIDE.trim_end().len().abs_diff(parts) <= 4 * sections.len() + 4, "nothing falls between sections");
+        let spawning = guide_text(Some("spawning")).unwrap();
+        assert!(spawning.starts_with("## Spawning") && !spawning.contains("## Getting the answer"), "{spawning}");
+        let answer = guide_text(Some("answer")).unwrap();
+        assert!(answer.contains("## Getting the answer") && !answer.contains("## Spawning"), "{answer}");
+        let unknown = guide_text(Some("weather")).unwrap_err();
+        assert!(unknown.contains("Spawning (spawning)") && unknown.contains("\"all\""), "{unknown}");
     }
 
     #[test]
@@ -763,10 +846,16 @@ mod tests {
     #[test]
     fn the_guide_is_a_tool_result() {
         tooled("guide-test");
-        let r = handle("guide-test", r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"luna_guide","arguments":{}}}"#)
-            .unwrap();
-        assert!(r["result"].get("isError").is_none());
-        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("luna_spawn"));
+        let call = |args: &str| {
+            let body = format!(r#"{{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{{"name":"luna_guide","arguments":{args}}}}}"#);
+            handle("guide-test", &body).unwrap()["result"].clone()
+        };
+        let r = call(r#"{"topic":"all"}"#);
+        assert!(r.get("isError").is_none());
+        assert!(r["content"][0]["text"].as_str().unwrap().contains("luna_spawn"));
+        let index = call("{}");
+        assert!(index["content"][0]["text"].as_str().unwrap().contains("topic"), "{index}");
+        assert_eq!(call(r#"{"topic":"weather"}"#)["isError"], true);
     }
 
     #[test]

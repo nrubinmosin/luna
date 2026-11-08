@@ -10,7 +10,9 @@ instead of Claude) with an opening prompt, wait for its reply, send follow-ups,
 answer what it asks, and delete it when done, worktree and its `worktree-*`
 branch included if it asked for one. The tools and a short instruction cost
 about 2k tokens once per session; the full manual is `luna_guide`'s, read only
-when the model asks. A chat without the box knows nothing of Luna, and neither
+when the model asks: whole with `topic: "all"` (the instruction says to, before
+the first spawn), one section by a word of its title (`topic: "spawning"`), or,
+with no topic, its opening and the sections to ask for. A chat without the box knows nothing of Luna, and neither
 does a background helper spawned without tools.
 
 - `luna_notify` raises a desktop notification mid-turn, titled with the chat's
