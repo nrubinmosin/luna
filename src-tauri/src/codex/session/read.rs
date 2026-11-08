@@ -52,11 +52,72 @@ pub(super) fn first_prompt_in(lines: impl Iterator<Item = impl AsRef<str>>) -> O
     None
 }
 
+/// What Codex puts into the conversation in a user message that no person
+/// wrote, each block of it wrapped in one of these tags, open and close (the
+/// opening one may carry attributes). As Codex 0.167.0 tells such a block
+/// from a prompt (`CONTEXTUAL_USER_FRAGMENT_MATCHERS`,
+/// codex-rs/core/src/context/contextual_user_message.rs at rust-v0.167.0),
+/// tag names in any case: the environment, a skill's text, a `!` shell
+/// command and its output, a turn's interruption, a subagent's word, plugin
+/// suggestions, a message-board notice, internal and goal context, a hook's
+/// prompt; and `<user_instructions>`, which older versions wrapped an
+/// `AGENTS.md` in. Anything else a prompt opens with, `<task>` say, is the
+/// person's.
+const INJECTED_TAGS: [&str; 11] = [
+    "environment_context",
+    "user_instructions",
+    "skill",
+    "user_shell_command",
+    "turn_aborted",
+    "subagent_notification",
+    "recommended_plugins",
+    "agent_message_board_notification",
+    "codex_internal_context",
+    "goal_context",
+    "hook_prompt",
+];
+
+/// The same 0.167.0 matchers for what is not a tag: the `AGENTS.md` Codex reads
+/// (`# AGENTS.md instructions for <dir>` ... `</INSTRUCTIONS>`, taken here by its
+/// heading alone), and three warnings Codex once wrote in the user's place and
+/// still recognizes in old rollouts.
+const INJECTED_OPENINGS: [&str; 4] = [
+    "# AGENTS.md instructions",
+    "Warning: apply_patch was requested via ",
+    "Warning: The maximum number of unified exec processes you can keep open is",
+    "Warning: Your account was flagged for potentially high-risk cyber activity",
+];
+
+/// Whether a block of a user message is one Codex injected (`INJECTED_TAGS`,
+/// `INJECTED_OPENINGS`, and `<external_KEY>` ... `</external_KEY>`, extra context
+/// a client hands it), rather than words a person or an agent sent.
+pub(super) fn injected(block: &str) -> bool {
+    let t = block.trim();
+    let starts = |prefix: &str| t.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix));
+    let ends = |suffix: &str| {
+        let tail = t.len().checked_sub(suffix.len()).and_then(|at| t.get(at..));
+        tail.is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
+    };
+    if INJECTED_OPENINGS.iter().any(|o| starts(o)) {
+        return true;
+    }
+    let wrapped = |tag: &str| {
+        let open = format!("<{tag}");
+        starts(&open) && t[open.len()..].starts_with(['>', ' ']) && ends(&format!("</{tag}>"))
+    };
+    if INJECTED_TAGS.iter().any(|tag| wrapped(tag)) {
+        return true;
+    }
+    let key = t.strip_prefix("<external_").and_then(|rest| rest.split_once('>')).map(|(key, _)| key);
+    key.is_some_and(|key| !key.is_empty() && ends(&format!("</external_{key}>")))
+}
+
 /// A rollout line as one turn of the conversation, if it is one: a
 /// `response_item` of type `message` with a user or assistant role. Developer
-/// messages (skills, agent-mode preambles) and the context Codex injects as
-/// a user turn — `AGENTS.md`, `<environment_context>` — are not conversation
-/// and are left out, the way `luna_read` leaves out Claude Code's meta turns.
+/// messages (skills, agent-mode preambles) and what Codex injects as a user
+/// message (`injected`: `AGENTS.md`, `<environment_context>` and the like)
+/// are not conversation and are left out, the way `luna_read` leaves out
+/// Claude Code's meta turns.
 fn message_of(v: &Value) -> Option<crate::agents::Message> {
     if v["type"] != "response_item" || v["payload"]["type"] != "message" {
         return None;
@@ -69,16 +130,22 @@ fn message_of(v: &Value) -> Option<crate::agents::Message> {
     let mut text = String::new();
     for block in v["payload"]["content"].as_array()? {
         let Some(t) = block["text"].as_str() else { continue };
-        if matches!(block["type"].as_str(), Some("input_text") | Some("output_text") | Some("text")) {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(t);
+        if !matches!(block["type"].as_str(), Some("input_text") | Some("output_text") | Some("text")) {
+            continue;
         }
+        // Codex tells its own blocks one by one, a message of the person's
+        // possibly carrying one beside their words.
+        if role == "user" && injected(t) {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(t);
     }
     // A helper's prompt as its caller wrote it, without Luna's note on it.
     let text = if role == "user" { crate::pty::without_note(&text) } else { &text }.trim().to_string();
-    if text.is_empty() || (role == "user" && (text.starts_with('<') || text.starts_with("# AGENTS.md"))) {
+    if text.is_empty() {
         return None;
     }
     Some(crate::agents::Message { role: role.to_string(), text, after_cli: false })
@@ -529,6 +596,46 @@ mod tests {
         assert_eq!(thread_title(&acct, "other"), Some(CliTitle { title: "Not ours".into(), renamed: false }));
         assert_eq!(thread_title(&acct, "missing"), None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A user message as a rollout holds it, its blocks as given.
+    fn user_line(blocks: &[&str]) -> String {
+        let content: Vec<Value> = blocks.iter().map(|t| serde_json::json!({ "type": "input_text", "text": t })).collect();
+        serde_json::json!({ "type": "response_item", "payload": { "type": "message", "role": "user", "content": content } }).to_string()
+    }
+
+    #[test]
+    fn a_prompt_in_tags_of_its_own_is_a_prompt() {
+        let text = |line: String| message_in(&line).map(|m| m.text);
+        // Prompts a person or an agent wrote, whatever they open with.
+        assert_eq!(text(user_line(&["<task>Fix the build</task>"])).as_deref(), Some("<task>Fix the build</task>"));
+        assert_eq!(text(user_line(&["<b>bold</b> claim"])).as_deref(), Some("<b>bold</b> claim"));
+        assert_eq!(text(user_line(&["<skill>s"])).as_deref(), Some("<skill>s"), "not closed: not Codex's");
+        let other = "<skills_instructions>x</skills_instructions>";
+        assert_eq!(text(user_line(&[other])).as_deref(), Some(other), "a tag of Codex's own, but not one it puts in a user's place");
+        // What Codex 0.167.0 puts there itself, as it spells it.
+        for block in [
+            "<environment_context>\n  <cwd>E:\\p</cwd>\n</environment_context>",
+            "<ENVIRONMENT_CONTEXT><cwd>E:\\p</cwd></Environment_Context>",
+            "# AGENTS.md instructions for E:\\p\n\n<INSTRUCTIONS>\nrules\n</INSTRUCTIONS>",
+            "<user_instructions>\nrules\n</user_instructions>",
+            "<skill>\n<name>review</name>\n<path>p</path>\nbody\n</skill>",
+            "<user_shell_command>\n<command>ls</command>\n</user_shell_command>",
+            "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
+            "<subagent_notification>{}</subagent_notification>",
+            "<recommended_plugins>\n- x\n</recommended_plugins>",
+            "<agent_message_board_notification>x</agent_message_board_notification>",
+            "<codex_internal_context source=\"goal\">x</codex_internal_context>",
+            "<goal_context>x</goal_context>",
+            "<hook_prompt hook_run_id=\"r1\">go on</hook_prompt>",
+            "<external_ticket>ABC-1</external_ticket>",
+            "Warning: The maximum number of unified exec processes you can keep open is 8.",
+        ] {
+            assert_eq!(text(user_line(&[block])), None, "{block}");
+        }
+        // Beside a person's words, only Codex's block goes.
+        let mixed = user_line(&["<environment_context><cwd>E:\\p</cwd></environment_context>", "<task>Review it</task>"]);
+        assert_eq!(text(mixed).as_deref(), Some("<task>Review it</task>"));
     }
 
     /// What a turn ended saying, until the next one starts.
