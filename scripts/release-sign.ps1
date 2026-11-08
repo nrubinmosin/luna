@@ -22,15 +22,19 @@
 # latest.json takes it: against the public key in tauri.conf.json, or, for
 # the release that brings a new key in, against the old one installed copies
 # hold, which -TrustedPubkey (or LUNA_UPDATER_TRUSTED_PUBKEY) gives, as
-# tauri.conf.json had it. A key installed copies would refuse stops the
-# release here.
+# tauri.conf.json had it; `embedded`, or nothing, means the embedded one. A
+# key installed copies would refuse stops the release here.
+# -RequireTrustedPubkey, which the workflow passes, refuses an empty value
+# (Resolve-TrustedPubkey says why).
 param(
     [Parameter(Mandatory)][string]$Dir,
     [Parameter(Mandatory)][string]$Version,
     [string]$UpdaterKey = $env:LUNA_UPDATER_KEY,
-    [string]$TrustedPubkey = $env:LUNA_UPDATER_TRUSTED_PUBKEY
+    [string]$TrustedPubkey = $env:LUNA_UPDATER_TRUSTED_PUBKEY,
+    [switch]$RequireTrustedPubkey
 )
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/release-lib.ps1"
 
-Invoke-ReleaseSign -Dir $Dir -Version $Version -UpdaterKey $UpdaterKey -TrustedPubkey $TrustedPubkey
+$trusted = Resolve-TrustedPubkey $TrustedPubkey -Required:$RequireTrustedPubkey
+Invoke-ReleaseSign -Dir $Dir -Version $Version -UpdaterKey $UpdaterKey -TrustedPubkey $trusted

@@ -114,12 +114,84 @@ function Read-WorkflowJobs([string]$Text) {
     [pscustomobject]@{ Header = @($lines[0..([math]::Max($jobsAt - 1, 0))]); Jobs = $jobs }
 }
 
-# What release.yml has to keep (docs/releasing.md): no job but sign names a
-# secret, a variable or an environment, or mentions the signing key; sign
-# names the `release` environment for signed runs, checks out sparsely, uses
-# no action but checkout and the artifact ones, and runs no package manager,
-# build tool or build script in any of its steps. Throws naming the breach.
+# The sign job as release.yml has to have it, step for step: every key of
+# every step and its whole value as Read-WorkflowJobs gives it (a `uses:`
+# without its version comment). An allowlist, not a list of what is barred:
+# a step, a key or a value that is not here is refused, however its command
+# is spelled. A change to the sign job changes this list in the same commit.
+$SignJob = @'
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: ${{ needs.verify.outputs.signed == 'true' && 'release' || '' }}
+    permissions:
+      contents: read
+    steps:
+'@
+$SignSteps = @(
+    [ordered]@{
+        uses = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        with = @'
+persist-credentials: false
+sparse-checkout-cone-mode: false
+sparse-checkout: |
+/scripts/lib.ps1
+/scripts/release-lib.ps1
+/scripts/release-sign.ps1
+/scripts/updater-signature.mjs
+/docker/windows-build.Dockerfile
+/pnpm-lock.yaml
+/src-tauri/tauri.conf.json
+'@
+    }
+    [ordered]@{
+        uses = 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
+        with = @'
+name: unsigned
+path: ${{ runner.temp }}/assets
+'@
+    }
+    [ordered]@{
+        name = 'Check the bundle against the build''s checksums'
+        env  = 'SUMS: ${{ needs.build.outputs.sums }}'
+        run  = @'
+|
+. ./scripts/lib.ps1
+. ./scripts/release-lib.ps1
+Assert-AssetChecksums "$env:RUNNER_TEMP/assets" $env:SUMS
+'@
+    }
+    [ordered]@{
+        name = 'Sign the installer'
+        if   = 'needs.verify.outputs.signed == ''true'''
+        env  = @'
+VERSION: ${{ needs.verify.outputs.version }}
+LUNA_UPDATER_TRUSTED_PUBKEY: ${{ vars.UPDATER_TRUSTED_PUBKEY }}
+TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+'@
+        run  = './scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -RequireTrustedPubkey'
+    }
+    [ordered]@{
+        uses = 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
+        with = @'
+name: assets
+path: ${{ runner.temp }}/assets/
+if-no-files-found: error
+retention-days: 7
+'@
+    }
+)
+
+# What release.yml has to keep (docs/releasing.md): no YAML anchor, alias or
+# merge key anywhere, so what a step says is what it runs; no job but sign
+# names a secret, a variable or an environment, or mentions the signing key;
+# and sign is exactly $SignJob and $SignSteps, with no `${{ }}` in a `run:`
+# and none in an `env:` but a plain needs, secrets or vars reference. Throws
+# naming the breach.
 function Assert-ReleaseWorkflow([string]$Text) {
+    $plain = @($Text -split "`n" | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+    if ($plain -match '(?m)(^\s*-\s+|:\s+)[&*][A-Za-z0-9_-]+|^\s*<<\s*:') { throw 'release.yml uses a YAML anchor, alias or merge key' }
     $workflow = Read-WorkflowJobs $Text
     if (($workflow.Header -join "`n") -match 'secrets\.|vars\.|environment:|TAURI_SIGNING') { throw 'the workflow''s header reaches for a secret' }
     foreach ($name in $workflow.Jobs.Keys) {
@@ -130,21 +202,27 @@ function Assert-ReleaseWorkflow([string]$Text) {
     }
     $sign = $workflow.Jobs['sign']
     if (-not $sign) { throw 'no sign job' }
-    if (($sign.Lines -join "`n") -notmatch "(?m)^    environment: \$\{\{ needs\.verify\.outputs\.signed == 'true' && 'release' \|\| '' \}\}$") {
-        throw 'sign does not name the release environment'
-    }
-    $allowed = '^actions/(checkout|download-artifact|upload-artifact)@[0-9a-f]{40}$'
-    $tools = '(?<![\w.-])(pnpm|npm|npx|yarn|corepack|bun|deno|node|cargo|rustc|rustup|make|cmake|pip|python3?|go|tauri|docker build)(?![\w-])|build-windows|release-bundle|sbom\.ps1|gate\.ps1'
-    foreach ($step in $sign.Steps) {
-        $uses = $step.Keys['uses']
-        if ($uses) {
-            if (($uses -replace '\s+#.*$', '') -notmatch $allowed) { throw "sign uses $uses" }
-            if ($uses -match '^actions/checkout@' -and $step.Keys['with'] -notmatch '(?m)^sparse-checkout:') { throw 'sign checks out the whole tree' }
+    $head = @($sign.Lines) -join "`n"
+    $at = $head.IndexOf("`n    steps:")
+    $head = if ($at -ge 0) { $head.Substring(0, $at + "`n    steps:".Length) } else { $head }
+    if ($head -cne ($SignJob -replace "`r`n", "`n")) { throw "the sign job's settings are not the ones allowed:`n$head" }
+    if ($sign.Steps.Count -ne $SignSteps.Count) { throw "sign has $($sign.Steps.Count) steps, not the $($SignSteps.Count) allowed" }
+    for ($i = 0; $i -lt $SignSteps.Count; $i++) {
+        $step = $sign.Steps[$i].Keys
+        $want = $SignSteps[$i]
+        $got = @($step.Keys) -join ','
+        if ($got -cne (@($want.Keys) -join ',')) { throw "sign step $($i + 1) has the keys $got, not $(@($want.Keys) -join ',')" }
+        foreach ($key in $want.Keys) {
+            $value = if ($key -eq 'uses') { $step[$key] -replace '\s+#.*$', '' } else { $step[$key] }
+            if ($value -cne ($want[$key] -replace "`r`n", "`n")) { throw "sign step $($i + 1)'s $key is not the one allowed: $value" }
         }
-        if ($step.Keys['run'] -match $tools) { throw "a sign step runs build tooling: $($step.Keys['run'])" }
-        if ($step.Keys['shell'] -and $step.Keys['shell'] -notmatch '^(pwsh|bash)$') { throw "a sign step runs in $($step.Keys['shell'])" }
+        if ($step['run'] -match '\$\{\{') { throw "sign step $($i + 1) puts an expression in its run" }
+        foreach ($line in @($step['env'] -split "`n" | Where-Object { $_ })) {
+            if ($line -cnotmatch '^[A-Z_]+: \$\{\{ (needs\.[a-z]+\.outputs\.[a-z]+|secrets\.[A-Z_]+|vars\.[A-Z_]+) \}\}$') {
+                throw "sign step $($i + 1) sets $line"
+            }
+        }
     }
-    if (-not ($sign.Steps | Where-Object { $_.Keys['env'] -match 'secrets\.TAURI_SIGNING_PRIVATE_KEY\b' })) { throw 'sign gets no key' }
 }
 
 try {
@@ -763,29 +841,48 @@ d8e1  latest.json
         Assert-Throws { Assert-AssetChecksums $dir "$(& $sha 'setup')  ../setup.exe" } 'not a sha256sum line'
     }
 
-    Check 'release.yml keeps the key in the sign job, and build tooling out of it' {
+    Check 'release.yml keeps the key in the sign job, and the sign job as allowed' {
         $text = [IO.File]::ReadAllText((Join-Path $RepoRoot '.github/workflows/release.yml')) -replace "`r`n", "`n"
         $workflow = Read-WorkflowJobs $text
         Assert-Equal ($workflow.Jobs.Keys -join ',') 'verify,build,sign,sbom,attest,publish'
-        $sign = $workflow.Jobs['sign']
-        Assert-Equal (@($sign.Steps | ForEach-Object { if ($_.Keys['name']) { $_.Keys['name'] } else { $_.Keys['uses'] -replace '@.*$', '' } }) -join ',') `
-            'actions/checkout,actions/download-artifact,Check the bundle against the build''s checksums,Sign the installer,actions/upload-artifact'
-        Assert-Equal ($sign.Steps[2].Keys['run'] -split "`n")[0] '|'
         Assert-ReleaseWorkflow $text
 
         # Each breach, as an edit of the real file.
         $edit = { param($from, $to) if (-not $text.Contains($from)) { throw "no '$from' in release.yml" }; $text.Replace($from, $to) }
         $beforeSign = '      # The key goes to this step alone'
-        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - name: Install`n        run: |`n          echo ready`n          pnpm install --frozen-lockfile`n$beforeSign") } 'runs build tooling'
-        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - run: >-`n          corepack enable &&`n          pnpm i`n$beforeSign") } 'runs build tooling'
-        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - shell: bash`n        run: `"cargo`n          build`"`n$beforeSign") } 'runs build tooling'
-        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567`n$beforeSign") } 'sign uses actions/setup-node'
-        Assert-Throws { Assert-ReleaseWorkflow (& $edit "          sparse-checkout-cone-mode: false`n" '' | ForEach-Object { $_ -replace '(?s)          sparse-checkout: \|\n(            \S+\n)+', '' }) } 'whole tree'
+        $signRun = '        run: ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -RequireTrustedPubkey'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - name: Install`n        run: |`n          echo ready`n          pnpm install --frozen-lockfile`n$beforeSign") } 'sign has 6 steps'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567`n$beforeSign") } 'sign has 6 steps'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun "$signRun`n          pnpm install") } 'run is not the one allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun "        run: `${{ format('{0}{1} install', 'pn', 'pm') }}") } 'run is not the one allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun ($signRun -replace ' -RequireTrustedPubkey', '')) } 'run is not the one allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun '        run: *command') } 'anchor, alias'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit '      - name: Sign the installer' '      - name: &step Sign the installer') } 'anchor, alias'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "        if: needs.verify.outputs.signed == 'true'" "        <<: *defaults`n        if: needs.verify.outputs.signed == 'true'") } 'anchor, alias'
         Assert-Throws {
-            Assert-ReleaseWorkflow (& $edit "        run: ./scripts/build-windows.ps1 -Installer" "        env:`n          KEY: `${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}`n        run: ./scripts/build-windows.ps1 -Installer")
+            Assert-ReleaseWorkflow (& $edit '          VERSION: ${{ needs.verify.outputs.version }}' "          VERSION: `${{ needs.verify.outputs.version }}`n          BASH_ENV: `${{ format('x') }}")
+        } 'env is not the one allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "          sparse-checkout-cone-mode: false`n" '') } 'with is not the one allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "    timeout-minutes: 15`n    environment:" "    timeout-minutes: 15`n    container: node:24`n    environment:") } 'settings are not the ones allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "    environment: `${{ needs.verify.outputs.signed == 'true' && 'release' || '' }}`n" '') } 'settings are not the ones allowed'
+        Assert-Throws {
+            Assert-ReleaseWorkflow (& $edit '        run: ./scripts/build-windows.ps1 -Installer' "        env:`n          KEY: `${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}`n        run: ./scripts/build-windows.ps1 -Installer")
         } 'the build job references a secret'
         Assert-Throws { Assert-ReleaseWorkflow (& $edit "  build:`n    needs: verify`n" "  build:`n    needs: verify`n    environment: release`n") } 'the build job references'
-        Assert-Throws { Assert-ReleaseWorkflow (& $edit "    environment: `${{ needs.verify.outputs.signed == 'true' && 'release' || '' }}`n" '') } 'release environment'
+    }
+
+    Check 'the trusted public key is the embedded one unless a key is given, and required where asked' {
+        $pubkey = Get-UpdaterPubkey
+        Assert-Equal (Resolve-TrustedPubkey '') $null
+        Assert-Equal (Resolve-TrustedPubkey 'embedded') $null
+        Assert-Equal (Resolve-TrustedPubkey 'embedded' -Required) $null
+        Assert-Equal (Resolve-TrustedPubkey " $pubkey`n") $pubkey
+        Assert-Equal (Resolve-TrustedPubkey $pubkey -Required) $pubkey
+        # Empty where it is required: the `release` environment does not
+        # define the variable, so a repository-level one would have stood in.
+        Assert-Throws { Resolve-TrustedPubkey '' -Required } 'UPDATER_TRUSTED_PUBKEY'
+        Assert-Throws { Resolve-TrustedPubkey 'yes' } 'not a minisign public key'
+        Assert-Throws { Resolve-TrustedPubkey 'dW50cnVzdGVkIGNvbW1lbnQ6IHgKUldRCg==' } 'not a minisign public key'
     }
 
     Check 'an SBOM is checked the way actions/attest checks it' {

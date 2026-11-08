@@ -563,6 +563,33 @@ function Export-TarballEntry([string]$Tarball, [string]$Entry, [string]$Destinat
     }
 }
 
+# The public key a signature is to be checked against, from what the
+# releaser gave (-TrustedPubkey, LUNA_UPDATER_TRUSTED_PUBKEY, the `release`
+# environment's UPDATER_TRUSTED_PUBKEY): $null, for the key the release
+# embeds, when that is empty or `embedded`; else the base64 minisign public
+# key given, checked for its shape. -Required refuses an empty value: the
+# workflow reads the variable through `vars`, which falls back to a
+# repository variable when the environment has none, and repository
+# variables any collaborator can write, where only the owner writes the
+# environment's. So the environment always defines it, `embedded` but for a
+# bridge release, and its value wins over any repository one.
+function Resolve-TrustedPubkey([string]$Value, [switch]$Required) {
+    $Value = $Value.Trim()
+    if (-not $Value) {
+        if ($Required) {
+            throw 'the release environment defines no UPDATER_TRUSTED_PUBKEY; set it there to `embedded` (or, for a key rotation''s bridge release, to the old public key), so a repository variable of that name cannot stand in for it'
+        }
+        return $null
+    }
+    if ($Value -ceq 'embedded') { return $null }
+    $lines = try { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Value)) -split '\r?\n' } catch { @() }
+    $bin = if ($lines.Count -ge 2) { try { [Convert]::FromBase64String($lines[1]) } catch { $null } }
+    if (-not $bin -or $bin.Length -ne 42 -or $bin[0] -ne 0x45 -or $bin[1] -notin 0x64, 0x44) {
+        throw "the trusted public key '$Value' is not a minisign public key as tauri.conf.json holds one (or `embedded`)"
+    }
+    $Value
+}
+
 # Signs the installer for $Version in the bundle $Dir (release-bundle.ps1's)
 # and puts the signature into its latest.json; release-sign.ps1 says why and
 # how. In order: the Tauri CLI's Linux build is fetched into a new folder and
