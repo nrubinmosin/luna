@@ -10,6 +10,43 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
+- The transcript readers, which take what a prompt-injected agent can write,
+  are fuzzed: each provider's are pure functions of a file's bytes, held to
+  golden readings of the fixtures, with a cargo-fuzz target each
+  (`scripts/fuzz.ps1`) that also checks every text read comes out of the
+  input, and that a line's length or depth costs no more than its bytes. A
+  scheduled workflow runs them weekly.
+
+### Fixed
+
+- A command call whose timeout is past any clock (a Claude Code `Bash`,
+  `PowerShell` or `Monitor` call, a Codex call's bound) made the time it is due
+  wrap round to one long before the call, so a caller waiting on a quiet turn
+  heard of it as hung without the call's own deadline holding the notice back;
+  it is now due never, as an open call with a long timeout is. Codex token
+  counts past 2^64 no longer overflow the total the answering model is found
+  by. Both found by fuzzing.
+- A Claude Code session's answer to a prompt the CLI put in itself (a
+  background task's end) opens a turn of its own for a caller reading the
+  conversation on from a cursor too, not only for one reading from the top,
+  so the report it leads with is the newest when that prompt and its answer
+  land in different reads.
+- A transcript line that is not UTF-8 no longer ends the search for a chat's
+  opening prompt (the name it goes by until the CLI titles it), in Claude Code
+  and Codex alike: it is read as the conversation reads it, a stray byte as
+  U+FFFD.
+
+## [0.10.1] - 2026-11-08
+
+A security and reliability release; it also carries the changes of 0.10.0,
+which was never published. Claude Code downloads are checked against
+Anthropic's signed release, sessions are kept away from the key to Luna's
+core, an interrupted CLI install is no longer mistaken for a finished one,
+shutting the PC down or restarting it when done works again, and the
+updater's signing key is kept out of the release build.
+
+### Security
+
 - Dependencies with published vulnerabilities are updated: rustls 0.23.46 and
   rustls-webpki 0.103.16 (TLS handshake fixes), webpki-roots 1.0.11 (distrusted
   emSign roots removed), zip 9 under the updater (tauri-plugin-updater
@@ -52,12 +89,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   or contained token, or a lower integrity level) before it can present the
   key. A normal window is unaffected. Codex's `workspace-write` on Linux and
   macOS remains able to read the file; the threat model (F3) says why.
-- The transcript readers, which take what a prompt-injected agent can write,
-  are fuzzed: each provider's are pure functions of a file's bytes, held to
-  golden readings of the fixtures, with a cargo-fuzz target each
-  (`scripts/fuzz.ps1`) that also checks every text read comes out of the
-  input, and that a line's length or depth costs no more than its bytes. A
-  scheduled workflow runs them weekly.
 
 ### Added
 
@@ -127,22 +158,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   requires of a CycloneDX file. Both SBOMs now carry one and are checked for it
   as soon as they are made, and the attestations use `actions/attest` in place
   of the deprecated `actions/attest-sbom`.
-- A command call whose timeout is past any clock (a Claude Code `Bash`,
-  `PowerShell` or `Monitor` call, a Codex call's bound) made the time it is due
-  wrap round to one long before the call, so a caller waiting on a quiet turn
-  heard of it as hung without the call's own deadline holding the notice back;
-  it is now due never, as an open call with a long timeout is. Codex token
-  counts past 2^64 no longer overflow the total the answering model is found
-  by. Both found by fuzzing.
-- A Claude Code session's answer to a prompt the CLI put in itself (a
-  background task's end) opens a turn of its own for a caller reading the
-  conversation on from a cursor too, not only for one reading from the top,
-  so the report it leads with is the newest when that prompt and its answer
-  land in different reads.
-- A transcript line that is not UTF-8 no longer ends the search for a chat's
-  opening prompt (the name it goes by until the CLI titles it), in Claude Code
-  and Codex alike: it is read as the conversation reads it, a stray byte as
-  U+FFFD.
 - The release and test builds failed: `tauri build` refuses a Tauri crate and its
   npm package on different minor versions, and the notification plugin's crate
   had moved to 2.8 while `@tauri-apps/plugin-notification` stayed at 2.7. The
@@ -189,14 +204,6 @@ fixes below.
 - Documentation in `docs/`: a user guide by topic, architecture pages, decision
   records, notes on how each CLI behaves, and a development guide.
 - A contributing guide, issue and pull request templates, and this changelog.
-
-### Added
-
-- The installer puts `THIRD-PARTY-NOTICES.txt` beside Luna, and each release
-  publishes it too: the license texts of every crate and npm package Luna is
-  built from, and where their source is; the Rust standard library's own
-  inventory; and what the build tools and the installer add: Vite's helpers,
-  NSIS and its Tauri plug-in, the WebView2 loader and the Visual C++ runtime.
 
 ### Changed
 
@@ -287,7 +294,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.10.0
 [0.9.0]: https://github.com/nrubinmosin/luna/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/nrubinmosin/luna/compare/v0.7.0...v0.8.0

@@ -123,7 +123,7 @@ hand, with the same scripts:
 | --- | --- |
 | `frontend` | `gate.ps1 -Group frontend`, then the commit-message check over the pushed range |
 | `rust-linux` | `gate.ps1 -Group rust` in `docker/linux-check.Dockerfile`'s image |
-| `windows-build` | `gate.ps1 -Group windows` and `windows-tests.ps1 -Build`, uploading the test executables |
+| `windows-build` | `gate.ps1 -Group windows` and `windows-tests.ps1 -Build`, uploading the test executables; then `third-party-notices.ps1`, as the release makes it on a Linux runner |
 | `windows-tests` | runs those executables on a `windows-2025` runner |
 
 `.github/workflows/fuzz.yml` runs each fuzz target for five minutes on Mondays
