@@ -18,7 +18,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   normally. The core refuses sessions and helpers whenever it runs elevated,
   and a core an older Luna left running elevated is replaced or, with
   sessions, restarted on the banner's button; one whose rights cannot be read
-  counts as elevated. Root is refused the same way on Linux and macOS, and the
+  counts as elevated. An elevated core lets an ordinary window in only to
+  stop it, past the check that otherwise turns away a client of lower
+  integrity; a sandboxed one is still refused. Root is refused the same way on Linux and macOS, and the
   live tests refuse to run from an elevated terminal.
 - Dependencies with published vulnerabilities are updated: rustls 0.23.46 and
   rustls-webpki 0.103.16 (TLS handshake fixes), webpki-roots 1.0.11 (distrusted

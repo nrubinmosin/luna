@@ -210,12 +210,15 @@ another program's and is left alone.
   reads elevated or cannot be read at all (`ERROR_ACCESS_DENIED`: above this
   window's integrity; off Windows its effective uid, from `/proc/<pid>/status`
   or `ps`) is never attached (`verdict`): replaced with no session, else the
-  banner asks for a restart. One that can be neither reached nor stopped (it
-  turns away a window of lower integrity, as a core that checks its peer's
-  integrity does) has no session,
-  being of a build that refuses them, and leaves ten minutes after its last
-  window; the banner says so. Off Windows, euid 0 is refused the same way,
-  with no de-elevation.
+  banner asks for a restart. The peer check (`peer.rs`) turns a client of
+  lower integrity away, which would leave an ordinary window no way to stop
+  an elevated core; so a core that refuses work lets a plain one (not
+  restricted, not an AppContainer) in to stop it and nothing else
+  (`Verdict::StopOnly`): only `shutdown` is answered on that connection, and
+  it is sent no events. One that can still be neither reached nor stopped (an
+  older build's, another user's) leaves, with no session, ten minutes after
+  its last window; the banner says so. Off Windows, euid 0 is refused the
+  same way, with no de-elevation.
 - **Restart window** (tray) starts a new window as `--after <pid>`, the core left
   running. `watchdog.rs` rebuilds a window whose WebView died.
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
