@@ -39,7 +39,7 @@ pub(crate) fn provider_root(provider: Provider) -> Result<PathBuf, String> {
     Ok(accounts_root()?.join(provider.accounts_dir()))
 }
 
-fn validate_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 64 {
         return Err("Account name must be 1..64 characters".into());
     }
