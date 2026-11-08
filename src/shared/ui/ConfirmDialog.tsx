@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
+import { useModal } from './modal';
 
 /**
  * Modal for actions that cannot be undone. Deliberately not `window.confirm`:
@@ -27,7 +28,10 @@ export function ConfirmDialog({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onCancel();
-      if (e.key === 'Enter') onConfirm();
+      // Enter confirms, except on a control that Enter works by itself: on a
+      // focused Cancel it would otherwise click Cancel and confirm at once.
+      const own = e.target instanceof Element && e.target.closest('button, a, summary, select, textarea');
+      if (e.key === 'Enter' && !own) onConfirm();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -40,6 +44,14 @@ export function ConfirmDialog({
   // rather than <body> because the theme variables and xp.css overrides all
   // hang off `[data-app]`.
   const host = document.querySelector('[data-app]') ?? document.body;
+
+  // Modal, over the app or over another dialog (Settings raises the update
+  // confirm): everything else is inert until it closes, Tab goes round inside
+  // it, and the focus comes back to the control that opened it. It opens on
+  // the dialog itself, so Enter confirms and Tab reaches the first control.
+  const box = useRef<HTMLDivElement>(null);
+  const trap = useModal(box, host);
+  const titleId = useId();
 
   return createPortal(
     <div
@@ -61,14 +73,26 @@ export function ConfirmDialog({
       }}
     >
       <div
+        ref={box}
         onClick={e => e.stopPropagation()}
+        onKeyDown={trap}
         className="window"
-        style={{ width: 400, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        style={{
+          width: 400,
+          outline: 'none',
+          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
+        }}
       >
         <div className="title-bar">
           {/* A chat can be named after a whole task, and a title that wraps
               pushes the close button off its own row. */}
-          <div className="title-bar-text">{title}</div>
+          <div className="title-bar-text" id={titleId}>
+            {title}
+          </div>
           <div className="title-bar-controls">
             <button aria-label="Close" onClick={onCancel} />
           </div>

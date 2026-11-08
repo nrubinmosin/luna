@@ -7,6 +7,7 @@ import type { CoreStateDto } from '../../ipc/coreProcess';
 import type { ClaudeDefaultsDto, CodexDefaultsDto, CodexModelDto } from '../../ipc/defaults';
 import type { FileDiffDto, LibraryOverviewDto, PlaceDto } from '../../ipc/library';
 import type { PowerStateDto } from '../../ipc/power';
+import type { BrowsersDto } from '../../ipc/browsers';
 import type { WorktreeInfoDto } from '../../ipc/worktrees';
 import type { Group, Layout, Slots } from '../../features/panes/panes.store';
 
@@ -569,3 +570,27 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     turnStartedMs: null
   }
 ];
+
+// Settings → Links: the browsers a Windows machine might have, two Chrome
+// profiles among them, and one account sent to the second.
+export const BROWSERS: BrowsersDto = {
+  system: String.raw`"C:\Program Files\Mozilla Firefox\firefox.exe" -osint -url "%1"`,
+  found: [
+    {
+      id: 'edge',
+      name: 'Microsoft Edge',
+      command: String.raw`"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" %1`
+    },
+    {
+      id: 'chrome:Default',
+      name: 'Google Chrome — Work',
+      command: String.raw`"C:\Program Files\Google\Chrome\Application\chrome.exe" --profile-directory="Default" %1`
+    },
+    {
+      id: 'chrome:Profile 1',
+      name: 'Google Chrome — Personal',
+      command: String.raw`"C:\Program Files\Google\Chrome\Application\chrome.exe" --profile-directory="Profile 1" %1`
+    }
+  ],
+  settings: { custom: [], default: 'chrome:Default', accounts: { 'claude/personal': 'chrome:Profile 1' }, folders: {} }
+};
