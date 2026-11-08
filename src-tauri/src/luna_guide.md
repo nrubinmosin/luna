@@ -33,9 +33,9 @@ on one of the user's accounts.
   accounts unless `accounts: true`; `accounts: false` drops them;
   `ids: []` with `accounts: true`: accounts alone. Their models only with `models: true`.
 - You interrupt, kill and delete only sessions you spawned and theirs. Any other (the user's own
-  chats, other chats' helpers, your parent) you can read, wait on and send text to with `scope:
-  "all"`, without which those tools refuse it; your text reaches it opened `[From session <your id>
-  via Luna]`. A deleted parent's helper passes to its parent; with none, only
+  chats, other chats' helpers, your parent) you can read, wait on, send text to and answer with
+  `scope: "all"`, without which those tools refuse it; your text reaches it opened `[From session
+  <your id> via Luna]`. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
@@ -166,7 +166,8 @@ on one of the user's accounts.
   `id`: pass it as `askId`, so your answer cannot land on the next one; a stale or unknown id
   is refused, and so is no id with several held.
 - `allow`, `keys`, a CLI's own list: your helpers only; allow true only for what you run unasked
-  (never plan/default), keys and lists at full access; others': model questions only. No control chars.
+  (never plan/default), keys and lists at full access; others' (`scope: "all"`): model questions only.
+  No control chars.
   Text or a prompt starting with `/` or `!` (CLI command, shell as you): only at
   full access, into your own helpers.
 - A visible Codex stopped on a list of its own ("Hooks need review" at startup) has it as a

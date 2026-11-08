@@ -90,9 +90,10 @@ in section 6.
   from a caller at full access into its own helper.
 - Stopping a turn (`luna_send` with `interrupt`) works only on the caller's own
   helpers and theirs, of either provider, as kill and delete do (F12).
-- Reading, waiting on and sending plain text to other sessions stays open
-  (R1), as that is how sessions hand work to one another, but only when the
-  call says `scope: "all"`; text sent so arrives opened `[From session <id> via
+- Reading, waiting on, sending plain text to and answering a model's question
+  in other sessions stays open (R1), as that is how sessions hand work to one
+  another, but only when the call says `scope: "all"`; text sent so, an answer
+  typed in as a message included, arrives opened `[From session <id> via
   Luna]`, not as the user's own words.
 - A helper reaches out of Luna only as far as its spawn asked: it starts with
   Luna's MCP server alone, without its account's MCP servers and connectors,
@@ -243,7 +244,7 @@ caller has at most 8 descendants (`agents/spawn/mod.rs:31`).
 | --- | --- | --- | --- |
 | `luna_kill`, `luna_delete` | own descendants | `authorize` (`agents/registry.rs:439`) | yes |
 | `luna_send` | own descendants; with `scope: "all"` any session but itself, the user's chats included, the text opened `[From session <id> via Luna]` (`agents/delivery.rs:322`); `interrupt` only own descendants, both providers (`agents/delivery.rs:339`); `/`- or `!`-led text only from full access into its own helper, checked again where queued or kept text is typed (`agents/privilege.rs:467`, `agents/privilege.rs:482`, `background/queue.rs:84`) | `in_scope` (`agents/registry.rs:468`), `authorize_send` (`agents/registry.rs:487`), `is_mine`, `command_reach` | yes |
-| `luna_answer` to a question a model asked | any session but itself, the user's chats included | `authorize_send` | yes |
+| `luna_answer` to a question a model asked | own descendants; with `scope: "all"` any session but itself, the user's chats included; an answer typed in as a message (a question with no dialog) opened `[From session <id> via Luna]` (`agents/answer.rs`, `answer_message`) | `in_scope` (`agents/registry.rs:468`), `authorize_send` | yes |
 | `luna_answer` with `allow`, `keys`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; `keys` and CLI lists only from full access (`agents/answer.rs:204`, call sites `agents/answer.rs:306-343`) | `answer_reach` | yes |
 | `luna_read`, `luna_wait` | own descendants; with `scope: "all"` any session but itself | `in_scope` (`agents/registry.rs:468`), `authorize_view` (`agents/registry.rs:450`) | yes |
 | `luna_spawn` | a new helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents/spawn/account.rs:12`), in any folder except Luna's data dir and what holds it (`agents/privilege.rs:305`, `agents/spawn/mod.rs:385`), at no more privilege than the caller (`agents/privilege.rs:227`, `agents/spawn/mod.rs:447`) | `cap`, `reaches_luna`, spawn cap | yes |
@@ -341,8 +342,9 @@ Residuals:
 ## 8. Accepted risks
 
 - **R1. Broad agent read/send access (by design).** Any tooled session may read
-  and wait on every session and send plain text to any other, the user's chats
-  included, once the call says `scope: "all"` (`agents/registry.rs:450-505`);
+  and wait on every session, send plain text to any other and answer its
+  model's questions, the user's chats included, once the call says `scope:
+  "all"` (`agents/registry.rs:450-505`);
   text so sent opens `[From session <id> via Luna]`. A prompt-injected session can put text in
   front of a more privileged one; what that session does stays within its own
   mode, and its permission prompts are answered by a person or its own caller

@@ -316,14 +316,15 @@ fn tools() -> Value {
         },
         {
             "name": "luna_answer",
-            "description": "Answer what a session waits on (state question or waiting; ask says what, askId: its id if any): answers, one per question: an option's number or label, or your own words; allow: true/false for a permission, note: why not. keys: raw keystrokes for any other dialog, e.g. \"{down}{enter}\" (also {esc} {tab} {shift+tab} {up} {left} {right} {space} {backspace}).",
+            "description": "Answer what a session waits on (yours; scope all: any), its state question or waiting (ask says what, askId: its id if any): answers, one per question: an option's number or label, or your own words; allow: true/false for a permission, note: why not. keys: raw keystrokes for any other dialog, e.g. \"{down}{enter}\" (also {esc} {tab} {shift+tab} {up} {left} {right} {space} {backspace}).",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "askId": { "type": "string" },
                 "answers": { "type": "array", "items": { "type": "string" } },
                 "allow": { "type": "boolean" },
                 "note": { "type": "string" },
-                "keys": { "type": "string" }
+                "keys": { "type": "string" },
+                "scope": scope.clone()
             }), &["id"]),
             "annotations": acts
         },
@@ -538,7 +539,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
                 Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
             };
         }
-        "luna_answer" => {
+        "luna_answer" => agents::in_scope(caller, &id, scope, "answer").and_then(|()| {
             let entered = crate::power::enter();
             agents::answer(
                 caller,
@@ -551,7 +552,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
                 entered.draining(),
             )
             .map(|r| json!(r))
-        }
+        }),
         "luna_sessions" => {
             serde_json::from_value::<agents::SessionFilter>(a.clone()).map_err(|e| format!("bad arguments: {e}")).and_then(|f| {
                 match f.history {
@@ -916,14 +917,21 @@ mod tests {
         assert!(refused(call("luna_wait", json!({ "ids": ["rs-kid", "rs-chat"], "timeoutS": 1 }))));
         assert!(refused(call("luna_send", json!({ "id": "rs-chat", "text": "hi" }))));
         assert!(refused(call("luna_read", json!({ "id": "rs-chat", "scope": "mine" }))));
+        // An answer is at least a send: its question or permission is another's.
+        assert!(refused(call("luna_answer", json!({ "id": "rs-chat", "answers": ["1"] }))));
+        assert!(refused(call("luna_answer", json!({ "id": "rs-chat", "allow": false }))));
         // Told so, the scope lets it by and the tool goes on to its own answer.
         let (_, text) = call("luna_read", json!({ "id": "rs-chat", "scope": "all" }));
         assert!(!text.contains("scope"), "{text}");
         let (_, text) = call("luna_send", json!({ "id": "rs-chat", "text": "hi", "scope": "all" }));
         assert!(text.contains("not running"), "{text}");
+        let (_, text) = call("luna_answer", json!({ "id": "rs-chat", "answers": ["1"], "scope": "all" }));
+        assert!(text.contains("not running"), "{text}");
         // Its own needs nothing said.
         let (_, text) = call("luna_read", json!({ "id": "rs-kid" }));
         assert!(!text.contains("scope"), "{text}");
+        let (_, text) = call("luna_answer", json!({ "id": "rs-kid", "answers": ["1"] }));
+        assert!(text.contains("not running"), "{text}");
         for id in ["rs-kid", "rs-chat", "rs-me"] {
             agents::forget(id);
         }

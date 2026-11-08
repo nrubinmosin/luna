@@ -14,9 +14,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `interrupt: true` reached any session, so one agent could stop another
   chat's helper mid-turn, or a person's chat, and dismiss the question it was
   waiting on.
-- Reading, waiting on and sending text to a session that is not the agent's
-  own takes `scope: "all"` in the call, and text so sent arrives opened
-  `[From session <id> via Luna]` rather than as the user's own words.
+- Reading, waiting on, sending text to and answering a session that is not
+  the agent's own takes `scope: "all"` in the call, and text so sent, an
+  answer typed in as a message too, arrives opened `[From session <id> via
+  Luna]` rather than as the user's own words.
 - Helpers start with Luna's MCP server alone: no MCP servers or connectors of
   their account (claude.ai's Gmail, Slack and other tools that send and write
   in the person's name; Codex's apps and its account's `config.toml`
