@@ -10,7 +10,9 @@ instead of Claude) with an opening prompt, wait for its reply, send follow-ups,
 answer what it asks, and delete it when done, worktree and its `worktree-*`
 branch included if it asked for one. The tools and a short instruction cost
 about 2k tokens once per session; the full manual is `luna_guide`'s, read only
-when the model asks. A chat without the box knows nothing of Luna, and neither
+when the model asks: whole with `topic: "all"` (the instruction says to, before
+the first spawn), one section by a word of its title (`topic: "spawning"`), or,
+with no topic, its opening and the sections to ask for. A chat without the box knows nothing of Luna, and neither
 does a background helper spawned without tools.
 
 - `luna_notify` raises a desktop notification mid-turn, titled with the chat's
@@ -42,8 +44,10 @@ hooks run unasked.
   you open it.
 - At most eight helpers under one chat, and a helper's helpers get no tools.
 - Every session gets its id as `LUNA_SESSION_ID`, a helper its parent's as
-  `LUNA_PARENT_ID`. A helper is told what it is and to write in the language of
-  its task: Claude Code through its system prompt; Codex, which can only replace
+  `LUNA_PARENT_ID`. A helper is told what it is — not the chat of whoever its
+  instructions call the operator, the user or the person at this machine — and
+  to write in the language of its task: Claude Code through its system prompt
+  and a note after its first prompt; Codex, which can only replace
   `developer_instructions`, through a note Luna appends to each background
   prompt (a visible helper's first). A prompt opening with a slash command goes
   without it, and a compaction can lose a visible one's.
@@ -121,15 +125,23 @@ would have asked in its reply, unless it runs with `approval: auto-review`.
   itself, everything the helper said since it was asked, report first. Past
   60,000 characters either is cut: `luna_read` says how many messages it left
   out (`leftOut`), goes on from its cursor with `since`, keeps the newest with
-  `last`; `luna_wait` names a file with the whole answer.
+  `last`; `luna_wait` names a file with the whole answer. `luna_read` with
+  `report: true` gives the report alone (of what was said since `since`, else
+  since the agent asked), and does not count as collecting the answer. A notice
+  says which lines of its file are the report (`lines 1-N of M`).
 - `luna_wait` takes several sessions (`ids`, `mode: "any"` or `"all"`) and says
   which finished. `screen: false` leaves the terminal out; `luna_list` with `ids`
-  gives those rows alone, and `accounts: false` leaves the accounts out.
+  gives those rows alone, and `accounts: false` leaves the accounts out. The
+  accounts' models (Codex's catalog with each model's levels) come only with
+  `models: true`.
 - **Notices.** An agent that asked and ended its turn is not left idle: once the
   answer comes (or the helper asks something, stops on a permission, or exits),
   Luna types a one-line `[Luna notice, not typed by the user]` into the agent's
   chat, as soon as it is between turns and you have not typed into it for 20
-  seconds. A draft you left there is stashed the same way (Claude Code) or holds
+  seconds. When another helper it is waiting on is mid-turn, the notice waits up
+  to 20 seconds more for that one's, so helpers finishing together make one
+  notice and one turn of the agent; a question or a permission prompt never
+  waits. A draft you left there is stashed the same way (Claude Code) or holds
   the notice (Codex). A `luna_wait` still out for that answer hands it over
   instead, and the notice follows only if the wait has not within 10 seconds
   (Claude Code moves a call past two minutes to the background). A wait the
@@ -138,7 +150,9 @@ would have asked in its reply, unless it runs with `approval: auto-review`.
   notice back.
 - The notice says what happened, how many messages the helper wrote, the first
   line of its report, and a file with all of them: the report (the longest
-  message, or the last when all are short) first, then the last, then the rest.
+  message, or the last when all are short — but a short turn the CLI started by
+  itself, on a background job's end, leaves the report to the long message
+  before it) first, then the last, then the rest.
   A `luna_read` collects the answer only when it returns all of it, uncut, from a
   finished helper.
 - Text sent to a visible session mid-turn may join that turn or start the next,
@@ -179,7 +193,7 @@ would have asked in its reply, unless it runs with `approval: auto-review`.
 its turn began and last did anything, the model it ran on (none until a model has
 answered), and how full its context is after its last turn. It names the accounts
 agents may use (the account alone is enough: it brings its own CLI), each with
-its models, the settings a helper would get there (read from the account's and the
+its models when asked (`models: true`), the settings a helper would get there (read from the account's and the
 project's settings the way the new-chat dialog reads them) and its usage as the
 Accounts window shows it.
 

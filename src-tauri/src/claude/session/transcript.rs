@@ -371,7 +371,8 @@ fn message_of(line: &str, with_tools: bool) -> Option<Line> {
             }
         }
     }
-    let text = text.trim().to_string();
+    // A helper's prompt as its caller wrote it, without Luna's note on it.
+    let text = if role == "user" { crate::pty::without_note(&text) } else { &text }.trim().to_string();
     if text.is_empty() || text.starts_with("<local-command") || text.starts_with("<command-name") {
         return None;
     }
@@ -478,6 +479,17 @@ mod tests {
         std::fs::write(&expected, "{}\n").unwrap();
         assert_eq!(transcript_of(Some(77), None, "E:\\p", 0, &acct), Some(expected));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_helpers_prompt_reads_without_lunas_note() {
+        let path = std::env::temp_dir().join(format!("luna-claude-note-{}.jsonl", std::process::id()));
+        let prompt = crate::pty::helper_prompt("p-1", "Fix the build.");
+        let line = serde_json::json!({ "type": "user", "message": { "role": "user", "content": prompt } });
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+        let (msgs, _) = messages_from(&path, 0, false);
+        assert_eq!(msgs, vec![crate::agents::Message { role: "user".into(), text: "Fix the build.".into(), after_cli: false }]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
