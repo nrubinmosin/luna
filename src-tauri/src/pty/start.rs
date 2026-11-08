@@ -894,6 +894,7 @@ mod tests {
             pairs(&[
                 ("CLAUDE_CONFIG_DIR", "/golden/acc-claude"),
                 ("DISABLE_AUTOUPDATER", "1"),
+                ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
                 ("LUNA_MCP_TOKEN", "<token>"),
                 ("LUNA_SESSION_ID", ID),
                 ("LUNA_PARENT_ID", PARENT),

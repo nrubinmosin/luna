@@ -102,6 +102,10 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         // second copy under the user profile that nothing here ever runs.
         ("DISABLE_AUTOUPDATER", "1".to_string()),
     ];
+    // A helper's, whatever it would inherit (`HelperSettings`).
+    if s.parent.is_some() {
+        envs.push((NO_AUTO_MEMORY_ENV, "1".to_string()));
+    }
     if s.instructions_dir.is_some() {
         envs.push((CLAUDE_ADDED_DIR_MEMORY, "1".to_string()));
     }
@@ -129,10 +133,19 @@ pub(crate) const STRICT_MCP: &str = "--strict-mcp-config";
 /// - unless `connectors`, no claude.ai connectors (`disableClaudeAiConnectors`,
 ///   settings-reference, honored from any scope), behind `STRICT_MCP`, which
 ///   leaves them out already: the setting holds should the flag ever not.
+///
+/// The variable `NO_AUTO_MEMORY_ENV` goes with the setting, `1` in the helper's
+/// environment and in this file's `env`: 2.1.319 reads it before the setting,
+/// and a `0` there, inherited or from the account's settings, forces
+/// auto-memory on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct HelperSettings {
     pub(crate) connectors: bool,
 }
+
+/// Claude Code's variable that turns auto-memory off (`1`) or on (`0`) above
+/// the settings (code.claude.com/docs/en/memory).
+pub(crate) const NO_AUTO_MEMORY_ENV: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
 
 /// What `claude_instructions_dir` asks of a session's start: the folder and
 /// the variable that has its `CLAUDE.md` read.
@@ -163,6 +176,9 @@ pub(crate) fn claude_settings(
     settings.insert("permissions".into(), serde_json::json!({ "deny": [claude_read_deny(core, cfg!(windows))] }));
     if let Some(h) = helper {
         settings.insert("autoMemoryEnabled".into(), false.into());
+        // Above the account's and the project's `env`, as `--settings` is.
+        let env: serde_json::Map<String, serde_json::Value> = [(NO_AUTO_MEMORY_ENV.to_string(), "1".into())].into_iter().collect();
+        settings.insert("env".into(), env.into());
         if !h.connectors {
             settings.insert("disableClaudeAiConnectors".into(), true.into());
         }

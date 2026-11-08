@@ -232,9 +232,11 @@ pub(crate) fn claude_settings_alone() -> serde_json::Value {
 }
 
 /// `settings` as a helper's file has them (claude/launch.rs `HelperSettings`):
-/// auto-memory off, and the account's claude.ai connectors.
+/// auto-memory off, by setting and by variable, and the account's claude.ai
+/// connectors.
 pub(crate) fn claude_helper_settings(mut settings: serde_json::Value) -> serde_json::Value {
     settings["autoMemoryEnabled"] = false.into();
+    settings["env"] = serde_json::json!({ "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1" });
     settings["disableClaudeAiConnectors"] = true.into();
     settings
 }

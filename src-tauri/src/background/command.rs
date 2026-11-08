@@ -90,6 +90,8 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<(Vec<String>, String, V
             args.extend(skills.args);
             envs.push(("CLAUDE_CONFIG_DIR", s.account_path.clone()));
             envs.push(("DISABLE_AUTOUPDATER", "1".into()));
+            // Never inherited: a `0` there turns auto-memory on (`HelperSettings`).
+            envs.push((crate::claude::launch::NO_AUTO_MEMORY_ENV, "1".into()));
         }
         Provider::Codex => {
             args.push("exec".into());
@@ -521,7 +523,12 @@ mod tests {
     }
 
     fn claude_turn_envs(id: &str) -> Vec<(String, String)> {
-        pairs(&[("CLAUDE_CONFIG_DIR", "C:\\acc"), ("DISABLE_AUTOUPDATER", "1"), ("LUNA_SESSION_ID", id)])
+        pairs(&[
+            ("CLAUDE_CONFIG_DIR", "C:\\acc"),
+            ("DISABLE_AUTOUPDATER", "1"),
+            ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+            ("LUNA_SESSION_ID", id),
+        ])
     }
 
     /// A helper's token as its spawn has it (agents/spawn/background.rs):
@@ -677,6 +684,8 @@ mod tests {
         assert!(!t.args.iter().any(|a| a == "--strict-mcp-config"), "{:?}", t.args);
         let mut kept = golden::claude_settings_alone();
         kept["autoMemoryEnabled"] = json!(false);
+        kept["env"] = json!({ "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1" });
+        assert!(t.envs.contains(&("CLAUDE_CODE_DISABLE_AUTO_MEMORY".to_string(), "1".to_string())), "{:?}", t.envs);
         assert_eq!(t.settings, Some(kept));
         crate::agents::forget(ID);
     }
@@ -902,6 +911,7 @@ mod tests {
                 ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
                 ("CLAUDE_CONFIG_DIR", "<acc>"),
                 ("DISABLE_AUTOUPDATER", "1"),
+                ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
                 ("LUNA_SESSION_ID", ID),
             ])
         );
