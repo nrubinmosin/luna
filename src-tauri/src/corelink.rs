@@ -242,9 +242,10 @@ fn verdict(core: &Welcome, elevated: bool) -> Verdict {
 }
 
 /// An elevated core that this window can neither talk to nor stop: only one
-/// of its own rights can, or time. A core that refuses to run sessions (this
-/// build's and later) has none, and leaves ten minutes after its last window
-/// went (coreproc.rs `leave_when_alone`).
+/// of its own rights can, or time. A core of this build or later lets an
+/// ordinary window in to stop it (peer.rs `StopOnly`), so this is another's:
+/// with no session, it leaves ten minutes after its last window went
+/// (coreproc.rs `leave_when_alone`).
 const ELEVATED_STUCK: &str = "A Luna core started as administrator is running, and Luna cannot stop it without \
     administrator rights. With no session in it, it leaves by itself ten minutes after its last window closed: start Luna \
     again then. Or sign out of Windows, or run `luna --stop-core` as administrator.";
