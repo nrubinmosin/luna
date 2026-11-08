@@ -12,6 +12,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - `luna_power` disarms with the action `cancel`; `off`, its old name, still
   works.
+- Release notes are made from this file: a release's notes are its version's
+  section, the sections of every version since the last published release, a
+  link to the full changes, and the commands and checksums to verify the
+  download. The tag's message no longer carries them, and the update chip
+  shows the section's opening paragraph.
+- Commit messages follow one written-down form (CONTRIBUTING.md, "Commits"):
+  a sentence of at most 72 characters saying what the change does, no type
+  prefix, a blank line, then why. The commit-msg hook, the gate and CI refuse
+  the rest; past commits stay as they are. A refusal says to commit again from
+  the message, not to amend, and `amend!` commits are let through to be
+  squashed, as `fixup!` ones are.
+- Dependabot opens its grouped update PRs monthly instead of weekly, and leaves a
+  new Node or Rust major to a hand-made migration.
+- Tauri 2.12.5 and its plugins' latest releases; base64, dirs, getrandom and
+  toml_edit moved to versions the rest of the tree already carried, which drops
+  dirs 6 and toml_edit 0.22 from the build; vt100 0.18 for the screen a helper's
+  output is replayed onto.
 
 ### Fixed
 
@@ -30,6 +47,25 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   not saved as finished.
 - A restart that Windows refuses, or that is canceled, no longer leaves Luna set
   to start at the next sign-in.
+- The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
+  format`): it was written without a serial number, which the attest action
+  requires of a CycloneDX file. Both SBOMs now carry one and are checked for it
+  as soon as they are made, and the attestations use `actions/attest` in place
+  of the deprecated `actions/attest-sbom`.
+
+### Security
+
+- The updater's signing key no longer reaches the release build. `tauri build`
+  runs every dependency's build scripts, proc-macros and frontend tooling, and
+  any of them could have read the key it was handed; the installer is now
+  built unsigned and signed afterwards in a job of its own, which runs only the
+  Tauri CLI pinned by `pnpm-lock.yaml`, without network, and checks the
+  signature against the updater's public key before publishing it. The release
+  still takes one approval, now given to the signing job. `release.ps1 -Local`
+  signs the same way, builds an export of the commit rather than the checkout
+  it signs from, and no longer runs the built exe to ask its core fingerprint.
+  A key rotation's bridge release is checked against the old public key, given
+  as `UPDATER_TRUSTED_PUBKEY`.
 
 ## [0.10.0] - 2026-11-08
 

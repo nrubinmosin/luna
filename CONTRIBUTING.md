@@ -30,14 +30,42 @@ Test only on the test build, and only on throwaway accounts under
 
 ## Commits
 
-- One logical change per commit, with a subject that says what the change does.
+One logical change per commit, told as a sentence: what the behavior is now,
+not what kind of change it was. The commit-msg hook and CI refuse what strays;
+`sh scripts/check-commit-msg.sh FILE` checks a draft and
+`sh scripts/check-commit-msg.sh --range origin/master..HEAD` a branch.
+
+- **The subject says what the change does**, in at most 72 characters, with no
+  period at the end. It starts with a capital letter, a digit or the path-like
+  name of what it is about (`agents/wait.rs: luna_wait on one session or
+  several`). No type prefix (`docs:`, `fix(scope)!:`): the type is in the
+  sentence.
+- **A blank line, then why.** The body says why first, then what changed and
+  where it moved, wrapped at 72. A line with a URL, an indented line (a command,
+  a table row) or a single unbreakable token may run on. An issue is a
+  sentence: "Fixes #12."
+- **No attribution trailers**: no `Co-Authored-By:`, no robot emoji, no
+  "Generated with ...". Authorship is git's author field only.
+- **The forms git writes itself stay as they are**: `Merge ...`,
+  `Revert "..."` and the release bump `Luna X.Y.Z`. A `fixup!`, `squash!` or
+  `amend!` commit passes the hook and fails CI: squash it before the merge.
+  A message the hook refused was never committed: fix it and commit again
+  (`git commit -e -F <file>`), not `--amend`.
 - Everything in US English (`pnpm check:text`).
 - Match the surrounding code: naming, idioms, comment density; comments say why.
-- **No attribution trailers**: no `Co-Authored-By:`, no robot emoji, no
-  "Generated with ...". Authorship is git's author field only. The commit-msg
-  hook and CI enforce this.
 - Delete what a change makes obsolete in the same change; commit no scratch
   files.
+
+From this repository's history:
+
+| | Subject |
+| --- | --- |
+| good | `An elevated run takes back an open file it made, owned by Administrators` |
+| good | `agents/wait.rs: luna_wait on one session or several` |
+| good | `procs.rs becomes a folder, each OS's part a file of its own` |
+| refused | `docs: the spawn sequence's preparation is schematic, with each CLI's exact order beside it`: a type prefix, and 90 characters. Instead: `Spawn preparation is schematic, each CLI's exact order beside it` |
+| refused | `check-text passes over symbolic links and directories, as a skill's .claude/skills link is`: 90 characters. The "as" clause opens the body: `check-text passes over symbolic links and directories` |
+| refused | `fix: gate step for the commit-message tests.`: a type prefix, lowercase prose and a period. Instead: `The gate runs the commit-message check's tests` |
 
 ## Pull requests
 
