@@ -13,15 +13,27 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - No CLI runs with administrator rights. Luna started as administrator starts
   its core, and so every session and helper, with the desktop's ordinary
   rights and the user's own environment, not the elevated one's; where there
-  are none (no Explorer, another account's credentials,
-  User Account Control off) it starts no session and says to restart it
-  normally. The core refuses sessions and helpers whenever it runs elevated,
-  and a core an older Luna left running elevated is replaced or, with
-  sessions, restarted on the banner's button; one whose rights cannot be read
-  counts as elevated. An elevated core lets an ordinary window in only to
-  stop it, past the check that otherwise turns away a client of lower
-  integrity; a sandboxed one is still refused. Root is refused the same way on Linux and macOS, and the
+  are none (no Explorer, another account's credentials, User Account Control
+  off) it starts no session and says to restart it normally. The core refuses
+  sessions and helpers whenever it runs elevated, and a core an older Luna
+  left running elevated is replaced or, with sessions, restarted on the
+  banner's button; one whose rights cannot be read counts as elevated. An
+  elevated core lets an ordinary window in only to stop it, past the check
+  that otherwise turns away a client of lower integrity; a sandboxed one is
+  still refused. Root is refused the same way on Linux and macOS, and the
   live tests refuse to run from an elevated terminal.
+
+## [0.10.1] - 2026-11-08
+
+A security and reliability release; it also carries the changes of 0.10.0,
+which was never published. Claude Code downloads are checked against
+Anthropic's signed release, sessions are kept away from the key to Luna's
+core, an interrupted CLI install is no longer mistaken for a finished one,
+shutting the PC down or restarting it when done works again, and the
+updater's signing key is kept out of the release build.
+
+### Security
+
 - Dependencies with published vulnerabilities are updated: rustls 0.23.46 and
   rustls-webpki 0.103.16 (TLS handshake fixes), webpki-roots 1.0.11 (distrusted
   emSign roots removed), zip 9 under the updater (tauri-plugin-updater
@@ -180,14 +192,6 @@ fixes below.
   records, notes on how each CLI behaves, and a development guide.
 - A contributing guide, issue and pull request templates, and this changelog.
 
-### Added
-
-- The installer puts `THIRD-PARTY-NOTICES.txt` beside Luna, and each release
-  publishes it too: the license texts of every crate and npm package Luna is
-  built from, and where their source is; the Rust standard library's own
-  inventory; and what the build tools and the installer add: Vite's helpers,
-  NSIS and its Tauri plug-in, the WebView2 loader and the Visual C++ runtime.
-
 ### Changed
 
 - Luna is dual-licensed under MIT OR Apache-2.0.
@@ -277,7 +281,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.10.0
 [0.9.0]: https://github.com/nrubinmosin/luna/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/nrubinmosin/luna/compare/v0.7.0...v0.8.0
