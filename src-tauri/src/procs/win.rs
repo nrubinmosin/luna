@@ -9,7 +9,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
-    SetInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows::Win32::System::Threading::{
@@ -148,6 +148,65 @@ pub fn join(job: &Job, pid: u32) -> bool {
         let assigned = AssignProcessToJobObject(job.0, proc_);
         let _ = CloseHandle(proc_);
         assigned.is_ok()
+    }
+}
+
+/// A job for a short run that must leave nothing behind (cli/probe.rs): its
+/// every member ends with it, by `end` or by its last handle closing, this
+/// process's death included. Unlike a session's `Job`, it is never let go,
+/// and nothing in it is spared for having a window.
+pub struct KillJob(HANDLE);
+// A job handle is a kernel object; any thread may use or close it.
+unsafe impl Send for KillJob {}
+unsafe impl Sync for KillJob {}
+
+impl KillJob {
+    pub fn new() -> windows::core::Result<KillJob> {
+        // SAFETY: a new job handle, owned by the KillJob from here on, which
+        // closes it once.
+        let job = KillJob(unsafe { CreateJobObjectW(None, windows::core::PCWSTR::null())? });
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: the handle is open, and the struct is the one the class
+        // names, of the size passed.
+        unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )?;
+        }
+        Ok(job)
+    }
+
+    /// Puts `pid`, created suspended, into the job.
+    pub fn assign(&self, pid: u32) -> windows::core::Result<()> {
+        // SAFETY: a process handle opened and closed here; the job's is open.
+        unsafe {
+            let proc_ = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid)?;
+            let assigned = AssignProcessToJobObject(self.0, proc_);
+            let _ = CloseHandle(proc_);
+            assigned
+        }
+    }
+
+    /// Ends every process in the job.
+    pub fn end(&self) {
+        // SAFETY: the job handle is open for as long as `self` lives.
+        unsafe {
+            let _ = TerminateJobObject(self.0, 1);
+        }
+    }
+}
+
+impl Drop for KillJob {
+    fn drop(&mut self) {
+        self.end();
+        // SAFETY: the handle was returned by CreateJobObjectW and is closed once.
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
     }
 }
 

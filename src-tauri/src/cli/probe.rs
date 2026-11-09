@@ -166,13 +166,32 @@ fn run(provider: Provider, exe: &Path, home: &Path, args: &[String]) -> Result<(
     run_within(cmd, &shown, RUN_FOR)
 }
 
-/// What the probe started, all of it: a Job Object on Windows, the
-/// process's own group on Unix. Whatever the CLI starts is born inside, and
-/// goes with it when the run ends, however it ends.
+/// What the probe started, all of it: a Job Object of its own on Windows,
+/// the process's own group on Unix. Whatever the CLI starts is born inside,
+/// and goes with it when the run ends, however it ends.
 struct Tree {
     child: std::process::Child,
     #[cfg(windows)]
-    job: Option<crate::procs::Job>,
+    job: crate::procs::KillJob,
+}
+
+#[cfg(all(test, windows))]
+thread_local! {
+    /// For this test thread: the job cannot be had, as when Windows refuses
+    /// one (a parent's job that forbids nesting, say).
+    static NO_JOB: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A job of the probe's own with `pid` in it, or why not.
+#[cfg(windows)]
+fn job_for(pid: u32) -> windows::core::Result<crate::procs::KillJob> {
+    #[cfg(test)]
+    if NO_JOB.with(std::cell::Cell::get) {
+        return Err(windows::core::Error::from(windows::core::HRESULT(0x8007_0005_u32 as i32)));
+    }
+    let job = crate::procs::KillJob::new()?;
+    job.assign(pid)?;
+    Ok(job)
 }
 
 impl Tree {
@@ -189,12 +208,24 @@ impl Tree {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
         }
-        let child = cmd.spawn()?;
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut child = cmd.spawn()?;
+        // Not let run outside its job: what it started there could outlive
+        // the run with nothing to end it. Still suspended, it has started
+        // nothing.
         #[cfg(windows)]
         {
-            let job = crate::procs::adopt(child.id());
-            crate::procs::resume(child.id());
-            Ok(Tree { child, job })
+            match job_for(child.id()) {
+                Ok(job) => {
+                    crate::procs::resume(child.id());
+                    Ok(Tree { child, job })
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    Err(std::io::Error::other(format!("no job of its own to run in: {e}")))
+                }
+            }
         }
         #[cfg(not(windows))]
         Ok(Tree { child })
@@ -203,13 +234,9 @@ impl Tree {
     /// Ends every process of the run, the CLI's leftovers among them, and
     /// reaps the CLI.
     fn end(&mut self) {
+        // Every member, a process with a window of its own among them.
         #[cfg(windows)]
-        match &self.job {
-            Some(job) => {
-                crate::procs::end_leftovers(job, None);
-            }
-            None => crate::pty::kill_tree(Some(self.child.id())),
-        }
+        self.job.end();
         // The group outlives its leader while any member is left.
         #[cfg(unix)]
         // SAFETY: a plain signal to the group this run's process leads.
@@ -420,6 +447,62 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&left.stdout).trim(), "0", "the grandchild went with the run");
+    }
+
+    /// A job that cannot be had: the CLI, created suspended, never runs.
+    #[cfg(windows)]
+    #[test]
+    fn without_a_job_of_its_own_the_cli_never_runs() {
+        let marker = std::env::temp_dir().join(format!("luna-probe-nojob-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let mut cmd = Process::new("cmd");
+        cmd.args(["/d", "/c"]).arg(format!("echo ran> \"{}\"", marker.display()));
+        NO_JOB.with(|f| f.set(true));
+        let refused = run_within(cmd, "stand-in", Duration::from_secs(5));
+        NO_JOB.with(|f| f.set(false));
+        assert!(refused.unwrap_err().contains("no job of its own"));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists(), "it was ended before it ran");
+    }
+
+    /// What has a window of its own is ended with the rest: the session
+    /// cleanup spares such a process, the probe's job does not. The window is
+    /// shown without being activated, off screen and off the taskbar.
+    #[cfg(windows)]
+    #[test]
+    fn a_descendant_with_a_window_is_ended_with_the_run() {
+        let seen = std::env::temp_dir().join(format!("luna-probe-windowed-{}", std::process::id()));
+        let _ = std::fs::remove_file(&seen);
+        let script = format!(
+            r#"Add-Type -AssemblyName System.Windows.Forms
+Add-Type -Name W -Namespace L -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int c); [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);'
+$f = New-Object System.Windows.Forms.Form
+$f.ShowInTaskbar = $false
+$f.StartPosition = 'Manual'
+$f.Location = New-Object System.Drawing.Point(-32000, -32000)
+$f.Size = New-Object System.Drawing.Size(10, 10)
+[void][L.W]::ShowWindow($f.Handle, 4)
+Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
+[System.Windows.Forms.Application]::Run()"#,
+            seen.display()
+        );
+        let encoded: String = {
+            use base64::Engine;
+            let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            base64::engine::general_purpose::STANDARD.encode(utf16)
+        };
+        let mut cmd = Process::new("cmd");
+        cmd.args(["/d", "/c"]).arg(format!("start /b powershell -NoProfile -NonInteractive -EncodedCommand {encoded} & echo started"));
+        // Long enough for the window to be up before the run is ended.
+        let refused = run_within(cmd, "stand-in", Duration::from_secs(20));
+        assert!(refused.unwrap_err().contains("left its output open"));
+        let said = std::fs::read_to_string(&seen).expect("the windowed process came up");
+        let (pid, visible) = said.trim().split_once(' ').unwrap();
+        assert_eq!(visible, "True", "its window was visible");
+        std::thread::sleep(Duration::from_millis(500));
+        let pid: u32 = pid.parse().unwrap();
+        assert!(!crate::procs::alive(pid), "the windowed descendant went with the run");
+        let _ = std::fs::remove_file(&seen);
     }
 
     #[cfg(unix)]
