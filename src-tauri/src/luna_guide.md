@@ -94,7 +94,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - A helper has Luna's MCP server alone: none of its account's servers or connectors (claude.ai's
   Gmail, Slack and the like; Codex's apps and `config.toml` servers), and a Claude Code one no
   auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper still has
-  servers from the project's `.codex/` and from plugins.
+  servers from the project's `.codex/` and from plugins, which the result lists in `mcpLeftOn`; one
+  whose account has a server Codex cannot turn off for a run (a name with a dot) is not started.
 - `requestKey` (spawn, send, delete): a retry with the same key and arguments within an hour gets
   the first call's result, not a second helper or message; one that failed is made anew. A key
   stands for one call: other arguments under it are refused. Keys are kept in the core's memory:

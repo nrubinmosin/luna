@@ -58,6 +58,49 @@ pub fn helper_mcp_servers(account_path: &str) -> Result<Vec<(String, Vec<String>
     })
 }
 
+/// What a helper started without connectors still has (codex/launch.rs
+/// `connectors_off` turns off only the account's own servers), one line each,
+/// for the spawn's result and "What Luna applied": the servers of each
+/// `.codex/config.toml` Codex reads as a project layer — the folder's and its
+/// parents' up to the project root, the one holding `.git`, or the folder's
+/// alone outside a repository; a helper's folder is trusted for its run — and
+/// the plugins the account's config.toml turns on, which may bring servers of
+/// their own. Not the plugins of Luna's library: they hold skills only
+/// (library/folders.rs).
+pub fn servers_left_on(account_path: &str, folder: &str) -> Vec<String> {
+    let mut left = Vec::new();
+    let folder = Path::new(folder);
+    let root = folder.ancestors().find(|d| d.join(".git").exists());
+    let layers: Vec<&Path> = match root {
+        Some(root) => folder.ancestors().take_while(|d| *d != root).chain([root]).collect(),
+        None => vec![folder],
+    };
+    let account = Path::new(account_path);
+    for dir in layers.into_iter().rev() {
+        let codex = dir.join(".codex");
+        if crate::pty::same_dir(&codex.to_string_lossy(), &account.to_string_lossy()) {
+            continue;
+        }
+        let file = codex.join("config.toml");
+        let doc = read_or_empty(&file);
+        if let Some(servers) = doc.get("mcp_servers").and_then(|t| t.as_table_like()) {
+            left.extend(servers.iter().map(|(name, _)| format!("server {name:?} of {}", file.display())));
+        }
+    }
+    let doc = read_or_empty(&account.join("config.toml"));
+    if let Some(plugins) = doc.get("plugins").and_then(|t| t.as_table_like()) {
+        let on = |v: &toml_edit::Item| v.get("enabled").and_then(|e| e.as_bool()) != Some(false);
+        let luna = format!("@{}", crate::library::CODEX_MARKET);
+        left.extend(
+            plugins
+                .iter()
+                .filter(|(name, v)| on(v) && !name.ends_with(&luna))
+                .map(|(name, _)| format!("plugin {name:?}: the servers it brings, if any")),
+        );
+    }
+    left
+}
+
 /// For lookups only: a config that will not parse simply has nothing to say.
 /// One look, as nothing is written back.
 pub fn read_or_empty(path: &Path) -> DocumentMut {
@@ -115,6 +158,40 @@ mod tests {
         std::fs::write(root.join("config.toml"), "[mcp_servers.gmail\ncommand = ").unwrap();
         assert!(mcp_servers(&account).is_err());
         assert!(helper_mcp_servers(&account).unwrap_err().contains("not started"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn what_a_helper_keeps_is_its_projects_servers_and_its_accounts_plugins() {
+        let root = std::env::temp_dir().join(format!("luna-codex-left-on-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (account, repo) = (root.join("acc"), root.join("repo"));
+        let sub = repo.join("crates").join("app");
+        for d in [&account, &repo.join(".git"), &sub.join(".codex"), &repo.join(".codex"), &root.join(".codex")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (a, s) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
+        assert!(servers_left_on(&a, &s).is_empty(), "no config anywhere");
+        let write = |dir: &Path, text: &str| std::fs::write(dir.join("config.toml"), text).unwrap();
+        write(&repo.join(".codex"), "[mcp_servers.docs]\ncommand = \"x\"\n");
+        write(&sub.join(".codex"), "[mcp_servers.\"team.db\"]\nurl = \"u\"\n");
+        // Above the repository's root: not a layer of this project.
+        write(&root.join(".codex"), "[mcp_servers.above]\ncommand = \"x\"\n");
+        write(
+            &account,
+            "[mcp_servers.gmail]\ncommand = \"x\"\n[plugins.\"crm@market\"]\nenabled = true\n\
+             [plugins.\"off@market\"]\nenabled = false\n[plugins.\"repo@luna\"]\nenabled = true\n",
+        );
+        let left = servers_left_on(&a, &s);
+        assert_eq!(left.len(), 3, "{left:?}");
+        assert!(left[0].starts_with("server \"docs\" of ") && left[0].contains("repo"), "root first: {left:?}");
+        assert!(left[1].starts_with("server \"team.db\" of "), "{left:?}");
+        assert!(left[2].starts_with("plugin \"crm@market\""), "{left:?}");
+        assert!(!left.iter().any(|l| l.contains("above") || l.contains("gmail") || l.contains("off@") || l.contains("@luna")));
+        // Outside a repository, the folder's own layer alone.
+        let _ = std::fs::remove_dir_all(repo.join(".git"));
+        let left = servers_left_on(&a, &s);
+        assert!(left[0].starts_with("server \"team.db\"") && left.len() == 2, "{left:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

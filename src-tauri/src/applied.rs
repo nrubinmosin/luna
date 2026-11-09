@@ -107,7 +107,9 @@ items! {
     HelperReviewer = "helper.reviewer", Runtime,
         "What a helper would ask goes to the chat that started it, never to a reviewer model an account or project names.";
     HelperMcpAlone = "helper.luna-mcp-alone", Boundary,
-        "A helper is briefed by an agent, not by you: it gets Luna's MCP server alone, none of the account's connectors or MCP servers, unless the agent that spawned it asked for them (connectors: true).";
+        "A helper is briefed by an agent, not by you: it gets none of the account's connectors or MCP servers, unless the agent that spawned it asked for them (connectors: true). Luna's MCP server alone for Claude Code; a Codex helper may keep its project's and plugins' servers, listed beside this if it does.";
+    HelperMcpLeftOn = "helper.mcp-left-on", Boundary,
+        "What a Codex helper keeps although spawned without connectors: Codex has no switch to turn off for one run the servers of the project's .codex/config.toml, which the run trusts, or those a plugin brings.";
     HelperNoMemory = "helper.no-auto-memory", Boundary,
         "What a helper saved to the account's auto-memory would reach every later session of the account unseen: its auto-memory is off.";
     HelperTrust = "helper.trust", Runtime,

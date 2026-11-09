@@ -186,6 +186,17 @@ with the new list, and visible helpers are gone.
 - **Breaking for agents:** `luna_session_answer`'s `keys` (raw keystrokes for a
   helper's screen); a helper has none, and a dialog in your own chat is yours.
 
+### Security
+
+- A Codex helper spawned without `connectors` is not started when its
+  account's `config.toml` has an MCP server whose name Codex cannot turn off
+  for one run (a dotted name such as `team.slack`): such a server stayed on
+  while "What Luna applied" said the helper had Luna's server alone. The
+  error names the server; rename it, or spawn with `connectors: true`. The
+  servers a Codex helper keeps all the same, those of the project's
+  `.codex/config.toml` and the plugins its account turns on, are listed in
+  the spawn's result (`mcpLeftOn`) and in "What Luna applied".
+
 ### Fixed
 
 - A Codex helper spawned with `approval: "auto-review"` failed every turn
