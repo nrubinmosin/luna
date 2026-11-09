@@ -544,8 +544,11 @@ fn read_override(dirs: &Dirs) -> Result<Option<String>, String> {
 }
 
 /// The override's SKILL.md in `dir`, opened as itself
-/// (`boundary::open_no_follow`: no link at it, and no FIFO there to wait on)
-/// and read no further than `cap` bytes; None where there is none.
+/// (`boundary::open_no_follow`: no link at it, and no FIFO there to wait on),
+/// held to a plain file of one name of this user's making
+/// (`secret::own_file`; not `read_private`, as a library of the person's
+/// choosing keeps its own folder's access) and read no further than `cap`
+/// bytes; None where there is none.
 fn read_skill_md(dir: &Path, cap: u64) -> Result<Option<Vec<u8>>, String> {
     use std::io::Read;
     let path = dir.join(SKILL_FILE);
@@ -562,6 +565,14 @@ fn read_skill_md(dir: &Path, cap: u64) -> Result<Option<Vec<u8>>, String> {
     let opened = file.metadata().map_err(|e| format!("{}: {e}", path.display()))?;
     if crate::boundary::is_link(&opened) || !opened.is_file() {
         return Err(not_a_file());
+    }
+    // The person's own file, in a folder of theirs that need not be private
+    // (a library of their choosing keeps its folder's access): of their
+    // making, of one name, not another user's or another file's second name.
+    match crate::secret::own_file(&file) {
+        Ok(Ok(())) => {}
+        Ok(Err(why)) => return Err(format!("{} is not a file of yours ({why}); the override is your own", path.display())),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
     }
     let mut bytes = Vec::new();
     file.take(cap).read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -1043,6 +1054,32 @@ mod tests {
             assert_eq!(std::fs::read_to_string(saved.join("SKILL.md.1-0.luna-tmp")).unwrap(), "a save under way");
             assert_eq!(std::fs::read_to_string(saved.join("more").join("notes.md")).unwrap(), "notes");
             assert!(!dir.exists() && !f.dirs.root.join("system").exists(), "across: {across}");
+        }
+    }
+
+    /// An override that is a second name of another file (a hard link), or a
+    /// file of another user's: not the person's own file, so not served, nor
+    /// opened in the editor. Read through the window, both say why.
+    #[test]
+    fn an_override_not_of_the_person_s_own_making_is_not_served() {
+        let f = Fixture::new("system-own");
+        let path = write_override(&f, OURS);
+        let other = f.base.join("other.md");
+        std::fs::write(&other, OURS).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::hard_link(&other, &path).unwrap();
+        let r = resolve_in(&f.dirs);
+        assert_eq!(r.source, Source::Luna);
+        assert!(r.problem.as_deref().is_some_and(|p| p.contains("not a file of yours")), "{:?}", r.problem);
+        assert!(read_system(&f.dirs, HANDOFF).err().is_some_and(|e| e.contains("not a file of yours")));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, OURS).unwrap();
+        assert_eq!(resolve_in(&f.dirs).source, Source::Library, "its own file again");
+        // Another user's, where this test may hand one over.
+        #[cfg(unix)]
+        if unsafe { libc::geteuid() } == 0 {
+            std::os::unix::fs::chown(&path, Some(4242), Some(4242)).unwrap();
+            assert!(resolve_in(&f.dirs).problem.is_some_and(|p| p.contains("owned by uid 4242")));
         }
     }
 

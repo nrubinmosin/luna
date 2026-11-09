@@ -141,7 +141,7 @@ folders: there is one text for every chat it is served to.
   folder are not, though the text may name them: the chat is told where they
   are.
 - **Yours is broken** when it does not do (no front matter, another name, no
-  description, nothing past the front matter, a link, too large): it is saved
+  description, nothing past the front matter, a link, a file not of your own making, too large): it is saved
   all the same, but Luna's own is served in its place, and the row and the
   chat's **What Luna applied** panel say why. A file over 64 KB is not saved
   from the editor at all.
