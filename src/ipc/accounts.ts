@@ -14,12 +14,16 @@ export interface AccountLimitsDto {
   plan: string | null;
   /** False when no usage numbers are known; show "—", not 0%. */
   haveUsage: boolean;
-  h5: number;
-  week: number;
+  /** The 5-hour session window and the week across all models, null when
+   *  the answer had no row for it: absent, not at 0%. */
+  h5: number | null;
+  week: number | null;
   resetH5: string | null;
   resetWeek: string | null;
   /** Weekly limits scoped to one model, each with its own reset. */
   scoped: Array<{ label: string; used: number; resetsAt: string | null }>;
+  /** Rows of a kind Luna does not know, under the server's own label. */
+  other: Array<{ kind: string; label: string; used: number; resetsAt: string | null }>;
   /** 'cache' (the CLI's own, free) or 'network'. */
   source: string | null;
   fetchedAtMs: number | null;
