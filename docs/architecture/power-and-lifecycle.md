@@ -174,15 +174,50 @@ another program's and is left alone.
 
 ## Core and window lifecycle
 
-- The core: `--core`, one per data dir (`core.lock`), 127.0.0.1 with a token in
-  `<data>/core/core.json`, from a copy of the exe on Windows. It exits after 10
-  minutes with no window and no session; a helper in a turn counts, and so does
-  one whose leftovers still hold the PC (`background::running`). Leaving, it
-  stops every helper's turn with its process tree (`background::stop_all`).
+- The core: `--core`, one per data dir (`core.lock`), from a copy of the exe on
+  Windows. It exits after 10 minutes with no window and no session; a helper in
+  a turn counts, and so does one whose leftovers still hold the PC
+  (`background::running`). Leaving, it stops every helper's turn with its
+  process tree (`background::stop_all`) and takes `core.json` (and off Windows
+  its socket) along.
+- **The endpoint** ([ADR-0021](../adr/0021-core-endpoint-by-os-identity.md)).
+  The core listens on a name it draws afresh at each start (`endpoint/`): on
+  Windows a named pipe, `\\.\pipe\luna-core-<32 hex>`, made with
+  `FILE_FLAG_FIRST_PIPE_INSTANCE` and `PIPE_REJECT_REMOTE_CLIENTS`, a protected
+  DACL of the user and SYSTEM (and Administrators, read and write) and a medium
+  no-read-up, no-write-up label; one instance always waits for the next
+  client, made before the last one is handed on, and each must read back the
+  first one's DACL and label. Every handle is overlapped and not inheritable,
+  so a read and a write wait at once on one connection, each to its own
+  deadline. Off Windows, a socket `core-<16 hex>.sock` in `core/` (`0700`),
+  stale ones swept at the core's start. `core.json` holds the core's pid, its
+  creation time, the protocol (2) and the endpoint's name: no token.
+- **Who is let in** (`peer/`), read before the first byte: on Windows the
+  token the client opened the pipe with (the core impersonates the client
+  for one `OpenThreadToken` and reverts at once; a window opens at
+  identification level); on Linux `SO_PEERCRED` and `/proc/<pid>` (user
+  namespace, `no_new_privs`, seccomp mode and filter count, a pidfd where the
+  kernel gives one); on macOS the uid and pid. Refused, with nothing said back
+  and the pid, image and reason logged: what cannot be read, a restricted or
+  AppContainer token, another user namespace, `no_new_privs` where the core
+  has none, a stricter seccomp state than the core's (a higher mode, or more
+  filters: a heuristic that holds along the core's own chain, as for a sandbox
+  it launches, not between launch contexts; ADR-0021), another user, a lower
+  integrity. Then the stranger's limits: 32 connections before their hello, the
+  hello within 5 s and 4 KiB. A core that itself runs with `no_new_privs`
+  (started under Flatpak, systemd's NoNewPrivileges, a container) logs so once
+  at its start: a client confined by Landlock alone in its namespace cannot be
+  told from a window there.
 - The window (`corelink.rs`) finds the core of its own build or starts it,
   holds the connection (losing it means the core died: banner, Restart), skips a
-  `core.json` whose pid is dead, runs restarts one at a time. A core of another
-  build with no sessions is replaced at once; with sessions only on a button.
+  `core.json` whose pid is dead, runs restarts one at a time. Before it says
+  anything it checks that the endpoint's server is the pid `core.json` names. A
+  core of another build with no sessions is replaced at once; with sessions only
+  on a button. A `core.json` with a token is a core of Luna 0.11 or before
+  (protocol 1, `corelink/v1.rs`): the window says hello on its loopback port
+  with that token, to learn its session count, and stops it if it has none;
+  nothing else is ever sent it. `luna --stop-core` (the uninstaller's) goes
+  through the endpoint like a window, or a protocol-1 core's port.
 - **Never elevated** (`elevation.rs`). No CLI runs with administrator rights.
   A window that finds its own token elevated (or above medium integrity) starts
   the core with the desktop shell's token: `GetShellWindow`, its process's
@@ -210,15 +245,16 @@ another program's and is left alone.
   reads elevated or cannot be read at all (`ERROR_ACCESS_DENIED`: above this
   window's integrity; off Windows its effective uid, from `/proc/<pid>/status`
   or `ps`) is never attached (`verdict`): replaced with no session, else the
-  banner asks for a restart. The peer check (`peer.rs`) turns a client of
+  banner asks for a restart. The peer check (`peer/`) turns a client of
   lower integrity away, which would leave an ordinary window no way to stop
   an elevated core; so a core that refuses work lets a plain one (not
   restricted, not an AppContainer) in to stop it and nothing else
   (`Verdict::StopOnly`): only `shutdown` is answered on that connection, and
-  it is sent no events. One that can still be neither reached nor stopped (an
-  older build's, another user's) leaves, with no session, ten minutes after
-  its last window; the banner says so. Off Windows, euid 0 is refused the
-  same way, with no de-elevation.
+  it is sent no events. An elevated administrator of another account is let in
+  the same way, to stop it only. One that can still be neither reached nor
+  stopped (an older build's, another user's) leaves, with no session, ten
+  minutes after its last window; the banner says so. Off Windows, euid 0 is
+  refused the same way, with no de-elevation.
 - **Restart window** (tray) starts a new window as `--after <pid>`, the core left
   running. `watchdog.rs` rebuilds a window whose WebView died.
 - **Quit** asks every session to quit as a delete would, stops helper turns, then

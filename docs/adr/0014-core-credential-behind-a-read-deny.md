@@ -1,6 +1,6 @@
 # ADR-0014: The core credential stays a bearer token behind a read deny
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0021](0021-core-endpoint-by-os-identity.md)
 - **Date:** 2026-11-08
 
 ## Context

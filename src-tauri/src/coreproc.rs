@@ -3,10 +3,11 @@
 //!
 //! The window starts it (corelink.rs) and stays connected; the core outlives
 //! a window that crashes, hangs or is killed, and a window started after
-//! finds it again through `<data>/core/core.json`. One core per data dir —
-//! a lock file held for the core's life sees to that, and the OS lets go of
-//! it however the core ends. With no window and no session for a while, the
-//! core leaves by itself.
+//! finds it again through `<data>/core/core.json`, which names its endpoint
+//! (endpoint/). Who may connect is the OS's to say (peer.rs): there is no
+//! token. One core per data dir — a lock file held for the core's life sees
+//! to that, and the OS lets go of it however the core ends. With no window
+//! and no session for a while, the core leaves by itself.
 //!
 //! Everything that runs the sessions runs here: the ptys (pty/), the hooks'
 //! listener and the agents' MCP server (hub.rs, agents/), the activity
@@ -15,9 +16,9 @@
 //! (corecmd.rs).
 
 use crate::admit::{Deadline, Slot, Slots};
+use crate::endpoint::{Listener, Stream};
 use crate::ipc::{self, Discovery, Event, Hello, Req, Res, Welcome};
 use std::io::{self, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
@@ -31,22 +32,23 @@ const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 /// reading must not make a session's output wait. It reconnects and each of
 /// its terminals reattaches from the scrollback.
 const QUEUE: usize = 8192;
-/// Connections let in at once before their hello: any local process can
-/// connect, and only a hello with the token earns more than this. Windows and
-/// one-off commands each say hello at once, so this is never full in use.
+/// Connections let in at once before their hello: only this user's own
+/// processes get this far (peer.rs), but one of them stuck, or many at once,
+/// gets no more than this. Windows and one-off commands each say hello at
+/// once, so this is never full in use.
 const STRANGERS: usize = 32;
 /// For the whole hello, from the connection on: a window sends it at once,
 /// and gives up on a core that has not answered within as long (corelink.rs).
 const HELLO_DEADLINE: Duration = Duration::from_secs(5);
-/// A hello's frame: a token, a role and a number, far smaller than this.
+/// A hello's frame: a role and a number, far smaller than this.
 const HELLO_MAX: usize = 4096;
 
-/// A connected window's outgoing queue, and its socket to close if it falls
-/// behind.
+/// A connected window's outgoing queue, and its end of the connection to
+/// close if it falls behind.
 struct Window {
     id: u64,
     tx: SyncSender<Vec<u8>>,
-    stream: TcpStream,
+    stream: Stream,
 }
 
 static WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
@@ -122,7 +124,8 @@ fn run() {
     // Settings' checks; the token folders below are made private regardless.
     let _ = crate::paths::protect_data_dir();
     let dir = ipc::core_dir();
-    // Owner-only: `core.json` in it is the key to the whole core.
+    // Owner-only: off Windows the core's socket is in it, and the folder's
+    // mode is what keeps other users from reaching it.
     if let Err(e) = crate::secret::private_dir(&dir) {
         crate::log::error("core", &format!("cannot create {}: {e}", dir.display()));
         return;
@@ -156,8 +159,13 @@ fn run() {
     crate::lifecycle::start_core();
     sweep_old_copies();
     keep_full_speed();
+    crate::peer::note_launch();
 
-    let listener = match TcpListener::bind(("127.0.0.1", 0)) {
+    // Sockets a core before this one left behind, gone with it.
+    #[cfg(unix)]
+    crate::endpoint::sweep_stale();
+    let endpoint = crate::endpoint::fresh_name();
+    let listener = match Listener::bind(&endpoint) {
         Ok(l) => l,
         Err(e) => {
             crate::log::error("core", &format!("cannot listen: {e}"));
@@ -187,47 +195,67 @@ fn run() {
         crate::media::prune_periodically();
     }
 
-    let token = ipc::mint_token();
     let found = Discovery {
         pid: std::process::id(),
-        port: listener.local_addr().map(|a| a.port()).unwrap_or(0),
-        token: token.clone(),
         created_ms: crate::procs::created_ms(std::process::id()).unwrap_or(0),
+        proto: ipc::PROTO,
+        endpoint: endpoint.clone(),
     };
     if let Err(e) = write_discovery(&found) {
         crate::log::error("core", &format!("cannot write core.json: {e}"));
         return;
     }
+    #[cfg(unix)]
+    let _ = ENDPOINT.set(crate::endpoint::socket_path(&endpoint));
 
     ALONE_SINCE.store(started, Ordering::SeqCst);
     std::thread::spawn(leave_when_alone);
     let strangers = Slots::new(STRANGERS);
-    for stream in listener.incoming().flatten() {
+    loop {
+        let stream = match listener.accept() {
+            Ok(stream) => stream,
+            Err(e) => {
+                // Not a client's doing: the OS refused the next instance. Said
+                // once a second at most, and tried again.
+                crate::log::warn("core", &format!("cannot accept on the endpoint: {e}"));
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+        };
         // Past the cap the connection is closed at once, with nothing said.
         let Some(slot) = strangers.take() else { continue };
-        let token = token.clone();
         std::thread::spawn(move || {
-            if let Err(e) = serve(stream, slot, &token, started) {
+            if let Err(e) = serve(stream, slot, started) {
                 crate::log::info("core", &format!("connection ended: {e}"));
             }
         });
     }
-    drop(lock);
 }
 
-/// Through a temporary file, so a window never reads half of it, and the
-/// owner's alone: it holds the token.
+/// The socket file to take along on the way out, off Windows, where a pipe
+/// goes with its process.
+#[cfg(unix)]
+static ENDPOINT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Through a temporary file, so a window never reads half of it. Private to
+/// this user like everything in the core folder, though it holds nothing that
+/// lets anyone in.
 fn write_discovery(d: &Discovery) -> io::Result<()> {
     crate::secret::write_private(&ipc::discovery_file(), &serde_json::to_vec(d)?)
 }
 
-/// Leaves, taking `core.json` along so no window tries the dead port. Every
-/// session is asked to quit first, as a chat delete would, so each leaves its
-/// transcript whole; a background helper's turn has no quit to be asked and
-/// is stopped, its process tree with it, so nothing runs on unowned.
+/// Leaves, taking `core.json` along so no window tries the dead endpoint.
+/// Every session is asked to quit first, as a chat delete would, so each
+/// leaves its transcript whole; a background helper's turn has no quit to be
+/// asked and is stopped, its process tree with it, so nothing runs on
+/// unowned.
 fn leave(reason: &str) -> ! {
     crate::lifecycle::exiting(reason);
     let _ = std::fs::remove_file(ipc::discovery_file());
+    #[cfg(unix)]
+    if let Some(socket) = ENDPOINT.get() {
+        let _ = std::fs::remove_file(socket);
+    }
     wind_down();
     crate::lifecycle::end_process()
 }
@@ -317,44 +345,44 @@ fn broadcast(event: &str, payload: serde_json::Value) {
         Ok(()) => true,
         Err(TrySendError::Full(_)) => {
             crate::log::warn("core", "a window fell behind on the sessions' output; letting it go");
-            let _ = w.stream.shutdown(Shutdown::Both);
+            w.stream.shutdown();
             false
         }
         Err(TrySendError::Disconnected(_)) => false,
     });
 }
 
-/// The first frame of a connection, which must be a hello with the token:
-/// read within `within` and `HELLO_MAX` bytes, the stranger's slot held until
-/// then. Returns the request's id and the hello.
-fn hello(stream: &TcpStream, _slot: Slot, token: &str, within: Duration) -> io::Result<(u64, Hello)> {
+/// The first frame of a connection, which must be a hello: read within
+/// `within` and `HELLO_MAX` bytes, the stranger's slot held until then.
+/// Returns the request's id and the hello.
+fn hello(stream: &Stream, _slot: Slot, within: Duration) -> io::Result<(u64, Hello)> {
     let (kind, payload) = ipc::read_frame_within(&mut Deadline::new(stream, within), HELLO_MAX)?;
     stream.set_read_timeout(None)?;
     let first: Option<Req> = (kind == ipc::REQ).then(|| serde_json::from_slice(&payload).ok()).flatten();
-    let hello = first.filter(|r| r.cmd == "hello").and_then(|r| Some((r.id, serde_json::from_value::<Hello>(r.args).ok()?)));
-    // Nothing for someone without the token, not even why.
-    hello
-        .filter(|(_, h)| crate::secret::same(&h.token, token))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "no valid hello"))
+    first
+        .filter(|r| r.cmd == "hello")
+        .and_then(|r| Some((r.id, serde_json::from_value::<Hello>(r.args).ok()?)))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no valid hello"))
 }
 
-/// One connection: the hello, then requests until the other end goes.
-fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Result<()> {
-    // On Windows, who owns the client end decides before the hello: a CLI in
-    // its sandbox reads the token and connects, so the core turns a restricted,
-    // contained or lower-integrity peer away (peer.rs, threat model F3). Fail
-    // closed, and say nothing back, as a bad hello gets nothing. A core run as
+/// One connection: who opened it, the hello, then requests until the other
+/// end goes.
+fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
+    // Who opened the endpoint decides, before anything is read: this user's
+    // own processes, unconfined, at the core's integrity (peer.rs, threat
+    // model F3). Fail closed, and say nothing back. A core run as
     // administrator, which does no work, lets an ordinary window in below its
     // integrity to stop it and nothing else (`stop_only`): that window has
     // no other way to.
     let stop_only = match crate::peer::admission(&stream, crate::elevation::refusal().is_some()) {
         Ok(stop_only) => stop_only,
         Err(why) => {
-            crate::log::warn("core", &format!("refused a loopback connection: {why}"));
+            crate::log::warn("core", &format!("refused a connection to the core: {why}"));
+            stream.shutdown();
             return Ok(());
         }
     };
-    let (first_id, hello) = hello(&stream, slot, token, HELLO_DEADLINE)?;
+    let (first_id, hello) = hello(&stream, slot, HELLO_DEADLINE)?;
     if hello.proto != ipc::PROTO {
         let err = format!("protocol {} spoken here, {} asked for", ipc::PROTO, hello.proto);
         ipc::send(&mut stream, ipc::RES, &Res { id: first_id, ok: None, err: Some(err) })?;
@@ -373,7 +401,7 @@ fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Re
                 break;
             }
         }
-        let _ = out.shutdown(Shutdown::Both);
+        out.shutdown();
     });
 
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -393,25 +421,23 @@ fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Re
     result
 }
 
-/// Runs the real `serve` on one accepted connection, for the live integration
-/// test of the peer check (`live.rs`): the test owns the listener and mints
-/// the token, so removing the peer check from `serve` is seen here. A
-/// refused peer returns `Ok(())` before the hello; an accepted one goes on to
-/// the hello against `token`. Windows only: the integration test drives a
-/// sandboxed peer, which is a Windows notion.
-#[cfg(all(test, windows))]
-pub(crate) fn serve_for_test(stream: TcpStream, token: &str) -> io::Result<()> {
+/// Runs the real `serve` on one accepted connection, for the live tests of
+/// the peer check (`live.rs`): the test owns the listener, so removing the
+/// check from `serve` is seen there. A refused peer returns `Ok(())` before
+/// anything is read; one let in goes on to the hello.
+#[cfg(test)]
+pub(crate) fn serve_for_test(stream: Stream) -> io::Result<()> {
     let slots = Slots::new(STRANGERS);
-    serve(stream, slots.take().expect("a slot"), token, now_ms())
+    serve(stream, slots.take().expect("a slot"), now_ms())
 }
 
-/// Where a connection's answers go: its queue, and its socket, closed when an
-/// answer cannot be queued so the requests waiting on it fail rather than
-/// wait for good.
+/// Where a connection's answers go: its queue, and its end of the connection,
+/// closed when an answer cannot be queued so the requests waiting on it fail
+/// rather than wait for good.
 #[derive(Clone)]
 struct Replies {
     tx: SyncSender<Vec<u8>>,
-    stream: Arc<TcpStream>,
+    stream: Arc<Stream>,
 }
 
 /// Said to a connection let in only to stop the core (`serve`).
@@ -427,7 +453,7 @@ fn turned_away(cmd: &str, stop_only: bool) -> Option<String> {
     crate::elevation::refusal().filter(|_| !matches!(cmd, "info" | "shutdown")).map(String::from)
 }
 
-fn requests(stream: &mut TcpStream, replies: &Replies, started: u64, stop_only: bool) -> io::Result<()> {
+fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: bool) -> io::Result<()> {
     loop {
         let (kind, payload) = ipc::read_frame(stream)?;
         let req: Req = serde_json::from_slice(&payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -472,7 +498,7 @@ fn answer(replies: &Replies, id: u64, result: Result<serde_json::Value, String>)
         Ok(Ok(())) | Ok(Err(TrySendError::Disconnected(_))) => {}
         Ok(Err(TrySendError::Full(_))) | Err(_) => {
             crate::log::warn("core", &format!("could not answer request {id}; closing the connection"));
-            let _ = replies.stream.shutdown(Shutdown::Both);
+            replies.stream.shutdown();
         }
     }
 }
@@ -493,50 +519,51 @@ mod tests {
         HELD.lock().unwrap().clear();
     }
 
-    /// `hello` on the far end of a fresh connection the client side of which
-    /// `client` drives; what `hello` made of it, and how long that took.
-    fn hello_from(within: Duration, client: impl FnOnce(TcpStream) + Send + 'static) -> (io::Result<(u64, Hello)>, Duration) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let peer = std::thread::spawn(move || client(TcpStream::connect(addr).unwrap()));
-        let (stream, _) = listener.accept().unwrap();
+    /// `hello` on the core's end of a fresh connection to the endpoint, the
+    /// client side of which `client` drives; what `hello` made of it, and how
+    /// long that took.
+    fn hello_from(within: Duration, client: impl FnOnce(Stream) + Send + 'static) -> (io::Result<(u64, Hello)>, Duration) {
+        let (_listener, c, server) = crate::endpoint::tests::pair();
+        let peer = std::thread::spawn(move || client(c));
         let slots = Slots::new(1);
         let begun = std::time::Instant::now();
-        let got = hello(&stream, slots.take().unwrap(), "t0k3n", within);
+        let got = hello(&server, slots.take().unwrap(), within);
         let took = begun.elapsed();
         assert_eq!(slots.taken(), 0, "the stranger's slot is given back");
-        drop(stream);
+        drop(server);
         let _ = peer.join();
         (got, took)
     }
 
-    fn hello_req(token: &str) -> Req {
-        let args = serde_json::json!({ "proto": ipc::PROTO, "token": token, "role": "ctl" });
+    fn hello_req() -> Req {
+        let args = serde_json::json!({ "proto": ipc::PROTO, "role": "ctl" });
         Req { id: 7, cmd: "hello".into(), args }
     }
 
     #[test]
-    fn a_hello_with_the_token_is_let_in() {
-        let (got, _) = hello_from(HELLO_DEADLINE, |mut c| ipc::send(&mut c, ipc::REQ, &hello_req("t0k3n")).unwrap());
+    fn a_hello_is_let_in() {
+        let (got, _) = hello_from(HELLO_DEADLINE, |mut c| ipc::send(&mut c, ipc::REQ, &hello_req()).unwrap());
         let (id, h) = got.unwrap();
-        assert_eq!((id, h.role.as_str()), (7, "ctl"));
+        assert_eq!((id, h.role.as_str(), h.proto), (7, "ctl", ipc::PROTO));
     }
 
     #[test]
-    fn a_stranger_gets_nothing() {
+    fn anything_but_a_hello_first_gets_nothing() {
         let (got, _) = hello_from(HELLO_DEADLINE, |mut c| {
-            ipc::send(&mut c, ipc::REQ, &hello_req("guess")).unwrap();
+            ipc::send(&mut c, ipc::REQ, &Req { id: 1, cmd: "info".into(), args: serde_json::json!({}) }).unwrap();
             // Nothing comes back before the core closes the connection.
             c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
             let mut out = Vec::new();
             let _ = c.read_to_end(&mut out);
             assert!(out.is_empty());
         });
-        assert_eq!(got.err().unwrap().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(got.err().unwrap().kind(), io::ErrorKind::InvalidData, "a request before the hello");
         let (got, _) = hello_from(HELLO_DEADLINE, |mut c| {
-            ipc::send(&mut c, ipc::REQ, &Req { id: 1, cmd: "info".into(), args: serde_json::json!({}) }).unwrap()
+            ipc::send(&mut c, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args: serde_json::json!({ "role": 3 }) }).unwrap()
         });
-        assert_eq!(got.err().unwrap().kind(), io::ErrorKind::PermissionDenied, "a request before the hello");
+        assert_eq!(got.err().unwrap().kind(), io::ErrorKind::InvalidData, "a hello of the wrong shape");
+        let (got, _) = hello_from(HELLO_DEADLINE, |mut c| ipc::send(&mut c, ipc::EVENT, &hello_req()).unwrap());
+        assert_eq!(got.err().unwrap().kind(), io::ErrorKind::InvalidData, "a hello in a frame of the wrong kind");
     }
 
     #[test]
@@ -551,7 +578,7 @@ mod tests {
         assert!(took < Duration::from_secs(2), "{took:?}");
         // Half a frame, then the connection closed.
         let (got, _) = hello_from(HELLO_DEADLINE, |mut c| {
-            let frame = ipc::encode(ipc::REQ, &hello_req("t0k3n")).unwrap();
+            let frame = ipc::encode(ipc::REQ, &hello_req()).unwrap();
             c.write_all(&frame[..frame.len() / 2]).unwrap();
         });
         assert_eq!(got.err().unwrap().kind(), io::ErrorKind::UnexpectedEof);
@@ -564,7 +591,7 @@ mod tests {
         assert!(got.is_err());
         assert!(took < Duration::from_secs(1), "{took:?}");
         let (got, took) = hello_from(within, |mut c| {
-            let frame = ipc::encode(ipc::REQ, &hello_req("t0k3n")).unwrap();
+            let frame = ipc::encode(ipc::REQ, &hello_req()).unwrap();
             for b in frame {
                 if c.write_all(&[b]).is_err() {
                     break;
@@ -576,6 +603,30 @@ mod tests {
         assert!(took < Duration::from_secs(1), "{took:?}");
     }
 
+    /// The whole of `serve` for a plain client of this user's: let in, its
+    /// hello answered with who the core is. A hello of another protocol (a
+    /// window of Luna 0.11, if one got this far) is told so and let go.
+    #[test]
+    fn serve_welcomes_a_hello_and_names_a_protocol_it_does_not_speak() {
+        for (proto, welcomed) in [(ipc::PROTO, true), (1, false)] {
+            let (_listener, mut c, server) = crate::endpoint::tests::pair();
+            let core = std::thread::spawn(move || serve_for_test(server));
+            let args = serde_json::json!({ "proto": proto, "role": "ctl" });
+            ipc::send(&mut c, ipc::REQ, &Req { id: 3, cmd: "hello".into(), args }).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let res: Res = ipc::recv(&mut c, ipc::RES).expect("an answer");
+            assert_eq!(res.id, 3);
+            if welcomed {
+                let core: Welcome = serde_json::from_value(res.ok.expect("welcomed")).unwrap();
+                assert_eq!(core.pid, std::process::id());
+            } else {
+                assert!(res.err.is_some_and(|e| e.contains("protocol 2 spoken here, 1 asked for")));
+            }
+            drop(c);
+            let _ = core.join();
+        }
+    }
+
     /// What `requests` answers `cmd` with, in a core whose refusal
     /// (elevation.rs) is `why`.
     fn answered(why: Option<&'static str>, cmd: &str) -> Res {
@@ -584,21 +635,19 @@ mod tests {
 
     /// The same on a connection let in only to stop the core when `stop_only`.
     fn answered_on(why: Option<&'static str>, cmd: &str, stop_only: bool) -> Res {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
+        let (_listener, mut c, mut stream) = crate::endpoint::tests::pair();
         let cmd = cmd.to_string();
         // The request, then the end of the connection, which ends `requests`.
         let peer = std::thread::spawn(move || {
-            let mut c = TcpStream::connect(addr).unwrap();
             ipc::send(&mut c, ipc::REQ, &Req { id: 9, cmd, args: serde_json::Value::Null }).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
         });
-        let (mut stream, _) = listener.accept().unwrap();
-        peer.join().unwrap();
         let (tx, rx) = sync_channel(4);
         let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
         crate::elevation::refuse_here(why);
         let _ = requests(&mut stream, &replies, 0, stop_only);
         crate::elevation::refuse_here(None);
+        peer.join().unwrap();
         let frame = rx.recv_timeout(Duration::from_secs(10)).expect("an answer");
         let (_, payload) = ipc::read_frame(&mut io::Cursor::new(frame)).unwrap();
         serde_json::from_slice(&payload).unwrap()
