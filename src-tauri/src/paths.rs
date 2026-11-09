@@ -110,6 +110,7 @@ const OWN_NAMES: &[&str] = &[
     "library-folders",
     "library-state.json",
     "library-state.json.lock",
+    "library-system.lock",
     "luna.core.run",
     "luna.log",
     "luna.log.1",
