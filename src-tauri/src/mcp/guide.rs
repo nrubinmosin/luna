@@ -1,14 +1,17 @@
 //! `luna_guide_get`: the guide a topic at a time. Its topics are the tools'
 //! names and a few that are no tool's (notices, restart, helpers), fixed, so a
 //! caller names the one it needs rather than guessing at a title's words; with
-//! none, a short index. Nobody is asked to read the whole guide.
+//! none, a short index. Nobody is asked to read the whole guide. Every session
+//! with Luna's tools reads the same guide, so auto-handoff, which only a chat
+//! with it on is to know of, is no topic of it: `luna_session_handoff` itself
+//! answers that chat's how (agents/handoff).
 
 /// The guide: an opening, then `## ` sections, each the answer to some topics.
 pub(super) const GUIDE: &str = include_str!("../luna_guide.md");
 
 /// Each topic `luna_guide_get` takes, and the title of the section of the guide
 /// that answers it.
-pub(super) const TOPICS: [(&str, &str); 20] = [
+pub(super) const TOPICS: [(&str, &str); 19] = [
     ("luna_session_list", "Sessions"),
     ("luna_session_get", "Sessions"),
     ("luna_session_stop", "Sessions"),
@@ -28,8 +31,6 @@ pub(super) const TOPICS: [(&str, &str); 20] = [
     ("luna_notification_send", "Working with helpers"),
     ("luna_power_set", "Working with helpers"),
     ("luna_guide_get", "Working with helpers"),
-    // Only a chat with auto-handoff on has the tool (agents/handoff).
-    ("luna_session_handoff", "Handoff"),
 ];
 
 /// The topics to read before a first spawn, as the instructions name them.
