@@ -212,8 +212,6 @@ export function HandoffFileView({ chat, n, onClose }: { chat: Chat; n: number; o
         style={{
           width: 'min(760px, 92vw)',
           height: 'min(640px, 86vh)',
-          display: 'flex',
-          flexDirection: 'column',
           boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
         }}
       >
@@ -225,10 +223,7 @@ export function HandoffFileView({ chat, n, onClose }: { chat: Chat; n: number; o
             <button aria-label="Close" onClick={onClose} />
           </div>
         </div>
-        <div
-          className="window-body"
-          style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', minHeight: 0 }}
-        >
+        <div className="window-body" style={{ display: 'flex', flexDirection: 'column' }}>
           <div style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', marginBottom: 6 }}>
             Luna&apos;s copy, as the chat wrote it when it handed off: what its next conversation read first.
           </div>

@@ -7,6 +7,7 @@ import type { CoreStateDto } from '../../ipc/coreProcess';
 import type { ClaudeDefaultsDto, CodexDefaultsDto, CodexModelDto } from '../../ipc/defaults';
 import type { FileDiffDto, LibraryOverviewDto, PlaceDto } from '../../ipc/library';
 import type { PowerStateDto } from '../../ipc/power';
+import type { OrphanSessionDto } from '../../ipc/sessions';
 import type { BrowsersDto } from '../../ipc/browsers';
 import type { WorktreeInfoDto } from '../../ipc/worktrees';
 import type { Group, Layout, Slots } from '../../features/panes/panes.store';
@@ -287,6 +288,59 @@ export const POWER: PowerStateDto = {
   countdownEndsAtMs: null,
   summary: { busy: 2, waiting: 1, stalled: 0, idleSinceMs: null, sessions: [] }
 };
+
+// An update asked about with eight sessions at work and a long release note:
+// the tallest confirmation there is.
+const busy = (id: string, procs: string[]) => ({
+  id,
+  turn: 'busy' as const,
+  procs,
+  outputFresh: true,
+  busy: true,
+  stalled: null
+});
+export const UPDATE_POWER: PowerStateDto = {
+  ...POWER,
+  summary: {
+    ...POWER.summary,
+    busy: 8,
+    waiting: 0,
+    sessions: [
+      busy('demo-1', ['cargo test']),
+      busy('demo-2', []),
+      busy('demo-3', ['pnpm vitest']),
+      busy('demo-4', []),
+      busy('7f3a9c21-0d4e', ['git worktree add']),
+      busy('b04e1d55-91aa', []),
+      busy('c9d2e8a0-5b17', ['cargo clippy']),
+      busy('1e6f4b73-e2c8', [])
+    ]
+  }
+};
+export const UPDATE_NOTES = Array.from(
+  { length: 24 },
+  (_, i) => `- Change ${i + 1}: a line on what it does for whoever runs Luna, as release notes have them.`
+).join('\n');
+
+// Sessions still running that no chat claims, as a lost state restore leaves them.
+const orphan = (n: number, title: string | null, cwd: string, provider: Provider = 'claude'): OrphanSessionDto => ({
+  id: `lost-${n}`,
+  provider,
+  pid: 14200 + n * 316,
+  cwd,
+  accountPath: `C:\\src\\luna-accounts\\${provider === 'claude' ? 'anthropic' : 'openai'}\\personal`,
+  title,
+  status: 'resting'
+});
+export const ORPHANS: OrphanSessionDto[] = [
+  orphan(1, 'Bisect the flaky pty test', 'C:\\src\\luna'),
+  orphan(2, 'Try the new Codex sandbox flag', 'C:\\src\\luna', 'codex'),
+  orphan(3, null, 'C:\\src\\notes'),
+  orphan(4, 'Rename the hub lanes', 'C:\\src\\luna'),
+  orphan(5, 'Draft the 0.4 roadmap', 'C:\\src\\notes', 'codex'),
+  orphan(6, 'Profile the scrollback replay', 'C:\\src\\luna'),
+  orphan(7, 'Read the WebView2 release notes', 'C:\\src\\luna')
+];
 
 // What the new-chat dialog opens on. Left unanswered it would show every
 // control sitting on Luna's own fallback, which is the one state the shot is

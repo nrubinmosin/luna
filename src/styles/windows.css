@@ -12,6 +12,40 @@
   margin: 10px 12px;
 }
 
+/* A dialog (a .window straight on a .scrim) fits the app's window, however
+   short that is: a laptop at 150% leaves it some 450px. Its title bar stays
+   on top and its .dialog-foot, the Cancel / OK row, at the bottom; the
+   .window-body between them scrolls what does not fit. In :where(), so a
+   dialog that sizes itself (Settings) keeps its own rules, and an inline
+   style outranks these. */
+[data-app] :where(.scrim > .window) {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 48px);
+}
+[data-app] :where(.scrim > .window) > .title-bar {
+  flex: none;
+}
+[data-app] :where(.scrim > .window) > .window-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* The same 10px and 12px in from the frame as any window body, 4px of it
+     inside the scroller: a control's focus ring at the edge is not cut off. */
+  margin: 6px 8px;
+  padding: 4px;
+}
+[data-app] .dialog-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0 8px 6px;
+  padding: 4px;
+}
+
 /* Title bars: XP's Luna blue gloss in the light theme, graphite in the dark
    one (Royale Noir, without its blue). Title text in Trebuchet, as XP had it. */
 [data-app] .title-bar {

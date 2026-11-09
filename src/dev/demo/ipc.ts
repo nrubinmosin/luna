@@ -19,7 +19,8 @@ import {
   HANDOFF_FILE,
   AT_STAKE,
   APPLIED,
-  BROWSERS
+  BROWSERS,
+  ORPHANS
 } from './fixtures';
 
 /** What the stand-in answers with, set when a scene is seeded: until then it
@@ -30,6 +31,8 @@ export const demoState = {
   showsChecks: false,
   /** Only Settings → CLIs shows a canary warning, and its chip with it. */
   showsCanary: false,
+  /** Only the scene about them has sessions with no chat. */
+  showsOrphans: false,
   power: POWER
 };
 
@@ -56,6 +59,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'codex_defaults') return CODEX_DEFAULTS as unknown as T;
   if (cmd === 'codex_models') return CODEX_MODELS as unknown as T;
   if (cmd === 'power_state') return demoState.power as unknown as T;
+  if (cmd === 'orphan_sessions') return (demoState.showsOrphans ? ORPHANS : []) as unknown as T;
   if (cmd === 'background_helpers') return BACKGROUND as unknown as T;
   // A helper's conversation once, with nothing new after it.
   if (cmd === 'background_transcript') {

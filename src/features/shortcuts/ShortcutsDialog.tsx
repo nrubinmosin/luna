@@ -120,11 +120,7 @@ export function ShortcutsDialog() {
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{
-          width: 520,
-          maxWidth: 'calc(100vw - 32px)',
-          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
-        }}
+        style={{ width: 520, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Shortcuts</div>
@@ -132,7 +128,7 @@ export function ShortcutsDialog() {
             <button aria-label="Close" onClick={close} />
           </div>
         </div>
-        <div className="window-body" style={{ maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
+        <div className="window-body">
           <Section label="Keyboard" rows={KEYBOARD} />
           <Section label="Mouse" rows={MOUSE} />
           <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)' }}>

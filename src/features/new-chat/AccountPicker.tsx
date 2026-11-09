@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { accountKey, PROVIDER_LABEL, type Account } from '../../shared/types';
+import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
+import { useCloseWhenMoved } from '../../shared/ui/popover';
 
 /**
  * The account box of the new-chat dialog: a select whose rows carry the
@@ -8,6 +11,10 @@ import { Icon } from '../../shared/ui/icons';
  * cannot draw. Arrows step through the accounts as a select's would; while
  * the list is open, Enter and Escape belong to it, not to the dialog
  * (`data-picker-open` tells the dialog and the keymap to keep off).
+ *
+ * The list is portaled out of the dialog's body, which scrolls on a short
+ * screen and would cut it off at its edge, and placed by the face: below it,
+ * or above where there is more room, never taller than the room it has.
  */
 export function AccountPicker({
   accounts,
@@ -30,6 +37,10 @@ export function AccountPicker({
     setHotState(key);
   }, []);
   const box = useRef<HTMLDivElement>(null);
+  const face = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const host = useDialogHost();
+  const [pos, setPos] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
   const keys = accounts.map(a => accountKey(a.provider, a.name));
   const at = Math.max(0, keys.indexOf(value));
   const current = accounts[at];
@@ -45,7 +56,8 @@ export function AccountPicker({
     const { keys, value } = live.current;
     setHot(keys[Math.max(0, keys.indexOf(value))] ?? null);
     const away = (e: MouseEvent) => {
-      if (!box.current?.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (!box.current?.contains(t) && !list.current?.contains(t)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' || e.key === 'Enter') {
@@ -75,9 +87,30 @@ export function AccountPicker({
     };
   }, [open, setHot]);
 
+  useLayoutEffect(() => {
+    if (!open || !face.current) return;
+    const r = face.current.getBoundingClientRect();
+    const h = list.current?.scrollHeight ?? 0;
+    // The room on each side: 3px off the face, 8px clear of the window's edge.
+    const below = window.innerHeight - r.bottom - 11;
+    const above = r.top - 11;
+    const down = h <= below || below >= above;
+    const maxHeight = Math.min(240, down ? below : above);
+    setPos({ left: r.left, width: r.width, maxHeight, top: down ? r.bottom + 3 : r.top - 3 - Math.min(h, maxHeight) });
+  }, [open, accounts.length]);
+
+  // The row the arrows are on stays in sight in a list that scrolls. (jsdom
+  // has no scrollIntoView.)
+  useEffect(() => {
+    if (open) list.current?.querySelector('[data-hot="yes"]')?.scrollIntoView?.({ block: 'nearest' });
+  }, [open, hot]);
+
+  useCloseWhenMoved(open, face, () => setOpen(false));
+
   return (
     <div ref={box} className="picker" data-picker-open={open || undefined}>
       <button
+        ref={face}
         type="button"
         className="picker-face"
         disabled={!accounts.length}
@@ -103,27 +136,35 @@ export function AccountPicker({
           </span>
         )}
       </button>
-      {open && (
-        <div className="picker-list" role="listbox">
-          {accounts.map((a, i) => (
-            <div
-              key={keys[i]}
-              role="option"
-              aria-selected={i === at}
-              data-hot={keys[i] === hot ? 'yes' : 'no'}
-              onMouseEnter={() => setHot(keys[i] ?? null)}
-              onClick={() => {
-                onChange(accountKey(a.provider, a.name));
-                setOpen(false);
-              }}
-              title={PROVIDER_LABEL[a.provider]}
-            >
-              <Icon name={a.provider} />
-              {a.name}
-            </div>
-          ))}
-        </div>
-      )}
+      {open &&
+        host &&
+        createPortal(
+          <div
+            ref={list}
+            className="picker-list"
+            role="listbox"
+            style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, width: pos?.width, maxHeight: pos?.maxHeight }}
+          >
+            {accounts.map((a, i) => (
+              <div
+                key={keys[i]}
+                role="option"
+                aria-selected={i === at}
+                data-hot={keys[i] === hot ? 'yes' : 'no'}
+                onMouseEnter={() => setHot(keys[i] ?? null)}
+                onClick={() => {
+                  onChange(accountKey(a.provider, a.name));
+                  setOpen(false);
+                }}
+                title={PROVIDER_LABEL[a.provider]}
+              >
+                <Icon name={a.provider} />
+                {a.name}
+              </div>
+            ))}
+          </div>,
+          host
+        )}
     </div>
   );
 }
