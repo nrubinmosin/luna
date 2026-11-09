@@ -36,7 +36,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A chat writes its handoff in a private folder of its own in Luna's data
   folder, not the system's temp folder, which others may share; a Codex chat
   is given that folder to write in (`--add-dir`) where its sandbox writes at
-  all, and one under a read-only sandbox is told it can write no file.
+  all, and one under a read-only sandbox is told it can write no file. Where
+  a start cannot make that folder private, the chat is given and named none
+  and writes its handoff outside Luna's folder; What Luna applied says why.
 - The library's override of the handoff's instructions is read alone and no
   further than its 64 KB: nothing beside it in its folder, a FIFO or a large
   file, can hold up or swell the read.

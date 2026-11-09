@@ -633,6 +633,38 @@ fn the_chats_own_drafts_folder_is_where_it_writes_and_what_is_taken() {
 }
 
 #[test]
+fn a_drafts_folder_its_start_could_not_make_private_is_neither_named_nor_taken_from() {
+    chat("hodrf-me", Some(70));
+    // Something not a folder at its name: the start cannot make it private.
+    let drafts = copies_of("hodrf-me").unwrap().join(DRAFTS);
+    std::fs::write(&drafts, "not a folder").unwrap();
+    let why = drafts_at_start("hodrf-me").unwrap_err();
+    assert_eq!(drafts_refused("hodrf-me").as_deref(), Some(why.as_str()));
+    // The chat is sent to write its handoff outside Luna's folder.
+    let (failed, how) = call("hodrf-me", json!({}));
+    assert!(!failed && how.contains("of your own, outside Luna's folder: in your workspace, say."), "{how}");
+    assert!(!how.contains(&*drafts.to_string_lossy()), "{how}");
+    // Nor is a file taken from a folder made at that name since.
+    std::fs::remove_file(&drafts).unwrap();
+    std::fs::create_dir(&drafts).unwrap();
+    let draft = drafts.join("handoff-0123abcd.md");
+    std::fs::write(&draft, "# Goal\nShip it.\n").unwrap();
+    let e = schedule("hodrf-me", Provider::Claude, &draft.to_string_lossy(), before()).unwrap_err();
+    assert!(e.contains("could not be made private at its start") && e.contains(&why), "{e}");
+    // The next start that makes it private puts it back in use.
+    drafts_at_start("hodrf-me").unwrap();
+    assert_eq!(drafts_refused("hodrf-me"), None);
+    let (_, how) = call("hodrf-me", json!({}));
+    assert!(how.contains(&*drafts.to_string_lossy()), "{how}");
+    // A chat forgotten is forgotten here too.
+    std::fs::remove_dir_all(&drafts).unwrap();
+    std::fs::write(&drafts, "not a folder").unwrap();
+    assert!(drafts_at_start("hodrf-me").is_err() && drafts_refused("hodrf-me").is_some());
+    forget_session("hodrf-me");
+    assert_eq!(drafts_refused("hodrf-me"), None);
+}
+
+#[test]
 fn a_handoff_written_by_the_firm_notice_alone_records_its_checklist() {
     chat("hochk-me", Some(70));
     let (dir, file) = scratch_file("chk");

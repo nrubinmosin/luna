@@ -304,10 +304,15 @@ pub mod acl {
         Ok(())
     }
 
-    /// Whether `path` is a chat's handoff drafts folder in the data folder
-    /// `root`: `handoffs/<chat>/drafts` (agents/handoff `drafts_of`).
+    /// Whether `path` is a chat's handoff drafts folder,
+    /// `handoffs/<chat>/drafts` (agents/handoff `drafts_of`), below `root`:
+    /// the data folder where Luna has it whole, or its `handoffs` folder
+    /// where only Luna's own things in it are checked (paths.rs `scope`).
     fn handoff_drafts(root: &Path, path: &Path) -> bool {
-        path.file_name().is_some_and(|n| n == "drafts") && path.parent().and_then(Path::parent) == Some(root.join("handoffs").as_path())
+        let Some(handoffs) = path.parent().and_then(Path::parent) else { return false };
+        path.file_name().is_some_and(|n| n == "drafts")
+            && handoffs.file_name().is_some_and(|n| n == "handoffs")
+            && (handoffs == root || handoffs == root.join("handoffs"))
     }
 
     fn reset_below(dir: &Path, user: &str, odd: &mut Vec<String>) -> io::Result<()> {
@@ -1173,6 +1178,18 @@ mod tests {
         private_dir(&elsewhere).unwrap();
         acl::set_protected(&elsewhere, &format!("{private}(A;OICI;0x1301bf;;;{cap})")).unwrap();
         assert!(acl::verify(&root).unwrap().iter().any(|p| p.contains("other") && p.contains("access entries of its own")));
+        // The same where only Luna's own things are checked, `handoffs` one
+        // of them, in a data folder others share (paths.rs `Scope::Own`).
+        let handoffs = root.join("handoffs");
+        private_dir(&handoffs).unwrap();
+        let open = acl::verify(&handoffs).unwrap();
+        assert!(open.iter().any(|p| p.contains("other") && p.contains("access entries of its own")), "{open:?}");
+        assert!(!open.iter().any(|p| p.contains("drafts")), "{open:?}");
+        // A drafts folder anywhere else is held to the rule.
+        let stray = root.join("hooks").join("c1").join("drafts");
+        private_dir(&stray).unwrap();
+        acl::set_protected(&stray, &format!("{private}(A;OICI;0x1301bf;;;{cap})")).unwrap();
+        assert!(acl::verify(&root).unwrap().iter().any(|p| p.contains("hooks") && p.contains("access entries of its own")));
         // A file Luna made first, private, the sandbox cannot write; one at a
         // fresh name it makes and writes.
         let made = drafts.join("made-first.md");

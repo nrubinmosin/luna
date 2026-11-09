@@ -136,8 +136,9 @@ fn own_draft(real: &Path, data_dir: &Path, data: &Path, own: &Path) -> bool {
 }
 
 /// `file` checked as the module says, its bytes as they were read, for the
-/// chat whose folder of copies is `own`.
-pub(super) fn read_checked(file: &str, data_dir: &Path, own: &Path) -> Result<(PathBuf, Vec<u8>), String> {
+/// chat whose folder of copies is `own`. `refused`: why that chat's start could
+/// not make its drafts folder private, which then takes no file either.
+pub(super) fn read_checked(file: &str, data_dir: &Path, own: &Path, refused: Option<&str>) -> Result<(PathBuf, Vec<u8>), String> {
     // Taken out first: a hook that never returns is not to hold the map.
     #[cfg(test)]
     let hook = hooks().lock().unwrap_or_else(|e| e.into_inner()).remove(file);
@@ -166,6 +167,13 @@ pub(super) fn read_checked(file: &str, data_dir: &Path, own: &Path) -> Result<(P
         let named_inside = crate::paths::path_key(&path.to_string_lossy())
             .starts_with(&format!("{}{sep}", crate::paths::path_key(&data_dir.to_string_lossy())));
         a_draft = real.starts_with(&data) || named_inside;
+        if let (true, Some(why)) = (a_draft, refused) {
+            return Err(format!(
+                "file: {} is inside Luna's own folder, and this chat's drafts folder could not be made private at its start \
+                 ({why}); write the handoff outside Luna's folder",
+                path.display()
+            ));
+        }
         if a_draft && !own_draft(&real, data_dir, &data, own) {
             return Err(format!(
                 "file: {} is inside Luna's own folder; write the handoff in this chat's drafts folder (luna_session_handoff \
@@ -221,11 +229,11 @@ pub(super) fn read_within(
 ) -> Result<(PathBuf, Vec<u8>), String> {
     let place = readers.admit(chat)?;
     let (tx, rx) = std::sync::mpsc::channel();
-    let (f, d, o) = (file.to_string(), data_dir.to_path_buf(), own.to_path_buf());
+    let (f, d, o, refused) = (file.to_string(), data_dir.to_path_buf(), own.to_path_buf(), super::drafts_refused(chat));
     std::thread::Builder::new()
         .name("luna-handoff-read".into())
         .spawn(move || {
-            let read = read_checked(&f, &d, &o);
+            let read = read_checked(&f, &d, &o, refused.as_deref());
             // Its place goes before its answer: a caller that has the answer
             // finds the place free for the next read.
             drop(place);

@@ -99,7 +99,13 @@ drafts folder is made private, its DACL put back to the private three (this
 user, SYSTEM, Administrators) and anything added before going, at every start
 of the chat's CLI, before that CLI runs (`drafts_at_start`, from
 `pty/start.rs`: a first start, a resume, a restart, a quick resume for
-auto-handoff turned on while the chat runs). After the start no later look
+auto-handoff turned on while the chat runs). A start that cannot do so (a DACL
+that denies this user WRITE_DAC, a file at its name) gives its CLI no
+`--add-dir` for it (Claude Code not the chat's folder either), and until a
+start can, the call without `file` names the chat no drafts folder but a file
+of its own outside Luna's folder, and no file is taken from there
+(`drafts_refused`, file.rs `read_checked`); the log and What Luna applied's
+auto-handoff item say why. After the start no later look
 touches its DACL (`drafts_of`, `secret::own_dir`: a real folder, no link,
 owned by this user): Codex 0.167.0's unelevated Windows sandbox grants itself
 an inheritable Modify ACE on each `--add-dir` once it runs, which a private
@@ -107,9 +113,11 @@ DACL put back would take away. No one else can add an ACE meanwhile, as that
 takes WRITE_DAC, which the private DACL gives only this user, SYSTEM and
 Administrators; what this user's own processes add is theirs (R3). Luna does
 not try to tell the sandbox's SID from another (`cap_sid`,
-docs/cli-compatibility.md, is not to be trusted for it). The data folder's
-privacy check takes a drafts folder's ACEs as they are, for the same reason;
-its resetting pass puts them back to inherit, Codex's grant with them until
+docs/cli-compatibility.md, is not to be trusted for it; an account folder
+others can write is outside what Luna defends, threat model B5). The data
+folder's privacy check takes a drafts folder's ACEs as they are, for the same
+reason, whether it checks the data folder whole or only Luna's own things in
+it, `handoffs` among them (`secret.rs` `handoff_drafts`); its resetting pass puts them back to inherit, Codex's grant with them until
 its next start. What lies in them is checked at its own name: `handoffs.json` and
 a copy are read only as private files of this user's, by their handle, never
 through a link (`secret::read_private`; a store that is not one is not taken
