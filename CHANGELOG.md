@@ -52,6 +52,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   once. A Codex window of a length other
   than five hours or a week was already shown, named by its length; "1 day"
   and "1 hour" no longer read "1 days" and "1 hours".
+- Signing a Claude Code account in from Luna works on Windows. The login
+  window's session wrote its settings to `hooks\login:claude:<name>.json`, a
+  name Windows refuses, and never started. A login now writes no file at all
+  (its one setting, the core-folder deny, goes on the command line), and every
+  file Luna names for a session spells the session's id as a name every
+  volume takes. Codex's login wrote nothing of the kind and was not affected.
 
 ## [0.11.0] - 2026-11-09
 

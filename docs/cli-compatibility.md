@@ -24,6 +24,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | A tool's own `timeout` is no deadline: past it the call moves to the background | the guard requires `timeout N` in the command itself |
 | The stdout of a hook exiting 0 is added to the model's context | hooks print nothing |
 | Only one `--settings` file is taken | hooks, guard, `skillOverrides` and `claudeMdExcludes` share one file |
+| `--settings` is read as JSON when its value, trimmed, starts with `{` and ends with `}`, else as a path (2.1.319) | a login session's core-folder deny goes inline, so a login writes no file of Luna's |
 | `--resume` does not continue a turn a killed process was in, unless an environment variable Luna does not set is present | the window restarts sessions between turns |
 | `--append-system-prompt-file` is not re-read on resume (a resume keeps its system prompt) | folder instructions go as an `--add-dir` `CLAUDE.md` with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` |
 | `claudeMdExcludes` takes User memory by absolute path | the account's `CLAUDE.md` path is excluded |

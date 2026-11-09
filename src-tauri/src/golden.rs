@@ -29,11 +29,12 @@ impl Redact {
             r = r.with(url.expect("the hub is listening"), to);
         }
         let core = path(crate::ipc::core_dir());
-        r.with(path(data.join("hooks").join(format!("{id}.json"))), "<settings-file>")
-            .with(path(data.join("mcp").join(format!("{id}.json"))), "<mcp-file>")
-            .with(path(data.join("hooks").join(id)), "<instructions-dir>")
+        let name = crate::paths::id_file_name(id);
+        r.with(path(data.join("hooks").join(format!("{name}.json"))), "<settings-file>")
+            .with(path(data.join("mcp").join(format!("{name}.json"))), "<mcp-file>")
+            .with(path(data.join("hooks").join(&name)), "<instructions-dir>")
             .with(path(crate::agents::notes_dir()), "<notes-dir>")
-            .with(path(data.join("handoffs").join(id)), "<handoff-dir>")
+            .with(path(data.join("handoffs").join(&name)), "<handoff-dir>")
             .with(crate::claude::launch::claude_read_deny(&core, cfg!(windows)), "Read(//<core-dir>/**)")
             .with(core, "<core-dir>")
     }
@@ -181,7 +182,7 @@ impl Redact {
 /// The `CLAUDE.md` a start of chat `id` copied into its instructions folder,
 /// where its arguments (placeholders in) name that folder; the folder removed.
 pub(crate) fn instructions(id: &str, args: &[String]) -> Option<String> {
-    let dir = crate::paths::data_dir().join("hooks").join(id);
+    let dir = crate::paths::data_dir().join("hooks").join(crate::paths::id_file_name(id));
     let text = args.iter().any(|a| a == "<instructions-dir>").then(|| {
         let file = dir.join("CLAUDE.md");
         std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()))

@@ -153,7 +153,7 @@ pub(super) fn note_file(id: &str, text: &str) -> Option<std::path::PathBuf> {
     use sha2::{Digest, Sha256};
     let dir = notes_dir();
     let digest: String = Sha256::digest(text.as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
-    let path = dir.join(format!("{id}-{digest}.md"));
+    let path = dir.join(format!("{}-{digest}.md", crate::paths::id_file_name(id)));
     if path.is_file() {
         // Named just now, it is not to go with the week's sweep, which goes by
         // when a file was last written.
