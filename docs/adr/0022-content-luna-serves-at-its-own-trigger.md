@@ -73,7 +73,9 @@ Luna serves the text itself, through the tool only the opted-in chat has
   person's own text, trusted as their instructions to their own chat; Luna
   never lays it out into an account or a folder (the pass reads only `skills/`
   and `instructions/`), and a library skill named `session-handoff` under
-  `skills/` is not it.
+  `skills/` is not it. That name is reserved: such a skill is laid out nowhere
+  either, as it would tell every session of every account it went to of the
+  handoff, and the library offers to move it into the override's place instead.
 - **No other session is told.** The guide has no topic or section of it; a
   session the tool is not offered to that calls it all the same is refused as
   for a tool there is not (`mcp/dispatch.rs`), its arguments unread; the chat's

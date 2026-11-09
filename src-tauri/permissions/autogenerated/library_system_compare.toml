@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-library-system-compare"
+description = "Enables the library_system_compare command without any pre-configured scope."
+commands.allow = ["library_system_compare"]
+
+[[permission]]
+identifier = "deny-library-system-compare"
+description = "Denies the library_system_compare command without any pre-configured scope."
+commands.deny = ["library_system_compare"]

@@ -12,6 +12,7 @@ import {
   librarySetSource,
   librarySkip,
   librarySync,
+  type EditorEntry,
   type LibraryEntry,
   type LibraryOverviewDto
 } from '../../ipc/library';
@@ -28,6 +29,7 @@ import { LibraryEditor } from './LibraryEditor';
 import { useLibrary, waiting } from './library.store';
 import { LookRow } from './LookRow';
 import { SkillsGrid } from './SkillsGrid';
+import { SystemSkills } from './SystemSkills';
 
 export function LibraryDialog({ onClose }: { onClose: () => void }) {
   const host = useDialogHost();
@@ -37,7 +39,7 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
   // Commands still out: several can be, and the first back must not read as all done.
   const [pending, setPending] = useState(0);
   const busy = pending > 0;
-  const [editing, setEditing] = useState<LibraryEntry | null>(null);
+  const [editing, setEditing] = useState<EditorEntry | null>(null);
   const [deleting, setDeleting] = useState<LibraryEntry | null>(null);
   const [newName, setNewName] = useState('');
   const [newInstructions, setNewInstructions] = useState('');
@@ -346,6 +348,12 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
                   goes by <code>luna-&lt;name&gt;</code>.
                 </Note>
               </Section>
+
+              {o.system.length > 0 && (
+                <Section label="System skills">
+                  <SystemSkills o={o} act={act} edit={setEditing} />
+                </Section>
+              )}
 
               {left.length > 0 && (
                 <Section label="Left out">

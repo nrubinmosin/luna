@@ -40,9 +40,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - The library's override of the handoff's instructions is read alone and no
   further than its 64 KB: nothing beside it in its folder, a FIFO or a large
   file, can hold up or swell the read.
+- A skill of yours in the library named `session-handoff` is laid out nowhere,
+  and a copy of it laid out before is taken out unless changed there since: in
+  an account it would tell every session there of the handoff. Its row in the
+  window says so and offers to make it the handoff's override; no new skill
+  takes the name.
 
 ### Changed
 
+- The Skills & instructions window has a **System skills** section, apart from
+  your skills, for the handoff's instructions: whose text chats are served
+  (Luna's own with its version and hash, yours with its path, or yours that
+  will not do and why), **Edit** (your override, starting from Luna's text),
+  **Compare with Luna's** and **Back to Luna's** (your override into Luna's
+  backups). It has no accounts, audience or folders: one override for everyone.
 - Auto-handoff's instructions are served by its own tool: `luna_session_handoff`
   without a file answers how to hand off, where the file goes, what Luna adds
   by itself, and the instructions for the file, Luna's own (built in) or one
