@@ -3,12 +3,19 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import * as ipc from '../../ipc/applied';
 import type { Applied } from '../../ipc/applied';
+import * as handoffIpc from '../../ipc/handoff';
 import type { Chat } from '../../shared/types';
 import { AppliedPanel, byClass } from './AppliedPanel';
+import { useChats } from './chats.store';
 
 vi.mock('../../ipc/applied', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/applied')>()),
   appliedByLuna: vi.fn()
+}));
+vi.mock('../../ipc/handoff', () => ({
+  setAutoHandoff: vi.fn(() => Promise.resolve({ resume: false })),
+  handoffFile: vi.fn(),
+  handoffTranscript: vi.fn()
 }));
 // xterm cannot run in jsdom.
 vi.mock('../panes/terminals', () => ({
@@ -71,6 +78,38 @@ describe('AppliedPanel', () => {
     render(<AppliedPanel chat={chat} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Accounting incomplete.'));
     expect(screen.getByRole('alert')).toHaveTextContent('was not noted: disk full');
+  });
+
+  it('shows the handoff instructions once auto-handoff is ticked, without being opened again', async () => {
+    const tooled = { ...chat, tools: true, status: 'resting', group: 0 } as Chat;
+    useChats.setState({ folders: [{ id: 'f', path: '/repo', open: true, chats: [tooled] }] });
+    const none = { launch: [], account: [], incomplete: null, handoff: null };
+    vi.mocked(ipc.appliedByLuna)
+      .mockReset()
+      .mockResolvedValueOnce(none)
+      .mockResolvedValue({
+        ...none,
+        handoff: {
+          instructions: {
+            name: 'session-handoff',
+            state: 'luna',
+            version: '0.12.0',
+            sha256: '3054a9e14c774f592c9c2fed08da4ff7eb38befdb00321184f3d1b324c8aedd9',
+            path: '/lib/system/session-handoff/SKILL.md',
+            problem: null
+          },
+          sameNamed: []
+        }
+      });
+    render(<AppliedPanel chat={tooled} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/has not started under this Luna/)).toBeInTheDocument());
+    expect(screen.queryByText(/Handoff instructions/)).toBeNull();
+    await userEvent.click(screen.getByLabelText('Auto-handoff at'));
+    expect(await screen.findByText('Handoff instructions: Luna’s (0.12.0, sha 3054a9e14c77)')).toBeInTheDocument();
+    // Asked again only once the core had taken the change.
+    const [setAt] = vi.mocked(handoffIpc.setAutoHandoff).mock.invocationCallOrder;
+    const [, askedAgain] = vi.mocked(ipc.appliedByLuna).mock.invocationCallOrder;
+    expect(setAt).toBeLessThan(askedAgain!);
   });
 
   it('says so when the chat has not started, and closes', async () => {
