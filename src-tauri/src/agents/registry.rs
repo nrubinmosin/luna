@@ -262,6 +262,8 @@ pub fn register(
     );
     // One token per session: a respawn invalidates the last one.
     r.tokens.retain(|_, chat| chat != id);
+    // Its CLI lists its tools afresh as it starts (agents/handoff).
+    crate::agents::handoff::unlisted(id);
     if !tools {
         return None;
     }

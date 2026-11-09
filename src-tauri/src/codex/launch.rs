@@ -47,6 +47,9 @@ pub(crate) struct ChatStart<'a> {
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
+    /// Auto-handoff's threshold (agents/handoff): no flag of Codex's, Luna's
+    /// own tool and notices.
+    pub(crate) handoff: Option<u8>,
     pub(crate) skill_args: &'a [String],
 }
 
@@ -158,6 +161,9 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.extend(mcp_args(url));
         envs.push(("LUNA_MCP_TOKEN", token.to_string()));
         applied.push(Item::LunaTools.with(LUNA_TOOLS_VALUE));
+    }
+    if let Some(threshold) = s.handoff {
+        applied.push(Item::AutoHandoff.with(format!("at {threshold}% of the context: luna_session_handoff")));
     }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(library_applied(s.skill_args));

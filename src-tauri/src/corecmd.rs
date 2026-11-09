@@ -65,6 +65,9 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("apply_recommendation", Lane::Call),
     ("dismiss_recommendation", Lane::Call),
     ("applied_by_luna", Lane::Call),
+    ("set_auto_handoff", Lane::Call),
+    ("handoff_file", Lane::Call),
+    ("handoff_transcript", Lane::Call),
 ];
 
 /// The lane `cmd` comes on, or None for a command the page may not send.
@@ -152,11 +155,11 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "ensure_claude_session" => call!(wait res args, pty::ensure_claude_session,
             id: String, folder: AbsPath, account_path: AccountPath, model: String, effort: String,
             permission_mode: String, worktree: bool, worktree_name: Option<String>, resume: Option<String>,
-            tools: Option<bool>, read_only: Option<bool>, agent: Option<String>, guard: Option<bool>),
+            tools: Option<bool>, read_only: Option<bool>, agent: Option<String>, guard: Option<bool>, handoff: Option<u8>),
         "ensure_codex_session" => call!(wait res args, pty::ensure_codex_session,
             id: String, folder: AbsPath, account_path: AccountPath, model: Option<String>, effort: String,
             approval: String, sandbox: String, worktree: Option<bool>, resume: Option<String>, login: bool,
-            tools: Option<bool>, hooks_unasked: Option<bool>, guard: Option<bool>),
+            tools: Option<bool>, hooks_unasked: Option<bool>, guard: Option<bool>, handoff: Option<u8>),
         "write_session" => call!(res args, pty::write_session, id: String, data: String),
         "resize_session" => call!(res args, pty::resize_session, id: String, cols: u16, rows: u16),
         "kill_session" => call!(wait res args, pty::kill_session, id: String),
@@ -195,6 +198,9 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "codex_trust_folder" => call!(res args, crate::codex::trust::codex_trust_folder, account_path: AccountPath, folder: AbsPath),
         "claude_trust_folder" => call!(res args, crate::claude::trust::claude_trust_folder, account_path: AccountPath, folder: AbsPath),
         "applied_by_luna" => call!(ok args, crate::applied::applied_by_luna, chat_id: String),
+        "set_auto_handoff" => call!(res args, agents::set_auto_handoff, id: String, threshold: Option<u8>),
+        "handoff_file" => call!(res args, agents::handoff_file, chat_id: String, n: u32),
+        "handoff_transcript" => call!(res args, agents::handoff_transcript, chat_id: String, n: u32, since: Option<u64>),
         "recommendations" => call!(res args, checks::recommendations),
         "apply_recommendation" => call!(res args, checks::apply_recommendation, id: String, account: Option<String>, confirmed: bool),
         "dismiss_recommendation" => call!(res args, checks::dismiss_recommendation, id: String, account: Option<String>, dismissed: bool),

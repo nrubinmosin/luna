@@ -132,7 +132,10 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
         if stuck.contains(&id) {
             continue;
         }
-        let blocked = ask_of(&id).is_some_and(|a| a.blocking)
+        // A handoff under way: into the conversation it opens, once that has
+        // its prompt (agents/handoff).
+        let blocked = crate::agents::handoff::holds_text(&id)
+            || ask_of(&id).is_some_and(|a| a.blocking)
             || still_starting(pty, &id)
             || pty.typed_ago_ms(&id).is_some_and(|ms| ms < SEND_TYPING_MS);
         let before = crate::activity::turn_state(&id);

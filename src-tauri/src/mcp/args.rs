@@ -1,6 +1,6 @@
 //! A tool call's arguments held to the tool's own schema before it runs.
 
-use super::tools::tools;
+use super::tools::{handoff_tool, tools};
 use serde_json::Value;
 
 /// A call's arguments held to its tool's schema (`tools`) before anything runs:
@@ -12,7 +12,10 @@ use serde_json::Value;
 /// A null is a key left out. Not for an unknown tool, which `run` refuses by
 /// name, nor `luna_permission`, which the CLI calls in its own shape.
 pub(super) fn arguments_fit(name: &str, a: &Value) -> Result<(), String> {
-    let list = tools();
+    let mut list = tools();
+    if let Some(all) = list.as_array_mut() {
+        all.push(handoff_tool());
+    }
     let Some(schema) = list.as_array().and_then(|t| t.iter().find(|t| t["name"] == name)).map(|t| t["inputSchema"].clone()) else {
         return Ok(());
     };

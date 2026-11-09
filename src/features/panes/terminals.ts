@@ -21,8 +21,8 @@
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import type { Chat } from '../../shared/types';
-import { ensureClaudeSession, ensureCodexSession } from '../../ipc/sessions';
+import { handoffOf, type Chat } from '../../shared/types';
+import { ensureClaudeSession, ensureCodexSession, killSession } from '../../ipc/sessions';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
 import { claude } from '../providers';
@@ -35,6 +35,7 @@ import { sizing } from './terminal/sizing';
 import { TERM_FONT_FAMILY, TERM_FONT_SIZE, dark, followTheme, themeFor } from './terminal/theme';
 import { titleFromTyping } from './terminal/title';
 import { loadWebgl } from './terminal/webgl';
+import { useRestarts } from './restarts.store';
 
 /** How many terminals stay alive with no pane showing them. */
 const WARM = 3;
@@ -64,7 +65,8 @@ export function startSession(chat: Chat, folderPath: string, accountPath: string
         resume: chat.sessionId ?? null,
         tools: chat.tools ?? false,
         hooksUnasked: chat.hooksUnasked ?? false,
-        guard: chat.guard ?? false
+        guard: chat.guard ?? false,
+        handoff: handoffOf(chat)
       })
     : ensureClaudeSession({
         chatId: chat.id,
@@ -79,8 +81,22 @@ export function startSession(chat: Chat, folderPath: string, accountPath: string
         tools: chat.tools ?? false,
         readOnly: chat.readOnly ?? false,
         agent: chat.agent ?? null,
-        guard: chat.guard ?? false
+        guard: chat.guard ?? false,
+        handoff: handoffOf(chat)
       });
+}
+
+/**
+ * Starts a running chat's CLI again on the conversation it is on: what a
+ * setting its CLI takes only as it starts calls for (auto-handoff's tool, which
+ * a CLI lists once). Its terminal, if there is one, goes, and the pane showing
+ * the chat makes it afresh on the new process (`restarts`).
+ */
+export async function resumeSession(chat: Chat, folderPath: string, accountPath: string): Promise<void> {
+  await killSession(chat.id);
+  forget(chat.id);
+  await startSession(chat, folderPath, accountPath);
+  useRestarts.getState().bump(chat.id);
 }
 
 export interface TermSpec {

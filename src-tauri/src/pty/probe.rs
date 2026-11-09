@@ -293,8 +293,35 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
         let of = id.clone();
         m.draft = tauri::async_runtime::spawn_blocking(move || manager().has_draft(&of)).await.unwrap_or(false);
         m.held = crate::agents::held_count(&id);
+        m.handoff = crate::agents::mark_of(&id);
+        pin_name(m);
     }
     Ok(meta)
+}
+
+/// A conversation a handoff opened begins on Luna's prompt, which is no name
+/// for the chat: it keeps the one it had (Codex names a chat after its
+/// conversation's first prompt).
+fn pin_name(m: &mut SessionMeta) {
+    if m.first_prompt.as_deref().is_some_and(|p| p.trim_start().starts_with(crate::agents::handoff::PROMPT_TAG)) {
+        m.first_prompt = None;
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    #[test]
+    fn a_conversation_a_handoff_opened_keeps_the_chats_name() {
+        let named = |first: &str| {
+            let mut m = SessionMeta { first_prompt: Some(first.into()), ..Default::default() };
+            pin_name(&mut m);
+            m.first_prompt
+        };
+        assert_eq!(named("[Luna handoff 2, not typed by the user] This is a new conversation…"), None);
+        assert_eq!(named("Fix the updater"), Some("Fix the updater".into()), "a person's first prompt names it");
+    }
 }
 
 /// The CLI's title for a session that is not running, by its id — how a chat

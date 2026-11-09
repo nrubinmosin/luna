@@ -7,6 +7,7 @@ import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { useCore } from '../core/core.store';
 import { ui } from '../providers';
 import { acquire, release } from './terminals';
+import { useRestarts } from './restarts.store';
 import { TERM_FONT_FAMILY, TERM_FONT_SIZE } from './terminal/theme';
 
 /** A drag carrying real files, as opposed to a chat row being dropped into a pane. */
@@ -28,6 +29,8 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
   // Bumped when a new core has replaced one that stopped: the terminal is
   // made afresh and its session resumes there.
   const epoch = useCore(s => s.epoch);
+  // Bumped when the chat's CLI was started again under it (`resumeSession`).
+  const restarts = useRestarts(s => s.by[chat.id] ?? 0);
   const [dropping, setDropping] = useState(false);
   const [attaching, setAttaching] = useState(0);
 
@@ -51,7 +54,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     return () => release(chat.id, box);
     // Session identity is the chat id; the rest is captured at spawn time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat.id, accountsLoaded, accountPath, epoch]);
+  }, [chat.id, accountsLoaded, accountPath, epoch, restarts]);
 
   return (
     <div

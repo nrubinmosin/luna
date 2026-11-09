@@ -8,7 +8,7 @@ pub(super) const GUIDE: &str = include_str!("../luna_guide.md");
 
 /// Each topic `luna_guide_get` takes, and the title of the section of the guide
 /// that answers it.
-pub(super) const TOPICS: [(&str, &str); 19] = [
+pub(super) const TOPICS: [(&str, &str); 20] = [
     ("luna_session_list", "Sessions"),
     ("luna_session_get", "Sessions"),
     ("luna_session_stop", "Sessions"),
@@ -28,6 +28,8 @@ pub(super) const TOPICS: [(&str, &str); 19] = [
     ("luna_notification_send", "Working with helpers"),
     ("luna_power_set", "Working with helpers"),
     ("luna_guide_get", "Working with helpers"),
+    // Only a chat with auto-handoff on has the tool (agents/handoff).
+    ("luna_session_handoff", "Handoff"),
 ];
 
 /// The topics to read before a first spawn, as the instructions name them.
