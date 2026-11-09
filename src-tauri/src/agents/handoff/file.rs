@@ -209,10 +209,18 @@ pub(super) fn read_checked(file: &str, data_dir: &Path, own: &Path, refused: Opt
     if text.contains('\0') {
         return Err(format!("file: {} holds a NUL byte; it is not text", path.display()));
     }
-    if text.trim().is_empty() {
+    if without_bom(text).trim().is_empty() {
         return Err(format!("file: {} is empty", path.display()));
     }
     Ok((path, bytes))
+}
+
+/// `text` without a leading byte order mark, which the file's own bytes and
+/// so its copy keep: Windows PowerShell's `Set-Content -Encoding UTF8` starts
+/// a file with one (a Codex chat wrote its handoff so, 0.167.0), and it is no
+/// whitespace to `str::trim`.
+pub(super) fn without_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
 /// `read_checked` for `chat` (its folder of copies `own`) on a thread of its
@@ -318,6 +326,10 @@ pub(super) mod tests {
         // A number taken is never written over.
         assert!(snapshot("file-ok", &file.to_string_lossy(), &data, &out, 1).unwrap_err().contains("could not write"));
         assert!(snapshot("file-ok", &file.to_string_lossy(), &data, &out, 2).is_ok());
+        // A byte order mark is the file's: its copy keeps it.
+        std::fs::write(&file, b"\xef\xbb\xbf## Goal\n").unwrap();
+        let marked = snapshot("file-ok", &file.to_string_lossy(), &data, &out, 3).unwrap();
+        assert_eq!(std::fs::read(&marked.path).unwrap(), b"\xef\xbb\xbf## Goal\n");
         std::fs::write(out.join("7-facts.md"), "facts").unwrap();
         assert_eq!(next_free(&out), 8, "past every copy, facts included");
         assert_eq!(next_free(&dir.join("none")), 1);
@@ -347,6 +359,7 @@ pub(super) mod tests {
         std::fs::create_dir_all(dir.join("folder.md")).unwrap();
         refused(&dir.join("folder.md"), "not a file");
         refused(&write("empty.md", b" \n\t"), "empty");
+        refused(&write("bom.md", b"\xef\xbb\xbf\n"), "empty");
         refused(&write("nul.md", b"a\0b"), "NUL");
         refused(&write("latin.md", &[0x66, 0xe9, 0x65]), "UTF-8");
         refused(&write("big.md", &vec![b'a'; MAX_BYTES as usize + 1]), "KB");
