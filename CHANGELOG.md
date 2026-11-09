@@ -205,6 +205,11 @@ with the new list, and visible helpers are gone.
 
 ### Fixed
 
+- A release that changed only the CLI policy (`cli-known-good.json`, its
+  minimum safe versions) kept the core's fingerprint, so its window attached
+  to the old core still running, which went on allowing the old minimum. The
+  policy is now part of the fingerprint, and a test holds every file compiled
+  into the core to it.
 - A Codex helper spawned with `approval: "auto-review"` failed every turn
   after its first: `codex exec resume` refuses `--approve-for-me`, so its
   later turns pass the three settings that flag stands for instead.

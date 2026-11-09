@@ -19,6 +19,9 @@ mod corelink;
 mod coreproc;
 mod elevation;
 mod emit;
+// build.rs stamps the binary with it; compiled here for its tests.
+#[cfg(test)]
+mod fingerprint;
 #[cfg(test)]
 mod golden;
 mod guard;
