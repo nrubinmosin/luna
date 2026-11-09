@@ -110,7 +110,7 @@ any is there the start goes ahead and the dialog only warns, the CLI left to
 decide (and its exit, if it gives up, is no canary failure); if none is, the
 start is refused. The settings files are read as a project controls them: a
 regular file of at most 1 MiB, a link followed only to one, a FIFO or device at
-the name given up on without a wait (`read_settings`). The refusal is the
+the name given up on without a wait (`read_settings`); a file there that could not be read, and a place of settings that could not be looked at (a registry look failing other than "not found"), counts as a source that may hold a hook: a warning, not a refusal. The refusal is the
 start's error, which the pane shows as `[failed to start session: …]`. The same
 check answers the new-chat dialog (`chat_folder_check`, off the window's thread,
 asked for every folder, account and worktree box; its refusal disables Create,
