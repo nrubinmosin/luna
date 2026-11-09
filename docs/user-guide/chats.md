@@ -4,15 +4,20 @@
 
 ## Creating a chat
 
-**New chat** (Ctrl+N) asks for a folder and an account, plus the **Git worktree**
-and **Luna tools** checkboxes. They start as Settings has them (worktree on,
-tools off) or as kept for the folder: flipping one is for that chat only, and
-"keep for this folder" makes it the folder's own start. The folder list is the
-folders you launched chats in, adopted orphans into or browsed to.
+**New chat** (Ctrl+N) asks for a folder and an account, plus the **Git worktree**,
+**Luna tools** and **Wait guard** checkboxes. They start as Settings has them
+(worktree on, tools and the guard off) or as kept for the folder: flipping one
+is for that chat only, "back to …" undoes the flips, and "keep for this folder"
+makes them the folder's own start; kept as Settings has them anyway, the folder
+goes back to following Settings. Picking another folder starts the boxes the
+way that one does, and a chat made with Ctrl+Shift+N takes that start. A
+folder's start kept before the guard was part of it leaves the guard to
+Settings. The folder list is the folders you launched chats in, adopted orphans
+into or browsed to.
 
 The account decides which CLI runs, and the rest of the dialog follows.
 
-Two boxes add something to the CLI only when you tick them:
+These boxes add something to the CLI only when you ask for it:
 
 - **Trust this folder in "<account>"** shows when the account has not trusted
   the folder yet, unticked. Ticked, Luna writes the same mark the CLI's own
@@ -23,10 +28,12 @@ Two boxes add something to the CLI only when you tick them:
   worktree, so such a chat needs the box ticked or the worktree off. A chat an
   agent starts never writes trust: a Codex helper is trusted for its own runs
   only.
-- **Wait guard**, off: a shell command that would wait forever (`tail -f`,
-  `Get-Content -Wait` without a timeout) is refused before it runs, with the
-  reason for the model. Helpers always have it. Codex runs it only with
-  **Hooks unasked** on.
+- **Wait guard**, off unless Settings or the folder's start says on: a shell
+  command that would wait forever (`tail -f`, `Get-Content -Wait` without a
+  timeout) is refused before it runs, with the reason for the model. Helpers
+  always have it. Codex runs it only with **Hooks unasked** on: without it the
+  box shows off and cannot be ticked, whatever the start says, and the chat
+  starts without the guard.
 - **Auto-handoff at N% of its context**, off, only with Luna tools: see
   [Auto-handoff](#auto-handoff).
 

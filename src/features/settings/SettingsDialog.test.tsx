@@ -5,6 +5,7 @@ import { ACCOUNTS, FOLDERS } from '../../dev/demo/fixtures';
 import type { BrowserSettingsDto } from '../../ipc/browsers';
 import { useAccounts } from '../accounts/accounts.store';
 import { useChats } from '../chats/chats.store';
+import { useNewChat } from '../new-chat/newchat.store';
 import { UpdateConfirm } from '../updates/UpdateConfirm';
 import { useUpdates } from '../updates/updates.store';
 import { SettingsDialog } from './SettingsDialog';
@@ -215,5 +216,14 @@ describe('SettingsDialog', () => {
     expect(screen.getByRole('textbox', { name: 'Waiting marker text' })).toHaveValue('STATUS: WAITING');
     await user.click(tab('Links'));
     expect(screen.getByRole('textbox', { name: 'Browser name' })).toHaveValue('Firefox — Work');
+  });
+
+  it('sets where the new-chat boxes start, the wait guard off unless asked', async () => {
+    const user = open('chats');
+    const guard = screen.getByRole('checkbox', { name: 'Wait guard' });
+    expect(guard).not.toBeChecked();
+    await user.click(guard);
+    expect(useNewChat.getState().guard).toBe(true);
+    expect(guard).toBeChecked();
   });
 });
