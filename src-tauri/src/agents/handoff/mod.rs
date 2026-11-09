@@ -75,23 +75,11 @@ pub fn dir_of(chat: &str) -> Result<PathBuf, String> {
 /// folder may be shared, and a handoff quotes the person and the project.
 pub(super) const DRAFTS: &str = "drafts";
 
-/// `top` and the folders `below` it, in turn, each made where it is not there
-/// yet and checked where it is before anything is made below it: a folder,
-/// no link or junction, this user's, private (`secret::private_dir`, which
-/// checks the one folder it is given). In a data folder others share
-/// (paths.rs `scope`), a link planted at any of them would lead what Luna
-/// writes there, and what it gives a CLI to write in, to a folder another
-/// user holds. The innermost.
-pub(super) fn private_chain(top: &Path, below: &[&str]) -> Result<PathBuf, String> {
-    let make = |d: &Path| crate::secret::private_dir(d).map_err(|e| format!("{} is no private folder of Luna's: {e}", d.display()));
-    let mut dir = top.to_path_buf();
-    make(&dir)?;
-    for name in below {
-        dir.push(name);
-        make(&dir)?;
-    }
-    Ok(dir)
-}
+// The handoffs' folders are checked top down (`private_chain`): in a data
+// folder others share (paths.rs `scope`), a link planted at any of them would
+// lead what Luna writes there, and what it gives a CLI to write in, to a
+// folder another user holds.
+use crate::boundary::private_chain;
 
 /// `chat`'s folder of copies, checked from Luna's folder of handoffs down
 /// (`private_chain`) before a copy is written in it.
