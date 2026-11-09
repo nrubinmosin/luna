@@ -47,10 +47,19 @@ pub(crate) struct ChatStart<'a> {
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
-    /// Auto-handoff's threshold (agents/handoff): no flag of Codex's, Luna's
-    /// own tool and notices.
-    pub(crate) handoff: Option<u8>,
+    /// Auto-handoff's threshold (agents/handoff), Luna's own tool and notices,
+    /// and the chat's drafts folder where its sandbox writes at all
+    /// (`writes_files`): an `--add-dir`, which Codex makes writable.
+    pub(crate) handoff: Option<(u8, Option<&'a std::path::Path>)>,
     pub(crate) skill_args: &'a [String],
+}
+
+/// Whether a session in `sandbox` may write files at all: Codex makes an
+/// `--add-dir` writable under `workspace-write` and has no need of one under
+/// `danger-full-access`; under a read-only sandbox it ignores one, with a
+/// warning on the screen (0.167.0, docs/cli-compatibility.md).
+pub(crate) fn writes_files(sandbox: &str) -> bool {
+    matches!(sandbox, "workspace-write" | "danger-full-access")
 }
 
 /// The arguments and environment of a Codex chat's start, and what Luna
@@ -162,8 +171,15 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         envs.push(("LUNA_MCP_TOKEN", token.to_string()));
         applied.push(Item::LunaTools.with(LUNA_TOOLS_VALUE));
     }
-    if let Some(threshold) = s.handoff {
-        applied.push(Item::AutoHandoff.with(format!("at {threshold}% of the context: luna_session_handoff")));
+    if let Some((threshold, drafts)) = s.handoff {
+        let mut value = format!("at {threshold}% of the context: luna_session_handoff");
+        if let Some(drafts) = drafts {
+            let drafts = drafts.to_string_lossy().into_owned();
+            value.push_str(&format!("; --add-dir {drafts}"));
+            args.push("--add-dir".into());
+            args.push(drafts);
+        }
+        applied.push(Item::AutoHandoff.with(value));
     }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(library_applied(s.skill_args));

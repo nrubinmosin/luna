@@ -33,9 +33,17 @@ pub(super) struct Told {
     /// (watch.rs `told_now`).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub compacted: u32,
+    /// Its context in tokens at the last notice: what tells a compaction,
+    /// which takes tokens away, from a larger window, which does not.
+    #[serde(default, skip_serializing_if = "is_none_u64")]
+    pub tokens: u64,
 }
 
 fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_none_u64(n: &u64) -> bool {
     *n == 0
 }
 

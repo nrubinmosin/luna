@@ -74,6 +74,7 @@ const CODEX: &[Command] = &[
             "--approve-for-me",
             "--dangerously-bypass-approvals-and-sandbox",
             "--dangerously-bypass-hook-trust",
+            "--add-dir",
         ],
     },
     Command {
@@ -88,6 +89,7 @@ const CODEX: &[Command] = &[
             "--approve-for-me",
             "--dangerously-bypass-approvals-and-sandbox",
             "--dangerously-bypass-hook-trust",
+            "--add-dir",
         ],
     },
     Command {

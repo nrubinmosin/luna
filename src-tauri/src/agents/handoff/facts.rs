@@ -44,8 +44,9 @@ pub(super) const SECTIONS: [Section; 6] = [
     Section { heading: "Decisions and dead ends", holds: "" },
 ];
 
-/// SECTIONS as one line: each heading, and what it holds in brackets.
-fn checklist() -> String {
+/// SECTIONS as one line: each heading, and what it holds in brackets. What a
+/// chat that wrote by the firm notice alone was given (served.rs).
+pub(super) fn checklist() -> String {
     let each = SECTIONS.iter().map(|s| if s.holds.is_empty() { s.heading.to_string() } else { format!("{} ({})", s.heading, s.holds) });
     each.collect::<Vec<_>>().join("; ")
 }
@@ -123,18 +124,20 @@ SHA, transcript), which of them owe you an answer and the messages to them that 
 you one, text of yours Luna holds behind a person's draft, the accounts in use and how far each has gone, this chat's \
 settings, and where this conversation's transcript is";
 
-/// `luna_session_handoff` without `file`: the procedure, where the file goes,
-/// what Luna adds itself, and the instructions served (`body`), with whose
-/// they are (`source`).
-pub(super) fn how_to(source: &str, sha256: &str, body: &str, data_dir: &str, suggested: &str) -> String {
+/// `luna_session_handoff` without `file`: the procedure, where the file goes
+/// (`suggested`, in the chat's drafts folder), what Luna adds itself, and the
+/// instructions served (`body`), with whose they are (`source`). `unwritable`:
+/// why this chat can write no file at all, where its settings say so.
+pub(super) fn how_to(source: &str, sha256: &str, body: &str, suggested: &str, unwritable: Option<&str>) -> String {
     let short: String = sha256.chars().take(12).collect();
+    let unwritable = unwritable.map(|why| format!(" {why}")).unwrap_or_default();
     format!(
         "How to hand this chat off to a fresh conversation of its own.\n\n\
          1. Let your CLI's own background jobs and subagents finish, or stop them: they cannot cross over. Luna helpers do, \
          ids unchanged.\n\
-         2. Write the handoff as the instructions below say, as a Markdown file (.md, at most {kb} KB) at an absolute path \
-         outside Luna's folder ({data_dir}), wherever you can write: {suggested}, say.\n\
-         3. Call luna_session_handoff with file set to that path.\n\
+         2. Write the handoff as the instructions below say, as a Markdown file (.md, at most {kb} KB): {suggested}, in a \
+         folder Luna keeps for this chat alone. A file of yours outside Luna's folder will do too.{unwritable}\n\
+         3. Call luna_session_handoff with file set to its absolute path.\n\
          4. End your turn. Once this chat is at rest Luna clears this conversation and opens the next one with your file and \
          the facts it knows; notices and messages for this chat wait until then.\n\n\
          Luna adds these to the next conversation itself, so leave them out of the file: {LUNA_ADDS}.\n\n\
@@ -410,11 +413,14 @@ mod tests {
 
     #[test]
     fn the_no_file_answer_says_what_to_do_where_and_what_to_leave_out() {
-        let text = how_to("Luna's own, 0.12.0", "0123456789abcdef", "# Writing a handoff\n", "D:\\luna", "C:\\t\\luna-handoff-c1.md");
+        let text =
+            how_to("Luna's own, 0.12.0", "0123456789abcdef", "# Writing a handoff\n", "D:\\luna\\handoffs\\c1\\drafts\\handoff.md", None);
+        assert!(!text.contains("writes no file"));
+        let read_only = how_to("Luna's own, 0.12.0", "0123456789abcdef", "", "D:\\h.md", Some("This chat writes no file."));
+        assert!(read_only.contains("will do too. This chat writes no file.\n3."), "{read_only}");
         for want in [
             "1. Let your CLI's own background jobs",
-            "outside Luna's folder (D:\\luna)",
-            "C:\\t\\luna-handoff-c1.md",
+            "D:\\luna\\handoffs\\c1\\drafts\\handoff.md, in a folder Luna keeps for this chat alone",
             "3. Call luna_session_handoff with file",
             "4. End your turn",
             "so leave them out of the file: your helpers",

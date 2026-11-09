@@ -68,6 +68,34 @@ pub fn dir_of(chat: &str) -> Result<PathBuf, String> {
     Ok(root().join(crate::paths::id_file_name(chat)))
 }
 
+/// Under a chat's folder of copies, where it writes its handoff: the one
+/// place in Luna's folder a handoff file is taken from (file.rs), holding
+/// only what the chat wrote there. Luna's own, so private: the system's temp
+/// folder may be shared, and a handoff quotes the person and the project.
+pub(super) const DRAFTS: &str = "drafts";
+
+/// `chat`'s drafts folder, made private where it is not there yet. Claude
+/// Code reaches it within the folder of copies it is given (`--add-dir`),
+/// Codex by an `--add-dir` of its own, which its sandbox writes into.
+pub fn drafts_of(chat: &str) -> Result<PathBuf, String> {
+    let dir = dir_of(chat)?.join(DRAFTS);
+    crate::secret::private_dir(&dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// A session's `settings` as a caller is shown them (agents/list.rs, which
+/// every row a tool gives goes through): whole to the session itself, and to
+/// any other without its auto-handoff, which only the chat with it on is to
+/// know of.
+pub fn settings_shown(mut settings: Value, to_itself: bool) -> Value {
+    if !to_itself {
+        if let Some(o) = settings.as_object_mut() {
+            o.remove("handoff");
+        }
+    }
+    settings
+}
+
 /// The threshold `settings` holds, if auto-handoff is on in them.
 pub(super) fn threshold_in(settings: &Value) -> Option<u8> {
     settings["handoff"].as_u64().and_then(|t| u8::try_from(t).ok()).filter(|t| (THRESHOLD_MIN..=THRESHOLD_MAX).contains(t))
@@ -622,12 +650,17 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         let Some(context) = crate::background::Context::of(&path, provider) else { continue };
         let conversation = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let (told, fresh) = store::records().get(&chat).map(|r| (r.told.clone(), r.fresh)).unwrap_or_default();
-        let now = watch::told_now(told.as_ref(), &conversation, context.pct, fresh, threshold);
-        if told.as_ref().is_some_and(|t| t.conversation == now.conversation && now.compacted > t.compacted) {
+        let now = watch::told_now(told.as_ref(), &conversation, context.pct, context.tokens, fresh, threshold);
+        if let Some(t) = told.as_ref().filter(|t| t.conversation == now.conversation && t.level > now.level) {
+            let why = if now.compacted > t.compacted {
+                "its CLI compacted the conversation".to_string()
+            } else {
+                format!("its context fell with no fewer tokens ({}, a larger window?)", context.tokens)
+            };
             crate::log::info(
                 "handoff",
                 &format!(
-                    "{}: its CLI compacted the conversation, now at {}%, before a handoff (asked at {:?}); it will be asked again",
+                    "{}: {why}, now at {}%, before a handoff (asked at {:?}); it will be asked again",
                     label(&chat),
                     context.pct,
                     now.asked
@@ -637,7 +670,7 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         let level = watch::level(context.pct, threshold, now.floor);
         if !watch::due(&now, level) {
             // A conversation looked at for the first time keeps its floor, and
-            // one compacted is to be asked again.
+            // one whose context fell is to be asked again.
             if told.as_ref() != Some(&now) {
                 let kept = store::change(&chat, |r| {
                     r.told = Some(now);
@@ -649,21 +682,18 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
             }
             continue;
         }
-        // Told once it is on disk: a notice a later core would repeat is the
-        // smaller harm than none, so a save that fails still lets it go.
-        let mut asked = now.asked.clone();
-        asked.push(context.pct);
-        let kept = store::change(&chat, |r| {
-            r.told = Some(store::Told { level, asked, ..now });
-            r.fresh = false;
-        });
-        if let Err(e) = kept {
-            crate::log::warn("handoff", &format!("{}: the notice it was told could not be saved: {e}", label(&chat)));
-        }
         // The firm notice carries the checklist where Luna's own instructions
         // are what the chat would be served.
         let firm = level == 2;
         let inline = firm && crate::library::handoff_instructions().source == crate::library::Source::Luna;
+        // Told once it is on disk: a notice a later core would repeat is the
+        // smaller harm than none, so a save that fails still lets it go.
+        let mut asked = now.asked.clone();
+        asked.push(context.pct);
+        let told = store::Told { level, asked, tokens: context.tokens, ..now };
+        if let Err(e) = store::change(&chat, |r| told_of(r, told, inline)) {
+            crate::log::warn("handoff", &format!("{}: the notice it was told could not be saved: {e}", label(&chat)));
+        }
         let line = facts::notice(context.pct, threshold, firm, inline);
         reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.clone(), line));
         crate::agents::save_chats();
@@ -671,6 +701,18 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
             "handoff",
             &format!("{} is at {}% of its context: asked for a handoff (level {level})", label(&chat), context.pct),
         );
+    }
+}
+
+/// A notice due, as the chat's record keeps it: what it was told, and where
+/// the notice carries the checklist (`inline`) and the chat was given nothing
+/// yet, that checklist as what its handoff is written by: one that follows it
+/// without asking the tool has its handoff's provenance all the same.
+fn told_of(r: &mut store::Record, told: store::Told, inline: bool) {
+    r.told = Some(told);
+    r.fresh = false;
+    if inline && r.served.is_none() {
+        r.served = Some(served::Served::checklist());
     }
 }
 

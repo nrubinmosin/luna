@@ -93,7 +93,7 @@ items! {
     LunaTools = "luna-tools", UserAction,
         "The Luna tools box (or the agent that spawned it): Luna's MCP server, its tools allowed without a prompt.";
     AutoHandoff = "auto-handoff", UserAction,
-        "The Auto-handoff box: past this share of its context Luna asks the chat for a handoff, and offers it luna_session_handoff, which starts its next conversation from that file; the copies are in a folder it reads without asking.";
+        "The Auto-handoff box: past this share of its context Luna asks the chat for a handoff, and offers it luna_session_handoff, which starts its next conversation from that file. It writes the file in a private drafts folder of its own in Luna's data folder, given to it with the copies' folder (Claude Code, read without asking) or alone and writable (Codex, where its sandbox writes).";
     NotesDir = "notes-dir", Runtime,
         "Long prompts, messages and helpers' answers from Luna arrive as files there, readable without asking.";
     HelperIdentity = "helper.identity", Runtime,
