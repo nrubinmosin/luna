@@ -58,7 +58,14 @@ claude --model <alias> --effort <low|medium|high|xhigh|max|ultracode>
 ```
 
 `cwd` is the chat's folder; `CLAUDE_CONFIG_DIR` is the account folder;
-`DISABLE_AUTOUPDATER=1`. A worktree chat whose worktree is known resumes from
+`DISABLE_AUTOUPDATER=1`. `<chat>` here and in every other file or folder named
+for a session (`mcp/`, `hooks/<chat>/`, `media/`, `handoffs/`, a note's name)
+is the id as `paths::id_file_name` spells it: Luna's own ids as they are, any
+other byte as `.` and two hex digits, so the login pane's
+`login:<provider>:<name>` could never make a name Windows refuses. A login
+session (its folder the account folder) is no chat and writes no file at all:
+no hooks, tools, notes, handoff or library, and its one setting, the
+core-folder deny, goes inline as `--settings {"permissions":{…}}`. A worktree chat whose worktree is known resumes from
 the project folder as `--worktree <name> --resume <uuid>` rather than starting
 inside the worktree, because Claude Code removes a clean worktree on exit and,
 given the name, makes it again with the same name and branch. `--resume` is
@@ -128,7 +135,7 @@ Any change to a launch path shows up as a reviewed diff of the expected values.
 
 ## Hooks and the guard
 
-Every Claude Code session starts with a `--settings` file adding hooks that post
+Every Claude Code session but a login starts with a `--settings` file adding hooks that post
 to the hub with `curl.exe` (elsewhere `curl`). Hooks print nothing: Claude Code
 adds the stdout of a hook exiting 0 to the context. The one settings file also
 carries the library's `skillOverrides` and `claudeMdExcludes`

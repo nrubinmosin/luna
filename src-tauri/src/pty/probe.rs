@@ -16,13 +16,15 @@ use std::sync::Arc;
 /// comes back when it does. Ten minutes' grace, so a file is never pulled
 /// from under a session that is being spawned right now.
 fn prune_session_files(live: &std::collections::HashSet<String>) -> usize {
+    // A session's files go by its id spelled as a file name.
+    let live: std::collections::HashSet<String> = live.iter().map(|id| crate::paths::id_file_name(id)).collect();
     let mut removed = 0;
     for sub in ["hooks", "mcp"] {
         let Ok(entries) = std::fs::read_dir(crate::paths::data_dir().join(sub)) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else { continue };
-            if path.extension().and_then(|e| e.to_str()) != Some("json") || live.contains(id) {
+            let Some(name) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            if path.extension().and_then(|e| e.to_str()) != Some("json") || live.contains(name) {
                 continue;
             }
             let fresh = entry
