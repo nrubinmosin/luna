@@ -33,6 +33,8 @@
 //!
 //! - `reach`: which accounts a skill or an instructions file is meant for,
 //!   and which instructions an account gets.
+//! - `audience`: whose sessions one is for — the person's chats, helpers, or
+//!   both — and how each CLI keeps it from the others.
 //! - `skills`: the library's skills and instructions files, read and checked.
 //! - `files`: a copy's files on disk, and the blobs and backups kept of them.
 //! - `folders`: the folders the user names: where their skills wait, and what
@@ -44,13 +46,14 @@
 
 use crate::accounts::AccountInfo;
 use crate::provider::Provider;
-use crate::settings::{LibraryFolder, LibrarySettings, Reach};
+use crate::settings::{Audience, LibraryFolder, LibrarySettings, Reach};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod audience;
 mod commands;
 mod files;
 mod folders;
@@ -63,6 +66,7 @@ mod testkit;
 
 // Every file of the module reaches the others' items through `use super::*`,
 // and the rest of the crate keeps its `crate::library::X` paths.
+pub(crate) use audience::*;
 pub(crate) use commands::*;
 use files::*;
 pub(crate) use folders::*;
@@ -197,6 +201,29 @@ pub fn laid_out_in(account_path: &str) -> Vec<String> {
 #[derive(Serialize, Deserialize, Default)]
 struct Ledger {
     written: BTreeMap<String, Hashes>,
+    /// The instructions copies Luna wrote with a line before them saying whose
+    /// they are (audience.rs `worded`), by destination, with the audience it
+    /// named: only that line, and only there, comes off when such a copy is
+    /// taken into the library.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    worded: BTreeMap<String, Audience>,
+}
+
+impl Ledger {
+    /// What Luna has now written at `key`: these files, said for `banner`'s
+    /// sessions alone where that is not every session's.
+    fn wrote(&mut self, key: &str, hashes: Hashes, banner: Audience) {
+        self.written.insert(key.to_string(), hashes);
+        match banner {
+            Audience::Both => self.worded.remove(key),
+            other => self.worded.insert(key.to_string(), other),
+        };
+    }
+    /// Luna's note of `key` gone, files and line alike.
+    fn forget(&mut self, key: &str) -> Option<Hashes> {
+        self.worded.remove(key);
+        self.written.remove(key)
+    }
 }
 
 impl Ledger {
