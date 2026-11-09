@@ -31,10 +31,9 @@ describe('useCloseWhenMoved', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it('closes once a resize moves the anchor', () => {
+  it('closes on a resize though the anchor stays: a shorter window can leave the popover past its edge', () => {
     const onClose = vi.fn();
     render(<Probe open onClose={onClose} />);
-    moveAnchor();
     fireEvent(window, new Event('resize'));
     expect(onClose).toHaveBeenCalledOnce();
   });
