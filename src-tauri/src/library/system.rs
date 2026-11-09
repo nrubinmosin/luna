@@ -166,27 +166,47 @@ fn resolve_in(dirs: &Dirs) -> Resolved {
 }
 
 /// The override's SKILL.md if it will do; None where there is none; why not
-/// where it will not. Checked as the library's own skills are (`check_skill`,
-/// no link anywhere in its folder), and held to SYSTEM_MAX_BYTES of UTF-8 with
-/// something past its front matter.
+/// where it will not. Its front matter checked as a library skill's is
+/// (`check_skill`), and held to SYSTEM_MAX_BYTES of UTF-8 with something past
+/// its front matter. SKILL.md alone is read, as it alone is served: opened as
+/// itself (no link at it, `system/` or its folder; a FIFO there no reason to
+/// wait, `boundary::open_no_follow`) and read no further than the cap, so what
+/// lies beside it cannot hold up or swell the read, which the handoff's beat
+/// makes for every firm notice.
 fn read_override(dirs: &Dirs) -> Result<Option<String>, String> {
+    use std::io::Read;
     let system = dirs.root.join(SYSTEM_DIR);
     let dir = dirs.system(HANDOFF);
     for d in [&system, &dir] {
         match std::fs::symlink_metadata(d) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(format!("{}: {e}", d.display())),
-            Ok(m) if m.file_type().is_symlink() => return Err(format!("{} is a link; the override is a folder of its own", d.display())),
+            Ok(m) if crate::boundary::is_link(&m) => return Err(format!("{} is a link; the override is a folder of its own", d.display())),
             Ok(m) if !m.is_dir() => return Err(format!("{} is not a folder", d.display())),
             Ok(_) => {}
         }
     }
-    let files = read_dir_files(&dir)?;
-    let bytes = files.get(SKILL_FILE).ok_or("There is no SKILL.md")?;
+    let path = dir.join(SKILL_FILE);
+    let not_a_file = || format!("{} is a link or not a file; the override is the file itself", path.display());
+    match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("There is no SKILL.md".into()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+        Ok(m) if crate::boundary::is_link(&m) || !m.is_file() => return Err(not_a_file()),
+        Ok(_) => {}
+    }
+    let file = crate::boundary::open_no_follow(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // The handle's own word: what was opened, not what was at the name a
+    // moment before.
+    let opened = file.metadata().map_err(|e| format!("{}: {e}", path.display()))?;
+    if crate::boundary::is_link(&opened) || !opened.is_file() {
+        return Err(not_a_file());
+    }
+    let mut bytes = Vec::new();
+    file.take(SYSTEM_MAX_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     if bytes.len() > SYSTEM_MAX_BYTES {
         return Err(format!("SKILL.md is over {} KB", SYSTEM_MAX_BYTES / 1024));
     }
-    let text = String::from_utf8(bytes.clone()).map_err(|_| "SKILL.md is not UTF-8 text".to_string())?;
+    let text = String::from_utf8(bytes).map_err(|_| "SKILL.md is not UTF-8 text".to_string())?;
     check_skill(HANDOFF, &text)?;
     if body_of(&text).trim().is_empty() {
         return Err("SKILL.md has nothing past its front matter".into());
@@ -303,6 +323,63 @@ mod tests {
         // A folder without SKILL.md is an override that will not do, not none.
         std::fs::remove_file(&path).unwrap();
         assert!(resolve_in(&f.dirs).problem.unwrap().contains("no SKILL.md"));
+    }
+
+    const OURS: &str = "---\nname: session-handoff\ndescription: Ours.\n---\nBody\n";
+
+    /// A file link, where this machine lets a test make one (Windows asks for
+    /// Developer Mode or an administrator).
+    fn make_link(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        made.is_ok()
+    }
+
+    #[test]
+    fn only_skill_md_is_read_and_no_further_than_the_cap() {
+        let f = Fixture::new("system-bounded");
+        let path = write_override(&f, OURS);
+        let dir = path.parent().unwrap().to_path_buf();
+        // What lies beside it is never read: a file many times the cap, a link.
+        std::fs::write(dir.join("notes.md"), vec![b'a'; SYSTEM_MAX_BYTES * 8]).unwrap();
+        let _ = make_link(&dir.join("notes.md"), &dir.join("linked.md"));
+        assert_eq!(resolve_in(&f.dirs).source, Source::Library);
+        // SKILL.md a link to a file that would do: not the file itself.
+        let real = f.base.join("elsewhere.md");
+        std::fs::write(&real, OURS).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        if make_link(&real, &path) {
+            assert!(resolve_in(&f.dirs).problem.unwrap().contains("link or not a file"));
+            std::fs::remove_file(&path).unwrap();
+        }
+        std::fs::create_dir(&path).unwrap();
+        assert!(resolve_in(&f.dirs).problem.unwrap().contains("not a file"), "a folder at its name");
+    }
+
+    /// A FIFO beside SKILL.md, or at its name, holds no read up: the beat that
+    /// resolves the instructions for a firm notice is every chat's.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_the_override_s_folder_holds_nothing_up() {
+        let f = Fixture::new("system-fifo");
+        let path = write_override(&f, OURS);
+        let fifo = |p: &Path| {
+            let c = std::ffi::CString::new(p.to_string_lossy().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        };
+        let resolved = |f: &Fixture| {
+            let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || tx.send(resolve_in(&dirs)));
+            rx.recv_timeout(std::time::Duration::from_secs(5)).expect("resolved without waiting on a FIFO")
+        };
+        fifo(&path.with_file_name("pipe.md"));
+        assert_eq!(resolved(&f).source, Source::Library, "beside it");
+        std::fs::remove_file(&path).unwrap();
+        fifo(&path);
+        assert!(resolved(&f).problem.unwrap().contains("not a file"), "at its name");
     }
 
     #[test]
