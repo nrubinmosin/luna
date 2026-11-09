@@ -194,7 +194,8 @@ with the new list, and visible helpers are gone.
   while "What Luna applied" said the helper had Luna's server alone. The
   error names the server; rename it, or spawn with `connectors: true`. The
   servers a Codex helper keeps all the same, those of the project's
-  `.codex/config.toml` and the plugins its account turns on, are listed in
+  `.codex/config.toml` and the plugins on in the account's and project's
+  config as Codex merges them, are listed in
   the spawn's result (`mcpLeftOn`) and in "What Luna applied".
 - Luna starts no CLI but its own managed copy. Before its first download had
   finished, or with that copy damaged, a session ran whatever `claude` or

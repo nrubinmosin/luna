@@ -84,7 +84,9 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   a server whose name a `-c` key cannot spell (a dot, a character outside
   letters, digits, `_` and `-`): it could not be turned off. The
   project's `.codex/` and plugins' servers stay, as overriding a server no
-  layer defines fails the run; `servers_left_on` (codex/config.rs) lists them
+  layer defines fails the run; `servers_left_on` (codex/config.rs) lists them,
+  plugins as Codex 0.167.0 resolves them across the account's and the project's
+  layers (`plugins_on`),
   in the spawn's `mcpLeftOn` and as `helper.mcp-left-on` in "What Luna
   applied". A chat the window starts is never a helper
   (`ensure_*_session` registers it with no parent), so it keeps its account's
