@@ -648,11 +648,12 @@ fn low_integrity_run(command_line: &str) -> std::io::Result<u32> {
 }
 
 /// The Codex Linux sandbox (bubblewrap, its own user namespace) cannot get
-/// into the core: under `workspace-write`, with the network off and on, the
-/// test executable run inside it as a client (`peer::imp::tests::probe_client`)
-/// either cannot connect to the core's socket or is refused before the hello;
-/// the same client run plainly is let in. Needs user namespaces (a container
-/// run with `--security-opt seccomp=unconfined`). No account, no login.
+/// into the core: under `workspace-write`, with the network off and on, Luna's
+/// own client run inside it (`peer::imp::tests::probe_client`, a window's
+/// hello) either cannot connect to the core's socket or is refused by the real
+/// `serve` before its hello is read, and hears no welcome; the same client run
+/// plainly is welcomed. Needs user namespaces (a container run with
+/// `--security-opt seccomp=unconfined`). No account, no login.
 #[test]
 #[ignore = "live: needs LUNA_LIVE=1, the Codex CLI and user namespaces"]
 #[cfg(target_os = "linux")]
@@ -664,21 +665,26 @@ fn the_core_socket_refuses_a_sandboxed_codex_and_lets_a_plain_process_in() {
     let _ = std::fs::create_dir_all(crate::ipc::core_dir());
     let name = crate::endpoint::fresh_name();
     let listener = crate::endpoint::Listener::bind(&name).expect("the endpoint");
-    let (tx, verdicts) = std::sync::mpsc::channel();
+    // Each connection's outcome from the real handler: `Ok(())` refused before
+    // anything was read, an error for one let through (it ends at its end).
+    let (tx, served) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         while let Ok(stream) = listener.accept() {
-            if tx.send(crate::peer::refuse_reason(&stream)).is_err() {
+            if tx.send(crate::coreproc::serve_for_test(stream).map_err(|e| e.to_string())).is_err() {
                 break;
             }
         }
     });
     let exe = std::env::current_exe().unwrap();
     let probe = |mut cmd: std::process::Command| {
-        cmd.args(["--exact", "peer::imp::tests::probe_client", "--ignored", "--quiet"]).env("LUNA_PEER_PROBE", &name);
-        cmd.output().expect("the probe runs")
+        cmd.args(["--exact", "peer::imp::tests::probe_client", "--ignored", "--nocapture"]).env("LUNA_PEER_PROBE", &name);
+        let out = cmd.output().expect("the probe runs");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
     };
     let plain = probe(std::process::Command::new(&exe));
-    assert_eq!(verdicts.recv_timeout(Duration::from_secs(20)).expect("the plain probe connected"), None, "{plain:?}");
+    assert!(plain.contains("welcomed"), "a plain client is welcomed: {plain}");
+    let outcome = served.recv_timeout(Duration::from_secs(20)).expect("the plain probe connected");
+    assert!(outcome.is_err(), "the plain client got past the peer check");
 
     let home = crate::paths::data_dir().join("live-socket-home");
     std::fs::create_dir_all(&home).expect("a Codex home");
@@ -692,16 +698,16 @@ fn the_core_socket_refuses_a_sandboxed_codex_and_lets_a_plain_process_in() {
     for profile in ["luna-ws", "luna-ws-net"] {
         let mut cmd = std::process::Command::new(&codex);
         cmd.args(["sandbox", "-P", profile, "-C", &dir, "--"]).arg(&exe).env("CODEX_HOME", &home).current_dir(&home);
-        let out = probe(cmd);
-        let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        match verdicts.recv_timeout(Duration::from_secs(10)) {
-            Ok(refused) => {
-                eprintln!("{profile}: connected, {}", refused.as_deref().unwrap_or("LET IN"));
-                assert!(refused.is_some(), "{profile}: a sandboxed client was let in: {said}");
+        let said = probe(cmd);
+        assert!(!said.contains("welcomed"), "{profile}: a sandboxed client was welcomed: {said}");
+        match served.recv_timeout(Duration::from_secs(10)) {
+            Ok(outcome) => {
+                eprintln!("{profile}: connected, {}", if outcome.is_ok() { "refused before the hello" } else { "LET THROUGH" });
+                assert_eq!(outcome, Ok(()), "{profile}: let through to the hello: {said}");
             }
             Err(_) => {
                 eprintln!("{profile}: could not connect");
-                assert!(said.contains("the probe connects"), "{profile}: the probe neither connected nor failed to: {said}");
+                assert!(said.contains("refused at the connect"), "{profile}: the probe neither connected nor failed to: {said}");
             }
         }
     }
