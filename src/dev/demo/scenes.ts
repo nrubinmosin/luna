@@ -24,7 +24,8 @@ import { useUpdates } from '../../features/updates/updates.store';
 import { useShell } from '../../app/shell.store';
 import { usePower } from '../../features/power/power.store';
 import { SETTINGS_PAGES, useSettings, type SettingsPage } from '../../features/settings/settings.store';
-import { FOLDERS, ACCOUNTS, filled, parked, BACKGROUND, HANDED_OFF } from './fixtures';
+import { useShortcuts } from '../../features/shortcuts/ShortcutsDialog';
+import { FOLDERS, ACCOUNTS, filled, parked, BACKGROUND, HANDED_OFF, UPDATE_NOTES, UPDATE_POWER } from './fixtures';
 import { demoState } from './ipc';
 
 /** A Settings page's scene: `settings` is its first page, `settings-links` and
@@ -39,7 +40,9 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
  *  `?demo=library`, `?demo=power`, `?demo=applied` / `applied-dark` (a chat's What Luna applied),
  *  `?demo=helper` / `helper-dark` (a helper watched read-only),
  *  `?demo=delete-helpers` (deleting a chat whose helpers are at work),
- *  `?demo=handoff` / `handoff-dark` (a chat gone on past a handoff, its divider and copy). */
+ *  `?demo=handoff` / `handoff-dark` (a chat gone on past a handoff, its divider and copy),
+ *  `?demo=login` (an account's sign-in), `?demo=shortcuts`, `?demo=update` (the update's
+ *  confirmation with eight sessions at work and a long note), `?demo=orphans` (sessions with no chat). */
 export type Scene =
   | 'main'
   | 'dark'
@@ -64,8 +67,14 @@ export type Scene =
   | 'helper-dark'
   | 'delete-helpers'
   | 'handoff'
-  | 'handoff-dark';
-const SCENES: Scene[] = [
+  | 'handoff-dark'
+  | 'login'
+  | 'shortcuts'
+  | 'update'
+  | 'orphans';
+/** Every scene but `main`, the one a bare `?demo` gets; scripts/fit-check.mjs
+ *  reads the list from here. */
+export const SCENES: Scene[] = [
   'dark',
   'peek',
   'newchat',
@@ -87,13 +96,18 @@ const SCENES: Scene[] = [
   'helper-dark',
   'delete-helpers',
   'handoff',
-  'handoff-dark'
+  'handoff-dark',
+  'login',
+  'shortcuts',
+  'update',
+  'orphans'
 ];
 
 export function seedDemo(scene: Scene) {
   demoState.seeded = true;
   demoState.showsChecks = scene.startsWith('checks');
   demoState.showsCanary = scene.startsWith('settings-clis');
+  demoState.showsOrphans = scene === 'orphans';
   useBackground.setState({ helpers: BACKGROUND });
   // The shell store has read the theme by now; tell it, not localStorage.
   useShell.setState({ theme: scene.endsWith('dark') ? 'dark' : 'light', pinned: true });
@@ -189,6 +203,17 @@ export function seedDemo(scene: Scene) {
       document.querySelector<HTMLElement>('.chat-row[data-active="yes"] [title^="Delete chat"]')?.click();
       setTimeout(() => document.querySelector<HTMLElement>('label[for^="drop-helpers-"]')?.click(), 400);
     }, 300);
+  }
+  if (scene === 'login') useAccounts.setState({ loginFor: ACCOUNTS[0] ?? null });
+  if (scene === 'shortcuts') useShortcuts.getState().setOpen(true);
+  if (scene === 'update') {
+    demoState.power = UPDATE_POWER;
+    usePower.setState({ state: UPDATE_POWER });
+    useUpdates.setState({ asking: true, next: '0.7.0', notes: UPDATE_NOTES });
+  }
+  // The sidebar's line about them, then its dialog, as a click would open it.
+  if (scene === 'orphans') {
+    setTimeout(() => document.querySelector<HTMLElement>('[title^="Sessions still running"]')?.click(), 600);
   }
   // The two dialogs belong to an account row; open them the way a click would.
   const button = scene === 'recommended' ? 'Recommended settings' : scene === 'editor' ? 'Edit settings.json' : null;
