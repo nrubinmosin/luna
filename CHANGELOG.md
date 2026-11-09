@@ -8,6 +8,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-09
+
+Settings is a dialog of pages, each CLI follows a known-good or latest channel
+you can roll back, a chat can hand itself off to a fresh conversation as its
+context fills, and Luna changes nothing in a CLI's behavior without asking and
+shows what it applied. Helpers always run in the background, and a library
+skill or instructions file can be kept to your own chats or to helpers.
+Breaking for agents: Luna's tools are renamed `luna_<resource>_<verb>`
+(`luna_spawn` is `luna_session_spawn`, and so on), the old names only answer
+with the new list, and visible helpers are gone.
+
 ### Breaking (for agents)
 
 - Luna's MCP tools are named for the thing they act on and what they do,
@@ -103,7 +114,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - The floor below which no CLI version is downloaded rises when a version
   becomes current rather than when it is downloaded, and Codex has one too.
 - Settings → Updates shows Luna and the core; the CLIs moved to their own page.
-
 - Settings is a wide dialog with its pages listed on the left (General, Chats,
   Agents & trust, Links, CLIs, Updates) and only the page scrolling, in place of one
   narrow column of ten sections. Every setting is a row with its control on
@@ -143,7 +153,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - **Breaking for agents:** every helper runs in the background. A Codex
   helper's `approval` is `never` (the default) or `auto-review`; one that asks
   a person (`on-request` and the like) is refused, as nobody is there to ask.
-  `luna_spawn` answers with `id`, `settings`, `turnsEnded`, `sameFolder`, the
+  `luna_session_spawn` answers with `id`, `settings`, `turnsEnded`, `sameFolder`, the
   worktree and `accountChoice`; `started`, `screen`, `ask`, `starting` and
   `warnings` are gone with the visible start that filled them.
 - **Breaking for agents:** "Open as chat" hands a helper over to you for good.
@@ -168,12 +178,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Removed
 
-- **Breaking for agents:** `luna_spawn`'s `visible`; a call passing it is
+- **Breaking for agents:** `luna_session_spawn`'s `visible`; a call passing it is
   refused as any unknown argument is. With it go visible helpers, the chats an
   agent started in the window, and what kept them: the window's part in a
   spawn, carrying them on after a core restart, their nesting and reparenting,
   and the rule that one you typed into was never auto-deleted.
-- **Breaking for agents:** `luna_answer`'s `keys` (raw keystrokes for a
+- **Breaking for agents:** `luna_session_answer`'s `keys` (raw keystrokes for a
   helper's screen); a helper has none, and a dialog in your own chat is yours.
 
 ### Fixed
@@ -556,7 +566,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/nrubinmosin/luna/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/nrubinmosin/luna/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.10.0
