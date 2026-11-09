@@ -41,24 +41,50 @@ pub(crate) const WARN_AT: usize = 2;
 /// CLI that cannot run its session at all, not one stopped after work.
 const EARLY: Duration = Duration::from_secs(30);
 
-/// What a CLI says as it gives up on a start for a cause outside itself, and
-/// the cause, each as it was seen (docs/cli-compatibility.md): an exit that
-/// says one of these is the folder's doing, not the version's. Claude Code
-/// 2.1.319's "Can only use --worktree in a git repository, but <folder> is
-/// not a git repository" and Codex 0.167.0's git "fatal: not a git
-/// repository" share the first; the second is Codex's own for the same.
+/// The line a CLI writes as it gives up on a start for a cause outside
+/// itself, by how that line begins, and the cause; each as it was seen
+/// (docs/cli-compatibility.md). An exit that wrote one is the folder's doing,
+/// not the version's. Claude Code 2.1.319 (stderr, in a pane and under `-p`)
+/// and `codex exec` 0.167.0 (stderr) on `--worktree` outside a repository.
+/// Codex's interactive start there is refused before it runs (pty/folder.rs),
+/// so its own words are not needed.
 const NOT_THE_VERSION: &[(&str, &str)] = &[
-    ("not a git repository", "a worktree asked for outside a git repository"),
-    ("Managed worktrees require a local Git repository", "a worktree asked for outside a git repository"),
+    ("Error: Can only use --worktree in a git repository, but ", "a worktree asked for outside a git repository"),
+    ("Error: git command failed: fatal: not a git repository", "a worktree asked for outside a git repository"),
 ];
 
-/// The cause outside the CLI that `said` names, if it names one. Compared
-/// with every space and line break taken out, and case aside: a pane's screen
-/// breaks a long line wherever its width falls, mid-word too.
+/// The cause outside the CLI that `said` names, if a line of it is one of
+/// `NOT_THE_VERSION`'s, from the line's start: the words anywhere else (a
+/// prompt on the screen, a folder named so, a path in another error) name
+/// nothing, and an exit beside them still counts. Colors are taken out first.
+/// A pane's screen keeps a line its width wrapped as one; a line broken
+/// before its first words end is not known, and counts.
 pub(crate) fn cause_outside(said: &str) -> Option<&'static str> {
-    let squeezed = |s: &str| s.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect::<String>();
-    let said = squeezed(said);
-    NOT_THE_VERSION.iter().find(|(words, _)| said.contains(&squeezed(words))).map(|&(_, cause)| cause)
+    said.lines().map(without_escapes).find_map(|line| {
+        let line = line.trim_start();
+        NOT_THE_VERSION.iter().find(|(start, _)| line.starts_with(start)).map(|&(_, cause)| cause)
+    })
+}
+
+/// `line` without its escape sequences (a color, a cursor move): CSI ones to
+/// their final byte, any other to the character after the escape.
+fn without_escapes(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        if chars.next() == Some('[') {
+            for c in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&c) {
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The canary of one version, as Settings shows it.
@@ -314,10 +340,12 @@ mod tests {
         }
         let c = read_in(&root).unwrap();
         assert_eq!((c.watched, c.failures.len(), c.warned), (0, 0, false), "not counted, and their watches given back: {c:?}");
-        // The next sessions are watched in their place, and still count.
+        // The next sessions are watched in their place, and still count: one
+        // with the words on its screen, but not as the CLI's own line.
+        let mixed = "> fix: git says not a git repository in C:\\work\\not a git repository\nTypeError: undefined is not a function";
         for id in ["canary-wt-c", "canary-wt-d"] {
             session_started(Provider::Claude, &root, "2.0.0", id);
-            session_ended(id, true, || "TypeError: undefined is not a function".into());
+            session_ended(id, true, || mixed.into());
         }
         let c = read_in(&root).unwrap();
         assert_eq!((c.watched, c.failures.len(), c.warned), (2, 2, true), "{c:?}");
@@ -348,12 +376,24 @@ mod tests {
 
     #[test]
     fn only_a_cause_outside_the_cli_is_known_by_its_words() {
-        assert_eq!(cause_outside("FATAL: NOT A GIT\r\nREPOSITORY"), Some("a worktree asked for outside a git repository"));
+        const WORKTREE: Option<&str> = Some("a worktree asked for outside a git repository");
+        // Claude Code's line, red under `-p` with colors forced, among others.
+        let claude = "\u{1b}[31mError: Can only use --worktree in a git repository, but \u{1b}[1m/w/x\u{1b}[22m is not a git \
+                      repository. Configure a WorktreeCreate hook to use --worktree with other VCS systems.\u{1b}[39m";
+        assert_eq!(cause_outside(&format!("starting\n{claude}\n")), WORKTREE);
         assert_eq!(
-            cause_outside("Managed worktrees require a\nlocal Git repository."),
-            Some("a worktree asked for outside a git repository")
+            cause_outside("  Error: git command failed: fatal: not a git repository (or any of the parent directories): .git"),
+            WORKTREE
         );
-        for said in ["", "Error: Invalid API key", "segmentation fault", "a git repository was found"] {
+        // The words elsewhere than at the start of the CLI's own line name
+        // nothing, and the version's own failure beside them counts.
+        let mixed = [
+            "> why does git say not a git repository here?\nTypeError: undefined is not a function",
+            "Error: cannot open C:\\work\\not a git repository\\CLAUDE.md\nTypeError: x is not a function",
+            "fatal: not a git repository (or any of the parent directories): .git\npanic: index out of range",
+            "Managed worktrees require a local Git repository.",
+        ];
+        for said in mixed.into_iter().chain(["", "Error: Invalid API key", "segmentation fault"]) {
             assert_eq!(cause_outside(said), None, "{said}");
         }
     }

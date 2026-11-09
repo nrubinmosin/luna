@@ -161,10 +161,12 @@ Settings → CLIs show. Nothing rolls back on its own. In the test build a
 file `canary-fail` at the provider's root fails each watched session.
 An exit that says nothing of the version does not count and gives its watch
 to the next session: one whose last words (a pane's last screen, drawn from
-the end of its output; a helper's last 4 KB of stderr) name a cause outside
-the CLI (`NOT_THE_VERSION`, compared with spaces and line breaks taken out:
-"not a git repository" for both CLIs, Codex's "Managed worktrees require a
-local Git repository"), and one Luna stopped within the half minute
+the end of its output; a helper's last 4 KB of stderr) hold a line that
+begins as the CLI's own diagnostic for a cause outside it (`NOT_THE_VERSION`,
+colors taken out: Claude Code's "Error: Can only use --worktree in a git
+repository, but", `codex exec`'s "Error: git command failed: fatal: not a git
+repository"; the words anywhere else on the screen, a prompt or a folder's
+name, name nothing), and one Luna stopped within the half minute
 (`session_stopped`: a chat deleted or restarted, a login window closed, a
 helper's turn stopped, Luna quitting); one stopped later just stops being
 watched. A start `pty/folder.rs` refuses never runs, so it is never watched.
