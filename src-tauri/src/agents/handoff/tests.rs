@@ -557,50 +557,47 @@ fn a_copy_that_is_not_the_one_luna_made_is_never_switched_on() {
     done_with(&["hocp-me"], &dir);
 }
 
-/// The drafts folder of a Codex chat keeps the grant its sandbox gave itself
-/// at the CLI's start (0.167.0 on Windows) through every later look, the one
-/// for the SID the account's `cap_sid` names for the folder and no other: a
-/// SID that names no account but is not that one is taken away, and so is
-/// any where the account's file will not read, or the chat is Claude Code's.
+/// The drafts folder is made private at every start of the chat's CLI,
+/// before it runs, a foreign ACE added while it was open going too; after
+/// it, what the CLI's sandbox grants itself there (Codex 0.167.0 on Windows)
+/// stays through every later look, the answer naming a draft among them; a
+/// link at its name is no drafts folder at any look.
 #[cfg(windows)]
 #[test]
-fn the_drafts_folder_keeps_the_grant_its_cli_s_sandbox_gave_itself() {
+fn the_drafts_folder_is_made_private_at_the_start_and_keeps_what_its_cli_adds_after() {
     use crate::secret::acl;
-    let account = std::env::temp_dir().join(format!("luna-handoff-codex-home-{}", std::process::id()));
-    std::fs::create_dir_all(&account).unwrap();
-    let drafts = drafts_of("hosb-me", Provider::Codex, &account).unwrap();
-    let (cap, other) = ("S-1-5-21-1111111111-2222222222-3333333333-4444", "S-1-5-21-1111111111-2222222222-3333333333-5555");
-    let key = drafts.to_string_lossy().replace('\\', "/").to_lowercase();
-    std::fs::write(account.join("cap_sid"), format!(r#"{{"workspace":"{other}","writable_root_by_path":{{"{key}":"{cap}"}}}}"#)).unwrap();
+    chat("hosb-me", Some(70));
+    let drafts = drafts_at_start("hosb-me").unwrap();
     let private = crate::secret::private_sddl(&acl::user_sid().unwrap());
+    let cap = "S-1-5-21-1111111111-2222222222-3333333333-4444";
     let has = |sid: &str| acl::dacl_sddl(&drafts).unwrap().contains(sid);
+    acl::set_protected(&drafts, &format!("{private}(A;OICI;0x1301bf;;;BU)(A;OICI;0x1301bf;;;{cap})")).unwrap();
+    assert_eq!(drafts_at_start("hosb-me").unwrap(), drafts);
+    assert!(acl::is_private(&drafts).unwrap() && !has("BU") && !has(cap), "{}", acl::dacl_sddl(&drafts).unwrap());
+    // The sandbox's grant, added after the start: kept.
     acl::set_protected(&drafts, &format!("{private}(A;OICI;0x1301bf;;;{cap})")).unwrap();
-    assert_eq!(drafts_of("hosb-me", Provider::Codex, &account).unwrap(), drafts);
-    assert!(has(cap), "the cap SID is kept: {}", acl::dacl_sddl(&drafts).unwrap());
-    // Another SID that names no account, even one of the same file's.
-    acl::set_protected(&drafts, &format!("{private}(A;OICI;0x1301bf;;;{cap})(A;OICI;0x1301bf;;;{other})")).unwrap();
-    drafts_of("hosb-me", Provider::Codex, &account).unwrap();
-    assert!(!has(cap) && !has(other) && acl::is_private(&drafts).unwrap());
-    // A Claude Code chat's, or a Codex chat's whose cap_sid will not read.
-    for (provider, file) in [(Provider::Claude, None), (Provider::Codex, Some("not json"))] {
-        if let Some(text) = file {
-            std::fs::write(account.join("cap_sid"), text).unwrap();
-        }
-        acl::set_protected(&drafts, &format!("{private}(A;OICI;0x1301bf;;;{cap})")).unwrap();
-        drafts_of("hosb-me", provider, &account).unwrap();
-        assert!(!has(cap) && acl::is_private(&drafts).unwrap(), "{provider:?}");
-    }
+    assert_eq!(drafts_of("hosb-me").unwrap(), drafts);
+    let (failed, how) = call("hosb-me", json!({}));
+    assert!(!failed && how.contains(&*drafts.to_string_lossy()), "{how}");
+    assert!(has(cap), "{}", acl::dacl_sddl(&drafts).unwrap());
+    // A junction in its place: refused at a look, and at the start.
+    std::fs::remove_dir_all(&drafts).unwrap();
+    let elsewhere = std::env::temp_dir().join(format!("luna-handoff-sb-elsewhere-{}", std::process::id()));
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    assert!(file::tests::dir_link(&elsewhere, &drafts));
+    assert!(drafts_of("hosb-me").is_err() && drafts_at_start("hosb-me").is_err());
+    let _ = std::fs::remove_dir(&drafts);
+    let _ = std::fs::remove_dir_all(&elsewhere);
     let _ = std::fs::remove_dir_all(drafts.parent().unwrap());
-    let _ = std::fs::remove_dir_all(&account);
+    forget_session("hosb-me");
 }
-
 #[test]
 fn the_chats_own_drafts_folder_is_where_it_writes_and_what_is_taken() {
     chat("hodr-me", Some(70));
     chat("hodr-other", Some(70));
     // A link put at a name a draft could have, before the folder was Luna's
     // alone, where links can be made here: never the file named.
-    let drafts = drafts_of("hodr-me", Provider::Claude, Path::new(ACC)).unwrap();
+    let drafts = drafts_of("hodr-me").unwrap();
     let elsewhere = std::env::temp_dir().join(format!("luna-handoff-dr-target-{}.md", std::process::id()));
     std::fs::write(&elsewhere, "theirs").unwrap();
     #[cfg(windows)]

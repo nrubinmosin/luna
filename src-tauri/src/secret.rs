@@ -65,67 +65,30 @@ pub fn private_dir(dir: &Path) -> io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
-/// `private_dir` for a folder Luna gives a session's CLI to write in (a
-/// chat's handoff drafts, agents/handoff `drafts_of`), where the CLI's own
-/// sandbox may grant itself access to it at the CLI's start: Codex 0.167.0's
-/// unelevated Windows sandbox adds an inheritable Modify ACE for the SID its
-/// account's `cap_sid` names for the folder to each `--add-dir`
-/// (codex/sandbox.rs). Checked as `private_dir` checks a folder, but a DACL
-/// private save for ACEs to the SIDs in `sandbox` (`sddl_private_but_sandbox`)
-/// is left as it is: put back to private, it would take the grant away again
-/// at the next look, and the sandbox could write nothing there. Any other
-/// DACL is made private, and the SIDs it held beyond the private three are
-/// returned, for the caller's log. On Unix the same as `private_dir`: a
-/// sandbox there runs as this user.
-pub fn sandbox_dir(dir: &Path, sandbox: &[String]) -> io::Result<Vec<String>> {
+/// A folder Luna gives a session's CLI to write in (a chat's handoff
+/// drafts, agents/handoff `drafts_of`), looked at again while that CLI runs:
+/// made private where it is not there yet (`private_dir`); where it is, held
+/// to a real folder, no link or junction, owned by this user (or
+/// Administrators, SYSTEM, TrustedInstaller), with its DACL left as it is.
+/// The folder is made private at the CLI's every start, before it runs
+/// (`private_dir`); its sandbox may then grant itself access there (Codex
+/// 0.167.0's unelevated Windows sandbox adds a Modify ACE for a SID of its
+/// own to each `--add-dir`), which a private DACL put back would take away.
+/// No one else can add an ACE meanwhile: that takes WRITE_DAC, which the
+/// private DACL gives only this user, SYSTEM and Administrators. On Unix the
+/// same as `private_dir`: a sandbox there runs as this user.
+pub fn own_dir(dir: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
-        std::fs::create_dir_all(dir)?;
-        acl::claim_for_sandbox(dir, sandbox)
+        match std::fs::symlink_metadata(dir) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => private_dir(dir),
+            Err(e) => Err(e),
+            Ok(_) => acl::check_own(dir),
+        }
     }
     #[cfg(not(windows))]
-    {
-        let _ = sandbox;
-        private_dir(dir).map(|()| Vec::new())
-    }
+    private_dir(dir)
 }
-
-/// Whether `sddl` is `sddl_is_private` but for allow ACEs to the SIDs
-/// `sandbox` takes: those of a CLI sandbox's own on that folder, held by no
-/// user's logon, only by the restricted token a sandbox of this user's runs
-/// under, which Windows checks against this user's ACE as well. Everyone,
-/// Users, Authenticated Users, another user, a group, and a SID that names
-/// no account but is not the sandbox's (a domain account while its domain is
-/// out of reach, a deleted one) still make it not private.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub fn sddl_private_but_sandbox(sddl: &str, user: &str, sandbox: impl Fn(&str) -> bool) -> bool {
-    let Some((flags, aces)) = sddl_aces(sddl) else { return false };
-    flags.contains('P')
-        && !flags.contains("NO_ACCESS_CONTROL")
-        && !aces.is_empty()
-        && aces.iter().all(|ace| match ace.as_slice() {
-            ["D", ..] => true,
-            ["A", _, _, _, _, who] => *who == user || MACHINE_TRUSTEES.contains(who) || sandbox(who),
-            _ => false,
-        })
-}
-
-/// The trustees of `sddl`'s allow ACEs other than `user`, SYSTEM and
-/// Administrators: what making it private takes away, for the log.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn sddl_others(sddl: &str, user: &str) -> Vec<String> {
-    sddl_aces(sddl)
-        .map(|(_, aces)| {
-            aces.iter()
-                .filter_map(|ace| match ace.as_slice() {
-                    ["A", _, _, _, _, who] if *who != user && !MACHINE_TRUSTEES.contains(who) => Some(who.to_string()),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// The DACL, as SDDL, of a folder that is this user's, SYSTEM's and
 /// Administrators' alone: full control for each, by SID, inherited by what
 /// is in it, and nothing from above (`P`). No BUILTIN\Users: the data dir
@@ -221,19 +184,10 @@ pub mod acl {
         set_dacl(dir, &super::private_sddl(&user), PROTECTED_DACL_SECURITY_INFORMATION)
     }
 
-    /// `claim` for a folder a CLI's sandbox is given (`super::sandbox_dir`):
-    /// after `check_root`, a DACL private but for ACEs to the SIDs in
-    /// `sandbox` (`super::sddl_private_but_sandbox`) stays as it is; any other
-    /// is put back to private, a sandbox's ACEs going with whatever else was
-    /// there. What it took away beyond the private three.
-    pub fn claim_for_sandbox(dir: &Path, sandbox: &[String]) -> io::Result<Vec<String>> {
-        let user = check_root(dir, true)?;
-        let (sddl, named) = (dacl_sddl(dir)?, trustee(&user)?);
-        if super::sddl_private_but_sandbox(&sddl, &named, |sid| sandbox.iter().any(|s| s == sid)) {
-            return Ok(Vec::new());
-        }
-        set_dacl(dir, &super::private_sddl(&user), PROTECTED_DACL_SECURITY_INFORMATION)?;
-        Ok(super::sddl_others(&sddl, &named))
+    /// `check_root` alone, for a folder given to a CLI's sandbox
+    /// (`super::own_dir`): its DACL is left as it is.
+    pub fn check_own(dir: &Path) -> io::Result<()> {
+        check_root(dir, true).map(drop)
     }
 
     /// What every root is refused for: a link or junction, which a DACL would
@@ -305,17 +259,18 @@ pub mod acl {
             problems.push(format!("{}: open to others", root.display()));
         }
         if meta.is_dir() {
-            verify_below(root, &user, &named, &mut problems)?;
+            verify_below(root, root, &user, &named, &mut problems)?;
         }
         Ok(problems)
     }
 
-    /// `user` is this user's SID, for owners; `named` is the same user as a
-    /// DACL's SDDL names them (`trustee`).
-    fn verify_below(dir: &Path, user: &str, named: &str, problems: &mut Vec<String>) -> io::Result<()> {
+    /// `root` is the folder `verify` was asked of; `user` is this user's SID,
+    /// for owners; `named` is the same user as a DACL's SDDL names them
+    /// (`trustee`).
+    fn verify_below(root: &Path, dir: &Path, user: &str, named: &str, problems: &mut Vec<String>) -> io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
-            match verify_one(&path, user, named, problems) {
+            match verify_one(root, &path, user, named, problems) {
                 // Gone meanwhile: a running WebView comes and goes with files.
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 done => done.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?,
@@ -324,7 +279,7 @@ pub mod acl {
         Ok(())
     }
 
-    fn verify_one(path: &Path, user: &str, named: &str, problems: &mut Vec<String>) -> io::Result<()> {
+    fn verify_one(root: &Path, path: &Path, user: &str, named: &str, problems: &mut Vec<String>) -> io::Result<()> {
         let meta = std::fs::symlink_metadata(path)?;
         if meta.file_type().is_symlink() {
             problems.push(format!("{}: a link or junction", path.display()));
@@ -334,20 +289,25 @@ pub mod acl {
         if !owner_ok(&owner, user) {
             problems.push(format!("{}: owned by {owner}", path.display()));
         }
-        // A token folder keeps the private DACL of its own (`private_dir`),
-        // a folder given to a Codex sandbox the grant a Codex account's
-        // sandbox names for it beside that (`sandbox_dir`, codex/sandbox.rs).
+        // A token folder keeps the private DACL of its own (`private_dir`).
+        // A chat's handoff drafts folder may hold, beside that, what its
+        // CLI's sandbox granted itself there: it is made private at the
+        // CLI's every start, and only this user could add to it since
+        // (`super::own_dir`).
         let sddl = dacl_sddl(path)?;
-        if !super::sddl_inherits_only(&sddl) && !super::sddl_is_private(&sddl, named) {
-            let known = crate::codex::sandbox::sids_for(path);
-            if !super::sddl_private_but_sandbox(&sddl, named, |sid| known.iter().any(|s| s == sid)) {
-                problems.push(format!("{}: has access entries of its own", path.display()));
-            }
+        if !super::sddl_inherits_only(&sddl) && !super::sddl_is_private(&sddl, named) && !handoff_drafts(root, path) {
+            problems.push(format!("{}: has access entries of its own", path.display()));
         }
         if meta.is_dir() {
-            verify_below(path, user, named, problems)?;
+            verify_below(root, path, user, named, problems)?;
         }
         Ok(())
+    }
+
+    /// Whether `path` is a chat's handoff drafts folder in the data folder
+    /// `root`: `handoffs/<chat>/drafts` (agents/handoff `drafts_of`).
+    fn handoff_drafts(root: &Path, path: &Path) -> bool {
+        path.file_name().is_some_and(|n| n == "drafts") && path.parent().and_then(Path::parent) == Some(root.join("handoffs").as_path())
     }
 
     fn reset_below(dir: &Path, user: &str, odd: &mut Vec<String>) -> io::Result<()> {
@@ -1124,30 +1084,6 @@ mod tests {
         dir
     }
 
-    /// What a folder given to a CLI's sandbox may hold beyond the private
-    /// three: allow ACEs to the SIDs that sandbox has for it, and no others,
-    /// a SID that names no account but is another's among them; protected,
-    /// as a private DACL is.
-    #[test]
-    fn a_sandbox_s_own_grant_is_the_one_thing_a_private_folder_may_add() {
-        let me = "S-1-5-21-10-20-30-1001";
-        let cap = "S-1-5-21-111-222-333-444";
-        let base = format!("D:P(A;OICI;FA;;;{me})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
-        let sandbox = |sid: &str| sid == cap;
-        assert!(sddl_private_but_sandbox(&base, me, sandbox), "the private three alone");
-        let granted = format!("{base}(A;OICI;0x1301bf;;;{cap})");
-        assert!(sddl_private_but_sandbox(&granted, me, sandbox), "and the sandbox's own SID");
-        assert!(!sddl_is_private(&granted, me), "which `private_dir` would take away");
-        assert!(!sddl_private_but_sandbox(&granted, me, |_| false), "a Claude Code chat's: no sandbox SID at all");
-        assert_eq!(sddl_others(&granted, me), [cap]);
-        for other in ["S-1-5-21-10-20-30-1002", "S-1-5-21-555-666-777-888", "WD", "BU", "AU", "S-1-5-32-545", "S-1-1-0"] {
-            let sddl = format!("{base}(A;OICI;0x1301bf;;;{other})");
-            assert!(!sddl_private_but_sandbox(&sddl, me, sandbox), "{other} is someone");
-        }
-        assert!(!sddl_private_but_sandbox(&granted.replacen("D:P", "D:", 1), me, sandbox), "not protected: inherits from above");
-        assert!(!sddl_private_but_sandbox(&format!("{base}(OA;;FA;;;{cap})"), me, sandbox), "an allow of another kind");
-    }
-
     /// As Codex 0.167.0's unelevated Windows sandbox runs a command: this
     /// user's token restricted to a SID of the sandbox's own (`cap`), which
     /// Windows checks the DACL against as well as the user. `act` runs on a
@@ -1206,33 +1142,37 @@ mod tests {
         .unwrap()
     }
 
-    /// The drafts folder as Codex's sandbox finds it after its start, with the
-    /// grant it gave itself: kept by every later look that names its SID
-    /// (`sandbox_dir`), and taken away with the rest by anything else added,
-    /// another SID that names no account too, or by a look that names none (a
-    /// Claude Code chat's). The sandbox writes a file at a fresh name there,
-    /// not one Luna made first, private; what it makes is this user's, as the
-    /// submission check asks.
+    /// A folder given to a CLI's sandbox, as Codex's finds it after its
+    /// start: made private by `private_dir` (as at the CLI's start, foreign
+    /// ACEs and all going), then granted by the sandbox; looked at again by
+    /// `own_dir`, which keeps that grant and refuses a link. The sandbox writes
+    /// a file at a fresh name there, not one Luna made first, private; what it
+    /// makes is this user's, as the submission check asks. The data folder's
+    /// check takes such a drafts folder, and no other folder with an ACE of
+    /// its own.
     #[cfg(windows)]
     #[test]
     fn a_folder_given_to_a_sandbox_keeps_its_grant_and_the_sandbox_writes_new_files_there() {
         let root = scratch("sandbox-dir");
         private_dir(&root).unwrap();
-        let drafts = root.join("drafts");
-        assert!(sandbox_dir(&drafts, &[]).unwrap().is_empty());
-        assert!(acl::is_private(&drafts).unwrap());
+        let drafts = root.join("handoffs").join("c1").join("drafts");
+        private_dir(&drafts).unwrap();
         let part = || u32::from_str_radix(&random_hex(4), 16).unwrap();
-        let unmapped = || format!("S-1-5-21-{}-{}-{}-{}", part(), part(), part(), part());
-        let (cap, other) = (unmapped(), unmapped());
-        let user = acl::trustee(&acl::user_sid().unwrap()).unwrap();
-        let granted = format!("{}(A;OICI;0x1301bf;;;{cap})", private_sddl(&acl::user_sid().unwrap()));
-        acl::set_protected(&drafts, &granted).unwrap();
-        // Every later look that names the sandbox's SID leaves its grant.
-        assert!(sandbox_dir(&drafts, std::slice::from_ref(&cap)).unwrap().is_empty());
+        let (cap, other) = (format!("S-1-5-21-{}-{}-{}-{}", part(), part(), part(), part()), "BU");
+        let private = private_sddl(&acl::user_sid().unwrap());
+        // At the start, a foreign ACE goes with the rest.
+        acl::set_protected(&drafts, &format!("{private}(A;OICI;0x1301bf;;;{other})")).unwrap();
+        private_dir(&drafts).unwrap();
+        assert!(acl::is_private(&drafts).unwrap(), "{}", acl::dacl_sddl(&drafts).unwrap());
+        // After it, the sandbox's own grant stays through every later look.
+        acl::set_protected(&drafts, &format!("{private}(A;OICI;0x1301bf;;;{cap})")).unwrap();
+        own_dir(&drafts).unwrap();
         assert!(acl::dacl_sddl(&drafts).unwrap().contains(&cap), "{}", acl::dacl_sddl(&drafts).unwrap());
-        // The data folder's check takes it only where a Codex account names
-        // that SID for the folder, which none does for this one.
-        assert!(acl::verify(&root).unwrap().iter().any(|p| p.contains("access entries of its own")));
+        assert!(acl::verify(&root).unwrap().is_empty(), "{:?}", acl::verify(&root).unwrap());
+        let elsewhere = root.join("handoffs").join("c1").join("other");
+        private_dir(&elsewhere).unwrap();
+        acl::set_protected(&elsewhere, &format!("{private}(A;OICI;0x1301bf;;;{cap})")).unwrap();
+        assert!(acl::verify(&root).unwrap().iter().any(|p| p.contains("other") && p.contains("access entries of its own")));
         // A file Luna made first, private, the sandbox cannot write; one at a
         // fresh name it makes and writes.
         let made = drafts.join("made-first.md");
@@ -1248,22 +1188,14 @@ mod tests {
         let owner = acl::owner_of(&fresh).unwrap();
         assert!(owner == acl::user_sid().unwrap() || owner == acl::maker_sid().unwrap(), "{owner}");
         assert!(own_file(&std::fs::File::open(&fresh).unwrap()).unwrap().is_ok());
-        // Anything else added, a SID that names no account but is not the
-        // sandbox's among it, and the folder is made private again, the
-        // sandbox's grant going with the rest.
-        for extra in [other.as_str(), "BU"] {
-            acl::set_protected(&drafts, &format!("{granted}(A;OICI;0x1301bf;;;{extra})")).unwrap();
-            let taken = sandbox_dir(&drafts, std::slice::from_ref(&cap)).unwrap();
-            let now = acl::dacl_sddl(&drafts).unwrap();
-            assert!(sddl_is_private(&now, &user) && !now.contains(&cap) && taken.contains(&cap), "{extra}: {now} {taken:?}");
-        }
-        // A look that names no sandbox SID (a Claude Code chat's) keeps none.
-        acl::set_protected(&drafts, &granted).unwrap();
-        assert_eq!(sandbox_dir(&drafts, &[]).unwrap(), std::slice::from_ref(&cap));
-        assert!(acl::is_private(&drafts).unwrap());
+        // A link at its name is no folder of Luna's, its DACL untouched.
+        let linked = root.join("linked");
+        let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&linked).arg(&elsewhere).output().unwrap();
+        assert!(made.status.success());
+        assert!(own_dir(&linked).is_err());
+        let _ = std::fs::remove_dir(&linked);
         let _ = std::fs::remove_dir_all(&root);
     }
-
     #[test]
     fn hmac_is_rfc_4231s() {
         // Test cases 1, 2 and 6 (a key longer than a block).
