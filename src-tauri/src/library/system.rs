@@ -1305,12 +1305,14 @@ mod tests {
         assert!(!f.account(0).join("skills").join(HANDOFF).exists(), "Luna's old copy taken out");
         assert!(!f.account(1).join("skills").join(HANDOFF).exists());
         assert_eq!(p.kept, [f.account(2).join("skills").join(HANDOFF).to_string_lossy().into_owned()], "a changed one stays");
-        for a in &f.accounts {
+        // Failures name the account by its place and the kind of session,
+        // not what the arguments hold: a test's output is a log too.
+        for (i, a) in f.accounts.iter().enumerate() {
             for kind in [SessionKind::Chat, SessionKind::Helper] {
                 let s = folder_args(&f.dirs, &lib, a, &repo.to_string_lossy(), kind);
                 let said = format!("{:?} {:?} {:?}", s.args, s.hidden, s.audience);
-                assert!(!said.contains(HANDOFF), "{}: {said}", a.name);
-                assert!(said.contains("review"), "{}: the folder still keeps review: {said}", a.name);
+                assert!(!said.contains(HANDOFF), "account {i}, {kind:?}: the folder's arguments name the reserved skill");
+                assert!(said.contains("review"), "account {i}, {kind:?}: the folder no longer keeps review");
             }
         }
     }
