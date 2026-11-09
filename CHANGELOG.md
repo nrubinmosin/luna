@@ -26,10 +26,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A core of 0.11 still running when this version starts is asked how many
   sessions it runs and, with none, to stop, as a core of another build always
   was; with sessions the banner asks you to restart it.
-- Only a chat with Auto-handoff on hears of it. The agents' guide no longer has
-  a Handoff topic or section, which every session with Luna tools could read,
-  and a session not offered `luna_session_handoff` that calls it all the same
-  is answered as for a tool there is not.
+- Only a chat with Auto-handoff on is told of it. The agents' guide no longer
+  has a Handoff topic or section, which every session with Luna tools could
+  read, a chat's settings as another session reads them (`luna_session_get`, a
+  listing) no longer show its threshold, and a session not offered
+  `luna_session_handoff` that calls it all the same is answered as for a tool
+  there is not. A session that reads the chat's conversation with
+  `scope: "all"` still sees the notices in it, as it sees all of it.
+- A chat writes its handoff in a private folder of its own in Luna's data
+  folder, not the system's temp folder, which others may share; a Codex chat
+  is given that folder to write in (`--add-dir`) where its sandbox writes at
+  all, and one under a read-only sandbox is told it can write no file.
+- The library's override of the handoff's instructions is read alone and no
+  further than its 64 KB: nothing beside it in its folder, a FIFO or a large
+  file, can hold up or swell the read.
 
 ### Changed
 
@@ -41,9 +51,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   first notice sends the chat to the tool; the firm one, near where the CLI
   compacts, carries the file's headings itself
   ([ADR-0022](docs/adr/0022-content-luna-serves-at-its-own-trigger.md)).
-- A chat whose CLI compacted its conversation before a handoff is asked again
-  once past its threshold, and its title bar chip reads **handoff N% · asked**,
-  saying when in its tooltip.
+- A chat whose CLI compacted its conversation before a handoff, or that went on
+  with a model of a larger window, is asked again once past its threshold, and
+  its title bar chip reads **handoff N% · asked**, saying when in its tooltip;
+  only a fall in tokens counts as a compaction there.
 - The chat's What Luna applied panel says whose handoff instructions it gets,
   with Luna's version or the override's path and the text's hash, and warns of
   a `session-handoff` skill in its folder or account, which Luna never uses.
@@ -52,7 +63,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   tasks as data, and says that approvals the handoff quotes hold as far as the
   user's quoted words go and no further. A file written to Luna's own
   instructions that lacks one of their headings is named in the answer, not
-  refused. Each handoff on record keeps which instructions it was written by.
+  refused. Each handoff on record keeps which instructions it was written by,
+  the firm notice's checklist where that was all the chat had.
 
 ### Fixed
 
