@@ -431,6 +431,26 @@ fn nobody_but_a_chat_with_auto_handoff_on_hears_of_it() {
         assert_eq!(r["result"]["isError"], true, "{id}: no such topic");
         assert!(!holds_text(id) && store::records().get(id).is_none(), "{id}: nothing kept for it");
     }
+    // Its row as another session reads it: a helper of its own asking by id,
+    // another chat with `scope: "all"`, a listing: its settings without its
+    // auto-handoff. The chat itself reads them whole.
+    let tool = |caller: &str, name: &str, args: Value| {
+        let body = json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": name, "arguments": args } });
+        let r = crate::mcp::handle(caller, &body.to_string()).unwrap();
+        assert!(r["result"].get("isError").is_none(), "{caller} {name}: {r}");
+        r["result"]["content"][0]["text"].as_str().unwrap_or("").to_string()
+    };
+    for (caller, name, args) in [
+        ("hoaud-kid", "luna_session_get", json!({ "id": "hoaud-me" })),
+        ("hoaud-tools", "luna_session_get", json!({ "id": "hoaud-me", "scope": "all" })),
+        ("hoaud-tools", "luna_session_list", json!({ "ids": ["hoaud-me"], "scope": "all" })),
+    ] {
+        let text = tool(caller, name, args);
+        assert!(text.contains("hoaud-me") && !text.contains("handoff"), "{caller} {name}: {text}");
+    }
+    let to = |caller: &str| crate::agents::list::list(caller, Some(&["hoaud-me".to_string()]), true).sessions[0].settings.clone();
+    assert_eq!((to("hoaud-me")["handoff"].clone(), to("hoaud-kid").get("handoff")), (json!(70), None));
+    assert_eq!(to("hoaud-kid")["model"], "opus", "the rest of its settings as they are");
     // The chat that has it on: the tool, and how to write by.
     assert!(listed_names("hoaud-me").contains(&"luna_session_handoff".to_string()));
     let (failed, how) = call("hoaud-me", json!({}));
@@ -438,6 +458,56 @@ fn nobody_but_a_chat_with_auto_handoff_on_hears_of_it() {
     for id in ["hoaud-me", "hoaud-tools", "hoaud-kid", "hoaud-plain"] {
         forget_session(id);
     }
+}
+
+#[test]
+fn the_chats_own_drafts_folder_is_where_it_writes_and_what_is_taken() {
+    chat("hodr-me", Some(70));
+    chat("hodr-other", Some(70));
+    // Named by the answer, made private for it; a file there is taken.
+    let (failed, how) = call("hodr-me", json!({}));
+    let drafts = dir_of("hodr-me").unwrap().join("drafts");
+    let draft = drafts.join("handoff.md");
+    assert!(!failed && how.contains(&*draft.to_string_lossy()) && drafts.is_dir(), "{how}");
+    assert!(!how.contains("writes no file"), "this one writes: {how}");
+    std::fs::write(&draft, "# Goal\nShip it.\n").unwrap();
+    assert_eq!(schedule("hodr-me", Provider::Claude, &draft.to_string_lossy(), before()).unwrap()["n"], 1);
+    // Another chat's drafts are Luna's folder to it.
+    let e = schedule("hodr-other", Provider::Claude, &draft.to_string_lossy(), before()).unwrap_err();
+    assert!(e.contains("Luna's own folder"), "{e}");
+    // A chat that can write no file is told so, not sent to write one.
+    register("hodr-ro", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({ "sandbox": "read-only", "handoff": 70 }));
+    let (failed, how) = call("hodr-ro", json!({}));
+    assert!(!failed && how.contains("Codex's read-only sandbox, which writes no file"), "{how}");
+    finish("hodr-me", 1, Ended::Done, &String::new);
+    for id in ["hodr-me", "hodr-other", "hodr-ro"] {
+        forget_session(id);
+    }
+}
+
+#[test]
+fn a_handoff_written_by_the_firm_notice_alone_records_its_checklist() {
+    chat("hochk-me", Some(70));
+    let (dir, file) = scratch_file("chk");
+    let told = |level| store::Told { conversation: "c".into(), level, floor: 0, asked: vec![91], compacted: 0, tokens: 182_000 };
+    // The first notice gives nothing to write by; the firm one its checklist.
+    store::change("hochk-me", |r| told_of(r, told(1), false)).unwrap();
+    assert!(store::records()["hochk-me"].served.is_none());
+    store::change("hochk-me", |r| told_of(r, told(2), true)).unwrap();
+    let given = store::records()["hochk-me"].served.clone().expect("the checklist, as given");
+    assert_eq!(given, served::Served::checklist());
+    // Written by it without the tool: on the switch, and on the handoff's record.
+    let v = schedule("hochk-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    assert!(v["missing"].as_array().is_some_and(|m| !m.is_empty()), "Luna's checklist is looked for: {v}");
+    assert_eq!(store::records()["hochk-me"].switch.as_ref().unwrap().instructions.as_ref(), Some(&given));
+    finish("hochk-me", 1, Ended::Done, &String::new);
+    assert_eq!(store::records()["hochk-me"].past[0].instructions.as_ref(), Some(&given));
+    // Given the whole instructions first, a firm notice does not take their place.
+    let (failed, _) = call("hochk-me", json!({}));
+    assert!(!failed);
+    store::change("hochk-me", |r| told_of(r, told(2), true)).unwrap();
+    assert_eq!(store::records()["hochk-me"].served.as_ref().map(|s| s.source), Some(served::Given::Luna));
+    done_with(&["hochk-me"], &dir);
 }
 
 #[test]
@@ -459,7 +529,7 @@ fn the_tool_without_a_file_answers_how_and_the_handoff_keeps_which_text() {
     }
     assert!(!how.contains("name: session-handoff"), "front matter is not read out");
     let served = store::records()["hoins-me"].served.clone().expect("what it was served is kept");
-    assert_eq!((served.source, served.sha256.as_str()), (crate::library::Source::Luna, own.sha256.as_str()));
+    assert_eq!((served.source, served.sha256.as_str()), (served::Given::Luna, own.sha256.as_str()));
     // An empty file is no file: the same answer, nothing scheduled.
     let (failed, again) = call("hoins-me", json!({ "file": " " }));
     assert!(!failed && again.contains("How to hand this chat off") && !holds_text("hoins-me"));
@@ -489,7 +559,7 @@ fn a_thin_file_written_to_luna_s_instructions_is_named_not_refused() {
     // Written to an override: its sections are its author's, none looked for.
     store::change("hothin-me", |r| {
         r.served = Some(served::Served {
-            source: crate::library::Source::Library,
+            source: served::Given::Library,
             sha256: "ab".into(),
             version: None,
             path: Some("/lib/system/session-handoff/SKILL.md".into()),
@@ -507,7 +577,7 @@ fn a_chat_asked_and_not_handing_off_shows_it_until_a_handoff_goes_through() {
     chat("hoask-off", None);
     let (dir, file) = scratch_file("ask");
     assert_eq!(asked_of("hoask-me"), None, "never asked");
-    let told = store::Told { conversation: "c".into(), level: 2, floor: 0, asked: vec![71, 86], compacted: 1 };
+    let told = store::Told { conversation: "c".into(), level: 2, floor: 0, asked: vec![71, 86], compacted: 1, tokens: 172_000 };
     store::change("hoask-me", |r| r.told = Some(told.clone())).unwrap();
     assert_eq!(asked_of("hoask-me"), Some(HandoffAsked { at: vec![71, 86], compacted: 1 }));
     // Asked of a chat that no longer has it on: nothing to show.

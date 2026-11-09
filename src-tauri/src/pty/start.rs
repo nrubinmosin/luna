@@ -611,7 +611,10 @@ pub async fn ensure_claude_session(
         let tools = tools.unwrap_or(false) && !login;
         let notes = tools.then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
         let handoff = handoff_threshold(handoff, tools);
-        let handoff_dir = handoff.and_then(|_| crate::agents::handoff::dir_of(&id).ok()).filter(|dir| std::fs::create_dir_all(dir).is_ok());
+        // Its folder of copies, with the drafts folder it writes its handoff
+        // in made private there (agents/handoff `drafts_of`).
+        let handoff_dir =
+            handoff.and_then(|_| crate::agents::handoff::drafts_of(&id).ok()).and_then(|_| crate::agents::handoff::dir_of(&id).ok());
         let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
         // The library's instructions are read as memory of a folder added to
         // the session, which has every added folder's read: not the others'.
@@ -750,6 +753,9 @@ pub async fn ensure_codex_session(
         let guard = codex_guard_args(&id, guard.unwrap_or(false), hooks_unasked);
         let tools = tools.unwrap_or(false);
         let handoff = handoff_threshold(handoff, tools);
+        // The drafts folder it writes its handoff in, given only where its
+        // sandbox writes at all (codex/launch.rs `writes_files`).
+        let drafts = handoff.filter(|_| codex_launch::writes_files(sandbox)).and_then(|_| crate::agents::handoff::drafts_of(&id).ok());
         let mut settings = serde_json::json!({
             "model": chosen_model,
             "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
@@ -783,7 +789,7 @@ pub async fn ensure_codex_session(
             hooks_unasked,
             guard: &guard,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
-            handoff,
+            handoff: handoff.map(|t| (t, drafts.as_deref())),
             skill_args: &skills.args,
         });
         applied.extend(crate::library::audience_applied(&skills));
@@ -1567,9 +1573,16 @@ mod tests {
         let at = s.args.iter().position(|a| a == "<handoff-dir>").expect("the folder is added");
         assert_eq!(s.args[at - 1], "--add-dir");
         assert_eq!(s.applied.iter().find(|(k, ..)| k == "auto-handoff").map(|(_, c, _)| *c), Some(crate::applied::Class::UserAction));
-        // Codex: no flag of its own, the tool and the notices are Luna's.
+        // Codex: the tool and the notices are Luna's; its drafts folder, where
+        // it writes the handoff, is an `--add-dir` its sandbox writes into...
         let s = CodexAsk { tools: Some(true), handoff: Some(55), ..CodexAsk::chat() }.start(ID, &r);
+        assert_eq!(s.value("auto-handoff"), Some("at 55% of the context: luna_session_handoff; --add-dir <handoff-drafts>"));
+        let at = s.args.iter().position(|a| a == "<handoff-drafts>").expect("the drafts folder is added");
+        assert_eq!(s.args[at - 1], "--add-dir");
+        // ...where it writes at all: Codex ignores one under a read-only sandbox.
+        let s = CodexAsk { tools: Some(true), handoff: Some(55), sandbox: "read-only", ..CodexAsk::chat() }.start(ID, &r);
         assert_eq!(s.value("auto-handoff"), Some("at 55% of the context: luna_session_handoff"));
+        assert!(!s.args.iter().any(|a| a == "--add-dir"), "{:?}", s.args);
         // Without Luna's tools there is no server to offer the tool, and with
         // them but without the tick nothing is asked for: no word of it in the
         // start, the instructions included, which no CLI is given as a skill.

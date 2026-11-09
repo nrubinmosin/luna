@@ -165,6 +165,7 @@ pub fn list(caller: &str, ids: Option<&[String]>, all: bool) -> Listing {
             let (ask, task) = if told { (ask, task) } else { (None, None) };
             let worktree = checkout_of(pty, &id, &k);
             let signs = crate::background::signs(&id).unwrap_or_else(|| chat_signs(pty, &id, k.provider));
+            let settings = crate::agents::handoff::settings_shown(k.settings, id == caller);
             SessionRow {
                 state,
                 ask,
@@ -175,7 +176,7 @@ pub fn list(caller: &str, ids: Option<&[String]>, all: bool) -> Listing {
                 provider: k.provider,
                 account: k.account,
                 parent: k.parent,
-                settings: k.settings,
+                settings,
                 worktree,
                 task,
                 deletes_in_min,

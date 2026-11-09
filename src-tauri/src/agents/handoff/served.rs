@@ -12,15 +12,30 @@ use crate::agents::registry::{label, reg};
 use crate::library::{Resolved, Source, SystemSkillState, HANDOFF};
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
-/// The instructions a chat was served, as its handoffs' record keeps them.
+/// What a chat was given to write its handoff by.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::agents) enum Given {
+    /// Luna's own instructions, whole, by the tool.
+    Luna,
+    /// The library's override, whole, by the tool.
+    Library,
+    /// Only the checklist the firm notice carries (facts.rs `checklist`).
+    Checklist,
+}
+
+/// The instructions a chat was given, as its handoffs' record keeps them.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::agents) struct Served {
-    pub source: Source,
+    pub source: Given,
+    /// Of the text given.
     pub sha256: String,
-    /// Luna's version, for its own text.
+    /// Luna's version, for its own text and its checklist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// The override's path, for the library's.
@@ -30,11 +45,17 @@ pub(in crate::agents) struct Served {
 
 impl Served {
     pub(super) fn of(r: &Resolved) -> Served {
-        let (version, path) = match r.source {
-            Source::Luna => (Some(env!("CARGO_PKG_VERSION").to_string()), None),
-            Source::Library => (None, Some(r.path.to_string_lossy().into_owned())),
+        let (source, version, path) = match r.source {
+            Source::Luna => (Given::Luna, Some(env!("CARGO_PKG_VERSION").to_string()), None),
+            Source::Library => (Given::Library, None, Some(r.path.to_string_lossy().into_owned())),
         };
-        Served { source: r.source, sha256: r.sha256.clone(), version, path }
+        Served { source, sha256: r.sha256.clone(), version, path }
+    }
+
+    /// The firm notice's checklist, as a chat that wrote by it alone was given it.
+    pub(super) fn checklist() -> Served {
+        let sha256 = Sha256::digest(facts::checklist().as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        Served { source: Given::Checklist, sha256, version: Some(env!("CARGO_PKG_VERSION").to_string()), path: None }
     }
 }
 
@@ -74,20 +95,35 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
         (Source::Luna, None) => "Luna's own".to_string(),
     };
     crate::log::info("handoff", &format!("{} was served the handoff's instructions: {said}, sha256 {}", label(caller), r.short_sha()));
-    // A name nobody can have put there first: on a machine shared with others
-    // the system's temp folder is theirs too. Luna writes nothing there itself.
-    let suggested = std::env::temp_dir().join(format!("luna-handoff-{}.md", crate::secret::random_hex(8)));
-    let data = crate::paths::data_dir();
-    Ok(facts::how_to(&source_words(&r), &r.sha256, r.body(), &data.to_string_lossy(), &suggested.to_string_lossy()))
+    // Its drafts folder, private and its own; the folder made the chat's
+    // start makes it too, this call again where it went meanwhile.
+    let drafts = super::drafts_of(caller)?;
+    let settings = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.settings.clone()).unwrap_or_default();
+    let suggested = drafts.join("handoff.md");
+    Ok(facts::how_to(&source_words(&r), &r.sha256, r.body(), &suggested.to_string_lossy(), unwritable(&settings)))
+}
+
+/// Why a chat run with `settings` can write no file, its handoff included:
+/// Codex's read-only sandboxes write nowhere (an `--add-dir` is ignored under
+/// them), and Claude Code's plan mode edits nothing.
+pub(super) fn unwritable(settings: &Value) -> Option<&'static str> {
+    match (settings["sandbox"].as_str(), settings["permissionMode"].as_str()) {
+        (Some("read-only" | "read-only-net"), _) => Some(
+            "This chat runs in Codex's read-only sandbox, which writes no file, this folder included: ask the person to \
+             write it there, or to start the chat with a sandbox that writes (workspace-write).",
+        ),
+        (_, Some("plan")) => Some("In plan mode Claude Code writes no file: leave plan mode first, or ask the person to."),
+        _ => None,
+    }
 }
 
 /// Whether a handoff file is looked at for the sections of Luna's checklist
-/// (facts.rs `missing_sections`): where the chat was served Luna's own
-/// instructions, or none and Luna's own are in effect, so that the firm notice
-/// carried their checklist. An override's sections are its author's.
+/// (facts.rs `missing_sections`): where the chat was given Luna's own
+/// instructions or their checklist, or nothing and Luna's own are in effect.
+/// An override's sections are its author's.
 pub(super) fn checks_sections(served: Option<&Served>) -> bool {
     match served {
-        Some(s) => s.source == Source::Luna,
+        Some(s) => s.source != Given::Library,
         None => crate::library::handoff_instructions().source == Source::Luna,
     }
 }
@@ -152,17 +188,40 @@ mod tests {
     #[test]
     fn what_was_served_is_kept_by_whose_and_which() {
         let own = Served::of(&resolved(Source::Luna, None));
-        assert_eq!((own.source, own.version.as_deref(), own.path.as_deref()), (Source::Luna, Some(env!("CARGO_PKG_VERSION")), None));
+        assert_eq!((own.source, own.version.as_deref(), own.path.as_deref()), (Given::Luna, Some(env!("CARGO_PKG_VERSION")), None));
         let theirs = Served::of(&resolved(Source::Library, None));
-        assert_eq!((theirs.version.as_deref(), theirs.path.as_deref()), (None, Some("/lib/system/session-handoff/SKILL.md")));
+        assert_eq!((theirs.source, theirs.version.as_deref()), (Given::Library, None));
+        assert_eq!(theirs.path.as_deref(), Some("/lib/system/session-handoff/SKILL.md"));
         assert_eq!(theirs.sha256, "0123456789abcdef");
-        // Kept on disk: it reads back as it was.
-        let back: Served = serde_json::from_value(serde_json::to_value(&theirs).unwrap()).unwrap();
-        assert_eq!(back, theirs);
+        // The firm notice's checklist alone: Luna's, named by its own hash.
+        let list = Served::checklist();
+        let sha: String = Sha256::digest(facts::checklist().as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            (list.source, list.sha256.as_str(), list.version.as_deref()),
+            (Given::Checklist, sha.as_str(), Some(env!("CARGO_PKG_VERSION")))
+        );
+        // Kept on disk: it reads back as it was, and as 0.12.0's records name it.
+        for s in [&own, &theirs, &list] {
+            let back: Served = serde_json::from_value(serde_json::to_value(s).unwrap()).unwrap();
+            assert_eq!(&back, s);
+        }
+        assert_eq!(serde_json::to_value(&list).unwrap()["source"], "checklist");
         // Where an override was there and would not do, the answer says so.
         assert!(source_words(&resolved(Source::Luna, Some("The front matter has no description")))
             .contains("override at /lib/system/session-handoff/SKILL.md is not used: The front matter has no description"));
         assert!(source_words(&resolved(Source::Library, None)).starts_with("the person's, from Luna's library at /lib/"));
-        assert!(!checks_sections(Some(&theirs)) && checks_sections(Some(&own)));
+        assert!(!checks_sections(Some(&theirs)) && checks_sections(Some(&own)) && checks_sections(Some(&list)));
+    }
+
+    #[test]
+    fn a_chat_that_can_write_no_file_is_told_so() {
+        let said = |s: Value| unwritable(&s);
+        for sandbox in ["read-only", "read-only-net"] {
+            assert!(said(serde_json::json!({ "sandbox": sandbox })).is_some_and(|w| w.contains("read-only sandbox")), "{sandbox}");
+        }
+        assert!(said(serde_json::json!({ "permissionMode": "plan" })).is_some_and(|w| w.contains("plan mode")));
+        for writes in [serde_json::json!({ "sandbox": "workspace-write" }), serde_json::json!({ "permissionMode": "acceptEdits" })] {
+            assert_eq!(said(writes), None);
+        }
     }
 }

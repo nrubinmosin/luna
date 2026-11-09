@@ -8,7 +8,9 @@
 //! UTF-8 text with something in it, and not inside Luna's data folder,
 //! wherever its path leads: that is where the core's token and other chats'
 //! handoffs are, and Luna would otherwise copy for a session what its own
-//! read deny keeps from it (threat model F3).
+//! read deny keeps from it (threat model F3). The one place there it is taken
+//! from is right in the calling chat's own drafts folder (`own_draft`),
+//! reached from the data folder by its own names, no link on the way.
 //!
 //! The read runs on a thread of its own and is given READ_WAIT: a path on a
 //! share that does not answer, or something put at the name that blocks its
@@ -18,6 +20,7 @@
 //! call past either is refused, not given a thread. The copy is on disk,
 //! flushed, before the handoff counts on it.
 
+use crate::boundary::{is_link, open_no_follow};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -120,8 +123,21 @@ fn hooks() -> &'static std::sync::Mutex<std::collections::HashMap<String, Hook>>
     H.get_or_init(Default::default)
 }
 
-/// `file` checked as the module says, its bytes as they were read.
-pub(super) fn read_checked(file: &str, data_dir: &Path) -> Result<(PathBuf, Vec<u8>), String> {
+/// Whether `real`, a file's resolved path inside Luna's folder (`data`
+/// resolved, `data_dir` as named), is right in the drafts folder of the chat
+/// whose folder of copies is `own`, that folder resolving to where its names
+/// say: a link at `handoffs`, the chat's folder or `drafts` would lead
+/// elsewhere, and is no drafts folder.
+fn own_draft(real: &Path, data_dir: &Path, data: &Path, own: &Path) -> bool {
+    let drafts = own.join(super::DRAFTS);
+    let Ok(rel) = drafts.strip_prefix(data_dir) else { return false };
+    let Ok(resolved) = std::fs::canonicalize(&drafts) else { return false };
+    resolved == data.join(rel) && real.parent() == Some(resolved.as_path())
+}
+
+/// `file` checked as the module says, its bytes as they were read, for the
+/// chat whose folder of copies is `own`.
+pub(super) fn read_checked(file: &str, data_dir: &Path, own: &Path) -> Result<(PathBuf, Vec<u8>), String> {
     // Taken out first: a hook that never returns is not to hold the map.
     #[cfg(test)]
     let hook = hooks().lock().unwrap_or_else(|e| e.into_inner()).remove(file);
@@ -142,9 +158,10 @@ pub(super) fn read_checked(file: &str, data_dir: &Path) -> Result<(PathBuf, Vec<
     // to be reached through one.
     let real = std::fs::canonicalize(&path).map_err(|e| format!("file: {}: {e}", path.display()))?;
     if let Ok(data) = std::fs::canonicalize(data_dir) {
-        if real.starts_with(&data) {
+        if real.starts_with(&data) && !own_draft(&real, data_dir, &data, own) {
             return Err(format!(
-                "file: {} is inside Luna's own folder; write the handoff in your project or a temporary folder",
+                "file: {} is inside Luna's own folder; write the handoff in this chat's drafts folder (luna_session_handoff \
+                 without file names it) or outside Luna's folder",
                 path.display()
             ));
         }
@@ -175,23 +192,25 @@ pub(super) fn read_checked(file: &str, data_dir: &Path) -> Result<(PathBuf, Vec<
     Ok((path, bytes))
 }
 
-/// `read_checked` for `chat` on a thread of its own, admitted by `readers` and
-/// given `wait`: a read that has not answered by then is refused, and its
-/// thread left to end when it can, keeping its place until it does.
+/// `read_checked` for `chat` (its folder of copies `own`) on a thread of its
+/// own, admitted by `readers` and given `wait`: a read that has not answered
+/// by then is refused, and its thread left to end when it can, keeping its
+/// place until it does.
 pub(super) fn read_within(
     readers: &'static Readers,
     chat: &str,
     file: &str,
     data_dir: &Path,
+    own: &Path,
     wait: std::time::Duration,
 ) -> Result<(PathBuf, Vec<u8>), String> {
     let place = readers.admit(chat)?;
     let (tx, rx) = std::sync::mpsc::channel();
-    let (f, d) = (file.to_string(), data_dir.to_path_buf());
+    let (f, d, o) = (file.to_string(), data_dir.to_path_buf(), own.to_path_buf());
     std::thread::Builder::new()
         .name("luna-handoff-read".into())
         .spawn(move || {
-            let read = read_checked(&f, &d);
+            let read = read_checked(&f, &d, &o);
             // Its place goes before its answer: a caller that has the answer
             // finds the place free for the next read.
             drop(place);
@@ -218,7 +237,7 @@ pub(super) fn snapshot_within(
     n: u32,
     wait: std::time::Duration,
 ) -> Result<Snapshot, String> {
-    let (source, bytes) = read_within(readers, chat, file, data_dir, wait)?;
+    let (source, bytes) = read_within(readers, chat, file, data_dir, dir, wait)?;
     std::fs::create_dir_all(dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
     let path = dir.join(format!("{n}.md"));
     let written = crate::secret::create_private(&path).and_then(|mut out| {
@@ -244,43 +263,6 @@ pub(super) fn next_free(dir: &Path) -> u32 {
         stem.strip_suffix("-facts").unwrap_or(stem).parse::<u32>().ok()
     });
     taken.max().map_or(1, |n| n.saturating_add(1))
-}
-
-/// A link or a junction, whatever std calls it: Windows counts any reparse
-/// point that stands for another name as one.
-fn is_link(meta: &std::fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
-    meta.file_type().is_symlink()
-}
-
-/// The file at `path` itself, a link there opened as the link (and then
-/// refused by its metadata) rather than followed. On Unix without waiting: a
-/// FIFO put at the name blocks an open for reading until a writer comes, and is
-/// then refused by the handle's metadata like any other thing that is not a
-/// file. (Windows takes no FIFO at a path `boundary::absolute` lets through:
-/// its pipes live under `\\.\pipe\`.)
-fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
-    let mut o = std::fs::OpenOptions::new();
-    o.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        o.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    o.open(path)
 }
 
 #[cfg(test)]
@@ -369,6 +351,46 @@ mod tests {
     }
 
     #[test]
+    fn of_luna_s_folder_only_the_calling_chat_s_drafts_are_taken() {
+        let dir = scratch("drafts");
+        let data = dir.join("data");
+        let handoffs = data.join("handoffs");
+        let (own, other) = (handoffs.join("c1"), handoffs.join("c2"));
+        for d in [&own, &other] {
+            std::fs::create_dir_all(d.join(super::super::DRAFTS).join("deep")).unwrap();
+        }
+        let write = |p: PathBuf| {
+            std::fs::write(&p, "# Goal\nShip it.\n").unwrap();
+            p
+        };
+        let take = |file: &Path, own: &Path, n| snapshot("file-drafts", &file.to_string_lossy(), &data, own, n);
+        let mine = write(own.join("drafts").join("handoff.md"));
+        assert_eq!(std::fs::read_to_string(take(&mine, &own, 1).unwrap().path).unwrap(), "# Goal\nShip it.\n");
+        // Another chat's drafts, its own folder of copies, a folder below its
+        // drafts: Luna's folder, refused.
+        for (file, n) in [
+            (write(other.join("drafts").join("handoff.md")), 2),
+            (write(own.join("handoff.md")), 3),
+            (write(own.join("drafts").join("deep").join("handoff.md")), 4),
+        ] {
+            let e = take(&file, &own, n).unwrap_err();
+            assert!(e.contains("Luna's own folder"), "{}: {e}", file.display());
+        }
+        // A chat whose drafts folder is a link to another's: no drafts of its own.
+        let linked = handoffs.join("c3");
+        std::fs::create_dir_all(&linked).unwrap();
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(other.join("drafts"), linked.join("drafts")).is_ok();
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(other.join("drafts"), linked.join("drafts")).is_ok();
+        if made {
+            let e = take(&linked.join("drafts").join("handoff.md"), &linked, 5).unwrap_err();
+            assert!(e.contains("Luna's own folder"), "{e}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_read_that_does_not_answer_in_time_is_refused() {
         let dir = scratch("slow");
         let file = dir.join("handoff.md");
@@ -431,16 +453,16 @@ mod tests {
         };
         let short = std::time::Duration::from_millis(100);
         let a = hang("a");
-        assert!(read_within(readers, "chat-a", &a, &data, short).unwrap_err().contains("did not read within"));
+        assert!(read_within(readers, "chat-a", &a, &data, &dir, short).unwrap_err().contains("did not read within"));
         assert_eq!(readers.alive(), 1, "given up on, its reader still holds its place");
         // That chat gets no second reader while the first is in the filesystem.
-        let e = read_within(readers, "chat-a", &file("a2"), &data, short).unwrap_err();
+        let e = read_within(readers, "chat-a", &file("a2"), &data, &dir, short).unwrap_err();
         assert!(e.contains("has not come back yet"), "{e}");
         assert_eq!(readers.alive(), 1, "refused before any thread");
         // Another chat's: one more, then the cap.
         let b = hang("b");
-        assert!(read_within(readers, "chat-b", &b, &data, short).is_err());
-        let e = read_within(readers, "chat-c", &file("c"), &data, short).unwrap_err();
+        assert!(read_within(readers, "chat-b", &b, &data, &dir, short).is_err());
+        let e = read_within(readers, "chat-c", &file("c"), &data, &dir, short).unwrap_err();
         assert!(e.contains("being read and have not come back"), "{e}");
         assert_eq!(readers.alive(), 2);
         // The share answers: the readers end, and their places are free again.
@@ -450,7 +472,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert_eq!(readers.alive(), 0);
-        assert!(read_within(readers, "chat-a", &file("a3"), &data, short).is_ok());
+        assert!(read_within(readers, "chat-a", &file("a3"), &data, &dir, short).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
