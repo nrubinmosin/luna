@@ -397,7 +397,7 @@ turn, stopped on a prompt (once per stop) or exited.
 A person's chat with Luna tools may have auto-handoff on: `handoff` in its
 registry settings, the threshold in percent, passed by the window at every start
 (`ensure_*_session`) and set on a running chat by `set_auto_handoff`
-([ADR-0019](../adr/0019-session-self-handoff.md)).
+([ADR-0020](../adr/0020-session-self-handoff.md)).
 
 - **The tool.** `tools/list` adds `luna_session_handoff` for such a chat alone
   (`offers_tool`: tools, no parent, not an orphan, a helper or the dev caller) and

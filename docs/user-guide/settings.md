@@ -26,7 +26,8 @@ folded into a "How … works" line at the foot of its card.
 | Chats | New chats start with, Worktrees | Git worktree, Luna tools and Codex hooks without asking, as the new-chat dialog starts them; fetch origin before Claude Code makes a worktree; delete worktrees by default |
 | Agents & trust | Helpers, Trusted folders | Allow helpers more permissions than their parent chat; the folders whose projects Codex sessions start trusted |
 | Links | Open links in, Browsers | The default browser and the accounts and project folders that take another; the browsers found on this computer and your own |
-| Updates | — | Luna, the core, Claude Code and Codex: each version, its state and its button |
+| CLIs | Claude Code, Codex | The channel each follows (Known-good or Latest); its version and Check now; each installed version tagged current, previous, known-good, in use or bad, with Use and Mark bad; a new version's failed first sessions with Roll back and Keep it ([updates](updates.md#the-clis)) |
+| Updates | — | Luna and the core: each version, its state and its button |
 
 - **Waiting marker:** the checkbox turns it on and off; the text under it is
   saved with Save or Enter.

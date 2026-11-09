@@ -162,7 +162,7 @@ A chat without Luna tools cannot have it: their server is what offers it.
   starts. Turned off, the tool refuses from then on, and a handoff only
   scheduled is dropped.
 
-See [ADR-0019](../adr/0019-session-self-handoff.md).
+See [ADR-0020](../adr/0020-session-self-handoff.md).
 
 ## Status
 

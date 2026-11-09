@@ -8,7 +8,7 @@ import { useAccounts } from '../accounts/accounts.store';
 import { jumpToWaiting } from '../panes/navigate';
 import { useNow, worstLimit } from '../accounts/limits';
 import { useUpdates } from '../updates/updates.store';
-import { useCli } from '../updates/cli.store';
+import { canaryWarning, useCli } from '../updates/cli.store';
 import { cliUpdateNow } from '../../ipc/cli';
 import { PROVIDER_LABEL, PROVIDERS, accountKey, type Account } from '../../shared/types';
 import { PowerChip } from '../power/PowerChip';
@@ -38,6 +38,7 @@ const pct = (got: number, total: number | null) => (total ? Math.min(100, Math.r
 function UpdateChips() {
   const { phase, next, got, total } = useUpdates();
   const clis = useCli(s => s.status);
+  const versions = useCli(s => s.versions);
 
   const chips = [];
 
@@ -88,6 +89,24 @@ function UpdateChips() {
 
   for (const p of PROVIDERS) {
     const cli = clis[p];
+    // A new version's first sessions failing: loud until rolled back or kept,
+    // whatever the update pass is doing meanwhile.
+    const warning = canaryWarning(versions[p]);
+    if (warning) {
+      chips.push(
+        <div
+          key={`canary-${p}`}
+          onClick={() => useSettings.getState().setOpen(true, 'clis')}
+          title={`${PROVIDER_LABEL[p]} ${warning.version} may be broken: ${warning.failures.length} of the ${warning.watched} sessions started on it so far failed. Click to roll back or keep it.`}
+          className="sb-field click"
+          style={chipStyle(true)}
+        >
+          <Icon name={p} size={14} />
+          <Icon name="warn" />
+          {warning.version}
+        </div>
+      );
+    }
     if (cli?.phase === 'downloading') {
       const done = pct(cli.got, cli.total);
       // The first download is the one that matters — without it a fresh install
