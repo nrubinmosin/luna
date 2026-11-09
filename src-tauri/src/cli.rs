@@ -400,7 +400,7 @@ fn use_version(provider: Provider, dir: &str) -> Result<(), String> {
         return Err("an update of this CLI is under way; try again once it is done".into());
     }
     let src = source(provider);
-    let result = use_version_in(&root(provider), src.bin_rel, dir);
+    let result = use_version_in(&root(provider), src.bin_rel, min_safe(provider), dir);
     busy.store(false, Ordering::SeqCst);
     match &result {
         Ok(version) => crate::log::info("cli", &format!("{} {version} is now current by hand (versions/{dir})", provider.as_str())),
@@ -414,15 +414,94 @@ fn use_version(provider: Provider, dir: &str) -> Result<(), String> {
 }
 
 /// Makes the installed directory `dir` current, as the update pass would,
-/// and returns its version.
-fn use_version_in(root: &Path, bin_rel: &str, dir: &str) -> Result<String, String> {
+/// and returns its version. Below the floor too, the choice being the
+/// person's rather than the channel's: once every file is held again to the
+/// sha256 its record kept, and never below `min_safe`.
+fn use_version_in(root: &Path, bin_rel: &str, min_safe: &str, dir: &str) -> Result<String, String> {
     let Some((_, record)) = installed_all(root, bin_rel).into_iter().find(|(d, _)| d == dir) else {
         return Err(format!("{dir} is not an installed version"));
     };
+    if version_cmp(&record.version, min_safe).is_lt() {
+        return Err(format!("{} is older than {min_safe}, the oldest this Luna lets run", record.version));
+    }
+    let floor = floor_in(root, min_safe);
+    if version_cmp(&record.version, &floor).is_lt() {
+        reverify(&root.join("versions").join(dir), &record).map_err(|e| format!("{} is below {floor}, and {e}", record.version))?;
+    }
     mark_recorded(root)?;
     flip_in(root, bin_rel, dir)?;
     prune_in(root, bin_rel);
     Ok(record.version)
+}
+
+// ----------------------------------------------------------------- floor --
+
+/// At a provider's root: the highest version that has been current there.
+/// Nothing below it is downloaded, nor taken from the channel's pointer,
+/// which is not signed: a release server in other hands could otherwise
+/// point back at an older release with its known flaws. It rises when a
+/// version becomes current (`flip_in`), not when one is downloaded, so a
+/// version fetched and then refused does not shut out the one before it.
+const FLOOR: &str = "floor";
+/// Claude Code's floor from before, raised as each signed manifest was
+/// accepted: still honored, never written.
+const LEGACY_FLOOR: &str = "signed-floor";
+
+/// The oldest version of each CLI this Luna lets run at all.
+pub(crate) fn min_safe(provider: Provider) -> &'static str {
+    match provider {
+        // The version Luna was last checked live with (docs/cli-compatibility.md).
+        Provider::Claude => "2.1.319",
+        Provider::Codex => "0",
+    }
+}
+
+/// The floor under `root`: the highest of `min_safe` and what the floor
+/// files say.
+pub(crate) fn floor_in(root: &Path, min_safe: &str) -> String {
+    [FLOOR, LEGACY_FLOOR]
+        .iter()
+        .filter_map(|f| fs::read_to_string(root.join(f)).ok().and_then(|t| sane_version(&t, f).ok()))
+        .fold(min_safe.to_string(), |high, v| if version_cmp(&v, &high).is_gt() { v } else { high })
+}
+
+/// Refuses `version` below the floor under `root`.
+pub(crate) fn at_or_above_floor_in(root: &Path, min_safe: &str, version: &str) -> Result<(), String> {
+    let floor = floor_in(root, min_safe);
+    if version_cmp(version, &floor).is_lt() {
+        return Err(format!("refusing {version}: older than {floor}, the newest version this Luna has run (or the oldest it takes)"));
+    }
+    Ok(())
+}
+
+/// Moves the floor up to `version`, never down.
+fn raise_floor_in(root: &Path, version: &str) -> Result<(), String> {
+    let kept = fs::read_to_string(root.join(FLOOR)).ok().and_then(|t| sane_version(&t, FLOOR).ok());
+    if kept.is_some_and(|k| version_cmp(version, &k).is_le()) {
+        return Ok(());
+    }
+    crate::secret::write_private_synced(&root.join(FLOOR), version.as_bytes()).map_err(|e| format!("write {FLOOR}: {e}"))
+}
+
+/// Every file of an install held again to the sha256 its record kept: for a
+/// version gone back to below the floor, where nothing newer vouches for it.
+/// A record without a hash for each file cannot be held so.
+fn reverify(dir: &Path, record: &Record) -> Result<(), String> {
+    for f in &record.files {
+        let Some(want) = &f.sha256 else {
+            return Err(format!("its record keeps no sha256 for {} to check it against", f.path));
+        };
+        let path = dir.join(&f.path);
+        let meta = fs::symlink_metadata(&path).map_err(|e| format!("{} is missing: {e}", f.path))?;
+        if is_link(&meta) || !meta.is_file() {
+            return Err(format!("{} is not a file", f.path));
+        }
+        let got = sha256_of(&path)?;
+        if !got.eq_ignore_ascii_case(want) {
+            return Err(format!("{} no longer matches its sha256", f.path));
+        }
+    }
+    Ok(())
 }
 
 /// Startup: one update pass right away, then one every few hours. The first
@@ -554,34 +633,49 @@ fn update_inner(provider: Provider) -> Result<(), String> {
         });
         (src.fetch)(&agent, &latest, dir, &mut progress)
     };
-    let (dir, flipped) = update_in(&root(provider), src.bin_rel, &latest, &mut fetch)?;
+    let target = Target { version: &latest, min_safe: min_safe(provider) };
+    let (dir, flipped) = update_in(&root(provider), src.bin_rel, target, &mut fetch)?;
     if flipped {
         crate::log::info("cli", &format!("{} {latest} is now current (versions/{dir})", provider.as_str()));
     }
     Ok(())
 }
 
-/// The update pass on one provider's tree once the channel has named
-/// `latest`. Nothing to fetch when `current` holds a recorded install of it,
+/// What an update pass is to make current.
+#[derive(Clone, Copy)]
+struct Target<'a> {
+    version: &'a str,
+    /// Nothing older is taken however it is named.
+    min_safe: &'a str,
+}
+
+/// The update pass on one provider's tree once the channel has named its
+/// version. Nothing to fetch when `current` holds a recorded install of it,
 /// or when one is already in `versions/`; otherwise `fetch` stages a fresh
-/// one. Then the flip and the sweep. Returns the directory now current and
-/// whether `current` moved.
+/// one. A version below the floor is refused either way: the channel's
+/// pointer is not signed. Then the flip and the sweep. Returns the directory
+/// now current and whether `current` moved.
 fn update_in(
     root: &Path,
     bin_rel: &str,
-    latest: &str,
+    target: Target,
     fetch: &mut dyn FnMut(&Path) -> Result<Package, String>,
 ) -> Result<(String, bool), String> {
-    if let Some(c) = current_in(root, bin_rel).filter(|c| c.recorded && c.version == latest) {
+    let version = target.version;
+    if let Some(c) = current_in(root, bin_rel).filter(|c| c.recorded && c.version == version) {
         // `current` names a recorded install, so this code installed here:
         // a marker missing is one a crash or a cleanup took after the fact.
         mark_recorded(root)?;
         prune_in(root, bin_rel);
         return Ok((c.dir, false));
     }
-    let dir = match installed_in(root, bin_rel, latest) {
+    // Before the fetch, and for an install already there alike: an older
+    // recorded version left in `versions/` would otherwise be flipped back
+    // to with no fetch.
+    at_or_above_floor_in(root, target.min_safe, version)?;
+    let dir = match installed_in(root, bin_rel, version) {
         Some(dir) => dir,
-        None => install_in(root, bin_rel, latest, fetch)?,
+        None => install_in(root, bin_rel, version, fetch)?,
     };
     mark_recorded(root)?;
     flip_in(root, bin_rel, &dir)?;
@@ -599,12 +693,14 @@ fn update_in(
 /// spawn whatever is on PATH. Private as it is made, under a random name: in
 /// a data dir open to others a `current` of theirs would pick the binary
 /// every session runs. Synced, so a power cut leaves the old name or the new
-/// one.
+/// one. Then the floor rises to the version, now that it runs.
 fn flip_in(root: &Path, bin_rel: &str, dir: &str) -> Result<(), String> {
+    let record = read_record(&root.join("versions").join(dir)).map_err(|e| format!("{dir}: {e}"))?;
     if let Some(old) = current_in(root, bin_rel).filter(|c| c.dir != dir) {
         crate::secret::write_private_synced(&root.join(PREVIOUS), old.dir.as_bytes()).map_err(|e| format!("write {PREVIOUS}: {e}"))?;
     }
-    crate::secret::write_private_synced(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))
+    crate::secret::write_private_synced(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))?;
+    raise_floor_in(root, &record.version)
 }
 
 /// The directory `previous` names, while it is still a whole install.
@@ -944,6 +1040,21 @@ mod tests {
         Ok(Package { files, verified: "test".into() })
     }
 
+    /// What the channel's pointer names, with no minimum of its own.
+    fn pointer(version: &str) -> Target<'_> {
+        Target { version, min_safe: "0" }
+    }
+
+    /// `whole`, vouched for by sha256 as well, as Claude Code's manifest does.
+    fn hashed(dir: &Path) -> Result<Package, String> {
+        write_files(dir, &FILES);
+        let files = FILES
+            .iter()
+            .map(|(rel, b)| PackageFile { rel: rel.to_string(), size: b.len() as u64, sha256: Some(format!("{:x}", Sha256::digest(b))) })
+            .collect();
+        Ok(Package { files, verified: "test".into() })
+    }
+
     fn entries(dir: &Path) -> usize {
         fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
     }
@@ -996,7 +1107,7 @@ mod tests {
         assert!(installed_in(&root, BIN, "1.0.0").is_none());
 
         // Cut short again: the exe written, then the unpack fails.
-        let cut = update_in(&root, BIN, "1.0.0", &mut |dir: &Path| {
+        let cut = update_in(&root, BIN, pointer("1.0.0"), &mut |dir: &Path| {
             write_files(dir, &FILES[..1]);
             Err("unpack: unexpected end of file".into())
         });
@@ -1005,7 +1116,7 @@ mod tests {
         assert_eq!(entries(&root.join("staging")), 0, "the staged copies are gone");
 
         let fetched = Cell::new(0);
-        let (dir, flipped) = update_in(&root, BIN, "1.0.0", &mut |dir: &Path| {
+        let (dir, flipped) = update_in(&root, BIN, pointer("1.0.0"), &mut |dir: &Path| {
             fetched.set(fetched.get() + 1);
             whole(dir)
         })
@@ -1048,7 +1159,7 @@ mod tests {
     #[test]
     fn a_whole_package_is_activated_with_its_record() {
         let root = scratch("whole");
-        let (dir, flipped) = update_in(&root, BIN, "1.2.0", &mut whole).unwrap();
+        let (dir, flipped) = update_in(&root, BIN, pointer("1.2.0"), &mut whole).unwrap();
         assert_eq!((dir.as_str(), flipped), ("1.2.0", true));
         assert_eq!(fs::read_to_string(root.join("current")).unwrap(), "1.2.0");
         let record = read_record(&root.join("versions").join("1.2.0")).unwrap();
@@ -1058,7 +1169,7 @@ mod tests {
         assert_eq!(entries(&root.join("staging")), 0);
 
         // The next pass finds it installed and fetches nothing.
-        let (_, flipped) = update_in(&root, BIN, "1.2.0", &mut |_: &Path| panic!("fetched again")).unwrap();
+        let (_, flipped) = update_in(&root, BIN, pointer("1.2.0"), &mut |_: &Path| panic!("fetched again")).unwrap();
         assert!(!flipped);
         // A file the record names, cut short afterwards: no longer installed.
         fs::write(root.join("versions").join("1.2.0").join(FILES[1].0), b"cut").unwrap();
@@ -1092,12 +1203,12 @@ mod tests {
     #[test]
     fn a_version_installed_here_is_not_run_without_its_record() {
         let root = scratch("unrecorded");
-        update_in(&root, BIN, "1.2.0", &mut whole).unwrap();
+        update_in(&root, BIN, pointer("1.2.0"), &mut whole).unwrap();
         assert!(root.join(RECORDED).is_file(), "the tree is marked before `current` names anything");
         // A marker lost after the fact comes back on the next pass, even one
         // with nothing to fetch.
         fs::remove_file(root.join(RECORDED)).unwrap();
-        let (_, flipped) = update_in(&root, BIN, "1.2.0", &mut |_: &Path| panic!("fetched again")).unwrap();
+        let (_, flipped) = update_in(&root, BIN, pointer("1.2.0"), &mut |_: &Path| panic!("fetched again")).unwrap();
         assert!(!flipped && root.join(RECORDED).is_file());
         fs::remove_file(root.join("versions").join("1.2.0").join(RECORD)).unwrap();
         assert!(current_in(&root, BIN).is_none());
@@ -1120,7 +1231,7 @@ mod tests {
         let root = scratch("prune-link");
         let outside = scratch("prune-link-outside");
         write_files(&outside, &[("codex.exe", b"not Luna's")]);
-        update_in(&root, BIN, "2.0.0", &mut whole).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut whole).unwrap();
         let old = root.join("versions").join("1.0.0");
         fs::create_dir_all(&old).unwrap();
         link_dir(&old.join("bin"), &outside);
@@ -1145,8 +1256,8 @@ mod tests {
     #[test]
     fn the_previous_version_and_those_in_use_survive_the_sweep() {
         let root = scratch("keep");
-        update_in(&root, BIN, "1.0.0", &mut whole).unwrap();
-        update_in(&root, BIN, "2.0.0", &mut whole).unwrap();
+        update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut whole).unwrap();
         assert_eq!(dirs(&root), ["1.0.0", "2.0.0"]);
         assert_eq!(previous_in(&root, BIN).as_deref(), Some("1.0.0"));
 
@@ -1154,8 +1265,8 @@ mod tests {
         let (exe, held) = launch_in(&root, BIN);
         assert_eq!(exe.unwrap(), (root.join("versions").join("2.0.0").join(BIN), "2.0.0".to_string()));
         let held = held.expect("the directory is held");
-        update_in(&root, BIN, "3.0.0", &mut whole).unwrap();
-        update_in(&root, BIN, "4.0.0", &mut whole).unwrap();
+        update_in(&root, BIN, pointer("3.0.0"), &mut whole).unwrap();
+        update_in(&root, BIN, pointer("4.0.0"), &mut whole).unwrap();
         assert_eq!(dirs(&root), ["2.0.0", "3.0.0", "4.0.0"], "1.0.0 went; 2.0.0 runs, 3.0.0 is the previous one");
         assert!(root.join("versions").join("2.0.0").join(FILES[1].0).is_file(), "its helpers too");
         let rows = versions_in(&root, BIN);
@@ -1175,19 +1286,99 @@ mod tests {
     #[test]
     fn use_goes_back_to_an_installed_version_and_only_to_one() {
         let root = scratch("use");
-        update_in(&root, BIN, "1.0.0", &mut whole).unwrap();
-        update_in(&root, BIN, "2.0.0", &mut whole).unwrap();
-        assert_eq!(use_version_in(&root, BIN, "1.0.0").unwrap(), "1.0.0");
+        update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        assert_eq!(use_version_in(&root, BIN, "0", "1.0.0").unwrap(), "1.0.0");
         assert!(current_in(&root, BIN).is_some_and(|c| c.dir == "1.0.0"));
         assert_eq!(previous_in(&root, BIN).as_deref(), Some("2.0.0"), "and the way forward again is kept");
         // Not installed, not a plain name, or no longer whole: refused, and
         // `current` stays.
         for dir in ["3.0.0", "..", "../1.0.0"] {
-            assert!(use_version_in(&root, BIN, dir).is_err(), "{dir}");
+            assert!(use_version_in(&root, BIN, "0", dir).is_err(), "{dir}");
         }
         fs::write(root.join("versions").join("2.0.0").join(FILES[1].0), b"cut").unwrap();
-        assert!(use_version_in(&root, BIN, "2.0.0").unwrap_err().contains("not an installed version"));
+        assert!(use_version_in(&root, BIN, "0", "2.0.0").unwrap_err().contains("not an installed version"));
         assert!(current_in(&root, BIN).is_some_and(|c| c.dir == "1.0.0"));
+        let _ = remove_tree(&root);
+    }
+
+    #[test]
+    fn versions_order_by_their_numbers() {
+        use std::cmp::Ordering::*;
+        assert_eq!(version_cmp("2.1.100", "2.1.99"), Greater);
+        assert_eq!(version_cmp("2.1.319", "2.1.319"), Equal);
+        assert_eq!(version_cmp("2.1", "2.1.0"), Equal);
+        assert_eq!(version_cmp("2.0.999", "2.1.0"), Less);
+        assert_eq!(version_cmp("10.0.0", "9.9.9"), Greater);
+    }
+
+    /// The defect: the floor rose as each manifest was taken, before its
+    /// version ever ran, so a download refused afterwards shut out the
+    /// version before it.
+    #[test]
+    fn the_floor_rises_when_a_version_becomes_current_not_when_it_is_fetched() {
+        let root = scratch("floor");
+        update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        assert_eq!(floor_in(&root, "0"), "1.0.0");
+        // 2.0.0 fetched, then refused: the floor stays.
+        let refused = update_in(&root, BIN, pointer("2.0.0"), &mut |dir: &Path| {
+            write_files(dir, &FILES[..1]);
+            whole(dir).map(|mut p| {
+                p.files[0].size += 1;
+                p
+            })
+        });
+        assert!(refused.is_err());
+        assert_eq!(floor_in(&root, "0"), "1.0.0");
+        update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        assert_eq!(floor_in(&root, "0"), "2.0.0");
+
+        // The pointer may not name 1.0.0 again, installed as it is...
+        let refused = update_in(&root, BIN, pointer("1.0.0"), &mut |_: &Path| panic!("fetched")).unwrap_err();
+        assert!(refused.contains("refusing 1.0.0: older than 2.0.0"), "{refused}");
+        // ...nor anything else below the floor, fetched or not.
+        assert!(update_in(&root, BIN, pointer("1.5.0"), &mut |_: &Path| panic!("fetched")).is_err());
+        assert!(current_in(&root, BIN).is_some_and(|c| c.version == "2.0.0"));
+        let _ = remove_tree(&root);
+    }
+
+    #[test]
+    fn going_back_below_the_floor_rechecks_every_file_and_stops_at_the_minimum() {
+        let root = scratch("below");
+        update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        // Back by hand: allowed, once every file matches its sha256 again;
+        // the floor stays where it was.
+        assert_eq!(use_version_in(&root, BIN, "0", "1.0.0").unwrap(), "1.0.0");
+        assert_eq!(floor_in(&root, "0"), "2.0.0");
+        // A file altered at its size since: refused.
+        use_version_in(&root, BIN, "0", "2.0.0").unwrap();
+        fs::write(root.join("versions").join("1.0.0").join(BIN), b"THE CODEX EXE").unwrap();
+        assert!(use_version_in(&root, BIN, "0", "1.0.0").unwrap_err().contains("no longer matches its sha256"));
+        // Below the minimum: refused whatever its files.
+        update_in(&root, BIN, pointer("3.0.0"), &mut hashed).unwrap();
+        assert!(use_version_in(&root, BIN, "2.5.0", "2.0.0").unwrap_err().contains("older than 2.5.0"));
+        // A record with sizes alone cannot be checked so: not below the floor.
+        let plain = scratch("below-plain");
+        update_in(&plain, BIN, pointer("1.0.0"), &mut whole).unwrap();
+        update_in(&plain, BIN, pointer("2.0.0"), &mut whole).unwrap();
+        assert!(use_version_in(&plain, BIN, "0", "1.0.0").unwrap_err().contains("keeps no sha256"));
+        assert!(current_in(&plain, BIN).is_some_and(|c| c.version == "2.0.0"));
+        let _ = remove_tree(&root);
+        let _ = remove_tree(&plain);
+    }
+
+    #[test]
+    fn a_fresh_tree_takes_nothing_below_the_minimum() {
+        let root = scratch("fresh-floor");
+        assert_eq!(floor_in(&root, "2.1.319"), "2.1.319");
+        assert!(at_or_above_floor_in(&root, "2.1.319", "2.1.300").is_err());
+        at_or_above_floor_in(&root, "2.1.319", "2.2.0").unwrap();
+        // Floor files below the minimum do not lower it; the old one still counts.
+        fs::write(root.join(FLOOR), "1.0.0").unwrap();
+        assert_eq!(floor_in(&root, "2.1.319"), "2.1.319");
+        fs::write(root.join(LEGACY_FLOOR), "2.1.330").unwrap();
+        assert_eq!(floor_in(&root, "2.1.319"), "2.1.330");
         let _ = remove_tree(&root);
     }
 
