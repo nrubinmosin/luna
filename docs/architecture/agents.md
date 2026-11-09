@@ -188,6 +188,9 @@ the worktree once the CLI has made it (`worktreePending` until then).
 
 `account` may be a list of one provider's accounts: the first signed in with
 every window under 95%, else the one with most room; `accountChoice` says why.
+Only the windows the provider reported count, whatever their name: one it did
+not send is neither room nor full, and an account with none at all is taken
+like one whose usage is unknown.
 `readOnly: true` takes Edit, Write and NotebookEdit from Claude Code (whose Bash
 can still write) and puts Codex in `read-only` (or `read-only-net`). Claude's
 "read-only" is a list of tools, not an OS sandbox: Luna never confines Claude
