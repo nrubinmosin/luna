@@ -293,8 +293,16 @@ it all the same is answered as for a tool there is not. See
   bundled ssh fail under the sandbox; `gh`, Python, plain http and git over https
   work (Luna sets git's `http.sslBackend=openssl` there unless you chose one).
   For git over ssh set `GIT_SSH` to Windows' own `ssh.exe`.
-- Luna's `core` folder (in the data folder) holds the key to the whole app.
-  Off Windows, `read-only` and `read-only-net` sessions cannot read it.
-  `workspace-write` sessions, and every sandbox on Windows, still can: Codex
-  offers no way to deny them a folder that keeps your other settings for those
-  sandboxes. Claude Code's file tools are denied it everywhere; its Bash is not.
+- Luna's `core` folder (in the data folder) holds nothing that lets anyone
+  in: `core.json` names the running core's process and the pipe or socket it
+  listens on, beside the lock that keeps the core single and, on Windows, the
+  copies of the exe the core runs from. The core lets in only your processes
+  the OS does not mark as confined, so Codex's sandbox on Windows and Linux is
+  refused whatever it can read. Sessions are still kept out of the folder
+  where the CLI allows it, as a second wall (off Windows the core's socket is
+  there): off Windows, `read-only` and `read-only-net` sessions cannot read
+  it. `workspace-write` sessions, and every sandbox on Windows, still can:
+  Codex offers no way to deny them a folder that keeps your other settings for
+  those sandboxes. Claude Code's file tools are denied it everywhere; its Bash
+  is not, and like any program of yours that runs unconfined, it can reach the
+  core.

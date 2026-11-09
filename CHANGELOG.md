@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-10
+
+Auto-handoff's instructions are now a skill Luna serves only to the chat that
+turned it on, and the library's new System skills section lets you override
+them. A Claude account can be signed in from Luna on Windows again, usage shows
+only the windows the provider sent (no more "5 hours" at 0%), every dialog fits
+a short screen, and the Wait guard has a default in Settings and is kept per
+folder.
+
 ### Security
 
 - The core keeps no credential. Through 0.11 every command to the core took
@@ -39,16 +48,27 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   all, and one under a read-only sandbox is told it can write no file. Where
   a start cannot make that folder private, the chat is given and named none
   and writes its handoff outside Luna's folder; What Luna applied says why.
-- The library's override of the handoff's instructions is read alone and no
-  further than its 64 KB: nothing beside it in its folder, a FIFO or a large
-  file, can hold up or swell the read.
+- Auto-handoff's records and copies in Luna's data folder are kept from
+  anyone else who can write there (a data folder others share). Through 0.11
+  `handoffs.json` was read through whatever link stood at its name, and a link
+  planted at the `handoffs` folder or a chat's folder took the records and
+  copies to a folder another user holds. Each folder on the way is now checked
+  from the top down, a private folder of yours with no link or junction, before
+  anything below it is read, written or given to a CLI; the records and a copy
+  are read only as private files of yours, by their handle; and a switch, a
+  fresh one or one a core restart took up, types nothing until the copy it
+  points the next conversation at is the one on record (its SHA-256).
+- The library's override of the handoff's instructions is served only as a
+  file of your own making, not a second name of another file nor another
+  user's file, and is read alone and no further than its 64 KB: nothing beside
+  it in its folder, a FIFO or a large file, can hold up or swell the read.
 - A skill of yours in the library named `session-handoff` is laid out nowhere,
   and a copy of it laid out before is taken out unless changed there since: in
   an account it would tell every session there of the handoff. Its row in the
   window says so and offers to make it the handoff's override; no new skill
   takes the name.
 
-### Changed
+### Added
 
 - The Skills & instructions window has a **System skills** section, apart from
   your skills, for the handoff's instructions: whose text chats are served
@@ -56,6 +76,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   will not do and why), **Edit** (your override, starting from Luna's text),
   **Compare with Luna's** and **Back to Luna's** (your override into Luna's
   backups). It has no accounts, audience or folders: one override for everyone.
+  Where the backups are on another drive and a save changes your override
+  while it is copied there, it is kept aside in the library's `system/` folder
+  instead, not served, and the section names where.
+
+### Changed
+
 - Auto-handoff's instructions are served by its own tool: `luna_session_handoff`
   without a file answers how to hand off, where the file goes, what Luna adds
   by itself, and the instructions for the file, Luna's own (built in) or one
@@ -117,7 +143,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   spawning a helper there. Claude Code's `WorktreeCreate` hook, which makes a
   worktree without git, is let through when the account's or the project's
   settings name it; where it could come from a source Luna does not read (an
-  enabled plugin, managed settings), the dialog only warns.
+  enabled plugin, managed settings, a settings file or policy key it could not
+  read), the dialog only warns.
 - The CLI canary no longer blames a new Claude Code or Codex version for an
   exit that was not its doing. A session that ends on a cause outside the CLI
   (a worktree asked for outside a git repository) or that you or Luna stopped
@@ -132,8 +159,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   fits the window: its title bar and its buttons stay in view and the part
   between them scrolls. A long menu or popover (a chat's helpers, an
   exception's accounts, the browsers a link can open in) scrolls rather than
-  run off the window, and one closes once a scroll moves its button away
-  rather than stay over the wrong row. New chat's account list opens over the
+  run off the window, and one closes once a scroll moves its button away or
+  the window is resized rather than stay over the wrong row. New chat's account list opens over the
   dialog, below its box or above it, wherever there is more room.
 - In a chat's list of helpers, each helper's Delete stood past the list's
   right edge and "Open as chat" broke onto two lines; a helper's four buttons
@@ -730,7 +757,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/nrubinmosin/luna/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/nrubinmosin/luna/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/nrubinmosin/luna/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
