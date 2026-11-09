@@ -85,7 +85,7 @@ copied into the switch the next call with `file` schedules
 through.
 
 **Luna's folders.** `handoffs`, a chat's folder in it and its `drafts` are
-checked top down (`private_chain`, `secret::private_dir` at each level: a
+checked top down (`boundary::private_chain`, `secret::private_dir` at each level: a
 folder, no link or junction, this user's, private) before anything is made or
 read below them: the record loaded or saved (`store.rs`), a copy written
 (`copies_of`), the drafts folder named or given to a CLI (`drafts_of`). In a

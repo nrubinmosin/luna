@@ -201,9 +201,12 @@ The window re-reads the overview (no writes) on every focus.
   - **Where:** every path is `inside` the library: no link, junction or file
     in a folder's place anywhere below its folder (`skills/`, `system/`, the
     override's folder, the skill to adopt), and what is there resolves inside
-    the library's folder as resolved. The library's folder itself is where the
-    person put it, a link of theirs if they chose one. `library-backups/` is no
-    link either. Anything but plain files and folders in a folder to be moved
+    the library's folder as resolved (`inside`, on `boundary::walk_down`). The
+    library's folder itself is where the person put it, a link of theirs if
+    they chose one, and theirs, so only looked at. `library-backups/`, Luna's
+    own, is checked as the handoffs' folders are (`boundary::private_chain`: no
+    link, this user's, private) before anything moves. Anything but plain files
+    and folders in a folder to be moved
     (`plain_tree`) is refused too: a FIFO would hold a copy, and the library's
     lock, for good.
   - **Back to Luna's** moves the override's folder whole into

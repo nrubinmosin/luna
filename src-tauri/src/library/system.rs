@@ -186,29 +186,30 @@ fn too_large() -> String {
     format!("SKILL.md is over {} KB", SYSTEM_MAX_BYTES / 1024)
 }
 
-/// `rel` under `root`, with nothing on the way below `root` a link, a junction
-/// or a file in a folder's place, and the part of it that is there inside
-/// `root` once both are resolved: a check of the last part alone would let an
-/// ancestor planted as a link (`skills/` a junction to an account's) take what
-/// follows elsewhere. `root` itself is where the person put the library, a
-/// link of their choosing if they chose one. The last parts need not be there.
+/// `rel` under `root`, walked down from it (`boundary::walk_down`): nothing on
+/// the way below `root` a link, a junction or a file in a folder's place, and
+/// the part of it that is there inside `root` once both are resolved. A check
+/// of the last part alone would let an ancestor planted as a link (`skills/` a
+/// junction to an account's) take what follows elsewhere. `root` itself is
+/// where the person put the library, a link of their choosing if they chose
+/// one, and the person's folder, so only looked at: not made private as
+/// Luna's own are (`boundary::private_chain`). The last parts need not be there.
 fn inside(root: &Path, rel: &[&str]) -> Result<PathBuf, String> {
-    let mut path = root.to_path_buf();
     let mut there = None;
     let mut gone = false;
-    for (i, part) in rel.iter().enumerate() {
-        path.push(part);
-        if gone {
-            continue;
+    let path = crate::boundary::walk_down(root, rel, |p, depth| {
+        if depth == 0 || gone {
+            return Ok(());
         }
-        match std::fs::symlink_metadata(&path) {
+        match std::fs::symlink_metadata(p) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => gone = true,
-            Err(e) => return Err(format!("{}: {e}", path.display())),
-            Ok(m) if crate::boundary::is_link(&m) => return Err(format!("{} is a link — Luna leaves it alone", path.display())),
-            Ok(m) if i + 1 < rel.len() && !m.is_dir() => return Err(format!("{} is not a folder", path.display())),
-            Ok(_) => there = Some(path.clone()),
+            Err(e) => return Err(format!("{}: {e}", p.display())),
+            Ok(m) if crate::boundary::is_link(&m) => return Err(format!("{} is a link — Luna leaves it alone", p.display())),
+            Ok(m) if depth < rel.len() && !m.is_dir() => return Err(format!("{} is not a folder", p.display())),
+            Ok(_) => there = Some(p.to_path_buf()),
         }
-    }
+        Ok(())
+    })?;
     if let Some(there) = there {
         let resolved = |p: &Path| std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()));
         if !resolved(&there)?.starts_with(resolved(root)?) {
@@ -311,9 +312,11 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 /// the library, every file is copied first and the folder removed only once
 /// the copy is whole. Where it went.
 fn move_to_backups(dirs: &Dirs, dir: &Path, was: &Path) -> Result<PathBuf, String> {
-    let backups = inside(&dirs.data, &["library-backups"])?;
+    // Luna's own, in its data folder: no link, this user's, private, made so
+    // before anything is put in it.
+    crate::boundary::private_chain(&dirs.backups(), &[])?;
     let slot = backup_slot(dirs, was);
-    std::fs::create_dir_all(&backups).and_then(|()| std::fs::create_dir(&slot)).map_err(|e| format!("{}: {e}", slot.display()))?;
+    std::fs::create_dir(&slot).map_err(|e| format!("{}: {e}", slot.display()))?;
     let undo = || {
         let _ = std::fs::remove_file(slot.join("from.txt"));
         let _ = std::fs::remove_dir(&slot);
@@ -438,6 +441,8 @@ pub(super) fn adopt_system(dirs: &Dirs, name: &str) -> Result<(), String> {
     let current = override_dir(dirs, name)?;
     if let Some(dir) = &current {
         plain_tree(dir)?;
+        // Where the one replaced goes, sound before anything moves.
+        crate::boundary::private_chain(&dirs.backups(), &[])?;
     }
     let system = inside(&dirs.root, &[SYSTEM_DIR])?;
     std::fs::create_dir_all(&system).map_err(|e| format!("{}: {e}", system.display()))?;
@@ -1061,8 +1066,16 @@ mod tests {
         std::fs::create_dir_all(&f.dirs.data).unwrap();
         link_dir(&f.dirs.backups(), &elsewhere);
         let path = write_override(&f, OURS);
-        assert!(reset_system(&f.dirs, HANDOFF).unwrap_err().contains("link"));
+        let e = reset_system(&f.dirs, HANDOFF).unwrap_err();
+        assert!(e.contains("no private folder of Luna's"), "{e}");
         assert!(path.is_file(), "the override stays");
+        assert!(names(&elsewhere).is_empty(), "nothing put through the link");
+        // Nor an adoption over an override, whose replaced one goes there too:
+        // refused before anything moves.
+        f.skill(HANDOFF, "Mine.");
+        assert!(adopt_system(&f.dirs, HANDOFF).unwrap_err().contains("no private folder of Luna's"));
+        assert_eq!(resolve_in(&f.dirs).text, OURS);
+        assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file());
         assert!(names(&elsewhere).is_empty(), "nothing put through the link");
         unlink_dir(&f.dirs.backups());
     }
