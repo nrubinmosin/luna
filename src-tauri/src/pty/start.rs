@@ -874,6 +874,7 @@ mod tests {
         crate::agents::forget(id);
         assert_eq!(built, Ok(String::new()));
         let (l, mut envs) = (launch.expect("the start was caught"), envs.unwrap());
+        no_way_into_the_core(&l.args, &l.envs);
         Redact::assert_shown(&l.args, &l.envs, &l.cwd, &l.applied);
         Redact::assert_probed(l.provider, &l.args);
         // Every pane's CLI ends its environment on the terminal it draws into
@@ -891,6 +892,19 @@ mod tests {
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
         let instructions = golden::instructions(id, &args);
         Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, args, applied }
+    }
+
+    /// A CLI is given nothing of the core's: not its endpoint, nothing of its
+    /// `core.json`, no variable of the core's own. There is no token to give
+    /// (ADR-0021); this keeps it so for every kind of start, and the core's
+    /// endpoint handles are never inherited (endpoint/ `no_child_inherits_either_end`).
+    fn no_way_into_the_core(args: &[String], envs: &[(&str, String)]) {
+        let all = args.iter().map(String::as_str).chain(envs.iter().flat_map(|(k, v)| [*k, v.as_str()]));
+        for s in all {
+            let endpoint = s.contains(r"\pipe\luna-core-") || s.contains("/core/core-") || s.contains(r"\core\core-");
+            assert!(!endpoint && !s.contains("core.json"), "a start carries something of the core's: {s}");
+        }
+        assert!(envs.iter().all(|(k, _)| !k.starts_with("LUNA_CORE")), "{envs:?}");
     }
 
     /// The window's ask for a Claude Code chat; each case changes what it is about.

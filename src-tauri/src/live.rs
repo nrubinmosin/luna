@@ -448,232 +448,269 @@ fn codex_sandboxes_reach_the_core_folder_as_the_threat_model_says() {
     }
 }
 
-/// Accepts one connection on `listener` within `secs`, or None. The listener
-/// is made nonblocking here, whatever it was, so a client that never comes
-/// cannot block the accept past the deadline; the stream handed back is
-/// blocking again, as the core's own are.
-fn accept_within(listener: &std::net::TcpListener, secs: u64) -> Option<std::net::TcpStream> {
-    listener.set_nonblocking(true).expect("a nonblocking listener");
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                stream.set_nonblocking(false).expect("a blocking stream");
-                return Some(stream);
+/// The core's endpoint served on a fresh name by the real `serve`, each
+/// connection's outcome sent back: `Ok(())` for one refused before anything
+/// was read, an error for one let through (it ends at a hello that is none,
+/// or at its end after one).
+#[cfg(windows)]
+fn serve_endpoint() -> (String, std::sync::mpsc::Receiver<Result<(), String>>) {
+    let name = crate::endpoint::fresh_name();
+    let listener = crate::endpoint::Listener::bind(&name).expect("the endpoint");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(stream) = listener.accept() {
+            let served = crate::coreproc::serve_for_test(stream).map_err(|e| e.to_string());
+            if tx.send(served).is_err() {
+                break;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() > deadline {
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(40));
-            }
-            Err(_) => return None,
+        }
+    });
+    (name, rx)
+}
+
+/// Where the client half of the Windows endpoint test finds the pipe's name:
+/// a file beside the test executable, which a child in Codex's sandbox reads
+/// as well as one outside it, whatever environment the sandbox passes on.
+#[cfg(windows)]
+fn probe_file() -> PathBuf {
+    crate::paths::data_dir().join("live-endpoint-probe.txt")
+}
+
+/// The client half of the Windows endpoint test: started as a child of it
+/// (plainly, in `codex sandbox`, at low integrity), it opens the endpoint
+/// `probe_file` names as a window does and says hello. It prints `welcomed`,
+/// `refused at the open: <why>` or `refused: <why>`, and fails unless
+/// welcomed, so its exit code says it too.
+#[test]
+#[ignore = "a child process of the live endpoint test"]
+#[cfg(windows)]
+fn probe_client() {
+    let Ok(name) = std::fs::read_to_string(probe_file()) else { return };
+    let mut c = match crate::endpoint::Stream::connect(name.trim(), Duration::from_secs(5)) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("refused at the open: {e}");
+            panic!("refused at the open");
+        }
+    };
+    let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
+    let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, role: "ctl".into() };
+    let req = crate::ipc::Req { id: 1, cmd: "hello".into(), args: serde_json::to_value(hello).unwrap() };
+    let answered =
+        crate::ipc::send(&mut c, crate::ipc::REQ, &req).and_then(|()| crate::ipc::recv::<crate::ipc::Res>(&mut c, crate::ipc::RES));
+    match answered {
+        Ok(res) if res.ok.is_some() => println!("welcomed"),
+        Ok(res) => panic!("refused: {:?}", res.err),
+        Err(e) => {
+            println!("refused: {e}");
+            panic!("refused");
         }
     }
 }
 
-/// `LUNA_LIVE_STRICT=1`: a sandboxed connection the peer-check tests would
-/// otherwise skip when Codex's sandbox does not reach loopback is required,
-/// and its absence fails the test, so a run can prove the refusal was
-/// exercised (and a mutation run with the check removed must fail).
-#[cfg(windows)]
-fn strict() -> bool {
-    std::env::var("LUNA_LIVE_STRICT").as_deref() == Ok("1")
-}
-
-/// A client that never connects is given up on at the deadline, the listener
-/// blocking or not: the skip the peer-check tests advertise is reachable.
-#[test]
-fn accept_within_gives_up_at_its_deadline() {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let begun = Instant::now();
-    assert!(accept_within(&listener, 1).is_none(), "nobody connected");
-    let took = begun.elapsed();
-    assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(3), "ended at its deadline, not after: {took:?}");
-}
-
-/// The Windows peer check (peer.rs) turns a connection from a Codex session in
-/// its sandbox away before the hello, while a plain local process — as a
-/// window is — is let through. Proven against the real Codex sandbox: a
-/// sandboxed `curl` owns a restricted token, an unsandboxed one and the test
-/// process own the user's own. `read-only` and `workspace-write` both, since
-/// the unelevated sandbox restricts the token for either (its write access is
-/// an ACL grant, not a looser token). No account, no login.
+/// The Codex Windows sandbox cannot get into the core: under `read-only` and
+/// `workspace-write` alike, Luna's own client run in it (this executable's
+/// `probe_client`) is refused opening the core's pipe, whose DACL lets the
+/// sandbox's restricted token nowhere near it; were it let through, `serve`
+/// would refuse it before reading a byte. The same client run plainly, as a
+/// window is, is welcomed by the real `serve`; run at low integrity, it is
+/// refused the open by the pipe's label. No account, no login.
 #[test]
 #[ignore = "live: needs LUNA_LIVE=1 and the Codex CLI"]
 #[cfg(windows)]
-fn the_windows_peer_check_refuses_a_sandboxed_codex() {
-    use std::net::{TcpListener, TcpStream};
-    use std::process::Stdio;
+fn the_core_endpoint_refuses_a_sandboxed_codex_and_welcomes_a_plain_process() {
     if std::env::var("LUNA_LIVE").as_deref() != Ok("1") {
         eprintln!("skipped: LUNA_LIVE is not 1");
         return;
     }
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("a loopback listener");
-    let port = listener.local_addr().unwrap().port();
+    /// The probe's file goes when the test does, passed or not.
+    struct Gone(PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let (name, served) = serve_endpoint();
+    std::fs::write(probe_file(), &name).expect("the probe's file");
+    let _gone = Gone(probe_file());
+    let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+    let probe = ["--ignored", "--exact", "live::probe_client", "--nocapture"];
+    let said = |out: &std::process::Output| format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 
-    // A plain local process, as a window is: let through. The test process
-    // owns the client end, an unrestricted token of the core's integrity.
-    let mine = TcpStream::connect(("127.0.0.1", port)).expect("the self connection");
-    let server = accept_within(&listener, 5).expect("the self connection is accepted");
-    assert_eq!(crate::peer::refuse_reason(&server), None, "a plain local process is let in");
-    drop((mine, server));
+    // Plainly, as a window: welcomed; its connection ends past the hello.
+    let out = std::process::Command::new(&exe).args(probe).output().expect("the probe runs");
+    assert!(said(&out).contains("welcomed"), "a plain client is welcomed: {}", said(&out));
+    let outcome = served.recv_timeout(Duration::from_secs(20)).expect("the plain client connected");
+    assert!(outcome.is_err(), "the plain client got past the peer check");
 
-    let home = crate::paths::data_dir().join("live-peer-home");
+    let home = crate::paths::data_dir().join("live-endpoint-home");
     std::fs::create_dir_all(&home).expect("a Codex home");
-    // The `workspace-write` profile for the runner's `-P`, defined in a config
-    // file rather than a `-c` inline table: nested quotes in a table value do
-    // not survive the argv on Windows, where a `permissions.<p>.extends=…`
-    // key, as Luna's own profiles pass it, does.
+    // The `workspace-write` profile for the runner's `-P`, in a config file:
+    // nested quotes in a `-c` table value do not survive the argv on Windows.
     std::fs::write(home.join("config.toml"), "[permissions.luna-peer]\nextends = \":workspace\"\n").expect("the Codex config");
     let codex = live_codex();
-    let url = format!("http://127.0.0.1:{port}/");
     let sandbox_path = crate::pty::codex_sandbox_path("read-only");
-
-    // `--noproxy *`: the sandbox's "no network" only points proxy variables at
-    // a dead port, which curl would otherwise follow instead of the listener;
-    // a raw socket to loopback the sandbox still allows (cli-compatibility.md).
-    let client = ["curl.exe", "--noproxy", "*", "-s", "-m", "3", &url];
-
-    // Runs `codex sandbox <overrides> -- curl <url>`: curl owns the socket
-    // under the sandbox's restricted token. The outer Option is whether a
-    // connection came at all; the inner is the peer check's verdict on it
-    // (Some = refused). A connection that never comes is not a verdict:
-    // Codex's unelevated Windows sandbox accrues machine-wide network state and,
-    // several runs into one process (a bare `--ignored` run of these tests),
-    // stops reaching loopback under `workspace-write` — and `codex sandbox
-    // uninstall`, which would clear it, needs an administrator. So that sub-check
-    // is skipped, not failed; a single `--exact` run (how these are meant to be
-    // run) connects and asserts.
-    let probe = |overrides: Vec<String>, label: &str| -> Option<Option<String>> {
+    let dir = home.to_string_lossy().into_owned();
+    let unelevated = ["-c", "windows.sandbox=\"unelevated\""];
+    for (label, overrides) in [
+        ("read-only", vec![unelevated[0], unelevated[1], "-c", "sandbox_mode=\"read-only\""]),
+        ("workspace-write", vec![unelevated[0], unelevated[1], "-P", "luna-peer", "-C", &dir]),
+    ] {
         let mut cmd = std::process::Command::new(&codex);
-        cmd.arg("sandbox").args(&overrides).arg("--").args(client);
-        cmd.env("CODEX_HOME", &home).current_dir(&home);
+        cmd.arg("sandbox").args(&overrides).arg("--").arg(&exe).args(probe).env("CODEX_HOME", &home).current_dir(&home);
         if let Some(p) = &sandbox_path {
             cmd.env("PATH", p);
         }
-        let mut child = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("codex sandbox runs");
-        let got = accept_within(&listener, 20).map(|s| crate::peer::refuse_reason(&s));
-        let _ = child.wait();
-        if got.is_none() {
-            eprintln!("skipped {label}: the sandbox did not reach loopback (Codex sandbox network state; run this test on its own)");
-        }
-        got
-    };
-
-    // A connection that came is asserted refused (the inner is Some); one that
-    // did not come is skipped (`probe` said why). At least one mode must
-    // connect, so the test is not silently a no-op.
-    let assert_refused = |got: Option<Option<String>>, label: &str| -> bool {
-        match got {
-            Some(verdict) => {
-                assert!(verdict.is_some(), "{label} sandbox is refused; verdict was allow");
-                eprintln!("{label} sandbox: {}", verdict.unwrap());
-                true
+        let out = cmd.output().expect("codex sandbox runs");
+        let said = said(&out);
+        eprintln!("{label}: {}", said.lines().find(|l| l.starts_with("refused") || l.starts_with("welcomed")).unwrap_or("?"));
+        assert!(!said.contains("welcomed"), "{label}: a sandboxed client was welcomed: {said}");
+        // Either the open is refused (the DACL) and no connection comes, or
+        // one comes and `serve` refuses it before the hello.
+        match served.recv_timeout(Duration::from_secs(3)) {
+            Err(_) => {
+                assert!(said.contains("refused at the open"), "{label}: the probe neither failed to open nor reached the core: {said}")
             }
-            None => false,
+            Ok(outcome) => assert_eq!(outcome, Ok(()), "{label}: let through to the hello: {said}"),
         }
-    };
-    let dir = home.to_string_lossy().into_owned();
-    let read_only =
-        probe(vec!["-c".into(), "windows.sandbox=\"unelevated\"".into(), "-c".into(), "sandbox_mode=\"read-only\"".into()], "read-only");
-    let ro = assert_refused(read_only, "read-only");
-    // workspace-write through the runner names the config's profile with `-P`.
-    let ws = probe(
-        vec!["-c".into(), "windows.sandbox=\"unelevated\"".into(), "-P".into(), "luna-peer".into(), "-C".into(), dir],
-        "workspace-write",
-    );
-    let ws = assert_refused(ws, "workspace-write");
-    assert!(ro || ws, "neither sandbox reached loopback; run this test on its own");
-    assert!(
-        !strict() || (ro && ws),
-        "LUNA_LIVE_STRICT=1: every sandbox must connect so its refusal is exercised (read-only {ro}, workspace-write {ws})"
-    );
+    }
 
-    // An unsandboxed curl, the user's own token, as any local process: let in.
-    let mut child =
-        std::process::Command::new(client[0]).args(&client[1..]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("curl runs");
-    let plain = accept_within(&listener, 10).map(|s| crate::peer::refuse_reason(&s));
-    let _ = child.wait();
-    assert_eq!(plain, Some(None), "an unsandboxed local process is let in");
+    // At low integrity, as a browser's sandbox runs: refused the open.
+    let code = low_integrity_run(&format!("\"{exe}\" {}", probe.join(" "))).expect("a low-integrity probe runs");
+    assert_ne!(code, 0, "a low-integrity client was welcomed");
+    assert!(served.recv_timeout(Duration::from_secs(3)).is_err(), "a low-integrity client reached the core");
 
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The peer check enforces through the real connection handler, not only
-/// `refuse_reason`: without it a sandboxed Codex with the token would reach
-/// dispatch. Driven through `coreproc::serve_for_test`, so deleting the check
-/// from `serve` fails this test. A plain in-process client (as a window is)
-/// with a valid hello is welcomed; a sandboxed Codex is refused before the
-/// hello — with the check gone `serve` reads its HTTP as a frame and errors
-/// (`Err`) instead of returning `Ok`.
-#[test]
-#[ignore = "live: needs LUNA_LIVE=1 and the Codex CLI"]
+/// Runs `command_line` at low integrity (this process's token, lowered) and
+/// returns its exit code.
 #[cfg(windows)]
-fn serve_welcomes_a_plain_client_and_refuses_a_sandboxed_one() {
-    use std::net::{TcpListener, TcpStream};
-    use std::process::Stdio;
+fn low_integrity_run(command_line: &str) -> std::io::Result<u32> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        DuplicateTokenEx, SecurityImpersonation, SetTokenInformation, TokenIntegrityLevel, TokenPrimary, SID_AND_ATTRIBUTES,
+        TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{
+        CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, WaitForSingleObject, CREATE_NO_WINDOW, INFINITE,
+        PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    let mut line: Vec<u16> = command_line.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: every handle opened here is closed before return; the label's
+    // SID and the command line outlive the calls that read them.
+    unsafe {
+        let mut mine = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut mine)?;
+        let mut low = HANDLE::default();
+        let access = TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY;
+        let dup = DuplicateTokenEx(mine, access, None, SecurityImpersonation, TokenPrimary, &mut low);
+        let _ = CloseHandle(mine);
+        dup?;
+        // S-1-16-4096, the low mandatory level; SE_GROUP_INTEGRITY.
+        let mut sid = [1u8, 1, 0, 0, 0, 0, 0, 16, 0, 0x10, 0, 0];
+        let label = TOKEN_MANDATORY_LABEL {
+            Label: SID_AND_ATTRIBUTES { Sid: windows::Win32::Security::PSID(sid.as_mut_ptr().cast()), Attributes: 0x20 },
+        };
+        let set = SetTokenInformation(
+            low,
+            TokenIntegrityLevel,
+            (&label as *const TOKEN_MANDATORY_LABEL).cast(),
+            size_of::<TOKEN_MANDATORY_LABEL>() as u32,
+        );
+        let startup = STARTUPINFOW { cb: size_of::<STARTUPINFOW>() as u32, ..Default::default() };
+        let mut info = PROCESS_INFORMATION::default();
+        let made = set.and_then(|()| {
+            CreateProcessAsUserW(
+                Some(low),
+                windows::core::PCWSTR::null(),
+                Some(windows::core::PWSTR(line.as_mut_ptr())),
+                None,
+                None,
+                false,
+                CREATE_NO_WINDOW,
+                None,
+                windows::core::PCWSTR::null(),
+                &startup,
+                &mut info,
+            )
+        });
+        let _ = CloseHandle(low);
+        made?;
+        WaitForSingleObject(info.hProcess, INFINITE);
+        let mut code = 0u32;
+        let got = GetExitCodeProcess(info.hProcess, &mut code);
+        let _ = CloseHandle(info.hThread);
+        let _ = CloseHandle(info.hProcess);
+        got?;
+        Ok(code)
+    }
+}
+
+/// The Codex Linux sandbox (bubblewrap, its own user namespace) cannot get
+/// into the core: under `workspace-write`, with the network off and on, Luna's
+/// own client run inside it (`peer::imp::tests::probe_client`, a window's
+/// hello) either cannot connect to the core's socket or is refused by the real
+/// `serve` before its hello is read, and hears no welcome; the same client run
+/// plainly is welcomed. Needs user namespaces (a container run with
+/// `--security-opt seccomp=unconfined`). No account, no login.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1, the Codex CLI and user namespaces"]
+#[cfg(target_os = "linux")]
+fn the_core_socket_refuses_a_sandboxed_codex_and_lets_a_plain_process_in() {
     if std::env::var("LUNA_LIVE").as_deref() != Ok("1") {
         eprintln!("skipped: LUNA_LIVE is not 1");
         return;
     }
-    let token = crate::ipc::mint_token();
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("a loopback listener");
-    let port = listener.local_addr().unwrap().port();
-
-    // (a) A plain in-process client — the user's own token, as a window has —
-    // sends a valid hello and is welcomed.
-    let hello_token = token.clone();
-    let client = std::thread::spawn(move || {
-        let mut c = TcpStream::connect(("127.0.0.1", port)).expect("the client connects");
-        let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, token: hello_token, role: "ctl".into() };
-        let req = crate::ipc::Req { id: 1, cmd: "hello".into(), args: serde_json::to_value(hello).unwrap() };
-        crate::ipc::send(&mut c, crate::ipc::REQ, &req).expect("the hello is sent");
-        let res: crate::ipc::Res = crate::ipc::recv(&mut c, crate::ipc::RES).expect("a welcome comes back");
-        res.ok.is_some()
-    });
-    let (plain, _) = listener.accept().expect("the plain client is accepted");
-    // Returns Err once the client disconnects (requests reads EOF); the
-    // welcome the client read is what proves acceptance.
-    let _ = crate::coreproc::serve_for_test(plain, &token);
-    assert!(client.join().unwrap(), "a plain local client with a valid hello is welcomed");
-
-    // (b) A sandboxed Codex connecting (dumb curl) is refused before the hello.
-    let home = crate::paths::data_dir().join("live-serve-home");
-    std::fs::create_dir_all(&home).expect("a Codex home");
-    let codex = live_codex();
-    let url = format!("http://127.0.0.1:{port}/");
-    let sandbox_path = crate::pty::codex_sandbox_path("read-only");
-    let mut cmd = std::process::Command::new(&codex);
-    cmd.arg("sandbox")
-        .args(["-c", "windows.sandbox=\"unelevated\"", "-c", "sandbox_mode=\"read-only\""])
-        .arg("--")
-        .args(["curl.exe", "--noproxy", "*", "-s", "-m", "5", &url])
-        .env("CODEX_HOME", &home)
-        .current_dir(&home);
-    if let Some(p) = &sandbox_path {
-        cmd.env("PATH", p);
-    }
-    let mut child = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("codex sandbox runs");
-    let sandboxed = accept_within(&listener, 20);
-    let _ = child.wait();
-    // The sandbox not reaching loopback is a Codex machine-wide-state issue in a
-    // crowded `--ignored` run, not a verdict; a routine run skips rather than
-    // fails (run this test on its own to exercise it), and a strict one fails.
-    // The plain-client half above ran either way.
-    match sandboxed {
-        Some(stream) => {
-            let served = crate::coreproc::serve_for_test(stream, &token);
-            assert!(
-                served.is_ok(),
-                "serve refuses the sandboxed peer before the hello; with the check gone it reads the HTTP as a frame and errors"
-            );
-            eprintln!("the sandboxed half ran: refused before the hello");
+    let _ = std::fs::create_dir_all(crate::ipc::core_dir());
+    let name = crate::endpoint::fresh_name();
+    let listener = crate::endpoint::Listener::bind(&name).expect("the endpoint");
+    // Each connection's outcome from the real handler: `Ok(())` refused before
+    // anything was read, an error for one let through (it ends at its end).
+    let (tx, served) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(stream) = listener.accept() {
+            if tx.send(crate::coreproc::serve_for_test(stream).map_err(|e| e.to_string())).is_err() {
+                break;
+            }
         }
-        None if strict() => panic!("LUNA_LIVE_STRICT=1: the sandboxed client never connected, so the refusal was not exercised"),
-        None => eprintln!("skipped the sandboxed half: the sandbox did not reach loopback (run this test on its own)"),
-    }
+    });
+    let exe = std::env::current_exe().unwrap();
+    let probe = |mut cmd: std::process::Command| {
+        cmd.args(["--exact", "peer::imp::tests::probe_client", "--ignored", "--nocapture"]).env("LUNA_PEER_PROBE", &name);
+        let out = cmd.output().expect("the probe runs");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    let plain = probe(std::process::Command::new(&exe));
+    assert!(plain.contains("welcomed"), "a plain client is welcomed: {plain}");
+    let outcome = served.recv_timeout(Duration::from_secs(20)).expect("the plain probe connected");
+    assert!(outcome.is_err(), "the plain client got past the peer check");
 
+    let home = crate::paths::data_dir().join("live-socket-home");
+    std::fs::create_dir_all(&home).expect("a Codex home");
+    std::fs::write(
+        home.join("config.toml"),
+        "[permissions.luna-ws]\nextends = \":workspace\"\n\n[permissions.luna-ws-net]\nextends = \":workspace\"\n\n[permissions.luna-ws-net.network]\nenabled = true\n",
+    )
+    .expect("the Codex config");
+    let codex = live_codex();
+    let dir = home.to_string_lossy().into_owned();
+    for profile in ["luna-ws", "luna-ws-net"] {
+        let mut cmd = std::process::Command::new(&codex);
+        cmd.args(["sandbox", "-P", profile, "-C", &dir, "--"]).arg(&exe).env("CODEX_HOME", &home).current_dir(&home);
+        let said = probe(cmd);
+        assert!(!said.contains("welcomed"), "{profile}: a sandboxed client was welcomed: {said}");
+        match served.recv_timeout(Duration::from_secs(10)) {
+            Ok(outcome) => {
+                eprintln!("{profile}: connected, {}", if outcome.is_ok() { "refused before the hello" } else { "LET THROUGH" });
+                assert_eq!(outcome, Ok(()), "{profile}: let through to the hello: {said}");
+            }
+            Err(_) => {
+                eprintln!("{profile}: could not connect");
+                assert!(said.contains("refused at the connect"), "{profile}: the probe neither connected nor failed to: {said}");
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(&home);
 }
 

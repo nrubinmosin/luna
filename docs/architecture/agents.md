@@ -194,8 +194,11 @@ can still write) and puts Codex in `read-only` (or `read-only-net`). Claude's
 Code, and a session is held only by its permission mode and its rules, unless
 its user turns on Claude's own sandbox (none on native Windows).
 
-The core's token in `<data>/core/core.json` is the key to every command
-(threat model F3), so no session is to read it:
+A session cannot drive the core: nothing in `<data>/core/` lets anyone in, and
+the core refuses a client its OS marks confined, Codex's sandbox among them
+(threat model F3, [ADR-0021](../adr/0021-core-endpoint-by-os-identity.md)).
+`core/` is still kept from sessions where the CLI can say so, a second wall
+(off Windows the core's socket is there):
 - Claude Code: every settings file Luna writes (`claude_settings`) denies
   `Read(//<core>/**)` to its file tools (`claude_read_deny`; a Windows drive
   as `//e/…`). A rule, not a sandbox: Bash, where it runs unasked, reads
@@ -207,8 +210,8 @@ The core's token in `<data>/core/core.json` is the key to every command
   (and `auto-review`) stays Codex's own mode, as `:workspace` drops an
   account's `[sandbox_workspace_write]` roots and network.
 - Codex on Windows: no deny. The unelevated sandbox refuses every command
-  under a profile with one, and its write-restricted token reads `core/`
-  through the folder's private DACL.
+  under a profile with one; its restricted token is refused the core's pipe
+  by the pipe's DACL.
 `agent: "<name>"` is Claude Code's `--agent`; Codex refuses it.
 
 ## State and asks

@@ -1,6 +1,6 @@
 ---
 name: luna-security-review
-description: Security checklist for a Luna change, built from docs/security/threat-model.md — which trust boundary (B1–B7) it crosses, which STRIDE rows and MCP authorization rows it touches, which negative test it needs, when the threat model itself must change — plus an independent adversarial review. Use it whenever a change touches the hub or its listeners (hub.rs, admit.rs, coreproc.rs, ipc.rs), MCP tools or their authorization (mcp.rs, agents/registry.rs, agents/privilege.rs, agents/answer.rs, agents/spawn/), the least-privilege layer, Tauri IPC commands, capabilities or the CSP, how a CLI process is launched, private files and ACLs (secret.rs, paths.rs), worktree or account-folder writes, the updater or the installer (hooks.nsh) — before calling such a change done, or when someone asks "is this safe?" or for a security review of Luna code.
+description: Security checklist for a Luna change, built from docs/security/threat-model.md — which trust boundary (B1–B7) it crosses, which STRIDE rows and MCP authorization rows it touches, which negative test it needs, when the threat model itself must change — plus an independent adversarial review. Use it whenever a change touches the hub (hub.rs, admit.rs), the core's endpoint or its peer check (endpoint/, peer/, coreproc.rs, corelink.rs, ipc.rs), MCP tools or their authorization (mcp.rs, agents/registry.rs, agents/privilege.rs, agents/answer.rs, agents/spawn/), the least-privilege layer, Tauri IPC commands, capabilities or the CSP, how a CLI process is launched, private files and ACLs (secret.rs, paths.rs), worktree or account-folder writes, the updater or the installer (hooks.nsh) — before calling such a change done, or when someone asks "is this safe?" or for a security review of Luna code.
 ---
 
 # Security review
@@ -18,7 +18,7 @@ From the diff (`git diff master...`), list every boundary it crosses:
 | Boundary | Code that puts a change on it |
 |---|---|
 | B1 WebView → window (Tauri IPC) | `#[tauri::command]` fns, `capabilities/*.json`, `tauri.conf.json` CSP, anything rendering text as HTML in `src/` |
-| B2 window → core (loopback TCP) | `ipc.rs`, `coreproc.rs`, `corecmd.rs` dispatch, `corelink.rs` |
+| B2 window → core (the core's endpoint: a named pipe on Windows, a Unix socket elsewhere; no token, the OS-attested peer is the key) | `endpoint/`, `peer/`, `ipc.rs`, `coreproc.rs`, `admit.rs`, `corecmd.rs` dispatch, `corelink.rs` (and `corelink/v1.rs`, the protocol-1 path) |
 | B3 sessions → hub (hooks, guard, MCP) | `hub.rs`, `admit.rs`, `mcp.rs`, `agents/registry.rs`, `agents/privilege.rs`, `agents/answer.rs`, `agents/spawn/` |
 | B4 core → CLI processes | `pty/spawn.rs`, `pty/start.rs`, `background/command.rs`, `*/launch.rs`, text Luna types into a session |
 | B5 core → account and project folders | `library/`, `worktree/`, `accounts.rs`, `*/trust.rs`, `*/config.rs`, `claude/oauth.rs` |

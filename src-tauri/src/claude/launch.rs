@@ -397,9 +397,10 @@ fn hook_command(url: &str) -> String {
 /// `claude_settings_file`'s settings: the session's hooks to `hook_url`, the
 /// guard's to `guard_url`, the skills and instructions it does not get (the
 /// account's, and the other memory `memory_excludes` names), and
-/// `core`, Luna's `core/`, denied to its file tools: its `core.json` holds the
-/// token to the whole core. A rule, not a sandbox: Bash, where it runs
-/// unasked, still reads anything (threat model F3).
+/// `core`, Luna's `core/`, denied to its file tools: the core's own folder,
+/// no session's business, though nothing in it has let anyone in since the
+/// core took its clients by what the OS says of them (peer.rs, ADR-0021). A
+/// rule, not a sandbox: Bash, where it runs unasked, still reads anything.
 pub(crate) fn claude_settings(
     hook_url: Option<&str>,
     guard_url: Option<&str>,
