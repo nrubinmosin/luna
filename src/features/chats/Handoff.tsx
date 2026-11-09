@@ -106,11 +106,20 @@ export function askedWords(a: HandoffAsked): string {
  * made without it or to change one's mind while it runs. Takes effect in Luna
  * at once; the tool reaches a running CLI by a quick resume of the chat, on
  * the same conversation, once it is idle. With it on, `instructions` (the
- * core's word, as the panel opened) says whose instructions the chat is
- * served for its handoff, and warns of a skill of the same name its CLI may
- * show the model, which Luna never serves.
+ * core's word, asked again through `onApplied` once the core has taken a
+ * change made here) says whose instructions the chat is served for its
+ * handoff, and warns of a skill of the same name its CLI may show the model,
+ * which Luna never serves.
  */
-export function HandoffBox({ chat, instructions = null }: { chat: Chat; instructions?: HandoffApplied | null }) {
+export function HandoffBox({
+  chat,
+  instructions = null,
+  onApplied
+}: {
+  chat: Chat;
+  instructions?: HandoffApplied | null;
+  onApplied?: () => void;
+}) {
   const c = useChats(s => s.findChat(chat.id)) ?? chat;
   const pending = useRestarts(s => !!s.pending[chat.id]);
   const on = !!c.autoHandoff;
@@ -127,7 +136,7 @@ export function HandoffBox({ chat, instructions = null }: { chat: Chat; instruct
           id={`handoff-${chat.id}`}
           checked={on && able}
           disabled={!able}
-          onChange={() => void applyAutoHandoff(chat.id, !on, at)}
+          onChange={() => void applyAutoHandoff(chat.id, !on, at).then(onApplied)}
         />
         <label htmlFor={`handoff-${chat.id}`} style={{ cursor: 'default' }}>
           Auto-handoff at
@@ -136,7 +145,7 @@ export function HandoffBox({ chat, instructions = null }: { chat: Chat; instruct
           id={`handoff-at-${chat.id}`}
           value={at}
           disabled={!able || !on}
-          onCommit={v => void applyAutoHandoff(chat.id, on, v)}
+          onCommit={v => void applyAutoHandoff(chat.id, on, v).then(onApplied)}
         />
         <span style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)' }}>% of its context</span>
       </div>
