@@ -337,9 +337,11 @@ const CODEX_TITLE: &str = "tui.terminal_title=[\"thread-id\"]";
 /// `sandbox_mode` cannot say (see `profile_args`).
 pub(crate) const READ_ONLY_NET: &str = "read-only-net";
 
-/// Whether a session in `sandbox` is kept from reading Luna's `core/`, whose
-/// `core.json` holds the token to the whole core (`profile_args`); `windows`,
-/// whether it runs there. The read-only sandboxes only: Codex's `:workspace`
+/// Whether a session in `sandbox` is kept from Luna's `core/`, where the
+/// core's socket is off Windows (`profile_args`): a second wall, as the core
+/// refuses a sandboxed client itself (peer.rs) and nothing in the folder lets
+/// anyone in (ADR-0021); `windows`, whether it runs there. The read-only
+/// sandboxes only: Codex's `:workspace`
 /// profile drops what an account's `[sandbox_workspace_write]` adds, its roots
 /// and its network, so `workspace-write` stays Codex's own mode, without the
 /// deny. And not on Windows, where Codex's unelevated sandbox refuses every
