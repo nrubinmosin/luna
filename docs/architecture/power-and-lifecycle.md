@@ -200,7 +200,9 @@ another program's and is left alone.
   kernel gives one); on macOS the uid and pid. Refused, with nothing said back
   and the pid, image and reason logged: what cannot be read, a restricted or
   AppContainer token, another user namespace, `no_new_privs` where the core
-  has none, a stricter seccomp state than the core's, another user, a lower
+  has none, a stricter seccomp state than the core's (a higher mode, or more
+  filters: a heuristic that holds along the core's own chain, as for a sandbox
+  it launches, not between launch contexts; ADR-0021), another user, a lower
   integrity. Then the stranger's limits: 32 connections before their hello, the
   hello within 5 s and 4 KiB. A core that itself runs with `no_new_privs`
   (started under Flatpak, systemd's NoNewPrivileges, a container) logs so once

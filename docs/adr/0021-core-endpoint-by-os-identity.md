@@ -72,8 +72,12 @@ of this user, as the OS attests at connect.
   the facts cannot be read, the token is restricted or an AppContainer, the
   process is in another user namespace, `no_new_privs` is set where the core's
   is not, or its seccomp state is stricter than the core's (a higher mode, or
-  more filters: they are only ever added, and a child starts with its
-  parent's); another user is refused, except an elevated administrator (or
+  more filters). The filter count is a lineage heuristic, not a measure of
+  authority: filters are only ever added and a child starts with its parent's,
+  so a process that parted from the core's own chain and gained filters, as a
+  sandbox Luna launches does (Codex's bubblewrap, under the core), shows more;
+  across launch contexts the counts prove nothing (see the residuals). Another
+  user is refused, except an elevated administrator (or
   root), who may only stop it — through 0.11 Administrators could read
   `core.json` and so do anything; below the core's integrity is refused, except
   that a core run as administrator, which does no work, lets an ordinary window
@@ -123,14 +127,22 @@ socket is off Windows; nothing in it lets anyone in any more.
   the namespace: macOS Seatbelt is not seen at the socket, and Claude Code's
   own sandbox is not run by Luna. A core started with `no_new_privs`
   (Flatpak, systemd's NoNewPrivileges, a container) cannot refuse for that
-  bit, which every window it serves carries too, and cannot tell a client
+  bit, which a window started in the same context carries too, and cannot tell a client
   confined by Landlock alone, in the core's own user namespace and under its
   seccomp state, from itself: the kernel exposes no Landlock domain to procfs
   or to any other process (no status field, no LSM attribute, no query in
   Landlock's ABI; checked against the kernel's documentation and source and on
   6.18, where a Landlock-restricted process's status differs from a plain one's
   only in `NoNewPrivs`). Such a core still refuses another namespace or an
-  added seccomp filter, and says once at its start that it runs so. On a
+  added seccomp filter, and says once at its start that it runs so. The
+  seccomp rule compares counts, and a count says something only along one
+  inherited chain: a window need not share the core's launch context (another
+  terminal, a desktop launcher, a container), and between contexts it errs
+  both ways. A client from another context with as many filters as the core,
+  or fewer, is let in however strict its policy is, if its user and user
+  namespace match and `no_new_privs` does not tell it apart; a window from a
+  context with more filters than the core's, an allow-all one included, is
+  refused. Accepted while Linux is not a released platform. On a
   kernel before 6.5, without `SO_PEERPIDFD`, a confined client that leaves its
   connection to another process and exits could, should an unconfined process
   take its pid before the core reads `/proc`, be read as that process. A
