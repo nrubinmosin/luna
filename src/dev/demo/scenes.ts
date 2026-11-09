@@ -25,7 +25,18 @@ import { useShell } from '../../app/shell.store';
 import { usePower } from '../../features/power/power.store';
 import { SETTINGS_PAGES, useSettings, type SettingsPage } from '../../features/settings/settings.store';
 import { useShortcuts } from '../../features/shortcuts/ShortcutsDialog';
-import { FOLDERS, ACCOUNTS, filled, parked, BACKGROUND, HANDED_OFF, UPDATE_NOTES, UPDATE_POWER } from './fixtures';
+import {
+  FOLDERS,
+  ACCOUNTS,
+  filled,
+  parked,
+  BACKGROUND,
+  HANDED_OFF,
+  LIBRARY,
+  LIBRARY_SYSTEM,
+  UPDATE_NOTES,
+  UPDATE_POWER
+} from './fixtures';
 import { demoState } from './ipc';
 
 /** A Settings page's scene: `settings` is its first page, `settings-links` and
@@ -37,7 +48,9 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
  *  account), `?demo=settings` / `settings-dark` and one per page (`settings-chats`, …), `?demo=accounts`,
  *  `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
  *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
- *  `?demo=library`, `?demo=power`, `?demo=applied` / `applied-dark` (a chat's What Luna applied),
+ *  `?demo=library`, `?demo=library-system` / `library-system-dark` (its System skills, an override compared
+ *  with Luna's own and a skill of the system skill's name), `?demo=power`, `?demo=applied` / `applied-dark` (a
+ *  chat's What Luna applied),
  *  `?demo=helper` / `helper-dark` (a helper watched read-only),
  *  `?demo=delete-helpers` (deleting a chat whose helpers are at work),
  *  `?demo=handoff` / `handoff-dark` (a chat gone on past a handoff, its divider and copy),
@@ -56,6 +69,8 @@ export type Scene =
   | 'editor'
   | 'worktrees'
   | 'library'
+  | 'library-system'
+  | 'library-system-dark'
   | 'power'
   | 'checks'
   | 'checks-dark'
@@ -85,6 +100,8 @@ export const SCENES: Scene[] = [
   'editor',
   'worktrees',
   'library',
+  'library-system',
+  'library-system-dark',
   'power',
   'checks',
   'checks-dark',
@@ -159,6 +176,21 @@ export function seedDemo(scene: Scene) {
   if (scene === 'power') {
     demoState.power = { ...demoState.power, armed: { action: 'restart', quietS: 120, armedAtMs: 0, drain: true } };
     usePower.setState({ state: demoState.power, open: true });
+  }
+  demoState.library = scene.startsWith('library-system') ? LIBRARY_SYSTEM : LIBRARY;
+  if (scene.startsWith('library-system')) {
+    useLibrary.getState().setOpen(true);
+    // The override compared with Luna's own, opened the way a click would,
+    // and the window scrolled down to its System skills.
+    setTimeout(() => {
+      [...document.querySelectorAll<HTMLButtonElement>('button')]
+        .find(b => b.textContent === 'Compare with Luna’s')
+        ?.click();
+      setTimeout(() => {
+        const body = document.querySelector<HTMLElement>('.library-system')?.closest<HTMLElement>('.window-body');
+        if (body) body.scrollTop = body.scrollHeight;
+      }, 300);
+    }, 600);
   }
   if (scene === 'library') {
     useLibrary.getState().setOpen(true);

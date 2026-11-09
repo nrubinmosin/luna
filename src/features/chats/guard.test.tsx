@@ -8,7 +8,7 @@ import { GuardNotice } from './GuardNotice';
 
 vi.mock('../../ipc/applied', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/applied')>()),
-  appliedByLuna: vi.fn(() => Promise.resolve({ launch: [], account: [], incomplete: null }))
+  appliedByLuna: vi.fn(() => Promise.resolve({ launch: [], account: [], incomplete: null, handoff: null }))
 }));
 // xterm cannot run in jsdom.
 vi.mock('../panes/terminals', () => ({

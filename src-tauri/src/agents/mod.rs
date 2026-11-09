@@ -46,7 +46,7 @@ mod wait;
 pub use answer::answer;
 pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion};
 pub use delivery::{notes_dir, send};
-pub use handoff::{handoff, handoff_file, handoff_transcript, mark_of, set_auto_handoff, HandoffMark};
+pub use handoff::{asked_of, handoff, handoff_file, handoff_transcript, mark_of, set_auto_handoff, HandoffAsked, HandoffMark};
 pub use handover::{opening_lapsed, take_over};
 pub use held::held_count;
 pub use list::{account_get, account_list, session_get, session_list, SessionQuery};

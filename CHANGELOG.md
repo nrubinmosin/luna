@@ -26,6 +26,58 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A core of 0.11 still running when this version starts is asked how many
   sessions it runs and, with none, to stop, as a core of another build always
   was; with sessions the banner asks you to restart it.
+- Only a chat with Auto-handoff on is told of it. The agents' guide no longer
+  has a Handoff topic or section, which every session with Luna tools could
+  read, a chat's settings as another session reads them (`luna_session_get`, a
+  listing) no longer show its threshold, and a session not offered
+  `luna_session_handoff` that calls it all the same is answered as for a tool
+  there is not. A session that reads the chat's conversation with
+  `scope: "all"` still sees the notices in it, as it sees all of it.
+- A chat writes its handoff in a private folder of its own in Luna's data
+  folder, not the system's temp folder, which others may share; a Codex chat
+  is given that folder to write in (`--add-dir`) where its sandbox writes at
+  all, and one under a read-only sandbox is told it can write no file. Where
+  a start cannot make that folder private, the chat is given and named none
+  and writes its handoff outside Luna's folder; What Luna applied says why.
+- The library's override of the handoff's instructions is read alone and no
+  further than its 64 KB: nothing beside it in its folder, a FIFO or a large
+  file, can hold up or swell the read.
+- A skill of yours in the library named `session-handoff` is laid out nowhere,
+  and a copy of it laid out before is taken out unless changed there since: in
+  an account it would tell every session there of the handoff. Its row in the
+  window says so and offers to make it the handoff's override; no new skill
+  takes the name.
+
+### Changed
+
+- The Skills & instructions window has a **System skills** section, apart from
+  your skills, for the handoff's instructions: whose text chats are served
+  (Luna's own with its version and hash, yours with its path, or yours that
+  will not do and why), **Edit** (your override, starting from Luna's text),
+  **Compare with Luna's** and **Back to Luna's** (your override into Luna's
+  backups). It has no accounts, audience or folders: one override for everyone.
+- Auto-handoff's instructions are served by its own tool: `luna_session_handoff`
+  without a file answers how to hand off, where the file goes, what Luna adds
+  by itself, and the instructions for the file, Luna's own (built in) or one
+  override of yours for every chat, `system/session-handoff/SKILL.md` in the
+  library. One that will not do is not used, and the chat is told why. The
+  first notice sends the chat to the tool; the firm one, near where the CLI
+  compacts, carries the file's headings itself
+  ([ADR-0022](docs/adr/0022-content-luna-serves-at-its-own-trigger.md)).
+- A chat whose CLI compacted its conversation before a handoff, or that went on
+  with a model of a larger window, is asked again once past its threshold, and
+  its title bar chip reads **handoff N% · asked**, saying when in its tooltip;
+  only a fall in tokens counts as a compaction there.
+- The chat's What Luna applied panel says whose handoff instructions it gets,
+  with Luna's version or the override's path and the text's hash, and warns of
+  a `session-handoff` skill in its folder or account, which Luna never uses.
+- The next conversation's prompt is made as it is typed, after the reset, not
+  before; it names each helper's model, effort and transcript, quotes names and
+  tasks as data, and says that approvals the handoff quotes hold as far as the
+  user's quoted words go and no further. A file written to Luna's own
+  instructions that lacks one of their headings is named in the answer, not
+  refused. Each handoff on record keeps which instructions it was written by,
+  the firm notice's checklist where that was all the chat had.
 
 ### Fixed
 

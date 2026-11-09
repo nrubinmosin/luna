@@ -184,10 +184,7 @@ pub(super) fn sweep_blobs(dirs: &Dirs, ledger: &Ledger) {
 /// with all in it, by its own name, and the whole path beside it in `from.txt`,
 /// where no file of a skill's own can be.
 pub(super) fn back_up(dirs: &Dirs, from: &Path, files: &Files) -> Result<PathBuf, String> {
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
-    let tail: Vec<String> = from.components().rev().take(2).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-    let tail: String = tail.into_iter().rev().collect::<Vec<_>>().join("-").chars().filter(|c| !matches!(c, ':' | '\\' | '/')).collect();
-    let dir = dirs.backups().join(format!("{stamp}-{tail}"));
+    let dir = backup_slot(dirs, from);
     let saved = dir.join(from.file_name().unwrap_or_default());
     for (rel, bytes) in files {
         let path = if rel.is_empty() { saved.clone() } else { join_rel(&saved, rel) };
@@ -195,6 +192,15 @@ pub(super) fn back_up(dirs: &Dirs, from: &Path, files: &Files) -> Result<PathBuf
     }
     write_file(&dir.join("from.txt"), from.to_string_lossy().as_bytes())?;
     Ok(dir)
+}
+
+/// The folder in the backups for what is replaced at `from`, named for the
+/// moment and the last two parts of its path (`back_up`).
+pub(super) fn backup_slot(dirs: &Dirs, from: &Path) -> PathBuf {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
+    let tail: Vec<String> = from.components().rev().take(2).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let tail: String = tail.into_iter().rev().collect::<Vec<_>>().join("-").chars().filter(|c| !matches!(c, ':' | '\\' | '/')).collect();
+    dirs.backups().join(format!("{stamp}-{tail}"))
 }
 
 pub(super) fn sweep_backups(dirs: &Dirs) {

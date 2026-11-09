@@ -26,7 +26,8 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | `library/pass.rs` | one pass over every copy |
 | `library/overview.rs` | what the window is shown |
 | `library/commands.rs` | the window's commands |
-| `src/features/library/` | the Skills & instructions window, grids, `ReachPicker`, `AudiencePicker`, `FolderCell`, `LibraryEditor`, `diff.ts` |
+| `library/system.rs` | the system skills: the handoff's instructions resolved, Luna's own or the override in `system/` ([auto-handoff](handoff.md#the-instructions)); the override read, written, compared, sent to the backups or made from a library skill of the name; the reserved name |
+| `src/features/library/` | the Skills & instructions window, grids, `ReachPicker`, `AudiencePicker`, `FolderCell`, `LibraryEditor`, `SystemSkills`, `diff.ts` |
 
 ## Reaches
 
@@ -180,6 +181,51 @@ The window re-reads the overview (no writes) on every focus.
   `failed`: never written, adopted or removed.
 - Writes go through `<file>.<pid>-<n>.luna-tmp`; links are never followed or
   written over.
+- `system/` is read only for what Luna serves (`library/system.rs`): no pass
+  lays anything of it out, and a skill named `session-handoff` under
+  `skills/` is not the handoff's override.
+- A system skill's name is reserved (`system.rs` `reserved`): a library skill
+  of that name is `problem`ed in the overview, wanted nowhere (`units` skips
+  it, so a copy an earlier Luna laid out goes as one no longer wanted, unless
+  changed there) and hidden from no session (`hidden_here` skips it), so its
+  name reaches no account, folder or start. `library_new_skill` refuses the
+  name. Laid out, it would tell every session of the handoff.
+- The window's System skills section reaches only `system/<name>` for a name
+  `luna_text` knows, and Luna's backups: the editor through `library_read` and
+  `library_write` with `{"system": name}` (Luna's own text where there is no
+  override; a save over 64 KB refused, a draft that will not do saved and
+  served as broken), `library_check_system`, `library_system_compare`,
+  `library_system_reset` and `library_system_adopt`. The override's SKILL.md
+  is opened as `read_override` opens it (as itself, to a cap: 1 MB for the
+  editor).
+  - **Where:** every path is `inside` the library: no link, junction or file
+    in a folder's place anywhere below its folder (`skills/`, `system/`, the
+    override's folder, the skill to adopt), and what is there resolves inside
+    the library's folder as resolved (`inside`, on `boundary::walk_down`). The
+    library's folder itself is where the person put it, a link of theirs if
+    they chose one, and theirs, so only looked at. `library-backups/`, Luna's
+    own, is checked as the handoffs' folders are (`boundary::private_chain`: no
+    link, this user's, private) before anything moves. Anything but plain files
+    and folders in a folder to be moved
+    (`plain_tree`) is refused too: a FIFO would hold a copy, and the library's
+    lock, for good.
+  - **Back to Luna's** moves the override's folder whole into
+    `library-backups/<stamp>-system-<name>/` (`move_to_backups`, `from.txt`
+    beside it): a rename, so its temp files and a save made meanwhile go with
+    it. Across volumes the folder is first renamed aside in `system/`
+    (`.<name>.leaving-…`, read by nothing, so a save by its name lands where
+    it lay), copied from there, and taken out only once the copy holds the
+    same files with the same SHA-256 (`tree`); otherwise the copy goes and the
+    folder stays aside (`Moved::Aside`). The overview names every such folder
+    (`set_aside`, `systemAside`), an adoption's replaced one that would not
+    move too, for the person to move or delete.
+  - **Adoption** renames the skill into `system/` under a name nothing reads
+    (the step that fails where the folder is held open), then, holding the
+    system lock exclusive, renames an override there aside and the staged one
+    into place, each undone if the next fails; the one set aside goes to the
+    backups after. `resolve_in` holds the same lock (`<data>/library-system.lock`,
+    a file lock: the window adopts, the core serves) shared while it reads, so
+    no handoff is served Luna's text in the moment between the renames.
 
 ## Failure modes
 

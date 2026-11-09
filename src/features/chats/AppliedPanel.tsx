@@ -84,19 +84,22 @@ function GuardBox({ chat }: { chat: Chat }) {
 /**
  * What Luna applied to a chat's CLI, read-only: its latest start grouped by
  * why each item is there, and what Luna wrote into its account outside a
- * start. Asked of the core as it opens (applied.rs `applied_by_luna`).
+ * start. Asked of the core as it opens (applied.rs `applied_by_luna`), and
+ * again once the core has taken an auto-handoff change made here, which
+ * decides whether there are handoff instructions to show.
  */
 export function AppliedPanel({ chat, onClose }: { chat: Chat; onClose: () => void }) {
   const [view, setView] = useState<AppliedView | null>(null);
+  const [asked, setAsked] = useState(0);
   useEffect(() => {
     let stale = false;
     void appliedByLuna(chat.id)
       .then(v => !stale && setView(v))
-      .catch(() => !stale && setView({ launch: [], account: [], incomplete: null }));
+      .catch(() => !stale && setView({ launch: [], account: [], incomplete: null, handoff: null }));
     return () => {
       stale = true;
     };
-  }, [chat.id]);
+  }, [chat.id, asked]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -144,7 +147,7 @@ export function AppliedPanel({ chat, onClose }: { chat: Chat; onClose: () => voi
             and Luna&apos;s local addresses are not shown; files are named by their path.
           </div>
           <GuardBox chat={chat} />
-          <HandoffBox chat={chat} />
+          <HandoffBox chat={chat} instructions={view?.handoff ?? null} onApplied={() => setAsked(n => n + 1)} />
           {view?.incomplete && (
             <div
               role="alert"

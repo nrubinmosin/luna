@@ -16,7 +16,7 @@ list and the board; the core owns sessions
 | `features/new-chat/` | `NewChatDialog`, `AccountPicker`, `draft.ts` (settings draft with "touched by hand" and `follow`), `create.ts` (one creation path for the dialog and Ctrl+Shift+N) |
 | `features/providers/` | `claude/` and `codex/`: stock values, defaults, dialog `Fields`, title bar `Meta`, `LimitBars`, login, trust, `worktreeRe`, `projectOf(cwd)`, `branchPrefix`; `index.ts` `ui(provider)` |
 | `features/accounts/` | Accounts window, limits, sign-in (`LoginModal`), `RecommendedDialog`, `ConfigEditor`, `SettingsSync` |
-| `features/library/` | Skills & instructions window: grids, `ReachPicker`, `FolderCell`, `AddFolder`, "Needs a look" with `diff.ts` (line LCS), `LibraryEditor` |
+| `features/library/` | Skills & instructions window: grids, `ReachPicker`, `FolderCell`, `AddFolder`, "Needs a look" with `diff.ts` (line LCS), `LibraryEditor`, System skills (`SystemSkills`) |
 | `features/settings/` | Settings dialog: its page list and pages (`SettingsDialog`), the shared row, list and disclosure pieces (`SettingsRows`), one file per group in `sections/` (Links in `browsers/BrowserSection`); Recommendations window and chip |
 | `features/status-bar/`, `power/`, `shortcuts/`, `updates/`, `browsers/`, `core/` | the status bar, power chip and menu (`power.store` only listens to `power://state`), the F1 list, app and CLI updates, link browsers, the core banner |
 | `features/agents/` | `bridge.ts` (agent events ↔ chats), `background.store.ts`, `BackgroundChip`, `agentAccounts.store.ts` |

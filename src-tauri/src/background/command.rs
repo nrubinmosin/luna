@@ -336,6 +336,24 @@ pub(super) fn user_line(uuid: &str, text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Auto-handoff is a person's chat's alone: a helper, tools or none, is
+    /// started with no word of it, nor with its instructions as a skill.
+    #[test]
+    fn a_helper_is_started_with_nothing_of_the_handoff() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            for tools in [false, true] {
+                let mut e = entry(provider);
+                e.spec.tools = tools;
+                e.spec.parent = Some("a-chat".into());
+                let (args, dir, envs, applied) = command_for(&e, "bg-no-handoff").unwrap();
+                let said = format!("{args:?}{dir:?}{envs:?}{applied:?}").to_lowercase();
+                for word in ["luna_session_handoff", "session-handoff", "handoffs", "auto-handoff"] {
+                    assert!(!said.contains(word), "{provider:?} tools {tools}: {word} in {said}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn notes_are_open_to_a_helper_with_tools() {
         let mut e = entry(Provider::Claude);

@@ -1,5 +1,6 @@
 import { call } from './core';
 import type { Provider } from '../shared/types';
+import type { SystemSkillState } from './applied';
 
 /** An account, or what the sessions in a folder get on one account. */
 export type LibraryTarget =
@@ -82,6 +83,12 @@ export interface LibraryOverviewDto {
   overridden: string[];
   /** Copies no longer wanted, left in place because they had changed. */
   kept: string[];
+  /** The system skills as each is served now: Luna's own text, your override of it, or an override that will
+   *  not do (library/system.rs). */
+  system: SystemSkillState[];
+  /** Folders set aside in the library's `system/`, read by nothing: a former override that a copy into the
+   *  backups on another volume did not take whole, or one an adoption replaced and could not move. */
+  systemAside: string[];
 }
 export interface LibraryFileDto {
   path: string;
@@ -121,16 +128,32 @@ export const librarySkip = (dest: string, on: boolean) => call<LibraryOverviewDt
 export const libraryResolve = (dest: string, take: boolean) =>
   call<LibraryOverviewDto>('library_resolve', { dest, take });
 export const libraryDiff = (dest: string) => call<FileDiffDto[]>('library_diff', { dest }, []);
-/** The file the editor has open: a skill's SKILL.md or instructions, by name. */
+/** A skill's SKILL.md or instructions, by name. */
 export type LibraryEntry = { skill: string } | { instructions: string };
+/** The file the editor has open: a library entry, or a system skill's override (`exists` false: none yet, and
+ *  the text Luna's own to start from). */
+export type EditorEntry = LibraryEntry | { system: string };
 /** Whose sessions a skill or instructions file is for. */
 export const librarySetAudience = (entry: LibraryEntry, audience: Audience) =>
   call<LibraryOverviewDto>('library_set_audience', { entry, audience });
-export const libraryRead = (entry: LibraryEntry) => call<LibraryFileDto>('library_read', { entry });
-export const libraryWrite = (entry: LibraryEntry, text: string) =>
+export const libraryRead = (entry: EditorEntry) => call<LibraryFileDto>('library_read', { entry });
+export const libraryWrite = (entry: EditorEntry, text: string) =>
   call<LibraryOverviewDto>('library_write', { entry, text });
 export const libraryCheckSkill = (skill: string, text: string) =>
   call<string | null>('library_check_skill', { skill, text }, null);
+/** Why this text would not do as a system skill's override (Luna serves its own in its place), or null. */
+export const libraryCheckSystem = (name: string, text: string) =>
+  call<string | null>('library_check_system', { name, text }, null);
+/** Luna's own text of a system skill beside your override of it (null: none). */
+export interface SystemCompareDto {
+  luna: string;
+  yours: string | null;
+}
+export const librarySystemCompare = (name: string) => call<SystemCompareDto>('library_system_compare', { name });
+/** Back to Luna's own: the override goes to Luna's backups. */
+export const librarySystemReset = (name: string) => call<LibraryOverviewDto>('library_system_reset', { name });
+/** A library skill of a system skill's name becomes its override, its folder moved there. */
+export const librarySystemAdopt = (skill: string) => call<LibraryOverviewDto>('library_system_adopt', { skill });
 export const libraryNewSkill = (name: string) => call<LibraryOverviewDto>('library_new_skill', { name });
 export const libraryDeleteSkill = (name: string) => call<LibraryOverviewDto>('library_delete_skill', { name });
 export const libraryNewInstructions = (name: string) => call<LibraryOverviewDto>('library_new_instructions', { name });

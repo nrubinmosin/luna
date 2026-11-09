@@ -35,6 +35,7 @@ impl Redact {
             .with(path(data.join("hooks").join(&name)), "<instructions-dir>")
             .with(path(crate::agents::notes_dir()), "<notes-dir>")
             .with(path(data.join("handoffs").join(&name)), "<handoff-dir>")
+            .with(path(data.join("handoffs").join(&name).join("drafts")), "<handoff-drafts>")
             .with(crate::claude::launch::claude_read_deny(&core, cfg!(windows)), "Read(//<core-dir>/**)")
             .with(core, "<core-dir>")
             .with(project(), PROJECT)

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Chat, Folder, FolderStart, GroupId, HandoffMark, NameSource } from '../../shared/types';
+import type { Chat, Folder, FolderStart, GroupId, HandoffAsked, HandoffMark, NameSource } from '../../shared/types';
 import { useNewChat } from '../new-chat/newchat.store';
 import { usePanes } from '../panes/panes.store';
 import { forget } from '../panes/terminals';
@@ -26,6 +26,8 @@ interface ChatsState {
   setAutoHandoff: (chatId: string, on: boolean, at: number) => void;
   /** Its latest handoff, as the core said. */
   setHandoffMark: (chatId: string, mark: HandoffMark | null) => void;
+  /** A handoff it was asked for and has not made, as the core said. */
+  setHandoffAsked: (chatId: string, asked: HandoffAsked | null) => void;
   /** `byPerson`: launched by the user from the new-chat dialog, which makes
    *  the folder one the dialog offers; a helper opened as a chat is not. */
   addChat: (folderPath: string, chat: Chat, byPerson: boolean) => void;
@@ -281,6 +283,17 @@ export const useChats = create<ChatsState>()(
           folders: s.folders.map(f => ({
             ...f,
             chats: f.chats.map(x => (x.id === chatId ? { ...x, handoff: mark } : x))
+          }))
+        }));
+      },
+
+      setHandoffAsked: (chatId, asked) => {
+        const c = get().findChat(chatId);
+        if (!c || JSON.stringify(c.handoffAsked ?? null) === JSON.stringify(asked)) return;
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(x => (x.id === chatId ? { ...x, handoffAsked: asked } : x))
           }))
         }));
       },

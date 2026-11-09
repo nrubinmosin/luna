@@ -5,9 +5,10 @@ import { EditorState } from '@codemirror/state';
 import { EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from '@codemirror/view';
 import {
   libraryCheckSkill,
+  libraryCheckSystem,
   libraryRead,
   libraryWrite,
-  type LibraryEntry,
+  type EditorEntry,
   type LibraryFileDto
 } from '../../ipc/library';
 import { useDialogHost } from '../../shared/ui/dialogHost';
@@ -20,11 +21,15 @@ import { useLibrary } from './library.store';
  * Luna. Saving lays it out at once. A SKILL.md is checked as it is typed the
  * way a pass checks it — front matter with this name and a description — and
  * saved even when it does not do yet: a draft, laid out nowhere until it does.
+ * A system skill's override opens on Luna's own text where there is none yet,
+ * and is checked as Luna checks it before serving it; one that does not do is
+ * saved too, and Luna serves its own until it does.
  * Ctrl+S saves; Esc asks once before throwing edits away.
  */
-export function LibraryEditor({ entry, onClose }: { entry: LibraryEntry; onClose: () => void }) {
+export function LibraryEditor({ entry, onClose }: { entry: EditorEntry; onClose: () => void }) {
   const skill = 'skill' in entry ? entry.skill : null;
-  const name = 'skill' in entry ? entry.skill : entry.instructions;
+  const system = 'system' in entry ? entry.system : null;
+  const name = 'skill' in entry ? entry.skill : 'system' in entry ? entry.system : entry.instructions;
   const host = useDialogHost();
   const [file, setFile] = useState<LibraryFileDto | null>(null);
   const [text, setText] = useState('');
@@ -36,7 +41,11 @@ export function LibraryEditor({ entry, onClose }: { entry: LibraryEntry; onClose
   const box = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const dirty = !!file && text !== file.text;
-  const title = skill ? `SKILL.md — ${skill}` : `Instructions — ${name}`;
+  const title = system
+    ? `SKILL.md — ${system}, system skill`
+    : skill
+      ? `SKILL.md — ${skill}`
+      : `Instructions — ${name}`;
 
   useEffect(() => {
     void libraryRead(entry)
@@ -46,19 +55,20 @@ export function LibraryEditor({ entry, onClose }: { entry: LibraryEntry; onClose
       })
       .catch(e => setError(String(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [skill, name]);
+  }, [skill, system, name]);
 
   // Checked as typed, a moment after the last key; an answer about text
   // typed over since is dropped, or a slow one would outlive a quick one.
   useEffect(() => {
-    if (!skill || !file) return;
+    if ((!skill && !system) || !file) return;
     let stale = false;
-    const t = setTimeout(() => void libraryCheckSkill(skill, text).then(p => !stale && setProblem(p)), 250);
+    const check = () => (system ? libraryCheckSystem(system, text) : libraryCheckSkill(skill ?? '', text));
+    const t = setTimeout(() => void check().then(p => !stale && setProblem(p)), 250);
     return () => {
       stale = true;
       clearTimeout(t);
     };
-  }, [skill, file, text]);
+  }, [skill, system, file, text]);
 
   useEffect(() => {
     if (!file || !box.current || view.current) return;
@@ -169,12 +179,16 @@ export function LibraryEditor({ entry, onClose }: { entry: LibraryEntry; onClose
               style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
               title={file?.path}
             >
-              {file ? `${file.path}${file.exists ? '' : ' — not there yet, saving creates it'}` : 'Reading…'}
+              {file
+                ? `${file.path}${file.exists ? '' : system ? ' — Luna’s own text to start from: saving makes it yours' : ' — not there yet, saving creates it'}`
+                : 'Reading…'}
             </span>
             <span>
-              {skill
-                ? 'The description is what the model sees until it opens the skill'
-                : 'CLAUDE.md and AGENTS.md in the accounts that get it'}
+              {system
+                ? 'Served to chats with Auto-handoff on, never laid out'
+                : skill
+                  ? 'The description is what the model sees until it opens the skill'
+                  : 'CLAUDE.md and AGENTS.md in the accounts that get it'}
             </span>
           </div>
           <div ref={box} className="config-text" />
@@ -185,11 +199,17 @@ export function LibraryEditor({ entry, onClose }: { entry: LibraryEntry; onClose
               <span style={{ color: 'var(--wait)' }}>Unsaved changes — Esc again to throw them away</span>
             ) : problem ? (
               <span style={{ color: 'var(--wait)' }}>
-                {problem} — saved as a draft, laid out nowhere until it is fixed
+                {problem}
+                {system
+                  ? ' — saved, but Luna serves its own until it is fixed'
+                  : ' — saved as a draft, laid out nowhere until it is fixed'}
               </span>
             ) : saved && !dirty ? (
               <span style={{ color: 'var(--dim)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <Icon name="check" size={13} /> Saved and laid out. New sessions start with it.
+                <Icon name="check" size={13} />{' '}
+                {system
+                  ? 'Saved. Chats with Auto-handoff on are served it from their next handoff.'
+                  : 'Saved and laid out. New sessions start with it.'}
               </span>
             ) : null}
           </div>

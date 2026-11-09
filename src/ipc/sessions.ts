@@ -4,6 +4,7 @@ import type {
   CodexEffort,
   CodexSandbox,
   Effort,
+  HandoffAsked,
   HandoffMark,
   ModelLabel,
   PermMode,
@@ -151,6 +152,8 @@ export interface SessionMetaDto {
   marked: string | null;
   /** Its latest handoff, under way or past (agents/handoff). */
   handoff: HandoffMark | null;
+  /** A handoff it was asked for and has not made (agents/handoff). */
+  handoffAsked: HandoffAsked | null;
 }
 
 export interface CliTitleDto {

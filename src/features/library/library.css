@@ -67,3 +67,24 @@
   font-size: var(--fs-2);
   padding: 0 6px;
 }
+
+/* A system skill: Luna's own, set apart from the grids of yours, with no columns to pick from. */
+[data-app] .library-system {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  padding: 6px 8px 8px;
+}
+[data-app] .library-system[data-state="broken"] {
+  border-left-color: var(--wait);
+}
+[data-app] .library-system-tag {
+  font-size: var(--fs-1);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  padding: 0 4px;
+}

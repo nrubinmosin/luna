@@ -117,6 +117,8 @@ pub(super) fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
             let text = f.get(SKILL_FILE).ok_or("There is no SKILL.md")?;
             check_skill(&name, &String::from_utf8_lossy(text))
         });
+        // Fit or not, a system skill's name is laid out nowhere (system.rs).
+        let checked = if reserved(&name) { Err(reserved_why(&name)) } else { checked };
         let (description, problem) = match &checked {
             Ok(d) => (d.clone(), None),
             Err(e) => (String::new(), Some(e.clone())),

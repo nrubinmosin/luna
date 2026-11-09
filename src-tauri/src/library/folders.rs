@@ -470,7 +470,9 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
 /// it was renamed) or as Codex's `<folder>:<name>`. Both CLIs hide a skill by
 /// name, so one of the same name the repository has goes too. A skill not
 /// meant for this kind of session (`kind`) is hidden wherever it comes from,
-/// and said in the second list.
+/// and said in the second list. One of a system skill's name is laid out
+/// nowhere (system.rs `reserved`), so there is none of it to hide, and its
+/// name goes into no session's start.
 fn hidden_here(
     dirs: &Dirs,
     lib: &LibrarySettings,
@@ -478,7 +480,8 @@ fn hidden_here(
     lies_in: &[(&LibraryFolder, String)],
     kind: SessionKind,
 ) -> (Vec<String>, Vec<String>) {
-    let named: BTreeSet<&String> = lib.skills.keys().chain(lies_in.iter().flat_map(|(f, _)| f.skills.keys())).collect();
+    let named: BTreeSet<&String> =
+        lib.skills.keys().chain(lies_in.iter().flat_map(|(f, _)| f.skills.keys())).filter(|n| !reserved(n)).collect();
     let mut out = BTreeSet::new();
     let mut by_audience = Vec::new();
     // Read only for a Claude Code copy an outer folder gives, whose name the
@@ -502,7 +505,7 @@ fn hidden_here(
                     let going: Vec<&str> = f
                         .skills
                         .keys()
-                        .filter(|n| folder_copy_for(lib, f, n, a) && dirs.skills().join(n).is_dir())
+                        .filter(|n| !reserved(n) && folder_copy_for(lib, f, n, a) && dirs.skills().join(n).is_dir())
                         .map(String::as_str)
                         .collect();
                     let shown = claude_shown_names(f, a, ledger, &going);
