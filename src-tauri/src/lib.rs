@@ -209,6 +209,8 @@ macro_rules! app_handler {
             cli::cli_update_now,
             cli::cli_versions,
             cli::cli_use_version,
+            cli::cli_set_channel,
+            cli::cli_mark_bad,
             claude::defaults::claude_defaults,
             claude::limits::account_limits,
             claude::trust::claude_folder_trusted,

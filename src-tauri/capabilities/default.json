@@ -42,6 +42,8 @@
     "allow-cli-update-now",
     "allow-cli-versions",
     "allow-cli-use-version",
+    "allow-cli-set-channel",
+    "allow-cli-mark-bad",
     "allow-claude-defaults",
     "allow-account-limits",
     "allow-claude-folder-trusted",
