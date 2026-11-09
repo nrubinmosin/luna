@@ -52,16 +52,16 @@ pub fn folder_check(provider: Provider, folder: &str, account_path: &str, worktr
     if provider == Provider::Codex {
         return refused(format!("{outside}, and Codex makes a worktree with git alone: {elsewhere}"));
     }
-    let settings = claude_settings(account_path, folder);
+    let (settings, unread) = claude_settings(account_path, folder);
     if settings.iter().any(|v| v["hooks"]["WorktreeCreate"].as_array().is_some_and(|hooks| !hooks.is_empty())) {
         return FolderCheck::default();
     }
-    match unread_hook_source(account_path, &settings) {
+    match unread_hook_source(account_path, &settings, &unread) {
         Some(source) => FolderCheck {
             refusal: None,
             warning: Some(format!(
-                "{outside}: Claude Code makes a worktree there only through a WorktreeCreate hook, which {source} may \
-                 give it and Luna cannot read; without one it exits as it starts"
+                "{outside}: Claude Code makes a worktree there only through a WorktreeCreate hook, and Luna cannot tell \
+                 whether {source} gives it one; without one it exits as it starts"
             )),
         },
         None => refused(format!(
@@ -84,31 +84,52 @@ pub(crate) fn in_git_repository(dir: &Path) -> bool {
 
 /// The settings files Claude Code reads for a session in `folder` on
 /// `account_path` that Luna reads too: the account's `settings.json`, the
-/// project's `.claude/settings.json` and `.claude/settings.local.json`, each
-/// that is there and readable as `read_settings` takes it.
-fn claude_settings(account_path: &str, folder: &str) -> Vec<serde_json::Value> {
+/// project's `.claude/settings.json` and `.claude/settings.local.json`. Those
+/// read, and apart those that are there but could not be (`read_settings`):
+/// what they say is not known, which is not the same as nothing.
+fn claude_settings(account_path: &str, folder: &str) -> (Vec<serde_json::Value>, Vec<std::path::PathBuf>) {
     let project = Path::new(folder).join(".claude");
-    [Path::new(account_path).join("settings.json"), project.join("settings.json"), project.join("settings.local.json")]
-        .iter()
-        .filter_map(|file| read_settings(file))
-        .collect()
+    let (mut read, mut unread) = (Vec::new(), Vec::new());
+    for file in [Path::new(account_path).join("settings.json"), project.join("settings.json"), project.join("settings.local.json")] {
+        match read_settings(&file) {
+            Settings::Absent => {}
+            Settings::Read(v) => read.push(v),
+            Settings::Unread => unread.push(file),
+        }
+    }
+    (read, unread)
 }
 
 /// The most of a settings file `read_settings` reads: far above any real one.
 const SETTINGS_MAX: u64 = 1 << 20;
 
+/// What `read_settings` made of a settings file's name.
+#[derive(Debug, PartialEq)]
+enum Settings {
+    /// Nothing there.
+    Absent,
+    Read(serde_json::Value),
+    /// Something there that could not be read as a settings file: too big,
+    /// not a regular file, an error, not JSON.
+    Unread,
+}
+
 /// A settings file as JSON, read only as one should be: a regular file of at
 /// most `SETTINGS_MAX` bytes. A project's own files are the project's to make
 /// anything of, and this runs for the dialog and for an agent's spawn: a FIFO
-/// at the name, a link to a device, a file of gigabytes give None, not a
+/// at the name, a link to a device, a file of gigabytes are `Unread`, not a
 /// thread waiting on a writer or memory filled. A link to a regular file is
 /// followed, as Claude Code follows it. On Unix the open does not wait on a
 /// FIFO swapped in since the look; what was opened is looked at again.
-fn read_settings(path: &Path) -> Option<serde_json::Value> {
+fn read_settings(path: &Path) -> Settings {
     use std::io::Read;
-    let meta = std::fs::metadata(path).ok()?;
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Settings::Absent,
+        Err(_) => return Settings::Unread,
+    };
     if !meta.is_file() || meta.len() > SETTINGS_MAX {
-        return None;
+        return Settings::Unread;
     }
     let mut open = std::fs::OpenOptions::new();
     open.read(true);
@@ -117,50 +138,92 @@ fn read_settings(path: &Path) -> Option<serde_json::Value> {
         use std::os::unix::fs::OpenOptionsExt;
         open.custom_flags(libc::O_NONBLOCK);
     }
-    let file = open.open(path).ok()?;
-    if !file.metadata().ok()?.is_file() {
-        return None;
+    let read = open.open(path).and_then(|file| {
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::other("not a regular file"));
+        }
+        let mut bytes = Vec::new();
+        file.take(SETTINGS_MAX + 1).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+    match read {
+        Ok(bytes) if bytes.len() as u64 <= SETTINGS_MAX => serde_json::from_slice(&bytes).map_or(Settings::Unread, Settings::Read),
+        _ => Settings::Unread,
     }
-    let mut bytes = Vec::new();
-    file.take(SETTINGS_MAX + 1).read_to_end(&mut bytes).ok()?;
-    if bytes.len() as u64 > SETTINGS_MAX {
-        return None;
-    }
-    serde_json::from_slice(&bytes).ok()
 }
 
-/// Where a `WorktreeCreate` hook could come from that Luna does not read, if
-/// anything says there is such a source (Claude Code 2.1.319's own list):
-/// a plugin enabled in the settings Luna reads; the account's server-managed
-/// settings, cached as `remote-settings.json` in it; the machine's managed
-/// settings folder (`managed-settings.json`, `managed-settings.d`); on
-/// Windows the `SOFTWARE\Policies\ClaudeCode` key, the machine's or the
-/// user's; on macOS a managed-preferences file of Anthropic's. None when none
-/// of them is there.
-fn unread_hook_source(account_path: &str, settings: &[serde_json::Value]) -> Option<&'static str> {
+/// What a look for one source of settings found: there, not there, or no
+/// answer (a refused look, an error), which is no proof of nothing.
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Found {
+    There,
+    Absent,
+    Unknown,
+}
+
+/// `Found` for a path.
+fn found(path: &Path) -> Found {
+    match path.try_exists() {
+        Ok(true) => Found::There,
+        Ok(false) => Found::Absent,
+        Err(_) => Found::Unknown,
+    }
+}
+
+/// Where a `WorktreeCreate` hook could come from that Luna has not read, if
+/// anything says there may be one (Claude Code 2.1.319's own list): a
+/// settings file of the three that is there but could not be read; a plugin
+/// enabled in those read; the account's server-managed settings, cached as
+/// `remote-settings.json` in it; the machine's managed settings folder
+/// (`managed-settings.json`, `managed-settings.d`); on Windows the
+/// `SOFTWARE\Policies\ClaudeCode` key, the machine's or the user's; on macOS a
+/// managed-preferences file of Anthropic's. A place that could not be looked
+/// at counts as one that may hold a hook. None only when every one was looked
+/// at and is not there.
+fn unread_hook_source(account_path: &str, settings: &[serde_json::Value], unread: &[std::path::PathBuf]) -> Option<String> {
+    if let Some(file) = unread.first() {
+        return Some(format!("{}, which it could not read,", file.display()));
+    }
     let plugin = |v: &serde_json::Value| v["enabledPlugins"].as_object().is_some_and(|on| on.values().any(|v| v.as_bool() != Some(false)));
     if settings.iter().any(plugin) {
-        return Some("an enabled plugin");
+        return Some("an enabled plugin".into());
     }
-    if Path::new(account_path).join("remote-settings.json").exists() {
-        return Some("the account's server-managed settings");
+    let said = |what: &str, found: Found| match found {
+        Found::There => Some(what.to_string()),
+        Found::Unknown => Some(format!("{what}, which it could not look at,")),
+        Found::Absent => None,
+    };
+    let remote = found(&Path::new(account_path).join("remote-settings.json"));
+    if let Some(source) = said("the account's server-managed settings", remote) {
+        return Some(source);
     }
     let managed = Path::new(MANAGED_DIR);
-    if managed.join("managed-settings.json").exists() || managed.join("managed-settings.d").exists() {
-        return Some("the machine's managed settings");
+    for place in [managed.join("managed-settings.json"), managed.join("managed-settings.d")] {
+        if let Some(source) = said("the machine's managed settings", found(&place)) {
+            return Some(source);
+        }
     }
     #[cfg(windows)]
-    if policy_key() {
-        return Some("the ClaudeCode policy in the registry");
+    if let Some(source) = said("the ClaudeCode policy in the registry", policy_key()) {
+        return Some(source);
     }
     #[cfg(target_os = "macos")]
-    if std::fs::read_dir("/Library/Managed Preferences")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|e| e.file_name().to_string_lossy().to_lowercase().starts_with("com.anthropic"))
     {
-        return Some("macOS managed preferences");
+        let preferences = match std::fs::read_dir("/Library/Managed Preferences") {
+            Ok(entries) => {
+                let anthropic = |e: &std::fs::DirEntry| e.file_name().to_string_lossy().to_lowercase().starts_with("com.anthropic");
+                if entries.flatten().any(|e| anthropic(&e)) {
+                    Found::There
+                } else {
+                    Found::Absent
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Found::Absent,
+            Err(_) => Found::Unknown,
+        };
+        if let Some(source) = said("macOS managed preferences", preferences) {
+            return Some(source);
+        }
     }
     None
 }
@@ -175,22 +238,38 @@ const MANAGED_DIR: &str = if cfg!(windows) {
 };
 
 /// Whether `SOFTWARE\Policies\ClaudeCode` is there, the machine's or the
-/// user's: Claude Code's policy settings on Windows.
+/// user's: Claude Code's policy settings on Windows. There in either is
+/// `There`; a look refused or failed in either, and not there in the other,
+/// `Unknown`.
 #[cfg(windows)]
-fn policy_key() -> bool {
+fn policy_key() -> Found {
     use windows::core::HSTRING;
     use windows::Win32::System::Registry::{RegCloseKey, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
-    [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER].into_iter().any(|root| {
+    let looks = [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER].map(|root| {
         let mut key = HKEY::default();
         // SAFETY: a key opened and, when it was, closed here.
         unsafe {
-            let there = RegOpenKeyExW(root, &HSTRING::from(r"SOFTWARE\Policies\ClaudeCode"), None, KEY_READ, &mut key).is_ok();
-            if there {
+            let code = RegOpenKeyExW(root, &HSTRING::from(r"SOFTWARE\Policies\ClaudeCode"), None, KEY_READ, &mut key);
+            if code.is_ok() {
                 let _ = RegCloseKey(key);
             }
-            there
+            key_found(code)
         }
-    })
+    });
+    [Found::There, Found::Unknown].into_iter().find(|f| looks.contains(f)).unwrap_or(Found::Absent)
+}
+
+/// What a registry key's open said: opened, not there (the key or a key on
+/// its path), or anything else, an access denied among it, which says nothing
+/// of whether it is there.
+#[cfg(windows)]
+fn key_found(code: windows::Win32::Foundation::WIN32_ERROR) -> Found {
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS};
+    match code {
+        ERROR_SUCCESS => Found::There,
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => Found::Absent,
+        _ => Found::Unknown,
+    }
 }
 
 /// Whether this machine has a source of Claude Code's settings Luna does not
@@ -198,7 +277,7 @@ fn policy_key() -> bool {
 /// refusal are left out where it does.
 #[cfg(test)]
 pub(crate) fn machine_has_unread_source() -> bool {
-    unread_hook_source("/no/such/account", &[]).is_some()
+    unread_hook_source("/no/such/account", &[], &[]).is_some()
 }
 
 /// `folder_check` for the new-chat dialog, said before Create rather than by
@@ -320,10 +399,67 @@ mod tests {
         let mut big = hook.as_bytes().to_vec();
         big.resize(SETTINGS_MAX as usize + 1, b' ');
         std::fs::write(&file, &big).unwrap();
-        assert_eq!(read_settings(&file), None);
+        assert_eq!(read_settings(&file), Settings::Unread);
         std::fs::write(&file, hook).unwrap();
-        assert!(read_settings(&file).is_some(), "the same at its size");
-        assert_eq!(read_settings(&dir), None, "a folder at the name");
+        assert!(matches!(read_settings(&file), Settings::Read(_)), "the same at its size");
+        assert_eq!(read_settings(&dir), Settings::Unread, "a folder at the name");
+        std::fs::write(&file, "{ not json").unwrap();
+        assert_eq!(read_settings(&file), Settings::Unread);
+        assert_eq!(read_settings(&dir.join("none.json")), Settings::Absent);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A settings file Luna could not read is no proof that it names no hook:
+    /// one that names WorktreeCreate, padded past what Luna reads, or a folder
+    /// at a settings name, leaves the start to Claude Code with a warning.
+    #[test]
+    fn a_settings_file_luna_could_not_read_warns_rather_than_refuses() {
+        let dir = scratch("unreadable");
+        let (plain, account) = (dir.join("plain"), dir.join("account"));
+        std::fs::create_dir_all(plain.join(".claude")).unwrap();
+        std::fs::create_dir_all(&account).unwrap();
+        if in_git_repository(&plain) || machine_has_unread_source() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let (acc, folder) = (account.to_string_lossy().into_owned(), plain.to_string_lossy().into_owned());
+        assert!(folder_check(Provider::Claude, &folder, &acc, true).refusal.is_some(), "nothing could make one");
+        let mut padded = br#"{"hooks":{"WorktreeCreate":[{"hooks":[{"type":"command","command":"jj workspace add"}]}]}}"#.to_vec();
+        padded.resize(SETTINGS_MAX as usize + 1, b' ');
+        let local = plain.join(".claude").join("settings.local.json");
+        std::fs::write(&local, &padded).unwrap();
+        let check = folder_check(Provider::Claude, &folder, &acc, true);
+        assert_eq!(check.refusal, None, "{check:?}");
+        assert!(check.warning.as_deref().is_some_and(|w| w.contains("settings.local.json") && w.contains("could not read")), "{check:?}");
+        std::fs::remove_file(&local).unwrap();
+        std::fs::create_dir_all(account.join("settings.json")).unwrap();
+        let check = folder_check(Provider::Claude, &folder, &acc, true);
+        assert!(check.refusal.is_none() && check.warning.is_some_and(|w| w.contains("could not read")), "a folder at the name");
+        assert!(folder_refusal(Provider::Codex, &folder, &acc, true).is_some(), "Codex has no hook to make one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A registry look that fails other than by "not there" says nothing of
+    /// the policy key: no proof it is absent.
+    #[cfg(windows)]
+    #[test]
+    fn a_registry_look_that_fails_is_no_proof_of_no_policy() {
+        use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS};
+        assert_eq!(key_found(ERROR_SUCCESS), Found::There);
+        assert_eq!(key_found(ERROR_FILE_NOT_FOUND), Found::Absent);
+        assert_eq!(key_found(ERROR_PATH_NOT_FOUND), Found::Absent);
+        assert_eq!(key_found(ERROR_ACCESS_DENIED), Found::Unknown);
+        let unknown = unread_hook_source("/no/such/account", &[], &[]);
+        assert!(policy_key() == Found::Absent || unknown.is_some(), "a key there or unknown is a source");
+    }
+
+    /// A place of settings that could not be looked at is a source as much as
+    /// one that is there.
+    #[test]
+    fn a_place_that_could_not_be_looked_at_counts_as_a_source() {
+        let dir = scratch("found");
+        assert_eq!(found(&dir), Found::There);
+        assert_eq!(found(&dir.join("none")), Found::Absent);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -346,10 +482,20 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let (f, z, l) = (fifo.clone(), zero.clone(), linked.clone());
         std::thread::spawn(move || {
-            let _ = tx.send((read_settings(&f), read_settings(&z), read_settings(&l).is_some()));
+            let _ = tx.send((read_settings(&f), read_settings(&z), matches!(read_settings(&l), Settings::Read(_))));
         });
         let (from_fifo, from_zero, from_link) = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("returned at once");
-        assert_eq!((from_fifo, from_zero, from_link), (None, None, true));
+        assert_eq!((from_fifo, from_zero, from_link), (Settings::Unread, Settings::Unread, true));
+        // Unread is no proof of no hook: such a name in a project leaves the
+        // start to Claude Code with a warning.
+        let (plain, account) = (dir.join("plain"), dir.join("account"));
+        std::fs::create_dir_all(plain.join(".claude")).unwrap();
+        std::fs::create_dir_all(&account).unwrap();
+        if !in_git_repository(&plain) && !machine_has_unread_source() {
+            std::os::unix::fs::symlink("/dev/zero", plain.join(".claude").join("settings.json")).unwrap();
+            let check = folder_check(Provider::Claude, &plain.to_string_lossy(), &account.to_string_lossy(), true);
+            assert!(check.refusal.is_none() && check.warning.is_some(), "{check:?}");
+        }
         // Swapped in after the look: the open does not wait either.
         let mut open = std::fs::OpenOptions::new();
         open.read(true);
