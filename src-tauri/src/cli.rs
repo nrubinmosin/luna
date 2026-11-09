@@ -1594,7 +1594,7 @@ mod tests {
         drop(held);
         prune_in(&root, BIN);
         assert_eq!(dirs(&root), ["3.0.0", "4.0.0"]);
-        assert_eq!(entries(&root.join(in_use::DIR)), 0, "the lock files went with their directories");
+        assert_eq!(entries(&root.join(in_use::DIR)), 2, "the lock files stay, unlocked (cli/in_use.rs)");
         let _ = remove_tree(&root);
     }
 

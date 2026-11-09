@@ -205,6 +205,10 @@ with the new list, and visible helpers are gone.
 
 ### Fixed
 
+- A session starting while the update pass removed an old CLI version could,
+  once that version was installed again under the same folder name, run from
+  it under a lock no later pass saw, and on macOS and Linux a later pass could
+  remove the folder it ran from. The lock files under `in-use/` now stay.
 - A release that changed only the CLI policy (`cli-known-good.json`, its
   minimum safe versions) kept the core's fingerprint, so its window attached
   to the old core still running, which went on allowing the old minimum. The
