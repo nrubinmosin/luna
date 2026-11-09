@@ -1,6 +1,6 @@
 ---
 name: ui-check
-description: Check a Luna UI change the way the repo allows — the frontend gate, headless screenshots of the demo scenes before and after (scripts/screenshots.ps1) compared side by side, and a smoke run of the test build in the background, driven only through its own windows (WebDriver on its WebView, the dev caller), never by global input. Use it whenever a change touches src/ (components, stores, CSS, themes, layout, the demo data) or a window/tray behavior, when someone asks to see, screenshot, compare or smoke-test the UI, to check a change "looks right", or to retake the README screenshots, even if they only say "does the settings page still look ok?".
+description: Check a Luna UI change the way the repo allows — the frontend gate, headless screenshots of the demo scenes before and after (scripts/screenshots.ps1) compared side by side, and a smoke run of the test build in the background, driven only through its own windows (WebDriver on its WebView, the dev caller), never by global input. Use it whenever a change touches src/ (components, stores, CSS, themes, layout, the demo data) or a window/tray behavior, when someone asks to see, screenshot, compare or smoke-test the UI, to check a change "looks right" or fits a small screen, or to retake the README screenshots, even if they only say "does the settings page still look ok?".
 ---
 
 # UI check
@@ -50,6 +50,14 @@ Docker. It never touches a running Luna, so it is the safe way to see the UI.
   the changed pairs yourself (open both images). Report what differs and
   whether each difference is the one intended; an unchanged scene that should
   have changed is a finding too.
+- **A layout change** (a dialog, popover, menu or panel that grows, moves or
+  scrolls differently) also runs `./scripts/fit-check.ps1`: every scene and the
+  popups a click opens, at 1280×720 and 1024×600, 125% and 150%. It fails on a
+  control that is neither on screen nor in a scroller that is, and on a popup
+  cut off where it stands; shots and `report.json` go to `test-build/fit`, and
+  `-Scenes`/`-Sizes` narrow a rerun. A screen it cannot reach gets a scene in
+  `scenes.ts` or an entry in the script's `EXTRAS`. To shoot one size,
+  `screenshots.ps1 -Size 853,480 -Scale 1.5` is a 1280×720 screen at 150%.
 
 ## 3. Test-build smoke
 
@@ -92,5 +100,6 @@ and anything else you started.
 ## Report
 
 Which levels ran and their result; per scene: changed or not, intended or
-not, with the shot paths under `test-build/shots/`; the smoke steps done and
-what was seen; anything left unchecked and why.
+not, with the shot paths under `test-build/shots/`; the fit check's verdict
+for a layout change; the smoke steps done and what was seen; anything left
+unchecked and why.
