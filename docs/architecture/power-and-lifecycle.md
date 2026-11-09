@@ -196,12 +196,16 @@ another program's and is left alone.
   token the client opened the pipe with (the core impersonates the client
   for one `OpenThreadToken` and reverts at once; a window opens at
   identification level); on Linux `SO_PEERCRED` and `/proc/<pid>` (user
-  namespace, `no_new_privs`, a pidfd where the kernel gives one); on macOS the
-  uid and pid. Refused, with nothing said back and the pid, image and reason
-  logged: what cannot be read, a restricted or AppContainer token, another user
-  namespace, `no_new_privs` where the core has none, another user, a lower
+  namespace, `no_new_privs`, seccomp mode and filter count, a pidfd where the
+  kernel gives one); on macOS the uid and pid. Refused, with nothing said back
+  and the pid, image and reason logged: what cannot be read, a restricted or
+  AppContainer token, another user namespace, `no_new_privs` where the core
+  has none, a stricter seccomp state than the core's, another user, a lower
   integrity. Then the stranger's limits: 32 connections before their hello, the
-  hello within 5 s and 4 KiB.
+  hello within 5 s and 4 KiB. A core that itself runs with `no_new_privs`
+  (started under Flatpak, systemd's NoNewPrivileges, a container) logs so once
+  at its start: a client confined by Landlock alone in its namespace cannot be
+  told from a window there.
 - The window (`corelink.rs`) finds the core of its own build or starts it,
   holds the connection (losing it means the core died: banner, Restart), skips a
   `core.json` whose pid is dead, runs restarts one at a time. Before it says

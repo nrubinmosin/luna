@@ -159,6 +159,7 @@ fn run() {
     crate::lifecycle::start_core();
     sweep_old_copies();
     keep_full_speed();
+    crate::peer::note_launch();
 
     // Sockets a core before this one left behind, gone with it.
     #[cfg(unix)]

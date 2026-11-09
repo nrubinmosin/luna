@@ -63,13 +63,16 @@ of this user, as the OS attests at connect.
 - **Linux and macOS** (`endpoint/unix.rs`): a Unix socket in the core folder,
   which is `0700`. The core reads the kernel's record of the client
   (`SO_PEERCRED`; macOS `getpeereid` and `LOCAL_PEERPID`) and on Linux, from
-  `/proc/<pid>`, its user namespace and `no_new_privs`; where the kernel gives
-  a pidfd for the peer (`SO_PEERPIDFD`, 6.5) the facts count only if that
-  process is still there after they were read.
+  `/proc/<pid>`, its user namespace, `no_new_privs` and seccomp state (mode
+  and filter count); where the kernel gives a pidfd for the peer
+  (`SO_PEERPIDFD`, 6.5) the facts count only if that process is still there
+  after they were read.
 - **The decision** (`peer/mod.rs` `verdict`), pure and fail closed: refused when
   the facts cannot be read, the token is restricted or an AppContainer, the
-  process is in another user namespace, or `no_new_privs` is set where the
-  core's is not; another user is refused, except an elevated administrator (or
+  process is in another user namespace, `no_new_privs` is set where the core's
+  is not, or its seccomp state is stricter than the core's (a higher mode, or
+  more filters: they are only ever added, and a child starts with its
+  parent's); another user is refused, except an elevated administrator (or
   root), who may only stop it — through 0.11 Administrators could read
   `core.json` and so do anything; below the core's integrity is refused, except
   that a core run as administrator, which does no work, lets an ordinary window
@@ -98,9 +101,9 @@ socket is off Windows; nothing in it lets anyone in any more.
 - Covered by tests that fail without their part: the verdict's cases
   (`peer/mod.rs`); a restricted token that the DACL lets through refused by
   its token, a low-integrity client refused the open, an anonymous client
-  refused (`peer/win.rs`); a client with `no_new_privs` and one in a user
-  namespace of its own refused (`peer/unix.rs`, the latter where user
-  namespaces are allowed); a squatted name refused (`endpoint/win.rs`,
+  refused (`peer/win.rs`); a client with `no_new_privs`, one under a stricter
+  seccomp state and one in a user namespace of its own refused
+  (`peer/unix.rs`, the last where user namespaces are allowed); a squatted name refused (`endpoint/win.rs`,
   `endpoint/unix.rs`); an endpoint served by a process other than the one
   `core.json` names hears nothing (`corelink.rs`); discovery serializes no
   credential (`ipc.rs`); a protocol-1 core hears a hello and a shutdown and
@@ -117,7 +120,17 @@ socket is off Windows; nothing in it lets anyone in any more.
   loopback port and the endpoint is a program written to do so, no longer a
   proxy that happens to run. A confinement the OS does not mark on the token or
   the namespace: macOS Seatbelt is not seen at the socket, and Claude Code's
-  own sandbox is not run by Luna. A protocol-1 core until it is replaced. A
+  own sandbox is not run by Luna. A core started with `no_new_privs`
+  (Flatpak, systemd's NoNewPrivileges, a container) cannot refuse for that
+  bit, which every window it serves carries too, and cannot tell a client
+  confined by Landlock alone, in the core's own user namespace and under its
+  seccomp state, from itself: the kernel exposes no Landlock domain to procfs
+  or to any other process (no status field, no LSM attribute, no query in
+  Landlock's ABI; checked against the kernel's documentation and source and on
+  6.18, where a Landlock-restricted process's status differs from a plain one's
+  only in `NoNewPrivs`). Such a core still refuses another namespace or an
+  added seccomp filter, and says once at its start that it runs so. A
+  protocol-1 core until it is replaced. A
   Luna older than 0.12 meeting a 0.12 core (a downgrade) does not find it and
   shows the core down until the newer core is stopped (tray Quit or its
   `--stop-core`).

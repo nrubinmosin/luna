@@ -18,8 +18,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   endpoint of its own, a named pipe on Windows and a socket in Luna's private
   `core/` folder elsewhere, and lets in only your processes that the OS marks
   unconfined: Codex's Windows sandbox is refused the pipe's open, and on Linux a
-  process in another user namespace (Codex's bubblewrap sandbox) or with
-  `no_new_privs` set is turned away. `core.json` holds the core's pid and the
+  process in another user namespace (Codex's bubblewrap sandbox), with
+  `no_new_privs` set, or under more seccomp filters than the core is turned
+  away. `core.json` holds the core's pid and the
   endpoint's name, nothing that lets anyone in
   ([ADR-0021](docs/adr/0021-core-endpoint-by-os-identity.md)).
 - A core of 0.11 still running when this version starts is asked how many
