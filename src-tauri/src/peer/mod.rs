@@ -22,10 +22,12 @@
 //!   namespace of their own and sets `no_new_privs` for the seccomp filter it
 //!   adds, as Landlock needs the bit too; a core started plainly has neither.
 //!   A core started with `no_new_privs` (Flatpak, systemd's
-//!   NoNewPrivileges) cannot refuse for the bit, which its windows carry
-//!   too; it still refuses another namespace or more seccomp filters than
-//!   its own, but a client confined by Landlock alone is not seen: the kernel
-//!   shows no Landlock domain to anyone else (`note_launch`, ADR-0021). The
+//!   NoNewPrivileges) cannot refuse for the bit, which a window started in
+//!   the same context carries too; it still refuses another namespace or more
+//!   seccomp filters than its own, but a client confined by Landlock alone is
+//!   not seen: the kernel shows no Landlock domain to anyone else
+//!   (`note_launch`, ADR-0021). The filter count is compared as a lineage
+//!   heuristic, which says nothing between launch contexts (`Seccomp`). The
 //!   pid is held by a pidfd (`SO_PEERPIDFD`, 6.5), so what `/proc` said is
 //!   known to be of the process that connected, not of one that took its pid
 //!   since. Failing to get one refuses, except on a kernel that does not know
@@ -76,8 +78,9 @@ pub struct PeerFacts {
 /// A process's seccomp state, from `/proc/<pid>/status`: the mode (0 none, 1
 /// strict, 2 filter) and, where the kernel says (5.9), how many filters are
 /// stacked. A process can add filters and never take one away, and a child
-/// starts with its parent's, so a peer with a stricter mode or more filters
-/// than the core has been confined since it parted from it.
+/// starts with its parent's, so a peer descended from the core's launch
+/// context that shows a stricter mode or more filters has been confined since
+/// it parted from it: a sandbox Luna launches (Codex's bubblewrap).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Seccomp {
     pub mode: u32,
@@ -87,6 +90,12 @@ pub struct Seccomp {
 impl Seccomp {
     /// Stricter than `other`: a higher mode, or as many filters and then some.
     /// Where either count is unknown, the mode alone decides.
+    ///
+    /// A lineage heuristic, not a measure of authority: counts compare only
+    /// along one inherited chain. A peer from another launch context with as
+    /// many filters or fewer may carry a stricter policy and is not caught
+    /// here; a window from a context with more, an allow-all filter included,
+    /// is refused. Both are accepted residuals (ADR-0021).
     pub fn stricter_than(&self, other: &Seccomp) -> bool {
         self.mode > other.mode || (self.mode == other.mode && matches!((self.filters, other.filters), (Some(a), Some(b)) if a > b))
     }
@@ -169,10 +178,10 @@ pub fn admission(stream: &Stream, core_refuses_work: bool) -> Result<bool, Strin
 
 /// Said once as the core starts, where it runs with no_new_privs (inherited
 /// from what started it: Flatpak, systemd's NoNewPrivileges, a container).
-/// Every window has the bit then too, so it tells a sandbox nothing, and a
-/// client confined by Landlock alone in the core's own user namespace, under
-/// its seccomp state, cannot be told from a window: the kernel shows no
-/// Landlock domain to anyone else (ADR-0021).
+/// A window started in the same context has the bit too, so it tells a
+/// sandbox nothing, and a client confined by Landlock alone in the core's own
+/// user namespace, under its seccomp state, cannot be told from a window: the
+/// kernel shows no Landlock domain to anyone else (ADR-0021).
 pub fn note_launch() {
     if imp::core_facts(false).is_some_and(|c| c.no_new_privs) {
         crate::log::warn(
