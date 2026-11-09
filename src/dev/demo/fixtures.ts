@@ -2,7 +2,7 @@
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../../shared/types';
 import type { AccountsRootInfo } from '../../ipc/accounts';
 import type { AtStakeDto, BackgroundHelperDto, HelperTranscriptDto } from '../../ipc/agents';
-import type { CliStatusDto } from '../../ipc/cli';
+import type { CliStatusDto, CliVersionsDto } from '../../ipc/cli';
 import type { CoreStateDto } from '../../ipc/coreProcess';
 import type { ClaudeDefaultsDto, CodexDefaultsDto, CodexModelDto } from '../../ipc/defaults';
 import type { FileDiffDto, LibraryOverviewDto, PlaceDto } from '../../ipc/library';
@@ -170,9 +170,11 @@ export const CLI: Record<Provider, CliStatusDto> = {
     version: '2.1.252',
     path: 'C:\\src\\luna\\claude-cli\\versions\\2.1.252\\claude.exe',
     latest: '2.1.252',
+    channel: 'latest',
     got: 0,
     total: null,
     error: null,
+    note: null,
     checkedAtMs: Date.now() - 42 * 60_000
   },
   codex: {
@@ -180,11 +182,60 @@ export const CLI: Record<Provider, CliStatusDto> = {
     phase: 'idle',
     version: '0.154.0',
     path: 'C:\\src\\luna\\codex-cli\\versions\\0.154.0\\bin\\codex.exe',
-    latest: '0.154.0',
+    latest: '0.155.0',
+    channel: 'knownGood',
     got: 0,
     total: null,
     error: null,
+    note: null,
     checkedAtMs: Date.now() - 42 * 60_000
+  }
+};
+
+/** Settings → CLIs: Claude Code on latest, its new version's canary warning
+ *  (only the CLIs scenes show it), Codex on known-good. */
+export const CLI_VERSIONS: Record<Provider, CliVersionsDto> = {
+  claude: {
+    provider: 'claude',
+    channel: 'latest',
+    versions: [
+      { dir: '2.1.252', version: '2.1.252', current: true, previous: false, inUse: true, knownGood: false, bad: null },
+      { dir: '2.1.240', version: '2.1.240', current: false, previous: true, inUse: true, knownGood: true, bad: null }
+    ],
+    knownGood: ['2.1.240'],
+    minSafe: '2.1.240',
+    floor: '2.1.252',
+    pinned: null,
+    bad: {},
+    canary: {
+      version: '2.1.252',
+      watched: 3,
+      failures: ['exited with an error 2s after it started', 'exited with an error 3s after it started'],
+      warned: true,
+      dismissed: false
+    }
+  },
+  codex: {
+    provider: 'codex',
+    channel: 'knownGood',
+    versions: [
+      { dir: '0.154.0', version: '0.154.0', current: true, previous: false, inUse: true, knownGood: true, bad: null },
+      {
+        dir: '0.153.0',
+        version: '0.153.0',
+        current: false,
+        previous: true,
+        inUse: false,
+        knownGood: true,
+        bad: 'failed the offline probe: `exec` no longer lists --json'
+      }
+    ],
+    knownGood: ['0.153.0', '0.154.0'],
+    minSafe: '0.150.0',
+    floor: '0.154.0',
+    pinned: null,
+    bad: { '0.153.0': 'failed the offline probe: `exec` no longer lists --json' },
+    canary: null
   }
 };
 

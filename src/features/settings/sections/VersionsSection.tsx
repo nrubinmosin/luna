@@ -1,11 +1,8 @@
 import { useEffect, useState } from 'react';
 import { agoLabel } from '../../../shared/lib/format';
-import { cliUpdateNow } from '../../../ipc/cli';
 import { coreRestart, coreState, type CoreStateDto } from '../../../ipc/coreProcess';
 import { onCoreState } from '../../../ipc/events';
 import { useUpdates } from '../../updates/updates.store';
-import { useCli } from '../../updates/cli.store';
-import { PROVIDER_LABEL, type Provider } from '../../../shared/types';
 import { Group, Row } from '../SettingsRows';
 
 const pct = (got: number, total: number | null) => (total ? Math.min(100, Math.round((got / total) * 100)) : null);
@@ -138,49 +135,6 @@ function CoreRow() {
   );
 }
 
-function CliRow({ provider }: { provider: Provider }) {
-  const s = useCli(st => st.status[provider]);
-  const name = PROVIDER_LABEL[provider];
-
-  if (!s) {
-    return (
-      <VersionRow
-        name={name}
-        version="—"
-        status="no status yet"
-        actionLabel="Check"
-        action={() => void cliUpdateNow(provider)}
-      />
-    );
-  }
-
-  const done = pct(s.got, s.total);
-  const busy = s.phase === 'checking' || s.phase === 'downloading';
-  const status =
-    s.phase === 'downloading'
-      ? `downloading ${s.latest ?? ''}… ${done == null ? '' : `${done}%`}`
-      : s.phase === 'checking'
-        ? 'checking…'
-        : s.phase === 'error'
-          ? `update failed — ${s.error ?? 'unknown error'}`
-          : s.version
-            ? `checked ${agoLabel(s.checkedAtMs)}`
-            : `no private copy yet — sessions use ${provider} from PATH`;
-
-  return (
-    <VersionRow
-      name={name}
-      version={s.version ?? '—'}
-      status={status}
-      statusTitle={s.phase === 'error' ? (s.error ?? undefined) : s.path}
-      error={s.phase === 'error'}
-      disabled={busy}
-      actionLabel="Check"
-      action={() => void cliUpdateNow(provider)}
-    />
-  );
-}
-
 export function VersionsSection() {
   return (
     <Group
@@ -188,16 +142,14 @@ export function VersionsSection() {
         summary: 'How updates work',
         body: (
           <p>
-            Luna checks for its own updates on launch; each CLI is re-checked every 6 hours. New chats spawn on a fresh
-            CLI — running sessions keep the version they started with.
+            Luna checks for its own updates on launch. The CLIs have a page of their own, CLIs: which versions they
+            follow, which are installed, and going back to one.
           </p>
         )
       }}
     >
       <LunaRow />
       <CoreRow />
-      <CliRow provider="claude" />
-      <CliRow provider="codex" />
     </Group>
   );
 }

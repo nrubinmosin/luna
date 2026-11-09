@@ -324,6 +324,26 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* What a CLI version is to Luna, after its number: current, previous,
+   known-good, in use, bad. */
+[data-app] .set-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: var(--fs-4);
+  line-height: 1.5;
+  color: var(--dim);
+}
+[data-app] .set-tag-on {
+  color: var(--fg);
+  font-weight: 600;
+}
+[data-app] .set-tag-bad {
+  border-color: var(--set-error);
+  color: var(--set-error);
+}
 [data-app] .set-item-kind {
   flex: none;
   width: 60px;
