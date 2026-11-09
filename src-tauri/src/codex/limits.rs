@@ -250,6 +250,21 @@ fn from_rollout(out: &mut CodexLimits, account_path: &str) {
     }
 }
 
+/// A `wham/usage` answer, taken at `at`, into the DTO. One that carries its
+/// `rate_limit` is the whole picture even with no window in it: the windows
+/// it lacks are gone, so it is usage known (none), not a round that brought
+/// nothing, through which the UI keeps the last numbers it had.
+fn from_answer(out: &mut CodexLimits, body: &Value, at: u64) {
+    let (windows, plan) = windows_from_api(body);
+    if plan.is_some() {
+        out.plan = plan;
+    }
+    out.windows = windows;
+    out.have_usage = !out.windows.is_empty() || body["rate_limit"].is_object();
+    out.source = Some("network".into());
+    out.fetched_at_ms = Some(at as f64);
+}
+
 /// Async so the blocking HTTP work leaves the main thread free. `force` is a
 /// click on refresh: it looks past a 429 cool-off.
 #[tauri::command]
@@ -281,14 +296,7 @@ fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimits, String> 
 
     match get_usage(&auth) {
         Ok(body) => {
-            let (windows, plan) = windows_from_api(&body);
-            if plan.is_some() {
-                out.plan = plan;
-            }
-            out.windows = windows;
-            out.have_usage = !out.windows.is_empty();
-            out.source = Some("network".into());
-            out.fetched_at_ms = Some(now_ms() as f64);
+            from_answer(&mut out, &body, now_ms());
             throttle::clear(account_path);
         }
         Err(e) if e.starts_with(RATE_429) => {
@@ -415,6 +423,29 @@ mod tests {
         );
         let snap = serde_json::json!({ "primary": { "used_percent": 3, "window_minutes": 1440, "resets_at": 1789000000 } });
         assert_eq!(windows_from_rollout(&snap).0[0].label, "1 day");
+    }
+
+    /// An answer whose rate limits hold no window is usage known, none of it:
+    /// the UI keeps its last numbers only through a round that brought nothing.
+    #[test]
+    fn an_answer_with_no_window_left_is_usage_known_not_nothing() {
+        let mut out = CodexLimits::default();
+        let week = serde_json::json!({ "rate_limit": {
+            "primary_window": { "used_percent": 96, "limit_window_seconds": 604800, "reset_at": 1789000000 } } });
+        from_answer(&mut out, &week, 1);
+        assert_eq!((out.have_usage, out.windows.len()), (true, 1));
+
+        for empty in [
+            serde_json::json!({ "rate_limit": { "primary_window": null, "secondary_window": null } }),
+            serde_json::json!({ "rate_limit": { "primary_window": { "limit_window_seconds": 604800 } } }),
+        ] {
+            from_answer(&mut out, &empty, 2);
+            assert_eq!((out.have_usage, out.windows.len(), out.fetched_at_ms), (true, 0, Some(2.0)), "{empty}");
+        }
+
+        // A body without its rate limits says nothing about the windows.
+        from_answer(&mut out, &serde_json::json!({ "plan_type": "plus" }), 3);
+        assert!(!out.have_usage);
     }
 
     #[test]
