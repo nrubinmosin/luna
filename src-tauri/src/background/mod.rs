@@ -338,21 +338,29 @@ fn stopped_lines() -> HashMap<(String, String), Option<bool>> {
 /// after. A turn claimed but not yet started is stopped too: it does not
 /// start. Returns how many it stopped.
 pub fn stop_turns(close: bool) -> usize {
-    let (pids, claimed): (Vec<(u32, crate::procs::Pin)>, usize) = {
+    let (pids, claimed, ids): (Vec<(u32, crate::procs::Pin)>, usize, Vec<String>) = {
         let mut r = lock();
         r.closed |= close;
         let mut pids = Vec::new();
         let mut claimed = 0;
-        for e in r.entries.values_mut() {
+        let mut ids = Vec::new();
+        for (id, e) in r.entries.iter_mut() {
             match stop_for_luna(e) {
-                Some(pid) => pids.push((pid, crate::procs::pin(pid))),
+                Some(pid) => {
+                    pids.push((pid, crate::procs::pin(pid)));
+                    ids.push(id.clone());
+                }
                 None if e.run.is_some() => claimed += 1,
                 None => {}
             }
         }
-        (pids, claimed)
+        (pids, claimed, ids)
     };
     reg().1.notify_all();
+    // Their turns' exits are Luna's doing, not their CLI versions'.
+    for id in &ids {
+        crate::cli::session_stopped(id);
+    }
     let stopped = pids.len() + claimed;
     for (pid, _pin) in pids {
         crate::pty::kill_tree(Some(pid));

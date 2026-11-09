@@ -2,6 +2,7 @@
  * Making a chat, in one place: the dialog and the no-dialog shortcut both come
  * through here, so they cannot drift on trust, naming, color or placement.
  */
+import { chatFolderCheck } from '../../ipc/sessions';
 import { codexHooksStart } from '../../ipc/trust';
 import type { Account, Chat, ClaudeSettings, CodexSettings } from '../../shared/types';
 import { pickChatColor } from '../../shared/ui/chatColors';
@@ -44,7 +45,8 @@ export type ChatSpec = {
 } & ({ provider: 'claude'; settings: ClaudeSettings } | { provider: 'codex'; settings: CodexSettings });
 
 /**
- * Adds the chat and seats it where it will be seen. Marks the folder trusted
+ * Adds the chat and seats it where it will be seen; throws, with nothing
+ * written, for a folder its start would refuse. Marks the folder trusted
  * in the account first when the person ticked that (`trust`) and it is not
  * yet, and throws if that write fails: the mark has to land before the
  * session spawns. Unticked, nothing is written and the CLI asks itself. A
@@ -54,6 +56,19 @@ export type ChatSpec = {
 export async function createChat(spec: ChatSpec): Promise<string> {
   const p = ui(spec.provider);
   const accountPath = spec.account.path;
+  // A folder the chat could not start in — not there, or a worktree asked for
+  // outside a git repository — is refused before anything is written for it,
+  // trust included, as its start would refuse it. A helper opened as a chat
+  // goes on in the folder it already ran in.
+  if (!spec.fromHelper && accountPath) {
+    const { refusal } = await chatFolderCheck(
+      spec.provider,
+      accountPath,
+      spec.folder,
+      spec.worktree && !spec.inWorktree
+    );
+    if (refusal) throw new Error(refusal);
+  }
   if (spec.trust && !spec.fromHelper && accountPath && !(await p.folderTrusted(accountPath, spec.folder))) {
     await p.trustFolder(accountPath, spec.folder);
   }

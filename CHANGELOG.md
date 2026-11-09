@@ -52,6 +52,27 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   once. A Codex window of a length other
   than five hours or a week was already shown, named by its length; "1 day"
   and "1 hour" no longer read "1 days" and "1 hours".
+- Signing a Claude Code account in from Luna works on Windows. The login
+  window's session wrote its settings to `hooks\login:claude:<name>.json`, a
+  name Windows refuses, and never started. A login now writes no file at all
+  (its one setting, the core-folder deny, goes on the command line), and every
+  file Luna names for a session spells the session's id as a name every
+  volume takes. Codex's login wrote nothing of the kind and was not affected.
+- A chat is no longer started in a folder its CLI cannot run in. A folder that
+  no longer exists, or a Git worktree asked for outside a git repository (where
+  Claude Code and Codex both exit at once), is said in the New chat dialog
+  before Create, in the pane of a chat whose folder has gone, and to an agent
+  spawning a helper there. Claude Code's `WorktreeCreate` hook, which makes a
+  worktree without git, is let through when the account's or the project's
+  settings name it; where it could come from a source Luna does not read (an
+  enabled plugin, managed settings), the dialog only warns.
+- The CLI canary no longer blames a new Claude Code or Codex version for an
+  exit that was not its doing. A session that ends on a cause outside the CLI
+  (a worktree asked for outside a git repository) or that you or Luna stopped
+  (a chat deleted or restarted, the sign-in window closed, a helper stopped)
+  is not counted, and the next session is watched in its place. On the
+  0.11.0 test build two chats in a folder outside git raised "2 of the 2
+  sessions ... failed soon after starting" for Claude Code 2.1.319.
 
 ## [0.11.0] - 2026-11-09
 

@@ -354,13 +354,13 @@ mod tests {
     #[test]
     fn a_claude_turn_refuses_when_the_core_folder_deny_cannot_be_written() {
         // A Claude settings file carries the core-folder deny (threat model
-        // F3). An id with a path separator names a file under a hooks subfolder
-        // that is not there, so the write fails: the turn must refuse, not run
-        // without the deny.
+        // F3). A folder where the file of this id goes makes the write fail:
+        // the turn must refuse, not run without the deny.
+        let bad = "f3-blocked";
         let hooks = crate::paths::data_dir().join("hooks");
+        let blocker = hooks.join(format!("{}.json", crate::paths::id_file_name(bad)));
         let _ = crate::secret::private_dir(&hooks);
-        let _ = std::fs::remove_dir_all(hooks.join("f3-no-such-subdir"));
-        let bad = "f3-no-such-subdir/x";
+        std::fs::create_dir_all(&blocker).unwrap();
         assert!(command_for(&entry(Provider::Claude), bad).is_err(), "no deny written, no Claude turn");
         // The helper itself refuses the same way.
         let none = crate::library::SessionSkills::default();
@@ -368,6 +368,7 @@ mod tests {
         // Codex carries the deny in its sandbox profile, not a settings file,
         // so the same id does not stop it.
         assert!(command_for(&entry(Provider::Codex), bad).is_ok(), "Codex writes no settings file");
+        let _ = std::fs::remove_dir_all(&blocker);
     }
 
     #[test]
@@ -667,7 +668,7 @@ mod tests {
         let args = r.args(&args);
         let data = crate::paths::data_dir();
         let read = |sub: &str, placeholder: &str| {
-            let path = data.join(sub).join(format!("{id}.json"));
+            let path = data.join(sub).join(format!("{}.json", crate::paths::id_file_name(id)));
             let v = args.iter().any(|a| a == placeholder).then(|| r.file(&path.to_string_lossy()));
             let _ = std::fs::remove_file(&path);
             v

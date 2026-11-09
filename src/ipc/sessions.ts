@@ -11,6 +11,19 @@ import type {
 } from '../shared/types';
 import { MODEL_CLI, PERM_CLI } from '../shared/types';
 
+/** What a chat of `provider` on this account would meet in `folder`,
+ *  `worktree` saying whether it is to make one (pty/folder.rs). `refusal`:
+ *  why it could not start there — a folder that is not there, or a worktree
+ *  outside a git repository — which the start refuses the same. `warning`:
+ *  why it may still fail where Luna cannot tell (a WorktreeCreate hook Claude
+ *  Code may get from a source Luna does not read); it starts all the same. */
+export interface FolderCheck {
+  refusal: string | null;
+  warning: string | null;
+}
+export const chatFolderCheck = (provider: Provider, accountPath: string, folder: string, worktree: boolean) =>
+  call<FolderCheck>('chat_folder_check', { provider, accountPath, folder, worktree }, { refusal: null, warning: null });
+
 export interface ClaudeSessionSpec {
   chatId: string;
   folder: string;

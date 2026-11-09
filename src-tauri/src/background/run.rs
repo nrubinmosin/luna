@@ -213,6 +213,20 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     true
 }
 
+/// The end of a turn's stderr kept, as lines, at most `STDERR_KEPT` bytes of
+/// it: what the canary reads of a turn that ended early (cli/canary.rs).
+fn keep_stderr(kept: &Mutex<String>, line: &[u8]) {
+    let mut s = kept.lock().unwrap_or_else(|e| e.into_inner());
+    s.push_str(&String::from_utf8_lossy(line));
+    s.push('\n');
+    if s.len() > STDERR_KEPT {
+        let cut = (s.len() - STDERR_KEPT..s.len()).find(|&i| s.is_char_boundary(i)).unwrap_or(s.len());
+        s.drain(..cut);
+    }
+}
+
+const STDERR_KEPT: usize = 4096;
+
 /// A line off a turn's stderr, into its helper's log, under the same flag as
 /// `take_event`: what a process the turn left writes there after the turn is
 /// over is neither the helper's word nor a sign of it at work. Read on to the
@@ -320,11 +334,16 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 }
                 let err_reader = std::sync::Arc::new(OutReader::default());
                 let (err_drained, err_out) = std::sync::mpsc::channel::<()>();
+                // The end of what it says on stderr, for the canary.
+                let said = std::sync::Arc::new(Mutex::new(String::new()));
                 if let Some(err) = stderr {
-                    let (helper, on_it) = (id.clone(), err_reader.clone());
+                    let (helper, on_it, kept) = (id.clone(), err_reader.clone(), said.clone());
                     let read = std::thread::Builder::new().name(format!("luna-bg-err-{id}")).spawn(move || {
                         let _drained = err_drained;
-                        on_it.read_lines(err, |line| take_stderr(&helper, &on_it, line));
+                        on_it.read_lines(err, |line| {
+                            keep_stderr(&kept, line);
+                            take_stderr(&helper, &on_it, line)
+                        });
                     });
                     if let Err(e) = read {
                         crate::log::warn("background", &format!("cannot read what {} says on stderr: {e}", crate::agents::label(&id)));
@@ -336,7 +355,9 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
                 err_reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
                 // For the canary over a new CLI version's first sessions.
-                crate::cli::session_ended(&id, code.is_some_and(|c| c != 0));
+                crate::cli::session_ended(&id, code.is_some_and(|c| c != 0), || {
+                    std::mem::take(&mut *said.lock().unwrap_or_else(|e| e.into_inner()))
+                });
                 turn_over(&id, code);
             })
             .map_err(thread_err)?;

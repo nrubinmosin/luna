@@ -58,7 +58,14 @@ claude --model <alias> --effort <low|medium|high|xhigh|max|ultracode>
 ```
 
 `cwd` is the chat's folder; `CLAUDE_CONFIG_DIR` is the account folder;
-`DISABLE_AUTOUPDATER=1`. A worktree chat whose worktree is known resumes from
+`DISABLE_AUTOUPDATER=1`. `<chat>` here and in every other file or folder named
+for a session (`mcp/`, `hooks/<chat>/`, `media/`, `handoffs/`, a note's name)
+is the id as `paths::id_file_name` spells it: Luna's own ids as they are, any
+other byte as `.` and two hex digits, so the login pane's
+`login:<provider>:<name>` could never make a name Windows refuses. A login
+session (its folder the account folder) is no chat and writes no file at all:
+no hooks, tools, notes, handoff or library, and its one setting, the
+core-folder deny, goes inline as `--settings {"permissions":{…}}`. A worktree chat whose worktree is known resumes from
 the project folder as `--worktree <name> --resume <uuid>` rather than starting
 inside the worktree, because Claude Code removes a clean worktree on exit and,
 given the name, makes it again with the same name and branch. `--resume` is
@@ -85,7 +92,31 @@ shared server (which the `-c` overrides rule out anyway). Codex refuses
 `codex login` in the account folder.
 
 The core does not start a folder that does not exist: portable-pty would
-silently substitute the user's profile.
+silently substitute the user's profile. Before anything of a start is made
+(files, token, registration, the library pass, origin's fetch), `pty/folder.rs`
+`folder_check` refuses only where Luna can be sure the CLI could not start: a
+folder that is not there, and a start that passes `--worktree` (Claude Code:
+any, by name too; Codex: a new session) in a folder with no `.git` in it or
+above it, which both CLIs exit on at once. Codex makes its worktree with git
+alone. Claude Code also makes one through a `WorktreeCreate` hook, so for it
+Luna reads the account's `settings.json` and the project's
+`.claude/settings.json` and `settings.local.json`: a hook named there lets the
+start go. With none, Luna looks for a source of hooks it does not read: a
+plugin enabled in those files, the account's server-managed settings (its
+`remote-settings.json`), the machine's managed settings folder
+(`managed-settings.json`, `managed-settings.d`), Windows' `SOFTWARE\Policies\ClaudeCode`
+key (the machine's or the user's), Anthropic's macOS managed preferences. If
+any is there the start goes ahead and the dialog only warns, the CLI left to
+decide (and its exit, if it gives up, is no canary failure); if none is, the
+start is refused. The settings files are read as a project controls them: a
+regular file of at most 1 MiB, a link followed only to one, a FIFO or device at
+the name given up on without a wait (`read_settings`); a file there that could not be read, and a place of settings that could not be looked at (a registry look failing other than "not found"), counts as a source that may hold a hook: a warning, not a refusal. The refusal is the
+start's error, which the pane shows as `[failed to start session: …]`. The same
+check answers the new-chat dialog (`chat_folder_check`, off the window's thread,
+asked for every folder, account and worktree box; its refusal disables Create,
+its warning does not; `createChat` asks again before it writes trust) and
+refuses a helper's spawn (`agents/spawn`). A login runs in its account folder
+and is not checked.
 
 ## Golden tests
 
@@ -94,7 +125,10 @@ The goldens run the real start, not the builders alone.
 - **In a pane** (`pty/start.rs`, `golden_claude_*`, `golden_codex_*`): the
   start runs through `ensure_*` and `pty::spawn` under the spawn gate, side
   effects and all, and `pty::spawn::capture` (test builds only) takes the
-  `Launch` in place of creating the process. Each test compares the whole
+  `Launch` in place of creating the process. A start runs in a project folder
+  of its test's own (`golden::project`: in the temp folder, with a `.git` of
+  its own, removed as the test's thread ends), put as `/golden/project` in
+  what is compared. Each test compares the whole
   argument list, the environment, the cwd, the resume decision and the session's
   description, and reads back the settings, MCP and instructions files written
   for it, and what it applied (`Started::applied`, placeholders in). Cases:
@@ -128,7 +162,7 @@ Any change to a launch path shows up as a reviewed diff of the expected values.
 
 ## Hooks and the guard
 
-Every Claude Code session starts with a `--settings` file adding hooks that post
+Every Claude Code session but a login starts with a `--settings` file adding hooks that post
 to the hub with `curl.exe` (elsewhere `curl`). Hooks print nothing: Claude Code
 adds the stdout of a hook exiting 0 to the context. The one settings file also
 carries the library's `skillOverrides` and `claudeMdExcludes`
