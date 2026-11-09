@@ -42,6 +42,12 @@ nothing depends on a global install.
   keeps a version from being installed or used again by an update. Going back
   checks the version's files against their checksums first, and nothing older
   than the oldest safe version a Luna release names ever runs.
+- When a Luna update raises that oldest safe version past the CLI you have,
+  no chat or helper starts on it (the start says why) until the next check
+  installs a newer one, which it does at once, a version you held by hand
+  included.
+- While Luna runs as administrator it does not update the CLIs: the check
+  before a new version is used would run it with administrator rights.
 - Claude Code comes as a bare exe from the official release bucket, verified
   against its manifest's sha256, and the manifest against Anthropic's release
   signing key, which Luna carries. Codex comes from GitHub Releases

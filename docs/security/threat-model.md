@@ -232,11 +232,17 @@ releases (`codex/cli.rs`), both over HTTPS.
   default, it is the newest version on the list compiled into the Luna
   release (`src-tauri/cli-known-good.json`); on `latest`, what the unsigned
   pointer names, never below the floor (`cli.rs` `update_in`). Nothing below
-  `minSafe` is installed, made current or gone back to. Before a version
-  becomes current, the offline probe runs it (`cli/probe.rs`: `--version`,
-  each command's `--help`, Codex's `features list` with Luna's overrides) in
-  a scratch home under `staging/`, with the CLI's own variables pointed there
-  and the session variables stripped (`pty::clean_env`); one that fails is
+  `minSafe` is installed, made current, gone back to or started: a launch
+  refuses a current version below it, with no fall back to PATH, and the
+  pass lets no hold by hand keep it (`launch_in`, `choice::plan`). Before a
+  version becomes current, the offline probe runs it (`cli/probe.rs`:
+  `--version`, each command's `--help`, Codex's `features list` with Luna's
+  overrides) in a scratch home under `staging/`, with the CLI's own variables
+  pointed there and the session variables stripped (`pty::clean_env`), never
+  in an elevated process (the pass runs in the window, which may be: there
+  it holds off, F11), each run bounded to 30 s and 1 MiB of output per
+  stream, everything it started ended after (a Job Object on Windows, its
+  own process group on Unix); one that fails is
   marked bad and swept. Going back to an installed version ("Use",
   `cli_use_version`) holds every file to its recorded sha256 again; below the
   floor every file must have one.
@@ -275,7 +281,10 @@ binary and checksum replaced together, installed and run (F10).
 | T | A release pointer names an older version, or one Luna has not been checked with | mitigated: the known-good channel, the default, takes only versions on the list compiled into the release; a pointer's version below the floor is refused, installed or not; nothing below `minSafe` runs (`cli.rs` `update_in`, `cli/choice.rs`, `cli/known_good.rs`) |
 | T, E | A version gone back to by hand was altered on disk since it ran | mitigated: "Use" holds every file to its recorded sha256 first; below the floor a record without one per file is refused (`cli.rs` `reverify`) |
 | D | A new version breaks every session started on it | mitigated: an offline probe before it becomes current (`cli/probe.rs`), a canary over its first sessions that warns (`cli/canary.rs`), the previous version always kept and "Use" to go back; no automatic rollback (ADR-0019) |
-| D, E | The sweep deletes a version folder under a running session (Unix: a Codex session's helpers) | mitigated: a shared lock per running process, the sweep only under the exclusive one (`cli/in_use.rs`) |
+| D, E | The sweep deletes a version folder under a running session (Unix: a Codex session's helpers) | mitigated: a shared lock per running process, the sweep only under the exclusive one (`cli/in_use.rs`); a launch whose lock cannot be had is refused, never started unheld (`cli.rs` `launch_in`) |
+| E | The update pass, in a window started as administrator, runs a new CLI for its probe elevated | mitigated: `probe` refuses through `elevation::guard`, and an elevated window's pass fetches, probes and marks nothing (`cli.rs` `held_for_elevation`) |
+| D | A probed CLI hangs, writes without end, or leaves a process holding its output | mitigated: one deadline over the run and its output, 1 MiB kept per stream, its whole tree ended (`cli/probe.rs` `run_within`) |
+| T | A Luna release raises `minSafe`, and the version current (or held by hand) is below it | mitigated: no launch of it, no PATH stand-in, the hold dropped and the shipped list's version taken (`cli.rs` `launch_in`, `update_inner`, `cli/choice.rs`) |
 | T, D | Codex's tarball, matching its checksum, unpacks without bound (a gzip bomb, a PAX size override, a huge metadata record) | mitigated: the stream, each metadata record, the entries and their bytes are capped, a PAX size override refused (`codex/cli.rs`, `unpack_capped`) |
 | T, S | Codex release origin compromised: binary and checksum replaced together | open (F10) |
 | T | Local replacement of the managed binary or its `current` version file | same user: accepted (R3); another OS user: the data dir's mode on Unix, its protected DACL on Windows (F4) |
