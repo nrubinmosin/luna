@@ -21,7 +21,7 @@ pub fn kill(id: &str) -> Vec<String> {
         let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
         // Whoever is owed the turn hears it was stopped, not an exit code.
         if e.run.is_some() {
-            e.error = Some("it was stopped, by luna_kill or from the window".into());
+            e.error = Some("it was stopped, by luna_session_stop or from the window".into());
         }
         let job = e.job.clone().filter(|_| e.run.is_none() && e.left_running && !e.ending_left);
         // Only the Stop that takes the ending on sets the mark, and only it
@@ -90,7 +90,7 @@ pub(super) fn leftovers_hold(e: &Entry, now: u64) -> bool {
     e.left_running && (e.left.is_empty() || e.left.iter().any(|l| l.holds(now)))
 }
 
-/// Between turns, what its turns left running, for `luna_list`.
+/// Between turns, what its turns left running, for `luna_session_get`.
 pub(super) fn left_shown(e: &Entry, now: u64) -> Vec<LeftRunning> {
     if e.run.is_some() {
         return Vec::new();
@@ -98,7 +98,7 @@ pub(super) fn left_shown(e: &Entry, now: u64) -> Vec<LeftRunning> {
     shown(&e.left, now)
 }
 
-/// Leftovers as `luna_list` shows them, a helper's or a chat's.
+/// Leftovers as `luna_session_get` shows them, a helper's or a chat's.
 pub fn shown(left: &[Leftover], now: u64) -> Vec<LeftRunning> {
     left.iter()
         .map(|l| LeftRunning {
@@ -517,7 +517,7 @@ mod tests {
     }
 
     /// A job left between turns holds the machine until it has done nothing for
-    /// long, `luna_list` says what of it is at work, and a stop between turns ends
+    /// long, `luna_session_get` says what of it is at work, and a stop between turns ends
     /// all of it.
     #[cfg(windows)]
     #[test]
@@ -628,7 +628,7 @@ mod tests {
         lock().entries.insert("end-killed".into(), e);
         kill("end-killed");
         turn_over("end-killed", Some(1));
-        assert_eq!(last_error("end-killed").as_deref(), Some("it was stopped, by luna_kill or from the window"));
+        assert_eq!(last_error("end-killed").as_deref(), Some("it was stopped, by luna_session_stop or from the window"));
         lock().entries.remove("end-killed");
         // A clean exit says nothing.
         let mut e = entry(Provider::Claude);

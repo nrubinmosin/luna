@@ -66,7 +66,7 @@ export interface HelperDeletedDto {
   worktreeError?: string;
 }
 
-/** One message of a helper's conversation, as `luna_read` reads it. */
+/** One message of a helper's conversation, as `luna_message_list` reads it. */
 export interface HelperMessageDto {
   role: string;
   text: string;
@@ -109,11 +109,11 @@ export const backgroundAtStake = (ids: string[]) => call<AtStakeDto[]>('backgrou
 export const backgroundTranscript = (id: string, since: number | null, file: string | null) =>
   call<HelperTranscriptDto>('background_transcript', { id, since, file });
 
-/** Every chat's name by id, for `luna_sessions` (agents/). */
+/** Every chat's name by id, for `luna_session_list` (agents/). */
 export const chatNames = (names: Record<string, string>, groups: Record<string, number>) =>
   call<void>('chat_names', { names, groups });
 
-/** One account's usage as `luna_list` gives it to agents. */
+/** One account's usage as `luna_account_list` gives it to agents. */
 export interface AccountUsageDto {
   signedIn: boolean;
   plan: string;
@@ -123,7 +123,7 @@ export interface AccountUsageDto {
   takenAt: string | null;
 }
 
-/** Every account's usage by `provider/name`, for `luna_list` (agents/). */
+/** Every account's usage by `provider/name`, for `luna_account_list` (agents/). */
 export const accountUsage = (usage: Record<string, AccountUsageDto>) => call<void>('account_usage', { usage });
 
 /** `provider/name` keys of accounts agents may not use. */

@@ -1,4 +1,4 @@
-//! `luna_answer`: what a session waits on, answered. A helper's question or
+//! `luna_session_answer`: what a session waits on, answered. A helper's question or
 //! permission goes to its record (background/ask.rs); a question a chat's model
 //! asked goes in as the keys its CLI takes, by option number, label or words.
 
@@ -98,7 +98,7 @@ const KEY_GAP: std::time::Duration = std::time::Duration::from_millis(150);
 /// How long after an answer its effect is looked at.
 const ANSWER_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
 
-/// `luna_answer`: answers what the session waits on — a question or a
+/// `luna_session_answer`: answers what the session waits on — a question or a
 /// permission (`ask_of`).
 /// Under a drain (power/) only a structured answer goes through, to what a session
 /// holds for one now, named where it has a name. A note is refused, which a refused
@@ -123,7 +123,7 @@ fn drain_lets_answer(id: &str, ask: Option<&Ask>, ask_id: Option<&str>, answers:
     Ok(())
 }
 
-/// What `luna_answer` may do to a session that is not one of the caller's
+/// What `luna_session_answer` may do to a session that is not one of the caller's
 /// helpers: answer a question its model asked. Approving or refusing a
 /// permission, and a list a CLI holds its own screen on (Codex's approvals and
 /// hook trust read as one, `codex_list_on`), are its owner's and the user's to
@@ -291,7 +291,11 @@ pub fn answer(
                 type_in(pty, id, &text, before.map(|t| t.turn), baseline, hold)?;
             }
             Some(a) => press(pty, id, &presses_for(known.provider, a, answers)?)?,
-            None => return Err(format!("session {id} is not on a question Luna can read; luna_read with screen: true shows its terminal")),
+            None => {
+                return Err(format!(
+                    "session {id} is not on a question Luna can read; luna_message_list with screen: true shows its terminal"
+                ))
+            }
         }
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
     }

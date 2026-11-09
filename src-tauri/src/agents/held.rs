@@ -1,4 +1,4 @@
-//! Text held for a chat of the person's: a `luna_send` that found someone typing
+//! Text held for a chat of the person's: a `luna_session_send` that found someone typing
 //! there, or a draft Luna could not put aside, typed in once the way is clear
 //! (`deliver_held`), and text a core went in the middle of typing, found or not
 //! in what the chat was told (`reconcile_held`).
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn text_going_in_is_found_in_what_the_session_was_told() {
-        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false };
+        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
         let needle = needle_of("[tag] carry on\n\nThese messages:\n\nthe held   text", "the held\ntext");
         assert_eq!(needle, "the held text", "words, however they are laid out");
         let told = [m("assistant", "the held text"), m("user", "[tag] carry on\n\nthe held\n text and more")];

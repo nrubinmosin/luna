@@ -104,7 +104,7 @@ Test only on the test build, never on the Luna in use
 - Drive its UI only by means aimed at its own windows (WebDriver on its WebView,
   messages to its own HWNDs, UI Automation on its own elements). No global input,
   no `SetForegroundWindow`.
-- Before stopping a core or the PC, check `luna_list` and `luna_sessions` for
+- Before stopping a core or the PC, check `luna_session_list` and `luna_session_list` for
   work in progress.
 
 ## Screenshots

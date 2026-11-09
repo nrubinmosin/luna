@@ -13,7 +13,7 @@ fn refusal(st: &State) -> Option<String> {
     }
     let action = st.armed.as_ref().filter(|a| a.drain).map(|a| a.action)?;
     Some(format!(
-        "Luna is draining: a {} is armed for when all sessions are quiet, so nothing new starts. What runs may finish, and luna_answer (a pending ask only), luna_kill and luna_delete still work. End your turn.",
+        "Luna is draining: a {} is armed for when all sessions are quiet, so nothing new starts. What runs may finish, and luna_session_answer (a pending ask only), luna_session_stop and luna_session_delete still work. End your turn.",
         action.as_str()
     ))
 }
@@ -48,13 +48,13 @@ fn enter_on<'a>(state: &'a Mutex<State>, ended: &'a Condvar) -> Entered<'a> {
     Entered { state, ended, refusal: refusal(&st) }
 }
 
-/// Held across a `luna_answer`, which a drain narrows (`agents::answer`). Not to be
+/// Held across a `luna_session_answer`, which a drain narrows (`agents::answer`). Not to be
 /// taken with the registry's lock held: `tick` takes the two the other way round.
 pub fn enter() -> Entered<'static> {
     enter_on(state(), &ENTERED_ENDED)
 }
 
-/// Held across a `luna_spawn` or `luna_send`, which a drain refuses.
+/// Held across a `luna_session_spawn` or `luna_session_send`, which a drain refuses.
 pub fn admit() -> Result<Entered<'static>, String> {
     let entered = enter();
     match &entered.refusal {

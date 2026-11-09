@@ -119,7 +119,7 @@ pub fn render_screen(bytes: &[u8], rows: u16, cols: u16) -> String {
 /// character it is given, on the console's keyboard layout, and a character
 /// that layout has no key for reached Codex as nothing: on a Russian layout
 /// `[ ] { } < > ' ` ~ @ # $ ^ & |` and typographic quotes and dashes all
-/// vanished, from a person's typing and from `luna_send` alike. Given as
+/// vanished, from a person's typing and from `luna_session_send` alike. Given as
 /// win32-input-mode key events (ConPTY is opened with WIN32_INPUT_MODE), every
 /// character arrives as itself whatever the layout. Ctrl+<letter> is the same
 /// story: ConPTY hands Codex the control byte and Codex asks the layout which

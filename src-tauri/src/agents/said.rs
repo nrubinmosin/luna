@@ -53,12 +53,15 @@ pub(super) struct Said {
     /// That turn was one its CLI started by itself (a background job's end it
     /// took up), with no prompt of anyone's behind it.
     by_cli: bool,
+    /// Beside `texts`: each one its CLI marked a turn's final answer
+    /// (`Message::final_answer`).
+    finals: Vec<bool>,
 }
 
 impl Said {
     /// Messages of one turn, or of turns that cannot be told apart.
     pub(super) fn one_turn(texts: Vec<String>) -> Said {
-        Said { texts, last_turn: 0, starts: vec![0], by_cli: false }
+        Said { texts, last_turn: 0, starts: vec![0], by_cli: false, finals: Vec::new() }
     }
 }
 
@@ -95,6 +98,7 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
             said.starts.push(said.texts.len());
             prompted = false;
         }
+        said.finals.push(m.final_answer);
         said.texts.push(m.text);
     }
     said
@@ -121,8 +125,10 @@ pub(super) fn answer_where(file: Option<&std::path::Path>, span: Option<(usize, 
         (Some(path), Some((report, all))) if report < all => {
             format!("the answer is in {}, its report first (lines 1-{report} of {all})", path.display())
         }
-        (Some(path), _) => format!("the answer is in {}, its report first", path.display()),
-        (None, _) => "luna_read gives the answer".into(),
+        // The report is all there is: nothing to put first.
+        (Some(path), Some(_)) => format!("the answer is in {}", path.display()),
+        (Some(path), None) => format!("the answer is in {}, its report first", path.display()),
+        (None, _) => "luna_message_list gives the answer".into(),
     }
 }
 
@@ -134,7 +140,7 @@ pub(super) fn report_span(replies: &Said, text: &str) -> Option<(usize, usize)> 
     Some((report.lines().count().max(1), text.lines().count().max(1)))
 }
 
-/// The report alone (`report_of`), what `luna_read` with `report: true` gives.
+/// The report alone (`report_of`), what `luna_report_get` gives.
 pub(super) fn report_text(replies: &Said) -> Option<String> {
     replies.get(report_of(replies)).cloned()
 }
@@ -191,28 +197,82 @@ pub(super) const SHORT_MESSAGE: usize = 400;
 /// longer one, which the newer has moved past — and the short line goes after
 /// it as its last word.
 pub(super) fn report_of(replies: &Said) -> usize {
-    let from = replies.last_turn.min(replies.len().saturating_sub(1));
+    let (from, to) = report_turn(replies);
+    // Its CLI's word for it, where it gives one: that turn's final answer.
+    if let Some(at) = final_of(replies, from, to) {
+        return at;
+    }
     let len = |i: usize| replies[i].chars().count();
-    let longest = (from..replies.len()).max_by_key(|&i| len(i)).unwrap_or(from);
-    if replies.get(longest).map_or(0, |r| r.chars().count()) >= SHORT_MESSAGE {
+    let longest = (from..to).max_by_key(|&i| len(i)).unwrap_or(from);
+    if replies.get(longest).is_some_and(|r| r.chars().count() >= SHORT_MESSAGE) || to < replies.len() {
         return longest;
     }
-    let before = replies.by_cli.then(|| {
+    replies.len().saturating_sub(1)
+}
+
+/// The turn the report comes from, as a range of messages: the last that wrote
+/// any, unless that one its CLI started by itself and every message of it is
+/// short (a background job's end taken up, "nothing else changed"), when the
+/// latest turn before it with a message that is not short. Chosen before any
+/// CLI's mark is looked at: a wakeup marked final answers nobody.
+fn report_turn(replies: &Said) -> (usize, usize) {
+    let from = replies.last_turn.min(replies.len().saturating_sub(1));
+    let len = |i: usize| replies[i].chars().count();
+    let short = (from..replies.len()).all(|i| len(i) < SHORT_MESSAGE);
+    if replies.by_cli && short {
         // Each earlier turn as a range of messages, newest first.
         let mut bounds: Vec<usize> = replies.starts.iter().copied().filter(|&s| s < from).collect();
         bounds.push(from);
-        bounds.windows(2).rev().find_map(|w| (w[0]..w[1]).filter(|&i| len(i) >= SHORT_MESSAGE).max_by_key(|&i| len(i)))
-    });
-    before.flatten().unwrap_or(replies.len().saturating_sub(1))
+        if let Some(w) = bounds.windows(2).rev().find(|w| (w[0]..w[1]).any(|i| len(i) >= SHORT_MESSAGE)) {
+            return (w[0], w[1]);
+        }
+    }
+    (from, replies.len())
+}
+
+/// The last message of `from..to` that its CLI marked final.
+fn final_of(replies: &Said, from: usize, to: usize) -> Option<usize> {
+    (from..to).rev().find(|&i| replies.finals.get(i).copied().unwrap_or(false))
+}
+
+/// Whether `report_of` picked the report by length, with no CLI's mark on any
+/// message of the turn it reports from: a guess, which a caller is told of.
+pub(super) fn report_guessed(replies: &Said) -> bool {
+    let (from, to) = report_turn(replies);
+    !replies.is_empty() && final_of(replies, from, to).is_none()
 }
 
 /// A report's first line that says anything, on one line and short, without
 /// its markdown: the verdict, for a caller deciding whether to open the file.
+/// A heading of a few words ("Report", "## Summary") names the report rather
+/// than says what it found: the line after it, where one says anything.
 fn opening_line(report: &str) -> Option<String> {
-    first_words(report, NOTICE_QUOTE)
+    let label = |line: &str| {
+        let t = line.trim_start();
+        t.starts_with('#') && t.trim_start_matches('#').split_whitespace().count() < HEADING_WORDS
+    };
+    let body: Vec<&str> = report.lines().filter(|l| !label(l)).collect();
+    first_words(&body.join("\n"), NOTICE_QUOTE).or_else(|| first_words(report, NOTICE_QUOTE))
 }
 
-/// The most of a helper's task `luna_list` gives: it comes with every row.
+/// A heading of fewer words than this is a label (`opening_line`); one of more
+/// may be the verdict itself ("## Done: all tests pass").
+const HEADING_WORDS: usize = 4;
+
+/// Up to this many characters, all a helper said goes into the notice itself
+/// (`inline_answer`), and no file: a "Done." costs its caller no read.
+pub(super) const INLINE_ANSWER: usize = 300;
+
+/// All `replies` say, on one line for a notice, when it is short enough to
+/// go there whole (`INLINE_ANSWER`): messages apart by " / ".
+pub(super) fn inline_answer(replies: &Said) -> Option<String> {
+    let flat: Vec<String> = replies.iter().map(|t| t.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|t| !t.is_empty()).collect();
+    let line = flat.join(" / ");
+    let line: String = line.chars().filter(|c| !c.is_control()).collect();
+    (!line.is_empty() && line.chars().count() <= INLINE_ANSWER).then_some(line)
+}
+
+/// The most of a helper's task `luna_session_list` gives: it comes with every row.
 pub(super) const TASK_CHARS: usize = 100;
 
 /// The first line of `text` that says anything, as `opening_line` puts it, cut to
@@ -250,8 +310,10 @@ pub(super) fn first_words(text: &str, most: usize) -> Option<String> {
 /// What a notice says of the answer beyond where it is. Not for a turn that
 /// stopped short: the first line of what it got to say is no verdict on it.
 pub(super) fn begins(replies: &Said) -> String {
+    // Several messages and no CLI's mark on any: which leads was a guess.
+    let guessed = if replies.len() > 1 && report_guessed(replies) { " (its report picked by length)" } else { "" };
     match replies.get(report_of(replies)).and_then(|r| opening_line(r)) {
-        Some(line) => format!(". It begins: \"{line}\""),
+        Some(line) => format!(". It begins: \"{line}\"{guessed}"),
         None => String::new(),
     }
 }
@@ -278,10 +340,10 @@ mod tests {
         assert!(head[2].starts_with("line three"));
         assert_eq!(whole.lines().count(), 15);
         assert_eq!(report_text(&replies).unwrap().lines().count(), 3);
-        // A file that is the report alone says nothing of lines.
+        // A file that is the report alone says nothing of lines, nor of a report first.
         let one = answer_file("span", &Said::one_turn(vec!["Done.".into()]));
-        assert!(one.ends_with(", its report first"), "{one}");
-        let _ = std::fs::remove_file(one.trim_start_matches("the answer is in ").trim_end_matches(", its report first"));
+        assert!(!one.contains("report first"), "{one}");
+        let _ = std::fs::remove_file(one.trim_start_matches("the answer is in "));
         assert_eq!(report_text(&Said::default()), None);
     }
 
@@ -324,7 +386,7 @@ mod tests {
         let whole = answer_text(&replies);
         assert!(whole.starts_with("R2 DONE FOURTH\nKIWI\n\n---\n\nEverything else it said, in order:\n\nI’ll run the ping"), "{whole}");
         assert!(!whole.contains("Its last message"), "it leads already");
-        assert_eq!(begins(&replies), ". It begins: \"R2 DONE FOURTH\"");
+        assert_eq!(begins(&replies), ". It begins: \"R2 DONE FOURTH\" (its report picked by length)");
         // One that is not short is the report, wherever it is.
         let mut with_report = replies.texts.clone();
         with_report.insert(1, format!("Findings: {}", "a finding. ".repeat(40)));
@@ -334,8 +396,43 @@ mod tests {
     /// As helper B put it on 2026-11-04: a long report at one commit, then text
     /// queued mid-turn, then a shorter report at the commit it moved on to.
     #[test]
+    fn a_final_answer_its_cli_marked_is_the_report_whatever_its_length() {
+        let m = |role: &str, text: String, final_answer: bool| Message { role: role.into(), text, after_cli: false, final_answer };
+        let progress = format!("Working through the files. {}", "Notes. ".repeat(150));
+        let said = own_words(
+            vec![
+                m("user", "Fix it.".into(), false),
+                m("assistant", progress.clone(), false),
+                m("assistant", "Fixed: 3 files.".into(), true),
+            ],
+            false,
+        );
+        assert_eq!(said[report_of(&said)], "Fixed: 3 files.", "the CLI's final answer, not the longest message");
+        assert!(!report_guessed(&said));
+        // No mark: the longest, and the caller is told it was picked so.
+        let said = own_words(
+            vec![m("user", "Fix it.".into(), false), m("assistant", progress.clone(), false), m("assistant", "ok".into(), false)],
+            false,
+        );
+        assert_eq!(said[report_of(&said)], progress);
+        assert!(report_guessed(&said));
+        // A mark in an earlier turn says nothing of the last one.
+        let said = own_words(
+            vec![
+                m("user", "A?".into(), false),
+                m("assistant", "A.".into(), true),
+                m("user", "B?".into(), false),
+                m("assistant", progress.clone(), false),
+            ],
+            false,
+        );
+        assert_eq!(said[report_of(&said)], progress);
+        assert!(report_guessed(&said));
+    }
+
+    #[test]
     fn the_last_turn_reports() {
-        let m = |role: &str, text: String| Message { role: role.into(), text, after_cli: false };
+        let m = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, final_answer: false };
         let first = format!("The new tip is 5ce3b92d2. {}", "Details. ".repeat(120));
         let second = format!("The new tip is cfeb7186f. {}", "Lanes green. ".repeat(40));
         let said = own_words(
@@ -367,7 +464,8 @@ mod tests {
         // As power-fix put it on 2026-11-08: a long report, then a turn its CLI
         // started by itself on a background job's end, short. The report
         // stands; the short line comes next as its last word.
-        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true };
+        // The CLI marks its own wakeup's line final as it does any: it answers nobody all the same.
+        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true, final_answer: true };
         let said = own_words(
             vec![
                 m("user", "Fix the shutdown.".into()),
@@ -496,7 +594,15 @@ mod tests {
 
         let report = format!("# Report\nThe long one, with what was done. {}", "Details. ".repeat(50));
         let replies = Said::one_turn(vec!["Let me look.".to_string(), report, "Nothing else.".to_string()]);
-        assert_eq!(begins(&replies), ". It begins: \"Report\"", "the longest message, as the file leads with it");
+        assert!(begins(&replies).starts_with(". It begins: \"The long one, with what was done."), "a label of a heading is passed over");
+        assert_eq!(opening_line("## Done: all tests pass\nDetails"), Some("Done: all tests pass".into()), "a heading that says it");
+        assert_eq!(opening_line("# Report"), Some("Report".into()), "a heading alone is what there is");
+        assert!(begins(&replies).ends_with("(its report picked by length)"), "{}", begins(&replies));
+        // Short, all of it goes inline; long, none.
+        let short = Said::one_turn(vec!["Done.".into(), "Tests\n  pass.".into()]);
+        assert_eq!(inline_answer(&short).as_deref(), Some("Done. / Tests pass."));
+        assert_eq!(inline_answer(&replies), None);
+        assert_eq!(inline_answer(&Said::default()), None);
         assert!(!begins(&replies).contains('\n'));
         assert_eq!(begins(&Said::one_turn(vec!["---".to_string()])), "", "nothing worth quoting, no clause");
         assert_eq!(begins(&Said::default()), "");

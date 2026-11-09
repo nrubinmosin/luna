@@ -402,7 +402,7 @@ impl PtyManager {
 
         take_and_shut_down(self, id).await;
         // Everything else that kept count of it, so nothing keeps the chat on
-        // after it is gone: the agent registry (luna_sessions, the helper
+        // after it is gone: the agent registry (luna_session_list, the helper
         // limit, its token), the turn counters, a waiting cleared on it, the
         // Codex rollout it held.
         crate::agents::forget(id);

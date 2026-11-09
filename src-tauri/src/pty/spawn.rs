@@ -226,7 +226,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // A Luna started from inside a CLI session — a test build run by an
     // agent, say — inherits that session's identity and its tool environment.
     // Claude Code under CLAUDE_CODE_CHILD_SESSION takes itself for a subagent
-    // and stops saving transcripts (where `luna_read` and the chat titles come
+    // and stops saving transcripts (where `luna_message_list` and the chat titles come
     // from), and the NO_COLOR an agent's shell sets turned every terminal here
     // black and white. The sessions here are nobody's children. NO_COLOR is
     // only dropped when it came with such a session: set by hand, it stays.
@@ -452,7 +452,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                 crate::emit::to_ui("pty://exit", PtyExit { id: &id, code });
             }
             // The entry stays, for as long as the chat does: its transcript, its
-            // folder and its last screen are still asked for (luna_read, the
+            // folder and its last screen are still asked for (luna_message_list, the
             // exit notice, deleting it). What only a running session needs
             // goes now — the writer thread and the pty with it, and all but the
             // tail of the scrollback — or a CLI that quit on its own held

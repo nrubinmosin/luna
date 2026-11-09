@@ -28,7 +28,7 @@ pub fn head_of(dir: &str) -> Option<Head> {
     head_at(&dir.ancestors().find(|d| d.join(".git").exists())?.to_string_lossy())
 }
 
-/// What the checkout at `root` has checked out, off its `.git` alone: `luna_list`
+/// What the checkout at `root` has checked out, off its `.git` alone: `luna_session_get`
 /// asks this of every row of every call, and a git process per row is what it
 /// must not cost. As git resolves it: from HEAD through any symbolic refs, each
 /// loose or packed. None for what this does not read (reftable, whose HEAD names a

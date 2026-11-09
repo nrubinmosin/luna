@@ -1,4 +1,4 @@
-//! The window's power commands, and `luna_power` arming a rule for an agent.
+//! The window's power commands, and `luna_power_set` arming a rule for an agent.
 
 use super::*;
 
@@ -81,13 +81,13 @@ pub fn disarm_power_off() -> PowerState {
     snapshot(&st, &crate::activity::summary())
 }
 
-/// A rule as `luna_power` gives it: as it stands now, which is none if somebody
+/// A rule as `luna_power_set` gives it: as it stands now, which is none if somebody
 /// disarmed it while a drain's arming waited.
 fn armed_as_told(armed: Option<&Armed>) -> serde_json::Value {
-    armed.map_or(serde_json::Value::Null, |a| serde_json::json!({ "action": a.action.as_str(), "quietS": a.quiet_s, "drain": a.drain }))
+    armed.map_or(serde_json::Value::Null, |a| serde_json::json!({ "action": a.action.as_str(), "quietSec": a.quiet_s, "drain": a.drain }))
 }
 
-/// An agent's `luna_power`: the rule the power chip arms, so the PC goes down
+/// An agent's `luna_power_set`: the rule the power chip arms, so the PC goes down
 /// the way Luna takes it down — once every session is quiet, each CLI asked to
 /// quit first — rather than by a `shutdown` that takes the other chats' work
 /// with it. "cancel" disarms, as does "off", its name through 0.10. Says what
@@ -135,7 +135,7 @@ mod tests {
     fn luna_power_gives_the_rule_as_it_stands_after_settling() {
         assert_eq!(armed_as_told(None), serde_json::Value::Null, "disarmed while it waited");
         let rule = Armed { action: Action::Restart, quiet_s: 60, armed_at_ms: 0, drain: true };
-        assert_eq!(armed_as_told(Some(&rule)), serde_json::json!({ "action": "restart", "quietS": 60, "drain": true }));
+        assert_eq!(armed_as_told(Some(&rule)), serde_json::json!({ "action": "restart", "quietSec": 60, "drain": true }));
     }
 
     #[test]

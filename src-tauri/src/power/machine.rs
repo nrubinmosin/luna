@@ -30,7 +30,7 @@ fn send(chat_id: Option<&str>, title: &str, body: &str) {
 
 /// Whether this build leaves the machine alone, logging what it would have done:
 /// the test build, and unit tests. Asked everywhere the PC would be touched, and
-/// what arming logs and `luna_power` returns says it, from this same call.
+/// what arming logs and `luna_power_set` returns says it, from this same call.
 pub fn dry() -> bool {
     cfg!(test) || crate::paths::is_test()
 }

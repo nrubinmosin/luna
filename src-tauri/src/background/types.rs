@@ -79,7 +79,7 @@ impl Context {
     }
 }
 
-/// What a session's own events and files show beyond its state, as `luna_list`
+/// What a session's own events and files show beyond its state, as `luna_session_get`
 /// gives it: each row carries one of these whatever runs the session.
 #[derive(Serialize, Default, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -98,7 +98,7 @@ pub struct Signs {
     pub left_running: Vec<LeftRunning>,
 }
 
-/// One process a helper's turns left running, as `luna_list` shows it.
+/// One process a helper's turns left running, as `luna_session_get` shows it.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LeftRunning {
@@ -113,7 +113,7 @@ pub struct LeftRunning {
     pub quiet_min: u64,
 }
 
-/// An instant as the rest of `luna_list` writes one.
+/// An instant as the rest of `luna_session_get` writes one.
 pub fn iso(ms: u64) -> Option<String> {
     let t = chrono::DateTime::<chrono::Utc>::from_timestamp((ms / 1000) as i64, 0)?;
     Some(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))

@@ -116,7 +116,7 @@ pub(super) fn injected(block: &str) -> bool {
 /// `response_item` of type `message` with a user or assistant role. Developer
 /// messages (skills, agent-mode preambles) and what Codex injects as a user
 /// message (`injected`: `AGENTS.md`, `<environment_context>` and the like)
-/// are not conversation and are left out, the way `luna_read` leaves out
+/// are not conversation and are left out, the way `luna_message_list` leaves out
 /// Claude Code's meta turns.
 fn message_of(v: &Value) -> Option<crate::agents::Message> {
     if v["type"] != "response_item" || v["payload"]["type"] != "message" {
@@ -148,7 +148,10 @@ fn message_of(v: &Value) -> Option<crate::agents::Message> {
     if text.is_empty() {
         return None;
     }
-    Some(crate::agents::Message { role: role.to_string(), text, after_cli: false })
+    // 0.167.0 classes an assistant message as commentary, a partial answer or the
+    // turn's terminal one (`MessagePhase`, protocol/src/models.rs).
+    let final_answer = role == "assistant" && v["payload"]["phase"] == "final_answer";
+    Some(crate::agents::Message { role: role.to_string(), text, after_cli: false, final_answer })
 }
 
 /// The thread's name, if it has one. Codex appends `{id, thread_name,
@@ -610,6 +613,21 @@ mod tests {
     fn user_line(blocks: &[&str]) -> String {
         let content: Vec<Value> = blocks.iter().map(|t| serde_json::json!({ "type": "input_text", "text": t })).collect();
         serde_json::json!({ "type": "response_item", "payload": { "type": "message", "role": "user", "content": content } }).to_string()
+    }
+
+    #[test]
+    fn a_final_answer_is_marked_as_codex_marks_it() {
+        let said = |phase: Option<&str>| {
+            let mut payload =
+                serde_json::json!({ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "Done." }] });
+            if let Some(p) = phase {
+                payload["phase"] = p.into();
+            }
+            message_in(&serde_json::json!({ "type": "response_item", "payload": payload }).to_string()).unwrap()
+        };
+        assert!(said(Some("final_answer")).final_answer);
+        assert!(!said(Some("commentary")).final_answer);
+        assert!(!said(None).final_answer, "an older Codex's: no word either way");
     }
 
     #[test]

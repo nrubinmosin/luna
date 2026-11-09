@@ -1,5 +1,5 @@
 //! The notifier: a loop that types a one-line notice into an idle caller once
-//! what it is owed has come (an answer, a prompt, an exit), and the luna_notify
+//! what it is owed has come (an answer, a prompt, an exit), and the luna_notification_send
 //! tool's desktop notification.
 
 pub(super) mod lines;
@@ -294,7 +294,7 @@ fn rides_since(how: &Settled) -> Option<u64> {
 /// is not to go ahead of a line held here. That is this gate's word only: a line
 /// past it can still be held back, as any notice can, by a draft in its caller's
 /// composer or a turn it is on, and a power-off does not wait for that. Their debts
-/// stay open until then, for a `luna_wait` and against `reap`, and what happens to
+/// stay open until then, for a `luna_session_wait` and against `reap`, and what happens to
 /// the session meanwhile replaces the line. A budget line rides the same way, with
 /// no debt to it.
 pub(crate) fn riders_go(company: bool, only_riders: bool, oldest: u64, now: u64, busy: usize) -> bool {
@@ -491,7 +491,7 @@ pub(super) fn notifier() {
                         }
                         if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) {
                             line.push_str(&format!(
-                                " Luna stops telling you of its turns and jobs now: {BREAKER_NOTICES} notices in {} minutes look like chats waking each other. Its prompts and questions still come, luna_wait and luna_read still reach it, and a person typing into either chat lifts this.",
+                                " Luna stops telling you of its turns and jobs now: {BREAKER_NOTICES} notices in {} minutes look like chats waking each other. Its prompts and questions still come, luna_session_wait and luna_message_list still reach it, and a person typing into either chat lifts this.",
                                 BREAKER_WINDOW_MS / 60_000
                             ));
                         }
@@ -1030,7 +1030,7 @@ mod tests {
         let Some((Some(text), how @ Settled::Idle(_))) = line(o) else { panic!("its idle job is told of") };
         assert!(rides_since(&how).is_some_and(|since| now_ms() - since < 2 * 60_000), "and rides, from when it passed the mark");
         assert!(text.contains("only idle processes left, which have done nothing for 31 min: tail.exe (pid 22104)"), "{text}");
-        assert!(text.contains("luna_kill ends them") && text.contains("You will still hear when they end"), "{text}");
+        assert!(text.contains("luna_session_stop ends them") && text.contains("You will still hear when they end"), "{text}");
         settle_told(&mut reg().lock().unwrap(), ("lj-c".to_string(), "lj-s".to_string()), how, &o);
         let told = reg().lock().unwrap().owed.get(&("lj-c".to_string(), "lj-s".to_string())).copied().expect("the debt stays open");
         assert!(told.told_idle && told.told_pending);
@@ -1130,7 +1130,10 @@ mod tests {
         // Half an hour of nothing: said once for this turn, and still owed.
         crate::background::quiet_for_test("qt-s", QUIET_TURN_MS + 60_000);
         let Some((Some(text), Settled::Quiet(3))) = line(o) else { panic!("a quiet turn is news") };
-        assert!(text.contains("mid-turn and has written nothing for 31 min") && text.contains("luna_kill stops the turn"), "{text}");
+        assert!(
+            text.contains("mid-turn and has written nothing for 31 min") && text.contains("luna_session_stop stops the turn"),
+            "{text}"
+        );
         settle_told(&mut reg().lock().unwrap(), ("qt-c".to_string(), "qt-s".to_string()), Settled::Quiet(3), &o);
         let told = reg().lock().unwrap().owed.get(&("qt-c".to_string(), "qt-s".to_string())).copied().expect("still owed");
         assert_eq!(told.told_quiet, Some(3));
