@@ -831,7 +831,18 @@ export const APPLIED = {
       why: 'You ticked Trust this folder in the new-chat dialog: Luna wrote the same mark the CLI’s own trust prompt writes.'
     }
   ],
-  incomplete: null
+  incomplete: null,
+  handoff: {
+    instructions: {
+      name: 'session-handoff',
+      state: 'luna',
+      version: '0.12.0',
+      sha256: '4f2a9c81d03be7a65c1f0e2d9b8a7c6e5d4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b',
+      path: 'C:\\Users\\dev\\Luna\\library\\system\\session-handoff\\SKILL.md',
+      problem: null
+    },
+    sameNamed: []
+  }
 };
 
 // Settings → Links: the browsers a Windows machine might have, two Chrome

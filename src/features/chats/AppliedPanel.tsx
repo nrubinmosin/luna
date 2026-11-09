@@ -92,7 +92,7 @@ export function AppliedPanel({ chat, onClose }: { chat: Chat; onClose: () => voi
     let stale = false;
     void appliedByLuna(chat.id)
       .then(v => !stale && setView(v))
-      .catch(() => !stale && setView({ launch: [], account: [], incomplete: null }));
+      .catch(() => !stale && setView({ launch: [], account: [], incomplete: null, handoff: null }));
     return () => {
       stale = true;
     };
@@ -144,7 +144,7 @@ export function AppliedPanel({ chat, onClose }: { chat: Chat; onClose: () => voi
             and Luna&apos;s local addresses are not shown; files are named by their path.
           </div>
           <GuardBox chat={chat} />
-          <HandoffBox chat={chat} />
+          <HandoffBox chat={chat} instructions={view?.handoff ?? null} />
           {view?.incomplete && (
             <div
               role="alert"

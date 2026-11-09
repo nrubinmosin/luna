@@ -49,7 +49,8 @@ describe('AppliedPanel', () => {
     vi.mocked(ipc.appliedByLuna).mockResolvedValue({
       launch: [item('core-read-deny', 'boundary', 'permissions.deny Read(//e/Luna/core/**)')],
       account: [item('trust', 'userAction', 'E:\\src\\app')],
-      incomplete: null
+      incomplete: null,
+      handoff: null
     });
     render(<AppliedPanel chat={chat} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText('permissions.deny Read(//e/Luna/core/**)')).toBeInTheDocument());
@@ -64,7 +65,8 @@ describe('AppliedPanel', () => {
     vi.mocked(ipc.appliedByLuna).mockResolvedValue({
       launch: [item('model', 'userAction', '--model opus')],
       account: [],
-      incomplete: 'trust /p in /acc was not noted: disk full'
+      incomplete: 'trust /p in /acc was not noted: disk full',
+      handoff: null
     });
     render(<AppliedPanel chat={chat} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Accounting incomplete.'));
@@ -72,7 +74,7 @@ describe('AppliedPanel', () => {
   });
 
   it('says so when the chat has not started, and closes', async () => {
-    vi.mocked(ipc.appliedByLuna).mockResolvedValue({ launch: [], account: [], incomplete: null });
+    vi.mocked(ipc.appliedByLuna).mockResolvedValue({ launch: [], account: [], incomplete: null, handoff: null });
     const onClose = vi.fn();
     const user = userEvent.setup();
     render(<AppliedPanel chat={chat} onClose={onClose} />);
