@@ -369,3 +369,28 @@ fn a_copy_a_stopped_core_left_behind_is_never_written_into() {
     assert_eq!(std::fs::read_to_string(kept.join("1.md")).unwrap(), "left behind");
     done_with(&["holb-me"], &dir);
 }
+
+#[test]
+fn turning_it_off_while_the_file_is_read_leaves_nothing_to_switch() {
+    chat("hooff-me", Some(70));
+    let (dir, file) = scratch_file("hooff");
+    let path = file.to_string_lossy().into_owned();
+    // The person turns it off as the file is being read.
+    file::on_read(&path, || {
+        set_auto_handoff("hooff-me".into(), None).unwrap();
+    });
+    let e = schedule("hooff-me", Provider::Claude, &path, before()).unwrap_err();
+    assert!(e.contains("nothing will switch"), "{e}");
+    assert!(!holds_text("hooff-me"), "no switch to reset the chat with");
+    assert!(!dir_of("hooff-me").unwrap().join("1.md").exists(), "its copy gone");
+    // Or the chat starts again without it as the file is read: the same.
+    set_auto_handoff("hooff-me".into(), Some(70)).unwrap();
+    file::on_read(&path, || {
+        register("hooff-me", Provider::Claude, "C:/p", ACC, None, true, json!({ "model": "opus" }));
+    });
+    let e = schedule("hooff-me", Provider::Claude, &path, before()).unwrap_err();
+    assert!(e.contains("turned off for this chat while the file was copied"), "{e}");
+    assert!(!holds_text("hooff-me"));
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hooff-me");
+    done_with(&["hooff-me"], &dir);
+}
