@@ -23,14 +23,14 @@ mod phase;
 mod store;
 mod watch;
 
-use crate::agents::delivery::{type_in, TypingInto, POLL, TYPING_WAIT};
+use crate::agents::delivery::{type_in, TypingInto, POLL, SEND_TYPING_MS, TYPING_WAIT};
 use crate::agents::held::DRAFT_ALERT_MS;
 use crate::agents::notifier::{ready_for_notice, NOTIFY_EVERY};
 use crate::agents::read::transcript_path;
 use crate::agents::registry::{chat_name, label, reg, DEV_CALLER};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
-use phase::{Before, Ended, Look, Phase, Phases, Step, Switch, Term};
+use phase::{Before, Ended, Look, Phase, Phases, Refused, Step, Switch, Term, Typed};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -146,20 +146,53 @@ pub fn handoff(caller: &str, file: &str) -> Result<Value, String> {
 
 /// The handoff of `caller`, on the conversation `before`, scheduled from
 /// `file` once it is copied: the rest of `handoff`, past what takes a terminal.
+/// The number is reserved under the record's lock, and the file read and
+/// copied outside it (file.rs, bounded in time): a slow or hostile path holds
+/// up this chat's call alone. The switch is then recorded, on disk, under the
+/// notifier's exclusion for the chat (`hand_off`): a notice or a held send on
+/// its way into the chat goes in first, into the conversation that will hand
+/// it on, and none starts once the switch is there.
 fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Result<Value, String> {
     let dir = dir_of(caller)?;
-    // Numbered and copied under the record's lock: of two calls at once, the
-    // second finds the first under way.
-    let mut r = store::records();
-    let rec = r.entry(caller.to_string()).or_default();
-    if let Some(s) = &rec.switch {
-        return Err(format!("handoff {} is under way already; end your turn", s.n));
-    }
-    let n = rec.last + 1;
-    let snap = file::snapshot(file, &crate::paths::data_dir(), &dir, n)?;
-    rec.last = n;
+    // Past any copy on disk: one a core left behind as it stopped between the
+    // copy and its record (a number reserved is not saved) is never reused.
+    let free = file::next_free(&dir);
+    let n = {
+        let mut r = store::records();
+        let rec = r.entry(caller.to_string()).or_default();
+        if let Some(s) = &rec.switch {
+            return Err(format!("handoff {} is under way already; end your turn", s.n));
+        }
+        if rec.reserved.is_some() {
+            return Err("a handoff of this chat is being scheduled already; end your turn".into());
+        }
+        let n = (rec.last + 1).max(free);
+        rec.last = n;
+        rec.reserved = Some(n);
+        n
+    };
+    let unreserve = || {
+        if let Some(rec) = store::records().get_mut(caller).filter(|r| r.reserved == Some(n)) {
+            rec.reserved = None;
+        }
+    };
+    let snap = match file::snapshot(file, &crate::paths::data_dir(), &dir, n) {
+        Ok(snap) => snap,
+        Err(e) => {
+            unreserve();
+            return Err(e);
+        }
+    };
     let snapshot = snap.path.to_string_lossy().into_owned();
-    rec.switch = Some(Switch {
+    let give_up = |e: String| {
+        unreserve();
+        let _ = std::fs::remove_file(&snap.path);
+        Err(e)
+    };
+    let Ok(_exclusive) = crate::agents::notifier::hand_off(caller) else {
+        return give_up("Luna is typing into this chat right now; call luna_session_handoff again in a moment".into());
+    };
+    let switch = Switch {
         n,
         provider,
         snapshot: snapshot.clone(),
@@ -169,9 +202,21 @@ fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Res
         phase: Phase::Scheduled,
         before,
         attempts: 0,
+    };
+    let committed = store::change(caller, |rec| {
+        if rec.reserved != Some(n) || rec.switch.is_some() {
+            return false;
+        }
+        rec.reserved = None;
+        rec.switch = Some(switch);
+        true
     });
-    store::save(&r);
-    drop(r);
+    match committed {
+        Ok(true) => {}
+        Ok(false) => return give_up("this chat's handoffs changed while the file was copied; call luna_session_handoff again".into()),
+        Err(e) => return give_up(format!("the handoff could not be saved, so nothing will switch: {e}")),
+    }
+    drop(_exclusive);
     // A threshold notice not yet typed would land in the new conversation,
     // asking it for a handoff it has just been given.
     reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(c == caller && facts::is_notice(line)));
@@ -227,17 +272,27 @@ impl Term for Pty {
             alive,
             at_rest: ready_for_notice(pty, chat),
             draft: pty.has_draft(chat),
+            typing: pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS),
             jobs: crate::activity::own_jobs(chat),
             conversation: conversation_of(pty, chat, s.provider),
             prompted,
         }
     }
 
-    fn type_line(&self, chat: &str, text: &str) -> Result<(), String> {
+    fn type_line(&self, chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>) -> Result<Typed, String> {
         let pty = crate::pty::manager();
+        // From here to the Enter a person's keys wait (`hold_keys`): what the
+        // composer shows now is what the text lands in.
         let hold = pty.hold_keys(chat).ok_or("the chat's terminal is gone")?;
+        let written = pty.composer(chat).is_some_and(|c| !c.text.trim().is_empty() || c.stashed);
+        if written || pty.has_draft(chat) || pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS) {
+            return Ok(Typed::NotClear);
+        }
+        if let Err(r) = commit() {
+            return Ok(Typed::NotCommitted(r));
+        }
         let before = crate::activity::turn_state(chat);
-        type_in(pty, chat, text, before.map(|t| t.turn), before.map_or(0, |t| t.turns_ended), hold).map(|_| ())
+        type_in(pty, chat, text, before.map(|t| t.turn), before.map_or(0, |t| t.turns_ended), hold).map(|_| Typed::In)
     }
 
     fn pause(&self) {
@@ -253,15 +308,25 @@ impl Phases for Stored {
         store::records().get(chat).and_then(|r| r.switch.clone())
     }
 
-    fn set(&self, chat: &str, phase: Phase, attempts: u32) {
-        let n = store::change(chat, |r| {
-            let s = r.switch.as_mut()?;
-            s.phase = phase;
-            s.attempts = attempts;
-            Some(s.n)
+    fn advance(&self, chat: &str, n: u32, from: Phase, to: Phase, attempts: u32) -> Result<(), Refused> {
+        let moved = store::change(chat, |r| match r.switch.as_mut().filter(|s| s.n == n && s.phase == from) {
+            Some(s) => {
+                s.phase = to;
+                s.attempts = attempts;
+                true
+            }
+            None => false,
         });
-        if let Some(n) = n {
-            crate::log::info("handoff", &format!("{}: handoff {n} {phase:?}, reset tried {attempts} time(s)", label(chat)));
+        match moved {
+            Ok(true) => {
+                crate::log::info("handoff", &format!("{}: handoff {n} {to:?}, reset tried {attempts} time(s)", label(chat)));
+                Ok(())
+            }
+            Ok(false) => Err(Refused::Gone),
+            Err(e) => {
+                crate::log::warn("handoff", &format!("{}: handoff {n} could not move to {to:?}: {e}", label(chat)));
+                Err(Refused::Unsaved(e))
+            }
         }
     }
 }
@@ -293,8 +358,8 @@ fn start_switch(chat: &str, s: &Switch) {
         let _running = Running(id.clone());
         let Some(_typing) = TypingInto::wait_for(&id, TYPING_WAIT) else { return };
         let prompt = continuation(&id, &s);
-        let ended = phase::run(&Pty, &id, &prompt, &Stored);
-        finish(&id, ended, &prompt);
+        let ended = phase::run(&Pty, &id, s.n, &prompt, &Stored);
+        finish(&id, s.n, ended, &prompt);
     });
     if let Err(e) = started {
         running().lock().unwrap_or_else(|e| e.into_inner()).remove(chat);
@@ -387,32 +452,59 @@ fn usage_words(u: &Value) -> Option<String> {
     (!windows.is_empty()).then(|| windows.join(", "))
 }
 
-/// A switch has ended: kept on record, its place given up, and when it was
-/// given up, the chat and the person told.
-fn finish(chat: &str, ended: Ended, prompt: &str) {
+/// Handoff `n` of record `r` closed, if it is the one there and `only_if`
+/// says so: kept as past (the last KEPT), with those dropped from the record
+/// handed back for their copies to go.
+fn close(
+    r: &mut store::Record,
+    n: Option<u32>,
+    done: bool,
+    why: Option<String>,
+    only_if: impl Fn(&Switch) -> bool,
+) -> Option<(Switch, Vec<store::Past>)> {
+    if !r.switch.as_ref().is_some_and(|s| n.is_none_or(|n| s.n == n) && only_if(s)) {
+        return None;
+    }
+    let s = r.switch.take()?;
+    r.past.push(store::Past {
+        n: s.n,
+        at: now_ms(),
+        provider: s.provider,
+        snapshot: s.snapshot.clone(),
+        sha256: s.sha256.clone(),
+        previous: s.before.transcript.clone(),
+        done,
+        why,
+    });
+    r.fresh = done;
+    let over = r.past.len().saturating_sub(store::KEPT);
+    let gone: Vec<store::Past> = r.past.drain(..over).collect();
+    Some((s, gone))
+}
+
+/// Handoff `n` of `chat` has ended: kept on record, its place given up, and
+/// when it was given up, the chat and the person told. A record that will not
+/// save lets go of it all the same: held notices must not wait for a disk.
+fn finish(chat: &str, n: u32, ended: Ended, prompt: &str) {
     let (done, why, reset) = match ended {
         Ended::Back => return,
         Ended::Done => (true, None, true),
         Ended::Failed { why, reset } => (false, Some(why), reset),
     };
-    let dropped = store::change(chat, |r| {
-        let s = r.switch.take()?;
-        r.past.push(store::Past {
-            n: s.n,
-            at: now_ms(),
-            provider: s.provider,
-            snapshot: s.snapshot.clone(),
-            sha256: s.sha256.clone(),
-            previous: s.before.transcript.clone(),
-            done,
-            why: why.clone(),
-        });
-        r.fresh = done;
-        let over = r.past.len().saturating_sub(store::KEPT);
-        let gone: Vec<store::Past> = r.past.drain(..over).collect();
-        Some((s, gone))
-    });
-    let Some((s, gone)) = dropped else { return };
+    let closed = match store::change(chat, |r| close(r, Some(n), done, why.clone(), |_| true)) {
+        Ok(closed) => closed,
+        Err(e) => {
+            crate::log::warn("handoff", &format!("{}: handoff {n} could not be saved as ended: {e}", label(chat)));
+            store::records().get_mut(chat).and_then(|r| close(r, Some(n), done, why.clone(), |_| true))
+        }
+    };
+    let Some((s, gone)) = closed else { return };
+    ended_with(chat, &s, gone, why, reset, prompt);
+}
+
+/// What follows a handoff's end: the copies dropped from the record go, and one
+/// given up is told to the chat and the person.
+fn ended_with(chat: &str, s: &Switch, gone: Vec<store::Past>, why: Option<String>, reset: bool, prompt: &str) {
     for p in gone {
         let _ = std::fs::remove_file(&p.snapshot);
         let _ = std::fs::remove_file(Path::new(&p.snapshot).with_file_name(format!("{}-facts.md", p.n)));
@@ -489,17 +581,25 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         if !watch::due(&now, level) {
             // A conversation looked at for the first time keeps its floor.
             if told.as_ref() != Some(&now) {
-                store::change(&chat, |r| {
+                let kept = store::change(&chat, |r| {
                     r.told = Some(now);
                     r.fresh = false;
                 });
+                if let Err(e) = kept {
+                    crate::log::warn("handoff", &format!("{}: where its context stands could not be saved: {e}", label(&chat)));
+                }
             }
             continue;
         }
-        store::change(&chat, |r| {
+        // Told once it is on disk: a notice a later core would repeat is the
+        // smaller harm than none, so a save that fails still lets it go.
+        let kept = store::change(&chat, |r| {
             r.told = Some(store::Told { level, ..now });
             r.fresh = false;
         });
+        if let Err(e) = kept {
+            crate::log::warn("handoff", &format!("{}: the notice it was told could not be saved: {e}", label(&chat)));
+        }
         let line = facts::notice(context.pct, threshold, level == 2);
         reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.clone(), line));
         crate::agents::save_chats();
@@ -524,7 +624,7 @@ fn switches(b: &mut Beat) {
         }
         // A switch whose thread is gone mid-phase is looked at as a restart's is.
         if matches!(s.phase, Phase::Resetting { .. } | Phase::Prompting { .. }) {
-            Stored.set(&chat, Phase::Recovering { since: now_ms() }, s.attempts);
+            let _ = Stored.advance(&chat, s.n, s.phase, Phase::Recovering { since: now_ms() }, s.attempts);
             continue;
         }
         let look = Pty.look(&chat, &s);
@@ -550,12 +650,12 @@ fn switches(b: &mut Beat) {
             }
             Step::Retry => {
                 crate::log::info("handoff", &format!("{} is still on the conversation handoff {} left: trying again", label(&chat), s.n));
-                Stored.set(&chat, Phase::Scheduled, s.attempts);
+                let _ = Stored.advance(&chat, s.n, s.phase, Phase::Scheduled, s.attempts);
             }
-            Step::Done => finish(&chat, Ended::Done, ""),
+            Step::Done => finish(&chat, s.n, Ended::Done, ""),
             Step::Fail(why) => {
                 let reset = look.conversation.is_some() && look.conversation != s.before.conversation;
-                finish(&chat, Ended::Failed { why, reset }, &continuation(&chat, &s));
+                finish(&chat, s.n, Ended::Failed { why, reset }, &continuation(&chat, &s));
             }
             Step::Wait => {}
         }
@@ -597,8 +697,21 @@ pub fn set_auto_handoff(id: String, threshold: Option<u8>) -> Result<AutoHandoff
             None => false,
         }
     };
-    if threshold.is_none() && store::records().get(&id).and_then(|r| r.switch.as_ref()).is_some_and(|s| s.phase == Phase::Scheduled) {
-        finish(&id, Ended::Failed { why: "auto-handoff was turned off for this chat".into(), reset: false }, "");
+    // Only a handoff that is still scheduled, in one hold of the record: a
+    // switch that has taken its reset (`advance`, under the same lock) goes on.
+    if threshold.is_none() {
+        let why = "auto-handoff was turned off for this chat".to_string();
+        let only_scheduled = |s: &Switch| s.phase == Phase::Scheduled;
+        let closed = match store::change(&id, |r| close(r, None, false, Some(why.clone()), only_scheduled)) {
+            Ok(closed) => closed,
+            Err(e) => {
+                crate::log::warn("handoff", &format!("{}: the handoff given up could not be saved: {e}", label(&id)));
+                store::records().get_mut(&id).and_then(|r| close(r, None, false, Some(why.clone()), only_scheduled))
+            }
+        };
+        if let Some((s, gone)) = closed {
+            ended_with(&id, &s, gone, Some(why), false, "");
+        }
     }
     crate::log::info("handoff", &format!("{}: auto-handoff {}", label(&id), threshold.map_or("off".into(), |t| format!("at {t}%"))));
     let resume = tools && threshold.is_some() && crate::pty::manager().alive(&id) && !is_listed(&id);
@@ -672,9 +785,8 @@ pub fn handoff_transcript(chat_id: String, n: u32, since: Option<u64>) -> Result
 /// `id` is gone for good: its record and its snapshots with it.
 pub fn forget(id: &str) {
     unlisted(id);
-    let had = store::records().remove(id).is_some();
-    if had {
-        store::save(&store::records());
+    if let Err(e) = store::remove(id) {
+        crate::log::warn("handoff", &format!("{id}'s handoffs could not be forgotten on disk: {e}"));
     }
     if let Ok(dir) = dir_of(id) {
         if dir.is_dir() {

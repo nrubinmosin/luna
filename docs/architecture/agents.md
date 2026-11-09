@@ -416,25 +416,45 @@ registry settings, the threshold in percent, passed by the window at every start
   points): one that begins above the threshold is not sent straight into the
   next handoff. A switch scheduled drops a notice not yet typed.
 - **The copy.** `file.rs`: absolute, `.md` / `.markdown` / `.txt`, opened with no
-  link followed and checked on its handle, at most 128 KB of UTF-8 text, refused
-  inside the data dir after `canonicalize`; written new and private as
-  `<data>/handoffs/<chat>/<n>.md`, its SHA-256 on record. Claude Code chats with
-  auto-handoff get that folder as an `--add-dir`, read without asking.
-- **The switch** (`phase.rs`), every phase saved before its text goes in:
-  `Scheduled` (from the call: `notice_waits` holds the notifier, `deliver_held`
-  and `send` hold text for the chat) → the chat at rest on two looks
-  (`ready_for_notice`), no draft, no job of its own → a thread claims the
-  terminal (`TypingInto`) for the rest → `Resetting`: `/clear` or `/new` typed
-  (`type_in`, keys held) → the CLI on another conversation: the registry's
+  link followed (and, off Windows, without waiting, so a FIFO swapped in does not
+  hang the open) and checked on its handle, at most 128 KB of UTF-8 text, refused
+  inside the data dir after `canonicalize`; all of it on a thread of its own
+  given 10 s (`READ_WAIT`), outside the records' lock: the number is reserved
+  first (`Record::reserved`, never saved, one call at a time per chat) and taken
+  past any copy already on disk (`next_free`), so one a stopped core left is never
+  written into. The copy is made new and private as `<data>/handoffs/<chat>/<n>.md`
+  and flushed before the switch is recorded, its SHA-256 on record. Claude Code
+  chats with auto-handoff get that folder as an `--add-dir`, read without asking.
+- **Recording it.** The switch is recorded on disk (`write_private_synced`; a
+  save that fails is undone and refuses the call) under the notifier's
+  exclusion for the chat (`hand_off`): whatever is going into the chat then (a
+  notice, `tell_of`; a held send or a send, `going_into`) goes in first, into
+  the conversation that writes the handoff, and from then on each of them, which
+  looks again at `holds_text` under the same exclusion, goes nowhere until the
+  switch is over.
+- **The switch** (`phase.rs`). Every phase is taken by `Phases::advance`, for
+  that handoff's number, from the phase it was read in, on disk before any text
+  goes in; one not taken (given up meanwhile, a save that fails) types nothing.
+  Turning auto-handoff off gives up only a switch still `Scheduled`, under the
+  same lock, so it never strands a reset. `Scheduled` (from the call:
+  `notice_waits` holds the notifier, `deliver_held` and `send` hold text for the
+  chat) → the chat at rest on two looks (`ready_for_notice`), no draft, no job of
+  its own → a thread claims the terminal (`TypingInto`) for the rest. Each text
+  goes in by `Term::type_line`: a person's keys held (`hold_keys`), the composer
+  looked at again (anything in it, a stash, keys within 5 s: not now), the phase
+  taken, then the paste and the Enter. → `Resetting`: `/clear` or `/new` typed →
+  the CLI on another conversation: the registry's
   `sessionId` (Claude Code, `claude::session::session_id`) or the title's thread
   (Codex, `codex_thread`) → `Prompting`: the prompt typed, `[Luna handoff N, not
   typed by the user]`, the copy's path and `fact_block` (from `list::list`, the
   debts, `held`, `undelivered_for`, `Registry::usage`, the settings); past 6,000
   characters the facts go in `<n>-facts.md` beside it → the transcript other
-  than the one left holds that opening → done. Then what waited goes in.
+  than the one left holds that opening → done. Then what waited goes in. A
+  person writing in the new conversation before the prompt holds it back
+  (`Recovering`) until they are through.
 - **Failures.** 60 s without a new conversation, 60 s without the prompt in the
-  new transcript, 30 min without rest, 10 min with its CLI not running, or the
-  CLI's own jobs at rest: given up, kept on record (`Past`), the chat told by a
+  new transcript, 30 min without rest, 10 min with its CLI not running, the
+  CLI's own jobs at rest, or a phase that will not save: given up, kept on record (`Past`), the chat told by a
   line in `news` (before the reset: it goes on as it was, and may call again
   only if the tool is still its; after: what it is, the prompt again) and the
   desktop by a notification. A draft holds it as long as

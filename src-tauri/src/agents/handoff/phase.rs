@@ -85,6 +85,8 @@ pub(super) struct Look {
     pub at_rest: bool,
     /// A person's draft is in its composer.
     pub draft: bool,
+    /// A person typed into it a moment ago (delivery.rs SEND_TYPING_MS).
+    pub typing: bool,
     /// What its CLI runs of its own (activity `own_jobs`).
     pub jobs: Vec<String>,
     /// The conversation its CLI is on now, as `Before::conversation` says one.
@@ -148,7 +150,13 @@ pub(super) fn next(s: &Switch, look: &Look, rest_looks: u32) -> Step {
         }
         Phase::Resetting { at } => {
             if moved {
-                Step::Prompt
+                // The new conversation is there: its first prompt is Luna's
+                // only into a composer nobody is writing in.
+                if look.draft || look.typing {
+                    Step::Deferred
+                } else {
+                    Step::Prompt
+                }
             } else if look.now.saturating_sub(at) > RESET_WAIT_MS {
                 Step::Fail(format!("the CLI did not start a new conversation within {} s of the reset", RESET_WAIT_MS / 1000))
             } else {
@@ -174,6 +182,8 @@ pub(super) fn next(s: &Switch, look: &Look, rest_looks: u32) -> Step {
             }
             if look.prompted {
                 Step::Done
+            } else if look.draft || look.typing {
+                Step::Deferred
             } else if moved {
                 Step::Prompt
             } else if s.attempts >= MAX_ATTEMPTS {
@@ -194,11 +204,36 @@ pub(super) fn reset_command(provider: Provider) -> &'static str {
     }
 }
 
+/// What a try at typing came to.
+#[derive(Debug, PartialEq)]
+pub(super) enum Typed {
+    In,
+    /// The composer holds something, or a person typed a moment ago: nothing
+    /// was committed or typed.
+    NotClear,
+    /// The phase the text was to go in under could not be taken: nothing was
+    /// typed.
+    NotCommitted(Refused),
+}
+
+/// Why a phase could not be taken.
+#[derive(Debug, PartialEq)]
+pub(super) enum Refused {
+    /// The record holds no longer this handoff in the phase it was read in:
+    /// given up meanwhile (auto-handoff turned off), or moved on.
+    Gone,
+    /// It could not be saved.
+    Unsaved(String),
+}
+
 /// The chat's terminal, as the switch drives it.
 pub(super) trait Term {
     fn look(&self, chat: &str, s: &Switch) -> Look;
-    /// Types `text` as a prompt, a person's keys held back meanwhile.
-    fn type_line(&self, chat: &str, text: &str) -> Result<(), String>;
+    /// Types `text` as a prompt once the chat's composer is seen empty with a
+    /// person's keys held back, and `commit` (the phase the text goes in
+    /// under) has been taken; the keys stay held from that look to the Enter.
+    /// Nothing is typed when either fails.
+    fn type_line(&self, chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>) -> Result<Typed, String>;
     /// Between looks.
     fn pause(&self);
 }
@@ -213,43 +248,63 @@ pub(super) enum Ended {
         why: String,
         reset: bool,
     },
-    /// Handed back to the beat: the chat is not ready for the next step.
+    /// Handed back to the beat: the chat is not ready for the next step, or
+    /// the handoff is no longer this run's.
     Back,
 }
 
-/// Runs the switch of `chat` from where its phase stands to its end, or back
-/// to the beat when the chat is not ready: types the reset and the prompt as
-/// `next` calls for them, saving each phase before its text goes in, so a
-/// core that stops in between knows to look. `prompt` is the continuation
-/// prompt for this switch. Holds nothing of its own: the terminal is the
-/// caller's to claim for the whole of it.
-pub(super) fn run(term: &dyn Term, chat: &str, prompt: &str, phases: &dyn Phases) -> Ended {
+/// Runs the switch of `chat`'s handoff `n` from where its phase stands to its
+/// end, or back to the beat when the chat is not ready: types the reset and the
+/// prompt as `next` calls for them. Each goes in only under a phase taken for
+/// this very handoff from the phase it was read in, saved before the text
+/// (`Phases::advance`): a handoff given up meanwhile types nothing, and a core
+/// that stops in between knows to look. `prompt` is the continuation prompt.
+/// The terminal is the caller's to claim for the whole of it.
+pub(super) fn run(term: &dyn Term, chat: &str, n: u32, prompt: &str, phases: &dyn Phases) -> Ended {
     loop {
-        let Some(s) = phases.switch_of(chat) else { return Ended::Back };
+        let Some(s) = phases.switch_of(chat).filter(|s| s.n == n) else { return Ended::Back };
         let look = term.look(chat, &s);
         let reset_done = matches!(s.phase, Phase::Prompting { .. })
             || (matches!(s.phase, Phase::Resetting { .. } | Phase::Recovering { .. })
                 && look.conversation.is_some()
                 && look.conversation != s.before.conversation);
+        let unsaved =
+            |e: String, reset: bool| Ended::Failed { why: format!("its state could not be saved, so nothing more was typed: {e}"), reset };
         match next(&s, &look, REST_LOOKS) {
             Step::Reset => {
-                phases.set(chat, Phase::Resetting { at: look.now }, s.attempts + 1);
-                if let Err(e) = term.type_line(chat, reset_command(s.provider)) {
-                    return Ended::Failed { why: format!("the reset could not be typed: {e}"), reset: false };
+                let commit = || phases.advance(chat, n, s.phase, Phase::Resetting { at: look.now }, s.attempts + 1);
+                match term.type_line(chat, reset_command(s.provider), &commit) {
+                    Ok(Typed::In) => {}
+                    Ok(Typed::NotClear | Typed::NotCommitted(Refused::Gone)) => return Ended::Back,
+                    Ok(Typed::NotCommitted(Refused::Unsaved(e))) => return unsaved(e, false),
+                    Err(e) => return Ended::Failed { why: format!("the reset could not be typed: {e}"), reset: false },
                 }
             }
             Step::Prompt => {
-                phases.set(chat, Phase::Prompting { at: look.now }, s.attempts);
-                if let Err(e) = term.type_line(chat, prompt) {
-                    return Ended::Failed { why: format!("the prompt could not be typed: {e}"), reset: true };
+                let commit = || phases.advance(chat, n, s.phase, Phase::Prompting { at: look.now }, s.attempts);
+                match term.type_line(chat, prompt, &commit) {
+                    Ok(Typed::In) => {}
+                    // Someone is writing in the new conversation: looked at
+                    // again, by the beat, once they are through.
+                    Ok(Typed::NotClear) => {
+                        let _ = phases.advance(chat, n, s.phase, Phase::Recovering { since: look.now }, s.attempts);
+                        return Ended::Back;
+                    }
+                    Ok(Typed::NotCommitted(Refused::Gone)) => return Ended::Back,
+                    Ok(Typed::NotCommitted(Refused::Unsaved(e))) => return unsaved(e, true),
+                    Err(e) => return Ended::Failed { why: format!("the prompt could not be typed: {e}"), reset: true },
                 }
+            }
+            Step::Deferred if matches!(s.phase, Phase::Resetting { .. }) => {
+                let _ = phases.advance(chat, n, s.phase, Phase::Recovering { since: look.now }, s.attempts);
+                return Ended::Back;
             }
             Step::Wait if matches!(s.phase, Phase::Resetting { .. } | Phase::Prompting { .. }) => term.pause(),
             // Not this run's to wait out: the beat looks again, and starts a
             // run once the chat is ready.
             Step::Wait | Step::Deferred => return Ended::Back,
             Step::Retry => {
-                phases.set(chat, Phase::Scheduled, s.attempts);
+                let _ = phases.advance(chat, n, s.phase, Phase::Scheduled, s.attempts);
                 return Ended::Back;
             }
             Step::Done => return Ended::Done,
@@ -261,12 +316,14 @@ pub(super) fn run(term: &dyn Term, chat: &str, prompt: &str, phases: &dyn Phases
 /// Where switches are kept, for `run`: the store, or a test's.
 pub(super) trait Phases {
     fn switch_of(&self, chat: &str) -> Option<Switch>;
-    /// Saves `phase` and the resets typed so far before anything is typed.
-    fn set(&self, chat: &str, phase: Phase, attempts: u32);
+    /// Moves `chat`'s handoff `n` from phase `from` to `to` with the resets
+    /// typed so far, saved before it returns; refused when the record holds
+    /// another handoff or this one in another phase, or the save fails.
+    fn advance(&self, chat: &str, n: u32, from: Phase, to: Phase, attempts: u32) -> Result<(), Refused>;
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -285,7 +342,7 @@ mod tests {
         }
     }
 
-    fn rest(now: u64) -> Look {
+    pub(in crate::agents::handoff) fn rest(now: u64) -> Look {
         Look { now, alive: true, at_rest: true, conversation: Some("old".into()), ..Default::default() }
     }
 
@@ -355,47 +412,83 @@ mod tests {
 
     /// A chat's terminal as a test has it: what typing does to it is the
     /// test's to say.
-    struct Fake {
-        look: RefCell<Look>,
-        typed: RefCell<Vec<String>>,
+    pub(in crate::agents::handoff) struct Fake {
+        pub look: RefCell<Look>,
+        pub typed: RefCell<Vec<String>>,
         on_type: Box<dyn Fn(&str, &mut Look)>,
         clock: RefCell<u64>,
+        /// What the composer holds at the look made with the keys held, for
+        /// each text in turn: a person's keys landing after the switch's own look.
+        pub busy_at_type: RefCell<Vec<bool>>,
+        /// Called at each look, before it is made: something happening meanwhile.
+        pub on_look: RefCell<Option<Box<dyn FnOnce()>>>,
     }
 
     impl Term for Fake {
         fn look(&self, _: &str, _: &Switch) -> Look {
+            if let Some(f) = self.on_look.borrow_mut().take() {
+                f();
+            }
             Look { now: *self.clock.borrow(), ..self.look.borrow().clone() }
         }
-        fn type_line(&self, _: &str, text: &str) -> Result<(), String> {
+        fn type_line(&self, _: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>) -> Result<Typed, String> {
+            let busy = {
+                let mut b = self.busy_at_type.borrow_mut();
+                if b.is_empty() {
+                    false
+                } else {
+                    b.remove(0)
+                }
+            };
+            if busy {
+                return Ok(Typed::NotClear);
+            }
+            if let Err(r) = commit() {
+                return Ok(Typed::NotCommitted(r));
+            }
             self.typed.borrow_mut().push(text.to_string());
             (self.on_type)(text, &mut self.look.borrow_mut());
-            Ok(())
+            Ok(Typed::In)
         }
         fn pause(&self) {
             *self.clock.borrow_mut() += 1_000;
         }
     }
 
-    struct Kept(RefCell<HashMap<String, Switch>>);
+    struct Kept(std::rc::Rc<RefCell<HashMap<String, Switch>>>, RefCell<bool>);
 
     impl Phases for Kept {
         fn switch_of(&self, chat: &str) -> Option<Switch> {
             self.0.borrow().get(chat).cloned()
         }
-        fn set(&self, chat: &str, phase: Phase, attempts: u32) {
-            if let Some(s) = self.0.borrow_mut().get_mut(chat) {
-                s.phase = phase;
-                s.attempts = attempts;
+        fn advance(&self, chat: &str, n: u32, from: Phase, to: Phase, attempts: u32) -> Result<(), Refused> {
+            if *self.1.borrow() {
+                return Err(Refused::Unsaved("the disk is full".into()));
+            }
+            match self.0.borrow_mut().get_mut(chat).filter(|s| s.n == n && s.phase == from) {
+                Some(s) => {
+                    s.phase = to;
+                    s.attempts = attempts;
+                    Ok(())
+                }
+                None => Err(Refused::Gone),
             }
         }
     }
 
-    fn fake(on_type: impl Fn(&str, &mut Look) + 'static) -> Fake {
-        Fake { look: RefCell::new(rest(5_000)), typed: RefCell::default(), on_type: Box::new(on_type), clock: RefCell::new(5_000) }
+    pub(in crate::agents::handoff) fn fake(on_type: impl Fn(&str, &mut Look) + 'static) -> Fake {
+        Fake {
+            look: RefCell::new(rest(5_000)),
+            typed: RefCell::default(),
+            on_type: Box::new(on_type),
+            clock: RefCell::new(5_000),
+            busy_at_type: RefCell::default(),
+            on_look: RefCell::default(),
+        }
     }
 
     fn kept(s: Switch) -> Kept {
-        Kept(RefCell::new(HashMap::from([("c1".to_string(), s)])))
+        Kept(std::rc::Rc::new(RefCell::new(HashMap::from([("c1".to_string(), s)]))), RefCell::new(false))
     }
 
     #[test]
@@ -411,7 +504,7 @@ mod tests {
                 }
             });
             let phases = kept(switch(provider));
-            assert_eq!(run(&t, "c1", "[Luna handoff 3, …]", &phases), Ended::Done, "{provider:?}");
+            assert_eq!(run(&t, "c1", 3, "[Luna handoff 3, …]", &phases), Ended::Done, "{provider:?}");
             assert_eq!(*t.typed.borrow(), [reset_command(provider), "[Luna handoff 3, …]"]);
             assert_eq!(phases.switch_of("c1").unwrap().attempts, 1);
         }
@@ -421,7 +514,7 @@ mod tests {
     fn a_reset_that_never_shows_fails_with_the_old_conversation_kept() {
         let t = fake(|_, _| {});
         let phases = kept(switch(Provider::Claude));
-        match run(&t, "c1", "prompt", &phases) {
+        match run(&t, "c1", 3, "prompt", &phases) {
             Ended::Failed { why, reset } => {
                 assert!(why.contains("did not start a new conversation"), "{why}");
                 assert!(!reset, "the old conversation is still the one it is on");
@@ -439,7 +532,7 @@ mod tests {
             }
         });
         let phases = kept(switch(Provider::Codex));
-        assert!(matches!(run(&t, "c1", "prompt", &phases), Ended::Failed { reset: true, .. }));
+        assert!(matches!(run(&t, "c1", 3, "prompt", &phases), Ended::Failed { reset: true, .. }));
     }
 
     #[test]
@@ -447,7 +540,7 @@ mod tests {
         let t = fake(|_, _| {});
         t.look.borrow_mut().draft = true;
         let phases = kept(switch(Provider::Claude));
-        assert_eq!(run(&t, "c1", "prompt", &phases), Ended::Back);
+        assert_eq!(run(&t, "c1", 3, "prompt", &phases), Ended::Back);
         assert!(t.typed.borrow().is_empty());
     }
 
@@ -461,7 +554,7 @@ mod tests {
         s.phase = Phase::Recovering { since: 4_000 };
         s.attempts = 1;
         let phases = kept(s);
-        assert_eq!(run(&t, "c1", "prompt", &phases), Ended::Done);
+        assert_eq!(run(&t, "c1", 3, "prompt", &phases), Ended::Done);
         assert_eq!(*t.typed.borrow(), ["prompt"], "no second reset");
         // Back on the conversation it left: Scheduled again, nothing typed yet.
         let t = fake(|_, _| {});
@@ -469,8 +562,65 @@ mod tests {
         s.phase = Phase::Recovering { since: 4_000 };
         s.attempts = 1;
         let phases = kept(s);
-        assert_eq!(run(&t, "c1", "prompt", &phases), Ended::Back);
+        assert_eq!(run(&t, "c1", 3, "prompt", &phases), Ended::Back);
         assert_eq!(phases.switch_of("c1").unwrap().phase, Phase::Scheduled);
+        assert!(t.typed.borrow().is_empty());
+    }
+
+    #[test]
+    fn after_the_reset_a_person_writing_holds_the_prompt_back() {
+        // The look before the prompt: someone writes in the new conversation.
+        let mut s = switch(Provider::Claude);
+        s.phase = Phase::Resetting { at: 10_000 };
+        let moved = Look { conversation: Some("new".into()), ..rest(11_000) };
+        assert_eq!(next(&s, &Look { draft: true, ..moved.clone() }, 0), Step::Deferred);
+        assert_eq!(next(&s, &Look { typing: true, ..moved.clone() }, 0), Step::Deferred);
+        s.phase = Phase::Recovering { since: 10_000 };
+        assert_eq!(next(&s, &Look { draft: true, ..moved }, 0), Step::Deferred, "in recovery too");
+        // Their keys land after that look, before the paste: the composer is
+        // looked at again with the keys held, and nothing is typed into it.
+        let t = fake(|text, l| {
+            if text == "/clear" {
+                l.conversation = Some("new".into());
+            }
+        });
+        *t.busy_at_type.borrow_mut() = vec![false, true];
+        let phases = kept(switch(Provider::Claude));
+        assert_eq!(run(&t, "c1", 3, "prompt", &phases), Ended::Back);
+        assert_eq!(*t.typed.borrow(), ["/clear"], "no prompt appended to what they write");
+        assert!(matches!(phases.switch_of("c1").unwrap().phase, Phase::Recovering { .. }), "the beat looks again");
+        // Once they are through, the prompt goes in.
+        let t2 = fake(|_, l| l.prompted = true);
+        t2.look.borrow_mut().conversation = Some("new".into());
+        assert_eq!(run(&t2, "c1", 3, "prompt", &phases), Ended::Done);
+        assert_eq!(*t2.typed.borrow(), ["prompt"]);
+    }
+
+    #[test]
+    fn nothing_is_typed_under_a_phase_that_could_not_be_taken() {
+        // Given up between the look and the reset (auto-handoff turned off):
+        // the switch is no longer there to move, and no /clear goes in.
+        let t = fake(|_, _| {});
+        let phases = kept(switch(Provider::Claude));
+        let store = phases.0.clone();
+        *t.on_look.borrow_mut() = Some(Box::new(move || {
+            store.borrow_mut().remove("c1");
+        }));
+        assert_eq!(run(&t, "c1", 3, "prompt", &phases), Ended::Back);
+        assert!(t.typed.borrow().is_empty());
+        // Another handoff's number: not this run's.
+        let t = fake(|_, _| {});
+        let phases = kept(switch(Provider::Claude));
+        assert_eq!(run(&t, "c1", 4, "prompt", &phases), Ended::Back);
+        assert!(t.typed.borrow().is_empty());
+        // A phase that will not save: nothing typed, given up and said.
+        let t = fake(|_, _| {});
+        let phases = kept(switch(Provider::Codex));
+        *phases.1.borrow_mut() = true;
+        match run(&t, "c1", 3, "prompt", &phases) {
+            Ended::Failed { why, reset } => assert!(why.contains("could not be saved") && !reset, "{why}"),
+            other => panic!("{other:?}"),
+        }
         assert!(t.typed.borrow().is_empty());
     }
 }
