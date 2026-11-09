@@ -118,10 +118,12 @@ export function NewChatDialog() {
     (provider === 'codex' && hooks !== startHooks);
   const keptHere = !!ownStart || (provider === 'codex' && hooksStart.kept !== null);
   // A start that is the defaults anyway is no start of the folder's own. A
-  // guard box Codex cannot use keeps what the folder started with.
+  // guard box Codex cannot use keeps what the folder's own start says of it,
+  // nothing included: a guard left to Settings stays left to Settings.
   const keepForFolder = () => {
-    const keptGuard = guardable ? guard : start.guard;
-    const defaults = worktree === defaultWorktree && tools === defaultTools && keptGuard === defaultGuard;
+    const keptGuard = guardable ? guard : ownStart?.guard;
+    const defaults =
+      worktree === defaultWorktree && tools === defaultTools && (keptGuard ?? defaultGuard) === defaultGuard;
     useChats.getState().setStart(folder, defaults ? undefined : { worktree, tools, guard: keptGuard });
     if (provider !== 'codex') return;
     const kept = hooks === hooksStart.default ? null : hooks;
