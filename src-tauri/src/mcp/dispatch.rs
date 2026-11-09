@@ -26,6 +26,9 @@ const KEY_CHARS: usize = 128;
 const KEYS_PER_CALLER: usize = 64;
 const KEYS_IN_ALL: usize = 1024;
 const KEPT_RESULT_BYTES: usize = 16 * 1024;
+/// All the results kept whole come to no more than this; past it, or past
+/// KEPT_RESULT_BYTES, a call keeps its outcome alone (`Kept::Outcome`).
+const KEPT_BYTES_IN_ALL: usize = 2 * 1024 * 1024;
 
 /// The most of a past run's prompt and last reply `luna_run_list` passes on: a
 /// row is a pointer to the run, whose transcript has it whole.
@@ -164,7 +167,15 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     }
     let slot = (caller.to_string(), name.to_string(), key.to_string());
     match keyed(&slot, fingerprint(a)) {
-        Keyed::Done(v) => v,
+        Keyed::Done(Kept::Whole(v)) => v,
+        // Made once, its result too large to keep: what it made, not a second making.
+        Keyed::Done(Kept::Outcome(Some(made))) => {
+            let done = json!({ "replayed": true, "id": made, "note": "the first call's result was too large to keep" });
+            json!({ "content": content(done) })
+        }
+        Keyed::Done(Kept::Outcome(None)) => failure(format!(
+            "the {name} with requestKey {key:?} was made and succeeded; its result was too large to keep, so it is not given again (nor made again)"
+        )),
         Keyed::Running => failure(format!("a {name} with requestKey {key:?} is still under way; its result comes to that call")),
         Keyed::Full => failure(format!("{KEYS_PER_CALLER} keyed calls of yours are under way; retry once one has its result")),
         Keyed::Other => failure(format!(
@@ -183,8 +194,8 @@ enum Keyed {
     /// Never made, or it failed: made now.
     New,
     Running,
-    /// Made: its result again.
-    Done(Value),
+    /// Made: its result again, or what it made.
+    Done(Kept),
     /// The key stands for a call with other arguments: refused, not that
     /// call's result passed off as this one's.
     Other,
@@ -197,8 +208,17 @@ enum Keyed {
 /// forgets every key; the guide says so.
 struct Slot {
     at: Instant,
+    /// SHA-256 of the arguments (`fingerprint`), as hex: the same size whatever they are.
     print: String,
-    result: Option<Value>,
+    result: Option<Kept>,
+}
+
+/// What is kept of a call made: its result whole, or, too large for that, the
+/// id of what it made (none for a call whose result names none).
+#[derive(Clone)]
+enum Kept {
+    Whole(Value),
+    Outcome(Option<String>),
 }
 
 /// Keyed calls by caller, tool and key.
@@ -221,7 +241,8 @@ fn fingerprint(a: &Value) -> String {
             other => other.clone(),
         }
     }
-    sorted(a).to_string()
+    use sha2::{Digest, Sha256};
+    Sha256::digest(sorted(a).to_string().as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Takes `slot` for a call about to be made, unless one made or under way has it.
@@ -230,7 +251,7 @@ fn keyed(slot: &(String, String, String), print: String) -> Keyed {
     slots.retain(|_, s| s.at.elapsed() < KEY_KEEP);
     match slots.get(slot) {
         Some(s) if s.print != print => Keyed::Other,
-        Some(Slot { result: Some(v), .. }) => Keyed::Done(v.clone()),
+        Some(Slot { result: Some(kept), .. }) => Keyed::Done(kept.clone()),
         Some(_) => Keyed::Running,
         None => {
             // Room for it: the caller's oldest finished call goes past its own
@@ -259,12 +280,28 @@ fn keyed(slot: &(String, String, String), print: String) -> Keyed {
 /// and a retry makes it anew.
 fn settle_key(slot: (String, String, String), out: &Value) {
     let mut slots = key_slots().lock().unwrap_or_else(|e| e.into_inner());
-    // Too large to keep: made, and a retry would make it again.
-    if out["isError"] == true || out.to_string().len() > KEPT_RESULT_BYTES {
+    if out["isError"] == true {
         slots.remove(&slot);
-    } else if let Some(s) = slots.get_mut(&slot) {
+        return;
+    }
+    // Whole where it fits, else what it made: a retry is never made again.
+    let size = out.to_string().len();
+    let whole: usize = slots
+        .values()
+        .filter_map(|s| match &s.result {
+            Some(Kept::Whole(v)) => Some(v.to_string().len()),
+            _ => None,
+        })
+        .sum();
+    let kept = if size <= KEPT_RESULT_BYTES && whole + size <= KEPT_BYTES_IN_ALL {
+        Kept::Whole(out.clone())
+    } else {
+        let made = out["content"][0]["text"].as_str().and_then(|t| serde_json::from_str::<Value>(t).ok());
+        Kept::Outcome(made.and_then(|v| v["id"].as_str().map(str::to_owned)))
+    };
+    if let Some(s) = slots.get_mut(&slot) {
         s.at = Instant::now();
-        s.result = Some(out.clone());
+        s.result = Some(kept);
     }
 }
 
@@ -621,10 +658,21 @@ mod tests {
             assert!(matches!(keyed(&slot("kb-busy", &format!("k{i}")), "p".into()), Keyed::New));
         }
         assert!(matches!(keyed(&slot("kb-busy", "one-more"), "p".into()), Keyed::Full));
-        // A result too large to keep is not kept.
+        // A result too large to keep whole: what it made is kept, and a retry
+        // gets that, never a second making.
+        let made = json!({ "id": "big-helper", "sameFolder": vec!["x".repeat(100); 200] });
+        let big = json!({ "content": [{ "type": "text", "text": made.to_string() }] });
         assert!(matches!(keyed(&slot("kb-big", "k"), "p".into()), Keyed::New));
-        settle_key(slot("kb-big", "k"), &json!({ "text": "x".repeat(KEPT_RESULT_BYTES) }));
-        assert_eq!(held("kb-big"), 0);
+        settle_key(slot("kb-big", "k"), &big);
+        assert_eq!(held("kb-big"), 1);
+        assert!(matches!(keyed(&slot("kb-big", "k"), "p".into()), Keyed::Done(Kept::Outcome(Some(ref id))) if id == "big-helper"));
+        // One that names nothing it made: kept as made all the same.
+        assert!(matches!(keyed(&slot("kb-big", "k2"), "p".into()), Keyed::New));
+        settle_key(slot("kb-big", "k2"), &json!({ "text": "x".repeat(KEPT_RESULT_BYTES) }));
+        assert!(matches!(keyed(&slot("kb-big", "k2"), "p".into()), Keyed::Done(Kept::Outcome(None))));
+        // The arguments are kept as a digest, the same size whatever they are.
+        assert_eq!(fingerprint(&json!({ "text": "y".repeat(100_000) })).len(), 64);
+        assert_eq!(fingerprint(&json!({ "a": 1, "b": 2 })), fingerprint(&json!({ "b": 2, "a": 1 })));
         key_slots().lock().unwrap().retain(|(c, _, _), _| !c.starts_with("kb-"));
     }
 }
