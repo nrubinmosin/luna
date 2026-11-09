@@ -6,6 +6,7 @@ import {
   type LibraryOverviewDto
 } from '../../ipc/library';
 import { Icon, ToolButton } from '../../shared/ui/icons';
+import { AUDIENCE_TITLE, AudiencePicker } from './AudiencePicker';
 import { CellDot, NameCell } from './cells';
 import { baseName } from './paths';
 import { FOLDER_WIDTH, RED } from './presentation';
@@ -39,6 +40,9 @@ export function SkillsGrid({
               title="The accounts each is meant for — every account, every one of a CLI, or those you name"
             >
               Meant for
+            </th>
+            <th rowSpan={o.folders.length ? 2 : 1} title={AUDIENCE_TITLE}>
+              For
             </th>
             {o.folders.length > 0 && (
               <th
@@ -113,6 +117,9 @@ export function SkillsGrid({
                     onChange={r => act(librarySetAccounts(s.name, r ?? []))}
                   />
                   <CellDot places={mine.filter(p => p.target.kind === 'account')} />
+                </td>
+                <td className="cell">
+                  <AudiencePicker entry={{ skill: s.name }} audience={s.audience} act={act} />
                 </td>
                 {o.folders.map((f, i) => (
                   <td key={f.path} className="cell">

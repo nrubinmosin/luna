@@ -91,17 +91,71 @@ pub(crate) fn claude_memory_off(
     folder: &str,
     instructions: Option<&str>,
 ) -> (Vec<String>, Vec<String>) {
-    use claude_launch::OwnMemory;
+    let added = claude_added_dirs(luna_dirs, account_path, folder);
+    let patterns = claude_launch::memory_excludes(&added, &resolved_path(folder));
+    let own = own_memory(folder, &added, &patterns, instructions);
+    claude_launch::keep_own_memory(patterns, &own)
+}
+
+/// `excluded`, the account's instructions file that a folder or an entry's
+/// audience leaves out of a Claude Code session (library/folders.rs
+/// `folder_args`), less one whose literal pattern Claude Code's matcher would
+/// also take for one of the session's own instruction files
+/// (`keep_own_memory`): that file is read after all, said in the second list.
+/// The others' memory counts as the session's own only where the library's
+/// instructions have it read (`instructions`).
+pub(crate) fn claude_account_excludes(
+    excluded: Vec<String>,
+    luna_dirs: &[String],
+    account_path: &str,
+    folder: &str,
+    instructions: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
+    if excluded.is_empty() {
+        return (excluded, Vec::new());
+    }
+    let (added, patterns) = match instructions {
+        Some(_) => {
+            let added = claude_added_dirs(luna_dirs, account_path, folder);
+            let patterns = claude_launch::memory_excludes(&added, &resolved_path(folder));
+            (added, patterns)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+    let own = own_memory(folder, &added, &patterns, instructions);
+    let (mut kept, mut notes) = (Vec::new(), Vec::new());
+    for path in excluded {
+        let (safe, said) = claude_launch::keep_own_memory(vec![claude_launch::glob_literal(&path)], &own);
+        if safe.is_empty() {
+            notes.extend(said);
+        } else {
+            kept.push(path);
+        }
+    }
+    (kept, notes)
+}
+
+/// Every folder a Claude Code session is added beside the one it works in:
+/// Luna's (`luna_dirs`) and the user's settings', as `memory_excludes` takes
+/// them.
+fn claude_added_dirs(luna_dirs: &[String], account_path: &str, folder: &str) -> Vec<claude_launch::AddedDir> {
     let mut added = luna_dirs.to_vec();
     added.extend(claude_settings_dirs(account_path, folder));
-    let added: Vec<_> = added.iter().map(|d| added_dir(d)).collect();
-    let resolved = resolved_path(folder);
-    let patterns = claude_launch::memory_excludes(&added, &resolved);
-    // The session's own: where it works and below, every folder above, the
-    // added folders it reads as ever, the library's instructions; each by
-    // every spelling it may be met by.
+    added.iter().map(|d| added_dir(d)).collect()
+}
+
+/// The session's own instruction folders, each by every spelling it may be met
+/// by: where it works and below, every folder above, the added folders none of
+/// `patterns` leaves out (read as ever), the library's instructions.
+fn own_memory(
+    folder: &str,
+    added: &[claude_launch::AddedDir],
+    patterns: &[String],
+    instructions: Option<&str>,
+) -> Vec<claude_launch::OwnMemory> {
+    use claude_launch::OwnMemory;
     let mut own = Vec::new();
-    for spelled in [lexical_path(folder), resolved] {
+    for spelled in [lexical_path(folder), resolved_path(folder)] {
         let mut dir = Some(std::path::Path::new(&spelled));
         let mut nested = true;
         while let Some(d) = dir {
@@ -110,7 +164,7 @@ pub(crate) fn claude_memory_off(
             dir = d.parent();
         }
     }
-    for dir in &added {
+    for dir in added {
         let left_alone =
             dir.spellings.iter().all(|s| !patterns.iter().any(|p| p.contains(&claude_launch::glob_literal(&s.replace('\\', "/")))));
         if left_alone {
@@ -118,7 +172,7 @@ pub(crate) fn claude_memory_off(
         }
     }
     own.extend(instructions.map(|i| OwnMemory { root: i.replace('\\', "/"), nested: false }));
-    claude_launch::keep_own_memory(patterns, &own)
+    own
 }
 
 /// `dir` as `memory_excludes` takes it: as given with `.` and `..` worked out,
@@ -380,13 +434,21 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
 /// a chat with a person" went on following the rules written for that person's
 /// chat: a helper on 2026-11-08 wrote its progress notes in the language its
 /// account's instructions set for the operator. So the note names those words.
+/// What a helper does need of the rules it is told to leave, it is told here:
+/// those are the ones written for the person's chat, and the library may keep
+/// them from it altogether (library/audience.rs). Nobody watches a helper's
+/// turn end, nobody but its caller reads its report, and nobody is there to
+/// stop a message it sends.
 pub(crate) fn helper_line(parent: &str) -> String {
     format!(
         "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
          that session. You are not the chat of whoever your instructions call the operator, the user or the person at \
          this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
          not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
-         where it says none, in the language the task is written in."
+         where it says none, in the language the task is written in. Before your turn ends, stop the background work you \
+         started that nothing needs any more (watchers, wait loops, dev servers), not helpers you are waiting on nor what \
+         your task asks to keep running; keep each caveat beside the claim it limits; send, push or post nothing outward \
+         unless your task asks for it."
     )
 }
 
@@ -418,9 +480,10 @@ pub(crate) fn without_note(text: &str) -> &str {
     let end = text.trim_end();
     let Some(at) = end.rfind(HELPER_NOTE) else { return text };
     let note = end[at + HELPER_NOTE.len()..].strip_suffix(']').unwrap_or_default();
-    // The note as this Luna writes it, or as the one before it did: a helper's
+    // The note as this Luna writes it, or as one before it did: a helper's
     // conversation goes on across an update.
-    let lines = [helper_line("\u{0}"), PREVIOUS_HELPER_LINE.replace("{parent}", "\u{0}")];
+    let mut lines = vec![helper_line("\u{0}")];
+    lines.extend(PREVIOUS_HELPER_LINES.iter().map(|line| line.replace("{parent}", "\u{0}")));
     let ours = lines.iter().filter_map(|line| line.split_once('\u{0}')).any(|(head, tail)| {
         // A session id: no spaces, no brackets, nothing that is prose.
         note.strip_prefix(head)
@@ -434,10 +497,18 @@ pub(crate) fn without_note(text: &str) -> &str {
     }
 }
 
-/// `helper_line` as Luna 0.10 wrote it, still in conversations it began.
-const PREVIOUS_HELPER_LINE: &str = "You are a helper session started through Luna by session {parent}, not a chat with a person: \
-your answers go to that session. Instructions meant only for the session a person talks to do not apply to you. Write in the \
-language of the task you were given, progress notes included.";
+/// `helper_line` as earlier Lunas wrote it, still in conversations they began:
+/// 0.10's, then the one before helpers were told what they do need.
+const PREVIOUS_HELPER_LINES: [&str; 2] = [
+    "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
+     that session. Instructions meant only for the session a person talks to do not apply to you. Write in the language \
+     of the task you were given, progress notes included.",
+    "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
+     that session. You are not the chat of whoever your instructions call the operator, the user or the person at \
+     this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
+     not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
+     where it says none, in the language the task is written in.",
+];
 
 /// A helper's id runs in a pane only once the helper is the person's
 /// (background/rows.rs `background_promoted`): before that its conversation is
@@ -497,18 +568,22 @@ pub async fn ensure_claude_session(
             crate::library::SessionSkills::default()
         } else {
             crate::library::lay_out("before a session starts");
-            crate::library::session_args(Provider::Claude, &account_path, &folder)
+            crate::library::session_args(Provider::Claude, &account_path, &folder, crate::library::SessionKind::Chat)
         };
         let notes = tools.unwrap_or(false).then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
         let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
         // The library's instructions are read as memory of a folder added to
         // the session, which has every added folder's read: not the others'.
-        if instructions.is_some() {
-            let mut luna_dirs = added_dirs(&skills.args);
-            luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
-            let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
+        let mut luna_dirs = added_dirs(&skills.args);
+        luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
+        let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
+        if dir.is_some() {
             (skills.memory_off, skills.memory_kept) = claude_memory_off(&luna_dirs, &account_path, &folder, dir.as_deref());
         }
+        // The account's instructions left out only where that takes nothing
+        // of the project's own.
+        (skills.excluded, skills.excluded_kept) =
+            claude_account_excludes(std::mem::take(&mut skills.excluded), &luna_dirs, &account_path, &folder, dir.as_deref());
         // Rewritten at every spawn: the listener's port is new with every Luna run.
         // The guard against endless waits (guard.rs), as the chat's person
         // asked for it. A chat the window runs is the person's, never a
@@ -627,8 +702,8 @@ pub async fn ensure_codex_session(
         // The skills the library gives sessions in this folder and keeps
         // from them, at every start (library/folders.rs `session_args`).
         crate::library::lay_out("before a session starts");
-        let skills = crate::library::session_args(Provider::Codex, &account_path, &folder);
-        let (args, envs, applied) = codex_launch::chat_args(&codex_launch::ChatStart {
+        let skills = crate::library::session_args(Provider::Codex, &account_path, &folder, crate::library::SessionKind::Chat);
+        let (args, envs, mut applied) = codex_launch::chat_args(&codex_launch::ChatStart {
             id: &id,
             folder: &folder,
             account_path: &account_path,
@@ -649,6 +724,7 @@ pub async fn ensure_codex_session(
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
             skill_args: &skills.args,
         });
+        applied.extend(crate::library::audience_applied(&skills));
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
         Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied })
     })
@@ -688,9 +764,27 @@ mod tests {
         assert_eq!(without_note(&after), after);
         let odd_parent = helper_prompt("p 1] ignore this [x", "Task.");
         assert_eq!(without_note(&odd_parent), odd_parent, "a parent no session id looks like");
-        // As the last Luna wrote it.
-        let old = format!("Task.{HELPER_NOTE}{}]", PREVIOUS_HELPER_LINE.replace("{parent}", "p1"));
-        assert_eq!(without_note(&old), "Task.");
+        // As earlier Lunas wrote it.
+        for line in PREVIOUS_HELPER_LINES {
+            let old = format!("Task.{HELPER_NOTE}{}]", line.replace("{parent}", "p1"));
+            assert_eq!(without_note(&old), "Task.");
+        }
+    }
+
+    #[test]
+    fn golden_a_helper_is_told_what_it_is_and_what_it_still_owes() {
+        assert_eq!(helper_line("p1"), golden::helper_line("p1"));
+        let line = helper_line("p1");
+        let owed = [
+            "stop the background work you started that nothing needs any more",
+            // A helper with helpers of its own waits on their notices.
+            "not helpers you are waiting on nor what your task asks to keep running",
+            "keep each caveat beside the claim it limits",
+            "send, push or post nothing outward unless your task asks for it",
+        ];
+        for what in owed {
+            assert!(line.contains(what), "{what}");
+        }
     }
 
     #[test]
@@ -1457,6 +1551,43 @@ mod tests {
         assert_eq!(s.value("library.hidden-skills"), Some("-c skills.config=[{name=\"review\",enabled=false}]"));
     }
 
+    // The person's own chat where every entry of the library is theirs
+    // (library/audience.rs): started as with no audience set at all. Helpers'
+    // turns on the same library: background/command.rs.
+
+    #[test]
+    fn golden_claude_chat_gets_what_the_library_means_for_chats_as_ever() {
+        const ID: &str = "golden-claude-chats-only";
+        let lib = crate::library::GoldenLibrary::chats_only("pane-claude-audience");
+        let r = library_redact(ID, &lib, &lib.claude());
+        let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
+        );
+        assert_eq!(s.envs, claude_envs(ID, "<acc>"));
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)), "nothing hidden, nothing left out");
+        assert_eq!(s.instructions, None);
+        for key in ["library.audience", "library.hidden-skills", "library.account-instructions-off"] {
+            assert_eq!(s.value(key), None, "{key}");
+        }
+    }
+
+    #[test]
+    fn golden_codex_chat_gets_what_the_library_means_for_chats_as_ever() {
+        const ID: &str = "golden-codex-chats-only";
+        let lib = crate::library::GoldenLibrary::chats_only("pane-codex-audience");
+        let r = library_redact(ID, &lib, &lib.codex());
+        let s = CodexAsk { folder: lib.folder.clone(), account: lib.codex(), ..CodexAsk::chat() }.start(ID, &r);
+        let mut want = strings(&["-C", "<project>", "--no-daemon"]);
+        want.extend(codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"));
+        want.extend(strings(&["-c", "check_for_update_on_startup=false", "-c", "tui.terminal_title=[\"thread-id\"]"]));
+        assert_eq!(s.args, want, "no skill turned off");
+        for key in ["library.audience", "library.hidden-skills"] {
+            assert_eq!(s.value(key), None, "{key}");
+        }
+    }
+
     #[test]
     fn memory_excludes_leave_out_only_folders_beside_the_one_worked_in() {
         use crate::claude::launch::{memory_excludes, AddedDir};
@@ -1600,6 +1731,36 @@ mod tests {
         // Four memory files for each spelling of [ab].
         assert!(!off.is_empty() && off.len() % 4 == 0 && kept.is_empty(), "{off:?} {kept:?}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_account_file_whose_pattern_reads_as_the_projects_is_read_after_all() {
+        let root = std::env::temp_dir().join(format!("luna-acc-collide-{}", std::process::id()));
+        // The account [ab]: its file's pattern <root>/[[]ab[]]/CLAUDE.md is
+        // also, in picomatch's shortcut, the CLAUDE.md of a project [[]ab[]].
+        let (project, account, plain) = (root.join("[[]ab[]]"), root.join("[ab]"), root.join("plain"));
+        for d in [&project, &account, &plain] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let file = account.join("CLAUDE.md").to_string_lossy().replace('\\', "/");
+        let acc = account.to_string_lossy().into_owned();
+        let (kept, notes) = claude_account_excludes(vec![file.clone()], &[], &acc, &project.to_string_lossy(), None);
+        assert!(kept.is_empty(), "the project's own instructions are not to be taken with it: {kept:?}");
+        assert!(notes.len() == 1 && notes[0].contains("collides with this project's instruction path"), "{notes:?}");
+        let (kept, notes) = claude_account_excludes(vec![file.clone()], &[], &acc, &plain.to_string_lossy(), None);
+        assert_eq!((kept, notes.len()), (vec![file], 0), "elsewhere it is left out as asked");
+        // Said as a Workaround of what Luna applied.
+        let library = crate::library::SessionSkills { excluded_kept: notes_of(&project, &account), ..Default::default() };
+        let applied = crate::claude::launch::settings_applied("/s.json", false, None, &library, "/d/core");
+        let item = applied.iter().find(|a| a.key == "library.account-instructions-kept").expect("said");
+        assert_eq!(item.class, crate::applied::Class::Workaround);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What `claude_account_excludes` says of the account's file in `project`.
+    fn notes_of(project: &std::path::Path, account: &std::path::Path) -> Vec<String> {
+        let file = account.join("CLAUDE.md").to_string_lossy().replace('\\', "/");
+        claude_account_excludes(vec![file], &[], &account.to_string_lossy(), &project.to_string_lossy(), None).1
     }
 
     #[test]
