@@ -391,9 +391,10 @@ pub(crate) fn helper_line(parent: &str) -> String {
          that session. You are not the chat of whoever your instructions call the operator, the user or the person at \
          this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
          not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
-         where it says none, in the language the task is written in. Before your turn ends, stop what you started that \
-         is still running; keep each caveat beside the claim it limits; send, push or post nothing outward unless your \
-         task asks for it."
+         where it says none, in the language the task is written in. Before your turn ends, stop the background work you \
+         started that nothing needs any more (watchers, wait loops, dev servers), not helpers you are waiting on nor what \
+         your task asks to keep running; keep each caveat beside the claim it limits; send, push or post nothing outward \
+         unless your task asks for it."
     )
 }
 
@@ -717,7 +718,9 @@ mod tests {
         assert_eq!(helper_line("p1"), golden::helper_line("p1"));
         let line = helper_line("p1");
         let owed = [
-            "stop what you started that is still running",
+            "stop the background work you started that nothing needs any more",
+            // A helper with helpers of its own waits on their notices.
+            "not helpers you are waiting on nor what your task asks to keep running",
             "keep each caveat beside the claim it limits",
             "send, push or post nothing outward unless your task asks for it",
         ];
