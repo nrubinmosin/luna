@@ -40,8 +40,11 @@
 //! periodic check. Where a version comes from is each provider's `Source`
 //! (`claude::cli`, `codex::cli`).
 
+mod choice;
 mod in_use;
+mod known_good;
 
+pub use choice::Channel;
 pub use in_use::{session_version, InUse};
 
 use crate::provider::Provider;
@@ -133,11 +136,17 @@ pub struct CliStatus {
     pub version: Option<String>,
     /// Where that binary lives — the bare name on PATH while there is no managed copy.
     pub path: String,
-    /// The newest version the channel offers, once a check has come back.
+    /// The newest version the CLI's own release channel offers, once a check
+    /// has come back.
     pub latest: Option<String>,
+    /// Which versions the update pass installs.
+    pub channel: Channel,
     pub got: u64,
     pub total: Option<u64>,
     pub error: Option<String>,
+    /// Why the last pass left `current` where it was, when that was on
+    /// purpose rather than for want of anything newer.
+    pub note: Option<String>,
     pub checked_at_ms: Option<u64>,
 }
 
@@ -151,6 +160,7 @@ fn state() -> &'static Mutex<HashMap<Provider, CliStatus>> {
                 CliStatus {
                     provider: Some(p),
                     phase: "idle".into(),
+                    channel: choice::channel_in(&root(p)),
                     version: current_version(p),
                     path: binary(p).to_string_lossy().into_owned(),
                     ..Default::default()
@@ -336,6 +346,10 @@ pub struct VersionRow {
     pub previous: bool,
     /// A process of Luna's runs from it now.
     pub in_use: bool,
+    /// On this Luna's shipped list.
+    pub known_good: bool,
+    /// Marked bad, and why.
+    pub bad: Option<String>,
 }
 
 /// A provider's installed versions and what each is to Luna.
@@ -343,8 +357,19 @@ pub struct VersionRow {
 #[serde(rename_all = "camelCase")]
 pub struct CliVersions {
     pub provider: Option<Provider>,
+    pub channel: Channel,
     /// Newest first.
     pub versions: Vec<VersionRow>,
+    /// The shipped list, installed or not.
+    pub known_good: Vec<String>,
+    /// Nothing older runs.
+    pub min_safe: String,
+    /// The newest version that has run here: nothing older is downloaded.
+    pub floor: String,
+    /// The directory "Use" holds `current` at, while it does.
+    pub pinned: Option<String>,
+    /// Every version marked bad, installed or not, and why.
+    pub bad: std::collections::BTreeMap<String, String>,
 }
 
 /// Every recorded, intact install under `root`, newest first.
@@ -366,29 +391,66 @@ fn installed_all(root: &Path, bin_rel: &str) -> Vec<(String, Record)> {
     out
 }
 
-fn versions_in(root: &Path, bin_rel: &str) -> Vec<VersionRow> {
+fn versions_in(root: &Path, bin_rel: &str, known: &known_good::Entry) -> CliVersions {
     let current = current_in(root, bin_rel).map(|c| c.dir);
     let previous = previous_in(root, bin_rel);
-    installed_all(root, bin_rel)
+    let bad = choice::bad_in(root);
+    let versions = installed_all(root, bin_rel)
         .into_iter()
         .map(|(dir, record)| VersionRow {
             current: current.as_deref() == Some(dir.as_str()),
             previous: previous.as_deref() == Some(dir.as_str()),
             in_use: in_use::busy(root, &dir),
+            known_good: known.known_good.contains(&record.version),
+            bad: bad.get(&record.version).cloned(),
             version: record.version,
             dir,
         })
-        .collect()
+        .collect();
+    CliVersions {
+        provider: None,
+        channel: choice::channel_in(root),
+        versions,
+        known_good: known.known_good.clone(),
+        min_safe: known.min_safe.clone(),
+        floor: floor_in(root, &known.min_safe),
+        pinned: choice::pinned_in(root),
+        bad,
+    }
 }
 
 #[tauri::command]
 pub fn cli_versions(provider: Provider) -> CliVersions {
     let src = source(provider);
-    CliVersions { provider: Some(provider), versions: versions_in(&root(provider), src.bin_rel) }
+    CliVersions { provider: Some(provider), ..versions_in(&root(provider), src.bin_rel, known_good::entry(provider)) }
 }
 
-/// "Use" in Settings: makes the installed directory `dir` current. Running
-/// sessions keep what they run; new ones start on it.
+/// The channel a provider follows from now on; a version held by hand is let
+/// go, and a pass runs at once.
+#[tauri::command]
+pub fn cli_set_channel(provider: Provider, channel: Channel) -> Result<(), String> {
+    choice::set_channel_in(&root(provider), channel)?;
+    crate::log::info("cli", &format!("{} follows the {channel:?} channel", provider.as_str()));
+    publish(provider, |s| s.channel = channel);
+    std::thread::spawn(move || update(provider));
+    Ok(())
+}
+
+/// "Mark bad": no pass installs `version` or makes it current again. One
+/// that is current stays until something else is: on the known-good channel
+/// the pass that runs now moves to the next version on the list, and on
+/// either "Use" goes back by hand.
+#[tauri::command]
+pub fn cli_mark_bad(provider: Provider, version: String, why: Option<String>) -> Result<(), String> {
+    choice::mark_bad_in(&root(provider), &version, why.as_deref().unwrap_or(""))?;
+    crate::log::info("cli", &format!("{} {version} marked bad: {}", provider.as_str(), why.unwrap_or_default()));
+    std::thread::spawn(move || update(provider));
+    Ok(())
+}
+
+/// "Use" in Settings: makes the installed directory `dir` current and holds
+/// it there, the update pass leaving it be until a channel is chosen again.
+/// Running sessions keep what they run; new ones start on it.
 #[tauri::command]
 pub async fn cli_use_version(provider: Provider, dir: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || use_version(provider, &dir)).await.map_err(|e| e.to_string())?
@@ -400,7 +462,8 @@ fn use_version(provider: Provider, dir: &str) -> Result<(), String> {
         return Err("an update of this CLI is under way; try again once it is done".into());
     }
     let src = source(provider);
-    let result = use_version_in(&root(provider), src.bin_rel, min_safe(provider), dir);
+    let root = root(provider);
+    let result = use_version_in(&root, src.bin_rel, min_safe(provider), dir).and_then(|v| choice::pin_in(&root, dir).map(|()| v));
     busy.store(false, Ordering::SeqCst);
     match &result {
         Ok(version) => crate::log::info("cli", &format!("{} {version} is now current by hand (versions/{dir})", provider.as_str())),
@@ -447,13 +510,9 @@ const FLOOR: &str = "floor";
 /// accepted: still honored, never written.
 const LEGACY_FLOOR: &str = "signed-floor";
 
-/// The oldest version of each CLI this Luna lets run at all.
+/// The oldest version of each CLI this Luna lets run at all (`known_good`).
 pub(crate) fn min_safe(provider: Provider) -> &'static str {
-    match provider {
-        // The version Luna was last checked live with (docs/cli-compatibility.md).
-        Provider::Claude => "2.1.319",
-        Provider::Codex => "0",
-    }
+    known_good::min_safe(provider)
 }
 
 /// The floor under `root`: the highest of `min_safe` and what the floor
@@ -591,32 +650,63 @@ fn update(provider: Provider) {
         s.got = 0;
         s.total = None;
         match &result {
-            Ok(()) => {
+            Ok(note) => {
                 s.phase = "idle".into();
                 s.error = None;
+                s.note = note.clone();
             }
             Err(e) => {
                 s.phase = "error".into();
                 s.error = Some(e.clone());
+                s.note = None;
             }
         }
         s.version = current_version(provider);
         s.path = binary(provider).to_string_lossy().into_owned();
     });
-    if let Err(e) = result {
-        crate::log::warn("cli", &format!("{} update failed: {e}", provider.as_str()));
+    match result {
+        Err(e) => crate::log::warn("cli", &format!("{} update failed: {e}", provider.as_str())),
+        Ok(Some(note)) => crate::log::info("cli", &format!("{}: {note}", provider.as_str())),
+        Ok(None) => {}
     }
 }
 
-fn update_inner(provider: Provider) -> Result<(), String> {
+/// One pass: what the channel names, made current. Ok with a note where
+/// `current` was left where it is on purpose.
+fn update_inner(provider: Provider) -> Result<Option<String>, String> {
+    let root = root(provider);
+    let channel = choice::channel_in(&root);
     publish(provider, |s| {
         s.phase = "checking".into();
         s.error = None;
+        s.channel = channel;
     });
     let src = source(provider);
     let agent = http();
-    let latest = (src.latest)(&agent)?;
-    publish(provider, |s| s.latest = Some(latest.clone()));
+    // Asked on either channel: on the known-good one it is news for the
+    // status line, and only `latest` fails without it.
+    let latest = (src.latest)(&agent);
+    if let Ok(l) = &latest {
+        publish(provider, |s| s.latest = Some(l.clone()));
+    }
+    let pinned = choice::pinned_in(&root).and_then(|dir| match installed_all(&root, src.bin_rel).into_iter().find(|(d, _)| *d == dir) {
+        Some((_, record)) => Some(record.version),
+        None => {
+            // Held at a version that is gone: nothing left to hold.
+            let _ = choice::unpin_in(&root);
+            None
+        }
+    });
+    let bad = choice::bad_in(&root);
+    let latest = latest.as_ref().map(String::as_str).map_err(String::as_str);
+    let (version, chosen) = match choice::plan(channel, pinned.as_deref(), known_good::entry(provider), &bad, latest)? {
+        choice::Plan::Stay(why) => return Ok(Some(why)),
+        choice::Plan::Install { version, chosen } => (version, chosen),
+    };
+    let target = Target { version: &version, min_safe: min_safe(provider), chosen };
+    if let Some(why) = held_below_floor(&root, src.bin_rel, target) {
+        return Ok(Some(why));
+    }
 
     let mut progress = |got: u64, total: Option<u64>| {
         publish(provider, |s| {
@@ -625,20 +715,19 @@ fn update_inner(provider: Provider) -> Result<(), String> {
         });
     };
     let mut fetch = |dir: &Path| {
-        crate::log::info("cli", &format!("downloading {} {latest}", provider.as_str()));
+        crate::log::info("cli", &format!("downloading {} {version}", provider.as_str()));
         publish(provider, |s| {
             s.phase = "downloading".into();
             s.got = 0;
             s.total = None;
         });
-        (src.fetch)(&agent, &latest, dir, &mut progress)
+        (src.fetch)(&agent, &version, dir, &mut progress)
     };
-    let target = Target { version: &latest, min_safe: min_safe(provider) };
-    let (dir, flipped) = update_in(&root(provider), src.bin_rel, target, &mut fetch)?;
+    let (dir, flipped) = update_in(&root, src.bin_rel, target, &mut fetch)?;
     if flipped {
-        crate::log::info("cli", &format!("{} {latest} is now current (versions/{dir})", provider.as_str()));
+        crate::log::info("cli", &format!("{} {version} is now current (versions/{dir})", provider.as_str()));
     }
-    Ok(())
+    Ok(None)
 }
 
 /// What an update pass is to make current.
@@ -647,14 +736,35 @@ struct Target<'a> {
     version: &'a str,
     /// Nothing older is taken however it is named.
     min_safe: &'a str,
+    /// Named by this Luna's own list (the known-good channel), not by the
+    /// channel's pointer off the network: it may be gone back to below the
+    /// floor while it is installed, as "Use" may.
+    chosen: bool,
+}
+
+/// Why the pass leaves `current` be rather than take `target`: a version of
+/// the shipped list below the floor that is no longer installed is not
+/// downloaded again, so a Luna whose CLI had moved on past its list stays
+/// where it is until a newer list comes with a Luna update.
+fn held_below_floor(root: &Path, bin_rel: &str, target: Target) -> Option<String> {
+    let floor = floor_in(root, target.min_safe);
+    let below = target.chosen && version_cmp(target.version, &floor).is_lt();
+    (below && installed_in(root, bin_rel, target.version).is_none()).then(|| {
+        format!(
+            "{}, the newest known-good version, is older than {floor}, which has run here, and is no longer installed: staying until a Luna update brings a newer one",
+            target.version
+        )
+    })
 }
 
 /// The update pass on one provider's tree once the channel has named its
 /// version. Nothing to fetch when `current` holds a recorded install of it,
 /// or when one is already in `versions/`; otherwise `fetch` stages a fresh
-/// one. A version below the floor is refused either way: the channel's
-/// pointer is not signed. Then the flip and the sweep. Returns the directory
-/// now current and whether `current` moved.
+/// one. A version below the floor is refused when the channel's pointer
+/// named it (the pointer is not signed) and never downloaded; one from the
+/// shipped list may be gone back to while installed, once its files match
+/// their recorded sha256 again. Then the flip and the sweep. Returns the
+/// directory now current and whether `current` moved.
 fn update_in(
     root: &Path,
     bin_rel: &str,
@@ -669,13 +779,25 @@ fn update_in(
         prune_in(root, bin_rel);
         return Ok((c.dir, false));
     }
+    if version_cmp(version, target.min_safe).is_lt() {
+        return Err(format!("refusing {version}: older than {}, the oldest this Luna lets run", target.min_safe));
+    }
     // Before the fetch, and for an install already there alike: an older
     // recorded version left in `versions/` would otherwise be flipped back
     // to with no fetch.
-    at_or_above_floor_in(root, target.min_safe, version)?;
-    let dir = match installed_in(root, bin_rel, version) {
-        Some(dir) => dir,
-        None => install_in(root, bin_rel, version, fetch)?,
+    let below = at_or_above_floor_in(root, target.min_safe, version);
+    if !target.chosen {
+        below.clone()?;
+    }
+    let dir = match (installed_in(root, bin_rel, version), below) {
+        (Some(dir), Ok(())) => dir,
+        (Some(dir), Err(_)) => {
+            let record = read_record(&root.join("versions").join(&dir)).map_err(|e| format!("{dir}: {e}"))?;
+            reverify(&root.join("versions").join(&dir), &record).map_err(|e| format!("{version}: {e}"))?;
+            dir
+        }
+        (None, Err(e)) => return Err(e),
+        (None, Ok(())) => install_in(root, bin_rel, version, fetch)?,
     };
     mark_recorded(root)?;
     flip_in(root, bin_rel, &dir)?;
@@ -1042,7 +1164,16 @@ mod tests {
 
     /// What the channel's pointer names, with no minimum of its own.
     fn pointer(version: &str) -> Target<'_> {
-        Target { version, min_safe: "0" }
+        Target { version, min_safe: "0", chosen: false }
+    }
+
+    /// What this Luna's list names, `known` from it.
+    fn chosen(version: &str) -> Target<'_> {
+        Target { version, min_safe: "0", chosen: true }
+    }
+
+    fn list(known: &[&str]) -> known_good::Entry {
+        known_good::Entry { min_safe: "0".into(), known_good: known.iter().map(|v| v.to_string()).collect() }
     }
 
     /// `whole`, vouched for by sha256 as well, as Claude Code's manifest does.
@@ -1269,7 +1400,7 @@ mod tests {
         update_in(&root, BIN, pointer("4.0.0"), &mut whole).unwrap();
         assert_eq!(dirs(&root), ["2.0.0", "3.0.0", "4.0.0"], "1.0.0 went; 2.0.0 runs, 3.0.0 is the previous one");
         assert!(root.join("versions").join("2.0.0").join(FILES[1].0).is_file(), "its helpers too");
-        let rows = versions_in(&root, BIN);
+        let rows = versions_in(&root, BIN, &list(&[])).versions;
         assert_eq!(
             rows.iter().map(|r| (r.version.as_str(), r.current, r.previous, r.in_use)).collect::<Vec<_>>(),
             [("4.0.0", true, false, false), ("3.0.0", false, true, false), ("2.0.0", false, false, true)]
@@ -1366,6 +1497,35 @@ mod tests {
         assert!(current_in(&plain, BIN).is_some_and(|c| c.version == "2.0.0"));
         let _ = remove_tree(&root);
         let _ = remove_tree(&plain);
+    }
+
+    /// The known-good channel after `latest` had moved on: back to the
+    /// listed version while it is installed, and never a download below the
+    /// floor; Settings sees the list, the marks and the hold.
+    #[test]
+    fn the_known_good_channel_goes_back_only_to_what_is_installed() {
+        let root = scratch("known");
+        update_in(&root, BIN, chosen("1.0.0"), &mut hashed).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        assert!(held_below_floor(&root, BIN, chosen("1.0.0")).is_none(), "1.0.0 is still installed");
+        let (dir, flipped) = update_in(&root, BIN, chosen("1.0.0"), &mut |_: &Path| panic!("fetched")).unwrap();
+        assert_eq!((dir.as_str(), flipped), ("1.0.0", true));
+        assert_eq!(floor_in(&root, "0"), "2.0.0", "the floor stays");
+
+        // Listed but never installed, below the floor: held, not fetched.
+        let why = held_below_floor(&root, BIN, chosen("1.5.0")).unwrap();
+        assert!(why.contains("older than 2.0.0"), "{why}");
+        assert!(update_in(&root, BIN, chosen("1.5.0"), &mut |_: &Path| panic!("fetched")).is_err());
+        // Above it, a listed version is fetched like any.
+        update_in(&root, BIN, chosen("3.0.0"), &mut hashed).unwrap();
+
+        choice::mark_bad_in(&root, "2.0.0", "hangs").unwrap();
+        choice::pin_in(&root, "3.0.0").unwrap();
+        let v = versions_in(&root, BIN, &list(&["1.0.0", "3.0.0"]));
+        let rows: Vec<_> = v.versions.iter().map(|r| (r.version.as_str(), r.known_good, r.bad.as_deref())).collect();
+        assert_eq!(rows, [("3.0.0", true, None), ("1.0.0", true, None)], "2.0.0, neither current nor previous, went");
+        assert_eq!((v.floor.as_str(), v.pinned.as_deref(), v.bad.len()), ("3.0.0", Some("3.0.0"), 1));
+        let _ = remove_tree(&root);
     }
 
     #[test]
