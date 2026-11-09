@@ -186,7 +186,12 @@ fn a_handoff_given_up_before_its_reset_tells_the_old_conversation() {
     // After the reset, the new conversation hears where to start.
     reg().lock().unwrap().news.retain(|(c, _)| c != "hogu-me");
     schedule("hogu-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
-    finish("hogu-me", 2, Ended::Failed { why: "the new conversation did not take Luna's prompt within 60 s".into(), reset: true }, "PROMPT");
+    finish(
+        "hogu-me",
+        2,
+        Ended::Failed { why: "the new conversation did not take Luna's prompt within 60 s".into(), reset: true },
+        "PROMPT",
+    );
     let news: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hogu-me").map(|(_, l)| l.clone()).collect();
     assert!(news[0].contains("cleared the conversation") && news[0].ends_with("PROMPT"), "{}", news[0]);
     reg().lock().unwrap().news.retain(|(c, _)| c != "hogu-me");
