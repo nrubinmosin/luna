@@ -115,3 +115,24 @@ folder's) is laid out nowhere until it does, and its copies stay as they were;
 so do those of a library that will not read for a moment (a file held open
 mid-save). Paths compare as the system compares them (on Windows regardless of
 case), so an account renamed in case only keeps its copies.
+
+## System skills
+
+One text in the library is no skill of yours to lay out but Luna's own, which
+you may override: **`session-handoff`**, what a chat with
+[Auto-handoff](chats.md#auto-handoff) on is given when it writes its handoff.
+Luna serves it only to such chats, through their `luna_session_handoff` tool,
+once they are asked for a handoff; it is never put into an account or a folder,
+and no other session, helper or chat without the tick sees it.
+
+- Luna's own is built in, of its version. To give your own to every chat,
+  write `system/session-handoff/SKILL.md` in the library: front matter with
+  `name: session-handoff` and a `description`, then the text, at most 64 KB. It
+  has no reach and no audience: it is everyone's.
+- One that does not do (no front matter, another name, no description, nothing
+  past the front matter, a link, too large) is not used: Luna's own is served,
+  and the chat's **What Luna applied** panel says why.
+- A skill named `session-handoff` among your skills is not the override, and
+  neither is one in a project's `.claude/skills` or `.agents/skills` or an
+  account's `skills/`: Luna never serves those for a handoff, though the CLI may
+  list them to the model. The chat's panel warns of one in its folder or account.

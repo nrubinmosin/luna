@@ -151,19 +151,30 @@ change it, from 10 to 90), or later in the chat's **What Luna applied** panel.
 A chat without Luna tools cannot have it: their server is what offers it.
 
 - Once a turn ends past the threshold, Luna types one notice into the chat
-  asking for a handoff: the steps and what the file is to hold (objective and
-  stop conditions, what is done and what remains, decisions, approvals and open
-  questions, branches and SHAs, helpers and what each was asked, checks, the next
-  action). A firmer one follows near where the CLI would compact the conversation
-  by itself. A conversation a handoff began is asked only once it has grown 5
-  points past where it began. Nothing switches unless the chat asks.
-- The chat writes the file and calls `luna_session_handoff`. Luna copies it into
-  its data folder and, once the chat is at rest, types `/clear` (Claude Code) or
-  `/new` (Codex) and then a prompt opening `[Luna handoff N` that points the new
-  conversation at the copy and states what Luna knows itself: the chat's helpers
-  and their state, branches and worktrees, the answers they owe, text not yet
-  delivered, accounts and their use, the chat's settings. Its helpers, their
-  answers and notices carry on untouched; the chat keeps its row, name and id.
+  asking for a handoff. The chat calls `luna_session_handoff` without arguments
+  and gets the steps and the instructions for the file: Luna's own, or yours
+  from the library ([System skills](library.md#system-skills)). A firmer notice
+  follows near where the CLI would compact the conversation by itself, carrying
+  the file's headings itself (goal, next action, the user's words, state,
+  pending, decisions and dead ends) for a chat short of context. A conversation
+  a handoff began is asked only once it has grown 5 points past where it began.
+  Nothing switches unless the chat asks.
+- If the CLI compacts the conversation before a handoff, the chat is asked
+  again once it is past the threshold again. The chip on the title bar then
+  reads **handoff N% · asked**, ringed, its tooltip saying at what share of the
+  context it was asked and how often the CLI compacted it since; it goes once a
+  handoff is under way or through.
+- The chat writes the file and calls `luna_session_handoff` with it. Luna copies
+  it into its data folder (written to Luna's own instructions, it names the
+  headings the file lacks, and goes on) and, once the chat is at rest, types
+  `/clear` (Claude Code) or `/new` (Codex) and then a prompt opening
+  `[Luna handoff N` that points the new conversation at the copy and states what
+  Luna knows itself, as of that moment: the chat's helpers with their model and
+  effort, state, task, branches and worktrees and transcripts, the answers they
+  owe, text not yet delivered, accounts and their use, the chat's settings. The
+  prompt says that approvals the handoff quotes hold as far as your quoted
+  words go and no further. Its helpers, their answers and notices carry on
+  untouched; the chat keeps its row, name and id.
 - Your draft in the chat holds the switch until you send or clear it; after a
   minute the desktop says so. Notices and messages for the chat wait meanwhile
   and go into the new conversation.
@@ -179,8 +190,18 @@ A chat without Luna tools cannot have it: their server is what offers it.
   on the same conversation once it is idle: a CLI lists Luna's tools as it
   starts. Turned off, the tool refuses from then on, and a handoff only
   scheduled is dropped.
+- With it on, the chat's **What Luna applied** panel says whose instructions it
+  would be given now: **Luna's** (with Luna's version and the text's hash),
+  **yours** (the library's file and its hash), or **yours is broken** (why, and
+  that Luna's is used). It warns when the chat's folder or account has a skill
+  named `session-handoff` of its own, which the CLI may show the model and Luna
+  never uses for the handoff.
+- Only this chat hears of any of it: helpers, chats without the tick and chats
+  without Luna tools are not offered the tool, find nothing of it in Luna's
+  guide, and get nothing of it in their account or command line.
 
-See [ADR-0020](../adr/0020-session-self-handoff.md).
+See [ADR-0020](../adr/0020-session-self-handoff.md) and
+[ADR-0022](../adr/0022-content-luna-serves-at-its-own-trigger.md).
 
 ## Status
 
