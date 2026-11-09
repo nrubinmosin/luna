@@ -520,6 +520,10 @@ fn use_version(provider: Provider, dir: &str) -> Result<(), String> {
 /// person's rather than the channel's: once every file is held again to the
 /// sha256 its record kept, and never below `min_safe`.
 fn use_version_in(root: &Path, bin_rel: &str, min_safe: &str, dir: &str) -> Result<String, String> {
+    // The floor as it is, before it decides how far the version is checked:
+    // a floor left below what is current would let an older version pass
+    // as above it, and the flip would then raise it to that one only.
+    reconcile_in(root, bin_rel)?;
     let Some((_, record)) = installed_all(root, bin_rel).into_iter().find(|(d, _)| d == dir) else {
         return Err(format!("{dir} is not an installed version"));
     };
@@ -734,6 +738,8 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
         return Ok(Some(why));
     }
     let src = source(provider);
+    // Before any way out of the pass, a version held by hand among them.
+    reconcile_in(&root, src.bin_rel)?;
     let agent = http();
     // Asked on either channel: on the known-good one it is news for the
     // status line, and only `latest` fails without it.
@@ -1812,6 +1818,29 @@ mod tests {
         // The pass with nothing to do mends it too.
         update_in(&root, BIN, pointer("2.0.0"), &mut |_: &Path| panic!("fetched")).unwrap();
         assert_eq!(fs::read_to_string(root.join(FLOOR)).unwrap(), "2.0.0");
+        let _ = remove_tree(&root);
+    }
+
+    /// The review's case: 3.0.0 current, the floor left at 1.0.0, 2.0.0
+    /// installed with a record from before every file had a sha256. "Use
+    /// 2.0.0" took it for above the floor, passed its files over and set the
+    /// floor to 2.0.0, as if 3.0.0 had never run.
+    #[test]
+    fn use_mends_a_floor_left_below_the_current_version_first() {
+        let root = scratch("use-floor");
+        update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        let path = root.join("versions").join("2.0.0").join(RECORD);
+        let mut record: Record = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        record.files.iter_mut().for_each(|f| f.sha256 = None);
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        update_in(&root, BIN, pointer("3.0.0"), &mut hashed).unwrap();
+        fs::write(root.join(FLOOR), "1.0.0").unwrap();
+
+        let refused = use_version_in(&root, BIN, "0", "2.0.0").unwrap_err();
+        assert!(refused.contains("below 3.0.0") && refused.contains("keeps no sha256"), "{refused}");
+        assert_eq!(fs::read_to_string(root.join(FLOOR)).unwrap(), "3.0.0", "3.0.0 ran, and the floor says so");
+        assert!(current_in(&root, BIN).is_some_and(|c| c.version == "3.0.0"));
         let _ = remove_tree(&root);
     }
 
