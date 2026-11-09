@@ -335,6 +335,8 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 err_reader.await_last_words(&err_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
                 err_reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
+                // For the canary over a new CLI version's first sessions.
+                crate::cli::session_ended(&id, code.is_some_and(|c| c != 0));
                 turn_over(&id, code);
             })
             .map_err(thread_err)?;
