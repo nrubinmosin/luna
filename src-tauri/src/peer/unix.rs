@@ -313,10 +313,16 @@ mod tests {
     }
 
     /// A peer gone and reaped before the core reads it is refused, and on a
-    /// kernel that knows `SO_PEERPIDFD` never read without a pidfd.
+    /// kernel that knows `SO_PEERPIDFD` never read without a pidfd. Whether
+    /// this one knows it is asked of a live peer first: before 6.5 it does
+    /// not, and `peer_pidfd` rightly answers `Ok(None)` there.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_peer_reaped_before_it_is_read_is_refused() {
+        let supported = {
+            let (_l, _client, server) = crate::endpoint::tests::pair();
+            peer_pidfd(server.raw()).expect("a live peer's pidfd, or none on a kernel without the option").is_some()
+        };
         let name = crate::endpoint::tests::test_name();
         let listener = crate::endpoint::Listener::bind(&name).unwrap();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -329,10 +335,12 @@ mod tests {
         let server = listener.accept().unwrap();
         let _ = child.kill();
         let _ = child.wait();
-        match peer_pidfd(server.raw()) {
-            Err(_) => {}
-            Ok(Some(pidfd)) => assert!(!still_there(&pidfd), "a reaped peer reads as there"),
-            Ok(None) => panic!("a kernel that knows SO_PEERPIDFD went on without one"),
+        if supported {
+            match peer_pidfd(server.raw()) {
+                Err(_) => {}
+                Ok(Some(pidfd)) => assert!(!still_there(&pidfd), "a reaped peer reads as there"),
+                Ok(None) => panic!("a kernel that knows SO_PEERPIDFD went on without one"),
+            }
         }
         assert_eq!(peer_facts(&server), None);
     }
