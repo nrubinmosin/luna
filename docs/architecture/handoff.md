@@ -70,7 +70,9 @@ the name `session-handoff`, UTF-8, at most 64 KB, something past the front
 matter), else Luna's own with why the override was passed over. SKILL.md alone
 is read: `system/` and its folder no link, the file opened as itself
 (`boundary::open_no_follow`, no link followed, no wait on a FIFO), a regular
-file by its handle, read no further than the cap and a byte; the beat resolves
+file of one name of this user's making by its handle (`secret::own_file`; the
+library may be a folder of the person's that is not private, so not
+`read_private`), read no further than the cap and a byte; the beat resolves
 it for every firm notice, and nothing beside it is to hold that up. A library
 skill named `session-handoff` under `skills/` is never read for it, and is laid
 out nowhere (the name is reserved, [library](library.md#invariants)). The
