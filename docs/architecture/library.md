@@ -212,7 +212,13 @@ The window re-reads the overview (no writes) on every focus.
   - **Back to Luna's** moves the override's folder whole into
     `library-backups/<stamp>-system-<name>/` (`move_to_backups`, `from.txt`
     beside it): a rename, so its temp files and a save made meanwhile go with
-    it; across volumes, a copy of every file and then the folder's removal.
+    it. Across volumes the folder is first renamed aside in `system/`
+    (`.<name>.leaving-…`, read by nothing, so a save by its name lands where
+    it lay), copied from there, and taken out only once the copy holds the
+    same files with the same SHA-256 (`tree`); otherwise the copy goes and the
+    folder stays aside (`Moved::Aside`). The overview names every such folder
+    (`set_aside`, `systemAside`), an adoption's replaced one that would not
+    move too, for the person to move or delete.
   - **Adoption** renames the skill into `system/` under a name nothing reads
     (the step that fails where the folder is held open), then, holding the
     system lock exclusive, renames an override there aside and the staged one

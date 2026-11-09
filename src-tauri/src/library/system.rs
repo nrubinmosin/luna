@@ -290,6 +290,72 @@ fn rename(step: &'static str, from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
 }
 
+// What a test has happen to a folder between a copy of it and the check of
+// that copy, as an editor saving into it would.
+#[cfg(test)]
+thread_local! {
+    static MEANWHILE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn meanwhile(dir: &Path) {
+    #[cfg(test)]
+    if let Some(happen) = MEANWHILE.with(|m| m.borrow_mut().take()) {
+        happen(dir);
+    }
+    let _ = dir;
+}
+
+/// Every file and folder under `dir` by its path there, a file with the
+/// SHA-256 of its bytes: what a copy must hold to be the folder's whole.
+fn tree(dir: &Path) -> std::io::Result<BTreeMap<String, Option<String>>> {
+    fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, Option<String>>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let rel = format!("{prefix}{}", entry.file_name().to_string_lossy());
+            if entry.file_type()?.is_dir() {
+                out.insert(format!("{rel}/"), None);
+                walk(&entry.path(), &format!("{rel}/"), out)?;
+            } else {
+                out.insert(rel, Some(sha256_hex(&std::fs::read(entry.path())?)));
+            }
+        }
+        Ok(())
+    }
+    let mut out = BTreeMap::new();
+    walk(dir, "", &mut out)?;
+    Ok(out)
+}
+
+/// Where a folder sent to the backups is now.
+#[derive(Debug, PartialEq)]
+pub(super) enum Moved {
+    /// In the backups, whole: the folder of the backup.
+    Backup(PathBuf),
+    /// Set aside where it lay, under a name nothing reads: the copy into the
+    /// backups, on another volume, did not come out whole (`set_aside` names
+    /// it to the window).
+    Aside(PathBuf),
+}
+
+/// Folders set aside in `system/`, read by nothing: a former override a copy
+/// into the backups did not take whole, one an adoption replaced and could
+/// not move, a move cut short. The window names them, for the person to move
+/// or delete.
+pub(super) fn set_aside(dirs: &Dirs) -> Vec<String> {
+    let Ok(system) = inside(&dirs.root, &[SYSTEM_DIR]) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&system) else { return Vec::new() };
+    let mut out: Vec<String> = entries
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            SYSTEM_SKILLS.iter().any(|s| name.starts_with(&format!(".{s}.")))
+        })
+        .map(|e| e.path().to_string_lossy().into_owned())
+        .collect();
+    out.sort();
+    out
+}
+
 /// Every file and folder under `from` copied to `to`, a new folder, as they
 /// are: for a move between volumes, which no rename makes.
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -308,10 +374,17 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 /// Moves the folder `dir` whole into Luna's backups, under a folder of its own
 /// named as `back_up` names one for `was`, where it lay, with `from.txt`
 /// beside it: a rename, so nothing in it is left out, its temp files and a
-/// save made meanwhile included. Where the backups are on another volume than
-/// the library, every file is copied first and the folder removed only once
-/// the copy is whole. Where it went.
-fn move_to_backups(dirs: &Dirs, dir: &Path, was: &Path) -> Result<PathBuf, String> {
+/// save made meanwhile included.
+///
+/// Where the backups are on another volume than the library, no rename
+/// reaches them. The folder is then renamed aside first, within its own
+/// volume and under a name nothing reads, so that a save by its name lands
+/// where it lay rather than in what is being copied; copied from there; and
+/// taken out only once the copy holds the same files with the same bytes. A
+/// copy that does not come out whole is taken out instead, and the folder
+/// stays aside (`Moved::Aside`): out of its place either way, so Luna's own
+/// text is served.
+fn move_to_backups(dirs: &Dirs, dir: &Path, was: &Path) -> Result<Moved, String> {
     // Luna's own, in its data folder: no link, this user's, private, made so
     // before anything is put in it.
     crate::boundary::private_chain(&dirs.backups(), &[])?;
@@ -325,23 +398,50 @@ fn move_to_backups(dirs: &Dirs, dir: &Path, was: &Path) -> Result<PathBuf, Strin
         undo();
         return Err(e);
     }
-    let to = slot.join(was.file_name().unwrap_or_default());
+    let name = was.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let to = slot.join(&name);
     match rename("backup", dir, &to) {
-        Ok(()) => return Ok(slot),
+        Ok(()) => return Ok(Moved::Backup(slot)),
         Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {}
         Err(e) => {
             undo();
             return Err(format!("{} to {}: {e}", dir.display(), to.display()));
         }
     }
-    if let Err(e) = copy_tree(dir, &to) {
-        let _ = std::fs::remove_dir_all(&to);
+    let aside = dir.with_file_name(format!(".{name}.leaving-{}", crate::secret::random_hex(4)));
+    if let Err(e) = rename("leave", dir, &aside) {
         undo();
-        return Err(format!("{} to {}: {e}", dir.display(), to.display()));
+        return Err(format!("{} to {}: {e}", dir.display(), aside.display()));
     }
-    std::fs::remove_dir_all(dir)
-        .map_err(|e| format!("{} is kept in {}, but not all of it could be taken out: {e}", dir.display(), slot.display()))?;
-    Ok(slot)
+    let whole = copy_tree(&aside, &to).and_then(|()| {
+        meanwhile(&aside);
+        Ok(tree(&aside)? == tree(&to)?)
+    });
+    match whole {
+        Ok(true) => {
+            if let Err(e) = std::fs::remove_dir_all(&aside) {
+                // The backup is whole; what is left aside the window names.
+                crate::log::warn(
+                    "library",
+                    &format!("{} is in {}, but {} could not be taken out: {e}", dir.display(), slot.display(), aside.display()),
+                );
+            }
+            Ok(Moved::Backup(slot))
+        }
+        not_whole => {
+            let why = match not_whole {
+                Err(e) => e.to_string(),
+                _ => "it changed while it was copied".into(),
+            };
+            crate::log::warn(
+                "library",
+                &format!("{} could not be copied whole into {} ({why}): kept at {}", dir.display(), slot.display(), aside.display()),
+            );
+            let _ = std::fs::remove_dir_all(&to);
+            undo();
+            Ok(Moved::Aside(aside))
+        }
+    }
 }
 
 /// Why this SKILL.md would not do as the override of `name`, if it would not:
@@ -401,17 +501,18 @@ pub(super) fn write_system(dirs: &Dirs, name: &str, text: &str) -> Result<PathBu
 }
 
 /// Back to Luna's own for `name`: the override's folder, as it is, moves into
-/// Luna's backups (kept BACKUP_DAYS, as a replaced library file is), `system/`
-/// going too once empty. Where it was put, or None where there was none. A
-/// handoff meanwhile reads the override or none, either a text it may be
-/// served, so this takes no system lock.
-pub(super) fn reset_system(dirs: &Dirs, name: &str) -> Result<Option<PathBuf>, String> {
+/// Luna's backups (kept BACKUP_DAYS, as a replaced library file is), or, where
+/// a copy to them on another volume does not come out whole, stays aside in
+/// `system/` (`move_to_backups`); `system/` goes too once empty. Where it is
+/// now, or None where there was none. A handoff meanwhile reads the override
+/// or none, either a text it may be served, so this takes no system lock.
+pub(super) fn reset_system(dirs: &Dirs, name: &str) -> Result<Option<Moved>, String> {
     luna_text(name)?;
     let Some(dir) = override_dir(dirs, name)? else { return Ok(None) };
     plain_tree(&dir)?;
-    let saved = move_to_backups(dirs, &dir, &dir)?;
+    let moved = move_to_backups(dirs, &dir, &dir)?;
     let _ = std::fs::remove_dir(dirs.root.join(SYSTEM_DIR));
-    Ok(Some(saved))
+    Ok(Some(moved))
 }
 
 /// Makes the library skill named as the system skill `name` its override:
@@ -474,9 +575,11 @@ pub(super) fn adopt_system(dirs: &Dirs, name: &str) -> Result<(), String> {
     drop(held);
     if let Some(aside) = aside {
         // In place already; the one replaced stays set aside in `system/`,
-        // read by nothing, where it will not move.
-        if let Err(e) = move_to_backups(dirs, &aside, &to) {
-            crate::log::warn("library", &format!("the override replaced is kept at {}: {e}", aside.display()));
+        // read by nothing and named by the window, where it will not move.
+        match move_to_backups(dirs, &aside, &to) {
+            Ok(Moved::Backup(_)) => {}
+            Ok(Moved::Aside(kept)) => crate::log::warn("library", &format!("the override replaced is kept at {}", kept.display())),
+            Err(e) => crate::log::warn("library", &format!("the override replaced is kept at {}: {e}", aside.display())),
         }
     }
     Ok(())
@@ -922,7 +1025,7 @@ mod tests {
         assert_eq!(reset_system(&f.dirs, HANDOFF), Ok(None), "none to take out");
         let path = write_override(&f, OURS);
         std::fs::write(path.with_file_name("example.md"), "beside it").unwrap();
-        let saved = reset_system(&f.dirs, HANDOFF).unwrap().expect("backed up");
+        let Some(Moved::Backup(saved)) = reset_system(&f.dirs, HANDOFF).unwrap() else { panic!("backed up") };
         assert_eq!(std::fs::read_to_string(saved.join(HANDOFF).join(SKILL_FILE)).unwrap(), OURS);
         assert_eq!(std::fs::read_to_string(saved.join(HANDOFF).join("example.md")).unwrap(), "beside it");
         assert!(saved.starts_with(f.dirs.backups()));
@@ -1048,13 +1151,44 @@ mod tests {
             if across {
                 fail("backup", std::io::ErrorKind::CrossesDevices);
             }
-            let saved = reset_system(&f.dirs, HANDOFF).unwrap().unwrap().join(HANDOFF);
+            let Some(Moved::Backup(saved)) = reset_system(&f.dirs, HANDOFF).unwrap() else { panic!("across: {across}: backed up") };
+            let saved = saved.join(HANDOFF);
             heal();
             assert_eq!(std::fs::read_to_string(saved.join(SKILL_FILE)).unwrap(), OURS, "across: {across}");
             assert_eq!(std::fs::read_to_string(saved.join("SKILL.md.1-0.luna-tmp")).unwrap(), "a save under way");
             assert_eq!(std::fs::read_to_string(saved.join("more").join("notes.md")).unwrap(), "notes");
             assert!(!dir.exists() && !f.dirs.root.join("system").exists(), "across: {across}");
+            assert!(set_aside(&f.dirs).is_empty(), "across: {across}: nothing left aside");
         }
+    }
+
+    /// Across volumes, a save that lands in the folder while it is copied (a
+    /// file changed after its copy was made, a file added) makes the copy no
+    /// longer the folder's whole: the copy goes, the folder stays aside under a
+    /// name nothing reads, with the save in it, and the window names it. Luna's
+    /// own is served, the override being out of its place either way.
+    #[test]
+    fn a_reset_across_volumes_loses_no_save_made_while_it_copies() {
+        let f = Fixture::new("system-reset-meanwhile");
+        let path = write_override(&f, OURS);
+        std::fs::write(path.with_file_name("notes.md"), "notes").unwrap();
+        fail("backup", std::io::ErrorKind::CrossesDevices);
+        MEANWHILE.with(|m| {
+            *m.borrow_mut() = Some(Box::new(|aside: &Path| {
+                std::fs::write(aside.join(SKILL_FILE), "saved while it was copied").unwrap();
+                std::fs::write(aside.join("added.md"), "added while it was copied").unwrap();
+            }))
+        });
+        let moved = reset_system(&f.dirs, HANDOFF).unwrap();
+        heal();
+        let Some(Moved::Aside(kept)) = moved else { panic!("set aside: {moved:?}") };
+        assert_eq!(std::fs::read_to_string(kept.join(SKILL_FILE)).unwrap(), "saved while it was copied");
+        assert_eq!(std::fs::read_to_string(kept.join("added.md")).unwrap(), "added while it was copied");
+        assert_eq!(std::fs::read_to_string(kept.join("notes.md")).unwrap(), "notes");
+        assert!(backups(&f).is_empty(), "the copy that was not whole is taken out");
+        assert!(!path.parent().unwrap().exists(), "out of its place");
+        assert_eq!(resolve_in(&f.dirs).state().state, SystemState::Luna);
+        assert_eq!(set_aside(&f.dirs), [kept.to_string_lossy().into_owned()], "named to the window");
     }
 
     /// An override that is a second name of another file (a hard link), or a

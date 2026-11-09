@@ -148,7 +148,10 @@ folders: there is one text for every chat it is served to.
 - **Compare with Luna's** shows your text against Luna's own, line by line:
   after an update, what Luna's own has that yours lacks.
 - **Back to Luna's** asks first, then moves your override's folder into Luna's
-  backups, kept 30 days like any file the library replaces.
+  backups, kept 30 days like any file the library replaces. Where the backups
+  are on another drive than the library, it is copied there and checked; if a
+  save changed it meanwhile, it is kept aside in `system/` instead, not served,
+  and the section names where, for you to move or delete.
 - A skill named `session-handoff` among your skills is not the override, and
   it is laid out nowhere: in every account and folder it would tell every
   session of the handoff. Its row says so and offers **Make it the override…**,

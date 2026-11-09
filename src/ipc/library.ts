@@ -86,6 +86,9 @@ export interface LibraryOverviewDto {
   /** The system skills as each is served now: Luna's own text, your override of it, or an override that will
    *  not do (library/system.rs). */
   system: SystemSkillState[];
+  /** Folders set aside in the library's `system/`, read by nothing: a former override that a copy into the
+   *  backups on another volume did not take whole, or one an adoption replaced and could not move. */
+  systemAside: string[];
 }
 export interface LibraryFileDto {
   path: string;
