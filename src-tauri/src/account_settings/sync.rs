@@ -295,6 +295,10 @@ mod tests {
 
     #[test]
     fn a_blank_codex_parent_empties_its_children_but_for_their_own_folders() {
+        use std::fs::TryLockError;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
         let (parent, child) = (dir("blank-parent"), dir("blank-child"));
         let (p, c) = (parent.to_string_lossy().into_owned(), child.to_string_lossy().into_owned());
         std::fs::write(parent.join("config.toml"), "\n").unwrap();
@@ -308,18 +312,57 @@ mod tests {
         assert!(doc.get("model").is_none() && doc.get("features").is_none(), "{doc}");
         assert!(doc.get("projects").is_some(), "{doc}");
 
-        // An editor's save caught half way: the look that follows gets what it wrote.
-        std::fs::write(parent.join("config.toml"), "").unwrap();
-        std::fs::write(child.join("config.toml"), "model = \"x\"\n").unwrap();
-        let path = parent.join("config.toml");
-        let saving = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(120));
-            std::fs::write(path, "model = \"saved\"\n").unwrap();
-        });
-        sync_one(Provider::Codex, &p, &c).unwrap();
-        saving.join().unwrap();
-        assert_eq!(std::fs::read_to_string(child.join("config.toml")).unwrap(), "model = \"saved\"\n");
+        // An editor's save caught half way: the look that follows gets what it
+        // wrote. The sync takes its lock, looks, and finding the file blank
+        // looks four more times 100 ms apart, so a save done within 300 ms of
+        // the lock last being free comes before its last look. The save waits
+        // until the sync holds the lock, a file of this test's own, and lands
+        // 50 ms later, past the look that follows the lock at once. A save held
+        // up longer, its thread kept waiting on a busy machine, may have missed
+        // every look and proves nothing: that round goes again.
+        let locks = dir("blank-lock");
+        let lock = locks.join("account-settings.lock");
+        let probe = Arc::new(std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock).unwrap());
+        LOCK_AT.with(|l| *l.borrow_mut() = Some(lock));
+        let saved = "model = \"saved\"\n";
+        let since = Instant::now();
+        loop {
+            std::fs::write(parent.join("config.toml"), "").unwrap();
+            std::fs::write(child.join("config.toml"), "model = \"x\"\n").unwrap();
+            let synced = Arc::new(AtomicBool::new(false));
+            let (path, probe, done, mut free) = (parent.join("config.toml"), probe.clone(), synced.clone(), Instant::now());
+            let saving = std::thread::spawn(move || {
+                loop {
+                    let now = Instant::now();
+                    match probe.try_lock() {
+                        Ok(()) => {
+                            probe.unlock().unwrap();
+                            free = now;
+                        }
+                        Err(TryLockError::WouldBlock) => break,
+                        Err(TryLockError::Error(e)) => panic!("{e}"),
+                    }
+                    if done.load(Ordering::SeqCst) {
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                std::fs::write(path, saved).unwrap();
+                Some(free.elapsed())
+            });
+            sync_one(Provider::Codex, &p, &c).unwrap();
+            synced.store(true, Ordering::SeqCst);
+            if saving.join().unwrap().is_some_and(|after| after < Duration::from_millis(300)) {
+                break;
+            }
+            assert!(since.elapsed() < Duration::from_secs(30), "no save came in time for the sync's looks in 30 s");
+        }
+        assert_eq!(std::fs::read_to_string(child.join("config.toml")).unwrap(), saved);
+        LOCK_AT.with(|l| *l.borrow_mut() = None);
+        drop(probe);
         let _ = std::fs::remove_dir_all(&parent);
         let _ = std::fs::remove_dir_all(&child);
+        let _ = std::fs::remove_dir_all(&locks);
     }
 }
