@@ -330,12 +330,14 @@ pub struct LibraryFile {
     pub exists: bool,
 }
 
-/// The file the editor has open: `{"skill": name}` or `{"instructions": name}`.
+/// The file the editor has open: `{"skill": name}`, `{"instructions": name}`
+/// or `{"system": name}`, a system skill's override (system.rs).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Entry {
     Skill(String),
     Instructions(String),
+    System(String),
 }
 
 fn library_path(dirs: &Dirs, entry: &Entry) -> Result<PathBuf, String> {
@@ -348,12 +350,19 @@ fn library_path(dirs: &Dirs, entry: &Entry) -> Result<PathBuf, String> {
             check_name(i)?;
             Ok(dirs.instructions_file(i))
         }
+        // Read and written by system.rs alone, which keeps to its own folder.
+        Entry::System(name) => Err(format!("{name} is a system skill")),
     }
 }
 
-/// Instructions, or a skill's SKILL.md, for the editor.
+/// Instructions, a skill's SKILL.md or a system skill's override, for the
+/// editor: where there is no override yet, Luna's own text to start one from.
 #[tauri::command(async)]
 pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
+    if let Entry::System(name) = &entry {
+        luna_text(name)?;
+        return read_system(&Dirs::current(), name);
+    }
     let path = library_path(&Dirs::current(), &entry)?;
     let (text, exists) = match std::fs::read_to_string(&path) {
         Ok(t) => (t, true),
@@ -365,9 +374,16 @@ pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
 
 /// Saves what the editor has, then lays it out. A skill whose SKILL.md does
 /// not do is still saved — it is the user's draft — and laid out nowhere until
-/// it does.
+/// it does. A system skill's override is laid out nowhere: it is served.
 #[tauri::command(async)]
 pub fn library_write(entry: Entry, text: String) -> Result<Overview, String> {
+    if let Entry::System(name) = &entry {
+        luna_text(name)?;
+        let _guard = lock();
+        let path = write_system(&Dirs::current(), name, &text)?;
+        crate::log::info("library", &format!("system skill {name}: the override at {} saved", path.display()));
+        return overview_locked(false);
+    }
     let _guard = lock();
     let dirs = Dirs::current();
     let path = library_path(&dirs, &entry)?;
@@ -378,13 +394,73 @@ pub fn library_write(entry: Entry, text: String) -> Result<Overview, String> {
 /// Why this SKILL.md would not be laid out, or None when it would.
 #[tauri::command(async)]
 pub fn library_check_skill(skill: String, text: String) -> Option<String> {
+    if reserved(&skill) {
+        return Some(reserved_why(&skill));
+    }
     check_skill(&skill, &text).err()
+}
+
+/// Why this SKILL.md would not do as the override of the system skill
+/// `name`, so that Luna would serve its own in its place; None when it would.
+#[tauri::command(async)]
+pub fn library_check_system(name: String, text: String) -> Option<String> {
+    luna_text(&name).err().or_else(|| check_override(&name, &text).err())
+}
+
+/// Luna's own text of a system skill and the library's override of it, to
+/// compare.
+#[tauri::command(async)]
+pub fn library_system_compare(name: String) -> Result<SystemCompare, String> {
+    luna_text(&name)?;
+    compare_system(&Dirs::current(), &name)
+}
+
+/// Back to Luna's own text for a system skill: the override goes to Luna's
+/// backups, or stays aside in `system/` where they would not take it whole,
+/// which the overview names (`system_aside`).
+#[tauri::command(async)]
+pub fn library_system_reset(name: String) -> Result<Overview, String> {
+    luna_text(&name)?;
+    let _guard = lock();
+    match reset_system(&Dirs::current(), &name)? {
+        Some(Moved::Backup(saved)) => {
+            crate::log::info("library", &format!("system skill {name}: back to Luna's own, the override kept in {}", saved.display()))
+        }
+        Some(Moved::Aside(kept)) => crate::log::warn(
+            "library",
+            &format!("system skill {name}: back to Luna's own, the override set aside at {}, not in the backups", kept.display()),
+        ),
+        None => {}
+    }
+    overview_locked(false)
+}
+
+/// Makes the library skill of a system skill's name that system skill's
+/// override, and takes it off every list: as a skill it was laid out nowhere
+/// anyway (`reserved`).
+#[tauri::command(async)]
+pub fn library_system_adopt(skill: String) -> Result<Overview, String> {
+    luna_text(&skill)?;
+    let _guard = lock();
+    adopt_system(&Dirs::current(), &skill)?;
+    crate::settings::update(|s| {
+        s.library.skills.remove(&skill);
+        s.library.audience.skills.remove(&skill);
+        for f in &mut s.library.folders {
+            f.skills.remove(&skill);
+        }
+    })?;
+    crate::log::info("library", &format!("skill {skill} made the system skill's override"));
+    overview_locked(true)
 }
 
 #[tauri::command(async)]
 pub fn library_new_skill(name: String) -> Result<Overview, String> {
     let name = name.trim().to_string();
     check_name(&name)?;
+    if reserved(&name) {
+        return Err(reserved_why(&name));
+    }
     let _guard = lock();
     let dirs = Dirs::current();
     let dir = dirs.skills().join(&name);

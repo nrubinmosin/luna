@@ -12,10 +12,12 @@ import { baseName } from './paths';
 import { FOLDER_WIDTH, RED } from './presentation';
 import { FolderCell } from './FolderCell';
 import { ReachPicker } from './ReachPicker';
+import { ReservedSkillRow } from './SystemSkills';
 
 /**
  * The library's skills against where each goes: the accounts it is meant for,
- * and a column per folder for the accounts whose sessions there get it.
+ * and a column per folder for the accounts whose sessions there get it. One
+ * that takes a system skill's name goes nowhere, and its row says so.
  */
 export function SkillsGrid({
   o,
@@ -91,6 +93,9 @@ export function SkillsGrid({
         </thead>
         <tbody>
           {o.skills.map(s => {
+            if (o.system.some(x => x.name === s.name)) {
+              return <ReservedSkillRow key={s.name} s={s} o={o} act={act} edit={edit} remove={remove} />;
+            }
             const mine = o.places.filter(p => p.skill === s.name);
             return (
               <tr key={s.name}>

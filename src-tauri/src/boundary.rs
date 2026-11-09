@@ -12,6 +12,13 @@
 //! own business (worktree removal keeps its own checks, worktree/paths.rs).
 //! The look on disk comes before the command opens the path again, a race a
 //! same-user process could win (threat model R6).
+//!
+//! A file a less trusted side put somewhere for Luna to read (a session's
+//! handoff, the library's override of the handoff's instructions) is opened
+//! as itself, never through a link at its name, and without waiting on a FIFO
+//! (`open_no_follow`, `is_link`). A folder something is written into, moved
+//! out of or given to a CLI is checked from a folder Luna trusts down, each
+//! step before the next (`walk_down`, `private_chain`).
 
 use crate::provider::Provider;
 use serde::{Deserialize, Deserializer};
@@ -170,6 +177,68 @@ impl<T: Into<String>> OrEmpty<T> {
     pub fn into_string(self) -> String {
         self.0.map(Into::into).unwrap_or_default()
     }
+}
+
+/// A link or a junction, whatever std calls it: Windows counts any reparse
+/// point that stands for another name as one.
+pub fn is_link(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
+}
+
+/// `top` and the folders `below` it, in turn, each handed to `step` (with its
+/// depth, `top` 0) before the next is looked at; the innermost. A check of
+/// the last folder alone would let a link planted above it lead whatever is
+/// done there elsewhere. Each caller brings its own step: `private_chain`'s
+/// makes Luna's own folders private, the library's (library/system.rs
+/// `inside`) only looks.
+pub fn walk_down(top: &Path, below: &[&str], mut step: impl FnMut(&Path, usize) -> Result<(), String>) -> Result<PathBuf, String> {
+    let mut dir = top.to_path_buf();
+    step(&dir, 0)?;
+    for (i, name) in below.iter().enumerate() {
+        dir.push(name);
+        step(&dir, i + 1)?;
+    }
+    Ok(dir)
+}
+
+/// `top` and the folders `below` it, Luna's own, each made where it is not
+/// there yet and checked where it is before anything is made below it: a
+/// folder, no link or junction, this user's, private (`secret::private_dir`,
+/// which checks the one folder it is given). The innermost.
+pub fn private_chain(top: &Path, below: &[&str]) -> Result<PathBuf, String> {
+    walk_down(top, below, |d, _| crate::secret::private_dir(d).map_err(|e| format!("{} is no private folder of Luna's: {e}", d.display())))
+}
+/// The file at `path` itself, for reading a file someone other than Luna put
+/// there (a session's handoff, the library's override of the handoff's
+/// instructions): a link there opened as the link (and then refused by its
+/// metadata, `is_link`) rather than followed. On Unix without waiting: a FIFO
+/// put at the name blocks an open for reading until a writer comes, and is
+/// then refused by the handle's metadata like any other thing that is not a
+/// file. (Windows takes no FIFO at a path `absolute` lets through: its pipes
+/// live under `\\.\pipe\`.)
+pub fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        o.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    o.open(path)
 }
 
 #[cfg(test)]

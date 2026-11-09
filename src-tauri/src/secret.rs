@@ -65,6 +65,30 @@ pub fn private_dir(dir: &Path) -> io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
+/// A folder Luna gives a session's CLI to write in (a chat's handoff
+/// drafts, agents/handoff `drafts_of`), looked at again while that CLI runs:
+/// made private where it is not there yet (`private_dir`); where it is, held
+/// to a real folder, no link or junction, owned by this user (or
+/// Administrators, SYSTEM, TrustedInstaller), with its DACL left as it is.
+/// The folder is made private at the CLI's every start, before it runs
+/// (`private_dir`); its sandbox may then grant itself access there (Codex
+/// 0.167.0's unelevated Windows sandbox adds a Modify ACE for a SID of its
+/// own to each `--add-dir`), which a private DACL put back would take away.
+/// No one else can add an ACE meanwhile: that takes WRITE_DAC, which the
+/// private DACL gives only this user, SYSTEM and Administrators. On Unix the
+/// same as `private_dir`: a sandbox there runs as this user.
+pub fn own_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        match std::fs::symlink_metadata(dir) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => private_dir(dir),
+            Err(e) => Err(e),
+            Ok(_) => acl::check_own(dir),
+        }
+    }
+    #[cfg(not(windows))]
+    private_dir(dir)
+}
 /// The DACL, as SDDL, of a folder that is this user's, SYSTEM's and
 /// Administrators' alone: full control for each, by SID, inherited by what
 /// is in it, and nothing from above (`P`). No BUILTIN\Users: the data dir
@@ -160,6 +184,12 @@ pub mod acl {
         set_dacl(dir, &super::private_sddl(&user), PROTECTED_DACL_SECURITY_INFORMATION)
     }
 
+    /// `check_root` alone, for a folder given to a CLI's sandbox
+    /// (`super::own_dir`): its DACL is left as it is.
+    pub fn check_own(dir: &Path) -> io::Result<()> {
+        check_root(dir, true).map(drop)
+    }
+
     /// What every root is refused for: a link or junction, which a DACL would
     /// be written through to wherever it points; something other than a
     /// folder where one is `want_dir`; and an owner `owner_ok` does not name,
@@ -229,17 +259,18 @@ pub mod acl {
             problems.push(format!("{}: open to others", root.display()));
         }
         if meta.is_dir() {
-            verify_below(root, &user, &named, &mut problems)?;
+            verify_below(root, root, &user, &named, &mut problems)?;
         }
         Ok(problems)
     }
 
-    /// `user` is this user's SID, for owners; `named` is the same user as a
-    /// DACL's SDDL names them (`trustee`).
-    fn verify_below(dir: &Path, user: &str, named: &str, problems: &mut Vec<String>) -> io::Result<()> {
+    /// `root` is the folder `verify` was asked of; `user` is this user's SID,
+    /// for owners; `named` is the same user as a DACL's SDDL names them
+    /// (`trustee`).
+    fn verify_below(root: &Path, dir: &Path, user: &str, named: &str, problems: &mut Vec<String>) -> io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
-            match verify_one(&path, user, named, problems) {
+            match verify_one(root, &path, user, named, problems) {
                 // Gone meanwhile: a running WebView comes and goes with files.
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 done => done.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?,
@@ -248,7 +279,7 @@ pub mod acl {
         Ok(())
     }
 
-    fn verify_one(path: &Path, user: &str, named: &str, problems: &mut Vec<String>) -> io::Result<()> {
+    fn verify_one(root: &Path, path: &Path, user: &str, named: &str, problems: &mut Vec<String>) -> io::Result<()> {
         let meta = std::fs::symlink_metadata(path)?;
         if meta.file_type().is_symlink() {
             problems.push(format!("{}: a link or junction", path.display()));
@@ -259,14 +290,29 @@ pub mod acl {
             problems.push(format!("{}: owned by {owner}", path.display()));
         }
         // A token folder keeps the private DACL of its own (`private_dir`).
+        // A chat's handoff drafts folder may hold, beside that, what its
+        // CLI's sandbox granted itself there: it is made private at the
+        // CLI's every start, and only this user could add to it since
+        // (`super::own_dir`).
         let sddl = dacl_sddl(path)?;
-        if !super::sddl_inherits_only(&sddl) && !super::sddl_is_private(&sddl, named) {
+        if !super::sddl_inherits_only(&sddl) && !super::sddl_is_private(&sddl, named) && !handoff_drafts(root, path) {
             problems.push(format!("{}: has access entries of its own", path.display()));
         }
         if meta.is_dir() {
-            verify_below(path, user, named, problems)?;
+            verify_below(root, path, user, named, problems)?;
         }
         Ok(())
+    }
+
+    /// Whether `path` is a chat's handoff drafts folder,
+    /// `handoffs/<chat>/drafts` (agents/handoff `drafts_of`), below `root`:
+    /// the data folder where Luna has it whole, or its `handoffs` folder
+    /// where only Luna's own things in it are checked (paths.rs `scope`).
+    fn handoff_drafts(root: &Path, path: &Path) -> bool {
+        let Some(handoffs) = path.parent().and_then(Path::parent) else { return false };
+        path.file_name().is_some_and(|n| n == "drafts")
+            && handoffs.file_name().is_some_and(|n| n == "handoffs")
+            && (handoffs == root || handoffs == root.join("handoffs"))
     }
 
     fn reset_below(dir: &Path, user: &str, odd: &mut Vec<String>) -> io::Result<()> {
@@ -387,6 +433,18 @@ pub mod acl {
             let _ = LocalFree(Some(HLOCAL(text.0.cast())));
             out.map_err(io::Error::other)
         }
+    }
+
+    /// Gives `path` the protected DACL `sddl`, as a test plants one.
+    #[cfg(test)]
+    pub fn set_protected(path: &Path, sddl: &str) -> io::Result<()> {
+        set_dacl(path, sddl, PROTECTED_DACL_SECURITY_INFORMATION)
+    }
+
+    /// The SID of `path`'s owner, for the tests.
+    #[cfg(test)]
+    pub fn owner_of(path: &Path) -> io::Result<String> {
+        owner_sid(path)
     }
 
     /// The SID, as text, that an SDDL alias (`LA`, `BA`…) stands for here.
@@ -859,6 +917,46 @@ fn found(file: &std::fs::File) -> io::Result<Found> {
     }
 }
 
+/// What a private file of Luna's at `path` holds, at most `max` bytes: read
+/// only where it is one, by what its handle says (`found`), opened without
+/// following a link at it or waiting on a FIFO (`boundary::open_no_follow`):
+/// a plain file of one name, of a trusted owner, nobody else may open. None
+/// where nothing is there. Anything else is refused, not read: a link there
+/// leads to a file anyone may have made, and one others may write is not
+/// Luna's word.
+pub fn read_private(path: &Path, max: u64) -> io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let refused = |why: String| io::Error::other(format!("{} is not this user's alone ({why}): not read", path.display()));
+    let file = match crate::boundary::open_no_follow(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        // A link (Unix's `O_NOFOLLOW`), a folder or a junction (which
+        // Windows will not open as a file), one this user may not read.
+        Err(e) => return Err(refused(e.to_string())),
+    };
+    match found(&file)? {
+        Found::Private => {}
+        Found::Loose(why) | Found::Foreign(why) => return Err(refused(why)),
+    }
+    let mut bytes = Vec::new();
+    file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(io::Error::other(format!("{} is over {max} bytes: not read", path.display())));
+    }
+    Ok(Some(bytes))
+}
+
+/// Whether the file open on `file` is of this user's making, private or not:
+/// a plain file of one name a trusted owner holds (`found`). For a file a
+/// session of this user's wrote in a folder of Luna's (a handoff's draft),
+/// which its CLI makes as it makes any file. Why not, where it is not.
+pub fn own_file(file: &std::fs::File) -> io::Result<Result<(), String>> {
+    Ok(match found(file)? {
+        Found::Private | Found::Loose(_) => Ok(()),
+        Found::Foreign(why) => Err(why),
+    })
+}
+
 /// Makes the file open on `file` this user's alone, through its handle:
 /// 0600 on Unix (`fchmod`), the protected DACL on Windows.
 fn tighten(file: &std::fs::File) -> io::Result<()> {
@@ -991,6 +1089,130 @@ mod tests {
         dir
     }
 
+    /// As Codex 0.167.0's unelevated Windows sandbox runs a command: this
+    /// user's token restricted to a SID of the sandbox's own (`cap`), which
+    /// Windows checks the DACL against as well as the user. `act` runs on a
+    /// thread that takes the token first.
+    #[cfg(windows)]
+    fn as_sandbox<T: Send + 'static>(cap: &str, act: impl FnOnce() -> T + Send + 'static) -> T {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
+        use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+        use windows::Win32::Security::{
+            CreateRestrictedToken, DuplicateTokenEx, ImpersonateLoggedOnUser, SecurityImpersonation, TokenImpersonation,
+            CREATE_RESTRICTED_TOKEN_FLAGS, PSID, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
+            TOKEN_IMPERSONATE, TOKEN_QUERY,
+        };
+        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        struct Token(HANDLE);
+        // SAFETY: a kernel handle, usable from any thread.
+        unsafe impl Send for Token {}
+        // SAFETY: this process's own token, duplicated for impersonation and
+        // restricted to `cap`; each handle and the SID are freed once.
+        let token = unsafe {
+            let mut mine = HANDLE::default();
+            OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut mine).unwrap();
+            let mut dup = HANDLE::default();
+            DuplicateTokenEx(
+                mine,
+                TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY,
+                None,
+                SecurityImpersonation,
+                TokenImpersonation,
+                &mut dup,
+            )
+            .unwrap();
+            let _ = CloseHandle(mine);
+            let text: Vec<u16> = cap.encode_utf16().chain(Some(0)).collect();
+            let mut sid = PSID::default();
+            ConvertStringSidToSidW(PCWSTR(text.as_ptr()), &mut sid).unwrap();
+            let restrict = [SID_AND_ATTRIBUTES { Sid: sid, Attributes: 0 }];
+            let mut restricted = HANDLE::default();
+            CreateRestrictedToken(dup, CREATE_RESTRICTED_TOKEN_FLAGS(0), None, None, Some(&restrict), &mut restricted).unwrap();
+            let _ = LocalFree(Some(HLOCAL(sid.0)));
+            let _ = CloseHandle(dup);
+            Token(restricted)
+        };
+        std::thread::spawn(move || {
+            let token = token;
+            // SAFETY: an impersonation token made above; the thread ends
+            // after `act`, and its impersonation with it.
+            unsafe { ImpersonateLoggedOnUser(token.0) }.expect("impersonate");
+            let out = act();
+            // SAFETY: closed once, after its last use.
+            let _ = unsafe { CloseHandle(token.0) };
+            out
+        })
+        .join()
+        .unwrap()
+    }
+
+    /// A folder given to a CLI's sandbox, as Codex's finds it after its
+    /// start: made private by `private_dir` (as at the CLI's start, foreign
+    /// ACEs and all going), then granted by the sandbox; looked at again by
+    /// `own_dir`, which keeps that grant and refuses a link. The sandbox writes
+    /// a file at a fresh name there, not one Luna made first, private; what it
+    /// makes is this user's, as the submission check asks. The data folder's
+    /// check takes such a drafts folder, and no other folder with an ACE of
+    /// its own.
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_given_to_a_sandbox_keeps_its_grant_and_the_sandbox_writes_new_files_there() {
+        let root = scratch("sandbox-dir");
+        private_dir(&root).unwrap();
+        let drafts = root.join("handoffs").join("c1").join("drafts");
+        private_dir(&drafts).unwrap();
+        let part = || u32::from_str_radix(&random_hex(4), 16).unwrap();
+        let (cap, other) = (format!("S-1-5-21-{}-{}-{}-{}", part(), part(), part(), part()), "BU");
+        let private = private_sddl(&acl::user_sid().unwrap());
+        // At the start, a foreign ACE goes with the rest.
+        acl::set_protected(&drafts, &format!("{private}(A;OICI;0x1301bf;;;{other})")).unwrap();
+        private_dir(&drafts).unwrap();
+        assert!(acl::is_private(&drafts).unwrap(), "{}", acl::dacl_sddl(&drafts).unwrap());
+        // After it, the sandbox's own grant stays through every later look.
+        acl::set_protected(&drafts, &format!("{private}(A;OICI;0x1301bf;;;{cap})")).unwrap();
+        own_dir(&drafts).unwrap();
+        assert!(acl::dacl_sddl(&drafts).unwrap().contains(&cap), "{}", acl::dacl_sddl(&drafts).unwrap());
+        assert!(acl::verify(&root).unwrap().is_empty(), "{:?}", acl::verify(&root).unwrap());
+        let elsewhere = root.join("handoffs").join("c1").join("other");
+        private_dir(&elsewhere).unwrap();
+        acl::set_protected(&elsewhere, &format!("{private}(A;OICI;0x1301bf;;;{cap})")).unwrap();
+        assert!(acl::verify(&root).unwrap().iter().any(|p| p.contains("other") && p.contains("access entries of its own")));
+        // The same where only Luna's own things are checked, `handoffs` one
+        // of them, in a data folder others share (paths.rs `Scope::Own`).
+        let handoffs = root.join("handoffs");
+        private_dir(&handoffs).unwrap();
+        let open = acl::verify(&handoffs).unwrap();
+        assert!(open.iter().any(|p| p.contains("other") && p.contains("access entries of its own")), "{open:?}");
+        assert!(!open.iter().any(|p| p.contains("drafts")), "{open:?}");
+        // A drafts folder anywhere else is held to the rule.
+        let stray = root.join("hooks").join("c1").join("drafts");
+        private_dir(&stray).unwrap();
+        acl::set_protected(&stray, &format!("{private}(A;OICI;0x1301bf;;;{cap})")).unwrap();
+        assert!(acl::verify(&root).unwrap().iter().any(|p| p.contains("hooks") && p.contains("access entries of its own")));
+        // A file Luna made first, private, the sandbox cannot write; one at a
+        // fresh name it makes and writes.
+        let made = drafts.join("made-first.md");
+        drop(create_private(&made).unwrap());
+        let fresh = drafts.join(format!("handoff-{}.md", random_hex(8)));
+        let (m, f) = (made.clone(), fresh.clone());
+        let (into_made, into_fresh) = as_sandbox(&cap, move || {
+            (std::fs::OpenOptions::new().write(true).open(&m).map(drop), std::fs::write(&f, "# Goal\nShip it.\n"))
+        });
+        assert_eq!(into_made.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        into_fresh.unwrap();
+        // This user's own making, open to the sandbox: taken as a draft.
+        let owner = acl::owner_of(&fresh).unwrap();
+        assert!(owner == acl::user_sid().unwrap() || owner == acl::maker_sid().unwrap(), "{owner}");
+        assert!(own_file(&std::fs::File::open(&fresh).unwrap()).unwrap().is_ok());
+        // A link at its name is no folder of Luna's, its DACL untouched.
+        let linked = root.join("linked");
+        let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&linked).arg(&elsewhere).output().unwrap();
+        assert!(made.status.success());
+        assert!(own_dir(&linked).is_err());
+        let _ = std::fs::remove_dir(&linked);
+        let _ = std::fs::remove_dir_all(&root);
+    }
     #[test]
     fn hmac_is_rfc_4231s() {
         // Test cases 1, 2 and 6 (a key longer than a block).

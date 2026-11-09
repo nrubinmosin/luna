@@ -104,6 +104,16 @@ interface ChatBase {
   handoffAt?: number;
   /** Its latest handoff, as the core last said. */
   handoff?: HandoffMark | null;
+  /** A handoff it was asked for and has not made, as the core last said. */
+  handoffAsked?: HandoffAsked | null;
+}
+
+/** A chat asked for a handoff that has not come (agents/handoff `HandoffAsked`):
+ *  its context at each notice, and how often its CLI compacted the
+ *  conversation since, before a handoff. */
+export interface HandoffAsked {
+  at: number[];
+  compacted: number;
 }
 
 /** Where a chat's latest handoff stands (agents/handoff `HandoffMark`). */

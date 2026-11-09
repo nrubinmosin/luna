@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-library-system-adopt"
+description = "Enables the library_system_adopt command without any pre-configured scope."
+commands.allow = ["library_system_adopt"]
+
+[[permission]]
+identifier = "deny-library-system-adopt"
+description = "Denies the library_system_adopt command without any pre-configured scope."
+commands.deny = ["library_system_adopt"]

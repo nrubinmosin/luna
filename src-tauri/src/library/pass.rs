@@ -221,7 +221,10 @@ pub(super) fn units(
     let mut out = Vec::new();
     let account = |a: &AccountInfo| Target::Account { provider: a.provider, name: a.name.clone() };
     // A skill's files; while the skills will not list, every one a failure.
+    // One of a system skill's name is no copy anywhere (system.rs `reserved`):
+    // a copy of it laid out before goes as one no longer wanted.
     let files_of = |name: &str| match skills {
+        _ if reserved(name) => None,
         Ok(found) => found.get(name).map(|(_, files)| files.clone()),
         Err(e) => Some(Err(e.clone())),
     };

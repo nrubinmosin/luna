@@ -188,12 +188,13 @@ pub(super) fn names() -> Vec<String> {
 
 /// The tool a person's chat with auto-handoff on is offered besides the rest,
 /// and no other session (agents/handoff `offers_tool`). No target: it acts on
-/// the caller's own chat, the one its token is.
+/// the caller's own chat, the one its token is. Without `file` it only answers
+/// how to write the handoff; with one it hands off.
 pub(super) fn handoff_tool() -> Value {
     json!({
         "name": "luna_session_handoff",
-        "description": "Go on in a fresh conversation of this chat, from a handoff you wrote: Luna copies the file (Markdown, absolute path), waits for your turn to end, clears this conversation and opens the next with the file and the facts it knows (helpers, debts, accounts). Call it when a notice asks, then end your turn.",
-        "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } }, "required": ["file"] },
+        "description": "Go on in a fresh conversation of this chat, from a handoff you wrote. Without file: how to write it, and where. With file (Markdown, absolute path): Luna copies it, waits for your turn to end, clears this conversation and opens the next with the file and the facts it knows (helpers, debts, accounts). Call it when a notice asks, then end your turn.",
+        "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } }, "required": [] },
         "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false }
     })
 }

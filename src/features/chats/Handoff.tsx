@@ -6,8 +6,9 @@
  */
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type { HandoffApplied, SystemSkillState } from '../../ipc/applied';
 import { handoffFile, handoffTranscript } from '../../ipc/handoff';
-import { HANDOFF_AT, type Chat, type HandoffMark } from '../../shared/types';
+import { HANDOFF_AT, type Chat, type HandoffAsked, type HandoffMark } from '../../shared/types';
 import { ConversationView } from '../agents/HelperView';
 import { useHelperTranscript } from '../agents/helperTranscript';
 import { useRestarts } from '../panes/restarts.store';
@@ -74,13 +75,51 @@ export function ThresholdInput({
   );
 }
 
+/** Whose instructions a chat with auto-handoff on is served to write its
+ *  handoff by, as the What Luna applied panel says it. */
+export function instructionsWords(s: SystemSkillState): string {
+  const sha = s.sha256.slice(0, 12);
+  switch (s.state) {
+    case 'library':
+      return `yours (${s.path}, sha ${sha})`;
+    case 'broken':
+      return `yours is broken: ${s.problem ?? 'it will not do'} — Luna’s used (${s.version}, sha ${sha})`;
+    default:
+      return `Luna’s (${s.version}, sha ${sha})`;
+  }
+}
+
+/** What a chat's handoff chip says of a handoff it was asked for and has not
+ *  made: the share of its context at each ask, and its CLI's compactions since. */
+export function askedWords(a: HandoffAsked): string {
+  const at = a.at.map(p => `${p}%`);
+  const list = at.length > 1 ? `${at.slice(0, -1).join(', ')} and ${at[at.length - 1]}` : (at[0] ?? '');
+  const compacted =
+    a.compacted === 0
+      ? ''
+      : `; its CLI compacted the conversation ${a.compacted === 1 ? 'once' : `${a.compacted} times`} before a handoff`;
+  return `Handoff asked at ${list}, not done${compacted}`;
+}
+
 /**
  * The chat's own auto-handoff, as the new-chat dialog has it, for a chat
  * made without it or to change one's mind while it runs. Takes effect in Luna
  * at once; the tool reaches a running CLI by a quick resume of the chat, on
- * the same conversation, once it is idle.
+ * the same conversation, once it is idle. With it on, `instructions` (the
+ * core's word, asked again through `onApplied` once the core has taken a
+ * change made here) says whose instructions the chat is served for its
+ * handoff, and warns of a skill of the same name its CLI may show the model,
+ * which Luna never serves.
  */
-export function HandoffBox({ chat }: { chat: Chat }) {
+export function HandoffBox({
+  chat,
+  instructions = null,
+  onApplied
+}: {
+  chat: Chat;
+  instructions?: HandoffApplied | null;
+  onApplied?: () => void;
+}) {
   const c = useChats(s => s.findChat(chat.id)) ?? chat;
   const pending = useRestarts(s => !!s.pending[chat.id]);
   const on = !!c.autoHandoff;
@@ -97,7 +136,7 @@ export function HandoffBox({ chat }: { chat: Chat }) {
           id={`handoff-${chat.id}`}
           checked={on && able}
           disabled={!able}
-          onChange={() => void applyAutoHandoff(chat.id, !on, at)}
+          onChange={() => void applyAutoHandoff(chat.id, !on, at).then(onApplied)}
         />
         <label htmlFor={`handoff-${chat.id}`} style={{ cursor: 'default' }}>
           Auto-handoff at
@@ -106,7 +145,7 @@ export function HandoffBox({ chat }: { chat: Chat }) {
           id={`handoff-at-${chat.id}`}
           value={at}
           disabled={!able || !on}
-          onCommit={v => void applyAutoHandoff(chat.id, on, v)}
+          onCommit={v => void applyAutoHandoff(chat.id, on, v).then(onApplied)}
         />
         <span style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)' }}>% of its context</span>
       </div>
@@ -116,6 +155,32 @@ export function HandoffBox({ chat }: { chat: Chat }) {
         it takes effect at a quick resume of the chat, on the same conversation, once it is idle
         {pending ? ' — waiting for it to be idle.' : '.'}
       </div>
+      {on && able && instructions && (
+        <>
+          <div style={{ ...noteStyle, color: 'var(--dim)' }}>
+            Handoff instructions: {instructionsWords(instructions.instructions)}
+          </div>
+          {instructions.sameNamed.length > 0 && (
+            <div
+              role="alert"
+              style={{
+                marginTop: 6,
+                padding: '6px 8px',
+                border: '1px solid oklch(.62 .17 60)',
+                borderRadius: 2,
+                fontSize: 'var(--fs-3)',
+                color: 'var(--fg)'
+              }}
+            >
+              <b>A skill named {instructions.instructions.name} is here too.</b> The CLI may show it to the model; Luna
+              serves its own instructions (or yours in the library) for the handoff, never this one:{' '}
+              <span style={{ fontFamily: 'ui-monospace, Consolas, monospace', whiteSpace: 'pre-wrap' }}>
+                {instructions.sameNamed.join('\n')}
+              </span>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

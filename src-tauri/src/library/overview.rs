@@ -72,6 +72,12 @@ pub struct Overview {
     /// of the `AGENTS.md` Luna writes.
     pub overridden: Vec<String>,
     pub kept: Vec<String>,
+    /// The system skills, each as it is served now (system.rs): Luna's own
+    /// text, the library's override of it, or one that will not do.
+    pub system: Vec<SystemSkillState>,
+    /// Folders set aside in `system/`, read by nothing (system.rs
+    /// `set_aside`): for the person to move or delete.
+    pub system_aside: Vec<String>,
 }
 
 /// Whether these kept copies are not what the log said last: a pass comes
@@ -193,6 +199,8 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         found_instructions,
         overridden,
         kept: p.kept,
+        system: vec![resolve_in(&dirs).state()],
+        system_aside: set_aside(&dirs),
     })
 }
 

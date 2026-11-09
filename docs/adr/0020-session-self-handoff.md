@@ -1,6 +1,7 @@
 # ADR-0020: Hand a chat over to a fresh conversation in place, on its own word
 
-- **Status:** Accepted
+- **Status:** Accepted; how the chat is told to write its handoff, and that
+  only it is told, is [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md)
 - **Date:** 2026-11-09
 
 ## Context
@@ -38,9 +39,11 @@ Reset in place, opt-in per chat, on the session's own call (`agents/handoff/`):
   Turned on while the chat runs, the window resumes its CLI on the same
   conversation once it is idle, so the CLI lists the tool.
 - **Trigger.** At each turn's end Luna reads the chat's context (`Context::of`);
-  past the threshold one notice, with the procedure and the handoff's sections,
-  and a firmer one near where the CLI would compact; once each per
-  conversation. Luna never switches by itself.
+  past the threshold one notice, and a firmer one near where the CLI would
+  compact; once each per conversation, or again after the CLI compacted it
+  before a handoff. What they and the tool say of how to write the handoff is
+  [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md). Luna never
+  switches by itself.
 - **The call.** `luna_session_handoff({file})` takes no target: it acts on the
   chat its token is. Refused while the CLI's own jobs or subagents run (named).
   The file is checked (Markdown or text, absolute, no link, at most 128 KB, UTF-8,

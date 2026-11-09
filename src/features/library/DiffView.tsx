@@ -5,7 +5,8 @@ import { diffLines, hunks } from './diff';
 const ADDED = 'color-mix(in oklab, oklch(.68 .16 145) 22%, transparent)';
 const TAKEN = 'color-mix(in oklab, oklch(.63 .19 25) 20%, transparent)';
 
-function Changes({ label, from, to }: { label: string; from: string; to: string }) {
+/** `from` turned into `to`, line by line, under a small label. */
+export function Changes({ label, from, to }: { label: string; from: string; to: string }) {
   return (
     <div style={{ marginTop: 6 }}>
       <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginBottom: 2 }}>{label}</div>

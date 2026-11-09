@@ -72,6 +72,10 @@ pub(in crate::agents) struct Switch {
     /// Resets typed so far.
     #[serde(default)]
     pub attempts: u32,
+    /// The instructions the chat was served to write it by (served.rs); none
+    /// when it went by the notices alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<super::served::Served>,
 }
 
 /// What a look at the chat finds.
@@ -258,9 +262,11 @@ pub(super) enum Ended {
 /// prompt as `next` calls for them. Each goes in only under a phase taken for
 /// this very handoff from the phase it was read in, saved before the text
 /// (`Phases::advance`): a handoff given up meanwhile types nothing, and a core
-/// that stops in between knows to look. `prompt` is the continuation prompt.
-/// The terminal is the caller's to claim for the whole of it.
-pub(super) fn run(term: &dyn Term, chat: &str, n: u32, prompt: &str, phases: &dyn Phases) -> Ended {
+/// that stops in between knows to look. `prompt` makes the continuation prompt,
+/// as the moment it is typed finds the facts, not the moment the run began:
+/// the reset can take a minute. The terminal is the caller's to claim for the
+/// whole of it.
+pub(super) fn run(term: &dyn Term, chat: &str, n: u32, prompt: &dyn Fn() -> String, phases: &dyn Phases) -> Ended {
     loop {
         let Some(s) = phases.switch_of(chat).filter(|s| s.n == n) else { return Ended::Back };
         let look = term.look(chat, &s);
@@ -282,7 +288,7 @@ pub(super) fn run(term: &dyn Term, chat: &str, n: u32, prompt: &str, phases: &dy
             }
             Step::Prompt => {
                 let commit = || phases.advance(chat, n, s.phase, Phase::Prompting { at: look.now }, s.attempts);
-                match term.type_line(chat, prompt, &commit) {
+                match term.type_line(chat, &prompt(), &commit) {
                     Ok(Typed::In) => {}
                     // Someone is writing in the new conversation: looked at
                     // again, by the beat, once they are through.
@@ -339,6 +345,7 @@ pub(super) mod tests {
             phase: Phase::Scheduled,
             before: Before { conversation: Some("old".into()), transcript: Some("/t/old.jsonl".into()) },
             attempts: 0,
+            instructions: None,
         }
     }
 
@@ -504,17 +511,43 @@ pub(super) mod tests {
                 }
             });
             let phases = kept(switch(provider));
-            assert_eq!(run(&t, "c1", 3, "[Luna handoff 3, …]", &phases), Ended::Done, "{provider:?}");
+            assert_eq!(run(&t, "c1", 3, &|| "[Luna handoff 3, …]".into(), &phases), Ended::Done, "{provider:?}");
             assert_eq!(*t.typed.borrow(), [reset_command(provider), "[Luna handoff 3, …]"]);
             assert_eq!(phases.switch_of("c1").unwrap().attempts, 1);
         }
     }
 
     #[test]
+    fn the_prompt_is_made_after_the_reset_as_it_is_typed() {
+        // What the facts are when the run begins is not what they are a minute
+        // of reset later: the prompt is made at the moment it goes in.
+        let made = std::rc::Rc::new(RefCell::new(Vec::<usize>::new()));
+        let typed_at = made.clone();
+        let t = fake(move |text, l| {
+            typed_at.borrow_mut().push(usize::MAX);
+            if text == "/clear" {
+                l.conversation = Some("new".into());
+            } else {
+                l.prompted = true;
+            }
+        });
+        let phases = kept(switch(Provider::Claude));
+        let log = made.clone();
+        let prompt = move || {
+            let at = log.borrow().len();
+            log.borrow_mut().push(at);
+            "made now".to_string()
+        };
+        assert_eq!(run(&t, "c1", 3, &prompt, &phases), Ended::Done);
+        assert_eq!(*t.typed.borrow(), ["/clear", "made now"]);
+        assert_eq!(*made.borrow(), [usize::MAX, 1, usize::MAX], "made once, after the reset went in, before it was typed");
+    }
+
+    #[test]
     fn a_reset_that_never_shows_fails_with_the_old_conversation_kept() {
         let t = fake(|_, _| {});
         let phases = kept(switch(Provider::Claude));
-        match run(&t, "c1", 3, "prompt", &phases) {
+        match run(&t, "c1", 3, &|| "prompt".into(), &phases) {
             Ended::Failed { why, reset } => {
                 assert!(why.contains("did not start a new conversation"), "{why}");
                 assert!(!reset, "the old conversation is still the one it is on");
@@ -532,7 +565,7 @@ pub(super) mod tests {
             }
         });
         let phases = kept(switch(Provider::Codex));
-        assert!(matches!(run(&t, "c1", 3, "prompt", &phases), Ended::Failed { reset: true, .. }));
+        assert!(matches!(run(&t, "c1", 3, &|| "prompt".into(), &phases), Ended::Failed { reset: true, .. }));
     }
 
     #[test]
@@ -540,7 +573,7 @@ pub(super) mod tests {
         let t = fake(|_, _| {});
         t.look.borrow_mut().draft = true;
         let phases = kept(switch(Provider::Claude));
-        assert_eq!(run(&t, "c1", 3, "prompt", &phases), Ended::Back);
+        assert_eq!(run(&t, "c1", 3, &|| "prompt".into(), &phases), Ended::Back);
         assert!(t.typed.borrow().is_empty());
     }
 
@@ -554,7 +587,7 @@ pub(super) mod tests {
         s.phase = Phase::Recovering { since: 4_000 };
         s.attempts = 1;
         let phases = kept(s);
-        assert_eq!(run(&t, "c1", 3, "prompt", &phases), Ended::Done);
+        assert_eq!(run(&t, "c1", 3, &|| "prompt".into(), &phases), Ended::Done);
         assert_eq!(*t.typed.borrow(), ["prompt"], "no second reset");
         // Back on the conversation it left: Scheduled again, nothing typed yet.
         let t = fake(|_, _| {});
@@ -562,7 +595,7 @@ pub(super) mod tests {
         s.phase = Phase::Recovering { since: 4_000 };
         s.attempts = 1;
         let phases = kept(s);
-        assert_eq!(run(&t, "c1", 3, "prompt", &phases), Ended::Back);
+        assert_eq!(run(&t, "c1", 3, &|| "prompt".into(), &phases), Ended::Back);
         assert_eq!(phases.switch_of("c1").unwrap().phase, Phase::Scheduled);
         assert!(t.typed.borrow().is_empty());
     }
@@ -586,13 +619,13 @@ pub(super) mod tests {
         });
         *t.busy_at_type.borrow_mut() = vec![false, true];
         let phases = kept(switch(Provider::Claude));
-        assert_eq!(run(&t, "c1", 3, "prompt", &phases), Ended::Back);
+        assert_eq!(run(&t, "c1", 3, &|| "prompt".into(), &phases), Ended::Back);
         assert_eq!(*t.typed.borrow(), ["/clear"], "no prompt appended to what they write");
         assert!(matches!(phases.switch_of("c1").unwrap().phase, Phase::Recovering { .. }), "the beat looks again");
         // Once they are through, the prompt goes in.
         let t2 = fake(|_, l| l.prompted = true);
         t2.look.borrow_mut().conversation = Some("new".into());
-        assert_eq!(run(&t2, "c1", 3, "prompt", &phases), Ended::Done);
+        assert_eq!(run(&t2, "c1", 3, &|| "prompt".into(), &phases), Ended::Done);
         assert_eq!(*t2.typed.borrow(), ["prompt"]);
     }
 
@@ -606,18 +639,18 @@ pub(super) mod tests {
         *t.on_look.borrow_mut() = Some(Box::new(move || {
             store.borrow_mut().remove("c1");
         }));
-        assert_eq!(run(&t, "c1", 3, "prompt", &phases), Ended::Back);
+        assert_eq!(run(&t, "c1", 3, &|| "prompt".into(), &phases), Ended::Back);
         assert!(t.typed.borrow().is_empty());
         // Another handoff's number: not this run's.
         let t = fake(|_, _| {});
         let phases = kept(switch(Provider::Claude));
-        assert_eq!(run(&t, "c1", 4, "prompt", &phases), Ended::Back);
+        assert_eq!(run(&t, "c1", 4, &|| "prompt".into(), &phases), Ended::Back);
         assert!(t.typed.borrow().is_empty());
         // A phase that will not save: nothing typed, given up and said.
         let t = fake(|_, _| {});
         let phases = kept(switch(Provider::Codex));
         *phases.1.borrow_mut() = true;
-        match run(&t, "c1", 3, "prompt", &phases) {
+        match run(&t, "c1", 3, &|| "prompt".into(), &phases) {
             Ended::Failed { why, reset } => assert!(why.contains("could not be saved") && !reset, "{why}"),
             other => panic!("{other:?}"),
         }

@@ -43,6 +43,8 @@
 //!   only looking.
 //! - `overview`: what the window is shown of the library and its copies.
 //! - `commands`: the window's commands.
+//! - `system`: the system skills, text Luna serves at its own trigger and
+//!   never lays out, and the one override of each the library may hold.
 
 use crate::accounts::AccountInfo;
 use crate::provider::Provider;
@@ -61,6 +63,7 @@ mod overview;
 mod pass;
 mod reach;
 mod skills;
+mod system;
 #[cfg(test)]
 mod testkit;
 
@@ -74,6 +77,7 @@ pub(crate) use overview::*;
 pub(crate) use pass::*;
 pub(crate) use reach::*;
 pub(crate) use skills::*;
+pub(crate) use system::*;
 #[cfg(test)]
 pub(crate) use testkit::GoldenLibrary;
 #[cfg(test)]

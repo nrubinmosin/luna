@@ -210,22 +210,3 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   agents' spawns and sends are refused and answers take only a pending ask. After `restart` Luna
   starts at the next sign-in; that takes a person.
 - `luna_guide_get` with no topic gives the topics; each tool's name is one.
-
-## Handoff
-- A chat the user set to auto-handoff (with a threshold, in the new-chat dialog or the chat's What
-  Luna applied panel) has `luna_session_handoff`; no other session does. Past the threshold, at a
-  turn's end, a notice asks for a handoff, with the steps and the sections; a firmer one comes
-  near where the CLI compacts by itself. Nothing switches until you call the tool.
-- Write the handoff as a Markdown file (`.md`, under 128 KB, not inside Luna's folder) for a
-  successor that knows nothing of this conversation: the judgment only. Luna adds the facts
-  itself: your helpers and their state, branch and worktree, the answers they owe you, text of
-  yours not yet delivered, accounts and their use, this chat's settings.
-- Your CLI's own background jobs and subagents cannot cross: the call is refused while they run,
-  naming them. Luna helpers do cross, ids, debts and notices unchanged.
-- `luna_session_handoff` with `file` (absolute path) copies the file and returns `scheduled` and
-  the handoff's number; end your turn. Once the chat is at rest (a person's draft waits it out),
-  Luna types `/clear` (Claude Code) or `/new` (Codex), then a prompt opening `[Luna handoff N`
-  that names the copy, the conversation before and the facts. Meanwhile notices and text for the
-  chat wait, and go into the new conversation.
-- If it fails before the reset, a notice in this conversation says why and it goes on; after it,
-  the new conversation is told what it is and where to start.

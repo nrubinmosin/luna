@@ -22,6 +22,8 @@
 
 - [Overview](architecture/overview.md): processes, IPC, data flow, module map
 - [Agents](architecture/agents.md): MCP tools, registry, debts, notifier, rights
+- [Auto-handoff](architecture/handoff.md): who knows of it, the instructions
+  served, the threshold and its re-arm, the switch
 - [Background helpers](architecture/background-helpers.md): headless turns, and
   what outlives a core
 - [pty and launch](architecture/pty-and-launch.md): command lines, hooks and the
@@ -63,6 +65,7 @@
 | [0019](adr/0019-cli-channels-and-rollback.md) | CLI channels and rollback: a known-good list per release, an offline probe, a canary that asks | Accepted |
 | [0020](adr/0020-session-self-handoff.md) | Hand a chat over to a fresh conversation in place, on its own word | Accepted |
 | [0021](adr/0021-core-endpoint-by-os-identity.md) | The core lets in whom the OS vouches for, and keeps no credential | Accepted |
+| [0022](adr/0022-content-luna-serves-at-its-own-trigger.md) | Serve the handoff's instructions through Luna's own tool, to the chat that opted in alone | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 

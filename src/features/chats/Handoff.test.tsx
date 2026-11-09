@@ -8,7 +8,8 @@ import { useAccounts } from '../accounts/accounts.store';
 import { useRestarts } from '../panes/restarts.store';
 import { RESUME_LOOK_MS } from './autoHandoff';
 import { useChats } from './chats.store';
-import { clampThreshold, HandoffBar, HandoffBox, markWords } from './Handoff';
+import type { SystemSkillState } from '../../ipc/applied';
+import { askedWords, clampThreshold, HandoffBar, HandoffBox, instructionsWords, markWords } from './Handoff';
 
 vi.mock('../../ipc/handoff', () => ({
   setAutoHandoff: vi.fn(() => Promise.resolve({ resume: false })),
@@ -117,7 +118,53 @@ describe('HandoffBar', () => {
   });
 });
 
+const own: SystemSkillState = {
+  name: 'session-handoff',
+  state: 'luna',
+  version: '0.12.0',
+  sha256: '0123456789abcdef',
+  path: 'L:\\lib\\system\\session-handoff\\SKILL.md',
+  problem: null
+};
+
+describe('handoff words', () => {
+  it('say whose instructions a chat is served', () => {
+    expect(instructionsWords(own)).toBe('Luna’s (0.12.0, sha 0123456789ab)');
+    expect(instructionsWords({ ...own, state: 'library' })).toBe(
+      'yours (L:\\lib\\system\\session-handoff\\SKILL.md, sha 0123456789ab)'
+    );
+    expect(instructionsWords({ ...own, state: 'broken', problem: 'There is no SKILL.md' })).toBe(
+      'yours is broken: There is no SKILL.md — Luna’s used (0.12.0, sha 0123456789ab)'
+    );
+  });
+
+  it('say what a chat was asked and has not done, compactions included', () => {
+    expect(askedWords({ at: [71], compacted: 0 })).toBe('Handoff asked at 71%, not done');
+    expect(askedWords({ at: [71, 86], compacted: 1 })).toBe(
+      'Handoff asked at 71% and 86%, not done; its CLI compacted the conversation once before a handoff'
+    );
+    expect(askedWords({ at: [71, 86, 72], compacted: 2 })).toBe(
+      'Handoff asked at 71%, 86% and 72%, not done; its CLI compacted the conversation 2 times before a handoff'
+    );
+  });
+});
+
 describe('HandoffBox', () => {
+  it('names the instructions and warns of a skill of the same name, with it on', () => {
+    const shown = { instructions: own, sameNamed: ['/repo/.claude/skills/session-handoff/SKILL.md'] };
+    seat({ tools: true, autoHandoff: true });
+    const { rerender } = render(<HandoffBox chat={{ ...base, tools: true, autoHandoff: true }} instructions={shown} />);
+    expect(screen.getByText('Handoff instructions: Luna’s (0.12.0, sha 0123456789ab)')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('/repo/.claude/skills/session-handoff/SKILL.md');
+    rerender(
+      <HandoffBox chat={{ ...base, tools: true, autoHandoff: true }} instructions={{ ...shown, sameNamed: [] }} />
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
+    seat({ tools: true, autoHandoff: false });
+    rerender(<HandoffBox chat={{ ...base, tools: true }} instructions={shown} />);
+    expect(screen.queryByText(/Handoff instructions/)).toBeNull();
+  });
+
   it('needs Luna tools', () => {
     seat({ tools: false });
     render(<HandoffBox chat={{ ...base, tools: false }} />);

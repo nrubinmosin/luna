@@ -241,10 +241,14 @@ the new-chat dialog reads them) and its models.
 
 A chat of yours with Luna tools and **Auto-handoff** on is offered one more
 tool, `luna_session_handoff`, and asked to use it once its context passes the
-threshold: it writes a handoff, Luna clears the conversation and opens the next
-from it. Its helpers keep their ids, their answers still come to it, and
-`luna_session_wait` still reaches them. Only that chat has the tool, and it acts
-on that chat alone. See [Chats: Auto-handoff](chats.md#auto-handoff).
+threshold. Called without arguments it answers how: the steps, where the file
+goes, what Luna adds by itself, and the instructions for the file. Called with
+the file, Luna clears the conversation and opens the next from it. Its helpers
+keep their ids, their answers still come to it, and `luna_session_wait` still
+reaches them. Only that chat has the tool, and it acts on that chat alone: no
+other session is offered it or finds it in `luna_guide_get`, and one that calls
+it all the same is answered as for a tool there is not. See
+[Chats: Auto-handoff](chats.md#auto-handoff).
 
 ## Lifetime
 
