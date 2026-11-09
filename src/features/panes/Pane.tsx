@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
+import { useCloseWhenMoved } from '../../shared/ui/popover';
 import { StatusDot } from '../../shared/ui/StatusDot';
 import { CHAT_COLORS, chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, limitColor, shortSessionId, tail2, tint } from '../../shared/lib/format';
@@ -36,6 +37,8 @@ function ColorPicker({ chat, anchor, onClose }: { chat: Chat; anchor: HTMLElemen
     const below = r.bottom + 8;
     setPos({ left, top: below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 8) : below });
   }, [anchor, host]);
+
+  useCloseWhenMoved(true, anchor, onClose);
 
   // Any click the popover didn't swallow dismisses it, and so does Escape.
   useEffect(() => {

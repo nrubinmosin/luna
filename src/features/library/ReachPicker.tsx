@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import type { Reach } from '../../ipc/library';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
+import { useCloseWhenMoved } from '../../shared/ui/popover';
 import { PROVIDER_LABEL, type Provider } from '../../shared/types';
 
 const ALL = 'all';
@@ -167,6 +168,8 @@ export function ReachPicker({
       window.removeEventListener('keydown', onKey, true);
     };
   }, [open]);
+
+  useCloseWhenMoved(open, face, () => setOpen(false));
 
   const change = (next: Reach) => send(next);
   const all = reach.includes(ALL);
