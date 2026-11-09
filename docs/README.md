@@ -5,7 +5,7 @@
 - [The window and panes](user-guide/window.md): layouts, peek, groups, status
   bar, shortcuts, themes
 - [Chats](user-guide/chats.md): the new-chat dialog for each CLI, status, titles,
-  clipboard and links
+  clipboard and links, auto-handoff
 - [Accounts](user-guide/accounts.md): account folders, live limits, trust,
   recommendations, recommended and shared settings
 - [Skills and instructions](user-guide/library.md): the library, reaches,
@@ -61,6 +61,7 @@
 | [0017](adr/0017-helpers-run-in-the-background-only.md) | Helpers run in the background only; opening one hands it to the person | Accepted |
 | [0018](adr/0018-mcp-tools-by-resource-and-verb.md) | Name the MCP tools by resource and verb, and break the old names | Accepted |
 | [0019](adr/0019-cli-channels-and-rollback.md) | CLI channels and rollback: a known-good list per release, an offline probe, a canary that asks | Accepted |
+| [0020](adr/0020-session-self-handoff.md) | Hand a chat over to a fresh conversation in place, on its own word | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 

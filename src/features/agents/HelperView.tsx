@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { BackgroundHelperDto } from '../../ipc/agents';
 import { Icon } from '../../shared/ui/icons';
-import { useHelperTranscript } from './helperTranscript';
+import type { Provider } from '../../shared/types';
+import { useHelperTranscript, type HelperTranscript } from './helperTranscript';
 
 /** Who said a message, as a person reads it. */
 const ROLE: Record<string, string> = { user: 'Asked', assistant: 'Said' };
@@ -14,6 +15,48 @@ const ROLE: Record<string, string> = { user: 'Asked', assistant: 'Said' };
  */
 export function HelperView({ helper, onClose }: { helper: BackgroundHelperDto; onClose: () => void }) {
   const t = useHelperTranscript(helper.id);
+  const status = t.error
+    ? `no longer a helper: ${t.error}`
+    : t.loading
+      ? 'reading…'
+      : t.running
+        ? 'working · updates as it goes'
+        : 'between turns';
+  return (
+    <ConversationView
+      title={`${helper.name || helper.id} — read-only`}
+      label={`${helper.name || helper.id}, read-only`}
+      provider={helper.provider}
+      status={status}
+      t={t}
+      onClose={onClose}
+    />
+  );
+}
+
+/**
+ * A conversation read-only, a helper's or one a chat's handoff left: its
+ * messages, who said each, with the newest followed while the reader is at
+ * the end. Escape or a click outside closes it.
+ */
+export function ConversationView({
+  title,
+  label,
+  provider,
+  status,
+  t,
+  onClose,
+  header
+}: {
+  title: string;
+  label: string;
+  provider: Provider;
+  status: string;
+  t: HelperTranscript;
+  onClose: () => void;
+  /** Above the status line: what else the view offers. */
+  header?: ReactNode;
+}) {
   const list = useRef<HTMLDivElement>(null);
   // Following the end while the reader is at it; a reader scrolled up to read
   // something is left where they are.
@@ -32,13 +75,6 @@ export function HelperView({ helper, onClose }: { helper: BackgroundHelperDto; o
 
   // As ConfirmDialog: out of the row's draggable subtree, into the app root.
   const host = document.querySelector('[data-app]') ?? document.body;
-  const status = t.error
-    ? `no longer a helper: ${t.error}`
-    : t.loading
-      ? 'reading…'
-      : t.running
-        ? 'working · updates as it goes'
-        : 'between turns';
   return createPortal(
     <div
       onClick={e => {
@@ -59,7 +95,7 @@ export function HelperView({ helper, onClose }: { helper: BackgroundHelperDto; o
         onClick={e => e.stopPropagation()}
         className="window helper-view"
         role="dialog"
-        aria-label={`${helper.name || helper.id}, read-only`}
+        aria-label={label}
         style={{
           width: 'min(760px, 92vw)',
           height: 'min(640px, 86vh)',
@@ -70,8 +106,8 @@ export function HelperView({ helper, onClose }: { helper: BackgroundHelperDto; o
       >
         <div className="title-bar">
           <div className="title-bar-text" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Icon name={helper.provider} size={13} />
-            {helper.name || helper.id} — read-only
+            <Icon name={provider} size={13} />
+            {title}
           </div>
           <div className="title-bar-controls">
             <button aria-label="Close" onClick={onClose} />
@@ -81,6 +117,7 @@ export function HelperView({ helper, onClose }: { helper: BackgroundHelperDto; o
           className="window-body"
           style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', minHeight: 0, gap: 6 }}
         >
+          {header}
           <div style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)' }} data-testid="helper-view-status">
             {status}
             {t.leftOut > 0 && ` · ${t.leftOut} older message${t.leftOut > 1 ? 's' : ''} not shown`}

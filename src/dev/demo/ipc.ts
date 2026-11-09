@@ -16,6 +16,7 @@ import {
   CORE,
   BACKGROUND,
   HELPER_TRANSCRIPT,
+  HANDOFF_FILE,
   AT_STAKE,
   APPLIED,
   BROWSERS
@@ -65,6 +66,11 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
     return (args.ids as string[]).map(id => AT_STAKE[id] ?? { id }) as unknown as T;
   }
   if (cmd === 'applied_by_luna') return APPLIED as unknown as T;
+  if (cmd === 'handoff_file') return HANDOFF_FILE as unknown as T;
+  if (cmd === 'handoff_transcript') {
+    const first = args.since == null;
+    return { ...HELPER_TRANSCRIPT, running: false, messages: first ? HELPER_TRANSCRIPT.messages : [] } as unknown as T;
+  }
   // The Accounts window's own dialogs, so they can be looked at too.
   if (cmd === 'read_account_config') {
     const claudeSide = args.provider === 'claude';

@@ -79,6 +79,7 @@ export function useSessionWatch() {
         else if (meta.firstPrompt) store.setName(chat.id, meta.firstPrompt, 'prompt');
 
         useDrafts.getState().set(chat.id, { draft: meta.draft, held: meta.held });
+        if (meta.handoff) store.setHandoffMark(chat.id, meta.handoff);
         useMarked.getState().set(chat.id, meta.marked);
 
         const next = mapStatus(meta.status);

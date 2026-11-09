@@ -308,14 +308,33 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
         ));
     }
     let pty = crate::pty::manager();
-    if !live(pty, id) {
+    let background = crate::background::has(id);
+    // A chat in the middle of a handoff takes the text in the conversation it
+    // opens: held until its prompt is in (agents/handoff).
+    let handing_off = !background && crate::agents::handoff::holds_text(id);
+    if !handing_off && !live(pty, id) {
         return Err(format!("session {id} is not running"));
     }
     plain_text(text)?;
     command_reach_now(caller, id, text)?;
     // Checked as written: a `/` or `!` the line would hide is refused all the same.
     let text = &as_sent(caller, id, text);
-    let background = crate::background::has(id);
+    if handing_off {
+        hold(caller, id, text);
+        let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
+        let (state_before, _) = state_of(id);
+        return Ok(Sent {
+            ok: true,
+            state_before,
+            queued: false,
+            joined: false,
+            interrupted: false,
+            held: true,
+            started: false,
+            turns_ended,
+            screen: None,
+        });
+    }
     // Before anything is read of a chat: what is going in now may be a notice,
     // and the chat busy on it by the time this text's turn comes. Not there in
     // time, the text is held like any other (`hold`), and goes in when it can.
@@ -383,7 +402,12 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // go out with a draft they left: it waits for them (`deliver_held`),
     // unless the draft can be put aside (`type_text`).
     let typing = pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS);
-    let typed = if typing || terminal.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline)? };
+    // Under the notifier's exclusion for the chat: a handoff scheduled since
+    // the look above waits for this text, or the text is held for the
+    // conversation it opens.
+    let going = if typing || terminal.is_none() { None } else { crate::agents::notifier::going_into(id) };
+    let typed = if going.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline)? };
+    drop(going);
     let Some(sent) = typed else {
         hold(caller, id, text);
         return Ok(Sent {

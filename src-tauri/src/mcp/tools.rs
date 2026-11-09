@@ -186,6 +186,18 @@ pub(super) fn names() -> Vec<String> {
     tools().as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect()
 }
 
+/// The tool a person's chat with auto-handoff on is offered besides the rest,
+/// and no other session (agents/handoff `offers_tool`). No target: it acts on
+/// the caller's own chat, the one its token is.
+pub(super) fn handoff_tool() -> Value {
+    json!({
+        "name": "luna_session_handoff",
+        "description": "Go on in a fresh conversation of this chat, from a handoff you wrote: Luna copies the file (Markdown, absolute path), waits for your turn to end, clears this conversation and opens the next with the file and the facts it knows (helpers, debts, accounts). Call it when a notice asks, then end your turn.",
+        "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } }, "required": ["file"] },
+        "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false }
+    })
+}
+
 /// What a background Claude Code helper's CLI calls before a tool runs and
 /// with every `AskUserQuestion` (`--permission-prompt-tool`): never the
 /// model's to call, and offered only to such a helper.
@@ -202,10 +214,15 @@ fn permission_tool() -> Value {
     })
 }
 
-/// The tools a caller is offered: Luna's own when it was given them, and
-/// the permission handler when it is a background helper.
+/// The tools a caller is offered: Luna's own when it was given them, the
+/// handoff when it is a chat with auto-handoff on, and the permission handler
+/// when it is a background helper.
 pub(super) fn tools_for(caller: &str) -> Value {
     let mut list: Vec<Value> = if agents::has_tools(caller) { tools().as_array().cloned().unwrap_or_default() } else { Vec::new() };
+    if agents::handoff::offers_tool(caller) {
+        list.push(handoff_tool());
+        agents::handoff::listed(caller);
+    }
     if crate::background::has(caller) {
         list.push(permission_tool());
     }

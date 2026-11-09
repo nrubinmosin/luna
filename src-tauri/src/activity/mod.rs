@@ -195,6 +195,35 @@ pub fn turn_state(chat_id: &str) -> Option<TurnState> {
     Some(TurnState { turn: t.turn, busy, turns_ended: t.turns_ended, children_busy: t.procs.is_some() || !t.agents.is_empty() })
 }
 
+/// What a session's CLI runs of its own beside its turn, by name: processes its
+/// turns started that are still there, whatever they are doing, and its
+/// subagents at work. What a handoff cannot take across to a new conversation
+/// (agents/handoff). A process the last sample saw that has gone since is not
+/// counted: a command that wrote a file a moment ago is no job.
+pub fn own_jobs(chat_id: &str) -> Vec<String> {
+    let (left, agents) = {
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
+        st.tracks.get(chat_id).map(|t| (t.left.clone(), t.agents.len())).unwrap_or_default()
+    };
+    let mut jobs: Vec<String> = left.iter().filter(|l| procs::alive(l.pid)).map(procs::Leftover::label).collect();
+    match agents {
+        0 => {}
+        1 => jobs.push("1 subagent".into()),
+        n => jobs.push(format!("{n} subagents")),
+    }
+    jobs
+}
+
+/// Subagents of a session at work, for the tests of what may not cross a
+/// handoff.
+#[cfg(test)]
+pub(crate) fn subagents_for_test(chat_id: &str, n: usize) {
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+    let st = &mut *st;
+    let t = track(&mut st.tracks, &mut st.ended, chat_id);
+    t.agents = (0..n).map(|i| (format!("a{i}"), false)).collect();
+}
+
 /// How many subagents of a session are at work, as its hooks or rollouts have
 /// it.
 pub fn subagents(chat_id: &str) -> usize {

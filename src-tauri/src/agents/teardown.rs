@@ -477,6 +477,7 @@ pub fn forget(id: &str) {
     }
     // A core killed now must not bring it back.
     crate::background::save();
+    crate::agents::handoff::forget(id);
 }
 
 /// `id`'s helpers pass to `up`, or with no `up` stand alone (see `forget`).

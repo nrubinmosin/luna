@@ -53,6 +53,14 @@ pub fn status(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: 
     Some((v["status"].as_str()?.to_owned(), v["statusUpdatedAt"].as_u64()))
 }
 
+/// The conversation a live session is on, by the id its registry entry holds:
+/// `/clear` puts a new one there in place, the same process going on (agents/handoff).
+pub fn session_id(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<String> {
+    let dir = Path::new(account_path).join("sessions");
+    let v = registry_entry(&dir, pid, resume, cwd, spawned_at_ms)?;
+    v["sessionId"].as_str().map(str::to_owned)
+}
+
 /// The cwd the CLI reports for a live pty session — under `--worktree` that
 /// is the worktree, not the folder the session was spawned in.
 pub fn session_cwd(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<String> {

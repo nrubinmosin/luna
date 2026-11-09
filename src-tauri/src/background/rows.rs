@@ -364,7 +364,9 @@ pub fn background_transcript(id: String, since: Option<u64>, file: Option<String
 /// `background_transcript` of a file: at most VIEW_SCAN of it read into memory,
 /// its complete lines no longer than VIEW_LINE given to the transcript readers
 /// that work on bytes (`luna_lib::transcripts`), the newest VIEW_MESSAGES kept.
-fn view_of(path: &std::path::Path, provider: Provider, since: u64, running: bool) -> Transcript {
+/// Also the window's view of a conversation a chat's handoff left
+/// (agents/handoff `handoff_transcript`).
+pub(crate) fn view_of(path: &std::path::Path, provider: Provider, since: u64, running: bool) -> Transcript {
     let len = std::fs::metadata(path).map_or(0, |m| m.len());
     // A cursor past the end is one into a file since cut short or written anew.
     let since = if since > len { 0 } else { since };

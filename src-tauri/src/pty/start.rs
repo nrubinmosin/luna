@@ -510,6 +510,13 @@ const PREVIOUS_HELPER_LINES: [&str; 2] = [
      where it says none, in the language the task is written in.",
 ];
 
+/// Auto-handoff's threshold as a chat starts with it: one Luna takes, and
+/// only with Luna's tools, whose server offers the tool (agents/handoff).
+fn handoff_threshold(asked: Option<u8>, tools: bool) -> Option<u8> {
+    use crate::agents::handoff::{THRESHOLD_MAX, THRESHOLD_MIN};
+    asked.filter(|t| tools && (THRESHOLD_MIN..=THRESHOLD_MAX).contains(t))
+}
+
 /// A helper's id runs in a pane only once the helper is the person's
 /// (background/rows.rs `background_promoted`): before that its conversation is
 /// the helper's, held or going on, and a pane resuming it would run beside it
@@ -544,6 +551,9 @@ pub async fn ensure_claude_session(
     // The guard against endless waits, as the chat's person chose it in the
     // new-chat dialog.
     guard: Option<bool>,
+    // Auto-handoff's threshold, in percent of the context (agents/handoff):
+    // only with Luna's tools, whose server offers its tool.
+    handoff: Option<u8>,
 ) -> Result<String, String> {
     not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
@@ -571,11 +581,15 @@ pub async fn ensure_claude_session(
             crate::library::session_args(Provider::Claude, &account_path, &folder, crate::library::SessionKind::Chat)
         };
         let notes = tools.unwrap_or(false).then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
+        let handoff = handoff_threshold(handoff, tools.unwrap_or(false));
+        let handoff_dir =
+            handoff.and_then(|_| crate::agents::handoff::dir_of(&id).ok()).filter(|dir| !login && std::fs::create_dir_all(dir).is_ok());
         let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
         // The library's instructions are read as memory of a folder added to
         // the session, which has every added folder's read: not the others'.
         let mut luna_dirs = added_dirs(&skills.args);
         luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
+        luna_dirs.extend(handoff_dir.as_ref().map(|d| d.to_string_lossy().into_owned()));
         let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
         if dir.is_some() {
             (skills.memory_off, skills.memory_kept) = claude_memory_off(&luna_dirs, &account_path, &folder, dir.as_deref());
@@ -597,13 +611,16 @@ pub async fn ensure_claude_session(
         let tools = tools.unwrap_or(false);
         let read_only = read_only.unwrap_or(false);
         let agent = agent.filter(|a| !a.is_empty());
-        let settings = with_role(
+        let mut settings = with_role(
             serde_json::json!({
                 "model": model, "effort": effort, "permissionMode": permission_mode, "worktree": worktree,
             }),
             read_only,
             agent.as_deref(),
         );
+        if let Some(t) = handoff {
+            settings["handoff"] = serde_json::json!(t);
+        }
         // A login session runs in the account folder itself (the providers'
         // `loginSession`): not a chat, so not one agents may see or write to.
         let token =
@@ -623,6 +640,7 @@ pub async fn ensure_claude_session(
             mcp: mcp.as_ref().map(|(file, token)| (file.as_path(), token.as_str())),
             notes_dir: notes.as_deref(),
             instructions_dir: instructions.as_deref(),
+            handoff: handoff.map(|t| (t, handoff_dir.as_deref())),
             skill_args: &skills.args,
         });
         Ok(Launch {
@@ -662,6 +680,8 @@ pub async fn ensure_codex_session(
     // The guard against endless waits, as the chat's person chose it in the
     // new-chat dialog.
     guard: Option<bool>,
+    // Auto-handoff's threshold, as for a Claude Code chat.
+    handoff: Option<u8>,
 ) -> Result<String, String> {
     not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
@@ -692,10 +712,14 @@ pub async fn ensure_codex_session(
         let git_envs = codex_git_envs(sandbox);
         let guard = codex_guard_args(&id, guard.unwrap_or(false), hooks_unasked);
         let tools = tools.unwrap_or(false);
-        let settings = serde_json::json!({
+        let handoff = handoff_threshold(handoff, tools);
+        let mut settings = serde_json::json!({
             "model": chosen_model,
             "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
         });
+        if let Some(t) = handoff {
+            settings["handoff"] = serde_json::json!(t);
+        }
         // The person's own chat: no parent, and its account's servers and apps.
         let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, None, tools, settings);
         let mcp = token.and_then(|t| Some((crate::hub::mcp_url()?, t)));
@@ -722,6 +746,7 @@ pub async fn ensure_codex_session(
             hooks_unasked,
             guard: &guard,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
+            handoff,
             skill_args: &skills.args,
         });
         applied.extend(crate::library::audience_applied(&skills));
@@ -882,6 +907,7 @@ mod tests {
         read_only: Option<bool>,
         agent: Option<&'static str>,
         guard: Option<bool>,
+        handoff: Option<u8>,
     }
 
     impl ClaudeAsk {
@@ -899,6 +925,7 @@ mod tests {
                 read_only: None,
                 agent: None,
                 guard: None,
+                handoff: None,
             }
         }
 
@@ -921,6 +948,7 @@ mod tests {
                     self.read_only,
                     s(self.agent),
                     self.guard,
+                    self.handoff,
                 ),
             )
         }
@@ -1262,6 +1290,7 @@ mod tests {
         tools: Option<bool>,
         hooks_unasked: Option<bool>,
         guard: Option<bool>,
+        handoff: Option<u8>,
     }
 
     const CODEX_ACC: &str = "/golden/acc-codex";
@@ -1281,6 +1310,7 @@ mod tests {
                 tools: None,
                 hooks_unasked: None,
                 guard: None,
+                handoff: None,
             }
         }
 
@@ -1303,6 +1333,7 @@ mod tests {
                     self.tools,
                     self.hooks_unasked,
                     self.guard,
+                    self.handoff,
                 ),
             )
         }
@@ -1384,6 +1415,30 @@ mod tests {
         want.push(("cwd", Runtime, "cwd /golden/project".into()));
         want.push(("inherited-env-cleared", Runtime, removed()));
         assert_eq!(s.applied, want.into_iter().map(|(k, c, v)| (k.to_string(), c, v)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn auto_handoff_is_a_chats_with_luna_tools_and_says_where_its_copies_are() {
+        const ID: &str = "golden-handoff-chat";
+        let r = Redact::for_chat(ID);
+        // Claude Code: the folder of its copies, added so the next conversation
+        // reads its handoff without asking; in the settings the registry keeps.
+        let s = ClaudeAsk { tools: Some(true), handoff: Some(70), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(s.value("auto-handoff"), Some("at 70% of the context: luna_session_handoff; --add-dir <handoff-dir>"));
+        let at = s.args.iter().position(|a| a == "<handoff-dir>").expect("the folder is added");
+        assert_eq!(s.args[at - 1], "--add-dir");
+        assert_eq!(s.applied.iter().find(|(k, ..)| k == "auto-handoff").map(|(_, c, _)| *c), Some(crate::applied::Class::UserAction));
+        // Codex: no flag of its own, the tool and the notices are Luna's.
+        let s = CodexAsk { tools: Some(true), handoff: Some(55), ..CodexAsk::chat() }.start(ID, &r);
+        assert_eq!(s.value("auto-handoff"), Some("at 55% of the context: luna_session_handoff"));
+        // Without Luna's tools there is no server to offer the tool: nothing.
+        for s in [
+            ClaudeAsk { handoff: Some(70), ..ClaudeAsk::chat() }.start(ID, &r),
+            CodexAsk { handoff: Some(70), ..CodexAsk::chat() }.start(ID, &r),
+            ClaudeAsk { tools: Some(true), handoff: Some(99), ..ClaudeAsk::chat() }.start(ID, &r),
+        ] {
+            assert!(!s.keys().contains(&"auto-handoff") && !s.args.iter().any(|a| a == "<handoff-dir>"), "{:?}", s.args);
+        }
     }
 
     #[test]
