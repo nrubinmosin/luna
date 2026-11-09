@@ -307,11 +307,16 @@ pub struct SessionSkills {
     /// keep a skill from a session that its account has as a whole.
     pub hidden: Vec<String>,
     /// Claude Code: the account's instructions file, where a folder the
-    /// session lies in gives it other instructions or none —
-    /// `claudeMdExcludes` in the same settings. Codex has no way to leave its
+    /// session lies in gives it other instructions or none, or they are not
+    /// for its kind — `claudeMdExcludes` in the same settings, once the
+    /// session's start has kept only what takes nothing of the project's own
+    /// (pty/start.rs `claude_account_excludes`). Codex has no way to leave its
     /// account's `AGENTS.md` out of one session, so a folder says nothing to
     /// it of instructions.
     pub excluded: Vec<String>,
+    /// Claude Code: what `excluded` would have left out but could not, said
+    /// as what Luna applied.
+    pub excluded_kept: Vec<String>,
     /// Claude Code: the memory files of the other folders added to the
     /// session, which reading the library's instructions would have it read
     /// too (claude/launch.rs `memory_excludes`); set by the session's start,

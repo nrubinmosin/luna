@@ -91,17 +91,71 @@ pub(crate) fn claude_memory_off(
     folder: &str,
     instructions: Option<&str>,
 ) -> (Vec<String>, Vec<String>) {
-    use claude_launch::OwnMemory;
+    let added = claude_added_dirs(luna_dirs, account_path, folder);
+    let patterns = claude_launch::memory_excludes(&added, &resolved_path(folder));
+    let own = own_memory(folder, &added, &patterns, instructions);
+    claude_launch::keep_own_memory(patterns, &own)
+}
+
+/// `excluded`, the account's instructions file that a folder or an entry's
+/// audience leaves out of a Claude Code session (library/folders.rs
+/// `folder_args`), less one whose literal pattern Claude Code's matcher would
+/// also take for one of the session's own instruction files
+/// (`keep_own_memory`): that file is read after all, said in the second list.
+/// The others' memory counts as the session's own only where the library's
+/// instructions have it read (`instructions`).
+pub(crate) fn claude_account_excludes(
+    excluded: Vec<String>,
+    luna_dirs: &[String],
+    account_path: &str,
+    folder: &str,
+    instructions: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
+    if excluded.is_empty() {
+        return (excluded, Vec::new());
+    }
+    let (added, patterns) = match instructions {
+        Some(_) => {
+            let added = claude_added_dirs(luna_dirs, account_path, folder);
+            let patterns = claude_launch::memory_excludes(&added, &resolved_path(folder));
+            (added, patterns)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+    let own = own_memory(folder, &added, &patterns, instructions);
+    let (mut kept, mut notes) = (Vec::new(), Vec::new());
+    for path in excluded {
+        let (safe, said) = claude_launch::keep_own_memory(vec![claude_launch::glob_literal(&path)], &own);
+        if safe.is_empty() {
+            notes.extend(said);
+        } else {
+            kept.push(path);
+        }
+    }
+    (kept, notes)
+}
+
+/// Every folder a Claude Code session is added beside the one it works in:
+/// Luna's (`luna_dirs`) and the user's settings', as `memory_excludes` takes
+/// them.
+fn claude_added_dirs(luna_dirs: &[String], account_path: &str, folder: &str) -> Vec<claude_launch::AddedDir> {
     let mut added = luna_dirs.to_vec();
     added.extend(claude_settings_dirs(account_path, folder));
-    let added: Vec<_> = added.iter().map(|d| added_dir(d)).collect();
-    let resolved = resolved_path(folder);
-    let patterns = claude_launch::memory_excludes(&added, &resolved);
-    // The session's own: where it works and below, every folder above, the
-    // added folders it reads as ever, the library's instructions; each by
-    // every spelling it may be met by.
+    added.iter().map(|d| added_dir(d)).collect()
+}
+
+/// The session's own instruction folders, each by every spelling it may be met
+/// by: where it works and below, every folder above, the added folders none of
+/// `patterns` leaves out (read as ever), the library's instructions.
+fn own_memory(
+    folder: &str,
+    added: &[claude_launch::AddedDir],
+    patterns: &[String],
+    instructions: Option<&str>,
+) -> Vec<claude_launch::OwnMemory> {
+    use claude_launch::OwnMemory;
     let mut own = Vec::new();
-    for spelled in [lexical_path(folder), resolved] {
+    for spelled in [lexical_path(folder), resolved_path(folder)] {
         let mut dir = Some(std::path::Path::new(&spelled));
         let mut nested = true;
         while let Some(d) = dir {
@@ -110,7 +164,7 @@ pub(crate) fn claude_memory_off(
             dir = d.parent();
         }
     }
-    for dir in &added {
+    for dir in added {
         let left_alone =
             dir.spellings.iter().all(|s| !patterns.iter().any(|p| p.contains(&claude_launch::glob_literal(&s.replace('\\', "/")))));
         if left_alone {
@@ -118,7 +172,7 @@ pub(crate) fn claude_memory_off(
         }
     }
     own.extend(instructions.map(|i| OwnMemory { root: i.replace('\\', "/"), nested: false }));
-    claude_launch::keep_own_memory(patterns, &own)
+    own
 }
 
 /// `dir` as `memory_excludes` takes it: as given with `.` and `..` worked out,
@@ -520,12 +574,16 @@ pub async fn ensure_claude_session(
         let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
         // The library's instructions are read as memory of a folder added to
         // the session, which has every added folder's read: not the others'.
-        if instructions.is_some() {
-            let mut luna_dirs = added_dirs(&skills.args);
-            luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
-            let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
+        let mut luna_dirs = added_dirs(&skills.args);
+        luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
+        let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
+        if dir.is_some() {
             (skills.memory_off, skills.memory_kept) = claude_memory_off(&luna_dirs, &account_path, &folder, dir.as_deref());
         }
+        // The account's instructions left out only where that takes nothing
+        // of the project's own.
+        (skills.excluded, skills.excluded_kept) =
+            claude_account_excludes(std::mem::take(&mut skills.excluded), &luna_dirs, &account_path, &folder, dir.as_deref());
         // Rewritten at every spawn: the listener's port is new with every Luna run.
         // The guard against endless waits (guard.rs), as the chat's person
         // asked for it. A chat the window runs is the person's, never a
@@ -1673,6 +1731,36 @@ mod tests {
         // Four memory files for each spelling of [ab].
         assert!(!off.is_empty() && off.len() % 4 == 0 && kept.is_empty(), "{off:?} {kept:?}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_account_file_whose_pattern_reads_as_the_projects_is_read_after_all() {
+        let root = std::env::temp_dir().join(format!("luna-acc-collide-{}", std::process::id()));
+        // The account [ab]: its file's pattern <root>/[[]ab[]]/CLAUDE.md is
+        // also, in picomatch's shortcut, the CLAUDE.md of a project [[]ab[]].
+        let (project, account, plain) = (root.join("[[]ab[]]"), root.join("[ab]"), root.join("plain"));
+        for d in [&project, &account, &plain] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let file = account.join("CLAUDE.md").to_string_lossy().replace('\\', "/");
+        let acc = account.to_string_lossy().into_owned();
+        let (kept, notes) = claude_account_excludes(vec![file.clone()], &[], &acc, &project.to_string_lossy(), None);
+        assert!(kept.is_empty(), "the project's own instructions are not to be taken with it: {kept:?}");
+        assert!(notes.len() == 1 && notes[0].contains("collides with this project's instruction path"), "{notes:?}");
+        let (kept, notes) = claude_account_excludes(vec![file.clone()], &[], &acc, &plain.to_string_lossy(), None);
+        assert_eq!((kept, notes.len()), (vec![file], 0), "elsewhere it is left out as asked");
+        // Said as a Workaround of what Luna applied.
+        let library = crate::library::SessionSkills { excluded_kept: notes_of(&project, &account), ..Default::default() };
+        let applied = crate::claude::launch::settings_applied("/s.json", false, None, &library, "/d/core");
+        let item = applied.iter().find(|a| a.key == "library.account-instructions-kept").expect("said");
+        assert_eq!(item.class, crate::applied::Class::Workaround);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What `claude_account_excludes` says of the account's file in `project`.
+    fn notes_of(project: &std::path::Path, account: &std::path::Path) -> Vec<String> {
+        let file = account.join("CLAUDE.md").to_string_lossy().replace('\\', "/");
+        claude_account_excludes(vec![file], &[], &account.to_string_lossy(), &project.to_string_lossy(), None).1
     }
 
     #[test]

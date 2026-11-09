@@ -62,7 +62,12 @@ from it what is not for its kind, in `folder_args`:
   (`hidden_here`). No per-launch helper variant of the account's file is
   written: it would be a second copy to keep current, and an account gets one
   instructions file, so a chats-only file leaves a Claude Code helper with no
-  library instructions rather than other ones.
+  library instructions rather than other ones. The account's file is left out
+  by its path taken literally (`glob_literal`), and only where that pattern
+  cannot also match one of the session's own instruction files in Claude
+  Code's matcher (`pty::claude_account_excludes`, through #30's
+  `keep_own_memory`): one that could is read after all and said as the
+  Workaround `library.account-instructions-kept`.
 - **Codex:** skills as above, in the one `-c skills.config`. Its account's
   `AGENTS.md` cannot be left out of one session (0.167.0: the user-instructions
   provider in `codex-rs/codex-home/src/instructions/mod.rs` reads
