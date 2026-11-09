@@ -125,7 +125,10 @@ The goldens run the real start, not the builders alone.
 - **In a pane** (`pty/start.rs`, `golden_claude_*`, `golden_codex_*`): the
   start runs through `ensure_*` and `pty::spawn` under the spawn gate, side
   effects and all, and `pty::spawn::capture` (test builds only) takes the
-  `Launch` in place of creating the process. Each test compares the whole
+  `Launch` in place of creating the process. A start runs in a project folder
+  of its test's own (`golden::project`: in the temp folder, with a `.git` of
+  its own, removed as the test's thread ends), put as `/golden/project` in
+  what is compared. Each test compares the whole
   argument list, the environment, the cwd, the resume decision and the session's
   description, and reads back the settings, MCP and instructions files written
   for it, and what it applied (`Started::applied`, placeholders in). Cases:

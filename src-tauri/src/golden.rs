@@ -185,16 +185,36 @@ pub(crate) const PROJECT: &str = "/golden/project";
 
 /// The project folder the golden starts run in: one that is there, as a start
 /// refuses a folder that is not (pty/folder.rs), with a `.git` folder of its
-/// own, enough for a worktree to be asked for in it. Made once, empty, and
-/// put as `PROJECT` in what is compared.
+/// own, enough for a worktree to be asked for in it; put as `PROJECT` in what
+/// is compared. One per test, made on its thread's first ask: each test runs
+/// on a thread of its own, so no two share one and none sees another's, and
+/// it goes with its thread (`Project`'s drop), the test's end, passed or not.
 pub(crate) fn project() -> String {
-    static DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join("luna-golden-project");
+    PROJECT_DIR.with(|p| p.0.to_string_lossy().into_owned())
+}
+
+thread_local! {
+    static PROJECT_DIR: Project = Project::new();
+}
+
+/// A golden project folder, removed when dropped.
+struct Project(PathBuf);
+
+impl Project {
+    fn new() -> Self {
+        static MADE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("luna-golden-project-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".git")).expect("the golden project folder");
-        dir.to_string_lossy().into_owned()
-    })
-    .clone()
+        Project(dir)
+    }
+}
+
+impl Drop for Project {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// The `CLAUDE.md` a start of chat `id` copied into its instructions folder,
@@ -448,4 +468,16 @@ fn a_spec_not_shown_whole_is_refused() {
         let caught = std::panic::catch_unwind(|| Redact::assert_shown(&args, &envs, cwd, &shown()));
         assert!(caught.is_err(), "{args:?} {envs:?} {cwd}");
     }
+}
+
+/// A golden project folder is its test's alone and leaves nothing behind.
+#[test]
+fn a_golden_project_is_its_tests_own_and_goes_with_it() {
+    let mine = project();
+    assert!(std::path::Path::new(&mine).join(".git").is_dir());
+    assert_eq!(project(), mine, "the same through the test");
+    let theirs = std::thread::spawn(project).join().unwrap();
+    assert_ne!(theirs, mine, "another test's is a folder of its own");
+    assert!(!std::path::Path::new(&theirs).exists(), "gone with its test's thread");
+    assert!(std::path::Path::new(&mine).is_dir(), "this one stays while its test runs");
 }
