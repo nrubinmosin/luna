@@ -1,6 +1,6 @@
 //! The peer check's facts on Windows: the token a pipe's client opened it with.
 
-use super::{CoreFacts, PeerFacts};
+use super::{CoreFacts, PeerFacts, Seccomp};
 use crate::endpoint::Stream;
 use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
@@ -32,7 +32,7 @@ pub(super) fn core_facts(refuses_work: bool) -> Option<CoreFacts> {
     let token = own_token()?;
     // SAFETY: a token opened for query, alive for the call.
     let integrity = unsafe { token_integrity(token.0) }?;
-    Some(CoreFacts { integrity, no_new_privs: false, refuses_work })
+    Some(CoreFacts { integrity, no_new_privs: false, seccomp: Seccomp::default(), refuses_work })
 }
 
 fn own_token() -> Option<Owned> {
@@ -71,6 +71,7 @@ pub(super) fn peer_facts(stream: &Stream) -> Option<PeerFacts> {
             integrity,
             foreign_userns: false,
             no_new_privs: false,
+            seccomp: Seccomp::default(),
         })
     }
 }

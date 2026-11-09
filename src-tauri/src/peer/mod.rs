@@ -17,12 +17,18 @@
 //!   does not get as far: the pipe's DACL refuses its open (endpoint/win.rs);
 //!   this check is what holds if a sandbox's token ever passes the DACL.
 //! - Linux: the credentials the kernel recorded at connect (`SO_PEERCRED`):
-//!   its uid, and from `/proc/<pid>` its user namespace and `no_new_privs`.
-//!   Codex's sandbox (bubblewrap) runs its commands in a user namespace of
-//!   their own, and sets `no_new_privs` for its seccomp filter, as Landlock
-//!   needs too; the core has neither. The pid is held by a pidfd where the
-//!   kernel gives one (`SO_PEERPIDFD`, 6.5), so what `/proc` said is known to
-//!   be of the process that connected, not of one that took its pid since.
+//!   its uid, and from `/proc/<pid>` its user namespace, `no_new_privs` and
+//!   seccomp state. Codex's sandbox (bubblewrap) runs its commands in a user
+//!   namespace of their own and sets `no_new_privs` for the seccomp filter it
+//!   adds, as Landlock needs the bit too; a core started plainly has neither.
+//!   A core started with `no_new_privs` (Flatpak, systemd's
+//!   NoNewPrivileges) cannot refuse for the bit, which its windows carry
+//!   too; it still refuses another namespace or more seccomp filters than
+//!   its own, but a client confined by Landlock alone is not seen: the kernel
+//!   shows no Landlock domain to anyone else (`note_launch`, ADR-0021). The
+//!   pid is held by a pidfd where the kernel gives one (`SO_PEERPIDFD`, 6.5),
+//!   so what `/proc` said is known to be of the process that connected, not
+//!   of one that took its pid since.
 //! - macOS: the uid (`getpeereid`) and that the pid can be read
 //!   (`LOCAL_PEERPID`). A Seatbelt sandbox is not seen there.
 //!
@@ -62,6 +68,27 @@ pub struct PeerFacts {
     pub foreign_userns: bool,
     /// Linux: `no_new_privs` set, as a seccomp or Landlock sandbox sets it.
     pub no_new_privs: bool,
+    /// Linux: its seccomp state.
+    pub seccomp: Seccomp,
+}
+
+/// A process's seccomp state, from `/proc/<pid>/status`: the mode (0 none, 1
+/// strict, 2 filter) and, where the kernel says (5.9), how many filters are
+/// stacked. A process can add filters and never take one away, and a child
+/// starts with its parent's, so a peer with a stricter mode or more filters
+/// than the core has been confined since it parted from it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Seccomp {
+    pub mode: u32,
+    pub filters: Option<u32>,
+}
+
+impl Seccomp {
+    /// Stricter than `other`: a higher mode, or as many filters and then some.
+    /// Where either count is unknown, the mode alone decides.
+    pub fn stricter_than(&self, other: &Seccomp) -> bool {
+        self.mode > other.mode || (self.mode == other.mode && matches!((self.filters, other.filters), (Some(a), Some(b)) if a > b))
+    }
 }
 
 /// What the core says of itself, to judge a peer against.
@@ -69,6 +96,7 @@ pub struct PeerFacts {
 pub struct CoreFacts {
     pub integrity: u32,
     pub no_new_privs: bool,
+    pub seccomp: Seccomp,
     /// It runs as administrator and starts nothing (elevation.rs).
     pub refuses_work: bool,
 }
@@ -103,6 +131,8 @@ pub fn verdict(peer: Option<&PeerFacts>, core: &CoreFacts) -> Verdict {
         Verdict::Refuse("another user namespace (a CLI sandbox)")
     } else if p.no_new_privs && !core.no_new_privs {
         Verdict::Refuse("no_new_privs set, where the core's is not (a CLI sandbox)")
+    } else if p.seccomp.stricter_than(&core.seccomp) {
+        Verdict::Refuse("a stricter seccomp filter than the core's (a CLI sandbox)")
     } else if !p.same_user && p.integrity >= HIGH {
         Verdict::StopOnly
     } else if !p.same_user {
@@ -136,6 +166,22 @@ pub fn admission(stream: &Stream, core_refuses_work: bool) -> Result<bool, Strin
     }
 }
 
+/// Said once as the core starts, where it runs with no_new_privs (inherited
+/// from what started it: Flatpak, systemd's NoNewPrivileges, a container).
+/// Every window has the bit then too, so it tells a sandbox nothing, and a
+/// client confined by Landlock alone in the core's own user namespace, under
+/// its seccomp state, cannot be told from a window: the kernel shows no
+/// Landlock domain to anyone else (ADR-0021).
+pub fn note_launch() {
+    if imp::core_facts(false).is_some_and(|c| c.no_new_privs) {
+        crate::log::warn(
+            "core",
+            "the core runs with no_new_privs, inherited from what started it: a client confined by Landlock alone in this user \
+             namespace cannot be told from a window (another namespace or a stricter seccomp filter still is)",
+        );
+    }
+}
+
 /// The reason to refuse `stream`'s client from a core that works, or None to
 /// let it through (`admission`).
 #[cfg_attr(not(test), allow(dead_code))]
@@ -159,11 +205,16 @@ mod tests {
             integrity: MEDIUM,
             foreign_userns: false,
             no_new_privs: false,
+            seccomp: Seccomp::default(),
         }
     }
 
     fn core(integrity: u32) -> CoreFacts {
-        CoreFacts { integrity, no_new_privs: false, refuses_work: false }
+        CoreFacts { integrity, no_new_privs: false, seccomp: Seccomp::default(), refuses_work: false }
+    }
+
+    fn filtered(filters: u32) -> Seccomp {
+        Seccomp { mode: 2, filters: Some(filters) }
     }
 
     fn refused(v: Verdict) -> bool {
@@ -200,14 +251,53 @@ mod tests {
         assert_eq!(verdict(Some(&namespaced), &core(MEDIUM)), Verdict::Refuse("another user namespace (a CLI sandbox)"));
         let nnp = PeerFacts { no_new_privs: true, ..plain() };
         assert!(refused(verdict(Some(&nnp), &core(MEDIUM))));
-        // A core that has it set itself (started under such a sandbox) judges
-        // its peers by the rest: its own window has it too.
-        let under_nnp = CoreFacts { no_new_privs: true, ..core(MEDIUM) };
-        assert_eq!(verdict(Some(&nnp), &under_nnp), Verdict::Allow);
         // Neither lets a sandbox through a core that refuses work.
         let refusing = CoreFacts { refuses_work: true, ..core(HIGH) };
         assert!(refused(verdict(Some(&PeerFacts { integrity: LOW, ..namespaced }), &refusing)));
         assert!(refused(verdict(Some(&PeerFacts { integrity: LOW, ..nnp }), &refusing)));
+    }
+
+    /// A peer under a stricter seccomp state than the core's has been confined
+    /// since it parted from it (Codex's bubblewrap sandbox adds a filter):
+    /// refused. One under the core's own, or a laxer one, is not.
+    #[test]
+    fn a_peer_under_a_stricter_seccomp_than_the_cores_is_refused() {
+        let reason = Verdict::Refuse("a stricter seccomp filter than the core's (a CLI sandbox)");
+        // A filter where the core has none; one more filter than the core's.
+        assert_eq!(verdict(Some(&PeerFacts { seccomp: filtered(1), ..plain() }), &core(MEDIUM)), reason);
+        let under_two = CoreFacts { seccomp: filtered(2), ..core(MEDIUM) };
+        assert_eq!(verdict(Some(&PeerFacts { seccomp: filtered(3), ..plain() }), &under_two), reason);
+        // Strict mode is stricter than any filter.
+        assert_eq!(verdict(Some(&PeerFacts { seccomp: Seccomp { mode: 1, filters: Some(0) }, ..plain() }), &core(MEDIUM)), reason);
+        // The core's own state (a window started where the core was, inside a
+        // container's filters), or fewer filters: let in.
+        assert_eq!(verdict(Some(&PeerFacts { seccomp: filtered(2), ..plain() }), &under_two), Verdict::Allow);
+        assert_eq!(verdict(Some(&PeerFacts { seccomp: filtered(1), ..plain() }), &under_two), Verdict::Allow);
+        // With no count from the kernel (before 5.9) the mode alone decides.
+        let uncounted = |mode| Seccomp { mode, filters: None };
+        let core_uncounted = CoreFacts { seccomp: uncounted(2), ..core(MEDIUM) };
+        assert_eq!(verdict(Some(&PeerFacts { seccomp: uncounted(2), ..plain() }), &core_uncounted), Verdict::Allow);
+        assert_eq!(verdict(Some(&PeerFacts { seccomp: uncounted(2), ..plain() }), &core(MEDIUM)), reason);
+    }
+
+    /// A core started with no_new_privs (under Flatpak, systemd's
+    /// NoNewPrivileges, a container) cannot refuse a peer for it: the window
+    /// that started it, and every later one, has it too. There it still
+    /// refuses another user namespace and a stricter seccomp state. What it
+    /// cannot see is Landlock: the kernel shows no Landlock domain to procfs,
+    /// so a client confined by Landlock alone, in the core's namespace and
+    /// under its seccomp state, is let in — the residual ADR-0021 names.
+    #[test]
+    fn under_a_core_with_no_new_privs_a_namespace_or_seccomp_still_refuses_and_landlock_alone_does_not() {
+        let under_nnp = CoreFacts { no_new_privs: true, seccomp: filtered(1), ..core(MEDIUM) };
+        let window = PeerFacts { no_new_privs: true, seccomp: filtered(1), ..plain() };
+        assert_eq!(verdict(Some(&window), &under_nnp), Verdict::Allow, "its own window");
+        let landlock_only = window.clone();
+        assert_eq!(verdict(Some(&landlock_only), &under_nnp), Verdict::Allow, "the documented residual: nothing tells it apart");
+        let codex = PeerFacts { seccomp: filtered(2), ..window.clone() };
+        assert!(refused(verdict(Some(&codex), &under_nnp)), "a seccomp sandbox on top is refused");
+        let namespaced = PeerFacts { foreign_userns: true, ..window };
+        assert!(refused(verdict(Some(&namespaced), &under_nnp)), "so is a namespace of its own");
     }
 
     /// Another user is refused; an administrator of another account (or root)
