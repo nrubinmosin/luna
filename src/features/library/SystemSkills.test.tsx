@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { EditorView } from '@codemirror/view';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,7 @@ import type { SystemSkillState } from '../../ipc/applied';
 import * as ipc from '../../ipc/library';
 import type { LibraryOverviewDto, LibrarySkillDto } from '../../ipc/library';
 import { LibraryEditor } from './LibraryEditor';
+import { useLibrary } from './library.store';
 import { SkillsGrid } from './SkillsGrid';
 import { stateWords, SystemSkills } from './SystemSkills';
 
@@ -108,6 +109,21 @@ describe('SystemSkills', () => {
     expect(screen.getByText('mine')).toBeInTheDocument();
     await userEvent.click(button('Hide comparison'));
     expect(screen.queryByText('Luna’s own → yours')).toBeNull();
+  });
+
+  it('compares again with each new look at the library, though the row says the same', async () => {
+    vi.mocked(ipc.librarySystemCompare)
+      .mockReset()
+      .mockResolvedValueOnce({ luna: 'a\n', yours: 'a\nbefore\n' })
+      .mockResolvedValue({ luna: 'a\n', yours: 'a\nafter\n' });
+    const broken = state({ state: 'broken', problem: 'The front matter has no description' });
+    render(<SystemSkills o={overview(broken)} act={vi.fn()} edit={vi.fn()} />);
+    await userEvent.click(button('Compare with Luna’s'));
+    expect(await screen.findByText('before')).toBeInTheDocument();
+    // Edited elsewhere with the same fault, or another library with one: a new look, the same state.
+    act(() => useLibrary.setState({ at: useLibrary.getState().at + 1 }));
+    expect(await screen.findByText('after')).toBeInTheDocument();
+    expect(ipc.librarySystemCompare).toHaveBeenCalledTimes(2);
   });
 
   it('goes back to Luna’s own only once confirmed', async () => {

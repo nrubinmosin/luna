@@ -14,6 +14,7 @@ import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { NameCell, Note } from './cells';
 import { Changes } from './DiffView';
+import { useLibrary } from './library.store';
 import { GREEN, RED } from './presentation';
 
 /** What each system skill is, as the window says it. */
@@ -36,19 +37,28 @@ export function stateWords(s: SystemSkillState): string {
   }
 }
 
-/** Luna's own text beside the override, as a diff; asked again whenever what is served changes (`key`). */
+/**
+ * Luna's own text beside the override, as a diff, asked again with every new
+ * look at the library (`at`): the override may change on disk, or the
+ * library's folder move, while what the row says of it stays the same.
+ */
 function Compare({ name }: { name: string }) {
+  const at = useLibrary(s => s.at);
   const [c, setC] = useState<SystemCompareDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let stale = false;
     librarySystemCompare(name)
-      .then(r => !stale && setC(r))
+      .then(r => {
+        if (stale) return;
+        setC(r);
+        setError(null);
+      })
       .catch((e: unknown) => !stale && setError(String(e)));
     return () => {
       stale = true;
     };
-  }, [name]);
+  }, [name, at]);
   const say = (text: string, color = 'var(--faint)') => (
     <div style={{ fontSize: 'var(--fs-2)', color, marginTop: 6 }}>{text}</div>
   );
@@ -143,7 +153,7 @@ function SystemSkill({
           {stateWords(s)}
         </span>
       </div>
-      {comparing && mine && <Compare key={`${s.state}-${s.sha256}-${s.problem ?? ''}`} name={s.name} />}
+      {comparing && mine && <Compare name={s.name} />}
       {resetting && (
         <ConfirmDialog
           title="Back to Luna’s own"
