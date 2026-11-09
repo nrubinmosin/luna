@@ -10,8 +10,13 @@ use serde_json::json;
 
 const ACC: &str = "C:/acc/anthropic/one";
 
-/// A chat of the person's with Luna's tools, auto-handoff at `threshold`.
+/// A chat of the person's with Luna's tools, auto-handoff at `threshold`, and
+/// no copies on disk from a run before: tests share the data dir, and one that
+/// stopped half way leaves its folder.
 fn chat(id: &str, threshold: Option<u8>) {
+    if let Ok(dir) = dir_of(id) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
     let settings = match threshold {
         Some(t) => json!({ "model": "opus", "handoff": t }),
         None => json!({ "model": "opus" }),
