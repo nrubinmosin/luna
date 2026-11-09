@@ -187,7 +187,7 @@ pub(in crate::agents) fn under_cap(r: &Registry, caller: &str, except: Option<u6
         .filter(|s| s.helper.is_none() && !s.settled && Some(s.request) != except)
         .filter(|s| s.caller == top || is_descendant(r, &top, &s.caller))
         .count();
-    let done = |id: &String| r.auto.get(id).is_some_and(|a| a.idle_since.is_some() && !a.deleting);
+    let done = |id: &String| r.auto.get(id).is_some_and(|a| a.released && !a.deleting);
     let mut counted: Vec<String> = descendants(r, &top).into_iter().filter(|id| !done(id)).collect();
     counted.sort();
     (counted, coming)
@@ -475,10 +475,11 @@ mod tests {
         let e = cap_room(&reg().lock().unwrap(), "cap-top", None).unwrap_err();
         assert!(e.contains("cap-grandkid") && e.contains("cap-kid-0") && e.contains("delete those"), "{e}");
         // One whose answer reached its caller and that waits out autoDelete holds none.
-        reg().lock().unwrap().auto.insert("cap-kid-0".into(), crate::agents::teardown::Auto { idle_since: Some(1), deleting: false });
+        let auto = |released| crate::agents::teardown::Auto { idle_since: Some(1), deleting: false, released };
+        reg().lock().unwrap().auto.insert("cap-kid-0".into(), auto(true));
         assert!(room("cap-top", None), "a finished helper is no place taken");
         // At work again, or not autoDelete, it counts.
-        reg().lock().unwrap().auto.insert("cap-kid-0".into(), crate::agents::teardown::Auto { idle_since: None, deleting: false });
+        reg().lock().unwrap().auto.insert("cap-kid-0".into(), auto(false));
         assert!(!room("cap-top", None));
         reg().lock().unwrap().auto.remove("cap-kid-0");
         forget("cap-grandkid");
