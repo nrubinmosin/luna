@@ -56,20 +56,35 @@ Luna serves the text itself, through the tool only the opted-in chat has
   threshold notice sends the chat to the call; the firm one, near where the CLI
   compacts, carries the six headings inline (one list in the code,
   `facts.rs` `SECTIONS`) so a chat short of context needs no extra call.
-- **The override.** One file, `<library>/system/session-handoff/SKILL.md`,
-  checked as a library skill is (front matter `name: session-handoff` and a
-  description, no link in its folder, UTF-8, at most 64 KB, something past the
-  front matter). One that will not do is not served: Luna's own is, and the
-  reason goes with it to the chat and to the panel. It is the person's own text,
-  trusted as their instructions to their own chat; Luna never lays it out into
-  an account or a folder (the pass reads only `skills/` and `instructions/`),
-  and a library skill named `session-handoff` under `skills/` is not it.
-- **Nobody else hears.** The guide has no topic or section of it; a session the
-  tool is not offered to that calls it all the same is refused as for a tool
-  there is not (`mcp/dispatch.rs`), its arguments unread. Nothing of it goes into
-  any launch or account.
-- **Record.** Which text a chat was served (Luna's with its version, or the
-  override with its path, and the hash) is kept on its handoff record
+- **Where the file goes.** The chat's own drafts folder in Luna's data folder,
+  `<data>/handoffs/<chat>/drafts/`, made private: the system's temp folder may
+  be shared with others, and a handoff quotes the person and the project.
+  Claude Code reaches it within the folder of copies it is given; a Codex chat
+  gets it as an `--add-dir`, which Codex makes writable, under a sandbox that
+  writes at all. Under Codex's read-only sandbox (or Claude Code's plan mode)
+  the chat can write no file, and the tool's answer says so. Of Luna's folder,
+  a handoff file is taken only from there.
+- **The override.** One file, `<library>/system/session-handoff/SKILL.md`, its
+  front matter checked as a library skill's (`name: session-handoff`, a
+  description), UTF-8, at most 64 KB, something past the front matter. It alone
+  is read, opened as itself (no link at it or its folders, no wait on a FIFO)
+  and no further than the cap. One that will not do is not served: Luna's own
+  is, and the reason goes with it to the chat and to the panel. It is the
+  person's own text, trusted as their instructions to their own chat; Luna
+  never lays it out into an account or a folder (the pass reads only `skills/`
+  and `instructions/`), and a library skill named `session-handoff` under
+  `skills/` is not it.
+- **No other session is told.** The guide has no topic or section of it; a
+  session the tool is not offered to that calls it all the same is refused as
+  for a tool there is not (`mcp/dispatch.rs`), its arguments unread; the chat's
+  settings as another session reads them lack it. Nothing of it goes into any
+  launch or account but the chat's own. A session that reads the chat's
+  transcript (`luna_message_list` with `scope: "all"`) sees what is in it, the
+  notices and the continuation prompt included: the broad read access the
+  threat model accepts (R1), decided so by the owner.
+- **Record.** Which text a chat was given (Luna's with its version, the
+  override with its path, or, for one that wrote by the firm notice alone, its
+  checklist; each with its hash) is kept on its handoff record
   (`handoffs.json`); the panel shows what it would be served now, and warns of
   a skill of the same name in its folder or account.
 - **Approvals.** The owner's decision: approvals carry across a handoff within

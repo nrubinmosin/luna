@@ -128,7 +128,8 @@ and no other session, helper or chat without the tick sees it.
 - Luna's own is built in, of its version. To give your own to every chat,
   write `system/session-handoff/SKILL.md` in the library: front matter with
   `name: session-handoff` and a `description`, then the text, at most 64 KB. It
-  has no reach and no audience: it is everyone's.
+  has no reach and no audience: it is everyone's. Only that file is read and
+  served; anything beside it in the folder is not.
 - One that does not do (no front matter, another name, no description, nothing
   past the front matter, a link, too large) is not used: Luna's own is served,
   and the chat's **What Luna applied** panel says why.

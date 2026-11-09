@@ -39,30 +39,46 @@ the window at every start (`ensure_*_session`) and set on a running chat by
 - The guide (`luna_guide.md`, `mcp/guide.rs` `TOPICS`) has no topic or section
   of it, and nothing of it is in `initialize`'s instructions or any other
   tool's description: every session with tools reads those.
-- Nothing of it goes into a launch or an account: the instructions are no
-  skill any CLI lists, and the library never lays `system/` out. A Claude Code
-  chat with it on gets its folder of copies as an `--add-dir`, read without
-  asking; that is all.
+- Its settings as another session reads them (`luna_session_get`, a listing;
+  every row goes through `agents/list.rs`) lack `handoff` (`settings_shown`);
+  the chat itself reads them whole.
+- Nothing of it goes into a launch or an account but the chat's own: the
+  instructions are no skill any CLI lists, and the library never lays `system/`
+  out. A Claude Code chat with it on gets its folder of copies as an
+  `--add-dir`, read without asking; a Codex one, under a sandbox that writes at
+  all (`writes_files`), its drafts folder as an `--add-dir`, which Codex makes
+  writable.
+- A session that reads the chat's transcript (`luna_message_list` with
+  `scope: "all"`) sees the notices and the prompt in it, as it sees all of it:
+  the threat model's R1, accepted.
 
 ## The instructions
 
 `luna_session_handoff` without `file` (`served::instructions`) answers as plain
 text: the steps (the CLI's own jobs ended, the file written, the call with
-`file`, the turn ended), where the file goes (absolute, outside the data dir; a
-suggested name in the system's temp folder with a random part, as that folder
-may be shared), what Luna adds to the next conversation itself (`LUNA_ADDS`,
-the one list of it), and the instructions past their front matter, naming
-whose they are and their SHA-256.
+`file`, the turn ended), where the file goes (`<data>/handoffs/<chat>/drafts/
+handoff.md`, the folder made private, `drafts_of`; or any file outside the
+data dir), what Luna adds to the next conversation itself (`LUNA_ADDS`, the one
+list of it), and the instructions past their front matter, naming whose they
+are and their SHA-256. A chat that can write no file (Codex's read-only
+sandboxes, Claude Code's plan mode: `unwritable`) is told so.
 
 `library::handoff_instructions` resolves them at each ask:
 `<library>/system/session-handoff/SKILL.md` when it will do (`check_skill` with
-the name `session-handoff`, no link in `system/` or its folder, UTF-8, at most
-64 KB, something past the front matter), else Luna's own with why the override
-was passed over. A library skill named `session-handoff` under `skills/` is
-never read for it. What was served (`Served`: source, hash, Luna's version or
-the override's path) is kept on the chat's record (`Record::served`), copied
-into the switch the next call with `file` schedules (`Switch::instructions`)
-and into its `Past`, and let go once a handoff goes through.
+the name `session-handoff`, UTF-8, at most 64 KB, something past the front
+matter), else Luna's own with why the override was passed over. SKILL.md alone
+is read: `system/` and its folder no link, the file opened as itself
+(`boundary::open_no_follow`, no link followed, no wait on a FIFO), a regular
+file by its handle, read no further than the cap and a byte; the beat resolves
+it for every firm notice, and nothing beside it is to hold that up. A library
+skill named `session-handoff` under `skills/` is never read for it. What a chat
+was given (`Served`: `Given::Luna`, `Library`, or `Checklist` where the firm
+notice's checklist was all it had, each with its hash, Luna's version or the
+override's path) is kept on the chat's record (`Record::served`: the tool sets
+it, a firm notice carrying the checklist sets it where nothing was, `told_of`),
+copied into the switch the next call with `file` schedules
+(`Switch::instructions`) and into its `Past`, and let go once a handoff goes
+through.
 
 ## The threshold
 
@@ -82,12 +98,15 @@ listed the tool, at a turn count it has not looked at with the turn over,
   the threshold is not sent straight into the next handoff.
 - **Re-arm.** A conversation told of its threshold whose context is then well
   under it (`rearm_below`: 15 points, or half the threshold where that is less)
-  was compacted by its CLI: its level and floor start over, the compaction is
-  counted (`Told::compacted`) and logged, and it is asked again once past the
-  threshold. Both CLIs keep the conversation's transcript through their own
-  compaction (seen in their code, [CLI compatibility](../cli-compatibility.md));
-  one that started a new transcript would read as a new conversation, asked
-  again all the same, the earlier asks then dropped from the chip.
+  starts over, level and floor, and is asked again once past the threshold.
+  Its tokens say why it fell: fewer than at its last notice by a tenth and
+  more (`Told::tokens`, `compacted`) is a compaction, counted
+  (`Told::compacted`) and shown; as many or more is a larger window (a model
+  with more context), logged as the context falling and not counted. Both CLIs
+  keep the conversation's transcript through their own compaction (seen in
+  their code, [CLI compatibility](../cli-compatibility.md)); one that started a
+  new transcript would read as a new conversation, asked again all the same,
+  the earlier asks then dropped from the chip.
 - A switch scheduled drops a notice not yet typed.
 
 ## The call with a file
@@ -95,7 +114,8 @@ listed the tool, at a turn count it has not looked at with the turn over,
 - **The copy.** `file.rs`: absolute, `.md` / `.markdown` / `.txt`, opened with no
   link followed (and, off Windows, without waiting, so a FIFO swapped in does not
   hang the open) and checked on its handle, at most 128 KB of UTF-8 text, refused
-  inside the data dir after `canonicalize`; all of it on a thread of its own
+  inside the data dir after `canonicalize` but right in the calling chat's own
+  drafts folder, that folder resolving where its names say (`own_draft`); all of it on a thread of its own
   given 10 s (`READ_WAIT`), outside the records' lock; a reader given up on keeps
   its place until its thread ends (`Readers`: one per chat, four in all, a call
   past either refused): the number is reserved
