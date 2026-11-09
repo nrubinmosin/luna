@@ -26,6 +26,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | `library/pass.rs` | one pass over every copy |
 | `library/overview.rs` | what the window is shown |
 | `library/commands.rs` | the window's commands |
+| `library/system.rs` | the system skills: the handoff's instructions resolved, Luna's own or the override in `system/` ([auto-handoff](handoff.md#the-instructions)) |
 | `src/features/library/` | the Skills & instructions window, grids, `ReachPicker`, `AudiencePicker`, `FolderCell`, `LibraryEditor`, `diff.ts` |
 
 ## Reaches
@@ -180,6 +181,9 @@ The window re-reads the overview (no writes) on every focus.
   `failed`: never written, adopted or removed.
 - Writes go through `<file>.<pid>-<n>.luna-tmp`; links are never followed or
   written over.
+- `system/` is read only for what Luna serves (`library/system.rs`): no pass
+  lays anything of it out, and a skill named `session-handoff` under
+  `skills/` is not the handoff's override.
 
 ## Failure modes
 

@@ -26,6 +26,33 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A core of 0.11 still running when this version starts is asked how many
   sessions it runs and, with none, to stop, as a core of another build always
   was; with sessions the banner asks you to restart it.
+- Only a chat with Auto-handoff on hears of it. The agents' guide no longer has
+  a Handoff topic or section, which every session with Luna tools could read,
+  and a session not offered `luna_session_handoff` that calls it all the same
+  is answered as for a tool there is not.
+
+### Changed
+
+- Auto-handoff's instructions are served by its own tool: `luna_session_handoff`
+  without a file answers how to hand off, where the file goes, what Luna adds
+  by itself, and the instructions for the file, Luna's own (built in) or one
+  override of yours for every chat, `system/session-handoff/SKILL.md` in the
+  library. One that will not do is not used, and the chat is told why. The
+  first notice sends the chat to the tool; the firm one, near where the CLI
+  compacts, carries the file's headings itself
+  ([ADR-0022](docs/adr/0022-content-luna-serves-at-its-own-trigger.md)).
+- A chat whose CLI compacted its conversation before a handoff is asked again
+  once past its threshold, and its title bar chip reads **handoff N% · asked**,
+  saying when in its tooltip.
+- The chat's What Luna applied panel says whose handoff instructions it gets,
+  with Luna's version or the override's path and the text's hash, and warns of
+  a `session-handoff` skill in its folder or account, which Luna never uses.
+- The next conversation's prompt is made as it is typed, after the reset, not
+  before; it names each helper's model, effort and transcript, quotes names and
+  tasks as data, and says that approvals the handoff quotes hold as far as the
+  user's quoted words go and no further. A file written to Luna's own
+  instructions that lacks one of their headings is named in the answer, not
+  refused. Each handoff on record keeps which instructions it was written by.
 
 ### Fixed
 
