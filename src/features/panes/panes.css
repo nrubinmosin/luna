@@ -197,6 +197,11 @@
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pane-sid {
   color: #858585;
 }
+/* Auto-handoff asked for a handoff that has not come (chats/Handoff.tsx
+   `askedWords`): ringed in the waiting color, in either theme. */
+[data-app] .pane-chips .pchip[data-state="asked"] {
+  box-shadow: inset 0 0 0 1px var(--wait);
+}
 
 /* A narrow pane gives up its details chip by chip before the name and the
    controls. */

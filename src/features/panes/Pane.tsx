@@ -10,7 +10,7 @@ import { BackgroundChip } from '../agents/BackgroundChip';
 import { useChats } from '../chats/chats.store';
 import { AppliedPanel } from '../chats/AppliedPanel';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
-import { HandoffBar } from '../chats/Handoff';
+import { askedWords, HandoffBar } from '../chats/Handoff';
 import { draftTag, useDrafts } from '../chats/drafts.store';
 import { CLEAR_WAITING_TITLE, clearWaiting, useMarked } from '../chats/marked.store';
 import { claude, codex } from '../providers';
@@ -386,12 +386,18 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                       tools
                     </span>
                   )}
+                  {/* Asked and not handed off: said here, where the setting
+                      is, rather than as a row tag, which is for what waits on
+                      the person. */}
                   {chat.tools && chat.autoHandoff && (
                     <span
                       className="pchip opt-2"
-                      title={`Auto-handoff at ${chat.handoffAt ?? HANDOFF_AT.default}% of the context: past it, Luna asks this chat for a handoff and starts its next conversation from it on the chat's word`}
+                      data-state={chat.handoffAsked ? 'asked' : undefined}
+                      title={`Auto-handoff at ${chat.handoffAt ?? HANDOFF_AT.default}% of the context: past it, Luna asks this chat for a handoff and starts its next conversation from it on the chat's word${
+                        chat.handoffAsked ? `\n${askedWords(chat.handoffAsked)}` : ''
+                      }`}
                     >
-                      handoff {chat.handoffAt ?? HANDOFF_AT.default}%
+                      handoff {chat.handoffAt ?? HANDOFF_AT.default}%{chat.handoffAsked && ' · asked'}
                     </span>
                   )}
                   {(chat.worktree || chat.worktreePath) && (

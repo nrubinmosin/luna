@@ -80,6 +80,7 @@ export function useSessionWatch() {
 
         useDrafts.getState().set(chat.id, { draft: meta.draft, held: meta.held });
         if (meta.handoff) store.setHandoffMark(chat.id, meta.handoff);
+        store.setHandoffAsked(chat.id, meta.handoffAsked ?? null);
         useMarked.getState().set(chat.id, meta.marked);
 
         const next = mapStatus(meta.status);
