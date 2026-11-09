@@ -539,9 +539,13 @@ mod tests {
         let next = l.next.lock().unwrap();
         let next = next.as_ref().expect("the next instance");
         assert_eq!(security_of(next.0).unwrap(), l.security);
-        let user = crate::secret::acl::user_sid().unwrap();
-        // Windows writes the DACL back by alias where it has one.
-        assert!(l.security.contains(&user) && l.security.contains("(ML;;NWNR;;;ME)"), "{}", l.security);
-        assert!(l.security.starts_with("D:P"), "protected: {}", l.security);
+        // The user as Windows writes it back: by alias where it has one, as
+        // `LA` for the built-in Administrator (RID 500) that CI's runners
+        // run as, else by its SID.
+        let user = crate::secret::acl::trustee(&crate::secret::acl::user_sid().unwrap()).unwrap();
+        let (dacl, label) = l.security.split_once("S:").expect("a label");
+        assert!(crate::secret::sddl_is_private(dacl, &user), "protected, this user, SYSTEM and Administrators alone: {}", l.security);
+        assert!(dacl.contains(&format!(";;;{user})")), "this user is in it: {}", l.security);
+        assert!(label.contains("(ML;;NWNR;;;ME)"), "{}", l.security);
     }
 }
