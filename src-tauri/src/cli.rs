@@ -72,8 +72,6 @@ pub struct Source {
     pub root_name: &'static str,
     /// The executable, relative to a version directory, `/`-separated.
     pub bin_rel: &'static str,
-    /// What to spawn from PATH while there is no managed copy.
-    pub path_fallback: &'static str,
     pub latest: fn(&ureq::Agent) -> Result<String, String>,
     /// Puts `version` into `dir`, an empty staging directory, and says what
     /// it put there. What it leaves on failure goes with the directory.
@@ -139,7 +137,7 @@ pub struct CliStatus {
     pub phase: String,
     /// The version sessions spawn right now; None until the first download.
     pub version: Option<String>,
-    /// Where that binary lives — the bare name on PATH while there is no managed copy.
+    /// Where that binary lives; empty while there is no managed copy to start.
     pub path: String,
     /// The newest version the CLI's own release channel offers, once a check
     /// has come back.
@@ -167,7 +165,7 @@ fn state() -> &'static Mutex<HashMap<Provider, CliStatus>> {
                     phase: "idle".into(),
                     channel: choice::channel_in(&root(p)),
                     version: current_version(p),
-                    path: binary(p).to_string_lossy().into_owned(),
+                    path: binary(p).map(|b| b.to_string_lossy().into_owned()).unwrap_or_default(),
                     ..Default::default()
                 },
             );
@@ -228,22 +226,44 @@ fn intact(dir: &Path, record: &Record, bin_rel: &str) -> bool {
 }
 
 fn current_in(root: &Path, bin_rel: &str) -> Option<Current> {
-    let name = fs::read_to_string(root.join("current")).ok()?;
+    current_or_why(root, bin_rel).ok()
+}
+
+/// Why `current` gives nothing to start.
+#[derive(Debug, PartialEq)]
+enum NoCurrent {
+    /// No `current` yet: the first install has not finished.
+    NotInstalled,
+    /// A `current` that names nothing runnable, and why.
+    Damaged(String),
+}
+
+fn current_or_why(root: &Path, bin_rel: &str) -> Result<Current, NoCurrent> {
+    let name = match fs::read_to_string(root.join("current")) {
+        Ok(name) => name,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(NoCurrent::NotInstalled),
+        Err(e) => return Err(NoCurrent::Damaged(format!("its current will not read: {e}"))),
+    };
     let name = name.trim();
     if !plain_name(name) {
-        return None;
+        return Err(NoCurrent::Damaged(format!("its current names {name:?}, which is no version directory")));
     }
     let dir = root.join("versions").join(name);
+    let damaged = |why: &str| NoCurrent::Damaged(format!("versions/{name}, which current names, {why}"));
     match read_record(&dir) {
-        Ok(record) => intact(&dir, &record, bin_rel).then(|| Current { dir: name.into(), version: record.version, recorded: true }),
+        Ok(record) if intact(&dir, &record, bin_rel) => Ok(Current { dir: name.into(), version: record.version, recorded: true }),
+        Ok(_) => Err(damaged("is missing files its record lists, or has them at another size")),
         // Without its record, a directory is run only in a tree this code has
         // never installed into: there it can only be from before records. In
         // one it has, it is an install whose record is gone, which proves
         // nothing about the files beside it.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && fs::symlink_metadata(root.join(RECORDED)).is_err() => {
-            dir.join(bin_rel).is_file().then(|| Current { dir: name.into(), version: name.into(), recorded: false })
+            match dir.join(bin_rel).is_file() {
+                true => Ok(Current { dir: name.into(), version: name.into(), recorded: false }),
+                false => Err(damaged(&format!("has no {bin_rel}"))),
+            }
         }
-        Err(_) => None,
+        Err(e) => Err(damaged(&format!("has no completion record that reads ({e})"))),
     }
 }
 
@@ -269,37 +289,51 @@ pub(crate) fn current_version(provider: Provider) -> Option<String> {
     current_in(&root(provider), source(provider).bin_rel).map(|c| c.version)
 }
 
-/// What a session should spawn. Falls back to PATH so a fresh install that
-/// has not finished its first download still works for anyone who has the
-/// CLI installed the usual way.
-pub fn binary(provider: Provider) -> PathBuf {
+/// The managed copy `current` names, for Settings to show; None while there
+/// is none to start.
+pub fn binary(provider: Provider) -> Option<PathBuf> {
     let src = source(provider);
     let root = root(provider);
-    match current_in(&root, src.bin_rel) {
-        Some(c) => root.join("versions").join(c.dir).join(src.bin_rel),
-        None => PathBuf::from(src.path_fallback),
-    }
+    current_in(&root, src.bin_rel).map(|c| root.join("versions").join(c.dir).join(src.bin_rel))
 }
 
-/// `binary`, for a process that is about to start: with a hold on its
-/// version directory that the caller keeps until the process has exited, so
-/// the sweep leaves that directory be (`in_use`). `session` is the chat or
-/// helper it is for, whose version `luna_session_get` then shows. The bare
-/// name on PATH, unheld, only while nothing is current; a managed copy that
-/// cannot be held is not started at all.
+/// What a session should spawn: the managed copy `current` names, with a hold
+/// on its version directory that the caller keeps until the process has
+/// exited, so the sweep leaves that directory be (`in_use`). `session` is the
+/// chat or helper it is for, whose version `luna_session_get` then shows.
+///
+/// Nothing else is started, the CLI on PATH included: only a managed copy has
+/// been through the checks a version passes before it runs (its signature or
+/// checksums, the probe, the known-good list and `minSafe`), and a bare name
+/// is found wherever the process's search looks first. Luna installs its copy
+/// at its first start, so only that first download is waited for. The live
+/// suite's test executables, which keep no managed copy, take the one its
+/// script names (`live_cli`).
 pub fn launch(provider: Provider, session: Option<&str>) -> Result<(PathBuf, Option<InUse>), String> {
     let src = source(provider);
     let root = root(provider);
-    match launch_in(&root, src.bin_rel, min_safe(provider))? {
-        Some((path, version, held)) => {
-            if let Some(session) = session {
-                in_use::note_session(session, provider, &version);
-                canary::session_started(provider, &root, &version, session);
-            }
-            Ok((path, Some(held)))
-        }
-        None => Ok((PathBuf::from(src.path_fallback), None)),
+    #[cfg(test)]
+    if let Some(exe) = live_cli(provider).filter(|_| current_in(&root, src.bin_rel).is_none()) {
+        return Ok((exe, None));
     }
+    let (path, version, held) = launch_in(&root, src.bin_rel, min_safe(provider))?;
+    if let Some(session) = session {
+        in_use::note_session(session, provider, &version);
+        canary::session_started(provider, &root, &version, session);
+    }
+    Ok((path, Some(held)))
+}
+
+/// The CLI scripts/live-tests.ps1 resolved for the live suite, by its full
+/// path: `LUNA_LIVE_CLAUDE_CLI` or `LUNA_LIVE_CODEX_CLI`. Test executables
+/// only; a shipped Luna starts nothing but its managed copy.
+#[cfg(test)]
+pub fn live_cli(provider: Provider) -> Option<PathBuf> {
+    let var = match provider {
+        Provider::Claude => "LUNA_LIVE_CLAUDE_CLI",
+        Provider::Codex => "LUNA_LIVE_CODEX_CLI",
+    };
+    std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
 /// How often a launch tries for its hold: `current` moving under it, or the
@@ -309,18 +343,34 @@ const HOLD_TRIES: u32 = 5;
 /// The exe `current` names under `root`, its version, and a hold on its
 /// directory taken before `current` is read a second time: a flip and a
 /// sweep between the two reads would have taken the directory the first one
-/// named. None where nothing is current. An Err rather than a start without
-/// the hold: the sweep could later take the folder from under the process.
-/// An Err too, never the CLI on PATH, for a current version below `min_safe`:
-/// a Luna release that raised its minimum runs nothing older, whatever
-/// `current` or a version held by hand says, until the next pass moves it.
-fn launch_in(root: &Path, bin_rel: &str, min_safe: &str) -> Result<Option<(PathBuf, String, InUse)>, String> {
+/// named. An Err where nothing is current, saying whether nothing has been
+/// installed yet or what is there is damaged; an Err rather than a start
+/// without the hold: the sweep could later take the folder from under the
+/// process. An Err too for a current version below `min_safe`: a Luna
+/// release that raised its minimum runs nothing older, whatever `current` or
+/// a version held by hand says, until the next pass moves it.
+fn launch_in(root: &Path, bin_rel: &str, min_safe: &str) -> Result<(PathBuf, String, InUse), String> {
     let mut why = String::new();
     for attempt in 0..HOLD_TRIES {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(20 * u64::from(attempt)));
         }
-        let Some(c) = current_in(root, bin_rel) else { return Ok(None) };
+        let c = match current_or_why(root, bin_rel) {
+            Ok(c) => c,
+            Err(NoCurrent::NotInstalled) => {
+                return Err(format!(
+                    "not started: Luna has not installed this CLI in {} yet; it downloads it at its start, and Settings → CLIs \
+                     shows how far it has got",
+                    root.display()
+                ))
+            }
+            Err(NoCurrent::Damaged(why)) => {
+                return Err(format!(
+                    "not started: Luna's copy of this CLI in {} is damaged: {why}; Settings → CLIs installs it again",
+                    root.display()
+                ))
+            }
+        };
         if version_cmp(&c.version, min_safe).is_lt() {
             return Err(format!(
                 "not started: version {} is older than {min_safe}, the oldest this Luna lets run; Settings → CLIs installs a newer one",
@@ -332,7 +382,7 @@ fn launch_in(root: &Path, bin_rel: &str, min_safe: &str) -> Result<Option<(PathB
             continue;
         };
         if current_in(root, bin_rel).is_some_and(|again| again.dir == c.dir) {
-            return Ok(Some((root.join("versions").join(&c.dir).join(bin_rel), c.version, held)));
+            return Ok((root.join("versions").join(&c.dir).join(bin_rel), c.version, held));
         }
         why = "the current version kept changing while it was read".into();
     }
@@ -510,7 +560,7 @@ fn use_version(provider: Provider, dir: &str) -> Result<(), String> {
     }
     publish(provider, |s| {
         s.version = current_version(provider);
-        s.path = binary(provider).to_string_lossy().into_owned();
+        s.path = binary(provider).map(|b| b.to_string_lossy().into_owned()).unwrap_or_default();
     });
     result.map(|_| ())
 }
@@ -715,7 +765,7 @@ fn update(provider: Provider) {
             }
         }
         s.version = current_version(provider);
-        s.path = binary(provider).to_string_lossy().into_owned();
+        s.path = binary(provider).map(|b| b.to_string_lossy().into_owned()).unwrap_or_default();
     });
     match result {
         Err(e) => crate::log::warn("cli", &format!("{} update failed: {e}", provider.as_str())),
@@ -916,7 +966,7 @@ fn update_in(
 /// two leaves both naming the old one.
 /// Through a temp file: the core reads `current` for every spawn, and a read
 /// between a plain write's truncate and its bytes would find no version and
-/// spawn whatever is on PATH. Private as it is made, under a random name: in
+/// refuse the start. Private as it is made, under a random name: in
 /// a data dir open to others a `current` of theirs would pick the binary
 /// every session runs. Synced, so a power cut leaves the old name or the new
 /// one. Then the floor rises to the version, now that it runs.
@@ -1528,7 +1578,7 @@ mod tests {
         assert_eq!(previous_in(&root, BIN).as_deref(), Some("1.0.0"));
 
         // A session starts on 2.0.0 and runs on through two more updates.
-        let (exe, version, held) = launch_in(&root, BIN, "0").unwrap().unwrap();
+        let (exe, version, held) = launch_in(&root, BIN, "0").unwrap();
         assert_eq!((exe, version.as_str()), (root.join("versions").join("2.0.0").join(BIN), "2.0.0"));
         update_in(&root, BIN, pointer("3.0.0"), &mut whole).unwrap();
         update_in(&root, BIN, pointer("4.0.0"), &mut whole).unwrap();
@@ -1550,11 +1600,10 @@ mod tests {
 
     /// A start the sweep could not see would let it take the folder from under
     /// the process: one whose hold cannot be had is refused, never started
-    /// unheld; with nothing current it is PATH's, which no sweep touches.
+    /// unheld.
     #[test]
     fn a_managed_copy_that_cannot_be_held_is_not_started() {
         let root = scratch("unheld");
-        assert!(launch_in(&root, BIN, "0").unwrap().is_none(), "nothing current: the CLI on PATH");
         update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
         // The locks' folder taken by a file: no lock can be had there.
         remove_tree(&root.join(in_use::DIR)).ok();
@@ -1563,7 +1612,7 @@ mod tests {
         assert!(refused.contains("not started: cannot hold 1.0.0"), "{refused}");
         // Held again once the lock can be had.
         fs::remove_file(root.join(in_use::DIR)).unwrap();
-        assert!(launch_in(&root, BIN, "0").unwrap().is_some());
+        assert!(launch_in(&root, BIN, "0").is_ok());
         let _ = remove_tree(&root);
     }
 
@@ -1578,7 +1627,41 @@ mod tests {
         choice::pin_in(&root, "1.0.0").unwrap();
         let refused = launch_in(&root, BIN, "1.5.0").err().expect("refused");
         assert!(refused.contains("1.0.0 is older than 1.5.0"), "{refused}");
-        assert!(launch_in(&root, BIN, "1.0.0").unwrap().is_some(), "at the minimum it runs");
+        assert!(launch_in(&root, BIN, "1.0.0").is_ok(), "at the minimum it runs");
+        let _ = remove_tree(&root);
+    }
+
+    /// Nothing but a managed copy that passed its checks is started: not the
+    /// CLI on PATH while none is installed yet, and not a damaged one, each
+    /// refused with what it is.
+    #[test]
+    fn nothing_installed_or_a_damaged_copy_starts_nothing() {
+        let root = scratch("damaged");
+        let refused = launch_in(&root, BIN, "0").err().expect("nothing installed: refused, not the CLI on PATH");
+        assert!(refused.contains("not started") && refused.contains("not installed this CLI"), "{refused}");
+        update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
+        assert!(launch_in(&root, BIN, "0").is_ok());
+        let damaged = |root: &Path| {
+            let refused = launch_in(root, BIN, "0").err().expect("damaged: refused");
+            assert!(refused.contains("not started") && refused.contains("is damaged"), "{refused}");
+            refused
+        };
+        // The exe gone from under its record.
+        let exe = root.join("versions").join("1.0.0").join(BIN);
+        fs::remove_file(&exe).unwrap();
+        assert!(damaged(&root).contains("missing files"));
+        fs::write(&exe, FILES[0].1).unwrap();
+        // The record gone, in a tree this code installed into.
+        let record = root.join("versions").join("1.0.0").join(RECORD);
+        let kept = fs::read(&record).unwrap();
+        fs::remove_file(&record).unwrap();
+        assert!(damaged(&root).contains("completion record"));
+        fs::write(&record, kept).unwrap();
+        // `current` naming no version directory.
+        fs::write(root.join("current"), "../elsewhere").unwrap();
+        assert!(damaged(&root).contains("no version directory"));
+        fs::write(root.join("current"), "1.0.0").unwrap();
+        assert!(launch_in(&root, BIN, "0").is_ok());
         let _ = remove_tree(&root);
     }
 

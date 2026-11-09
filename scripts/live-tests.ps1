@@ -18,7 +18,9 @@
 # (paths.rs `data_dir`): their hub, settings and log (luna.log there) share
 # nothing with a test build running beside them. The CLI is the test build's
 # managed copy when it has one (test-build\claude-cli, test-build\codex-cli),
-# put first on PATH for the run, or else whatever is on PATH.
+# or else whatever is on PATH, resolved here and named to the tests by its full
+# path (LUNA_LIVE_CLAUDE_CLI, LUNA_LIVE_CODEX_CLI; cli.rs `live_cli`): Luna
+# itself starts nothing but its managed copy.
 param(
     [string]$ClaudeAccount,
     [string]$CodexAccount,
@@ -44,8 +46,8 @@ $dir = Join-Path $testBuild 'live-tests'
 # environment variable naming the account and the tests' name prefix.
 $runs = @()
 foreach ($p in @(
-        @{ Name = $ClaudeAccount; Dir = 'anthropic'; Var = 'LUNA_LIVE_CLAUDE_ACCOUNT'; Prefix = 'live::claude_'; Cli = 'claude-cli'; Bin = 'claude.exe' }
-        @{ Name = $CodexAccount; Dir = 'openai'; Var = 'LUNA_LIVE_CODEX_ACCOUNT'; Prefix = 'live::codex_'; Cli = 'codex-cli'; Bin = 'bin/codex.exe' }
+        @{ Name = $ClaudeAccount; Dir = 'anthropic'; Var = 'LUNA_LIVE_CLAUDE_ACCOUNT'; Prefix = 'live::claude_'; CliVar = 'LUNA_LIVE_CLAUDE_CLI'; Cli = 'claude-cli'; Bin = 'claude.exe' }
+        @{ Name = $CodexAccount; Dir = 'openai'; Var = 'LUNA_LIVE_CODEX_ACCOUNT'; Prefix = 'live::codex_'; CliVar = 'LUNA_LIVE_CODEX_CLI'; Cli = 'codex-cli'; Bin = 'bin/codex.exe' }
     )) {
     if (-not $p.Name) { continue }
     $account = Join-Path $testBuild 'accounts' $p.Dir $p.Name
@@ -73,7 +75,7 @@ foreach ($p in @(
         $cli = $onPath.Source
     }
     Write-Host "$($p.Dir): account $account, CLI $cli"
-    $runs += @{ Var = $p.Var; Account = $account; Prefix = $p.Prefix; CliDir = Split-Path -Parent $cli }
+    $runs += @{ Var = $p.Var; Account = $account; Prefix = $p.Prefix; CliVar = $p.CliVar; Cli = $cli; CliDir = Split-Path -Parent $cli }
 }
 
 if (-not $NoBuild) {
@@ -85,7 +87,7 @@ if (-not $exes) { throw "no test executables in $dir - run without -NoBuild" }
 Write-Warning 'the live tests spend the quota of the accounts named, a few short turns each'
 $saved = @{}
 $set = @{ LUNA_LIVE = '1'; LUNA_LIVE_TIMEOUT_S = "$TimeoutS"; PATH = (($runs.CliDir | Select-Object -Unique) + $env:PATH) -join [IO.Path]::PathSeparator }
-foreach ($r in $runs) { $set[$r.Var] = $r.Account }
+foreach ($r in $runs) { $set[$r.Var] = $r.Account; $set[$r.CliVar] = $r.Cli }
 $passed = 0; $failed = @()
 Push-Location -LiteralPath $dir
 try {

@@ -17,13 +17,13 @@ import { Group, List, ListItem, Row, type About } from '../SettingsRows';
 const pct = (got: number, total: number | null) => (total ? Math.min(100, Math.round((got / total) * 100)) : null);
 
 /** What the update pass is doing, or last did, in a line. */
-function statusLine(s: CliStatusDto | null, provider: Provider): string {
+function statusLine(s: CliStatusDto | null): string {
   if (!s) return 'no status yet';
   const done = pct(s.got, s.total);
   if (s.phase === 'downloading') return `downloading ${s.latest ?? ''}… ${done == null ? '' : `${done}%`}`;
   if (s.phase === 'checking') return 'checking…';
   if (s.phase === 'error') return `update failed — ${s.error ?? 'unknown error'}`;
-  if (!s.version) return `no private copy yet — sessions use ${provider} from PATH`;
+  if (!s.version) return 'no working copy yet — sessions start once Luna has installed one';
   if (s.note) return s.note;
   const offered = s.latest && s.latest !== s.version && s.channel === 'knownGood' ? ` · ${s.latest} is out` : '';
   return `checked ${agoLabel(s.checkedAtMs)}${offered}`;
@@ -170,7 +170,7 @@ function CliGroup({ provider, about }: { provider: Provider; about?: About }) {
               color: s?.phase === 'error' ? 'var(--set-error)' : undefined
             }}
           >
-            {statusLine(s, provider)}
+            {statusLine(s)}
           </div>
         }
         note={
