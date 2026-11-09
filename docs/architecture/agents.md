@@ -419,14 +419,19 @@ registry settings, the threshold in percent, passed by the window at every start
   link followed (and, off Windows, without waiting, so a FIFO swapped in does not
   hang the open) and checked on its handle, at most 128 KB of UTF-8 text, refused
   inside the data dir after `canonicalize`; all of it on a thread of its own
-  given 10 s (`READ_WAIT`), outside the records' lock: the number is reserved
+  given 10 s (`READ_WAIT`), outside the records' lock; a reader given up on keeps
+  its place until its thread ends (`Readers`: one per chat, four in all, a call
+  past either refused): the number is reserved
   first (`Record::reserved`, never saved, one call at a time per chat) and taken
   past any copy already on disk (`next_free`), so one a stopped core left is never
   written into. The copy is made new and private as `<data>/handoffs/<chat>/<n>.md`
   and flushed before the switch is recorded, its SHA-256 on record. Claude Code
   chats with auto-handoff get that folder as an `--add-dir`, read without asking.
 - **Recording it.** The switch is recorded on disk (`write_private_synced`; a
-  save that fails is undone and refuses the call) under the notifier's
+  save that fails is undone and refuses the call), only while the reservation
+  is still the call's and auto-handoff is still on, both looked at under the
+  record's lock (turning it off takes that lock, clears the reservation and
+  changes the registry inside it), under the notifier's
   exclusion for the chat (`hand_off`): whatever is going into the chat then (a
   notice, `tell_of`; a held send or a send, `going_into`) goes in first, into
   the conversation that writes the handoff, and from then on each of them, which

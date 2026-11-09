@@ -176,7 +176,7 @@ fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Res
             rec.reserved = None;
         }
     };
-    let snap = match file::snapshot(file, &crate::paths::data_dir(), &dir, n) {
+    let snap = match file::snapshot(caller, file, &crate::paths::data_dir(), &dir, n) {
         Ok(snap) => snap,
         Err(e) => {
             unreserve();
@@ -203,17 +203,26 @@ fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Res
         before,
         attempts: 0,
     };
+    // Under the record's lock, the registry looked at inside it: auto-handoff
+    // turned off since the call (`set_auto_handoff`, which takes them in the
+    // same order, or the chat started again without it) leaves nothing to
+    // record.
     let committed = store::change(caller, |rec| {
         if rec.reserved != Some(n) || rec.switch.is_some() {
-            return false;
+            return Err(
+                "this chat's handoffs changed while the file was copied (auto-handoff turned off, or another handoff); nothing will switch",
+            );
         }
         rec.reserved = None;
+        if !offers_tool(caller) {
+            return Err("auto-handoff was turned off for this chat while the file was copied; nothing will switch");
+        }
         rec.switch = Some(switch);
-        true
+        Ok(())
     });
     match committed {
-        Ok(true) => {}
-        Ok(false) => return give_up("this chat's handoffs changed while the file was copied; call luna_session_handoff again".into()),
+        Ok(Ok(())) => {}
+        Ok(Err(why)) => return give_up(why.into()),
         Err(e) => return give_up(format!("the handoff could not be saved, so nothing will switch: {e}")),
     }
     drop(_exclusive);
@@ -680,42 +689,52 @@ pub fn set_auto_handoff(id: String, threshold: Option<u8>) -> Result<AutoHandoff
     if let Some(t) = threshold.filter(|t| !(THRESHOLD_MIN..=THRESHOLD_MAX).contains(t)) {
         return Err(format!("a threshold of {t}% is not one: from {THRESHOLD_MIN} to {THRESHOLD_MAX}"));
     }
-    let tools = {
-        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        match r.known.get_mut(&id) {
-            Some(k) => {
-                match threshold {
-                    Some(t) => k.settings["handoff"] = json!(t),
-                    None => {
-                        if let Some(o) = k.settings.as_object_mut() {
-                            o.remove("handoff");
-                        }
-                    }
-                }
-                k.tools
-            }
-            None => false,
+    // The registry's word and what it stops, in one hold of the chat's record
+    // (records, then the registry: the order a schedule's commitment takes
+    // them in too). Off: a number reserved for a file being copied is no
+    // longer one a switch can be recorded under, and a handoff still only
+    // scheduled is given up; a switch that has taken its reset (`advance`,
+    // under the same lock) goes on.
+    let why = "auto-handoff was turned off for this chat".to_string();
+    let only_scheduled = |s: &Switch| s.phase == Phase::Scheduled;
+    let apply = |r: &mut store::Record| {
+        let tools = set_in_registry(&id, threshold);
+        if threshold.is_some() {
+            return (tools, None);
+        }
+        r.reserved = None;
+        (tools, close(r, None, false, Some(why.clone()), only_scheduled))
+    };
+    let (tools, closed) = match store::change(&id, apply) {
+        Ok(done) => done,
+        Err(e) => {
+            crate::log::warn("handoff", &format!("{}: auto-handoff's change could not be saved: {e}", label(&id)));
+            let mut r = store::records();
+            apply(r.entry(id.clone()).or_default())
         }
     };
-    // Only a handoff that is still scheduled, in one hold of the record: a
-    // switch that has taken its reset (`advance`, under the same lock) goes on.
-    if threshold.is_none() {
-        let why = "auto-handoff was turned off for this chat".to_string();
-        let only_scheduled = |s: &Switch| s.phase == Phase::Scheduled;
-        let closed = match store::change(&id, |r| close(r, None, false, Some(why.clone()), only_scheduled)) {
-            Ok(closed) => closed,
-            Err(e) => {
-                crate::log::warn("handoff", &format!("{}: the handoff given up could not be saved: {e}", label(&id)));
-                store::records().get_mut(&id).and_then(|r| close(r, None, false, Some(why.clone()), only_scheduled))
-            }
-        };
-        if let Some((s, gone)) = closed {
-            ended_with(&id, &s, gone, Some(why), false, "");
-        }
+    if let Some((s, gone)) = closed {
+        ended_with(&id, &s, gone, Some(why), false, "");
     }
     crate::log::info("handoff", &format!("{}: auto-handoff {}", label(&id), threshold.map_or("off".into(), |t| format!("at {t}%"))));
     let resume = tools && threshold.is_some() && crate::pty::manager().alive(&id) && !is_listed(&id);
     Ok(AutoHandoff { resume })
+}
+
+/// Auto-handoff at `threshold` (or off) in `id`'s registry settings; whether it
+/// has Luna's tools. Called with its record's lock held.
+fn set_in_registry(id: &str, threshold: Option<u8>) -> bool {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(k) = r.known.get_mut(id) else { return false };
+    match threshold {
+        Some(t) => k.settings["handoff"] = json!(t),
+        None => {
+            if let Some(o) = k.settings.as_object_mut() {
+                o.remove("handoff");
+            }
+        }
+    }
+    k.tools
 }
 
 /// Where a chat's latest handoff stands, for its divider in the window.
