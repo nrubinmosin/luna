@@ -43,8 +43,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   A window that is not sent is now left out everywhere, the account choice of a
   spawn given a list included, which judges an account by the windows it has.
   A Codex answer with no window left no longer keeps the last ones on show,
-  and the CLI's cache no longer stands in for a newer answer from Luna, which
-  brought back a window that answer no longer had.
+  and neither the CLI's cache nor a Codex rollout stands in any more for a
+  newer answer from Luna, which brought back a window that answer no longer
+  had.
 - A Claude usage row of a kind Luna did not know was dropped without a trace,
   so a new or renamed window vanished. It is now shown under the server's own
   name for it with its kind, "monthly (monthly_all)", and its kind is logged

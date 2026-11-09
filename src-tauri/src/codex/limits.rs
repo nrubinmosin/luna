@@ -1,16 +1,16 @@
 //! Rate limits of a ChatGPT subscription, the way Codex's own `/status` gets
 //! them: `GET chatgpt.com/backend-api/wham/usage` with the access token from
 //! `<CODEX_HOME>/auth.json`. Zero tokens. When the network or the token is
-//! not there, the last `token_count` line of a rollout has the same numbers
-//! as of the last turn.
+//! not there, the newer of Luna's last answer and the last `token_count` line
+//! of a rollout (the same numbers as of the last turn) stands in.
 
 use crate::throttle::{self, now_ms};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 pub const RATE_429: &str = "rate-limited";
@@ -235,16 +235,34 @@ fn get_usage(auth: &Auth) -> Result<Value, String> {
     resp.into_json().map_err(|e| e.to_string())
 }
 
-fn from_rollout(out: &mut CodexLimits, account_path: &str) {
-    let Some((snapshot, ts)) = super::session::latest_rate_limits(account_path) else { return };
-    let (windows, plan) = windows_from_rollout(&snapshot);
-    if windows.is_empty() {
-        return;
-    }
+/// The last answer from the endpoint, per account path, and when it came.
+fn last_answer() -> &'static Mutex<HashMap<String, (u64, Value)>> {
+    static LAST: OnceLock<Mutex<HashMap<String, (u64, Value)>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// What is known without asking the endpoint: Luna's own last answer from it,
+/// or the newest rollout's snapshot, whichever was taken later. Each is the
+/// whole picture, so the older would bring back a window the newer one no
+/// longer has. A snapshot with no window in it says nothing.
+fn from_newest_known(out: &mut CodexLimits, account_path: &str) {
+    let remembered = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
+    let rollout = super::session::latest_rate_limits(account_path).and_then(|(snapshot, ts)| {
+        let (windows, plan) = windows_from_rollout(&snapshot);
+        let at = chrono::DateTime::parse_from_rfc3339(&ts).ok().map(|t| t.timestamp_millis().max(0) as u64);
+        (!windows.is_empty()).then_some((at, windows, plan))
+    });
+    let rollout = match (remembered, rollout) {
+        (Some((said_at, _)), Some(r @ (Some(at), _, _))) if at > said_at => r,
+        (Some((said_at, body)), _) => return from_answer(out, &body, said_at),
+        (None, Some(r)) => r,
+        (None, None) => return,
+    };
+    let (at, windows, plan) = rollout;
     out.windows = windows;
     out.have_usage = true;
     out.source = Some("rollout".into());
-    out.fetched_at_ms = chrono::DateTime::parse_from_rfc3339(&ts).ok().map(|t| t.timestamp_millis() as f64);
+    out.fetched_at_ms = at.map(|at| at as f64);
     if out.plan.is_none() {
         out.plan = plan;
     }
@@ -284,29 +302,36 @@ fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimits, String> 
 
     if auth.expired {
         out.stale = true;
-        from_rollout(&mut out, account_path);
+        from_newest_known(&mut out, account_path);
         return Ok(out);
     }
 
     if let Some(secs) = throttle::remaining(account_path).filter(|_| !force) {
         out.rate_limited = Some(secs);
-        from_rollout(&mut out, account_path);
+        from_newest_known(&mut out, account_path);
         return Ok(out);
     }
 
     match get_usage(&auth) {
         Ok(body) => {
-            from_answer(&mut out, &body, now_ms());
+            let at = now_ms();
+            from_answer(&mut out, &body, at);
             throttle::clear(account_path);
+            // One without its rate limits says nothing to fall back on.
+            if out.have_usage {
+                if let Ok(mut m) = last_answer().lock() {
+                    m.insert(account_path.to_string(), (at, body));
+                }
+            }
         }
         Err(e) if e.starts_with(RATE_429) => {
             let secs: u64 = e.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0);
             out.rate_limited = Some(throttle::hit("codex-limits", account_path, secs));
-            from_rollout(&mut out, account_path);
+            from_newest_known(&mut out, account_path);
         }
         Err(e) => {
             crate::log::warn("codex-limits", &format!("usage failed for {account_path}: {e}"));
-            from_rollout(&mut out, account_path);
+            from_newest_known(&mut out, account_path);
             if !out.have_usage {
                 return Err(e);
             }
@@ -446,6 +471,53 @@ mod tests {
         // A body without its rate limits says nothing about the windows.
         from_answer(&mut out, &serde_json::json!({ "plan_type": "plus" }), 3);
         assert!(!out.have_usage);
+    }
+
+    /// An account folder with an access token long expired, so that a fetch
+    /// falls back at once and asks nothing, and one rollout written `ago` ms
+    /// before now, with a 5-hour window at 40% and the week at 96%.
+    fn account_with_rollout(tag: &str, ago: u64) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("luna-codex-limits-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":1}"#);
+        let today = chrono::Local::now();
+        let day = dir.join("sessions").join(today.format("%Y/%m/%d").to_string());
+        std::fs::create_dir_all(&day).unwrap();
+        let auth = serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig") } });
+        std::fs::write(dir.join("auth.json"), auth.to_string()).unwrap();
+        let at = chrono::DateTime::from_timestamp_millis((now_ms() - ago) as i64).unwrap().to_rfc3339();
+        let line = serde_json::json!({ "timestamp": at, "type": "event_msg", "payload": { "type": "token_count", "info": null, "rate_limits": {
+            "primary": { "used_percent": 40, "window_minutes": 300, "resets_at": null },
+            "secondary": { "used_percent": 96, "window_minutes": 10080, "resets_at": null } } } });
+        let name = format!("rollout-{}-limits-test.jsonl", today.format("%Y-%m-%dT%H-%M-%S"));
+        std::fs::write(day.join(name), format!("{line}\n")).unwrap();
+        let path = dir.to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    #[test]
+    fn an_older_rollout_does_not_bring_back_a_window_a_newer_answer_lacks() {
+        let week_only = serde_json::json!({ "rate_limit": {
+            "primary_window": { "used_percent": 41, "limit_window_seconds": 604800, "reset_at": 1789000000 }, "secondary_window": null } });
+        let labels = |out: &CodexLimits| out.windows.iter().map(|w| w.label.clone()).collect::<Vec<_>>();
+
+        // The rollout a minute old; the endpoint's answer since has the week
+        // alone. The next fetch that cannot ask:
+        let (dir, path) = account_with_rollout("newer-answer", 60_000);
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, week_only.clone()));
+        let out = fetch_limits(&path, false).unwrap();
+        assert!(out.stale, "fell back, asked nothing");
+        assert_eq!((labels(&out), out.source.as_deref()), (vec!["week".to_string()], Some("network")));
+        last_answer().lock().unwrap().remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The other way round the rollout is the newer, and stands.
+        let (dir, path) = account_with_rollout("newer-rollout", 10_000);
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 60_000, week_only));
+        let out = fetch_limits(&path, false).unwrap();
+        assert_eq!((labels(&out), out.source.as_deref()), (vec!["5 hours".to_string(), "week".to_string()], Some("rollout")));
+        last_answer().lock().unwrap().remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
