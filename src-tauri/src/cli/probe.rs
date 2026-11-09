@@ -14,6 +14,7 @@
 //! What only a real turn shows is the canary's (`canary`).
 
 use crate::provider::Provider;
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command as Process, Stdio};
 use std::time::{Duration, Instant};
@@ -139,9 +140,13 @@ fn codex_overrides() -> Vec<String> {
     args
 }
 
-/// How long one run of the binary may take: a CLI that hangs on `--help`
-/// fails the probe rather than the update pass.
+/// How long one run of the binary may take, its output read to the end: a
+/// CLI that hangs on `--help`, or leaves something running that holds its
+/// output open, fails the probe rather than the update pass.
 const RUN_FOR: Duration = Duration::from_secs(30);
+/// The most of each stream that is kept: a help is some 20 KB. Past it the
+/// pipe is let go, and a CLI that will not stop writing fails by the clock.
+const OUTPUT_CAP: u64 = 1 << 20;
 
 /// Runs `exe` with `args` in `home`, nothing on stdin, and returns its exit
 /// code and what it printed, both streams together.
@@ -157,39 +162,109 @@ fn run(provider: Provider, exe: &Path, home: &Path, args: &[String]) -> Result<(
             cmd.env("CODEX_HOME", home);
         }
     }
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let shown = format!("{} {}", exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), args.join(" "));
+    run_within(cmd, &shown, RUN_FOR)
+}
+
+/// What the probe started, all of it: a Job Object on Windows, the
+/// process's own group on Unix. Whatever the CLI starts is born inside, and
+/// goes with it when the run ends, however it ends.
+struct Tree {
+    child: std::process::Child,
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    job: Option<crate::procs::Job>,
+}
+
+impl Tree {
+    fn spawn(mut cmd: Process) -> std::io::Result<Tree> {
+        // Suspended until it is in its job: what it starts at once would
+        // otherwise be born outside it.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000 | 0x0000_0004); // CREATE_NO_WINDOW | CREATE_SUSPENDED
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let child = cmd.spawn()?;
+        #[cfg(windows)]
+        {
+            let job = crate::procs::adopt(child.id());
+            crate::procs::resume(child.id());
+            Ok(Tree { child, job })
+        }
+        #[cfg(not(windows))]
+        Ok(Tree { child })
     }
-    let shown = || format!("{} {}", exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), args.join(" "));
-    let mut child = cmd.spawn().map_err(|e| format!("could not run {}: {e}", shown()))?;
-    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+
+    /// Ends every process of the run, the CLI's leftovers among them, and
+    /// reaps the CLI.
+    fn end(&mut self) {
+        #[cfg(windows)]
+        match &self.job {
+            Some(job) => {
+                crate::procs::end_leftovers(job, None);
+            }
+            None => crate::pty::kill_tree(Some(self.child.id())),
+        }
+        // The group outlives its leader while any member is left.
+        #[cfg(unix)]
+        // SAFETY: a plain signal to the group this run's process leads.
+        unsafe {
+            libc::killpg(self.child.id() as i32, libc::SIGKILL);
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Runs `cmd` with its output piped, `within` for the whole of it: the run
+/// and its output read to the end, at most `OUTPUT_CAP` of each stream. What
+/// it started is ended either way.
+fn run_within(mut cmd: Process, shown: &str, within: Duration) -> Result<(Option<i32>, String), String> {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut tree = Tree::spawn(cmd).map_err(|e| format!("could not run {shown}: {e}"))?;
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, Vec<u8>)>();
+    let read = |at: usize, pipe: Option<Box<dyn Read + Send>>| {
+        let tx = tx.clone();
         std::thread::spawn(move || {
             let mut out = Vec::new();
-            if let Some(mut p) = pipe {
-                let _ = p.read_to_end(&mut out);
+            if let Some(p) = pipe {
+                let _ = Read::take(p, OUTPUT_CAP).read_to_end(&mut out);
             }
-            out
-        })
+            let _ = tx.send((at, out));
+        });
     };
-    let out = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
-    let err = read(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
-    let deadline = Instant::now() + RUN_FOR;
+    read(0, tree.child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    read(1, tree.child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    drop(tx);
+    let deadline = Instant::now() + within;
+    let late = |tree: &mut Tree, what: &str| {
+        tree.end();
+        Err(format!("{shown} {what} within {}s", within.as_secs()))
+    };
     let status = loop {
-        match child.try_wait() {
+        match tree.child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("{} did not finish within {}s", shown(), RUN_FOR.as_secs()));
-            }
+            _ => return late(&mut tree, "did not finish"),
         }
     };
-    let mut text = String::from_utf8_lossy(&out.join().unwrap_or_default()).into_owned();
-    text.push_str(&String::from_utf8_lossy(&err.join().unwrap_or_default()));
+    // Both streams to their end, by the same clock: a process the CLI left
+    // running holds them open.
+    let mut streams = [Vec::new(), Vec::new()];
+    for _ in 0..2 {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok((at, out)) => streams[at] = out,
+            Err(_) => return late(&mut tree, "left its output open"),
+        }
+    }
+    tree.end();
+    let mut text = String::from_utf8_lossy(&streams[0]).into_owned();
+    text.push_str(&String::from_utf8_lossy(&streams[1]));
     Ok((status.code(), text))
 }
 
@@ -301,6 +376,63 @@ mod tests {
         let refused = probe(Provider::Codex, Path::new("no-such-codex-exe"), "0.167.0", &std::env::temp_dir());
         crate::elevation::refuse_here(None);
         assert_eq!(refused.unwrap_err(), why, "refused before anything was started");
+    }
+
+    #[cfg(unix)]
+    fn sh(script: &str) -> Process {
+        let mut cmd = Process::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+
+    /// A run that leaves a process holding its output open: once the CLI
+    /// has exited, reading to the end waited on that process for ever.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_left_holding_the_output_fails_the_run_and_is_ended() {
+        let marker = format!("luna-probe-grandchild-{}", std::process::id());
+        let started = Instant::now();
+        let refused = run_within(sh(&format!("sleep 617 & echo {marker}; exit 0")), "stand-in", Duration::from_secs(2));
+        assert!(refused.unwrap_err().contains("left its output open"));
+        assert!(started.elapsed() < Duration::from_secs(10), "the deadline held through the draining");
+        std::thread::sleep(Duration::from_millis(300));
+        let left = Process::new("sh").args(["-c", "ps -eo args | grep -c '^sleep 617$' || true"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&left.stdout).trim(), "0", "the grandchild went with the run");
+    }
+
+    /// The same on Windows, where the run's job is what takes the grandchild.
+    #[cfg(windows)]
+    #[test]
+    fn a_process_left_holding_the_output_fails_the_run_and_is_ended() {
+        let mut cmd = Process::new("cmd");
+        cmd.args(["/d", "/c", "start /b ping -n 617 127.0.0.1 & echo started"]);
+        let started = Instant::now();
+        let refused = run_within(cmd, "stand-in", Duration::from_secs(3));
+        assert!(refused.unwrap_err().contains("left its output open"));
+        assert!(started.elapsed() < Duration::from_secs(15), "the deadline held through the draining");
+        std::thread::sleep(Duration::from_millis(500));
+        let left = Process::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "@(Get-CimInstance Win32_Process -Filter \"Name='PING.EXE'\" | Where-Object { $_.CommandLine -like '*-n 617 *' }).Count",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&left.stdout).trim(), "0", "the grandchild went with the run");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_is_kept_to_its_cap_and_a_plain_run_comes_back_whole() {
+        let (code, text) = run_within(sh("echo hello; echo there >&2; exit 3"), "stand-in", Duration::from_secs(10)).unwrap();
+        assert_eq!((code, text.as_str()), (Some(3), "hello\nthere\n"));
+        // Four times the cap of output: kept to the cap, or failed by the
+        // clock for writing on once nobody reads, never all of it.
+        let big = run_within(sh("head -c 4194304 /dev/zero"), "stand-in", Duration::from_secs(10));
+        if let Ok((_, text)) = big {
+            assert!(text.len() as u64 <= OUTPUT_CAP);
+        }
     }
 
     #[test]
