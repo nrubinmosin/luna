@@ -99,7 +99,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   the first call's result, not a second helper or message; one that failed is made anew. A key
   stands for one call: other arguments under it are refused. Keys are kept in the core's memory:
   a core restart forgets them. A key is at most 128 characters; Luna keeps 64 of yours, the
-  oldest finished making way.
+  oldest finished making way. A result too large to keep comes back as what it made (`id`).
 - `budgetTokens`: past that many `context` tokens (its own, not its subagents' or helpers') its
   parent hears, once; nothing stops. `settings` shows `budgetBreach`, `budgetTold`.
 
