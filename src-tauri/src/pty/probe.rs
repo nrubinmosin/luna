@@ -296,6 +296,7 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
         m.draft = tauri::async_runtime::spawn_blocking(move || manager().has_draft(&of)).await.unwrap_or(false);
         m.held = crate::agents::held_count(&id);
         m.handoff = crate::agents::mark_of(&id);
+        m.handoff_asked = crate::agents::asked_of(&id);
         pin_name(m);
     }
     Ok(meta)
