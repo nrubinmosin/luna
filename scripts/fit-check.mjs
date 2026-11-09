@@ -86,7 +86,12 @@ const EXTRAS = [
     setup: click('[aria-haspopup="menu"]'),
     opens: has('[role=menu]')
   },
-  { name: 'library-editor', scene: 'library', setup: click('[title$="SKILL.md"]'), opens: has('.config-text') },
+  {
+    name: 'library-editor',
+    scene: 'library',
+    setup: click('button[title^="Edit "][title$="SKILL.md"]'),
+    opens: has('.config-text')
+  },
   {
     name: 'library-addfolder',
     scene: 'library',
