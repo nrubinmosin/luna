@@ -162,6 +162,9 @@ export interface Folder {
 export interface FolderStart {
   worktree: boolean;
   tools: boolean;
+  /** The wait guard; none in a start kept before it was part of one, which
+   *  then follows the default in Settings. */
+  guard?: boolean;
 }
 
 // -------------------------------------------------------------- accounts --
