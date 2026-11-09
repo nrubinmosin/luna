@@ -65,6 +65,46 @@ pub fn private_dir(dir: &Path) -> io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
+/// `private_dir` for a folder Luna gives a session's CLI to write in (a
+/// chat's handoff drafts, agents/handoff `drafts_of`), where the CLI's own
+/// sandbox may grant itself access to it at the CLI's start: Codex 0.167.0's
+/// unelevated Windows sandbox adds an inheritable Modify ACE for a SID of its
+/// own (the account's capability SID) to each `--add-dir`. Checked as
+/// `private_dir` checks a folder, but a DACL private save for such ACEs
+/// (`sddl_private_but_sandbox`) is left as it is: put back to private, it
+/// would take the grant away again at the next look, and the sandbox could
+/// write nothing there. On Unix the same as `private_dir`: a sandbox there
+/// runs as this user.
+pub fn sandbox_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(dir)?;
+        acl::claim_for_sandbox(dir)
+    }
+    #[cfg(not(windows))]
+    private_dir(dir)
+}
+
+/// Whether `sddl` is `sddl_is_private` but for allow ACEs to SIDs `sandbox`
+/// takes for a CLI sandbox's own (on Windows: a SID of the local or domain
+/// account form, `S-1-5-21-…`, that names no account, `acl::names_account`).
+/// Such a SID is held by no user's logon, only by the restricted token a
+/// sandbox of this user's runs under, which Windows checks against this
+/// user's ACE as well: it lets nobody else in. Everyone, Users,
+/// Authenticated Users, another user or a group still make it not private.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn sddl_private_but_sandbox(sddl: &str, user: &str, sandbox: impl Fn(&str) -> bool) -> bool {
+    let Some((flags, aces)) = sddl_aces(sddl) else { return false };
+    flags.contains('P')
+        && !flags.contains("NO_ACCESS_CONTROL")
+        && !aces.is_empty()
+        && aces.iter().all(|ace| match ace.as_slice() {
+            ["D", ..] => true,
+            ["A", _, _, _, _, who] => *who == user || MACHINE_TRUSTEES.contains(who) || (who.starts_with("S-1-5-21-") && sandbox(who)),
+            _ => false,
+        })
+}
+
 /// The DACL, as SDDL, of a folder that is this user's, SYSTEM's and
 /// Administrators' alone: full control for each, by SID, inherited by what
 /// is in it, and nothing from above (`P`). No BUILTIN\Users: the data dir
@@ -158,6 +198,50 @@ pub mod acl {
     pub fn claim(dir: &Path) -> io::Result<()> {
         let user = check_root(dir, true)?;
         set_dacl(dir, &super::private_sddl(&user), PROTECTED_DACL_SECURITY_INFORMATION)
+    }
+
+    /// `claim` for a folder a CLI's sandbox is given (`super::sandbox_dir`):
+    /// after `check_root`, a DACL private but for a sandbox's own ACEs
+    /// (`super::sddl_private_but_sandbox`) stays as it is; any other is put
+    /// back to private, the sandbox's ACEs going with whatever else was there.
+    pub fn claim_for_sandbox(dir: &Path) -> io::Result<()> {
+        let user = check_root(dir, true)?;
+        if super::sddl_private_but_sandbox(&dacl_sddl(dir)?, &trustee(&user)?, |sid| !names_account(sid)) {
+            return Ok(());
+        }
+        set_dacl(dir, &super::private_sddl(&user), PROTECTED_DACL_SECURITY_INFORMATION)
+    }
+
+    /// Whether `sid` (as text) is a user, group or other account Windows can
+    /// name on this machine or its domain. A SID it maps to nothing (none
+    /// mapped) is no one's logon: what a CLI sandbox mints for itself. Any
+    /// other answer, an error included, counts as named.
+    pub fn names_account(sid: &str) -> bool {
+        use windows::Win32::Foundation::ERROR_NONE_MAPPED;
+        use windows::Win32::Security::{LookupAccountSidW, SID_NAME_USE};
+        let text: Vec<u16> = sid.encode_utf16().chain(Some(0)).collect();
+        let mut psid = PSID::default();
+        // SAFETY: the SID is made from the string and freed once; the name
+        // buffers are of the sizes the call is told.
+        unsafe {
+            if ConvertStringSidToSidW(PCWSTR(text.as_ptr()), &mut psid).is_err() {
+                return true;
+            }
+            let (mut name, mut domain) = ([0u16; 256], [0u16; 256]);
+            let (mut name_len, mut domain_len) = (name.len() as u32, domain.len() as u32);
+            let mut kind = SID_NAME_USE::default();
+            let looked = LookupAccountSidW(
+                PCWSTR::null(),
+                psid,
+                Some(PWSTR(name.as_mut_ptr())),
+                &mut name_len,
+                Some(PWSTR(domain.as_mut_ptr())),
+                &mut domain_len,
+                &mut kind,
+            );
+            let _ = LocalFree(Some(HLOCAL(psid.0)));
+            !matches!(looked, Err(e) if e.code() == ERROR_NONE_MAPPED.to_hresult())
+        }
     }
 
     /// What every root is refused for: a link or junction, which a DACL would
@@ -258,9 +342,14 @@ pub mod acl {
         if !owner_ok(&owner, user) {
             problems.push(format!("{}: owned by {owner}", path.display()));
         }
-        // A token folder keeps the private DACL of its own (`private_dir`).
+        // A token folder keeps the private DACL of its own (`private_dir`),
+        // a folder given to a CLI's sandbox the sandbox's grant beside it
+        // (`sandbox_dir`).
         let sddl = dacl_sddl(path)?;
-        if !super::sddl_inherits_only(&sddl) && !super::sddl_is_private(&sddl, named) {
+        if !super::sddl_inherits_only(&sddl)
+            && !super::sddl_is_private(&sddl, named)
+            && !super::sddl_private_but_sandbox(&sddl, named, |sid| !names_account(sid))
+        {
             problems.push(format!("{}: has access entries of its own", path.display()));
         }
         if meta.is_dir() {
@@ -387,6 +476,18 @@ pub mod acl {
             let _ = LocalFree(Some(HLOCAL(text.0.cast())));
             out.map_err(io::Error::other)
         }
+    }
+
+    /// Gives `path` the protected DACL `sddl`, as a test plants one.
+    #[cfg(test)]
+    pub fn set_protected(path: &Path, sddl: &str) -> io::Result<()> {
+        set_dacl(path, sddl, PROTECTED_DACL_SECURITY_INFORMATION)
+    }
+
+    /// The SID of `path`'s owner, for the tests.
+    #[cfg(test)]
+    pub fn owner_of(path: &Path) -> io::Result<String> {
+        owner_sid(path)
     }
 
     /// The SID, as text, that an SDDL alias (`LA`, `BA`…) stands for here.
@@ -1029,6 +1130,133 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("luna-secret-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// What a folder given to a CLI's sandbox may hold beyond the private
+    /// three: allow ACEs to SIDs of the account form that name no account (a
+    /// sandbox's own), and no others; protected, as a private DACL is.
+    #[test]
+    fn a_sandbox_s_own_grant_is_the_one_thing_a_private_folder_may_add() {
+        let me = "S-1-5-21-10-20-30-1001";
+        let cap = "S-1-5-21-111-222-333-444";
+        let base = format!("D:P(A;OICI;FA;;;{me})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+        let sandbox = |sid: &str| sid == cap;
+        assert!(sddl_private_but_sandbox(&base, me, sandbox), "the private three alone");
+        let granted = format!("{base}(A;OICI;0x1301bf;;;{cap})");
+        assert!(sddl_private_but_sandbox(&granted, me, sandbox), "and the sandbox's own SID");
+        assert!(!sddl_is_private(&granted, me), "which `private_dir` would take away");
+        for other in ["S-1-5-21-10-20-30-1002", "WD", "BU", "AU", "S-1-5-32-545", "S-1-1-0"] {
+            let sddl = format!("{base}(A;OICI;0x1301bf;;;{other})");
+            assert!(!sddl_private_but_sandbox(&sddl, me, sandbox), "{other} is someone");
+        }
+        assert!(!sddl_private_but_sandbox(&granted.replacen("D:P", "D:", 1), me, sandbox), "not protected: inherits from above");
+        assert!(!sddl_private_but_sandbox(&format!("{base}(OA;;FA;;;{cap})"), me, sandbox), "an allow of another kind");
+    }
+
+    /// As Codex 0.167.0's unelevated Windows sandbox runs a command: this
+    /// user's token restricted to a SID of the sandbox's own (`cap`), which
+    /// Windows checks the DACL against as well as the user. `act` runs on a
+    /// thread that takes the token first.
+    #[cfg(windows)]
+    fn as_sandbox<T: Send + 'static>(cap: &str, act: impl FnOnce() -> T + Send + 'static) -> T {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
+        use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+        use windows::Win32::Security::{
+            CreateRestrictedToken, DuplicateTokenEx, ImpersonateLoggedOnUser, SecurityImpersonation, TokenImpersonation,
+            CREATE_RESTRICTED_TOKEN_FLAGS, PSID, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
+            TOKEN_IMPERSONATE, TOKEN_QUERY,
+        };
+        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        struct Token(HANDLE);
+        // SAFETY: a kernel handle, usable from any thread.
+        unsafe impl Send for Token {}
+        // SAFETY: this process's own token, duplicated for impersonation and
+        // restricted to `cap`; each handle and the SID are freed once.
+        let token = unsafe {
+            let mut mine = HANDLE::default();
+            OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut mine).unwrap();
+            let mut dup = HANDLE::default();
+            DuplicateTokenEx(
+                mine,
+                TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY,
+                None,
+                SecurityImpersonation,
+                TokenImpersonation,
+                &mut dup,
+            )
+            .unwrap();
+            let _ = CloseHandle(mine);
+            let text: Vec<u16> = cap.encode_utf16().chain(Some(0)).collect();
+            let mut sid = PSID::default();
+            ConvertStringSidToSidW(PCWSTR(text.as_ptr()), &mut sid).unwrap();
+            let restrict = [SID_AND_ATTRIBUTES { Sid: sid, Attributes: 0 }];
+            let mut restricted = HANDLE::default();
+            CreateRestrictedToken(dup, CREATE_RESTRICTED_TOKEN_FLAGS(0), None, None, Some(&restrict), &mut restricted).unwrap();
+            let _ = LocalFree(Some(HLOCAL(sid.0)));
+            let _ = CloseHandle(dup);
+            Token(restricted)
+        };
+        std::thread::spawn(move || {
+            let token = token;
+            // SAFETY: an impersonation token made above; the thread ends
+            // after `act`, and its impersonation with it.
+            unsafe { ImpersonateLoggedOnUser(token.0) }.expect("impersonate");
+            let out = act();
+            // SAFETY: closed once, after its last use.
+            let _ = unsafe { CloseHandle(token.0) };
+            out
+        })
+        .join()
+        .unwrap()
+    }
+
+    /// The drafts folder as Codex's sandbox finds it after its start, with the
+    /// grant it gave itself: kept by every later look (`sandbox_dir`), not by
+    /// `private_dir`, and taken away with the rest by anything else added. The
+    /// sandbox writes a file at a fresh name there, not one Luna made first,
+    /// private; what it makes is this user's, as the submission check asks.
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_given_to_a_sandbox_keeps_its_grant_and_the_sandbox_writes_new_files_there() {
+        let root = scratch("sandbox-dir");
+        private_dir(&root).unwrap();
+        let drafts = root.join("drafts");
+        sandbox_dir(&drafts).unwrap();
+        assert!(acl::is_private(&drafts).unwrap());
+        let part = || u32::from_str_radix(&random_hex(4), 16).unwrap();
+        let cap = format!("S-1-5-21-{}-{}-{}-{}", part(), part(), part(), part());
+        assert!(!acl::names_account(&cap) && acl::names_account(&acl::user_sid().unwrap()) && acl::names_account("S-1-5-32-545"));
+        let user = acl::trustee(&acl::user_sid().unwrap()).unwrap();
+        let granted = format!("{}(A;OICI;0x1301bf;;;{cap})", private_sddl(&acl::user_sid().unwrap()));
+        acl::set_protected(&drafts, &granted).unwrap();
+        // Every later look leaves the sandbox's grant.
+        sandbox_dir(&drafts).unwrap();
+        assert!(acl::dacl_sddl(&drafts).unwrap().contains(&cap), "{}", acl::dacl_sddl(&drafts).unwrap());
+        assert!(acl::verify(&root).unwrap().is_empty(), "{:?}", acl::verify(&root).unwrap());
+        // A file Luna made first, private, the sandbox cannot write; one at a
+        // fresh name it makes and writes.
+        let made = drafts.join("made-first.md");
+        drop(create_private(&made).unwrap());
+        let fresh = drafts.join(format!("handoff-{}.md", random_hex(8)));
+        let (m, f) = (made.clone(), fresh.clone());
+        let (into_made, into_fresh) = as_sandbox(&cap, move || {
+            (std::fs::OpenOptions::new().write(true).open(&m).map(drop), std::fs::write(&f, "# Goal\nShip it.\n"))
+        });
+        assert_eq!(into_made.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        into_fresh.unwrap();
+        // This user's own making, open to the sandbox: taken as a draft.
+        let owner = acl::owner_of(&fresh).unwrap();
+        assert!(owner == acl::user_sid().unwrap() || owner == acl::maker_sid().unwrap(), "{owner}");
+        assert!(own_file(&std::fs::File::open(&fresh).unwrap()).unwrap().is_ok());
+        // Anything else added and the folder is made private again, the
+        // sandbox's grant going with the rest.
+        let opened = format!("{granted}(A;OICI;0x1301bf;;;BU)");
+        acl::set_protected(&drafts, &opened).unwrap();
+        sandbox_dir(&drafts).unwrap();
+        let now = acl::dacl_sddl(&drafts).unwrap();
+        assert!(sddl_is_private(&now, &user) && !now.contains(&cap), "{now}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

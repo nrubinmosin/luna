@@ -557,6 +557,22 @@ fn a_copy_that_is_not_the_one_luna_made_is_never_switched_on() {
     done_with(&["hocp-me"], &dir);
 }
 
+/// The drafts folder keeps the grant its CLI's sandbox gave itself at the
+/// CLI's start (Codex 0.167.0's Windows sandbox) through every later look,
+/// the answer that names a draft's name among them.
+#[cfg(windows)]
+#[test]
+fn the_drafts_folder_keeps_the_grant_its_cli_s_sandbox_gave_itself() {
+    let drafts = drafts_of("hosb-me").unwrap();
+    let cap = "S-1-5-21-1111111111-2222222222-3333333333-4444";
+    assert!(!crate::secret::acl::names_account(cap));
+    let granted = format!("{}(A;OICI;0x1301bf;;;{cap})", crate::secret::private_sddl(&crate::secret::acl::user_sid().unwrap()));
+    crate::secret::acl::set_protected(&drafts, &granted).unwrap();
+    assert_eq!(drafts_of("hosb-me").unwrap(), drafts);
+    assert!(crate::secret::acl::dacl_sddl(&drafts).unwrap().contains(cap), "{}", crate::secret::acl::dacl_sddl(&drafts).unwrap());
+    let _ = std::fs::remove_dir_all(drafts.parent().unwrap());
+}
+
 #[test]
 fn the_chats_own_drafts_folder_is_where_it_writes_and_what_is_taken() {
     chat("hodr-me", Some(70));
@@ -570,18 +586,17 @@ fn the_chats_own_drafts_folder_is_where_it_writes_and_what_is_taken() {
     let _ = std::os::windows::fs::symlink_file(&elsewhere, drafts.join("handoff.md"));
     #[cfg(unix)]
     let _ = std::os::unix::fs::symlink(&elsewhere, drafts.join("handoff.md"));
-    // Named by the answer: a file of its own, made new, empty and private.
+    // Named by the answer: a name of its own in its drafts folder, not there
+    // yet, for its CLI to make the file at (Codex's Windows sandbox could not
+    // write one Luna made first, private).
     let (failed, how) = call("hodr-me", json!({}));
     let at = drafts.to_string_lossy().into_owned();
     let named = how.split(&*at).nth(1).and_then(|rest| rest.split(", in a folder").next()).expect("a file in the drafts folder");
     let draft = PathBuf::from(format!("{at}{named}"));
     assert!(!failed && draft != drafts.join("handoff.md") && !how.contains("writes no file"), "{how}");
-    let meta = std::fs::symlink_metadata(&draft).unwrap();
-    assert!(meta.is_file() && !meta.file_type().is_symlink() && meta.len() == 0, "{}", draft.display());
-    #[cfg(unix)]
-    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777, 0o600);
-    #[cfg(windows)]
-    assert!(crate::secret::acl::is_private(&draft).unwrap());
+    assert_eq!(std::fs::symlink_metadata(&draft).unwrap_err().kind(), std::io::ErrorKind::NotFound, "{}", draft.display());
+    let (_, again) = call("hodr-me", json!({}));
+    assert!(!again.contains(&*draft.to_string_lossy()), "each answer names another");
     std::fs::write(&draft, "# Goal\nShip it.\n").unwrap();
     assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "theirs", "nothing written through the link");
     let _ = std::fs::remove_file(&elsewhere);
