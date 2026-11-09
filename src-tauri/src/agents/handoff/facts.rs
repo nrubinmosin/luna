@@ -65,7 +65,7 @@ fn heading_key(text: &str) -> String {
 pub(super) fn missing_sections(text: &str) -> Vec<&'static str> {
     let mut fenced = false;
     let mut heads = Vec::new();
-    for line in text.lines().map(str::trim) {
+    for line in super::file::without_bom(text).lines().map(str::trim) {
         if line.starts_with("```") || line.starts_with("~~~") {
             fenced = !fenced;
         } else if let Some(rest) = line.strip_prefix('#').filter(|_| !fenced) {
@@ -411,6 +411,10 @@ mod tests {
         let thin = "# Goals\nShip it.\n**Next action:** push\n```sh\n# Pending\n```\nThe state is green.\n## Statement\n";
         assert_eq!(missing_sections(thin), ["Goal", "Next action", "The user's words", "State", "Pending", "Decisions and dead ends"]);
         assert_eq!(missing_sections("#Goal\n"), missing_sections(""), "no heading without its space");
+        // A file that opens with a byte order mark (Windows PowerShell's
+        // `Set-Content -Encoding UTF8` writes one) opens with its heading.
+        let marked = format!("\u{feff}{all}");
+        assert!(missing_sections(&marked).is_empty(), "{:?}", missing_sections(&marked));
         // Luna's own instructions ask for every heading of the list, in its order.
         let own = crate::library::body_of(crate::library::LUNA_HANDOFF);
         let at: Vec<Option<usize>> = SECTIONS.iter().map(|s| own.find(&format!("`## {}`", s.heading))).collect();

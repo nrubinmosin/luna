@@ -161,7 +161,9 @@ listed the tool, at a turn count it has not looked at with the turn over,
 
 - **The copy.** `file.rs`: absolute, `.md` / `.markdown` / `.txt`, opened with no
   link followed (and, off Windows, without waiting, so a FIFO swapped in does not
-  hang the open) and checked on its handle, at most 128 KB of UTF-8 text, refused
+  hang the open) and checked on its handle, at most 128 KB of UTF-8 text (a
+  leading byte order mark kept in the copy, skipped by the empty and heading
+  checks: `without_bom`), refused
   inside the data dir after `canonicalize` but right in the calling chat's own
   drafts folder, that folder resolving where its names say (`own_draft`); all of it on a thread of its own
   given 10 s (`READ_WAIT`), outside the records' lock; a reader given up on keeps
