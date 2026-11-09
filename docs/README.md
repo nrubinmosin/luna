@@ -55,13 +55,14 @@
 | [0011](adr/0011-private-data-dir-beside-the-exe.md) | Luna's data lives in one private folder beside the exe | Accepted |
 | [0012](adr/0012-agents-over-mcp-with-notices.md) | Agents drive sessions over MCP; answers come back as notices | Accepted |
 | [0013](adr/0013-own-cli-binaries.md) | Luna ships and updates its own copies of the CLIs | Accepted |
-| [0014](adr/0014-core-credential-behind-a-read-deny.md) | The core credential stays a bearer token behind a read deny | Accepted |
+| [0014](adr/0014-core-credential-behind-a-read-deny.md) | The core credential stays a bearer token behind a read deny | Superseded by 0021 |
 | [0015](adr/0015-the-page-gets-only-what-it-calls.md) | The page gets only the commands it calls | Accepted |
 | [0016](adr/0016-luna-is-a-runtime.md) | Luna is a runtime, not a provider configurator | Accepted |
 | [0017](adr/0017-helpers-run-in-the-background-only.md) | Helpers run in the background only; opening one hands it to the person | Accepted |
 | [0018](adr/0018-mcp-tools-by-resource-and-verb.md) | Name the MCP tools by resource and verb, and break the old names | Accepted |
 | [0019](adr/0019-cli-channels-and-rollback.md) | CLI channels and rollback: a known-good list per release, an offline probe, a canary that asks | Accepted |
 | [0020](adr/0020-session-self-handoff.md) | Hand a chat over to a fresh conversation in place, on its own word | Accepted |
+| [0021](adr/0021-core-endpoint-by-os-identity.md) | The core lets in whom the OS vouches for, and keeps no credential | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 

@@ -37,9 +37,12 @@ Two principles shape everything else:
 
 The core owns the pty manager, the **hub** (loopback HTTP for hooks, the guard
 and MCP), the agents registry and notifier, activity sampling, power, and
-background helpers. One core per data dir (`core.lock`); it listens on
-`127.0.0.1` with a token from `<data>/core/core.json` and leaves by itself after
-10 minutes with no window and no session
+background helpers. One core per data dir (`core.lock`); it listens on an
+endpoint of its own, a named pipe on Windows and a socket in `<data>/core/`
+elsewhere (`endpoint/`), named in `<data>/core/core.json`, and lets in only this
+user's processes the OS marks unconfined, with no token
+([ADR-0021](../adr/0021-core-endpoint-by-os-identity.md), `peer/`). It leaves by
+itself after 10 minutes with no window and no session
 ([ADR-0002](../adr/0002-core-process-outlives-the-window.md)).
 
 ```mermaid
@@ -65,7 +68,7 @@ flowchart LR
 
   P -- "invoke (ipc/core.ts call)" --> T
   T --> L
-  L -- "loopback TCP, token hello<br/>length-prefixed JSON frames" --> CC
+  L -- "named pipe / Unix socket, no token<br/>length-prefixed JSON frames" --> CC
   CC --> PTY
   CC --> AG
   PTY -- "spawn, write, resize" --> CLI

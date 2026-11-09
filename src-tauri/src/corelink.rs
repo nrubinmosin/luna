@@ -8,19 +8,23 @@
 //! A core of another build is never worked with. One with no session running
 //! is asked to stop and replaced at once; one with sessions is left alone
 //! until the user says to restart it, which stops them (they resume after).
+//! A core of protocol 1 (Luna 0.11 and before, v1.rs) is always such a one,
+//! reached the old way only to ask that much.
 //!
 //! Nor is a core run as administrator, whose CLIs would run so too
 //! (elevation.rs): one with no session is replaced, one with sessions waits
 //! for a restart. A window that is itself elevated starts the core with the
 //! desktop shell's ordinary token, and where there is none starts no core.
 
+mod v1;
+
 use crate::corecmd;
-use crate::ipc::{self, Discovery, Event, Hello, Req, Res, Welcome};
+use crate::endpoint::Stream;
+use crate::ipc::{self, Discovery, Event, Found, Hello, Req, Res, Welcome};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{self, Write};
-use std::net::TcpStream;
+use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -44,7 +48,7 @@ pub struct LinkState {
 /// `pending` is None once the connection has ended: a request let in after
 /// the last of them heard so would wait for an answer nothing can bring.
 struct Conn {
-    writer: Mutex<TcpStream>,
+    writer: Mutex<Stream>,
     pending: Mutex<Option<HashMap<u64, Sender<Result<Value, String>>>>>,
 }
 
@@ -154,8 +158,8 @@ fn connect() {
 /// gone stays gone until the user restarts it (CoreBanner), never behind their
 /// back. Going back, the window says it is starting, so its panes start over
 /// and each reattaches from the scrollback (core.store.ts).
-fn rejoin() -> Option<(TcpStream, Welcome)> {
-    let found = discover().filter(Discovery::running)?;
+fn rejoin() -> Option<(Stream, Welcome)> {
+    let Found::Current(found) = discover().filter(Found::running)? else { return None };
     match hello(&found, "ui") {
         Ok((stream, core)) if core.fingerprint == env!("LUNA_CORE_FP") => {
             crate::log::warn("core", "the core let this window go and is still running; going back to it");
@@ -167,7 +171,7 @@ fn rejoin() -> Option<(TcpStream, Welcome)> {
 
 /// Reads the core's frames until its end of the connection closes: the core
 /// gone, or one that let this window go (`rejoin`).
-fn hold(mut stream: TcpStream, conn: Arc<Conn>) {
+fn hold(mut stream: Stream, conn: Arc<Conn>) {
     while let Ok((kind, payload)) = ipc::read_frame(&mut stream) {
         match kind {
             ipc::EVENT => {
@@ -198,7 +202,7 @@ fn hold(mut stream: TcpStream, conn: Arc<Conn>) {
 }
 
 enum Attached {
-    Ours(TcpStream, Welcome),
+    Ours(Stream, Welcome),
     /// Another build's, with sessions in it.
     Foreign(Welcome),
     /// No core to work with that is not run as administrator (elevation.rs):
@@ -232,11 +236,12 @@ fn counts_as_elevated(read: Option<bool>) -> bool {
 
 /// `elevated`: what the core's token says, read by this window
 /// (`counts_as_elevated`); a core older than the check does not say so itself.
-fn verdict(core: &Welcome, elevated: bool) -> Verdict {
+/// `v1`: a core of protocol 1, another build's whatever it says.
+fn verdict(core: &Welcome, elevated: bool, v1: bool) -> Verdict {
     if elevated || core.refused.is_some() {
         return if core.sessions > 0 { Verdict::Elevated } else { Verdict::Replace };
     }
-    match (core.fingerprint == env!("LUNA_CORE_FP"), core.sessions > 0) {
+    match (!v1 && core.fingerprint == env!("LUNA_CORE_FP"), core.sessions > 0) {
         (true, _) => Verdict::Attach,
         (false, true) => Verdict::Foreign,
         (false, false) => Verdict::Replace,
@@ -260,45 +265,25 @@ fn attach() -> Result<Attached, String> {
     let mut silent_elevated = None;
     // A core.json whose core is gone — the PC went down under it, and its
     // pid may be another program's by now — is not tried: a connect to its
-    // closed port takes Windows seconds to refuse.
-    if let Some(found) = discover().filter(Discovery::running) {
-        let elevated = counts_as_elevated(crate::elevation::process_elevated(found.pid));
-        match hello(&found, "ui") {
-            Ok((stream, core)) => match verdict(&core, elevated) {
-                Verdict::Attach => return Ok(Attached::Ours(stream, core)),
-                Verdict::Foreign => return Ok(Attached::Foreign(core)),
-                Verdict::Elevated => {
-                    let why = format!(
-                        "The sessions are running in a Luna core started as administrator ({} running). Restart it to run them \
-                         normally: they quit and resume in the new one.",
-                        core.sessions
-                    );
-                    return Ok(Attached::Elevated { core: Some(core), why });
-                }
-                Verdict::Replace => {
-                    let how = if elevated || core.refused.is_some() { "run as administrator" } else { "of another build" };
-                    crate::log::warn(
-                        "core",
-                        &format!("the running core is {how} (build {}, core {}); replacing it", core.build, core.fingerprint),
-                    );
-                    stop(stream, found.pid);
-                    if elevated && found.running() {
-                        return Ok(Attached::Elevated { core: None, why: ELEVATED_STUCK.into() });
-                    }
-                }
-            },
+    // endpoint would only fail, or reach whatever took its name.
+    if let Some(found) = discover().filter(Found::running) {
+        let elevated = counts_as_elevated(crate::elevation::process_elevated(found.pid()));
+        match meet(&found, elevated) {
+            Met::Ours(stream, core) => return Ok(Attached::Ours(stream, core)),
+            Met::Done(attached) => return Ok(attached),
+            Met::Replaced => {}
             // An elevated core may refuse a window that is not (a check of the
             // caller's integrity), and its lock keeps any other from starting.
-            Err(_) if elevated => silent_elevated = Some(found),
+            Met::Silent if elevated => silent_elevated = Some(found),
             // A core that does not answer; a new one overwrites its core.json.
-            Err(_) => {}
+            Met::Silent => {}
         }
     }
     let how = match crate::elevation::plan(&crate::elevation::System) {
         crate::elevation::Launch::Refused(r) => return Ok(Attached::Elevated { core: None, why: r.message() }),
         how => how,
     };
-    let before = discover().map(|d| d.pid);
+    let before = discover().map(|d| d.pid());
     match launch(&how) {
         // Not a core that stopped: a restart would only fail the same way.
         Err(e) if how != crate::elevation::Launch::Directly => {
@@ -310,7 +295,9 @@ fn attach() -> Result<Attached, String> {
     let deadline = std::time::Instant::now() + START_WAIT;
     while std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
-        let Some(found) = discover().filter(|d| Some(d.pid) != before) else { continue };
+        // The one just started speaks this protocol; a protocol-1 core that
+        // some older window started meanwhile is not it.
+        let Some(Found::Current(found)) = discover().filter(|d| Some(d.pid()) != before) else { continue };
         let (stream, core) = hello(&found, "ui").map_err(|e| format!("the new core does not answer: {e}"))?;
         // Started elevated after all: it runs nothing, and is not left to idle.
         if let Some(why) = core.refused.clone() {
@@ -325,16 +312,94 @@ fn attach() -> Result<Attached, String> {
     Err(format!("no core came up within {}s", START_WAIT.as_secs()))
 }
 
-fn discover() -> Option<Discovery> {
-    serde_json::from_slice(&std::fs::read(ipc::discovery_file()).ok()?).ok()
+/// What came of meeting the core a `core.json` names.
+enum Met {
+    /// Of this build: the line to keep.
+    Ours(Stream, Welcome),
+    /// Left as it is, for the person to decide on, or one that cannot be
+    /// replaced from here.
+    Done(Attached),
+    /// Stopped: a new one is to be started.
+    Replaced,
+    /// It did not answer.
+    Silent,
 }
 
-fn hello(found: &Discovery, role: &str) -> io::Result<(TcpStream, Welcome)> {
-    let mut stream = TcpStream::connect_timeout(&([127, 0, 0, 1], found.port).into(), Duration::from_secs(2))?;
+/// The line to a core met, by the protocol it speaks.
+enum Line {
+    Current(Stream),
+    V1(v1::Link),
+}
+
+impl Line {
+    fn stop(self, pid: u32) {
+        match self {
+            Line::Current(stream) => stop(stream, pid),
+            Line::V1(link) => link.stop(pid),
+        }
+    }
+}
+
+/// Says hello to the core `found` names, as `role`, in its protocol.
+fn greet(found: &Found, role: &str) -> io::Result<(Line, Welcome)> {
+    match found {
+        Found::Current(d) => hello(d, role).map(|(s, core)| (Line::Current(s), core)),
+        Found::V1(d) => v1::hello(d, role).map(|(link, core)| (Line::V1(link), core)),
+    }
+}
+
+/// Says hello to the running core `found` names and decides on it
+/// (`verdict`): kept, left alone, or stopped to be replaced. A protocol-1 core
+/// is never kept: it hears a hello, and a shutdown when it has no session, and
+/// nothing else.
+fn meet(found: &Found, elevated: bool) -> Met {
+    let Ok((line, core)) = greet(found, "ui") else { return Met::Silent };
+    match verdict(&core, elevated, matches!(line, Line::V1(_))) {
+        Verdict::Attach => match line {
+            Line::Current(stream) => Met::Ours(stream, core),
+            // Never so (`verdict`); were it, another build's all the same.
+            Line::V1(_) => Met::Done(Attached::Foreign(core)),
+        },
+        Verdict::Foreign => Met::Done(Attached::Foreign(core)),
+        Verdict::Elevated => {
+            let why = format!(
+                "The sessions are running in a Luna core started as administrator ({} running). Restart it to run them \
+                 normally: they quit and resume in the new one.",
+                core.sessions
+            );
+            Met::Done(Attached::Elevated { core: Some(core), why })
+        }
+        Verdict::Replace => {
+            let how = if elevated || core.refused.is_some() { "run as administrator" } else { "of another build" };
+            crate::log::warn("core", &format!("the running core is {how} (build {}, core {}); replacing it", core.build, core.fingerprint));
+            line.stop(found.pid());
+            if elevated && found.running() {
+                return Met::Done(Attached::Elevated { core: None, why: ELEVATED_STUCK.into() });
+            }
+            Met::Replaced
+        }
+    }
+}
+
+fn discover() -> Option<Found> {
+    Found::parse(&std::fs::read(ipc::discovery_file()).ok()?)
+}
+
+/// Connects to the core `found` names and says hello. The endpoint's server
+/// must be the process the file names, or nothing is said: a name served by
+/// anyone else (one who took it while it was free) learns nothing, and the
+/// window opens it for identification only, so it can act as nobody.
+fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
+    let mut stream = Stream::connect(&found.endpoint, Duration::from_secs(2))?;
+    let server = stream.server_pid()?;
+    if server != found.pid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("the core's endpoint is served by pid {server}, not by the core's pid {}", found.pid),
+        ));
+    }
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    // Keystrokes go out as they are typed, not when a buffer fills.
-    stream.set_nodelay(true)?;
-    let args = serde_json::to_value(Hello { proto: ipc::PROTO, token: found.token.clone(), role: role.into() })?;
+    let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into() })?;
     ipc::send(&mut stream, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args })?;
     let res: Res = ipc::recv(&mut stream, ipc::RES)?;
     let core: Welcome = match (res.ok, res.err) {
@@ -350,7 +415,8 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(TcpStream, Welcome)> {
 /// its sessions to quit first, so this can take some seconds. One still
 /// there well past their grace is killed with everything it started, the
 /// sessions' CLIs among them: stopping must leave nothing of Luna running.
-fn stop(mut stream: TcpStream, pid: u32) {
+/// The core's endpoint, or a protocol-1 core's socket (v1.rs).
+fn stop<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32) {
     let _ = ipc::send(&mut stream, ipc::REQ, &Req { id: 2, cmd: "shutdown".into(), args: Value::Null });
     let deadline = std::time::Instant::now() + STOP_WAIT;
     let gone = loop {
@@ -410,21 +476,7 @@ fn write(conn: &Conn, frame: &[u8]) -> io::Result<()> {
 /// `how` is never a refusal: `attach` has stopped at one.
 fn launch(how: &crate::elevation::Launch) -> Result<(), String> {
     let exe = core_exe()?;
-    let data = crate::paths::data_dir();
-    let log = crate::log::path().clone();
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.arg(crate::coreproc::FLAG)
-        .arg("--data-dir")
-        .arg(&data)
-        .arg("--log")
-        .arg(&log)
-        // Its own exe is a copy, and a restart of the PC starts this one again.
-        .args(std::env::current_exe().ok().map(|exe| [std::ffi::OsString::from("--window-exe"), exe.into()]).into_iter().flatten())
-        // Not in any project folder, so it never holds one open.
-        .current_dir(&data)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    let cmd = core_command(&exe);
     let started = match how {
         // The Secondary Logon service creates it, not this window: it
         // inherits none of the window's handles, and no console.
@@ -435,6 +487,26 @@ fn launch(how: &crate::elevation::Launch) -> Result<(), String> {
         _ => spawn_detached(cmd),
     };
     started.map_err(|e| format!("cannot start {}: {e}", exe.display()))
+}
+
+/// The core's command line: where its data and log are, and the window's exe.
+/// Nothing that lets anyone in, as there is nothing of the kind to pass.
+fn core_command(exe: &std::path::Path) -> std::process::Command {
+    let data = crate::paths::data_dir();
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg(crate::coreproc::FLAG)
+        .arg("--data-dir")
+        .arg(&data)
+        .arg("--log")
+        .arg(crate::log::path())
+        // Its own exe is a copy, and a restart of the PC starts this one again.
+        .args(std::env::current_exe().ok().map(|exe| [std::ffi::OsString::from("--window-exe"), exe.into()]).into_iter().flatten())
+        // Not in any project folder, so it never holds one open.
+        .current_dir(&data)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
 }
 
 /// Out of any job the window was started in, so closing that job does not
@@ -487,9 +559,13 @@ pub fn shut_down() {
         GENERATION.fetch_add(1, Ordering::SeqCst);
         *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
-    if let Some(found) = discover().filter(Discovery::running) {
-        if let Ok((stream, _)) = hello(&found, "ctl") {
-            stop(stream, found.pid);
+    // Through the core's own endpoint, which lets in this user's unconfined
+    // processes alone (and an administrator, to stop it): `luna --stop-core`
+    // is no shutdown for anyone who asks. A protocol-1 core is stopped the
+    // way it listens, with its token.
+    if let Some(found) = discover().filter(Found::running) {
+        if let Ok((line, _)) = greet(&found, "ctl") {
+            line.stop(found.pid());
         }
     }
 }
@@ -579,11 +655,11 @@ mod tests {
         let ours = env!("LUNA_CORE_FP");
         // Of this very build, and elevated by its token: an older core says
         // nothing of it, so the window's own look is what counts.
-        assert_eq!(verdict(&core(ours, 2, None), true), Verdict::Elevated, "sessions in it: the person restarts it");
-        assert_eq!(verdict(&core(ours, 0, None), true), Verdict::Replace, "none: replaced at once");
-        assert_eq!(verdict(&core("0000000000000000", 3, None), true), Verdict::Elevated);
+        assert_eq!(verdict(&core(ours, 2, None), true, false), Verdict::Elevated, "sessions in it: the person restarts it");
+        assert_eq!(verdict(&core(ours, 0, None), true, false), Verdict::Replace, "none: replaced at once");
+        assert_eq!(verdict(&core("0000000000000000", 3, None), true, false), Verdict::Elevated);
         // One that says so itself, whatever the window could read of its token.
-        assert_eq!(verdict(&core(ours, 0, Some(crate::elevation::ADMIN)), false), Verdict::Replace);
+        assert_eq!(verdict(&core(ours, 0, Some(crate::elevation::ADMIN)), false, false), Verdict::Replace);
     }
 
     #[test]
@@ -593,15 +669,88 @@ mod tests {
         assert!(counts_as_elevated(Some(true)));
         assert!(!counts_as_elevated(Some(false)));
         // Of this very build and answering: still not worked with.
-        assert_eq!(verdict(&core(ours, 2, None), counts_as_elevated(None)), Verdict::Elevated);
-        assert_eq!(verdict(&core(ours, 0, None), counts_as_elevated(None)), Verdict::Replace);
+        assert_eq!(verdict(&core(ours, 2, None), counts_as_elevated(None), false), Verdict::Elevated);
+        assert_eq!(verdict(&core(ours, 0, None), counts_as_elevated(None), false), Verdict::Replace);
     }
 
     #[test]
     fn a_core_that_is_not_elevated_is_judged_by_its_build() {
         let ours = env!("LUNA_CORE_FP");
-        assert_eq!(verdict(&core(ours, 2, None), false), Verdict::Attach);
-        assert_eq!(verdict(&core("0000000000000000", 2, None), false), Verdict::Foreign);
-        assert_eq!(verdict(&core("0000000000000000", 0, None), false), Verdict::Replace);
+        assert_eq!(verdict(&core(ours, 2, None), false, false), Verdict::Attach);
+        assert_eq!(verdict(&core("0000000000000000", 2, None), false, false), Verdict::Foreign);
+        assert_eq!(verdict(&core("0000000000000000", 0, None), false, false), Verdict::Replace);
+    }
+
+    /// A core of protocol 1 is another build's whatever it says of itself:
+    /// never attached, left alone with sessions, replaced without.
+    #[test]
+    fn a_protocol_1_core_is_never_attached() {
+        let ours = env!("LUNA_CORE_FP");
+        assert_eq!(verdict(&core(ours, 2, None), false, true), Verdict::Foreign);
+        assert_eq!(verdict(&core(ours, 0, None), false, true), Verdict::Replace);
+        assert_eq!(verdict(&core(ours, 1, None), true, true), Verdict::Elevated);
+    }
+
+    /// A Luna 0.11 core, found by the token in its `core.json`, hears a
+    /// hello and, when it has no session, a shutdown: nothing else, whatever
+    /// the window would otherwise ask. With sessions it is left alone for the
+    /// person to restart (the mismatch banner).
+    #[test]
+    fn a_protocol_1_core_hears_a_hello_and_a_shutdown_and_nothing_else() {
+        let idle = v1::tests::old_core(0);
+        assert!(matches!(meet(&Found::V1(idle.found.clone()), false), Met::Replaced));
+        assert_eq!(*idle.heard.lock().unwrap(), ["hello", "shutdown"]);
+        let hello = idle.hello.lock().unwrap().clone().expect("a hello with the token");
+        assert_eq!((hello["proto"].as_u64(), hello["role"].as_str()), (Some(1), Some("ui")));
+
+        let busy = v1::tests::old_core(2);
+        match meet(&Found::V1(busy.found.clone()), false) {
+            Met::Done(Attached::Foreign(core)) => assert_eq!((core.sessions, core.version.as_str()), (2, "0.11.0")),
+            _ => panic!("a protocol-1 core with sessions is left for the person"),
+        }
+        assert_eq!(*busy.heard.lock().unwrap(), ["hello"]);
+
+        // `--stop-core` and Restart reach it the same way.
+        let stopped = v1::tests::old_core(3);
+        let (line, _) = greet(&Found::V1(stopped.found.clone()), "ctl").expect("hello");
+        line.stop(stopped.found.pid);
+        assert_eq!(*stopped.heard.lock().unwrap(), ["hello", "shutdown"]);
+    }
+
+    /// The core is started with where its data and log are and nothing else:
+    /// no secret on its command line, none in an environment of its own.
+    #[test]
+    fn the_core_is_started_with_no_secret() {
+        let cmd = core_command(std::path::Path::new("luna-core.exe"));
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let flags: Vec<&str> = args.iter().map(String::as_str).filter(|a| a.starts_with("--")).collect();
+        assert_eq!(flags, ["--core", "--data-dir", "--log", "--window-exe"]);
+        assert_eq!(args.len(), 7, "{args:?}");
+        assert_eq!(cmd.get_envs().count(), 0, "no variable set for it");
+    }
+
+    /// The window speaks to the endpoint only if the core `core.json` names
+    /// serves it: one served by any other process hears nothing at all.
+    #[test]
+    fn an_endpoint_served_by_another_process_hears_nothing() {
+        let name = crate::endpoint::tests::test_name();
+        let listener = crate::endpoint::Listener::bind(&name).unwrap();
+        let (tx, heard) = channel();
+        std::thread::spawn(move || {
+            let server = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut got = Vec::new();
+            let _ = (&server).read_to_end(&mut got);
+            let _ = tx.send(got);
+        });
+        // The server waiting for its client before the client comes: one that
+        // came and went before it was waited for is no client at all.
+        std::thread::sleep(Duration::from_millis(300));
+        // This process serves it; the file names another.
+        let found = Discovery { pid: std::process::id() + 1, created_ms: 0, proto: ipc::PROTO, endpoint: name };
+        let err = hello(&found, "ui").err().expect("refused");
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        let got = heard.recv_timeout(Duration::from_secs(10)).expect("the server saw the connection");
+        assert!(got.is_empty(), "nothing was said to it: {got:?}");
     }
 }

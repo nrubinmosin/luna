@@ -8,6 +8,24 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Security
+
+- The core keeps no credential. Through 0.11 every command to the core took
+  a token from `core.json`, a file every process of yours could read, a CLI's
+  sandbox included; on Windows a sandboxed command was refused at the core's
+  loopback port, but the same command reached the core through any plain
+  loopback forwarder (measured with Codex 0.167.0). The core now listens on an
+  endpoint of its own, a named pipe on Windows and a socket in Luna's private
+  `core/` folder elsewhere, and lets in only your processes that the OS marks
+  unconfined: Codex's Windows sandbox is refused the pipe's open, and on Linux a
+  process in another user namespace (Codex's bubblewrap sandbox) or with
+  `no_new_privs` set is turned away. `core.json` holds the core's pid and the
+  endpoint's name, nothing that lets anyone in
+  ([ADR-0021](docs/adr/0021-core-endpoint-by-os-identity.md)).
+- A core of 0.11 still running when this version starts is asked how many
+  sessions it runs and, with none, to stop, as a core of another build always
+  was; with sessions the banner asks you to restart it.
+
 ## [0.11.0] - 2026-11-09
 
 Settings is a dialog of pages, each CLI follows a known-good or latest channel
