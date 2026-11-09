@@ -432,9 +432,6 @@
 }
 
 /* The account box: a select drawn by hand, so its rows can carry icons. */
-[data-app] .picker {
-  position: relative;
-}
 [data-app] button.picker-face {
   width: 100%;
   min-width: 0;
@@ -470,12 +467,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Portaled and placed by its face (AccountPicker), over any dialog. */
 [data-app] .picker-list {
-  position: absolute;
-  z-index: 10;
-  top: calc(100% + 3px);
-  left: 0;
-  right: 0;
+  position: fixed;
+  z-index: 90;
   max-height: 240px;
   overflow-y: auto;
   padding: 3px;
