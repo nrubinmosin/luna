@@ -195,15 +195,28 @@ The window re-reads the overview (no writes) on every focus.
   `library_write` with `{"system": name}` (Luna's own text where there is no
   override; a save over 64 KB refused, a draft that will not do saved and
   served as broken), `library_check_system`, `library_system_compare`,
-  `library_system_reset` (the override's folder to `library-backups/`, as
-  `back_up` keeps any replaced file) and `library_system_adopt` (the library
-  skill of the name renamed into `system/`, an override there backed up first).
-  The override's SKILL.md is opened as `read_override` opens it (as itself, to
-  a cap: 1 MB for the editor). A link as `system/`, as the override's folder,
-  in it or as the skill to adopt is refused, never read, written or removed
-  through; so is anything but plain files and folders in a folder backed up or
-  moved (`plain_tree`), as a FIFO there would hold the read, and the library's
-  lock, for good.
+  `library_system_reset` and `library_system_adopt`. The override's SKILL.md
+  is opened as `read_override` opens it (as itself, to a cap: 1 MB for the
+  editor).
+  - **Where:** every path is `inside` the library: no link, junction or file
+    in a folder's place anywhere below its folder (`skills/`, `system/`, the
+    override's folder, the skill to adopt), and what is there resolves inside
+    the library's folder as resolved. The library's folder itself is where the
+    person put it, a link of theirs if they chose one. `library-backups/` is no
+    link either. Anything but plain files and folders in a folder to be moved
+    (`plain_tree`) is refused too: a FIFO would hold a copy, and the library's
+    lock, for good.
+  - **Back to Luna's** moves the override's folder whole into
+    `library-backups/<stamp>-system-<name>/` (`move_to_backups`, `from.txt`
+    beside it): a rename, so its temp files and a save made meanwhile go with
+    it; across volumes, a copy of every file and then the folder's removal.
+  - **Adoption** renames the skill into `system/` under a name nothing reads
+    (the step that fails where the folder is held open), then, holding the
+    system lock exclusive, renames an override there aside and the staged one
+    into place, each undone if the next fails; the one set aside goes to the
+    backups after. `resolve_in` holds the same lock (`<data>/library-system.lock`,
+    a file lock: the window adopts, the core serves) shared while it reads, so
+    no handoff is served Luna's text in the moment between the renames.
 
 ## Failure modes
 

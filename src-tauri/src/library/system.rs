@@ -20,7 +20,10 @@
 //!   compared with.
 //! - `read_system`, `write_system`, `reset_system`, `adopt_system`: what the
 //!   window's System skills section does with an override (commands.rs),
-//!   nowhere but `system/<name>` and Luna's backups, and never through a link.
+//!   nowhere but `system/<name>` and Luna's backups, and never through a link
+//!   anywhere below the library's folder (`inside`). A replaced override goes
+//!   to the backups whole, by a rename; an adoption is staged and swapped in
+//!   under a lock the resolver shares (`system_lock`), undone if it fails.
 
 use super::*;
 
@@ -183,28 +186,53 @@ fn too_large() -> String {
     format!("SKILL.md is over {} KB", SYSTEM_MAX_BYTES / 1024)
 }
 
-/// The override's folder, `<library>/system/<name>`, where it and `system/`
-/// are folders; None where either is not there. A link or a file in place of
-/// either is an error: Luna neither reads through a link nor writes through
-/// one.
-fn override_dir(dirs: &Dirs, name: &str) -> Result<Option<PathBuf>, String> {
-    let dir = dirs.system(name);
-    for d in [&dirs.root.join(SYSTEM_DIR), &dir] {
-        match std::fs::symlink_metadata(d) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(format!("{}: {e}", d.display())),
-            Ok(m) if crate::boundary::is_link(&m) => return Err(format!("{} is a link; the override is a folder of its own", d.display())),
-            Ok(m) if !m.is_dir() => return Err(format!("{} is not a folder", d.display())),
-            Ok(_) => {}
+/// `rel` under `root`, with nothing on the way below `root` a link, a junction
+/// or a file in a folder's place, and the part of it that is there inside
+/// `root` once both are resolved: a check of the last part alone would let an
+/// ancestor planted as a link (`skills/` a junction to an account's) take what
+/// follows elsewhere. `root` itself is where the person put the library, a
+/// link of their choosing if they chose one. The last parts need not be there.
+fn inside(root: &Path, rel: &[&str]) -> Result<PathBuf, String> {
+    let mut path = root.to_path_buf();
+    let mut there = None;
+    let mut gone = false;
+    for (i, part) in rel.iter().enumerate() {
+        path.push(part);
+        if gone {
+            continue;
+        }
+        match std::fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => gone = true,
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+            Ok(m) if crate::boundary::is_link(&m) => return Err(format!("{} is a link — Luna leaves it alone", path.display())),
+            Ok(m) if i + 1 < rel.len() && !m.is_dir() => return Err(format!("{} is not a folder", path.display())),
+            Ok(_) => there = Some(path.clone()),
         }
     }
-    Ok(Some(dir))
+    if let Some(there) = there {
+        let resolved = |p: &Path| std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()));
+        if !resolved(&there)?.starts_with(resolved(root)?) {
+            return Err(format!("{} lies outside {}", there.display(), root.display()));
+        }
+    }
+    Ok(path)
+}
+
+/// The override's folder, `<library>/system/<name>` (`inside` the library);
+/// None where it is not there.
+fn override_dir(dirs: &Dirs, name: &str) -> Result<Option<PathBuf>, String> {
+    let dir = inside(&dirs.root, &[SYSTEM_DIR, name])?;
+    match std::fs::symlink_metadata(&dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", dir.display())),
+        Ok(m) if !m.is_dir() => Err(format!("{} is not a folder", dir.display())),
+        Ok(_) => Ok(Some(dir)),
+    }
 }
 
 /// Refuses a folder that holds anything but plain files and folders, before
-/// it is read whole, backed up, removed or moved: a link, which none of that
-/// goes through, or a FIFO or a device, which a read would wait on with the
-/// library's lock held.
+/// it is moved or copied: a link, which none of that goes through, or a FIFO
+/// or a device, which a copy would wait on with the library's lock held.
 fn plain_tree(dir: &Path) -> Result<(), String> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
         let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
@@ -218,6 +246,99 @@ fn plain_tree(dir: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Beside the ledger in Luna's data: held shared while the override is read
+/// to be served (`resolve_in`) and exclusive while an adoption swaps one in,
+/// so no handoff reads the moment between its renames, when there is none. A
+/// file lock: the window adopts, the core serves.
+const SYSTEM_LOCK: &str = "library-system.lock";
+
+/// The lock on `system/`, held for as long as it lives; none where the lock
+/// file will not open, as with the library's own lock (`lock`).
+struct SystemLock {
+    _file: Option<std::fs::File>,
+}
+
+fn system_lock(dirs: &Dirs, exclusive: bool) -> SystemLock {
+    let path = dirs.data.join(SYSTEM_LOCK);
+    let _ = std::fs::create_dir_all(&dirs.data);
+    let file = crate::secret::open_private(&path).and_then(|f| {
+        let locked = if exclusive { f.lock() } else { f.lock_shared() };
+        locked.map(|()| f)
+    });
+    if let Err(e) = &file {
+        crate::log::warn("library", &format!("system lock {}: {e}", path.display()));
+    }
+    SystemLock { _file: file.ok() }
+}
+
+// The steps of a move a test makes fail as the disk would, by name.
+#[cfg(test)]
+thread_local! {
+    static FAULTS: std::cell::RefCell<Vec<(&'static str, std::io::ErrorKind)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A rename that is one named step of a move, for a test to make fail.
+fn rename(step: &'static str, from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(kind) = FAULTS.with(|f| f.borrow().iter().find(|(s, _)| *s == step).map(|(_, k)| *k)) {
+        return Err(std::io::Error::new(kind, format!("{step} failed for the test")));
+    }
+    let _ = step;
+    std::fs::rename(from, to)
+}
+
+/// Every file and folder under `from` copied to `to`, a new folder, as they
+/// are: for a move between volumes, which no rename makes.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), to.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Moves the folder `dir` whole into Luna's backups, under a folder of its own
+/// named as `back_up` names one for `was`, where it lay, with `from.txt`
+/// beside it: a rename, so nothing in it is left out, its temp files and a
+/// save made meanwhile included. Where the backups are on another volume than
+/// the library, every file is copied first and the folder removed only once
+/// the copy is whole. Where it went.
+fn move_to_backups(dirs: &Dirs, dir: &Path, was: &Path) -> Result<PathBuf, String> {
+    let backups = inside(&dirs.data, &["library-backups"])?;
+    let slot = backup_slot(dirs, was);
+    std::fs::create_dir_all(&backups).and_then(|()| std::fs::create_dir(&slot)).map_err(|e| format!("{}: {e}", slot.display()))?;
+    let undo = || {
+        let _ = std::fs::remove_file(slot.join("from.txt"));
+        let _ = std::fs::remove_dir(&slot);
+    };
+    if let Err(e) = write_file(&slot.join("from.txt"), was.to_string_lossy().as_bytes()) {
+        undo();
+        return Err(e);
+    }
+    let to = slot.join(was.file_name().unwrap_or_default());
+    match rename("backup", dir, &to) {
+        Ok(()) => return Ok(slot),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {}
+        Err(e) => {
+            undo();
+            return Err(format!("{} to {}: {e}", dir.display(), to.display()));
+        }
+    }
+    if let Err(e) = copy_tree(dir, &to) {
+        let _ = std::fs::remove_dir_all(&to);
+        undo();
+        return Err(format!("{} to {}: {e}", dir.display(), to.display()));
+    }
+    std::fs::remove_dir_all(dir)
+        .map_err(|e| format!("{} is kept in {}, but not all of it could be taken out: {e}", dir.display(), slot.display()))?;
+    Ok(slot)
 }
 
 /// Why this SKILL.md would not do as the override of `name`, if it would not:
@@ -264,45 +385,49 @@ pub(super) fn write_system(dirs: &Dirs, name: &str, text: &str) -> Result<PathBu
     if text.len() > SYSTEM_MAX_BYTES {
         return Err(format!("{}, more than Luna serves: not saved", too_large()));
     }
-    override_dir(dirs, name)?;
-    let path = dirs.system(name).join(SKILL_FILE);
+    let path = inside(&dirs.root, &[SYSTEM_DIR, name, SKILL_FILE])?;
     if let Ok(m) = std::fs::symlink_metadata(&path) {
-        if crate::boundary::is_link(&m) || !m.is_file() {
-            return Err(format!("{} is a link or a folder — Luna leaves it alone", path.display()));
+        if !m.is_file() {
+            return Err(format!("{} is a folder — Luna leaves it alone", path.display()));
         }
     }
+    // Through a temp file and a rename (`Dirs::write`): a handoff reads the
+    // old text or the new, never part of either.
     dirs.write(&path, text.as_bytes())?;
     Ok(path)
 }
 
-/// Back to Luna's own for `name`: the override's folder, all there is in it,
-/// goes to Luna's backups (`back_up`, kept BACKUP_DAYS as a replaced library
-/// file is) and out of the library, `system/` with it once empty. Where it
-/// was put, or None where there was no override.
+/// Back to Luna's own for `name`: the override's folder, as it is, moves into
+/// Luna's backups (kept BACKUP_DAYS, as a replaced library file is), `system/`
+/// going too once empty. Where it was put, or None where there was none. A
+/// handoff meanwhile reads the override or none, either a text it may be
+/// served, so this takes no system lock.
 pub(super) fn reset_system(dirs: &Dirs, name: &str) -> Result<Option<PathBuf>, String> {
     luna_text(name)?;
     let Some(dir) = override_dir(dirs, name)? else { return Ok(None) };
     plain_tree(&dir)?;
-    let files = read_dir_files(&dir)?;
-    let saved = back_up(dirs, &dir, &files)?;
-    std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let saved = move_to_backups(dirs, &dir, &dir)?;
     let _ = std::fs::remove_dir(dirs.root.join(SYSTEM_DIR));
     Ok(Some(saved))
 }
 
 /// Makes the library skill named as the system skill `name` its override:
 /// the skill's folder moves to where the override goes, its SKILL.md the one
-/// served and the files beside it there for the text to name, an override
-/// there already going to the backups first (`reset_system`). Moved as it is:
+/// served and the files beside it there for the text to name. Moved as it is:
 /// one that will not do is then an override that will not do, shown so, and
 /// Luna's own served.
+///
+/// Staged first: the skill is renamed into `system/` under a name nothing
+/// reads, the step that fails where its folder is held open, before anything
+/// served changes. Then, under the system lock, an override there is renamed
+/// aside and the staged one into its place, each undone if the next fails; the
+/// one set aside goes to the backups after.
 pub(super) fn adopt_system(dirs: &Dirs, name: &str) -> Result<(), String> {
     luna_text(name)?;
-    let from = dirs.skills().join(name);
+    let from = inside(&dirs.root, &["skills", name])?;
     match std::fs::symlink_metadata(&from) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("The library has no skill named {name}")),
         Err(e) => return Err(format!("{}: {e}", from.display())),
-        Ok(m) if crate::boundary::is_link(&m) => return Err(format!("{} is a link — Luna leaves it alone", from.display())),
         Ok(m) if !m.is_dir() => return Err(format!("{} is not a skill's folder", from.display())),
         Ok(_) => {}
     }
@@ -310,13 +435,46 @@ pub(super) fn adopt_system(dirs: &Dirs, name: &str) -> Result<(), String> {
     if !from.join(SKILL_FILE).is_file() {
         return Err(format!("{} has no SKILL.md", from.display()));
     }
-    reset_system(dirs, name)?;
-    let system = dirs.root.join(SYSTEM_DIR);
+    let current = override_dir(dirs, name)?;
+    if let Some(dir) = &current {
+        plain_tree(dir)?;
+    }
+    let system = inside(&dirs.root, &[SYSTEM_DIR])?;
     std::fs::create_dir_all(&system).map_err(|e| format!("{}: {e}", system.display()))?;
-    // Within the library: the skill is in one place or the other at every
-    // moment, never in neither.
-    let to = dirs.system(name);
-    std::fs::rename(&from, &to).map_err(|e| format!("{} to {}: {e}", from.display(), to.display()))
+    let to = system.join(name);
+    let staged = system.join(format!(".{name}.adopting-{}", crate::secret::random_hex(4)));
+    if let Err(e) = rename("stage", &from, &staged) {
+        let _ = std::fs::remove_dir(&system);
+        return Err(format!("{} to {}: {e}", from.display(), staged.display()));
+    }
+    let held = system_lock(dirs, true);
+    let aside = match current {
+        Some(dir) => {
+            let aside = system.join(format!(".{name}.replaced-{}", crate::secret::random_hex(4)));
+            if let Err(e) = rename("aside", &dir, &aside) {
+                let _ = std::fs::rename(&staged, &from);
+                return Err(format!("{} to {}: {e}", dir.display(), aside.display()));
+            }
+            Some(aside)
+        }
+        None => None,
+    };
+    if let Err(e) = rename("swap", &staged, &to) {
+        if let Some(aside) = &aside {
+            let _ = std::fs::rename(aside, &to);
+        }
+        let _ = std::fs::rename(&staged, &from);
+        return Err(format!("{} to {}: {e}", staged.display(), to.display()));
+    }
+    drop(held);
+    if let Some(aside) = aside {
+        // In place already; the one replaced stays set aside in `system/`,
+        // read by nothing, where it will not move.
+        if let Err(e) = move_to_backups(dirs, &aside, &to) {
+            crate::log::warn("library", &format!("the override replaced is kept at {}: {e}", aside.display()));
+        }
+    }
+    Ok(())
 }
 
 /// Luna's own text of a system skill beside the library's override of it.
@@ -349,7 +507,10 @@ pub(super) fn resolve_in(dirs: &Dirs) -> Resolved {
         path: path.clone(),
         problem,
     };
-    match read_override(dirs) {
+    let held = system_lock(dirs, false);
+    let read = read_override(dirs);
+    drop(held);
+    match read {
         Ok(None) => luna(None),
         Ok(Some(text)) => {
             Resolved { source: Source::Library, sha256: sha256_hex(text.as_bytes()), text, path: path.clone(), problem: None }
@@ -780,6 +941,144 @@ mod tests {
         // Without a SKILL.md it is no skill to make the override.
         std::fs::create_dir_all(f.dirs.skills().join(HANDOFF)).unwrap();
         assert!(adopt_system(&f.dirs, HANDOFF).unwrap_err().contains("no SKILL.md"));
+        assert_eq!(names(&f.dirs.root.join("system")), [HANDOFF], "nothing staged or set aside is left");
+    }
+
+    /// Makes a step of a move fail as the disk would, for this test's thread.
+    fn fail(step: &'static str, kind: std::io::ErrorKind) {
+        FAULTS.with(|f| f.borrow_mut().push((step, kind)));
+    }
+
+    fn heal() {
+        FAULTS.with(|f| f.borrow_mut().clear());
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> =
+            std::fs::read_dir(dir).map(|e| e.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// An adoption that fails at any step leaves what was served, and the
+    /// skill, as they were: the move that may fail (its folder held open) comes
+    /// before anything served changes, and the swap is undone.
+    #[test]
+    fn an_adoption_that_fails_changes_nothing() {
+        let f = Fixture::new("system-adopt-fails");
+        write_override(&f, OURS);
+        f.skill(HANDOFF, "Mine.");
+        let served = resolve_in(&f.dirs).sha256;
+        for step in ["stage", "aside", "swap"] {
+            fail(step, std::io::ErrorKind::PermissionDenied);
+            assert!(adopt_system(&f.dirs, HANDOFF).is_err(), "{step}");
+            heal();
+            let r = resolve_in(&f.dirs);
+            assert_eq!((r.source, &r.sha256), (Source::Library, &served), "{step}: the override as it was");
+            assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file(), "{step}: the skill where it was");
+            assert_eq!(names(&f.dirs.root.join("system")), [HANDOFF], "{step}: nothing staged or set aside is left");
+            assert!(backups(&f).is_empty(), "{step}");
+        }
+        // Then it goes through.
+        adopt_system(&f.dirs, HANDOFF).unwrap();
+        assert!(resolve_in(&f.dirs).body().contains("Mine."));
+        assert_eq!(backups(&f).len(), 1, "the one replaced");
+    }
+
+    /// The source folder held open with no sharing, as an editor or a scanner
+    /// may hold a file on Windows: its rename fails, and the override stays.
+    #[cfg(windows)]
+    #[test]
+    fn an_adoption_of_a_folder_held_open_changes_nothing() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let f = Fixture::new("system-adopt-held");
+        write_override(&f, OURS);
+        f.skill(HANDOFF, "Mine.");
+        let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(f.dirs.skills().join(HANDOFF).join(SKILL_FILE)).unwrap();
+        assert!(adopt_system(&f.dirs, HANDOFF).is_err());
+        drop(held);
+        assert_eq!(resolve_in(&f.dirs).text, OURS);
+        assert_eq!(names(&f.dirs.root.join("system")), [HANDOFF]);
+        assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file());
+    }
+
+    /// While an adoption holds the system lock, what is served waits for it:
+    /// no handoff reads the moment between its renames.
+    #[test]
+    fn what_is_served_waits_for_an_adoption_s_swap() {
+        let f = Fixture::new("system-lock");
+        write_override(&f, OURS);
+        let held = system_lock(&f.dirs, true);
+        let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(resolve_in(&dirs).source));
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "it waits");
+        drop(held);
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(), Source::Library);
+    }
+
+    /// Back to Luna's moves the override's folder whole: its temp files and
+    /// whatever else is in it, by a rename, or across volumes by a copy of all
+    /// of it before the folder goes.
+    #[test]
+    fn back_to_luna_s_keeps_all_of_the_folder() {
+        for across in [false, true] {
+            let f = Fixture::new(if across { "system-reset-across" } else { "system-reset-whole" });
+            let path = write_override(&f, OURS);
+            let dir = path.parent().unwrap().to_path_buf();
+            std::fs::write(dir.join("SKILL.md.1-0.luna-tmp"), "a save under way").unwrap();
+            std::fs::create_dir_all(dir.join("more")).unwrap();
+            std::fs::write(dir.join("more").join("notes.md"), "notes").unwrap();
+            if across {
+                fail("backup", std::io::ErrorKind::CrossesDevices);
+            }
+            let saved = reset_system(&f.dirs, HANDOFF).unwrap().unwrap().join(HANDOFF);
+            heal();
+            assert_eq!(std::fs::read_to_string(saved.join(SKILL_FILE)).unwrap(), OURS, "across: {across}");
+            assert_eq!(std::fs::read_to_string(saved.join("SKILL.md.1-0.luna-tmp")).unwrap(), "a save under way");
+            assert_eq!(std::fs::read_to_string(saved.join("more").join("notes.md")).unwrap(), "notes");
+            assert!(!dir.exists() && !f.dirs.root.join("system").exists(), "across: {across}");
+        }
+    }
+
+    /// A link planted above what the window changes: `skills/` a junction to
+    /// an account's, `library-backups/` one to elsewhere. Neither adoption nor
+    /// Back to Luna's goes through it, and nothing there is touched.
+    #[test]
+    fn a_link_above_what_is_changed_is_refused() {
+        let f = Fixture::new("system-ancestors");
+        let theirs = f.account(0).join("skills");
+        std::fs::create_dir_all(theirs.join(HANDOFF)).unwrap();
+        std::fs::write(theirs.join(HANDOFF).join(SKILL_FILE), OURS).unwrap();
+        link_dir(&f.dirs.skills(), &theirs);
+        assert!(adopt_system(&f.dirs, HANDOFF).unwrap_err().contains("link"));
+        assert!(theirs.join(HANDOFF).join(SKILL_FILE).is_file(), "the account's skill stays where it is");
+        assert!(!f.dirs.root.join("system").exists());
+        unlink_dir(&f.dirs.skills());
+
+        let elsewhere = f.base.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(&f.dirs.data).unwrap();
+        link_dir(&f.dirs.backups(), &elsewhere);
+        let path = write_override(&f, OURS);
+        assert!(reset_system(&f.dirs, HANDOFF).unwrap_err().contains("link"));
+        assert!(path.is_file(), "the override stays");
+        assert!(names(&elsewhere).is_empty(), "nothing put through the link");
+        unlink_dir(&f.dirs.backups());
+    }
+
+    /// The library's own folder may be reached through a link of the person's
+    /// choosing: what lies below it is judged against where it leads.
+    #[test]
+    fn a_library_reached_through_a_link_of_its_own_still_works() {
+        let f = Fixture::new("system-root-link");
+        let via = f.base.join("via");
+        link_dir(&via, &f.dirs.root);
+        let dirs = Dirs { root: via.clone(), data: f.dirs.data.clone() };
+        write_system(&dirs, HANDOFF, OURS).unwrap();
+        assert_eq!(resolve_in(&dirs).source, Source::Library);
+        assert!(reset_system(&dirs, HANDOFF).unwrap().is_some());
+        unlink_dir(&via);
     }
 
     /// A skill of the reserved name among the library's is laid out nowhere:
