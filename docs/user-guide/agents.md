@@ -38,7 +38,10 @@ does a background helper spawned without tools.
   `config.toml`), and a Claude Code helper with auto-memory off, so that what
   an agent briefs it to do stays inside Luna. A spawn with `connectors: true`
   keeps them. A Codex helper still has servers from the project's `.codex/`
-  folder and from plugins.
+  folder and from plugins: the spawn's result and the helper's "What Luna
+  applied" list them. A Codex helper whose account has a server Codex cannot
+  turn off for one run (a name with a dot, such as `team.slack`) is not
+  started without `connectors: true`.
 - A tool called with an argument it does not take, or of the wrong type, is
   refused with what it does take, rather than run on a default.
 
