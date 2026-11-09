@@ -5,6 +5,7 @@ import { backgroundDelete, backgroundKill, type BackgroundHelperDto } from '../.
 import { Icon } from '../../shared/ui/icons';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { useDialogHost } from '../../shared/ui/dialogHost';
+import { useCloseWhenMoved } from '../../shared/ui/popover';
 import { sinceLabel } from '../../shared/lib/format';
 import { logWarn } from '../../shared/lib/log';
 import { allChats, useChats } from '../chats/chats.store';
@@ -225,6 +226,8 @@ function HelperList({
     const below = r.bottom + 6;
     setPos({ left, top: below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : below });
   }, [anchor, host, helpers.length]);
+
+  useCloseWhenMoved(true, anchor, onClose);
 
   // Any click the list didn't swallow dismisses it, and so does Escape.
   useEffect(() => {

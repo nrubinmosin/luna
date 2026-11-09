@@ -79,7 +79,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   sessions running) and the bottom of the sign-in window. Every dialog now
   fits the window: its title bar and its buttons stay in view and the part
   between them scrolls. A long menu or popover (a chat's helpers, an
-  exception's accounts) scrolls rather than run off the window.
+  exception's accounts, the browsers a link can open in) scrolls rather than
+  run off the window, and one closes once a scroll moves its button away
+  rather than stay over the wrong row. New chat's account list opens over the
+  dialog, below its box or above it, wherever there is more room.
 
 ## [0.11.0] - 2026-11-09
 

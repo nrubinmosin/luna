@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { pickFolder } from '../../ipc/cli';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon, ToolButton } from '../../shared/ui/icons';
+import { useCloseWhenMoved } from '../../shared/ui/popover';
 import { useChats } from '../chats/chats.store';
 
 const baseName = (path: string) =>
@@ -72,6 +73,8 @@ export function AddFolder({ columns, onAdd }: { columns: string[]; onAdd: (path:
       window.removeEventListener('keydown', onKey, true);
     };
   }, [open]);
+
+  useCloseWhenMoved(open, face, () => setOpen(false));
 
   const row = (key: string, label: string, title: string, onClick: () => void) => (
     <div
