@@ -56,8 +56,10 @@ the window at every start (`ensure_*_session`) and set on a running chat by
 
 `luna_session_handoff` without `file` (`served::instructions`) answers as plain
 text: the steps (the CLI's own jobs ended, the file written, the call with
-`file`, the turn ended), where the file goes (`<data>/handoffs/<chat>/drafts/
-handoff.md`, `drafts_of`; or any file outside the data dir), what Luna adds to the next conversation itself (`LUNA_ADDS`, the one
+`file`, the turn ended), where the file goes (a file of its own in
+`<data>/handoffs/<chat>/drafts/`, `handoff-<random>.md`, made new, empty and
+private for the answer, `new_draft`, so no link at a name used before is handed
+over; or any file outside the data dir), what Luna adds to the next conversation itself (`LUNA_ADDS`, the one
 list of it), and the instructions past their front matter, naming whose they
 are and their SHA-256. A chat that can write no file (Codex's read-only
 sandboxes, Claude Code's plan mode: `unwritable`) is told so.
@@ -167,7 +169,11 @@ so it never strands a reset.
 `Scheduled` (from the call: `notice_waits` holds the notifier, `deliver_held`
 and `send` hold text for the chat) → the chat at rest on two looks
 (`ready_for_notice`), no draft, no job of its own → a thread claims the terminal
-(`TypingInto`) for the rest. Each text goes in by `Term::type_line`: a person's
+(`TypingInto`) for the rest, once the copy holds (`copy_holds`: right in the
+chat's checked folder of copies, a private file of this user's opened as
+itself, its SHA-256 the one on record; otherwise given up, nothing typed, and
+no prompt pointing at it, the chat and the person told why; the same for a
+switch a core takes up again). Each text goes in by `Term::type_line`: a person's
 keys held (`hold_keys`), the composer looked at again (anything in it, a stash,
 keys within 5 s: not now), the phase taken, then the paste and the Enter. →
 `Resetting`: `/clear` or `/new` typed → the CLI on another conversation: the

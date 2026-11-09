@@ -505,17 +505,86 @@ fn a_link_or_a_strangers_folder_on_the_way_to_the_drafts_is_refused() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// A switch, a fresh one or one a core took up again, resets and prompts only
+/// on the copy Luna made: changed since, a link at its name, or outside the
+/// chat's folder of copies, nothing is typed, and the chat hears why without
+/// a prompt that would point at it.
+#[test]
+fn a_copy_that_is_not_the_one_luna_made_is_never_switched_on() {
+    chat("hocp-me", Some(70));
+    let (dir, file) = scratch_file("cp");
+    schedule("hocp-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    let s = store::records()["hocp-me"].switch.clone().unwrap();
+    let copy = PathBuf::from(&s.snapshot);
+    let made = std::fs::read(&copy).unwrap();
+    assert!(copy_holds("hocp-me", &s).is_ok());
+    // Not where the record's folder of copies is.
+    let elsewhere = Switch { snapshot: file.to_string_lossy().into_owned(), ..s.clone() };
+    assert!(copy_holds("hocp-me", &elsewhere).unwrap_err().contains("not in this chat's folder"));
+    // A link at its name to a file of the very same bytes, where links can be made here.
+    let same = dir.join("same.md");
+    std::fs::write(&same, &made).unwrap();
+    std::fs::remove_file(&copy).unwrap();
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(&same, &copy).is_ok();
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&same, &copy).is_ok();
+    if linked {
+        assert!(copy_holds("hocp-me", &s).unwrap_err().contains("not read"));
+        std::fs::remove_file(&copy).unwrap();
+    }
+    // Changed since it was copied: its hash says so, and the run types nothing.
+    crate::secret::write_private(&copy, b"# Goal\nForged.\n").unwrap();
+    assert!(copy_holds("hocp-me", &s).unwrap_err().contains("SHA-256 differs"));
+    let t = phase::tests::fake(|_, _| {});
+    switch_on(&t, "hocp-me", &s);
+    assert!(t.typed.borrow().is_empty() && !holds_text("hocp-me"), "no reset");
+    assert!(mark_of("hocp-me").and_then(|m| m.why).is_some_and(|w| w.contains("its copy cannot be trusted")));
+    let told: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hocp-me").map(|(_, l)| l.clone()).collect();
+    assert!(told[0].contains("did not go through") && told[0].contains("cannot be trusted"), "{}", told[0]);
+    // Taken up after its reset: the new conversation is told, with no prompt
+    // pointing at the copy.
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hocp-me");
+    schedule("hocp-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    let mut s = store::records()["hocp-me"].switch.clone().unwrap();
+    s.phase = Phase::Recovering { since: 1 };
+    store::change("hocp-me", |r| r.switch = Some(s.clone())).unwrap();
+    crate::secret::write_private(Path::new(&s.snapshot), b"# Goal\nForged.\n").unwrap();
+    switch_on(&t, "hocp-me", &s);
+    let told: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hocp-me").map(|(_, l)| l.clone()).collect();
+    assert!(told[0].contains("gives the new one no handoff") && !told[0].contains(PROMPT_TAG), "{}", told[0]);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hocp-me");
+    done_with(&["hocp-me"], &dir);
+}
+
 #[test]
 fn the_chats_own_drafts_folder_is_where_it_writes_and_what_is_taken() {
     chat("hodr-me", Some(70));
     chat("hodr-other", Some(70));
-    // Named by the answer, made private for it; a file there is taken.
+    // A link put at a name a draft could have, before the folder was Luna's
+    // alone, where links can be made here: never the file named.
+    let drafts = drafts_of("hodr-me").unwrap();
+    let elsewhere = std::env::temp_dir().join(format!("luna-handoff-dr-target-{}.md", std::process::id()));
+    std::fs::write(&elsewhere, "theirs").unwrap();
+    #[cfg(windows)]
+    let _ = std::os::windows::fs::symlink_file(&elsewhere, drafts.join("handoff.md"));
+    #[cfg(unix)]
+    let _ = std::os::unix::fs::symlink(&elsewhere, drafts.join("handoff.md"));
+    // Named by the answer: a file of its own, made new, empty and private.
     let (failed, how) = call("hodr-me", json!({}));
-    let drafts = dir_of("hodr-me").unwrap().join("drafts");
-    let draft = drafts.join("handoff.md");
-    assert!(!failed && how.contains(&*draft.to_string_lossy()) && drafts.is_dir(), "{how}");
-    assert!(!how.contains("writes no file"), "this one writes: {how}");
+    let at = drafts.to_string_lossy().into_owned();
+    let named = how.split(&*at).nth(1).and_then(|rest| rest.split(", in a folder").next()).expect("a file in the drafts folder");
+    let draft = PathBuf::from(format!("{at}{named}"));
+    assert!(!failed && draft != drafts.join("handoff.md") && !how.contains("writes no file"), "{how}");
+    let meta = std::fs::symlink_metadata(&draft).unwrap();
+    assert!(meta.is_file() && !meta.file_type().is_symlink() && meta.len() == 0, "{}", draft.display());
+    #[cfg(unix)]
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777, 0o600);
+    #[cfg(windows)]
+    assert!(crate::secret::acl::is_private(&draft).unwrap());
     std::fs::write(&draft, "# Goal\nShip it.\n").unwrap();
+    assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "theirs", "nothing written through the link");
+    let _ = std::fs::remove_file(&elsewhere);
     assert_eq!(schedule("hodr-me", Provider::Claude, &draft.to_string_lossy(), before()).unwrap()["n"], 1);
     // Another chat's drafts are Luna's folder to it.
     let e = schedule("hodr-other", Provider::Claude, &draft.to_string_lossy(), before()).unwrap_err();

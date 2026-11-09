@@ -336,7 +336,10 @@ pub(super) fn prompt(
 /// again only where the tool is still its (`offered`). After, it is the new
 /// one, which has to hear what it is and where to start.
 pub(super) fn failed_line(n: u32, why: &str, snapshot: &str, reset: bool, offered: bool, prompt: &str) -> String {
-    if reset {
+    if reset && prompt.is_empty() {
+        // No prompt to give: it would point at a copy Luna cannot vouch for.
+        format!("Handoff {n} cleared the conversation, but Luna gives the new one no handoff ({why}). Ask the person how to go on.")
+    } else if reset {
         format!("Handoff {n} cleared the conversation, but Luna's prompt for the new one did not go in ({why}). It was:\n{prompt}")
     } else {
         let next = if offered {
