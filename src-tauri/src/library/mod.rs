@@ -128,7 +128,7 @@ const BACKUP_DAYS: u64 = 30;
 const FOLDERS_DIR: &str = "library-folders";
 /// The marketplace a Codex account caches Luna's folder plugins under — no
 /// name Codex keeps for its own, so none of its syncs prunes it.
-const CODEX_MARKET: &str = "luna";
+pub(crate) const CODEX_MARKET: &str = "luna";
 /// Before a Claude Code copy's name where another skill a session there sees
 /// has that name: Claude Code would list ours as `<folder>:<name>`, scoped to
 /// files under Luna's own folder, which no work ever is.

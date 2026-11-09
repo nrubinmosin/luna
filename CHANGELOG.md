@@ -186,8 +186,35 @@ with the new list, and visible helpers are gone.
 - **Breaking for agents:** `luna_session_answer`'s `keys` (raw keystrokes for a
   helper's screen); a helper has none, and a dialog in your own chat is yours.
 
+### Security
+
+- A Codex helper spawned without `connectors` is not started when its
+  account's `config.toml` has an MCP server whose name Codex cannot turn off
+  for one run (a dotted name such as `team.slack`): such a server stayed on
+  while "What Luna applied" said the helper had Luna's server alone. The
+  error names the server; rename it, or spawn with `connectors: true`. The
+  servers a Codex helper keeps all the same, those of the project's
+  `.codex/config.toml` and the plugins on in the account's and project's
+  config as Codex merges them, are listed in
+  the spawn's result (`mcpLeftOn`) and in "What Luna applied".
+- Luna starts no CLI but its own managed copy. Before its first download had
+  finished, or with that copy damaged, a session ran whatever `claude` or
+  `codex` the system found on PATH, past the checks a managed version passes
+  (its signature or checksums, the probe, the known-good list and its
+  minimum). Now such a session is refused, saying whether the CLI is not
+  installed yet or its copy is damaged; Settings → CLIs installs it again.
+
 ### Fixed
 
+- A session starting while the update pass removed an old CLI version could,
+  once that version was installed again under the same folder name, run from
+  it under a lock no later pass saw, and on macOS and Linux a later pass could
+  remove the folder it ran from. The lock files under `in-use/` now stay.
+- A release that changed only the CLI policy (`cli-known-good.json`, its
+  minimum safe versions) kept the core's fingerprint, so its window attached
+  to the old core still running, which went on allowing the old minimum. The
+  policy is now part of the fingerprint, and a test holds every file compiled
+  into the core to it.
 - A Codex helper spawned with `approval: "auto-review"` failed every turn
   after its first: `codex exec resume` refuses `--approve-for-me`, so its
   later turns pass the three settings that flag stands for instead.

@@ -238,6 +238,11 @@ pub struct Spawned {
     /// `luna_session_list` names it once it has.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub worktree_pending: bool,
+    /// A Codex helper spawned without connectors: the MCP servers it keeps
+    /// all the same, which Codex cannot turn off for a run (codex/config.rs
+    /// `servers_left_on`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_left_on: Vec<String>,
     /// With `account` as a list: the one taken, and why not the ones before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_choice: Option<AccountChoice>,

@@ -181,7 +181,10 @@ The script checks each account is there, reached through no link and signed
 in; builds the Windows test executables (`windows-tests.ps1 -Build`) into
 `test-build/live-tests`; and runs only the live tests, one at a time, with
 `LUNA_LIVE=1` and `LUNA_LIVE_CLAUDE_ACCOUNT` / `LUNA_LIVE_CODEX_ACCOUNT` set. The
-CLI is the test build's managed copy when it has one, else the one on PATH.
+CLI is the test build's managed copy when it has one, else the one on PATH,
+resolved by the script and passed by its full path in `LUNA_LIVE_CLAUDE_CLI` /
+`LUNA_LIVE_CODEX_CLI`: only test executables read those, as Luna itself starts
+nothing but its managed copy.
 Run from `test-build/live-tests`, the executable keeps its own data folder, so
 its hub, settings and log (`test-build/live-tests/luna.log`) never mix with a
 test build running beside it. From a terminal run as administrator the script

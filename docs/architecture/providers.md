@@ -50,7 +50,10 @@ and a why. Per provider:
 `cli.rs` keeps Luna's own copies in `<data>/claude-cli/versions/<ver>/claude.exe`
 and `<data>/codex-cli/versions/<ver>/bin/codex.exe`, with `current` naming the
 active version folder ([ADR-0013](../adr/0013-own-cli-binaries.md)). Versions are
-never overwritten; `PATH` is the fallback until a copy exists. Which version
+never overwritten. Nothing else is started, the CLI on `PATH` included: until
+the first copy is installed a session is refused as not installed yet, and a
+`current` that names a missing, incomplete or unrecorded directory is refused as
+damaged (`cli.rs` `launch_in`), never replaced by whatever a bare name finds. Which version
 the pass installs is the provider's channel
 ([ADR-0019](../adr/0019-cli-channels-and-rollback.md), `cli/choice.rs`):
 `known-good` (the default) takes the newest version on the list compiled into
@@ -141,7 +144,9 @@ holds a shared lock on `<root>/in-use/<dir>` until it has exited
 (`cli/in_use.rs`, `cli::launch`), and the sweep removes a folder only while
 it holds that file's exclusive lock, so no start begins from it meanwhile.
 The window sweeps and the core spawns, hence a file lock rather than a count
-in memory; the OS lets go of it with a process that dies.
+in memory; the OS lets go of it with a process that dies. The lock files are
+never removed: a start that opened one while the sweep held it goes on to lock
+that file, which must be the one every later sweep locks too.
 
 Going back: "Use" (`cli_use_version`) makes any installed folder current and
 writes `<root>/pinned`, which the pass leaves be until a channel is chosen
