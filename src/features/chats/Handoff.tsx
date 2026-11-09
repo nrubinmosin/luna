@@ -242,6 +242,7 @@ export function HandoffFileView({ chat, n, onClose }: { chat: Chat; n: number; o
               padding: 8,
               whiteSpace: 'pre-wrap',
               overflowWrap: 'anywhere',
+              color: 'var(--fg)',
               fontSize: 'var(--fs-3)',
               fontFamily: 'ui-monospace, Consolas, monospace'
             }}
