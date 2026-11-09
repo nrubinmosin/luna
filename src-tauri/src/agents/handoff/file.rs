@@ -9,6 +9,11 @@
 //! wherever its path leads: that is where the core's token and other chats'
 //! handoffs are, and Luna would otherwise copy for a session what its own
 //! read deny keeps from it (threat model F3).
+//!
+//! The read runs on a thread of its own and is given READ_WAIT: a path on a
+//! share that does not answer, or something put at the name that blocks its
+//! reader, holds up this one call and nothing else. The copy is on disk,
+//! flushed, before the handoff counts on it.
 
 use sha2::{Digest, Sha256};
 use std::io::Read;
@@ -17,6 +22,9 @@ use std::path::{Path, PathBuf};
 /// The most a handoff file may hold: a page or two of judgment is what a
 /// handoff is, and the next conversation reads all of it first.
 pub(in crate::agents) const MAX_BYTES: u64 = 128 * 1024;
+
+/// How long the file gets to be checked and read.
+pub(super) const READ_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The extensions a handoff file may have.
 const EXTENSIONS: [&str; 3] = ["md", "markdown", "txt"];
@@ -30,8 +38,28 @@ pub(super) struct Snapshot {
     pub size: usize,
 }
 
+/// What a test has happen as a file is read, by its path: a slow share, a
+/// look at what is held meanwhile.
+#[cfg(test)]
+pub(super) fn on_read(file: &str, f: impl FnOnce() + Send + 'static) {
+    hooks().lock().unwrap_or_else(|e| e.into_inner()).insert(file.to_string(), Box::new(f));
+}
+
+#[cfg(test)]
+type Hook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+fn hooks() -> &'static std::sync::Mutex<std::collections::HashMap<String, Hook>> {
+    static H: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Hook>>> = std::sync::OnceLock::new();
+    H.get_or_init(Default::default)
+}
+
 /// `file` checked as the module says, its bytes as they were read.
 pub(super) fn read_checked(file: &str, data_dir: &Path) -> Result<(PathBuf, Vec<u8>), String> {
+    #[cfg(test)]
+    if let Some(f) = hooks().lock().unwrap_or_else(|e| e.into_inner()).remove(file) {
+        f();
+    }
     let path = crate::boundary::absolute(file.trim()).map_err(|e| format!("file: {e}; give the absolute path of the handoff"))?;
     let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     if !EXTENSIONS.contains(&ext.as_str()) {
@@ -78,16 +106,53 @@ pub(super) fn read_checked(file: &str, data_dir: &Path) -> Result<(PathBuf, Vec<
     Ok((path, bytes))
 }
 
-/// Checks `file` and copies it to `<dir>/<n>.md`, made private and new: a
-/// file already there under that number is never written into.
+/// `read_checked` on a thread of its own, given `wait`: a read that has not
+/// answered by then is refused, and its thread left to end when it can.
+pub(super) fn read_within(file: &str, data_dir: &Path, wait: std::time::Duration) -> Result<(PathBuf, Vec<u8>), String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (f, d) = (file.to_string(), data_dir.to_path_buf());
+    std::thread::Builder::new()
+        .name("luna-handoff-read".into())
+        .spawn(move || {
+            let _ = tx.send(read_checked(&f, &d));
+        })
+        .map_err(|e| format!("could not start reading the file: {e}"))?;
+    rx.recv_timeout(wait)
+        .unwrap_or_else(|_| Err(format!("file: {file} did not read within {} s; write the handoff on a local disk", wait.as_secs().max(1))))
+}
+
+/// Checks `file` and copies it to `<dir>/<n>.md`, made private and new (a file
+/// already there under that number is never written into), flushed to disk,
+/// the folder too where it can be.
 pub(super) fn snapshot(file: &str, data_dir: &Path, dir: &Path, n: u32) -> Result<Snapshot, String> {
-    let (source, bytes) = read_checked(file, data_dir)?;
+    snapshot_within(file, data_dir, dir, n, READ_WAIT)
+}
+
+pub(super) fn snapshot_within(file: &str, data_dir: &Path, dir: &Path, n: u32, wait: std::time::Duration) -> Result<Snapshot, String> {
+    let (source, bytes) = read_within(file, data_dir, wait)?;
     std::fs::create_dir_all(dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
     let path = dir.join(format!("{n}.md"));
-    let mut out = crate::secret::create_private(&path).map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    std::io::Write::write_all(&mut out, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    let written = crate::secret::create_private(&path).and_then(|mut out| {
+        std::io::Write::write_all(&mut out, &bytes)?;
+        out.sync_all()
+    });
+    if let Err(e) = written.and_then(|()| crate::secret::sync_dir(dir)) {
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("could not write {}: {e}", path.display()));
+    }
     let sha256 = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
     Ok(Snapshot { path, sha256, source: source.to_string_lossy().into_owned(), size: bytes.len() })
+}
+
+/// The first handoff number past every copy in `dir` (`<n>.md`, `<n>-facts.md`).
+pub(super) fn next_free(dir: &Path) -> u32 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 1 };
+    let taken = entries.flatten().filter_map(|e| {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let stem = name.strip_suffix(".md")?;
+        stem.strip_suffix("-facts").unwrap_or(stem).parse::<u32>().ok()
+    });
+    taken.max().map_or(1, |n| n.saturating_add(1))
 }
 
 /// A link or a junction, whatever std calls it: Windows counts any reparse
@@ -105,7 +170,11 @@ fn is_link(meta: &std::fs::Metadata) -> bool {
 }
 
 /// The file at `path` itself, a link there opened as the link (and then
-/// refused by its metadata) rather than followed.
+/// refused by its metadata) rather than followed. On Unix without waiting: a
+/// FIFO put at the name blocks an open for reading until a writer comes, and is
+/// then refused by the handle's metadata like any other thing that is not a
+/// file. (Windows takes no FIFO at a path `boundary::absolute` lets through:
+/// its pipes live under `\\.\pipe\`.)
 fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     let mut o = std::fs::OpenOptions::new();
     o.read(true);
@@ -118,7 +187,7 @@ fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        o.custom_flags(libc::O_NOFOLLOW);
+        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     o.open(path)
 }
@@ -153,6 +222,9 @@ mod tests {
         // A number taken is never written over.
         assert!(snapshot(&file.to_string_lossy(), &data, &out, 1).unwrap_err().contains("could not write"));
         assert!(snapshot(&file.to_string_lossy(), &data, &out, 2).is_ok());
+        std::fs::write(out.join("7-facts.md"), "facts").unwrap();
+        assert_eq!(next_free(&out), 8, "past every copy, facts included");
+        assert_eq!(next_free(&dir.join("none")), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -203,5 +275,41 @@ mod tests {
         #[cfg(unix)]
         let made = std::os::unix::fs::symlink(target, link);
         made.is_ok()
+    }
+
+    #[test]
+    fn a_read_that_does_not_answer_in_time_is_refused() {
+        let dir = scratch("slow");
+        let file = dir.join("handoff.md");
+        std::fs::write(&file, "# Objective").unwrap();
+        let name = file.to_string_lossy().into_owned();
+        on_read(&name, || std::thread::sleep(std::time::Duration::from_millis(1500)));
+        let started = std::time::Instant::now();
+        let e = snapshot_within(&name, &dir.join("data"), &dir.join("out"), 1, std::time::Duration::from_millis(200)).unwrap_err();
+        assert!(e.contains("did not read within"), "{e}");
+        assert!(started.elapsed() < std::time::Duration::from_millis(1200), "not held up by the read");
+        assert!(!dir.join("out").join("1.md").exists());
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A FIFO swapped in at a checked name: the open itself returns at once,
+    /// and the handle says it is no file.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_at_the_name_does_not_block_the_open() {
+        let dir = scratch("fifo");
+        let fifo = dir.join("pipe.md");
+        let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let at = fifo.clone();
+        std::thread::spawn(move || {
+            let opened = open_no_follow(&at).map(|f| f.metadata().map(|m| m.is_file()));
+            let _ = tx.send(opened.is_ok_and(|m| m.is_ok_and(|file| !file)));
+        });
+        let refused = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("open returned without a writer");
+        assert!(refused, "opened, and its handle says it is no file");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

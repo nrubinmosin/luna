@@ -1,8 +1,9 @@
 //! What is kept of each chat's handoffs, in `<data>/handoffs/handoffs.json`:
 //! the number last given out, what the chat was told of its context and in
 //! which conversation, the handoff under way with its phase, and those through
-//! or given up. Saved at every change, under the lock it is changed under, so
-//! a core started later goes on from where this one stopped (`from_bytes`).
+//! or given up. Saved at every change, under the lock it is changed under, and
+//! on disk before the change counts (`change`): what is typed into a chat next
+//! goes by it, and a core started later goes on from there (`from_bytes`).
 
 use super::phase::{Phase, Switch};
 use serde::{Deserialize, Serialize};
@@ -58,6 +59,11 @@ pub(super) struct Record {
     pub fresh: bool,
     #[serde(default)]
     pub past: Vec<Past>,
+    /// The number a call is copying its file under, its I/O done outside
+    /// the lock: one at a time per chat. Never saved: a core that stops in
+    /// the middle leaves no copy anyone schedules from.
+    #[serde(skip)]
+    pub reserved: Option<u32>,
 }
 
 pub(super) type Records = BTreeMap<String, Record>;
@@ -71,15 +77,25 @@ fn file() -> std::path::PathBuf {
 /// test's run starts empty and writes nothing: tests share the data dir, and a
 /// record a test left would stand in another's way.
 pub(super) fn records() -> MutexGuard<'static, Records> {
+    static_records().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn static_records() -> &'static Mutex<Records> {
     static R: OnceLock<Mutex<Records>> = OnceLock::new();
-    let m = R.get_or_init(|| {
+    R.get_or_init(|| {
         #[cfg(not(test))]
         let loaded = std::fs::read(file()).map(|b| from_bytes(&b, crate::throttle::now_ms())).unwrap_or_default();
         #[cfg(test)]
         let loaded = Records::new();
         Mutex::new(loaded)
-    });
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    })
+}
+
+/// The records if nobody holds them now: for the test that the file is read
+/// without them.
+#[cfg(test)]
+pub(super) fn try_records() -> Option<MutexGuard<'static, Records>> {
+    static_records().try_lock().ok()
 }
 
 /// What a core saved, as this one takes it up: a switch it was in the middle
@@ -100,30 +116,66 @@ pub(super) fn from_bytes(bytes: &[u8], now: u64) -> Records {
     r
 }
 
-/// Writes the records out as they are, called with their lock held.
-pub(super) fn save(r: &Records) {
-    #[cfg(test)]
-    let _ = r;
-    #[cfg(not(test))]
-    {
-        let path = file();
-        let bytes = match serde_json::to_vec_pretty(r) {
-            Ok(b) => b,
-            Err(e) => return crate::log::warn("handoff", &format!("could not put the handoffs into words: {e}")),
-        };
-        let saved = std::fs::create_dir_all(super::root()).and_then(|()| crate::secret::write_private(&path, &bytes));
-        if let Err(e) = saved {
-            crate::log::warn("handoff", &format!("could not save {}: {e}", path.display()));
-        }
-    }
+/// Writes the records out as they are, called with their lock held, on disk
+/// (flushed, the folder too where it can be) before it returns.
+#[cfg(not(test))]
+fn save(r: &Records) -> Result<(), String> {
+    let path = file();
+    let bytes = serde_json::to_vec_pretty(r).map_err(|e| format!("could not put the handoffs into words: {e}"))?;
+    std::fs::create_dir_all(super::root())
+        .and_then(|()| crate::secret::write_private_synced(&path, &bytes))
+        .map_err(|e| format!("could not save {}: {e}", path.display()))
 }
 
-/// Changes `chat`'s record and saves them all.
-pub(super) fn change<T>(chat: &str, f: impl FnOnce(&mut Record) -> T) -> T {
+/// A test's records stay in memory; a chat a test names here fails to save,
+/// as a full disk would.
+#[cfg(test)]
+fn save_for(_: &Records, chat: &str) -> Result<(), String> {
+    if failing().lock().unwrap_or_else(|e| e.into_inner()).contains(chat) {
+        return Err("could not save handoffs.json: the disk is full".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn save_for(r: &Records, _: &str) -> Result<(), String> {
+    save(r)
+}
+
+#[cfg(test)]
+pub(super) fn failing() -> &'static Mutex<std::collections::HashSet<String>> {
+    static F: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    F.get_or_init(Default::default)
+}
+
+/// Changes `chat`'s record and saves them all. A save that fails puts the
+/// record back as it was and says so: nothing goes by a change that is not on
+/// disk.
+pub(super) fn change<T>(chat: &str, f: impl FnOnce(&mut Record) -> T) -> Result<T, String> {
     let mut r = records();
+    let before = r.get(chat).cloned();
     let out = f(r.entry(chat.to_string()).or_default());
-    save(&r);
-    out
+    if let Err(e) = save_for(&r, chat) {
+        match before {
+            Some(b) => {
+                r.insert(chat.to_string(), b);
+            }
+            None => {
+                r.remove(chat);
+            }
+        }
+        return Err(e);
+    }
+    Ok(out)
+}
+
+/// `chat`'s record gone, saved; what is in memory goes whatever the disk says.
+pub(super) fn remove(chat: &str) -> Result<(), String> {
+    let mut r = records();
+    if r.remove(chat).is_none() {
+        return Ok(());
+    }
+    save_for(&r, chat)
 }
 
 #[cfg(test)]
@@ -154,12 +206,28 @@ mod tests {
         ] {
             saved.insert(chat.into(), Record { last: 1, switch: Some(s(phase)), ..Default::default() });
         }
+        saved.get_mut("reset").unwrap().reserved = Some(2);
         let back = from_bytes(&serde_json::to_vec(&saved).unwrap(), 900);
+        assert_eq!(back["reset"].reserved, None, "a number being copied under is never saved");
         for chat in ["reset", "prompt", "again"] {
             assert_eq!(back[chat].switch.as_ref().unwrap().phase, Phase::Recovering { since: 900 }, "{chat}");
         }
         let waiting = back["waiting"].switch.as_ref().unwrap();
         assert_eq!((waiting.phase, waiting.scheduled_at, waiting.attempts), (Phase::Scheduled, 900, 1));
         assert!(from_bytes(b"not json", 1).is_empty());
+    }
+
+    #[test]
+    fn a_change_that_cannot_be_saved_is_undone_and_said() {
+        change("sv-ok", |r| r.last = 4).unwrap();
+        failing().lock().unwrap().insert("sv-ok".into());
+        let e = change("sv-ok", |r| r.last = 5).unwrap_err();
+        assert!(e.contains("disk is full"), "{e}");
+        assert_eq!(records()["sv-ok"].last, 4, "put back as it was");
+        failing().lock().unwrap().insert("sv-new".into());
+        assert!(change("sv-new", |r| r.last = 1).is_err());
+        assert!(!records().contains_key("sv-new"), "a record that never saved is not there");
+        failing().lock().unwrap().retain(|c| !c.starts_with("sv-"));
+        remove("sv-ok").unwrap();
     }
 }

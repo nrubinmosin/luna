@@ -402,7 +402,12 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // go out with a draft they left: it waits for them (`deliver_held`),
     // unless the draft can be put aside (`type_text`).
     let typing = pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS);
-    let typed = if typing || terminal.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline)? };
+    // Under the notifier's exclusion for the chat: a handoff scheduled since
+    // the look above waits for this text, or the text is held for the
+    // conversation it opens.
+    let going = if typing || terminal.is_none() { None } else { crate::agents::notifier::going_into(id) };
+    let typed = if going.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline)? };
+    drop(going);
     let Some(sent) = typed else {
         hold(caller, id, text);
         return Ok(Sent {

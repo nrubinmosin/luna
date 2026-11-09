@@ -591,11 +591,13 @@ fn debts_moved(caller: &str, told: &[(String, Settled, Owed)]) -> bool {
     told.iter().any(|(id, _, o)| r.owed.get(&(caller.to_string(), id.clone())).is_none_or(|now| now.rev != o.rev))
 }
 
-/// The one exclusion between a notice going in and a handover of a session it
-/// tells of (agents/handover.rs): by session, those a notice is going into its
-/// caller about now, and those being handed over to the person. Either waits
-/// for the other, so no handover lands between a notice's last look at its
-/// debts and its text going in.
+/// The one exclusion between text going into a session and what changes whose
+/// it is or which conversation it is on: by session, those a notice is going
+/// into or telling of now (and those held sends and sends are typing into,
+/// `going_into`), and those being handed over to the person (agents/handover.rs)
+/// or having a handoff scheduled (agents/handoff). Either waits for the other,
+/// so neither lands between a notice's last look at its debts and its text
+/// going in.
 #[derive(Default)]
 struct Gate {
     telling: HashMap<String, usize>,
@@ -607,9 +609,11 @@ fn gate() -> &'static (std::sync::Mutex<Gate>, std::sync::Condvar) {
     G.get_or_init(Default::default)
 }
 
-/// A notice's hold on the sessions it tells of, from its last look at their
-/// debts until its text is in (`tell_of`): a handover of any of them waits.
-struct Telling(Vec<String>);
+/// A notice's hold on its caller and the sessions it tells of, from its last
+/// look at their debts until its text is in (`tell_of`), or text's hold on the
+/// session it is typed into (`going_into`): a handover or a handoff of any of
+/// them waits.
+pub(in crate::agents) struct Telling(Vec<String>);
 
 impl Drop for Telling {
     fn drop(&mut self) {
@@ -628,19 +632,38 @@ impl Drop for Telling {
 }
 
 /// The hold a notice to `caller` about `told` goes in under, if it still may: none
-/// of its sessions is being handed over and its debts are as it found them. The
-/// debts are looked at under the gate, so a handover either waits for this notice
-/// or has cleared them first.
-fn tell_of(caller: &str, told: &[(String, Settled, Owed)]) -> Option<Telling> {
+/// of its sessions is being handed over, its caller has no handoff scheduled or
+/// being scheduled, and its debts are as it found them. All of it is looked at
+/// under the gate, so a handover or a handoff either waits for this notice or
+/// is in place before it, and it goes nowhere.
+pub(in crate::agents) fn tell_of(caller: &str, told: &[(String, Settled, Owed)]) -> Option<Telling> {
     let mut g = gate().0.lock().unwrap_or_else(|e| e.into_inner());
-    if told.iter().any(|(id, ..)| g.handing.contains(id)) || debts_moved(caller, told) {
+    if told.iter().any(|(id, ..)| g.handing.contains(id))
+        || g.handing.contains(caller)
+        || crate::agents::handoff::holds_text(caller)
+        || debts_moved(caller, told)
+    {
         return None;
     }
-    let ids: Vec<String> = told.iter().map(|(id, ..)| id.clone()).collect();
+    let mut ids: Vec<String> = told.iter().map(|(id, ..)| id.clone()).collect();
+    ids.push(caller.to_string());
     for id in &ids {
         *g.telling.entry(id.clone()).or_default() += 1;
     }
     Some(Telling(ids))
+}
+
+/// The hold text other than a notice goes into session `id` under (a held
+/// send, a send), if it still may: nothing is handing `id` over and no handoff
+/// of it is scheduled or being scheduled, looked at under the gate, so a
+/// handoff scheduled now waits for this text to be in.
+pub(in crate::agents) fn going_into(id: &str) -> Option<Telling> {
+    let mut g = gate().0.lock().unwrap_or_else(|e| e.into_inner());
+    if g.handing.contains(id) || crate::agents::handoff::holds_text(id) {
+        return None;
+    }
+    *g.telling.entry(id.to_string()).or_default() += 1;
+    Some(Telling(vec![id.to_string()]))
 }
 
 /// A handover's hold on session `id` (`hand_off`), let go when dropped.
