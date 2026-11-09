@@ -22,7 +22,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | --- | --- |
 | `hub.rs` | loopback HTTP: `/hook/<chat>/<secret>`, `/guard/<chat>/<secret>`, `/mcp` (bearer); a thread per request in bounded lanes (`admit.rs`) |
 | `mcp/mod.rs` | JSON-RPC: `initialize` (with `instructions`), `tools/list`, `tools/call`; `mcp::Call` per call in flight |
-| `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list); `luna_permission` only for a background Claude Code helper's CLI |
+| `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list); `luna_session_handoff` only for a chat with auto-handoff on (`handoff_tool`); `luna_permission` only for a background Claude Code helper's CLI |
 | `mcp/args.rs`, `mcp/dispatch.rs`, `mcp/guide.rs` | strict arguments (`arguments_fit`); each call to the agent layer and its log line; the guide by topic (`TOPICS`) |
 | `agents/registry.rs` | the `Registry` behind one lock (`reg()`): tokens (by SHA-256), `Known` sessions, lineage, spawns under way, debts, waits, receipts, names, groups, helpers taken over |
 | `agents/owed.rs` | answers owed (`Owed`), `hand_over` and its undo |
@@ -38,6 +38,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
 | `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and budget news |
+| `agents/handoff/` | auto-handoff: `luna_session_handoff`, the threshold notices (`watch.rs`), the file check and copy (`file.rs`), the switch's machine (`phase.rs`), its saved state (`store.rs`, `<data>/handoffs/handoffs.json`) and what the prompt and notices say (`facts.rs`) |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
 | `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic its opening and the topics |
 
@@ -98,6 +99,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `luna_session_answer` to a model's question | its descendants; with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`) |
 | `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, at the caller's privilege |
 | `luna_session_spawn` | a background helper at no more privilege than the caller, never in or above the data dir; a Codex one never with an approval that asks a person |
+| `luna_session_handoff` | the caller's own chat only (no target argument); offered and taken only from a person's chat with Luna tools and auto-handoff on |
 
 Every descendant is a background helper: a chat the window runs has no parent,
 so no agent interrupts, stops, deletes or approves for it.
@@ -389,6 +391,90 @@ turn, stopped on a prompt (once per stop) or exited.
   `read-only-net` off Windows are denied `core/` (F3) — `workspace-write` and
   every Windows sandbox still read it, the latter through the data folder's
   private DACL), swept after a week.
+
+## Auto-handoff
+
+A person's chat with Luna tools may have auto-handoff on: `handoff` in its
+registry settings, the threshold in percent, passed by the window at every start
+(`ensure_*_session`) and set on a running chat by `set_auto_handoff`
+([ADR-0020](../adr/0020-session-self-handoff.md)).
+
+- **The tool.** `tools/list` adds `luna_session_handoff` for such a chat alone
+  (`offers_tool`: tools, no parent, not an orphan, a helper or the dev caller) and
+  notes that its CLI has it (`listed`, cleared by `register` at every start: a
+  CLI lists tools as it starts, and Luna's server cannot announce a new one).
+  The tool takes `file` and nothing that names a chat. It is refused while the
+  CLI's own jobs run (`activity::own_jobs`: what its turns started that is still
+  alive, its subagents), and while one is under way.
+- **The threshold.** The `luna-handoff` thread, every 2 s: for each opted-in
+  chat whose CLI has listed the tool, at a turn count it has not looked at with
+  the turn over, `Context::of` its transcript; past the threshold one line in
+  `Registry::news` (the notifier types it), past `firm_at` (threshold + 10, kept
+  within 85-95) a firmer one; once each per conversation (`Told`, by the
+  transcript's name). A conversation a handoff began (`Record::fresh`) keeps
+  its first reading as a floor and is asked only past it by `GROWTH` (5
+  points): one that begins above the threshold is not sent straight into the
+  next handoff. A switch scheduled drops a notice not yet typed.
+- **The copy.** `file.rs`: absolute, `.md` / `.markdown` / `.txt`, opened with no
+  link followed (and, off Windows, without waiting, so a FIFO swapped in does not
+  hang the open) and checked on its handle, at most 128 KB of UTF-8 text, refused
+  inside the data dir after `canonicalize`; all of it on a thread of its own
+  given 10 s (`READ_WAIT`), outside the records' lock; a reader given up on keeps
+  its place until its thread ends (`Readers`: one per chat, four in all, a call
+  past either refused): the number is reserved
+  first (`Record::reserved`, never saved, one call at a time per chat) and taken
+  past any copy already on disk (`next_free`), so one a stopped core left is never
+  written into. The copy is made new and private as `<data>/handoffs/<chat>/<n>.md`
+  and flushed before the switch is recorded, its SHA-256 on record. Claude Code
+  chats with auto-handoff get that folder as an `--add-dir`, read without asking.
+- **Recording it.** The switch is recorded on disk (`write_private_synced`; a
+  save that fails is undone and refuses the call), only while the reservation
+  is still the call's and auto-handoff is still on, both looked at under the
+  record's lock (turning it off takes that lock, clears the reservation and
+  changes the registry inside it), under the notifier's
+  exclusion for the chat (`hand_off`): whatever is going into the chat then (a
+  notice, `tell_of`; a held send or a send, `going_into`) goes in first, into
+  the conversation that writes the handoff, and from then on each of them, which
+  looks again at `holds_text` under the same exclusion, goes nowhere until the
+  switch is over.
+- **The switch** (`phase.rs`). Every phase is taken by `Phases::advance`, for
+  that handoff's number, from the phase it was read in, on disk before any text
+  goes in; one not taken (given up meanwhile, a save that fails) types nothing.
+  Turning auto-handoff off gives up only a switch still `Scheduled`, under the
+  same lock, so it never strands a reset. `Scheduled` (from the call:
+  `notice_waits` holds the notifier, `deliver_held` and `send` hold text for the
+  chat) → the chat at rest on two looks (`ready_for_notice`), no draft, no job of
+  its own → a thread claims the terminal (`TypingInto`) for the rest. Each text
+  goes in by `Term::type_line`: a person's keys held (`hold_keys`), the composer
+  looked at again (anything in it, a stash, keys within 5 s: not now), the phase
+  taken, then the paste and the Enter. → `Resetting`: `/clear` or `/new` typed →
+  the CLI on another conversation: the registry's
+  `sessionId` (Claude Code, `claude::session::session_id`) or the title's thread
+  (Codex, `codex_thread`) → `Prompting`: the prompt typed, `[Luna handoff N, not
+  typed by the user]`, the copy's path and `fact_block` (from `list::list`, the
+  debts, `held`, `undelivered_for`, `Registry::usage`, the settings); past 6,000
+  characters the facts go in `<n>-facts.md` beside it → the transcript other
+  than the one left holds that opening → done. Then what waited goes in. A
+  person writing in the new conversation before the prompt holds it back
+  (`Recovering`) until they are through.
+- **Failures.** 60 s without a new conversation, 60 s without the prompt in the
+  new transcript, 30 min without rest, 10 min with its CLI not running, the
+  CLI's own jobs at rest, or a phase that will not save: given up, kept on record (`Past`), the chat told by a
+  line in `news` (before the reset: it goes on as it was, and may call again
+  only if the tool is still its; after: what it is, the prompt again) and the
+  desktop by a notification. A draft holds it as long as
+  it stands, told to the desktop after a minute.
+- **A core restart.** `from_bytes`: a switch in `Resetting` or `Prompting` is
+  `Recovering`. Once the chat is back and at rest: on the conversation it left,
+  `Scheduled` again (two resets at most); on another, done if its transcript
+  holds the prompt, else the prompt is typed.
+- **The window.** `session_meta` carries the latest `HandoffMark` (under way,
+  done, failed) for the pane's divider (`chats/Handoff.tsx`); `handoff_file` and
+  `handoff_transcript` read the copy and the conversation left by the record's
+  paths (`background::view_of`). A conversation's first prompt that is Luna's
+  handoff prompt is no name for the chat (`pty/probe.rs` `pin_name`).
+- `forget` drops a deleted chat's record and its folder of copies; a chat keeps
+  its last 20 on record.
 
 ## Failed turns
 

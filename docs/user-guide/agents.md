@@ -229,6 +229,15 @@ its own CLI) with their usage as the Accounts window shows it; `luna_account_get
 settings a helper would get there (read from the account's and the project's settings the way
 the new-chat dialog reads them) and its models.
 
+## Auto-handoff
+
+A chat of yours with Luna tools and **Auto-handoff** on is offered one more
+tool, `luna_session_handoff`, and asked to use it once its context passes the
+threshold: it writes a handoff, Luna clears the conversation and opens the next
+from it. Its helpers keep their ids, their answers still come to it, and
+`luna_session_wait` still reaches them. Only that chat has the tool, and it acts
+on that chat alone. See [Chats: Auto-handoff](chats.md#auto-handoff).
+
 ## Lifetime
 
 - A helper goes by itself (`autoDelete`, on by default) once its answer reached

@@ -95,7 +95,35 @@ interface ChatBase {
   /** The browser this chat's links open in, remembered from a Shift+click;
    *  unset means its account's, its folder's or the default. */
   browser?: string | null;
+  /** Auto-handoff, asked for in the new-chat dialog or its What Luna applied
+   *  panel: past `handoffAt` percent of its context Luna asks the chat for a
+   *  handoff and offers it the tool that starts its next conversation from
+   *  it. Only with Luna's tools. */
+  autoHandoff?: boolean;
+  /** Its threshold, in percent; kept while auto-handoff is off. */
+  handoffAt?: number;
+  /** Its latest handoff, as the core last said. */
+  handoff?: HandoffMark | null;
 }
+
+/** Where a chat's latest handoff stands (agents/handoff `HandoffMark`). */
+export interface HandoffMark {
+  n: number;
+  /** When it was scheduled, or when it ended. */
+  at: number;
+  state: 'underWay' | 'done' | 'failed';
+  why?: string | null;
+  /** The conversation it left can be read. */
+  previous: boolean;
+}
+
+/** Auto-handoff's threshold as the window offers it, in percent of the context. */
+export const HANDOFF_AT = { default: 70, min: 10, max: 90 } as const;
+
+/** The threshold a chat starts its CLI with: none without Luna's tools,
+ *  whose server is the one that offers the handoff. */
+export const handoffOf = (c: { tools?: boolean; autoHandoff?: boolean; handoffAt?: number }): number | null =>
+  c.tools && c.autoHandoff ? (c.handoffAt ?? HANDOFF_AT.default) : null;
 
 export interface ClaudeChat extends ChatBase, ClaudeSettings {
   provider: 'claude';

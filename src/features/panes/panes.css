@@ -368,3 +368,40 @@
 [data-app] .pane-bar .kids[data-new="yes"] {
   animation: kids-new 1.2s ease-in-out 4;
 }
+
+/* ------------------------------------------------------------------------
+   The divider over a chat's terminal once it has had a handoff
+   (chats/Handoff.tsx): a rule across the pane with where the latest stands
+   in the middle, and what it opens.
+   ------------------------------------------------------------------------ */
+[data-app] .handoff-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  font-size: var(--fs-1);
+  color: var(--dim);
+  background: var(--term);
+}
+[data-app] .handoff-rule {
+  flex: 1 1 12px;
+  min-width: 12px;
+  height: 0;
+  border-top: 1px dashed var(--line);
+}
+[data-app] .handoff-bar[data-state="failed"] {
+  color: oklch(0.58 0.2 25);
+}
+[data-app] .handoff-bar[data-state="underWay"] .handoff-rule {
+  border-top-style: dotted;
+  border-top-color: var(--luna-blue);
+}
+[data-app] .handoff-link {
+  cursor: default;
+  text-decoration: underline;
+  border-radius: 2px;
+}

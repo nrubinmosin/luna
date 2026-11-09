@@ -254,6 +254,25 @@ describe('NewChatDialog: what Luna adds only when asked', () => {
     expect(chat).toMatchObject({ guard: true });
   });
 
+  it('offers auto-handoff only with Luna tools, off unless ticked, with its threshold', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    const tools = screen.getByRole('checkbox', { name: 'Luna tools' });
+    if ((tools as HTMLInputElement).checked) await user.click(tools);
+    const box = screen.getByRole('checkbox', { name: 'Auto-handoff at' });
+    expect(box).toBeDisabled();
+    expect(box).not.toBeChecked();
+    await user.click(tools);
+    expect(box).toBeEnabled();
+    await user.click(box);
+    const at = screen.getByRole('spinbutton', { name: /Auto-handoff threshold/ });
+    await user.clear(at);
+    await user.type(at, '60');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ tools: true, autoHandoff: true, handoffAt: 60 });
+  });
+
   it('offers Codex the wait guard only with its hooks unasked', async () => {
     useNewChat.getState().remember('/repo', { provider: 'codex', name: 'gpt' });
     const user = userEvent.setup();

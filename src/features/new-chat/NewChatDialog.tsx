@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { accountKey, type ClaudeSettings, type CodexSettings } from '../../shared/types';
+import { accountKey, HANDOFF_AT, type ClaudeSettings, type CodexSettings } from '../../shared/types';
 import { ACCENT, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
@@ -12,6 +12,7 @@ import { pickFolder } from '../../ipc/cli';
 import { codexHooksStart, keepCodexHooks, type CodexHooksStart } from '../../ipc/trust';
 import { Icon } from '../../shared/ui/icons';
 import { AccountPicker } from './AccountPicker';
+import { ThresholdInput } from '../chats/Handoff';
 
 const noteStyle: CSSProperties = { fontSize: 'var(--fs-2)', color: 'var(--faint)', marginTop: 3 };
 const linkStyle: CSSProperties = {
@@ -94,6 +95,10 @@ export function NewChatDialog() {
   const accountPath = account?.path ?? '';
   // Off unless asked for here: a chat's CLI runs as it would on its own.
   const [guard, setGuard] = useState(false);
+  // Off unless asked for here, and only with Luna tools, whose server offers
+  // the handoff (agents/handoff).
+  const [autoHandoff, setAutoHandoff] = useState(false);
+  const [handoffAt, setHandoffAt] = useState<number>(HANDOFF_AT.default);
   // Codex runs a hook Luna gives it only with hooks' trust bypassed.
   const guardable = provider !== 'codex' || hooks;
 
@@ -189,6 +194,8 @@ export function NewChatDialog() {
           worktree,
           tools,
           guard,
+          autoHandoff,
+          handoffAt,
           trust: trustIt
         });
       } else {
@@ -201,6 +208,8 @@ export function NewChatDialog() {
           tools,
           hooksUnasked: hooks,
           guard: guard && hooks,
+          autoHandoff,
+          handoffAt,
           trust: trustIt
         });
       }
@@ -501,6 +510,35 @@ export function NewChatDialog() {
               )}
             </div>
           )}
+
+          <div
+            className="field-row"
+            title={
+              tools
+                ? 'Past this share of its context, Luna asks the chat to write a handoff; on its word the chat goes on ' +
+                  'in a fresh conversation from it, its helpers and their answers carrying on. Nothing switches ' +
+                  'unless the chat asks.'
+                : 'Only with Luna tools: their server is what offers the handoff'
+            }
+          >
+            <input
+              type="checkbox"
+              id="handoff-toggle"
+              checked={autoHandoff && tools}
+              disabled={!tools}
+              onChange={() => setAutoHandoff(h => !h)}
+            />
+            <label htmlFor="handoff-toggle" style={{ whiteSpace: 'nowrap', cursor: 'default' }}>
+              Auto-handoff at
+            </label>
+            <ThresholdInput
+              id="handoff-at"
+              value={handoffAt}
+              disabled={!tools || !autoHandoff}
+              onCommit={setHandoffAt}
+            />
+            <span style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)', whiteSpace: 'nowrap' }}>% of its context</span>
+          </div>
 
           {provider === 'codex' ? (
             <codex.Fields draft={codexDraft} origin={originOf(codexDraft, codex.describe)} accountPath={accountPath} />

@@ -95,6 +95,7 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "quietSec",
         "drain",
         "topic",
+        "file",
     ];
     let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
     if !set.is_empty() {
@@ -126,6 +127,8 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
             "nextCursor",
             "worktreeRemoved",
             "worktreeLeft",
+            "scheduled",
+            "n",
         ];
         let got: Vec<String> = OUTCOME.iter().filter_map(|k| v.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
         crate::log::info("mcp", &format!("{line} in {ms}ms: {}", if got.is_empty() { "ok".to_string() } else { got.join(" ") }));
@@ -403,6 +406,8 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
         "luna_power_set" => {
             crate::power::arm_for_agent(caller, a["action"].as_str().unwrap_or(""), a["quietSec"].as_u64(), a["drain"].as_bool())
         }
+        // The caller's own chat, by its token: there is no other to name.
+        "luna_session_handoff" => agents::handoff(caller, a["file"].as_str().unwrap_or("")),
         _ => Err(format!("unknown tool {name}; the tools: {}", names().join(", "))),
     };
     match out {

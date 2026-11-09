@@ -24,7 +24,7 @@ import { useUpdates } from '../../features/updates/updates.store';
 import { useShell } from '../../app/shell.store';
 import { usePower } from '../../features/power/power.store';
 import { SETTINGS_PAGES, useSettings, type SettingsPage } from '../../features/settings/settings.store';
-import { FOLDERS, ACCOUNTS, filled, parked, BACKGROUND } from './fixtures';
+import { FOLDERS, ACCOUNTS, filled, parked, BACKGROUND, HANDED_OFF } from './fixtures';
 import { demoState } from './ipc';
 
 /** A Settings page's scene: `settings` is its first page, `settings-links` and
@@ -38,7 +38,8 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
  *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
  *  `?demo=library`, `?demo=power`, `?demo=applied` / `applied-dark` (a chat's What Luna applied),
  *  `?demo=helper` / `helper-dark` (a helper watched read-only),
- *  `?demo=delete-helpers` (deleting a chat whose helpers are at work). */
+ *  `?demo=delete-helpers` (deleting a chat whose helpers are at work),
+ *  `?demo=handoff` / `handoff-dark` (a chat gone on past a handoff, its divider and copy). */
 export type Scene =
   | 'main'
   | 'dark'
@@ -61,7 +62,9 @@ export type Scene =
   | 'applied-dark'
   | 'helper'
   | 'helper-dark'
-  | 'delete-helpers';
+  | 'delete-helpers'
+  | 'handoff'
+  | 'handoff-dark';
 const SCENES: Scene[] = [
   'dark',
   'peek',
@@ -82,7 +85,9 @@ const SCENES: Scene[] = [
   'applied-dark',
   'helper',
   'helper-dark',
-  'delete-helpers'
+  'delete-helpers',
+  'handoff',
+  'handoff-dark'
 ];
 
 export function seedDemo(scene: Scene) {
@@ -100,7 +105,7 @@ export function seedDemo(scene: Scene) {
   // it landed, leaving four panes saying the account was not on disk. Silence
   // the writers rather than the pollers: less to keep in step with.
   useChats.setState({
-    folders: FOLDERS,
+    folders: scene.startsWith('handoff') ? HANDED_OFF : FOLDERS,
     active: 'demo-1',
     setStatus: () => {},
     setName: () => {},
@@ -166,6 +171,17 @@ export function seedDemo(scene: Scene) {
         300
       );
     }, 300);
+  }
+  // The handoff the first chat went through: its divider, and its copy opened
+  // the way a click would.
+  if (scene.startsWith('handoff')) {
+    setTimeout(
+      () =>
+        [...document.querySelectorAll<HTMLElement>('.handoff-link')]
+          .find(l => l.textContent === 'open handoff')
+          ?.click(),
+      400
+    );
   }
   // The first chat's Delete, with its helpers listed and their boxes ticked.
   if (scene === 'delete-helpers') {

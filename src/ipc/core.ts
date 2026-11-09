@@ -65,7 +65,10 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'codex_folder_trusted',
   'codex_trust_folder',
   'claude_trust_folder',
-  'applied_by_luna'
+  'applied_by_luna',
+  'set_auto_handoff',
+  'handoff_file',
+  'handoff_transcript'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
 

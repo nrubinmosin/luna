@@ -19,6 +19,9 @@ export type ChatSpec = {
   tools?: boolean;
   /** The guard against endless waits (ticked in the dialog). */
   guard?: boolean;
+  /** Auto-handoff (ticked in the dialog, with Luna tools) and its threshold. */
+  autoHandoff?: boolean;
+  handoffAt?: number;
   /** Mark the folder trusted in the account, as the CLI's own trust prompt
    *  would: ticked in the dialog, never for a helper opened as a chat. */
   trust?: boolean;
@@ -76,7 +79,9 @@ export async function createChat(spec: ChatSpec): Promise<string> {
     worktreePath,
     color: pickChatColor(wornColors(folders, group)),
     tools: spec.tools ?? false,
-    guard: spec.guard ?? false
+    guard: spec.guard ?? false,
+    autoHandoff: (spec.tools ?? false) && (spec.autoHandoff ?? false),
+    handoffAt: spec.handoffAt
   };
   const chat: Chat =
     spec.provider === 'claude'

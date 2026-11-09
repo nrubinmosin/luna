@@ -27,6 +27,8 @@ Two boxes add something to the CLI only when you tick them:
   `Get-Content -Wait` without a timeout) is refused before it runs, with the
   reason for the model. Helpers always have it. Codex runs it only with
   **Hooks unasked** on.
+- **Auto-handoff at N% of its context**, off, only with Luna tools: see
+  [Auto-handoff](#auto-handoff).
 
 **Ctrl+Shift+N** opens the dialog instead when the folder is not trusted in the
 account, since whether to trust it is yours to say.
@@ -97,7 +99,7 @@ its latest start (a helper's latest turn), read-only, grouped by why it is
 there:
 
 - **You chose**: the model, effort and modes, the worktree, Luna tools, the wait
-  guard, hooks unasked, the library's skills and instructions, an agent's
+  guard, auto-handoff, hooks unasked, the library's skills and instructions, an agent's
   request.
 - **Luna needs it to run the chat**: the account folder, the session's id,
   resume, the activity hooks, the CLI's own updates kept off, a helper's role,
@@ -110,7 +112,8 @@ there:
 
 Each item shows its value and the reason. Tokens and Luna's local addresses are
 never shown, and files appear by their path. The panel also has the chat's own
-**Wait guard for this chat** box (from the CLI's next start). If Luna could not
+**Wait guard for this chat** box (from the CLI's next start) and the chat's
+**Auto-handoff** box ([below](#auto-handoff)). If Luna could not
 note a write into the account, or its note of them will not read, the panel
 says **Accounting incomplete** and why. A folder whose memory Luna could not
 leave out without risking this project's own instructions is listed under
@@ -120,6 +123,46 @@ Chats from before the guard was a choice, which had it because of Luna tools,
 are named once in a notice across the board until you dismiss it. Below those comes what Luna wrote
 into the account outside a start: the folder's trust when you ticked it, and
 the library's copies. See [ADR-0016](../adr/0016-luna-is-a-runtime.md).
+
+## Auto-handoff
+
+A chat with Luna tools can go on in a fresh conversation of its own when its
+context fills, written up by itself, its helpers carrying on. Tick
+**Auto-handoff at N% of its context** in the new-chat dialog (70% unless you
+change it, from 10 to 90), or later in the chat's **What Luna applied** panel.
+A chat without Luna tools cannot have it: their server is what offers it.
+
+- Once a turn ends past the threshold, Luna types one notice into the chat
+  asking for a handoff: the steps and what the file is to hold (objective and
+  stop conditions, what is done and what remains, decisions, approvals and open
+  questions, branches and SHAs, helpers and what each was asked, checks, the next
+  action). A firmer one follows near where the CLI would compact the conversation
+  by itself. A conversation a handoff began is asked only once it has grown 5
+  points past where it began. Nothing switches unless the chat asks.
+- The chat writes the file and calls `luna_session_handoff`. Luna copies it into
+  its data folder and, once the chat is at rest, types `/clear` (Claude Code) or
+  `/new` (Codex) and then a prompt opening `[Luna handoff N` that points the new
+  conversation at the copy and states what Luna knows itself: the chat's helpers
+  and their state, branches and worktrees, the answers they owe, text not yet
+  delivered, accounts and their use, the chat's settings. Its helpers, their
+  answers and notices carry on untouched; the chat keeps its row, name and id.
+- Your draft in the chat holds the switch until you send or clear it; after a
+  minute the desktop says so. Notices and messages for the chat wait meanwhile
+  and go into the new conversation.
+- If the switch fails before the reset (no new conversation, the CLI's own jobs
+  still running, the chat never at rest), the conversation goes on as it was and
+  a notice says why; you get a desktop notification too. If it fails after, the
+  new conversation is told what it is and where to start.
+- A divider over the terminal says **Handoff N · time**, with **open handoff**
+  (Luna's copy of the file) and **previous conversation** (the one it left,
+  read-only); from there **‹ before handoff N-1** steps further back. A chip on
+  the title bar shows the threshold.
+- Turned on while the chat runs, it takes effect at a quick resume of the chat
+  on the same conversation once it is idle: a CLI lists Luna's tools as it
+  starts. Turned off, the tool refuses from then on, and a handoff only
+  scheduled is dropped.
+
+See [ADR-0020](../adr/0020-session-self-handoff.md).
 
 ## Status
 
