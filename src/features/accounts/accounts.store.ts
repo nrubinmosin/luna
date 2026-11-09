@@ -118,6 +118,11 @@ const shortOf = (label: string) => {
 const askClaude = async (path: string, force = false): Promise<Round | null> => {
   const lim = await ipc.accountLimits(path, force).catch(() => null);
   if (!lim) return null;
+  // Only the windows the answer had: one the server did not send is not a
+  // window at 0%, here or in what agents are told.
+  const fixed: Account['limits'] = [];
+  if (lim.h5 != null) fixed.push({ id: 'h5', label: '5 hours', short: '5H', used: lim.h5, resetAt: lim.resetH5 });
+  if (lim.week != null) fixed.push({ id: 'week', label: 'week', short: 'W', used: lim.week, resetAt: lim.resetWeek });
   return {
     plan: lim.plan,
     email: lim.email,
@@ -129,14 +134,20 @@ const askClaude = async (path: string, force = false): Promise<Round | null> => 
     rateLimited: lim.rateLimited,
     limits: lim.haveUsage
       ? [
-          { id: 'h5', label: '5 hours', short: '5H', used: lim.h5, resetAt: lim.resetH5 },
-          { id: 'week', label: 'week', short: 'W', used: lim.week, resetAt: lim.resetWeek },
+          ...fixed,
           ...lim.scoped.map(s => ({
             id: `scoped:${s.label}`,
             label: `${s.label} · week`,
             short: shortOf(s.label),
             used: s.used,
             resetAt: s.resetsAt
+          })),
+          ...lim.other.map(o => ({
+            id: `other:${o.kind}:${o.label}`,
+            label: o.label,
+            short: shortOf(o.label),
+            used: o.used,
+            resetAt: o.resetsAt
           }))
         ]
       : null

@@ -25,12 +25,17 @@ per account. A fresh Codex account gets a `config.toml` with
 
 Limits cost no tokens.
 
-- **Claude Code:** 5h, week and every per-model weekly limit, each with its reset
-  (in so long, and the exact time in the Accounts window), from the OAuth usage
-  endpoint `/usage` uses, the CLI's own cache answering most rounds.
-- **Codex:** the ChatGPT plan's rate-limit windows (typically 5 hours and a week,
-  plus per-model limits), from the endpoint Codex's `/status` reads, with the
-  token in `auth.json`; when unreachable, the last `token_count` of a rollout.
+- Each account shows the windows its provider reports, each with its reset (in
+  so long, and the exact time in the Accounts window). A window the provider
+  does not send is left out, not shown at 0%, and one Luna does not know yet is
+  shown under the provider's own name for it.
+- **Claude Code:** the 5-hour session window and the week across all models
+  when the usage endpoint sends them, and every per-model weekly limit, from the
+  OAuth usage endpoint `/usage` uses, the CLI's own cache answering most rounds.
+- **Codex:** the ChatGPT plan's rate-limit windows, each named by its length
+  ("5 hours", "week", "1 day"), plus per-model limits, from the endpoint Codex's
+  `/status` reads, with the token in `auth.json`; when unreachable, the last
+  `token_count` of a rollout.
 - A 429 backs off longer each time; the refresh button on the row asks now.
 - A Claude Code access token lasts about eight hours; for an account nobody has
   opened since, Luna renews it the way the CLI does, under the CLI's own lock, so

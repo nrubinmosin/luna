@@ -8,7 +8,9 @@ use crate::throttle::{self, now_ms};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::Mutex;
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 pub const RATE_429: &str = "rate-limited";
@@ -114,14 +116,31 @@ fn read_auth(account_path: &str) -> Option<Auth> {
     })
 }
 
+/// A window's name from its length: "5 hours" and "week" for the two Codex
+/// has had, any other length spelled out, so a new one is shown, not dropped.
 pub fn window_label(minutes: Option<i64>) -> String {
+    let count = |n: i64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
     match minutes {
         Some(300) => "5 hours".into(),
         Some(10080) => "week".into(),
-        Some(m) if m > 0 && m % 1440 == 0 => format!("{} days", m / 1440),
-        Some(m) if m > 0 && m % 60 == 0 => format!("{} hours", m / 60),
+        Some(m) if m > 0 && m % 1440 == 0 => count(m / 1440, "day"),
+        Some(m) if m > 0 && m % 60 == 0 => count(m / 60, "hour"),
         Some(m) if m > 0 => format!("{m} min"),
         _ => "limit".into(),
+    }
+}
+
+/// Whether a window length other than the two Codex has had is yet to be
+/// logged: once a run, as every poll brings it again.
+fn length_is_news(minutes: Option<i64>) -> bool {
+    static SAID: Mutex<BTreeSet<Option<i64>>> = Mutex::new(BTreeSet::new());
+    !matches!(minutes, Some(300 | 10080)) && SAID.lock().unwrap_or_else(|e| e.into_inner()).insert(minutes)
+}
+
+fn note_length(minutes: Option<i64>) {
+    if length_is_news(minutes) {
+        let length = minutes.map_or("no stated length".to_string(), |m| format!("{m} min"));
+        crate::log::info("codex-limits", &format!("a rate-limit window of {length}, new to Luna; shown as {:?}", window_label(minutes)));
     }
 }
 
@@ -129,17 +148,17 @@ fn iso(secs: Option<i64>) -> Option<String> {
     chrono::DateTime::from_timestamp(secs?, 0).map(|t| t.to_rfc3339())
 }
 
-/// One window of the `wham/usage` response.
+/// One window of the `wham/usage` response; none without its share, which
+/// is no window at 0%.
 fn window_from_api(id: &str, label: Option<&str>, w: &Value) -> Option<LimitWindow> {
-    if !w.is_object() {
-        return None;
-    }
+    let used = w["used_percent"].as_f64()? / 100.0;
     let secs = w["limit_window_seconds"].as_i64();
     let minutes = secs.filter(|s| *s > 0).map(|s| (s + 59) / 60);
+    note_length(minutes);
     Some(LimitWindow {
         id: id.into(),
         label: label.map(str::to_owned).unwrap_or_else(|| window_label(minutes)),
-        used: w["used_percent"].as_f64().unwrap_or(0.0) / 100.0,
+        used,
         window_minutes: minutes,
         resets_at: iso(w["reset_at"].as_i64()),
     })
@@ -176,14 +195,13 @@ pub fn windows_from_rollout(snapshot: &Value) -> (Vec<LimitWindow>, Option<Strin
     let mut out = vec![];
     for (id, key) in [("primary", "primary"), ("secondary", "secondary")] {
         let w = &snapshot[key];
-        if !w.is_object() {
-            continue;
-        }
+        let Some(used) = w["used_percent"].as_f64() else { continue };
         let minutes = w["window_minutes"].as_i64();
+        note_length(minutes);
         out.push(LimitWindow {
             id: id.into(),
             label: window_label(minutes),
-            used: w["used_percent"].as_f64().unwrap_or(0.0) / 100.0,
+            used: used / 100.0,
             window_minutes: minutes,
             resets_at: iso(w["resets_at"].as_i64()),
         });
@@ -345,7 +363,64 @@ mod tests {
         assert_eq!(window_label(Some(300)), "5 hours");
         assert_eq!(window_label(Some(10080)), "week");
         assert_eq!(window_label(Some(2880)), "2 days");
+        assert_eq!(window_label(Some(1440)), "1 day");
+        assert_eq!(window_label(Some(60)), "1 hour");
         assert_eq!(window_label(Some(90)), "90 min");
         assert_eq!(window_label(None), "limit");
+    }
+
+    /// The answer as the endpoint gave it on 2026-11-09: the week alone.
+    #[test]
+    fn a_window_the_answer_lacks_is_absent_not_zero() {
+        let body: Value = serde_json::from_str(
+            r#"{"plan_type":"plus",
+                "rate_limit":{"allowed":true,"limit_reached":false,
+                  "primary_window":{"used_percent":37,"limit_window_seconds":604800,"reset_after_seconds":1000,"reset_at":1789000000},
+                  "secondary_window":null}}"#,
+        )
+        .unwrap();
+        let (w, _) = windows_from_api(&body);
+        assert_eq!(w.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["week"]);
+
+        // A window without its share is no window either.
+        let body = serde_json::json!({ "rate_limit": {
+            "primary_window": { "limit_window_seconds": 18000, "reset_at": 1789000000 },
+            "secondary_window": { "used_percent": 40, "limit_window_seconds": 604800, "reset_at": 1789000000 } } });
+        assert_eq!(windows_from_api(&body).0.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(), ["secondary"]);
+        let snap =
+            serde_json::json!({ "primary": { "window_minutes": 300 }, "secondary": { "used_percent": 40, "window_minutes": 10080 } });
+        assert_eq!(windows_from_rollout(&snap).0.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["week"]);
+    }
+
+    #[test]
+    fn a_window_of_a_new_length_is_kept_under_its_length() {
+        let body: Value = serde_json::from_str(
+            r#"{"rate_limit":{
+                  "primary_window":{"used_percent":12,"limit_window_seconds":86400,"reset_at":1789000000},
+                  "secondary_window":{"used_percent":64,"limit_window_seconds":2592000,"reset_at":1790000000}},
+                "additional_rate_limits":[{"limit_name":"GPT-5 Codex Spark","metered_feature":"codex_spark",
+                  "rate_limit":{"primary_window":{"used_percent":5,"limit_window_seconds":7200,"reset_at":1789001000}}}]}"#,
+        )
+        .unwrap();
+        let (w, _) = windows_from_api(&body);
+        let rows: Vec<(&str, &str, f64, Option<i64>)> =
+            w.iter().map(|w| (w.id.as_str(), w.label.as_str(), w.used, w.window_minutes)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("primary", "1 day", 0.12, Some(1440)),
+                ("secondary", "30 days", 0.64, Some(43200)),
+                ("codex_spark", "GPT-5 Codex Spark · 2 hours", 0.05, Some(120)),
+            ]
+        );
+        let snap = serde_json::json!({ "primary": { "used_percent": 3, "window_minutes": 1440, "resets_at": 1789000000 } });
+        assert_eq!(windows_from_rollout(&snap).0[0].label, "1 day");
+    }
+
+    #[test]
+    fn a_new_window_length_is_logged_once() {
+        assert!(!length_is_news(Some(300)) && !length_is_news(Some(10080)), "the two Codex has had");
+        assert!(length_is_news(Some(4321)));
+        assert!(!length_is_news(Some(4321)), "every poll brings it again");
     }
 }

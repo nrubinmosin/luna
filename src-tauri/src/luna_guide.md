@@ -52,7 +52,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - An account is a signed-in login of one provider: an Anthropic account runs Claude Code
   only, an OpenAI account runs Codex only. `provider` and `account` in `luna_session_spawn` must
   match; an `account` alone brings its own provider. `luna_account_list` names those the user
-  lets agents use, with their usage (% per window, when it resets).
+  lets agents use, with their usage (% per window, when it resets) for the windows the
+  provider reports: a window missing there was not sent, it is not at 0%.
 - `luna_account_get` gives one: `defaults` (what a helper gets there unless the spawn says
   otherwise, from the account's and the project's settings, in `folder`, default yours), `usage`
   and `models` (Claude Code's aliases, a full id works too; Codex's catalog with each model's

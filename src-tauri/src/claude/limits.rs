@@ -2,7 +2,7 @@ use super::oauth;
 use crate::throttle::{self, now_ms};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
@@ -42,13 +42,19 @@ pub struct AccountLimits {
     /// False when no usage numbers are known at all, so the UI can show "—"
     /// rather than a row of confident-looking zeroes.
     pub have_usage: bool,
-    pub h5: f64,
-    pub week: f64,
+    /// The session window ("5 hours") and the week across all models, each
+    /// None when the answer had no row for it: a window the server did not
+    /// send is absent, not at 0%.
+    pub h5: Option<f64>,
+    pub week: Option<f64>,
     pub reset_h5: Option<String>,
     pub reset_week: Option<String>,
     /// Every weekly limit scoped to one model (Fable, Opus, ...), each with
     /// its own reset. One field used to hold them all, so the last row won.
     pub scoped: Vec<ScopedLimit>,
+    /// Rows of a kind Luna does not know, under the server's own label, so a
+    /// new or renamed window shows instead of vanishing.
+    pub other: Vec<OtherLimit>,
 
     /// Where the numbers came from, and when they were taken.
     pub source: Option<String>,
@@ -66,6 +72,18 @@ pub struct AccountLimits {
 #[serde(rename_all = "camelCase")]
 pub struct ScopedLimit {
     /// What the limit is scoped to, as the endpoint names it ("Fable").
+    pub label: String,
+    pub used: f64,
+    pub resets_at: Option<String>,
+}
+
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OtherLimit {
+    /// The server's meter kind, which Luna has no meaning for.
+    pub kind: String,
+    /// What the server calls the row: its scope's display name, its group,
+    /// both, or failing those its kind.
     pub label: String,
     pub used: f64,
     pub resets_at: Option<String>,
@@ -111,21 +129,53 @@ fn plan_from_tier(tier: &str) -> Option<String> {
     }
 }
 
+/// What the server calls a row of a kind Luna does not know: its scope's
+/// display name and its group ("Fable · monthly"), whichever it has, else its
+/// kind. A second row of the same name gets its kind too, so that each window
+/// keeps a name of its own: the quota notices tell windows apart by it.
+fn own_label(lim: &Value, kind: &str, taken: &[OtherLimit]) -> String {
+    let scope = &lim["scope"];
+    let name = scope["model"]["display_name"].as_str().or_else(|| scope["surface"]["display_name"].as_str()).filter(|n| !n.is_empty());
+    let group = lim["group"].as_str().filter(|g| !g.is_empty());
+    let label = match (name, group) {
+        (Some(n), Some(g)) => format!("{n} · {g}"),
+        (Some(one), None) | (None, Some(one)) => one.to_string(),
+        (None, None) if kind.is_empty() => "limit".to_string(),
+        (None, None) => kind.to_string(),
+    };
+    if !kind.is_empty() && taken.iter().any(|o| o.label == label) {
+        format!("{label} ({kind})")
+    } else {
+        label
+    }
+}
+
+/// Whether an unknown kind is yet to be logged: once a run, as every poll
+/// brings it again.
+fn kind_is_news(kind: &str) -> bool {
+    static SAID: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    SAID.lock().unwrap_or_else(|e| e.into_inner()).insert(kind.to_string())
+}
+
 /// Copies a `limits` array — the shape is identical in the API response and in
-/// the CLI's on-disk cache — into the DTO.
+/// the CLI's on-disk cache — into the DTO. Each answer stands alone: a window
+/// an earlier one had and this one lacks is gone, not kept from before.
 fn apply_limits(out: &mut AccountLimits, limits: &Value) {
     let Some(arr) = limits.as_array() else { return };
+    (out.h5, out.reset_h5, out.week, out.reset_week) = (None, None, None, None);
     out.scoped.clear();
+    out.other.clear();
     for lim in arr {
-        let pct = lim["percent"].as_f64().unwrap_or(0.0) / 100.0;
+        // A row without its share is not a window at 0%.
+        let Some(pct) = lim["percent"].as_f64().map(|p| p / 100.0) else { continue };
         let reset = lim["resets_at"].as_str().map(str::to_owned);
         match lim["kind"].as_str().unwrap_or("") {
             "session" => {
-                out.h5 = pct;
+                out.h5 = Some(pct);
                 out.reset_h5 = reset;
             }
             "weekly_all" => {
-                out.week = pct;
+                out.week = Some(pct);
                 out.reset_week = reset;
             }
             "weekly_scoped" => {
@@ -137,7 +187,16 @@ fn apply_limits(out: &mut AccountLimits, limits: &Value) {
                     .to_string();
                 out.scoped.push(ScopedLimit { label, used: pct, resets_at: reset });
             }
-            _ => {}
+            kind => {
+                let label = own_label(lim, kind, &out.other);
+                if kind_is_news(kind) {
+                    crate::log::info(
+                        "limits",
+                        &format!("the usage endpoint sent a row of kind {kind:?}, unknown to Luna; shown as {label:?}"),
+                    );
+                }
+                out.other.push(OtherLimit { kind: kind.to_string(), label, used: pct, resets_at: reset });
+            }
         }
     }
     out.have_usage = true;
@@ -305,12 +364,84 @@ mod scoped_tests {
         let mut out = AccountLimits::default();
         apply_limits(&mut out, &limits);
         assert!(out.have_usage);
-        assert_eq!(out.h5, 0.12);
-        assert_eq!(out.week, 0.41);
+        assert_eq!(out.h5, Some(0.12));
+        assert_eq!(out.week, Some(0.41));
         assert_eq!(out.scoped.len(), 2);
         assert_eq!(out.scoped[0].label, "Fable");
         assert_eq!(out.scoped[0].used, 0.63);
         assert_eq!(out.scoped[1].label, "Opus");
         assert_eq!(out.scoped[1].resets_at.as_deref(), Some("2026-10-20T09:00:00Z"));
+        assert!(out.other.is_empty());
+    }
+
+    /// The answer as the endpoint gave it on 2026-11-09: weekly rows, no
+    /// `session` row.
+    #[test]
+    fn a_window_the_answer_lacks_is_absent_not_zero() {
+        let limits: Value = serde_json::from_str(
+            r#"[
+              {"kind":"weekly_all","group":"weekly","percent":41,"resets_at":"2026-10-19T21:00:00Z"},
+              {"kind":"weekly_scoped","group":"weekly","percent":63,"resets_at":"2026-10-19T21:00:00Z",
+               "scope":{"model":{"display_name":"Fable"}}}
+            ]"#,
+        )
+        .unwrap();
+        let mut out = AccountLimits::default();
+        apply_limits(&mut out, &limits);
+        assert_eq!((out.h5, out.reset_h5.as_deref()), (None, None));
+        assert_eq!(out.week, Some(0.41));
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["h5"], Value::Null, "{json}");
+
+        // A session window an earlier answer had (the CLI's cache) is gone
+        // once a newer answer lacks it.
+        let mut out = AccountLimits::default();
+        apply_limits(&mut out, &serde_json::json!([{ "kind": "session", "percent": 12, "resets_at": null }]));
+        assert_eq!(out.h5, Some(0.12));
+        apply_limits(&mut out, &limits);
+        assert_eq!(out.h5, None);
+
+        // A row without its share is no window either.
+        apply_limits(&mut out, &serde_json::json!([{ "kind": "weekly_all", "resets_at": null }]));
+        assert_eq!((out.week, out.have_usage), (None, true));
+    }
+
+    #[test]
+    fn a_row_of_an_unknown_kind_is_kept_under_the_servers_label() {
+        let limits: Value = serde_json::from_str(
+            r#"[
+              {"kind":"weekly_all","group":"weekly","percent":41,"resets_at":"2026-10-19T21:00:00Z"},
+              {"kind":"monthly_all","group":"monthly","percent":7,"resets_at":"2026-11-30T00:00:00Z"},
+              {"kind":"monthly_scoped","group":"monthly","percent":30,"resets_at":null,
+               "scope":{"model":{"display_name":"Fable"}}},
+              {"kind":"daily_surface","percent":2,"resets_at":null,"scope":{"surface":{"display_name":"Claude Code"}}},
+              {"kind":"burst","percent":55,"resets_at":null},
+              {"kind":"monthly_extra","group":"monthly","percent":1,"resets_at":null}
+            ]"#,
+        )
+        .unwrap();
+        let mut out = AccountLimits::default();
+        apply_limits(&mut out, &limits);
+        let rows: Vec<(&str, &str, f64)> = out.other.iter().map(|o| (o.kind.as_str(), o.label.as_str(), o.used)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("monthly_all", "monthly", 0.07),
+                ("monthly_scoped", "Fable · monthly", 0.3),
+                ("daily_surface", "Claude Code", 0.02),
+                ("burst", "burst", 0.55),
+                ("monthly_extra", "monthly (monthly_extra)", 0.01),
+            ]
+        );
+        assert_eq!(out.other[0].resets_at.as_deref(), Some("2026-11-30T00:00:00Z"));
+        assert_eq!(out.week, Some(0.41), "the known rows as ever");
+        assert_eq!(out.h5, None);
+    }
+
+    #[test]
+    fn an_unknown_kind_is_logged_once() {
+        assert!(kind_is_news("ul-invented-kind"));
+        assert!(!kind_is_news("ul-invented-kind"), "every poll brings it again");
+        assert!(kind_is_news("ul-another-kind"));
     }
 }

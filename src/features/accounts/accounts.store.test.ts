@@ -36,6 +36,7 @@ const claudeLimits = (over: Partial<AccountLimitsDto> = {}): AccountLimitsDto =>
   resetH5: null,
   resetWeek: null,
   scoped: [],
+  other: [],
   source: 'network',
   fetchedAtMs: Date.now(),
   stale: false,
@@ -102,6 +103,27 @@ describe('accounts store: a refresh round', () => {
     expect(a!.limits.map(l => [l.short, l.used])).toEqual([
       ['5H', 0.25],
       ['W', 0.5]
+    ]);
+  });
+
+  it('shows no 5-hour window when the answer had none, rather than one at 0%', async () => {
+    const { ipc, state } = await load();
+    ipc.listAccounts.mockResolvedValue([work]);
+    ipc.accountLimits.mockResolvedValue(claudeLimits({ h5: null, resetH5: null }));
+    await state().refresh();
+    expect(state().accounts[0]!.limits.map(l => l.label)).toEqual(['week']);
+  });
+
+  it('keeps a window of a kind Luna does not know under the server’s label', async () => {
+    const { ipc, state } = await load();
+    ipc.listAccounts.mockResolvedValue([work]);
+    ipc.accountLimits.mockResolvedValue(
+      claudeLimits({ h5: null, other: [{ kind: 'monthly_all', label: 'monthly', used: 0.07, resetsAt: null }] })
+    );
+    await state().refresh();
+    expect(state().accounts[0]!.limits.map(l => [l.id, l.label, l.short, l.used])).toEqual([
+      ['week', 'week', 'W', 0.5],
+      ['other:monthly_all:monthly', 'monthly', 'M', 0.07]
     ]);
   });
 

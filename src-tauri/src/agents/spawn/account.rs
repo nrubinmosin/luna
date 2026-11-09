@@ -98,6 +98,9 @@ pub(in crate::agents) fn list_provider(
 /// The first account of the list that is there, signed in and has room in all
 /// its windows; failing that, of those signed in, the one with the most room.
 /// Unknown usage is no reason to pass over an account the caller put first.
+/// An account is judged by the windows its provider reported, whatever they
+/// are called: one it did not send counts neither as room nor as full, and
+/// an account with none at all is taken like one whose usage is unknown.
 pub(in crate::agents) fn pick_from_list(
     names: &[String],
     provider: Provider,
@@ -214,6 +217,31 @@ mod tests {
         assert_eq!(choice.account, "b");
         assert_eq!(choice.skipped, [SkippedAccount { account: "a".into(), why: "5 hours at 97%".into() }]);
         assert_eq!(choice.why, "the first in the list with room in every window (under 95%); the fullest, 5 hours, is at 94%");
+    }
+
+    #[test]
+    fn a_window_the_provider_did_not_send_counts_for_nothing() {
+        let allowed = [account(Provider::Claude, "a"), account(Provider::Claude, "b"), account(Provider::Claude, "c")];
+        // No "5 hours" anywhere, as the endpoint answered on 2026-11-09, and a
+        // window of a kind Luna does not know counting like any other.
+        let usage = used(&[("a", &[("week", 96.0)]), ("b", &[("week", 20.0), ("monthly", 97.0)]), ("c", &[("week", 30.0)])]);
+        let (taken, choice) = pick_from_list(&names(&["a", "b", "c"]), Provider::Claude, &allowed, &usage, |_| true, 0).unwrap();
+        assert_eq!(taken.name, "c");
+        let skipped: Vec<(&str, &str)> = choice.skipped.iter().map(|s| (s.account.as_str(), s.why.as_str())).collect();
+        assert_eq!(skipped, [("a", "week at 96%"), ("b", "monthly at 97%")]);
+        assert_eq!(choice.why, "the first in the list with room in every window (under 95%); the fullest, week, is at 30%");
+
+        // Every one spent: the most room is read off the windows each has.
+        let usage = used(&[("a", &[("week", 99.0)]), ("b", &[("monthly", 96.0)])]);
+        let (taken, choice) = pick_from_list(&names(&["a", "b"]), Provider::Claude, &allowed, &usage, |_| true, 0).unwrap();
+        assert_eq!(taken.name, "b");
+        assert!(choice.why.contains("the most room, at 96%"), "{}", choice.why);
+
+        // None sent at all: taken in its turn, as usage not known.
+        let usage = used(&[("a", &[])]);
+        let (taken, choice) = pick_from_list(&names(&["a", "b"]), Provider::Claude, &allowed, &usage, |_| true, 0).unwrap();
+        assert_eq!(taken.name, "a");
+        assert_eq!(choice.why, "the first in the list signed in; its usage is not known yet");
     }
 
     #[test]
