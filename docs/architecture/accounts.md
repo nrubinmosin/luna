@@ -51,8 +51,9 @@ chat or helper runs on it.
   `chatgpt.com/backend-api/wham/usage` (what `/status` reads): `primary`,
   `secondary` and `additional_rate_limits`, labeled by length (300 min →
   "5 hours", 10080 → "week", any other spelled out, "1 day", logged once a
-  run). Offline or with no token: the last `token_count.rate_limits` of a
-  rollout.
+  run). Offline, throttled or with an expired token: the newer of Luna's own
+  last answer and the last `token_count.rate_limits` of a rollout, never the
+  older, for the same reason.
 - **A window the provider did not send is absent, never 0%.** Claude's `h5`
   and `week` are `null` without their row, and each answer replaces the last
   whole, so a window the CLI's cache had and a newer answer lacks is gone; a
