@@ -155,10 +155,16 @@ pub(super) fn read_checked(file: &str, data_dir: &Path, own: &Path) -> Result<(P
         return Err(format!("file: {} is a link, a junction or not a file; give the file itself", path.display()));
     }
     // Where the path leads, links on the way followed: Luna's folder is not
-    // to be reached through one.
+    // to be reached through one. And a path named inside it is held to the
+    // drafts rule wherever it leads: one a link takes out of Luna's folder
+    // (a `handoffs` or a drafts folder planted as one) is no drafts folder of
+    // Luna's, whose file anyone could have put there.
     let real = std::fs::canonicalize(&path).map_err(|e| format!("file: {}: {e}", path.display()))?;
     if let Ok(data) = std::fs::canonicalize(data_dir) {
-        if real.starts_with(&data) && !own_draft(&real, data_dir, &data, own) {
+        let sep = std::path::MAIN_SEPARATOR;
+        let named_inside = crate::paths::path_key(&path.to_string_lossy())
+            .starts_with(&format!("{}{sep}", crate::paths::path_key(&data_dir.to_string_lossy())));
+        if (real.starts_with(&data) || named_inside) && !own_draft(&real, data_dir, &data, own) {
             return Err(format!(
                 "file: {} is inside Luna's own folder; write the handoff in this chat's drafts folder (luna_session_handoff \
                  without file names it) or outside Luna's folder",
@@ -266,7 +272,7 @@ pub(super) fn next_free(dir: &Path) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
@@ -376,18 +382,35 @@ mod tests {
             let e = take(&file, &own, n).unwrap_err();
             assert!(e.contains("Luna's own folder"), "{}: {e}", file.display());
         }
-        // A chat whose drafts folder is a link to another's: no drafts of its own.
-        let linked = handoffs.join("c3");
-        std::fs::create_dir_all(&linked).unwrap();
-        #[cfg(windows)]
-        let made = std::os::windows::fs::symlink_dir(other.join("drafts"), linked.join("drafts")).is_ok();
-        #[cfg(unix)]
-        let made = std::os::unix::fs::symlink(other.join("drafts"), linked.join("drafts")).is_ok();
-        if made {
-            let e = take(&linked.join("drafts").join("handoff.md"), &linked, 5).unwrap_err();
-            assert!(e.contains("Luna's own folder"), "{e}");
+        // A chat whose drafts folder is a link (a junction on Windows) to
+        // another's, or out of Luna's folder to one someone else holds: no
+        // drafts of its own, though the path is named inside Luna's folder.
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        write(outside.join("handoff.md"));
+        for (chat, target, n) in [("c3", other.join("drafts"), 5), ("c4", outside, 6)] {
+            let linked = handoffs.join(chat);
+            std::fs::create_dir_all(&linked).unwrap();
+            assert!(dir_link(&target, &linked.join("drafts")), "a link to {}", target.display());
+            let e = take(&linked.join("drafts").join("handoff.md"), &linked, n).unwrap_err();
+            assert!(e.contains("Luna's own folder"), "{chat}: {e}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder link at `link`: a junction on Windows, which needs no
+    /// privilege, a symlink elsewhere.
+    pub(in crate::agents::handoff) fn dir_link(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        let made = std::process::Command::new("cmd")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link).is_ok();
+        made
     }
 
     #[test]
