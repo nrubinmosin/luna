@@ -134,7 +134,7 @@ the corpus as well.
 ## 3. Live
 
 `src-tauri/src/live.rs` drives background helpers on the real CLIs through the
-same path a `luna_spawn` takes: `agents::spawn` with its privilege cap,
+same path a `luna_session_spawn` takes: `agents::spawn` with its privilege cap,
 `background::start` and `command_for`, the CLI's headless mode, Luna's MCP
 server on the hub, and `agents::wait` for the answer. For each provider it
 checks that:

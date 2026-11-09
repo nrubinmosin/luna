@@ -157,7 +157,7 @@ fn read(account_path: &str, folder: &str) -> Said {
     out
 }
 
-/// The same as the flags a helper would be spawned with, for `luna_list` —
+/// The same as the flags a helper would be spawned with, for `luna_account_get` —
 /// off the model list as far as it is known without asking the CLI.
 pub fn flags(account_path: &str, folder: &str) -> serde_json::Value {
     let d = resolve(account_path, folder, &super::models::models_known(account_path));

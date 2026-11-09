@@ -68,7 +68,18 @@ pub fn changed() {
     crate::emit::to_ui("agent://background", background_helpers());
 }
 
-/// What `luna_list` says of a helper beyond its state.
+/// When a helper last did anything (its last event, a turn's start or end),
+/// off what Luna has seen of it alone: a listing's cheap look, with no
+/// transcript read (`signs` reads one).
+pub fn last_activity_ms(id: &str) -> Option<u64> {
+    let r = lock();
+    let e = r.entries.get(id)?;
+    let o = &e.observed;
+    let started = e.run.as_ref().map_or(0, |run| run.started_ms);
+    [o.event_ms, o.turn_ended_ms, started].into_iter().max().filter(|ms| *ms > 0)
+}
+
+/// What `luna_session_get` says of a helper beyond its state.
 pub fn signs(id: &str) -> Option<Signs> {
     let (signs, provider) = {
         let r = lock();
@@ -333,7 +344,7 @@ fn is_zero(n: &usize) -> bool {
 }
 
 /// A helper's conversation from `since` on, for the window's read-only view of it:
-/// read off its transcript by the same readers `luna_read` uses, tool calls marked.
+/// read off its transcript by the same readers `luna_message_list` uses, tool calls marked.
 /// The file comes from the helper's own record, never from the window; `file` is
 /// the one `since` was a cursor into, and a cursor into another reads from the top.
 #[tauri::command]
@@ -533,7 +544,7 @@ mod tests {
 
     /// The window's view of a helper tails its conversation: a first look has
     /// what there is (the newest, if long), each next one what came since, both
-    /// providers by the readers `luna_read` uses; another file starts over.
+    /// providers by the readers `luna_message_list` uses; another file starts over.
     #[test]
     fn the_view_of_a_helper_tails_its_conversation_read_only() {
         let dir = std::env::temp_dir().join(format!("luna-view-{}", std::process::id()));

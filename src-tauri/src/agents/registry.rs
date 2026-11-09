@@ -8,7 +8,7 @@ use crate::agents::notifier::lines::NoticeTurn;
 use crate::agents::notifier::usage::QuotaTold;
 use crate::agents::owed::{Owed, Receipt};
 use crate::agents::persist::CHATS_FROZEN;
-use crate::agents::spawn::SpawnTaken;
+use crate::agents::spawn::{under_cap, SpawnTaken, MAX_DESCENDANTS};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -442,14 +442,14 @@ pub(super) fn authorize(caller: &str, target: &str) -> Result<Known, String> {
 }
 
 /// Reading a session and waiting on it reach any session but the caller's
-/// own: the transcript is on disk for anyone `luna_sessions` names it to, and
+/// own: the transcript is on disk for anyone `luna_session_list` names it to, and
 /// a caller that typed into a session has to be able to collect the answer.
 pub(super) fn authorize_view(caller: &str, target: &str) -> Result<Known, String> {
     if caller == target {
         return Err("that is your own session".into());
     }
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_sessions lists them"))
+    r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_session_list lists them"))
 }
 
 /// Whether `id` is the caller's: spawned by it, directly or through a helper.
@@ -509,17 +509,31 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
     if r.auto.get(target).is_some_and(|a| a.deleting) {
         return Err(format!("{target} is being deleted (autoDelete, idle since its answer); spawn a helper again for more"));
     }
-    let known = r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_sessions lists them"))?;
+    let known = r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_session_list lists them"))?;
+    // A helper that only waits out autoDelete holds no place under its chat's
+    // cap (`under_cap`); text sets it to work, and in a place again: one there
+    // must be, taken here under the lock the cap is counted under.
+    if r.auto.get(target).is_some_and(|a| a.released) {
+        let (counted, coming) = under_cap(&r, target, None);
+        if counted.len() + coming >= MAX_DESCENDANTS {
+            return Err(format!(
+                "{target} has given its answer and holds no place among the {MAX_DESCENDANTS} its chat may have at work; \
+                 they are taken ({}), so text that would set it to work again is refused: delete one first",
+                counted.join(", ")
+            ));
+        }
+    }
     // Text on its way starts the idle count over now, under the lock `reap`
     // decides under: it cannot be taken for deletion while this is delivered.
     if let Some(a) = r.auto.get_mut(target) {
         a.idle_since = None;
+        a.released = false;
     }
     Ok(known)
 }
 
 /// Every chat's name and window group, sent whenever one changes: what
-/// `luna_sessions` calls the user's own chats and where it puts them, which
+/// `luna_session_list` calls the user's own chats and where it puts them, which
 /// the core otherwise knows only by id.
 #[tauri::command]
 pub fn chat_names(mut names: HashMap<String, String>, groups: Option<HashMap<String, u32>>) {
@@ -583,6 +597,37 @@ mod tests {
         let mut d = descendants(&r, "a");
         d.sort();
         assert_eq!(d, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn a_dormant_helper_sent_to_takes_a_place_under_the_cap_or_is_refused() {
+        let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
+        register("dc-top", Provider::Claude, "C:\\p", account, None, true, none.clone());
+        let kids: Vec<String> = (0..10).map(|i| format!("dc-kid-{i}")).collect();
+        for id in &kids {
+            register(id, Provider::Claude, "C:\\p", account, Some("dc-top"), false, none.clone());
+            // Its answer delivered, waiting out autoDelete: no place taken.
+            reg().lock().unwrap().auto.insert(id.clone(), Auto { idle_since: Some(1), deleting: false, released: true });
+        }
+        // Each sent to takes a place again, as long as there is one.
+        for id in &kids[..8] {
+            assert!(authorize_send("dc-top", id).is_ok(), "{id}");
+        }
+        for id in &kids[8..] {
+            let e = authorize_send("dc-top", id).err().unwrap();
+            assert!(e.contains("delete one first") && e.contains("dc-kid-0"), "{e}");
+            assert!(reg().lock().unwrap().auto[id].released, "refused, it stays as it was");
+        }
+        // A read starts its autoDelete clock over, and sets no work going: the
+        // place is still to be taken when text does.
+        crate::agents::owed::looked(&kids[9]);
+        assert!(reg().lock().unwrap().auto[&kids[9]].idle_since.is_none());
+        let e = authorize_send("dc-top", &kids[9]).err().unwrap();
+        assert!(e.contains("delete one first"), "read first, then sent to: still counted: {e}");
+        for id in kids.iter().map(String::as_str).chain(["dc-top"]) {
+            reg().lock().unwrap().auto.remove(id);
+            forget(id);
+        }
     }
 
     #[test]

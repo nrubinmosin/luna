@@ -8,6 +8,36 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Breaking (for agents)
+
+- Luna's MCP tools are named for the thing they act on and what they do,
+  `luna_<resource>_<verb>`, sixteen of them: `luna_session_list`,
+  `luna_session_get`, `luna_session_spawn`, `luna_session_send`,
+  `luna_session_answer`, `luna_session_wait`, `luna_session_stop`,
+  `luna_session_delete`, `luna_message_list`, `luna_report_get`,
+  `luna_account_list`, `luna_account_get`, `luna_run_list`, `luna_guide_get`,
+  `luna_notification_send` and `luna_power_set`. The old names (`luna_list`,
+  `luna_sessions`, `luna_spawn`, `luna_send`, `luna_answer`, `luna_read`,
+  `luna_wait`, `luna_kill`, `luna_delete`, `luna_guide`, `luna_notify`,
+  `luna_power`) are gone: called, one answers with the tools there are now. A
+  session already running keeps the old list until its CLI reconnects.
+- A listing is compact rows, a page at a time, filtered before anything costly
+  is read (`luna_session_list`, about 60-80 tokens a row); one session whole is
+  `luna_session_get`; accounts are `luna_account_list` and `luna_account_get`;
+  past spawns are `luna_run_list`, compact and limited.
+- `luna_session_wait` returns the report by default, with how many other
+  messages there are and a file of all of them (`reply: "all"` or `"none"`
+  for the rest), and the terminal only with `screen: true`. `luna_report_get`
+  gives the report alone, starts the helper's autoDelete count over, and with
+  `ack: true` collects the answer so no notice follows.
+- Arguments say their units: `timeoutSec`, `quietSec`; a read's left-out count
+  is `rest`, its tool-call markers `toolCalls`; `luna_session_delete` takes
+  `id` or `ids` and answers `already` for one deleted before.
+- `luna_guide_get` takes a topic from a fixed list, the tools' names and
+  `notices`, `restart`, `helpers`, and with none gives a short index. The
+  instructions carry a short recipe for a safe spawn and name the two topics
+  to read first; nobody is asked to read the whole guide any more.
+
 ### Added
 
 - Each skill and instructions file in the library is for your own chats, for

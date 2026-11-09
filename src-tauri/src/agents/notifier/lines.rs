@@ -9,7 +9,7 @@ use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{failure_of, transcript_end, transcript_found, transcript_path};
 use crate::agents::registry::{is_descendant, label, reg, waits_on_helpers, Known, Registry};
 use crate::agents::said::{
-    answer_file, answer_text, answer_where, begins, note_file, replies_since, report_span, said_since, SHORT_MESSAGE,
+    answer_file, answer_text, answer_where, begins, inline_answer, note_file, replies_since, report_span, said_since, SHORT_MESSAGE,
 };
 use crate::agents::wait::REPLY_GRACE_MS;
 use crate::provider::Provider;
@@ -225,7 +225,7 @@ pub(in crate::agents) fn notice_line(
         if let Some((quiet, names)) = left.as_ref().filter(|(quiet, _)| *quiet >= IDLE_JOB_MS) {
             return Some((
                 Some(format!(
-                    "{who} has only idle processes left, which have done nothing for {} min: {names}. They may be stuck or waiting on something; luna_kill ends them. You will still hear when they end.",
+                    "{who} has only idle processes left, which have done nothing for {} min: {names}. They may be stuck or waiting on something; luna_session_stop ends them. You will still hear when they end.",
                     quiet / 60_000
                 )),
                 Settled::Idle(now_ms().saturating_sub(quiet - IDLE_JOB_MS)),
@@ -243,11 +243,14 @@ pub(in crate::agents) fn notice_line(
                 // A core's going took the job: news, whatever was said.
                 let how = if said.is_empty() && failed.is_none() && !o.job_went { Settled::NoNews(at) } else { Settled::Answered };
                 let quoted = if failed.is_some() { String::new() } else { begins(&said) };
-                let said = match said.len() {
-                    0 => "it has said nothing since your last notice. It does not take that up by itself; luna_send asks it how it went"
+                let n = said.len();
+                let messages = if n == 1 { "1 message".to_string() } else { format!("{n} messages") };
+                // Short enough, what it said is the notice's, and no file.
+                let said = match (n, inline_answer(&said)) {
+                    (0, _) => "it has said nothing since your last notice. It does not take that up by itself; luna_session_send asks it how it went"
                         .to_string(),
-                    1 => format!("it wrote 1 message since your last notice; {}{quoted}", answer_file(id, &said)),
-                    n => format!("it wrote {n} messages since your last notice; {}{quoted}", answer_file(id, &said)),
+                    (_, Some(line)) => format!("it wrote {messages} since your last notice: \"{line}\""),
+                    (_, None) => format!("it wrote {messages} since your last notice; {}{quoted}", answer_file(id, &said)),
                 };
                 let failed = failed.map_or(String::new(), |why| format!(" Its last turn stopped on an error: {}", sentence(&why)));
                 let since = if o.job_went { " that Luna's core has restarted" } else { "" };
@@ -288,14 +291,20 @@ pub(in crate::agents) fn notice_line(
             (false, true) => Some(answer_text(&replies)),
             (false, false) => Some(format!("{}\n\n---\n\n{}", answer_text(&replies), undelivered_text(&lost))),
         };
-        let file = text.as_deref().and_then(|t| note_file(id, t));
+        // All it said, short enough for the notice itself: no file to read.
+        let inline = if lost.is_empty() && failed.is_none() && !cut { inline_answer(&replies) } else { None };
+        let file = text.as_deref().filter(|_| inline.is_none()).and_then(|t| note_file(id, t));
         let span = text.as_deref().and_then(|t| report_span(&replies, t));
         let reply = match replies.len() {
             0 if !transcript_found(pty, id) => {
-                ", but Luna cannot find its transcript, so whether it replied is unknown (luna_read with screen: true shows what there is)"
+                ", but Luna cannot find its transcript, so whether it replied is unknown (luna_message_list with screen: true shows what there is)"
                     .to_string()
             }
-            0 => " without a reply (luna_read with screen: true shows why, if anything does)".to_string(),
+            0 => " without a reply (luna_message_list with screen: true shows why, if anything does)".to_string(),
+            n if inline.is_some() => {
+                let messages = if n == 1 { "1 message".to_string() } else { format!("{n} messages") };
+                format!(" with {messages} since you asked: \"{}\"", inline.as_deref().unwrap_or_default())
+            }
             1 => format!(" with 1 message since you asked; {}", answer_where(file.as_deref(), span)),
             n => format!(" with {n} messages since you asked; {}", answer_where(file.as_deref(), span)),
         };
@@ -304,19 +313,19 @@ pub(in crate::agents) fn notice_line(
             crate::background::settle_worktree(id);
             let what = never_started_what(&lost, file.as_deref());
             return Some((
-                Some(format!("{who} never got started: Luna's core restarted before its first turn got anywhere, so its prompt was lost and there is nothing to carry on from; {what}. luna_send starts it afresh.")),
+                Some(format!("{who} never got started: Luna's core restarted before its first turn got anywhere, so its prompt was lost and there is nothing to carry on from; {what}. luna_session_send starts it afresh.")),
                 Settled::Answered,
             ));
         }
         let lost = undelivered_line(&lost, !replies.is_empty(), file.as_deref());
         let unsure = if o.unsure {
-            " Luna cannot tell whether your last message reached it: the core went as it was going in, and its transcript cannot be read. luna_read shows what it has."
+            " Luna cannot tell whether your last message reached it: the core went as it was going in, and its transcript cannot be read. luna_message_list shows what it has."
         } else {
             ""
         };
         if cut {
             return Some((
-                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}.{lost}{unsure} luna_send has it carry on.")),
+                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}.{lost}{unsure} luna_session_send has it carry on.")),
                 Settled::Answered,
             ));
         }
@@ -324,11 +333,11 @@ pub(in crate::agents) fn notice_line(
         if let Some(why) = failed {
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
             return Some((
-                Some(format!("{who} stopped on an error: {}{said}{lost} luna_send has it carry on.", sentence(&why))),
+                Some(format!("{who} stopped on an error: {}{said}{lost} luna_session_send has it carry on.", sentence(&why))),
                 Settled::Answered,
             ));
         }
-        let reply = format!("{reply}{}", begins(&replies));
+        let reply = if inline.is_some() { reply } else { format!("{reply}{}", begins(&replies)) };
         if background || waits {
             // Said first and plainly: a weak model read "ended a turn" as
             // done and deleted the helper mid-job. Once per debt: a job can
@@ -383,11 +392,11 @@ fn quiet_line(who: &str, quiet_ms: u64, past_due_ms: Option<u64>) -> String {
     let quiet = quiet_ms / 60_000;
     match past_due_ms {
         Some(past) => format!(
-            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang; luna_read with screen: true shows where it is, luna_kill stops the turn. Said once per turn; the usual notice comes when it ends.",
+            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang; luna_message_list with screen: true shows where it is, luna_session_stop stops the turn. Said once per turn; the usual notice comes when it ends.",
             past / 60_000
         ),
         None => format!(
-            "{who} is mid-turn and has written nothing for {quiet} min. A command it runs may hang, or simply take long; luna_read with screen: true shows where it is, luna_kill stops the turn. Said once per turn; the usual notice comes when it ends."
+            "{who} is mid-turn and has written nothing for {quiet} min. A command it runs may hang, or simply take long; luna_message_list with screen: true shows where it is, luna_session_stop stops the turn. Said once per turn; the usual notice comes when it ends."
         ),
     }
 }
@@ -483,11 +492,11 @@ pub(in crate::agents) fn standing_line(
     if held && !o.told_waiting {
         let line = match &ask {
             Some(a) => match &a.id {
-                Some(ask_id) => format!("{who} {}. Answer with luna_answer, askId {ask_id}.", a.line()),
-                None => format!("{who} {}. Answer with luna_answer.", a.line()),
+                Some(ask_id) => format!("{who} {}. Answer with luna_session_answer, askId {ask_id}.", a.line()),
+                None => format!("{who} {}. Answer with luna_session_answer.", a.line()),
             },
             None => format!(
-                "{who} is stopped on a prompt in its terminal that Luna cannot read; luna_read with screen: true shows it, and the person answers it."
+                "{who} is stopped on a prompt in its terminal that Luna cannot read; luna_message_list with screen: true shows it, and the person answers it."
             ),
         };
         return Some((Some(line), Settled::Waiting));
@@ -501,7 +510,7 @@ pub(in crate::agents) fn standing_line(
             h.finish()
         };
         if o.told_ask != key {
-            return Some((Some(format!("{who} {} It works on meanwhile; luna_answer answers it.", a.line())), Settled::Asked(key)));
+            return Some((Some(format!("{who} {} It works on meanwhile; luna_session_answer answers it.", a.line())), Settled::Asked(key)));
         }
     }
     None
@@ -538,7 +547,9 @@ mod tests {
             on_hook(id, if failed { HookEvent::Failed("rate_limit") } else { HookEvent::Idle });
         }
         let fine = line_for("vd-fine");
-        assert!(fine.contains("finished its turn") && fine.contains("It begins: \"All done and fixed.\""), "{fine}");
+        // A line that short is the notice's own: no file, nothing to begin.
+        assert!(fine.contains("finished its turn") && fine.contains("since you asked: \"All done and fixed.\""), "{fine}");
+        assert!(!fine.contains("the answer is in") && !fine.contains("It begins"), "{fine}");
         let failed = line_for("vd-failed");
         assert!(failed.contains("stopped on an error: rate_limit"), "{failed}");
         assert!(failed.contains("It ended with 1 message"), "what it said before is still named: {failed}");
@@ -754,7 +765,7 @@ mod tests {
         assert!(text.contains("ended another turn") && text.contains("helpers of its own have yet to answer it"), "{text}");
         assert!(text.contains("It begins: \"Phase 1 is in"), "{text}");
         assert_eq!(cursor, std::fs::metadata(&path).unwrap().len(), "and what follows is what it hears next");
-        let file = text.split("the answer is in ").nth(1).and_then(|t| t.split(", its report first").next()).unwrap();
+        let file = text.split("the answer is in ").nth(1).and_then(|t| t.split(". It begins").next()).unwrap();
         assert!(std::fs::read_to_string(file).unwrap().starts_with("Phase 1 is in"));
         let _ = std::fs::remove_file(file);
         // A line or two is no news worth a turn: it comes with the answer.
@@ -1151,11 +1162,13 @@ mod tests {
         let line = line.unwrap();
         assert!(matches!(how, Settled::Answered));
         assert!(
-            line.contains("never got started") && line.contains("its prompt was lost") && line.contains("luna_send starts it afresh"),
+            line.contains("never got started")
+                && line.contains("its prompt was lost")
+                && line.contains("luna_session_send starts it afresh"),
             "{line}"
         );
         assert!(line.contains("its prompt and 1 queued message are in "), "{line}");
-        let file = line.split(" are in ").nth(1).and_then(|l| l.split(". luna_send").next()).unwrap();
+        let file = line.split(" are in ").nth(1).and_then(|l| l.split(". luna_session_send").next()).unwrap();
         let held = std::fs::read_to_string(file).unwrap();
         let _ = std::fs::remove_file(file);
         assert!(held.find("do the whole job").unwrap() < held.find("and a follow-up").unwrap(), "{held}");

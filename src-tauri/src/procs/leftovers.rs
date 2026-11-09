@@ -1,11 +1,11 @@
 //! What a session's turns left running past their end, as last read, and when
-//! it was last at work: what `luna_list` names, and what holds the machine.
+//! it was last at work: what `luna_session_list` names, and what holds the machine.
 
 use super::*;
 
 /// A process a session's turns left running past their end — a helper's in its
 /// job, a chat's under its CLI — as last read, and when it was last at work.
-/// One model for both: what `luna_list` names, and what holds the machine.
+/// One model for both: what `luna_session_list` names, and what holds the machine.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Leftover {
     pub pid: u32,
@@ -43,7 +43,7 @@ pub const LEFTOVER_WINDOW_MS: u64 = 60_000;
 /// and 20 KB read in its first 100 ms) is no work, nor its I/O then. Seen in
 /// the middle of its start, the rest of it is spread over the window after.
 const NEWBORN_WINDOW_MS: u64 = 30_000;
-/// At work this recently: what `luna_list` calls `active`.
+/// At work this recently: what `luna_session_list` calls `active`.
 pub const LEFTOVER_ACTIVE_MS: u64 = 10 * 60 * 1000;
 /// A leftover holds the machine awake until it has done nothing for this long
 /// on end, then lets go, and the log says so; any work starts it over. Doing
@@ -175,7 +175,7 @@ mod tests {
         let reborn = leftovers(&old, vec![(ProcRead { pid: 1, cpu_ms: 31, io_bytes: 21_400, started_ms: 8 }, "p1".into())], 6_000, 900);
         assert_eq!(reborn[0].moved_ms, 900);
         assert_eq!(left_names(&next), "p1 (pid 1), p2 (pid 2), p3 (pid 3), 1 more");
-        // Active for luna_list, holding for the machine, and letting go once.
+        // Active for luna_session_list, holding for the machine, and letting go once.
         let t = 61_000;
         assert!(next[2].active(t + LEFTOVER_ACTIVE_MS - 1) && !next[2].active(t + LEFTOVER_ACTIVE_MS));
         assert!(next[2].holds(t + LEFTOVER_HOLD_MS - 1) && !next[2].holds(t + LEFTOVER_HOLD_MS));

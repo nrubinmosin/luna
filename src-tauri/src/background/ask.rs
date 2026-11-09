@@ -46,7 +46,7 @@ pub fn ask(id: &str) -> Option<Ask> {
 }
 
 /// `luna_permission`: the CLI asks before a tool runs, or carries the model's
-/// `AskUserQuestion`. Held until `luna_answer`, the turn's end or the timeout;
+/// `AskUserQuestion`. Held until `luna_session_answer`, the turn's end or the timeout;
 /// the answer is the JSON the CLI takes back.
 pub fn permission(id: &str, args: &Value) -> Value {
     let tool = args["tool_name"].as_str().unwrap_or("").to_string();
@@ -129,9 +129,9 @@ pub fn answer(
     let h = match ask_id {
         Some(want) => open.find(|h| h.ask.id.as_deref() == Some(want)).ok_or_else(|| {
             if given {
-                format!("ask {want} of helper {id} is no longer open: it was answered or went with its turn. Its `ask` in luna_list says what it holds now")
+                format!("ask {want} of helper {id} is no longer open: it was answered or went with its turn. Its `ask` in luna_session_get says what it holds now")
             } else {
-                format!("helper {id} has had no ask {want} (since Luna's core last started): the id is unknown. Its `ask` in luna_list has the id of what it holds now, if anything")
+                format!("helper {id} has had no ask {want} (since Luna's core last started): the id is unknown. Its row in luna_session_list has the id of what it holds now (askId), if anything")
             }
         })?,
         None => {

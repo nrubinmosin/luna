@@ -22,7 +22,7 @@ update can replace the exe), not in the window.
   is let go by the core and comes straight back, terminals redrawn from the
   scrollback.
 - The hooks' listener, the agents' MCP server, activity and power run there too,
-  so an agent's `luna_wait` keeps working with no window open.
+  so an agent's `luna_session_wait` keeps working with no window open.
 - Settings → Updates shows the core and can restart it. It leaves by itself
   after ten minutes with no window and no session (a background helper in a
   turn counts, and so does one whose leftovers still keep the PC awake).
@@ -63,7 +63,7 @@ next core takes them up after an update, a restart or a reboot.
 
 - A turn the core was in the middle of is stopped with it. The agent owed the
   answer is told so once its own chat is back, along with any messages queued
-  behind that turn, kept word for word; `luna_send` has the helper carry on.
+  behind that turn, kept word for word; `luna_session_send` has the helper carry on.
 - With `resumeOnRestart: true` a helper goes on by itself, those messages
   included, where Luna knows the old turn ended (a normal stop, or any death of
   the core). One stopped before its first turn got anywhere is reported as never
@@ -75,7 +75,7 @@ next core takes them up after an update, a restart or a reboot.
 - What agents hold of your chats (answers owed by a chat an agent wrote to,
   messages held for your draft) is kept in `chat-ties.json` and picked up when
   each chat starts again, and so is a notice not yet given (such as the one
-  telling an agent you took its helper over). So is a `luna_spawn` the core went
+  telling an agent you took its helper over). So is a `luna_session_spawn` the core went
   in the middle of: the agent is told no helper came of it, with its prompt in a
   file and any worktree it had begun named and left, or with `resumeOnRestart`
   Luna starts it afresh and says so.

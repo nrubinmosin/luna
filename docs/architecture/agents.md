@@ -21,23 +21,25 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | Path | What it holds |
 | --- | --- |
 | `hub.rs` | loopback HTTP: `/hook/<chat>/<secret>`, `/guard/<chat>/<secret>`, `/mcp` (bearer); a thread per request in bounded lanes (`admit.rs`) |
-| `mcp.rs` | JSON-RPC: `initialize` (with `instructions`), `tools/list`, `tools/call`; twelve `luna_*` tools; `luna_permission` only for a background Claude Code helper's CLI; `mcp::Call` per call in flight; `HISTORY_LAST` |
+| `mcp/mod.rs` | JSON-RPC: `initialize` (with `instructions`), `tools/list`, `tools/call`; `mcp::Call` per call in flight |
+| `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list); `luna_permission` only for a background Claude Code helper's CLI |
+| `mcp/args.rs`, `mcp/dispatch.rs`, `mcp/guide.rs` | strict arguments (`arguments_fit`); each call to the agent layer and its log line; the guide by topic (`TOPICS`) |
 | `agents/registry.rs` | the `Registry` behind one lock (`reg()`): tokens (by SHA-256), `Known` sessions, lineage, spawns under way, debts, waits, receipts, names, groups, helpers taken over |
 | `agents/owed.rs` | answers owed (`Owed`), `hand_over` and its undo |
 | `agents/ask.rs` | what a session waits on (`ask_of`), screen recognition of dialogs |
 | `agents/read.rs`, `agents/said.rs` | transcripts and rollouts read with a byte cursor; what a session said and how a result puts it (`reply_of`, `report_of`) |
 | `agents/lost.rs` | what never reached a helper |
 | `agents/privilege.rs` | the least-privilege layer (`settle_mode`, `reaches_luna`, `command_reach`) |
-| `agents/delivery.rs` | `luna_send`, typing into a chat's terminal (`TypingInto`, `type_text`, the draft put aside) |
+| `agents/delivery.rs` | `luna_session_send`, typing into a chat's terminal (`TypingInto`, `type_text`, the draft put aside) |
 | `agents/held.rs` | text held for a person's draft (`hold`, `deliver_held`) and text a core went in the middle of typing (`reconcile_held`) |
 | `agents/handover.rs` | a helper the person opens as a chat, handed over for good (`take_over`) |
-| `agents/answer.rs`, `wait.rs`, `list.rs` | `luna_answer`, `luna_wait`, `luna_list` / `luna_sessions` |
+| `agents/answer.rs`, `wait.rs`, `list.rs` | `luna_session_answer`, `luna_session_wait`, `luna_session_list` / `luna_session_list` |
 | `agents/teardown.rs` | kill, delete, the person's guarded delete (`delete_by_user`, `at_stake`), `reap` (autoDelete), `forget` |
 | `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
-| `agents/spawn/` | `luna_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
+| `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and budget news |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
-| `luna_guide.md` | the full manual `luna_guide` returns: whole (`topic: "all"`), by section (`mcp.rs` `guide_text`: any word of a `## ` title), or with no topic its opening and the sections |
+| `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic its opening and the topics |
 
 ## How a session gets Luna
 
@@ -87,13 +89,15 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 
 | Tool | May target |
 | --- | --- |
-| `luna_sessions`, `luna_list` | all sessions of this launch (`list` with `ids` gives any session's rows), as metadata: another's `ask` and `task`, and others' spawns in `history`, only with `scope: "all"` |
-| `luna_send` | its descendants; with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
-| `luna_read`, `luna_wait` | its descendants; with `scope: "all"` any session but its own |
-| `luna_kill`, `luna_delete` | descendants only, never one the person is opening as a chat (`promoting`) |
-| `luna_answer` to a model's question | its descendants; with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_send`'s (`answer_message`) |
-| `luna_answer` with `allow`, or on a CLI's own list | descendants only, at the caller's privilege |
-| `luna_spawn` | a background helper at no more privilege than the caller, never in or above the data dir; a Codex one never with an approval that asks a person |
+| `luna_session_list`, `luna_session_get` | the caller's own; with `scope: "all"` every session of this launch, and with `ids` any session's row, as metadata: another's `ask`, `askId` and `task` only with `scope: "all"` |
+| `luna_run_list` | the caller's spawns and its helpers' (by owner now, else the recorded lineage); everyone's with `scope: "all"` |
+| `luna_message_list`, `luna_report_get` | its descendants; with `scope: "all"` any session but its own |
+| `luna_session_send` | its descendants; with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
+| `luna_session_wait` | its descendants; with `scope: "all"` any session but its own |
+| `luna_session_stop`, `luna_session_delete` | descendants only, never one the person is opening as a chat (`promoting`) |
+| `luna_session_answer` to a model's question | its descendants; with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`) |
+| `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, at the caller's privilege |
+| `luna_session_spawn` | a background helper at no more privilege than the caller, never in or above the data dir; a Codex one never with an approval that asks a person |
 
 Every descendant is a background helper: a chat the window runs has no parent,
 so no agent interrupts, stops, deletes or approves for it.
@@ -209,7 +213,7 @@ in the transcript; for Codex the rollout's open question or an approval its
 screen shows.
 
 A helper's ask is answered on its record (`background::answer`), checked against
-the very ask it lands on; asks carry an opaque `id`, which `luna_answer` takes
+the very ask it lands on; asks carry an opaque `id`, which `luna_session_answer` takes
 as `askId`. In a chat's terminal (`scope: "all"`) only a question its model
 asked is answered, as keys: an option is arrows down and Enter, free text in the
 row after the options, several Claude Code questions end on a review Enter
@@ -245,7 +249,7 @@ person's. `send` into a session on a blocking dialog refuses.
   then for the turn it starts, not the `afterTurn` given (`Owed::late`); a session
   that exits first is announced as such (`Owed::lost`).
 - The page sends chat names (and window groups) as `chat_names` on every change,
-  for `luna_sessions`.
+  for `luna_session_list`.
 - `list` adds per helper: `task`, `branch` and `sha` (`worktree::head_at`, off
   the `.git` files), `Signs` (turn start, last activity, model, `context` via
   `Context::of`), `leftRunning`, `deletesInMin`, `settings`. Codex's model is
@@ -301,9 +305,11 @@ turn, stopped on a prompt (once per stop) or exited.
   latest turn before it that wrote one of 400 or more (`Said::starts`)), then the last, then the rest. The notice quotes about
   150 characters of the report's first line (`opening_line`), not for a failed
   turn, and the report's lines in the file (`report_span`: `lines 1-N of M`).
-  `luna_read` with `report: true` (`read::report_read`) gives that report alone,
-  from `since`, else the debt's offset, else the transcript's start, and hands
-  nothing over. It reads as a read does: its cursor stops before a line still
+  `luna_report_get` (`read::report_get`) gives that report alone, from `since`,
+  else the debt's offset, else the transcript's start, with `rest` and a file of
+  the whole; it starts the autoDelete count over (`looked`), and with `ack` a
+  report of all of an owed answer, its turn over, hands it over as a whole read
+  does (`hand_over`, undone by a cancel); else nothing. It reads as a read does: its cursor stops before a line still
   being written, the report is cut at 60,000 characters, and a `since` that finds
   nothing finds nothing (only a read with no cursor falls back to a resumed
   conversation's last word).
@@ -372,7 +378,7 @@ turn, stopped on a prompt (once per stop) or exited.
   announced on the desktop once. `session_meta` carries `draft` and `held` for
   the row tag and the pane balloon.
 - Terminals are the person's chats only: what types into one is a notice to a
-  chat with tools, a `luna_send` with `scope: "all"`, or an answer to a question
+  chat with tools, a `luna_session_send` with `scope: "all"`, or an answer to a question
   its model asked. Nothing presses a key for an agent there.
 - `send` with `interrupt: true`, to the caller's descendants only (every one a
   helper): its turn is killed and its held asks cleared, and the text is the
@@ -387,7 +393,7 @@ turn, stopped on a prompt (once per stop) or exited.
 ## Failed turns
 
 `failure_of`: a background helper's `error` (`result` / `turn.failed`, a
-non-zero exit, `luna_kill`); Claude Code's last transcript line when it is
+non-zero exit, `luna_session_stop`); Claude Code's last transcript line when it is
 `isApiErrorMessage`, else its `StopFailure` hook; Codex's `task_complete.error`
 or `turn_aborted` reason (`Scan::failed`); a pty session's exit code. The notice
 says "stopped on an error"; `wait` returns `failed`. API-error lines,

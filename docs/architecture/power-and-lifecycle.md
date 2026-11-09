@@ -23,7 +23,7 @@ everything is done, and how its own processes start, update and end.
 | `procs/` | Job Object per session, CPU/IO per process, the busy rule (`judge`), leftovers; `win.rs`, `unix.rs` |
 | `keeper/` | off Windows: the `--keep-ties` process, job records, `end_last_ties`, `end_tree` |
 | `asking.rs` | a turn that ended on the waiting marker |
-| `power/` | `mod.rs` state; `rule.rs` each tick; `machine.rs` firing and OS calls; `admission.rs` what a draining rule lets in; `commands.rs` incl. `luna_power` |
+| `power/` | `mod.rs` state; `rule.rs` each tick; `machine.rs` firing and OS calls; `admission.rs` what a draining rule lets in; `commands.rs` incl. `luna_power_set` |
 | `coreproc.rs`, `corelink.rs`, `ipc.rs` | the core's life, the window's link, the frame protocol |
 | `elevation.rs` | no CLI as administrator: the window's de-elevated core start, the refusal everywhere a CLI starts |
 | `lifecycle.rs` | exit reasons, the `--watch-exit` watcher, `luna.run`, Restart window |
@@ -78,7 +78,7 @@ CPU in 15.6 ms ticks; a polling `tail -F` used 0.5 ms/s and 250 B/s). Birth is
 not work: until 30 s old only CPU since start counts. What a turn left holds the
 machine until it has done nothing for 2 h on end (`LEFTOVER_HOLD_MS`): a
 Docker or remote client waits on work done elsewhere, but a Monitor's `tail -F`
-once kept a PC awake all night. `luna_list`'s `active` is work in the last 10
+once kept a PC awake all night. `luna_session_list`'s `active` is work in the last 10
 min. When a session goes (delete, kill, Quit, a respawn), `procs::end_leftovers`
 ends what is still in its job, sparing windowed programs.
 
@@ -108,7 +108,7 @@ leftovers (nothing tells a window from a job), so `children_busy` stays false
 there. `kill_tree` there is `keeper::end_tree`, the equivalent of `taskkill /T`: the
 process, what it started, and what is in a group or session one of those leads,
 stopped top down and looked below again so nothing forks out, then killed. So
-`luna_kill`, an interrupt, a core's stop and a chat that would not quit take the
+`luna_session_stop`, an interrupt, a core's stop and a chat that would not quit take the
 tool commands with them. In the core a live pid that is no child of the core is
 another program's and is left alone.
 
@@ -162,8 +162,8 @@ another program's and is left alone.
   said logged; nothing there tells a canceled shutdown from a slow one, so
   recovery is by hand. Sleep / hibernate is `SetSuspendState`; sessions live on,
   and the clock jump on wake resets the window and countdown.
-- **Drain** (`Armed::drain`, "start nothing new") refuses agents' `luna_spawn`
-  and `luna_send` in `mcp::run` and narrows `luna_answer` to structured answers;
+- **Drain** (`Armed::drain`, "start nothing new") refuses agents' `luna_session_spawn`
+  and `luna_session_send` in `mcp::run` and narrows `luna_session_answer` to structured answers;
   a person is never refused. Calls are counted under the lock that arms
   (`power::enter`); arming waits for those in flight (`settle`, bounded).
 - The test build and unit tests never reach the OS (`power::dry`).

@@ -36,7 +36,7 @@
 //! - `machine`: what is done to the machine and said of it — notifications,
 //!   the firing itself, each OS's calls, and the guard that keeps tests off it.
 //! - `admission`: the agents' calls a draining rule refuses or waits for.
-//! - `commands`: the window's commands and `luna_power`'s.
+//! - `commands`: the window's commands and `luna_power_set`'s.
 
 use crate::activity::Summary;
 use crate::throttle::now_ms;
@@ -74,7 +74,7 @@ const BLOCKED_LOG_EVERY_MS: u64 = 10 * 60_000;
 /// nobody could tell why the PC had stayed up.
 const HOLD_LOG_EVERY_MS: u64 = 60 * 60_000;
 /// How long a drain being armed waits for calls already let in: past a
-/// `luna_spawn`'s own timeout. Longer, the rule still does not fire ahead of them.
+/// `luna_session_spawn`'s own timeout. Longer, the rule still does not fire ahead of them.
 const SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 /// RunOnce takes a command of no more than this many characters.
 const RUN_ONCE_MAX: usize = 260;

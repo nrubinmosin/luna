@@ -567,7 +567,7 @@ mod tests {
         on_claude_event(&mut e, &done);
         assert_eq!(e.error, None, "what was fed in behind it went through");
 
-        e.error = Some("it was stopped, by luna_kill or from the window".into());
+        e.error = Some("it was stopped, by luna_session_stop or from the window".into());
         on_claude_event(&mut e, &done);
         assert!(e.error.is_some(), "not a result's to clear");
     }

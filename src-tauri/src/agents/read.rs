@@ -1,10 +1,10 @@
 //! A session's transcript: where it is, what it holds as messages, and
-//! `luna_read`, which hands them over from a cursor on.
+//! `luna_message_list`, which hands them over from a cursor on.
 
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::delivery::screen_of;
 use crate::agents::lost::{lost_count, lost_whole, undelivered_note};
-use crate::agents::owed::{hand_over, queue_settled, seen};
+use crate::agents::owed::{hand_over, hand_over_rev, looked, queue_settled, seen};
 use crate::agents::registry::{authorize_view, label, reg};
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,10 @@ pub struct Message {
     /// all the same, for which report leads (`own_words`).
     #[serde(skip)]
     pub after_cli: bool,
+    /// Its CLI marked it the turn's final answer (Claude Code's `end_turn`, Codex's
+    /// `final_answer` phase): the report, said so rather than guessed (`report_of`).
+    #[serde(skip)]
+    pub final_answer: bool,
 }
 
 /// How far the session's transcript goes now, 0 before it has one.
@@ -40,7 +44,7 @@ pub struct Reading {
     /// Messages MAX_TEXT left out of this result: read from `since` on,
     /// the ones after `cursor`, still to read; with `last`, older ones.
     #[serde(skip_serializing_if = "is_zero")]
-    pub left_out: usize,
+    pub rest: usize,
     /// See `state_of`.
     pub state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,6 +59,19 @@ pub struct Reading {
     /// See `Waited::transcript_missing`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub transcript_missing: bool,
+    /// A report read's report was picked by length, its CLI having marked no
+    /// final answer (`said::report_guessed`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub report_guessed: bool,
+    /// Of a report read with `rest`: a file holding all it said, report first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// The answer owed for this report was collected (`ack`): no notice follows.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub acked: bool,
+    /// A message was cut to MAX_TEXT (its text says where the whole is).
+    #[serde(skip)]
+    pub cut: bool,
 }
 
 /// The last transcript found for each session: Claude Code drops the
@@ -182,14 +199,10 @@ pub fn read(
     last: Option<usize>,
     with_tools: bool,
     with_screen: bool,
-    report: bool,
     call: &crate::mcp::Call,
 ) -> Result<Reading, String> {
     let known = authorize_view(caller, id)?;
     let pty = crate::pty::manager();
-    if report {
-        return Ok(report_read(caller, id, known.provider, since, with_screen));
-    }
     let path = transcript_path(pty, id);
     // Taken before the transcript is read: a turn over by now has its words
     // in what is read.
@@ -221,7 +234,7 @@ pub fn read(
         }
     }
     let size = |m: &Message| m.text.chars().count();
-    let mut left_out = 0;
+    let mut rest = 0;
     let mut text_cut = false;
     if messages.iter().map(size).sum::<usize>() > MAX_TEXT {
         // As many as fit, and the first one taken whatever its size.
@@ -238,14 +251,14 @@ pub fn read(
         };
         if last.is_some() {
             let keep = fit(&mut messages.iter().rev().map(size));
-            left_out = messages.len() - keep;
-            front += left_out;
-            messages.drain(..left_out);
+            rest = messages.len() - keep;
+            front += rest;
+            messages.drain(..rest);
         } else {
             let keep = fit(&mut messages.iter().map(size));
-            left_out = messages.len() - keep;
-            back = left_out;
-            if left_out > 0 {
+            rest = messages.len() - keep;
+            back = rest;
+            if rest > 0 {
                 messages.truncate(keep);
                 if let Some(p) = &path {
                     cursor = cursor_after(p, from, cursor, found, keep, &messages_at);
@@ -295,19 +308,23 @@ pub fn read(
         transcript_missing: messages.is_empty() && !transcript_found(pty, id),
         messages,
         cursor,
-        left_out,
+        rest,
         state,
         ask,
         turns_ended,
         screen: with_screen.then(|| screen_of(pty, id)).flatten(),
         undelivered,
+        report_guessed: false,
+        file: None,
+        acked: false,
+        cut: text_cut,
     })
 }
 
 /// The report of what the session said since `since`, else since the caller
 /// last asked it something, else of its last turn that said anything: the one
 /// message a notice's answer file opens with (`said::report_of`), for a caller
-/// that wants no more of it. The rest it said is counted in `left_out`. Not the
+/// that wants no more of it. The rest it said is counted in `rest`. Not the
 /// answer collected: a notice owed still comes, its file holding the whole.
 ///
 /// Read as any read is: the cursor handed back is where the reader stopped,
@@ -316,7 +333,7 @@ pub fn read(
 /// the top. An explicit `since` that finds nothing is nothing: only a read
 /// with no cursor of its own takes, as a notice does (`said::replies_since`),
 /// the last word of a conversation that went on in a transcript of its own.
-fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>, with_screen: bool) -> Reading {
+fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -> Reading {
     let pty = crate::pty::manager();
     let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).map(|o| o.cursor);
     let (path, moved) = transcript_seen(pty, id);
@@ -340,22 +357,91 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>, w
         found = read_at(0).0.into_iter().last().into_iter().collect();
     }
     let replies = crate::agents::said::said_of(found);
+    let report_guessed = crate::agents::said::report_guessed(&replies);
+    let mut cut = false;
+    // The rest it said is a file away, report first, for a caller that wants it.
+    let file = (replies.len() > 1)
+        .then(|| crate::agents::said::note_file(id, &crate::agents::said::answer_text(&replies)))
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned());
     let messages: Vec<Message> = crate::agents::said::report_text(&replies)
-        .map(|text| Message { role: "assistant".into(), text: cut_to_max(&text).unwrap_or(text), after_cli: false })
+        .map(|text| {
+            let text = match cut_to_max(&text) {
+                Some(shorter) => {
+                    cut = true;
+                    shorter
+                }
+                None => text,
+            };
+            Message { role: "assistant".into(), text, after_cli: false, final_answer: false }
+        })
         .into_iter()
         .collect();
     let (state, ask) = state_of(id);
     Reading {
         transcript_missing: messages.is_empty() && !transcript_found(pty, id),
-        left_out: replies.len().saturating_sub(messages.len()),
+        rest: replies.len().saturating_sub(messages.len()),
         messages,
         cursor,
         state,
         ask,
         turns_ended: crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0),
-        screen: with_screen.then(|| screen_of(pty, id)).flatten(),
+        screen: None,
         undelivered: None,
+        report_guessed,
+        file,
+        acked: false,
+        cut,
     }
+}
+
+/// What a test runs between an ack's look at the debt and its taking it.
+#[cfg(test)]
+pub(super) static BEFORE_ACK: Mutex<Option<fn()>> = Mutex::new(None);
+
+/// `luna_report_get`: the report of what the session said (`report_read`), as a
+/// look at it that starts its autoDelete count over (`looked`). With `ack` it
+/// collects the answer owed, so no notice follows, only when this report is
+/// all of it and nothing moved while it was read: the same debt (by revision)
+/// and turn count before and after, the turn over, the read begun where the
+/// question found the transcript and ended at its end (no line still being
+/// written), and the report whole, not cut. Anything else leaves it owed, and
+/// `acked` says which. A cancel after the response puts the debt back.
+pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &crate::mcp::Call) -> Result<Reading, String> {
+    let known = authorize_view(caller, id)?;
+    let key = (caller.to_string(), id.to_string());
+    let debt = || reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
+    // Taken together, before the read: what an ack would collect.
+    let before = (debt(), crate::activity::turn_state(id), transcript_end(id));
+    let mut reading = report_read(caller, id, known.provider, since);
+    looked(id);
+    if !ack {
+        return Ok(reading);
+    }
+    let (Some(owed), ts, end) = before else { return Ok(reading) };
+    let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
+    let unmoved = debt().is_some_and(|now| now.rev == owed.rev)
+        && crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0) == turns_ended
+        && transcript_end(id) == end;
+    let done = ts.is_none_or(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
+    let all_of_it = since.is_none_or(|at| at <= owed.cursor)
+        && turns_ended > owed.baseline
+        && (!owed.queued || queue_settled(&key, owed, turns_ended))
+        && !reading.messages.is_empty()
+        && !reading.cut
+        && reading.cursor == end;
+    #[cfg(test)]
+    if let Some(between) = *BEFORE_ACK.lock().unwrap_or_else(|e| e.into_inner()) {
+        between();
+    }
+    // That debt alone, checked and taken in one hold of the lock: one put in
+    // its place since the look above stays owed.
+    if unmoved && done && all_of_it {
+        if let Some(undo) = hand_over_rev(caller, id, turns_ended, owed.rev) {
+            reading.acked = call.commit(undo);
+        }
+    }
+    Ok(reading)
 }
 
 /// A message's text cut to MAX_TEXT characters, saying how much more there is
@@ -365,7 +451,7 @@ fn cut_to_max(text: &str) -> Option<String> {
     (n > MAX_TEXT).then(|| {
         let more = n - MAX_TEXT;
         format!(
-            "{}\n\n[cut: {more} more characters; the transcript luna_sessions names has it whole]",
+            "{}\n\n[cut: {more} more characters; the transcript luna_session_get names has it whole]",
             text.chars().take(MAX_TEXT).collect::<String>()
         )
     })
@@ -406,9 +492,66 @@ mod tests {
     use crate::agents::registry::{reg, register, session_exited};
     use crate::agents::teardown::forget;
 
-    /// `report: true` reads as a read does: the reader's cursor, never past a
+    /// `luna_report_get` reads as a read does: the reader's cursor, never past a
     /// line still being written; a long report cut at MAX_TEXT; an explicit
     /// cursor that finds nothing finds nothing.
+    #[test]
+    fn an_ack_collects_only_a_whole_report_of_an_unmoved_debt() {
+        use crate::activity::{on_hook, HookEvent};
+        let (caller, id) = ("ak-caller", "ak-helper");
+        register(caller, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some(caller), false, serde_json::json!({}));
+        let path = std::env::temp_dir().join(format!("luna-ack-{}.jsonl", std::process::id()));
+        transcripts().lock().unwrap().insert(id.to_string(), path.clone());
+        let line = |role: &str, text: &str| {
+            let content = if role == "user" { serde_json::json!(text) } else { serde_json::json!([{ "type": "text", "text": text }]) };
+            format!("{}\n", serde_json::json!({ "type": role, "message": { "role": role, "content": content } }))
+        };
+        let owed = || reg().lock().unwrap().owed.contains_key(&(caller.to_string(), id.to_string()));
+        // Asked, and its turn over with an answer on disk.
+        let asked = |transcript: String| {
+            std::fs::write(&path, transcript).unwrap();
+            owe_from(caller, id, crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0), 0);
+            on_hook(id, HookEvent::Busy);
+            on_hook(id, HookEvent::Idle);
+        };
+        let ack = || report_get(caller, id, None, true, &crate::mcp::Call::new()).unwrap();
+        let done = format!("{}{}", line("user", "Do it."), line("assistant", "Done: all of it."));
+
+        // A line still being written: not all of it.
+        asked(format!("{done}{}", r#"{"type":"assistant","message":{"content":[{"type":"text","text":"and"#));
+        assert!(!ack().acked && owed(), "a partial line is still to come");
+        // A report cut to the limit: not all of it.
+        asked(format!("{}{}", line("user", "Do it."), line("assistant", &"x".repeat(MAX_TEXT + 10))));
+        assert!(!ack().acked && owed(), "a cut report is not the answer");
+        // Asked again since, a turn on the way: the new debt is not this one's.
+        asked(done.clone());
+        owe_from(caller, id, crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0), done.len() as u64);
+        on_hook(id, HookEvent::Busy);
+        assert!(!ack().acked && owed(), "a new question's answer is still to come");
+        on_hook(id, HookEvent::Idle);
+        // All of it, nothing moving: collected, and nothing left owed.
+        asked(done);
+        let got = ack();
+        assert!(got.acked && !owed(), "{:?}", got.messages);
+        assert!(!report_get(caller, id, None, true, &crate::mcp::Call::new()).unwrap().acked, "nothing owed: nothing to collect");
+        // A debt put in the place of the one looked at, between the look and the
+        // taking: not taken, and nothing said to be collected.
+        asked(format!("{}{}", line("user", "Do it."), line("assistant", "Done again.")));
+        fn new_debt() {
+            owe_from("ak-caller", "ak-helper", 0, 0);
+        }
+        *BEFORE_ACK.lock().unwrap() = Some(new_debt);
+        let raced = ack();
+        *BEFORE_ACK.lock().unwrap() = None;
+        assert!(!raced.acked && owed(), "the debt put in since stays owed");
+
+        transcripts().lock().unwrap().remove(id);
+        let _ = std::fs::remove_file(&path);
+        forget(id);
+        forget(caller);
+    }
+
     #[test]
     fn a_report_read_keeps_to_the_reader_its_limit_and_its_cursor() {
         let id = "rr-cursor";
@@ -423,21 +566,21 @@ mod tests {
         std::fs::write(&path, format!("{whole}{half}")).unwrap();
         transcripts().lock().unwrap().insert(id.to_string(), path.clone());
 
-        let r = report_read("rr-caller", id, Provider::Claude, None, false);
+        let r = report_read("rr-caller", id, Provider::Claude, None);
         assert_eq!(r.messages.len(), 1);
         assert!(r.messages[0].text.starts_with("REPORT "), "the report");
         assert!(r.messages[0].text.contains("[cut: 507 more characters;"), "cut at MAX_TEXT like any read");
-        assert_eq!(r.left_out, 1, "the other message it said");
+        assert_eq!(r.rest, 1, "the other message it said");
         assert_eq!(r.cursor, whole.len() as u64, "before the line still being written, not the file's end");
 
         // From that cursor nothing is there yet: nothing, not an older message.
-        let r = report_read("rr-caller", id, Provider::Claude, Some(whole.len() as u64), false);
+        let r = report_read("rr-caller", id, Provider::Claude, Some(whole.len() as u64));
         assert!(r.messages.is_empty(), "{:?}", r.messages);
         assert_eq!(r.cursor, whole.len() as u64);
 
         // The line finished: it is the next read's.
         std::fs::write(&path, format!("{whole}{}", line("assistant", "Pushed."))).unwrap();
-        let r = report_read("rr-caller", id, Provider::Claude, Some(whole.len() as u64), false);
+        let r = report_read("rr-caller", id, Provider::Claude, Some(whole.len() as u64));
         assert_eq!(r.messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["Pushed."]);
 
         transcripts().lock().unwrap().remove(id);
@@ -452,7 +595,10 @@ mod tests {
         let messages_at = |at: u64| -> Messages {
             let text = std::fs::read_to_string(&path).unwrap();
             let rest = &text[(at as usize).min(text.len())..];
-            (rest.lines().map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false }).collect(), text.len() as u64)
+            (
+                rest.lines().map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false, final_answer: false }).collect(),
+                text.len() as u64,
+            )
         };
         assert_eq!(cursor_after(&path, 0, 6, 3, 1, &messages_at), 2);
         assert_eq!(cursor_after(&path, 2, 6, 2, 1, &messages_at), 4);
@@ -487,10 +633,10 @@ mod tests {
         owe_from("lr-parent", "lb-child", 0, 0);
         let key = ("lr-parent".to_string(), "lb-child".to_string());
         let call = crate::mcp::Call::new();
-        let note = read("lr-parent", "lb-child", None, None, false, false, false, &call).unwrap().undelivered.unwrap();
+        let note = read("lr-parent", "lb-child", None, None, false, false, &call).unwrap().undelivered.unwrap();
         assert!(note.contains("never got started"), "{note}");
         assert!(!reg().lock().unwrap().owed.contains_key(&key), "all there was: no notice is to say it again");
-        assert_eq!(read("lr-parent", "lb-child", None, None, false, false, false, &crate::mcp::Call::new()).unwrap().undelivered, None);
+        assert_eq!(read("lr-parent", "lb-child", None, None, false, false, &crate::mcp::Call::new()).unwrap().undelivered, None);
         call.cancel();
         assert!(reg().lock().unwrap().owed.contains_key(&key), "payload and debt together");
         crate::background::remove("lb-child");

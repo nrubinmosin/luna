@@ -1,4 +1,4 @@
-//! Helpers going: `luna_kill`, `luna_delete` and the person's delete, the
+//! Helpers going: `luna_session_stop`, `luna_session_delete` and the person's delete, the
 //! `autoDelete` helpers `reap` takes, and what `forget` does with a deleted
 //! session's helpers and debts. Every helper runs in the background: a chat
 //! the window runs is the person's, and goes only by their hand.
@@ -25,6 +25,12 @@ pub(super) struct Auto {
     pub(super) idle_since: Option<u64>,
     /// Luna is deleting it now, so its end goes down as `auto-deleted`.
     pub(super) deleting: bool,
+    /// Its answer reached its caller and it went idle with nothing owed: it
+    /// holds no place under its chat's cap (`under_cap`) until work sets it
+    /// going again (`authorize_send` takes a place then). Apart from
+    /// `idle_since`, the autoDelete clock, which a read starts over without
+    /// any work resuming.
+    pub(super) released: bool,
 }
 
 /// What a helper has at stake in a delete, as the person's Delete dialog lists it:
@@ -127,7 +133,7 @@ pub struct Killed {
     pub ended: Vec<String>,
 }
 
-/// Stops a helper's turn; it stays, and `luna_send` carries it on. Between turns it
+/// Stops a helper's turn; it stays, and `luna_session_send` carries it on. Between turns it
 /// has only what its turns left running to stop (`background::kill`).
 pub fn kill(caller: &str, id: &str) -> Result<Killed, String> {
     authorize(caller, id)?;
@@ -167,7 +173,7 @@ pub fn delete(caller: &str, id: &str, drop_worktree: bool, force: bool) -> Resul
             if let Some(work) = crate::worktree::unsaved_work(&folder, &wt) {
                 return Err(format!(
                     "not deleted: worktree {wt} holds {work}, which removing it would lose (files git ignores do not count, and would go too). \
-                     Save what matters (commit and merge, or copy it), or call luna_delete without dropWorktree to keep the worktree, \
+                     Save what matters (commit and merge, or copy it), or call luna_session_delete without dropWorktree to keep the worktree, \
                      or with force: true to remove it anyway"
                 ));
             }
@@ -243,7 +249,7 @@ fn remove(
         return Err(format!("{id} is the person's own chat now, not a helper to delete"));
     }
     let pty = crate::pty::manager();
-    // What `luna_sessions` history has left to go on once it is gone.
+    // What `luna_run_list` has left to go on once it is gone.
     let transcript = transcript_path(pty, id);
     let last = transcript.as_ref().and_then(|_| replies_since(pty, id, known.provider, 0, false).texts.pop());
     crate::agentlog::left(
@@ -314,8 +320,10 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
             let Some(a) = r.auto.get_mut(&id) else { continue };
             if !(quiet && idle) {
                 a.idle_since = None;
+                a.released = false;
                 continue;
             }
+            a.released = true;
             let since = *a.idle_since.get_or_insert(now_ms());
             if now_ms().saturating_sub(since) < AUTO_DELETE_IDLE_MS {
                 continue;
@@ -413,7 +421,7 @@ fn reaped_with_leftovers(id: &str, owed: Vec<String>, parent: Option<String>, qu
 }
 
 /// A session is gone, however it was deleted: nothing here may keep it — not in
-/// `luna_sessions`, not against a caller's helper limit, not as a live token,
+/// `luna_session_list`, not against a caller's helper limit, not as a live token,
 /// and not as an answer owed to or by it.
 ///
 /// Its helpers go on. Each passes to its own parent, whose it already was
@@ -661,7 +669,7 @@ mod tests {
         assert!(reg().lock().unwrap().auto.contains_key("ks-s"), "between turns it was in the middle of nothing");
         crate::background::in_turn_for_test("ks-s");
         kill("ks-c", "ks-s").unwrap();
-        assert!(!reg().lock().unwrap().auto.contains_key("ks-s"), "stopped mid-turn, it stays for luna_send");
+        assert!(!reg().lock().unwrap().auto.contains_key("ks-s"), "stopped mid-turn, it stays for luna_session_send");
         crate::background::gone_for_test("ks-s");
         forget("ks-s");
         forget("ks-c");
@@ -689,7 +697,7 @@ mod tests {
             false,
             serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }),
         );
-        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), deleting: false };
+        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), deleting: false, released: true };
         reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
         reap_these(pty, vec![kid.to_string()]);
         assert!(reg().lock().unwrap().known.contains_key(kid), "the breach would go with it");

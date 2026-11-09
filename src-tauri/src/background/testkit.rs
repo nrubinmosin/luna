@@ -62,7 +62,7 @@ pub fn hold_for_test(id: &str) {
     lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, answer: None });
 }
 
-/// `luna_kill`: what was queued is dropped.
+/// `luna_session_stop`: what was queued is dropped.
 #[cfg(test)]
 pub fn killed_for_test(id: &str) {
     stop(lock().entries.get_mut(id).unwrap());

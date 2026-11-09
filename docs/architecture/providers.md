@@ -137,8 +137,8 @@ files themselves and the dialog opens on what they say:
 Picking another model moves the effort to that model's default unless the effort
 came from a file or was picked by hand (`draft.follow`). What Codex actually ran
 is read from the rollout's `turn_context` (`modelSeen`). The core normalizes and
-supplies stock values (`source: stock`) so the dialog, `luna_spawn` and
-`luna_list` say the same thing.
+supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
+`luna_session_list` say the same thing.
 
 ## Models
 
