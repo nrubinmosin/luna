@@ -275,6 +275,64 @@ mod tests {
     }
 
     #[test]
+    fn only_a_background_claude_code_helper_is_offered_the_permission_handler() {
+        use crate::provider::Provider;
+        let names = |id: &str| -> Vec<String> {
+            let r = handle(id, r#"{"jsonrpc":"2.0","id":20,"method":"tools/list"}"#).unwrap();
+            r["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
+        };
+        // As Claude Code's CLI calls it: between turns nobody is there to
+        // answer, so the handler says no at once.
+        let ask = |id: &str| {
+            let body = json!({ "jsonrpc": "2.0", "id": 21, "method": "tools/call",
+                "params": { "name": "luna_permission", "arguments": { "tool_name": "Bash", "input": { "command": "ls" } } } });
+            handle(id, &body.to_string()).unwrap()["result"].clone()
+        };
+        let refused = |r: &Value, why: &str| r["isError"] == true && r["content"][0]["text"].as_str().unwrap_or("").contains(why);
+        let permission = "luna_permission".to_string();
+        tooled("pt-chat");
+        for (id, provider, tools) in
+            [("pt-claude", Provider::Claude, false), ("pt-claude-tools", Provider::Claude, true), ("pt-codex", Provider::Codex, true)]
+        {
+            let acc = if provider == Provider::Claude { "C:/acc/anthropic/one" } else { "C:/acc/openai/two" };
+            agents::register(id, provider, "C:/p", acc, Some("pt-chat"), tools, json!({ "background": true }));
+            crate::background::idle_for_test(id, provider, 1, false);
+        }
+        // A Claude Code helper: the handler alone without Luna's tools, beside
+        // them with, and its CLI's call reaches it.
+        assert_eq!(names("pt-claude"), ["luna_permission"]);
+        let listed = names("pt-claude-tools");
+        assert!(listed.contains(&permission) && listed.contains(&"luna_session_list".to_string()), "{listed:?}");
+        for id in ["pt-claude", "pt-claude-tools"] {
+            let r = ask(id);
+            assert!(r.get("isError").is_none(), "{id}: {r}");
+            let answer: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(answer["behavior"], "deny", "{id}: {answer}");
+        }
+        // A Codex helper with Luna's tools: the rest, not this, and a call to it
+        // is a tool there is not. No ask is held for it.
+        let listed = names("pt-codex");
+        assert!(listed.contains(&"luna_session_list".to_string()) && !listed.contains(&permission), "{listed:?}");
+        assert!(refused(&ask("pt-codex"), "unknown tool luna_permission"));
+        assert!(crate::background::ask("pt-codex").is_none());
+        // A chat, either provider, with Luna's tools or without, is no helper.
+        agents::register("pt-codex-chat", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({}));
+        agents::register("pt-plain", Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, false, json!({}));
+        for id in ["pt-chat", "pt-codex-chat"] {
+            assert!(!names(id).contains(&permission), "{id}");
+            assert!(refused(&ask(id), "unknown tool luna_permission"), "{id}");
+        }
+        assert!(names("pt-plain").is_empty());
+        assert!(refused(&ask("pt-plain"), "not one of this session's tools"));
+        for id in ["pt-claude", "pt-claude-tools", "pt-codex"] {
+            crate::background::gone_for_test(id);
+        }
+        for id in ["pt-claude", "pt-claude-tools", "pt-codex", "pt-codex-chat", "pt-plain", "pt-chat"] {
+            agents::forget(id);
+        }
+    }
+
+    #[test]
     fn only_requests_are_answered() {
         tooled("me");
         assert!(handle("me", r#"{"jsonrpc":"2.0","method":"ping"}"#).is_none(), "no id: a notification");

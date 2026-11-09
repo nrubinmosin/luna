@@ -216,14 +216,15 @@ fn permission_tool() -> Value {
 
 /// The tools a caller is offered: Luna's own when it was given them, the
 /// handoff when it is a chat with auto-handoff on, and the permission handler
-/// when it is a background helper.
+/// when it is a background Claude Code helper. Nothing of Codex calls that
+/// one: a Codex helper's model would only see a tool it must not use.
 pub(super) fn tools_for(caller: &str) -> Value {
     let mut list: Vec<Value> = if agents::has_tools(caller) { tools().as_array().cloned().unwrap_or_default() } else { Vec::new() };
     if agents::handoff::offers_tool(caller) {
         list.push(handoff_tool());
         agents::handoff::listed(caller);
     }
-    if crate::background::has(caller) {
+    if crate::background::asks_through_luna(caller) {
         list.push(permission_tool());
     }
     Value::Array(list)

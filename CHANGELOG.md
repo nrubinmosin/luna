@@ -86,6 +86,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - In a chat's list of helpers, each helper's Delete stood past the list's
   right edge and "Open as chat" broke onto two lines; a helper's four buttons
   now fit its row, each label on one line.
+- A Codex helper with Luna's tools was offered `luna_permission` beside them,
+  a tool only a Claude Code helper's CLI calls (its permission prompts), so
+  its model paid for a tool it must never use and could call it by mistake,
+  which held an ask for its parent to answer. Only a background Claude Code
+  helper is offered it now; from anyone else a call to it is refused as an
+  unknown tool.
 
 ## [0.11.0] - 2026-11-09
 
