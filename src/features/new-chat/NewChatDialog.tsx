@@ -9,6 +9,7 @@ import { startFor, startOf, useNewChat } from './newchat.store';
 import { createChat } from './create';
 import { useSettingsDraft, type Draft } from './draft';
 import { pickFolder } from '../../ipc/cli';
+import { chatFolderRefusal } from '../../ipc/sessions';
 import { codexHooksStart, keepCodexHooks, type CodexHooksStart } from '../../ipc/trust';
 import { Icon } from '../../shared/ui/icons';
 import { AccountPicker } from './AccountPicker';
@@ -179,7 +180,31 @@ export function NewChatDialog() {
   // Claude Code cannot show its trust prompt in a worktree it makes: such a
   // chat needs the folder trusted first, or no worktree.
   const trustNeeded = provider === 'claude' && worktree && !trusted && !trustIt;
-  const canCreate = !!folder && !!account && !trustPending && !trustNeeded;
+
+  // What would keep the chat from starting in this folder — the folder is not
+  // there, or a worktree is asked for outside a git repository — said here,
+  // before Create, as the start itself would refuse it. Asked again for every
+  // folder, account and worktree box; no Create until the answer is in.
+  const refusalKey = `${provider}\u0000${accountPath}\u0000${folder}\u0000${worktree}`;
+  const [refusal, setRefusal] = useState<{ key: string; why: string | null } | null>(null);
+  useEffect(() => {
+    let stale = false;
+    const key = `${provider}\u0000${accountPath}\u0000${folder}\u0000${worktree}`;
+    if (!folder || !accountPath) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- with nothing to ask about the answer is known at once
+      setRefusal({ key, why: null });
+      return;
+    }
+    void chatFolderRefusal(provider, accountPath, folder, worktree)
+      .then(why => !stale && setRefusal({ key, why }))
+      .catch(e => !stale && setRefusal({ key, why: String(e) }));
+    return () => {
+      stale = true;
+    };
+  }, [folder, accountPath, provider, worktree]);
+  const folderAnswer = refusal?.key === refusalKey ? refusal : null;
+  const refused = folderAnswer?.why ?? null;
+  const canCreate = !!folder && !!account && !trustPending && !trustNeeded && folderAnswer !== null && !refused;
 
   const browse = async () => {
     const picked = await pickFolder();
@@ -224,7 +249,7 @@ export function NewChatDialog() {
       }
     } catch (e) {
       setCreating(false);
-      setCreateError(String(e));
+      setCreateError(e instanceof Error ? e.message : String(e));
       return;
     }
     setCreating(false);
@@ -406,6 +431,11 @@ export function NewChatDialog() {
                     Claude Code cannot ask about trust in a worktree it makes: tick this, or turn Git worktree off.
                   </div>
                 )}
+              </div>
+            )}
+            {refused && (
+              <div role="alert" style={{ marginTop: 7, fontSize: 'var(--fs-3)', color: 'oklch(.58 .2 25)' }}>
+                {refused}
               </div>
             )}
             {createError && (

@@ -48,6 +48,7 @@
     "allow-claude-defaults",
     "allow-account-limits",
     "allow-claude-folder-trusted",
+    "allow-chat-folder-refusal",
     "allow-codex-defaults",
     "allow-codex-hooks-start",
     "allow-set-codex-hooks-default",

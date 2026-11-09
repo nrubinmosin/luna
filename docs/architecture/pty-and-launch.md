@@ -92,7 +92,19 @@ shared server (which the `-c` overrides rule out anyway). Codex refuses
 `codex login` in the account folder.
 
 The core does not start a folder that does not exist: portable-pty would
-silently substitute the user's profile.
+silently substitute the user's profile. Before anything of a start is made
+(files, token, registration, the library pass, origin's fetch), `pty/folder.rs`
+`folder_refusal` refuses a folder that is not there and a start that passes
+`--worktree` (Claude Code: any, by name too; Codex: a new session) in a folder
+with no `.git` in it or above it, which both CLIs exit on at once; Claude Code
+is let through when a `WorktreeCreate` hook is named in the account's
+`settings.json` or the project's `.claude/settings.json` or
+`settings.local.json` (a plugin's hooks are not read). The refusal is the
+start's error, which the pane shows as `[failed to start session: …]`. The same
+check answers the new-chat dialog (`chat_folder_refusal`, asked for every
+folder, account and worktree box, and again by `createChat` before it writes
+trust) and refuses a helper's spawn (`agents/spawn`). A login runs in its account
+folder and is not checked.
 
 ## Golden tests
 

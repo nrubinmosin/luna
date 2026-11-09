@@ -358,6 +358,11 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     // The dev caller stands in for the user (`register_dev_caller`): no cap.
     let above = caller == DEV_CALLER || crate::settings::get().helpers_above_caller;
     let run_in = in_worktree.clone().or_else(|| params.folder.clone()).unwrap_or_default();
+    // A folder the helper's CLI could not start in (pty/folder.rs), said to
+    // the caller now rather than as a first turn that fails.
+    if let Some(why) = crate::pty::folder_refusal(provider, &run_in, &account.path, params.worktree.unwrap_or(false)) {
+        return Err(why);
+    }
     settle_mode(&mut params, provider, (me.provider, &me.settings), &account.path, &run_in, above)?;
     // A helper's CLI takes its opening prompt as it takes text sent later,
     // a command among it (`command_reach`); it is its caller's own.

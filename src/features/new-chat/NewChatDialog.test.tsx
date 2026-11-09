@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as defaults from '../../ipc/defaults';
+import * as sessions from '../../ipc/sessions';
 import * as trust from '../../ipc/trust';
 import type { ClaudeDefaultsDto, CodexDefaultsDto } from '../../ipc/defaults';
 import type { Account } from '../../shared/types';
@@ -25,6 +26,12 @@ vi.mock('../../ipc/trust', async importOriginal => ({
   claudeTrustFolder: vi.fn(() => Promise.resolve()),
   codexFolderTrusted: vi.fn(() => Promise.resolve(true)),
   codexHooksStart: vi.fn(() => Promise.resolve({ default: false, kept: null }))
+}));
+
+// Every folder is one a chat can start in, unless a test says otherwise.
+vi.mock('../../ipc/sessions', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/sessions')>()),
+  chatFolderRefusal: vi.fn(() => Promise.resolve(null))
 }));
 
 // xterm cannot run in jsdom.
@@ -63,6 +70,7 @@ const fromAccount = (value: string) => ({ value, source: 'account' as const });
 
 beforeEach(() => {
   // What a test told the settings to say goes back to nothing said.
+  vi.mocked(sessions.chatFolderRefusal).mockResolvedValue(null);
   vi.mocked(trust.claudeFolderTrusted).mockResolvedValue(true);
   vi.mocked(trust.claudeTrustFolder).mockClear();
   mocked.claudeDefaults.mockImplementation(() => Promise.resolve(STOCK_CLAUDE));
@@ -174,6 +182,38 @@ describe('NewChatDialog: creating', () => {
     useAccounts.setState({ accounts: [] });
     render(<NewChatDialog />);
     expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+  });
+
+  it('says why a folder will not do, and creates nothing there', async () => {
+    const why = '/repo does not exist (moved or deleted?): pick another folder';
+    vi.mocked(sessions.chatFolderRefusal).mockResolvedValue(why);
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('alert')).toHaveTextContent(why);
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    await user.keyboard('{Enter}');
+    expect(allChats(useChats.getState().folders)).toEqual([]);
+  });
+
+  it('asks again as Git worktree is flipped: a folder outside git takes no worktree', async () => {
+    const why = '/repo is not in a git repository: untick Git worktree, or pick a folder in one';
+    vi.mocked(sessions.chatFolderRefusal).mockImplementation((_p, _a, _f, worktree) =>
+      Promise.resolve(worktree ? why : null)
+    );
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    const worktree = screen.getByRole('checkbox', { name: 'Git worktree' });
+    if (!(worktree as HTMLInputElement).checked) await user.click(worktree);
+    await settle();
+    expect(screen.getByRole('alert')).toHaveTextContent(why);
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    await user.click(worktree);
+    await settle();
+    expect(screen.queryByRole('alert')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ worktree: false });
   });
 });
 
