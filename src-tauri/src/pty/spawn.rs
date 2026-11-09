@@ -221,7 +221,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // Luna's own copy of the CLI (see cli.rs), or the bare name on PATH until
     // the first download has landed; its version directory held, like the
     // account, until the process has exited.
-    let (exe, on_version) = crate::cli::launch(provider, Some(&id));
+    let (exe, on_version) = crate::cli::launch(provider, Some(&id))?;
     let mut cmd = CommandBuilder::new(exe);
     cmd.cwd(&cwd);
     cmd.args(&args);

@@ -260,7 +260,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         return Err(format!("{dir} does not exist"));
     }
     // Its version directory held until the process has exited (cli.rs `launch`).
-    let (exe, on_version) = crate::cli::launch(provider, Some(id));
+    let (exe, on_version) = crate::cli::launch(provider, Some(id))?;
     let mut cmd = std::process::Command::new(exe);
     cmd.args(&args).current_dir(&dir);
     crate::pty::clean_env(&mut cmd);

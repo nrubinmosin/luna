@@ -284,39 +284,50 @@ pub fn binary(provider: Provider) -> PathBuf {
 /// `binary`, for a process that is about to start: with a hold on its
 /// version directory that the caller keeps until the process has exited, so
 /// the sweep leaves that directory be (`in_use`). `session` is the chat or
-/// helper it is for, whose version `luna_session_get` then shows.
-pub fn launch(provider: Provider, session: Option<&str>) -> (PathBuf, Option<InUse>) {
+/// helper it is for, whose version `luna_session_get` then shows. The bare
+/// name on PATH, unheld, only while nothing is current; a managed copy that
+/// cannot be held is not started at all.
+pub fn launch(provider: Provider, session: Option<&str>) -> Result<(PathBuf, Option<InUse>), String> {
     let src = source(provider);
     let root = root(provider);
-    let (path, held) = launch_in(&root, src.bin_rel);
-    match path {
-        Some((path, version)) => {
+    match launch_in(&root, src.bin_rel)? {
+        Some((path, version, held)) => {
             if let Some(session) = session {
                 in_use::note_session(session, provider, &version);
                 canary::session_started(provider, &root, &version, session);
             }
-            (path, held)
+            Ok((path, Some(held)))
         }
-        None => (PathBuf::from(src.path_fallback), None),
+        None => Ok((PathBuf::from(src.path_fallback), None)),
     }
 }
+
+/// How often a launch tries for its hold: `current` moving under it, or the
+/// lock file not to be had for a moment.
+const HOLD_TRIES: u32 = 5;
 
 /// The exe `current` names under `root`, its version, and a hold on its
 /// directory taken before `current` is read a second time: a flip and a
 /// sweep between the two reads would have taken the directory the first one
-/// named. None for the path where nothing is current; no hold where the lock
-/// cannot be had.
-fn launch_in(root: &Path, bin_rel: &str) -> (Option<(PathBuf, String)>, Option<InUse>) {
-    let exe = |c: Current| (root.join("versions").join(&c.dir).join(bin_rel), c.version);
-    for _ in 0..3 {
-        let Some(c) = current_in(root, bin_rel) else { return (None, None) };
-        let held = in_use::hold(root, &c.dir);
-        if current_in(root, bin_rel).is_some_and(|again| again.dir == c.dir) {
-            return (Some(exe(c)), held);
+/// named. None where nothing is current. An Err rather than a start without
+/// the hold: the sweep could later take the folder from under the process.
+fn launch_in(root: &Path, bin_rel: &str) -> Result<Option<(PathBuf, String, InUse)>, String> {
+    let mut why = String::new();
+    for attempt in 0..HOLD_TRIES {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(20 * u64::from(attempt)));
         }
+        let Some(c) = current_in(root, bin_rel) else { return Ok(None) };
+        let Some(held) = in_use::hold(root, &c.dir) else {
+            why = format!("cannot hold {} in {} (a lock file there cannot be had)", c.dir, root.join(in_use::DIR).display());
+            continue;
+        };
+        if current_in(root, bin_rel).is_some_and(|again| again.dir == c.dir) {
+            return Ok(Some((root.join("versions").join(&c.dir).join(bin_rel), c.version, held)));
+        }
+        why = "the current version kept changing while it was read".into();
     }
-    // `current` moved under each of three reads: the latest, unheld.
-    (current_in(root, bin_rel).map(exe), None)
+    Err(format!("not started: {why}"))
 }
 
 // ---------------------------------------------------------------- status --
@@ -1480,9 +1491,8 @@ mod tests {
         assert_eq!(previous_in(&root, BIN).as_deref(), Some("1.0.0"));
 
         // A session starts on 2.0.0 and runs on through two more updates.
-        let (exe, held) = launch_in(&root, BIN);
-        assert_eq!(exe.unwrap(), (root.join("versions").join("2.0.0").join(BIN), "2.0.0".to_string()));
-        let held = held.expect("the directory is held");
+        let (exe, version, held) = launch_in(&root, BIN).unwrap().unwrap();
+        assert_eq!((exe, version.as_str()), (root.join("versions").join("2.0.0").join(BIN), "2.0.0"));
         update_in(&root, BIN, pointer("3.0.0"), &mut whole).unwrap();
         update_in(&root, BIN, pointer("4.0.0"), &mut whole).unwrap();
         assert_eq!(dirs(&root), ["2.0.0", "3.0.0", "4.0.0"], "1.0.0 went; 2.0.0 runs, 3.0.0 is the previous one");
@@ -1498,6 +1508,25 @@ mod tests {
         prune_in(&root, BIN);
         assert_eq!(dirs(&root), ["3.0.0", "4.0.0"]);
         assert_eq!(entries(&root.join(in_use::DIR)), 0, "the lock files went with their directories");
+        let _ = remove_tree(&root);
+    }
+
+    /// A start the sweep could not see would let it take the folder from under
+    /// the process: one whose hold cannot be had is refused, never started
+    /// unheld; with nothing current it is PATH's, which no sweep touches.
+    #[test]
+    fn a_managed_copy_that_cannot_be_held_is_not_started() {
+        let root = scratch("unheld");
+        assert!(launch_in(&root, BIN).unwrap().is_none(), "nothing current: the CLI on PATH");
+        update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
+        // The locks' folder taken by a file: no lock can be had there.
+        remove_tree(&root.join(in_use::DIR)).ok();
+        fs::write(root.join(in_use::DIR), b"not a folder").unwrap();
+        let refused = launch_in(&root, BIN).err().expect("refused");
+        assert!(refused.contains("not started: cannot hold 1.0.0"), "{refused}");
+        // Held again once the lock can be had.
+        fs::remove_file(root.join(in_use::DIR)).unwrap();
+        assert!(launch_in(&root, BIN).unwrap().is_some());
         let _ = remove_tree(&root);
     }
 
