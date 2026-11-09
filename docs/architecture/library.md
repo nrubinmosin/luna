@@ -26,8 +26,8 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | `library/pass.rs` | one pass over every copy |
 | `library/overview.rs` | what the window is shown |
 | `library/commands.rs` | the window's commands |
-| `library/system.rs` | the system skills: the handoff's instructions resolved, Luna's own or the override in `system/` ([auto-handoff](handoff.md#the-instructions)) |
-| `src/features/library/` | the Skills & instructions window, grids, `ReachPicker`, `AudiencePicker`, `FolderCell`, `LibraryEditor`, `diff.ts` |
+| `library/system.rs` | the system skills: the handoff's instructions resolved, Luna's own or the override in `system/` ([auto-handoff](handoff.md#the-instructions)); the override read, written, compared, sent to the backups or made from a library skill of the name; the reserved name |
+| `src/features/library/` | the Skills & instructions window, grids, `ReachPicker`, `AudiencePicker`, `FolderCell`, `LibraryEditor`, `SystemSkills`, `diff.ts` |
 
 ## Reaches
 
@@ -184,6 +184,26 @@ The window re-reads the overview (no writes) on every focus.
 - `system/` is read only for what Luna serves (`library/system.rs`): no pass
   lays anything of it out, and a skill named `session-handoff` under
   `skills/` is not the handoff's override.
+- A system skill's name is reserved (`system.rs` `reserved`): a library skill
+  of that name is `problem`ed in the overview, wanted nowhere (`units` skips
+  it, so a copy an earlier Luna laid out goes as one no longer wanted, unless
+  changed there) and hidden from no session (`hidden_here` skips it), so its
+  name reaches no account, folder or start. `library_new_skill` refuses the
+  name. Laid out, it would tell every session of the handoff.
+- The window's System skills section reaches only `system/<name>` for a name
+  `luna_text` knows, and Luna's backups: the editor through `library_read` and
+  `library_write` with `{"system": name}` (Luna's own text where there is no
+  override; a save over 64 KB refused, a draft that will not do saved and
+  served as broken), `library_check_system`, `library_system_compare`,
+  `library_system_reset` (the override's folder to `library-backups/`, as
+  `back_up` keeps any replaced file) and `library_system_adopt` (the library
+  skill of the name renamed into `system/`, an override there backed up first).
+  The override's SKILL.md is opened as `read_override` opens it (as itself, to
+  a cap: 1 MB for the editor). A link as `system/`, as the override's folder,
+  in it or as the skill to adopt is refused, never read, written or removed
+  through; so is anything but plain files and folders in a folder backed up or
+  moved (`plain_tree`), as a FIFO there would hold the read, and the library's
+  lock, for good.
 
 ## Failure modes
 

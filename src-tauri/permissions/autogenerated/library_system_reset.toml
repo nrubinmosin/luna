@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-library-system-reset"
+description = "Enables the library_system_reset command without any pre-configured scope."
+commands.allow = ["library_system_reset"]
+
+[[permission]]
+identifier = "deny-library-system-reset"
+description = "Denies the library_system_reset command without any pre-configured scope."
+commands.deny = ["library_system_reset"]

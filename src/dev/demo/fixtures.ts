@@ -5,7 +5,7 @@ import type { AtStakeDto, BackgroundHelperDto, HelperTranscriptDto } from '../..
 import type { CliStatusDto, CliVersionsDto } from '../../ipc/cli';
 import type { CoreStateDto } from '../../ipc/coreProcess';
 import type { ClaudeDefaultsDto, CodexDefaultsDto, CodexModelDto } from '../../ipc/defaults';
-import type { FileDiffDto, LibraryOverviewDto, PlaceDto } from '../../ipc/library';
+import type { FileDiffDto, LibraryOverviewDto, PlaceDto, SystemCompareDto } from '../../ipc/library';
 import type { PowerStateDto } from '../../ipc/power';
 import type { OrphanSessionDto } from '../../ipc/sessions';
 import type { BrowsersDto } from '../../ipc/browsers';
@@ -659,7 +659,50 @@ export const LIBRARY: LibraryOverviewDto = {
     }
   ],
   overridden: [],
-  kept: []
+  kept: [],
+  system: [
+    {
+      name: 'session-handoff',
+      state: 'luna',
+      version: '0.12.0',
+      sha256: '3054a9e14c774f592c9c2fed08da4ff7eb38befdb00321184f3d1b324c8aedd9',
+      path: 'C:\\Users\\me\\AppData\\Local\\luna\\library\\system\\session-handoff\\SKILL.md',
+      problem: null
+    }
+  ]
+};
+// The same library with an override of the handoff's instructions in place,
+// and a skill among the person's that takes the system skill's name (one made
+// for the handoff before there was an override): laid out nowhere.
+export const LIBRARY_SYSTEM: LibraryOverviewDto = {
+  ...LIBRARY,
+  skills: [
+    ...LIBRARY.skills,
+    {
+      name: 'session-handoff',
+      description: '',
+      problem:
+        "session-handoff is the name of Luna's system skill for handoffs: no skill of that name is laid out, so that no session without Auto-handoff hears of it. Your own text for it is the override, under System skills",
+      accounts: ['all'],
+      audience: 'both'
+    }
+  ],
+  system: [
+    {
+      name: 'session-handoff',
+      state: 'library',
+      version: '0.12.0',
+      sha256: '9b1de07c55a2f4e8a6c3d1b0e9f8a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0',
+      path: 'C:\\Users\\me\\AppData\\Local\\luna\\library\\system\\session-handoff\\SKILL.md',
+      problem: null
+    }
+  ]
+};
+const HANDOFF_HEAD =
+  '---\nname: session-handoff\ndescription: How a chat writes its handoff.\n---\n\n# Writing the handoff\n';
+export const SYSTEM_COMPARE: SystemCompareDto = {
+  luna: `${HANDOFF_HEAD}\n- Quote the person's decisions word for word.\n- Say what runs now and what waits on whom.\n- End on the next concrete action.\n`,
+  yours: `${HANDOFF_HEAD}\n- Quote the person's decisions word for word.\n- Say what runs now and what waits on whom.\n- Name the branch and the last green commit.\n- End on the next concrete action.\n`
 };
 export const LIBRARY_DIFF: FileDiffDto[] = [
   {

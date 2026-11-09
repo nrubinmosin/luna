@@ -72,7 +72,10 @@ is read: `system/` and its folder no link, the file opened as itself
 (`boundary::open_no_follow`, no link followed, no wait on a FIFO), a regular
 file by its handle, read no further than the cap and a byte; the beat resolves
 it for every firm notice, and nothing beside it is to hold that up. A library
-skill named `session-handoff` under `skills/` is never read for it. What a chat
+skill named `session-handoff` under `skills/` is never read for it, and is laid
+out nowhere (the name is reserved, [library](library.md#invariants)). The
+library window's System skills section edits, compares and removes the override
+([user guide](../user-guide/library.md#system-skills)). What a chat
 was given (`Served`: `Given::Luna`, `Library`, or `Checklist` where the firm
 notice's checklist was all it had, each with its hash, Luna's version or the
 override's path) is kept on the chat's record (`Record::served`: the tool sets

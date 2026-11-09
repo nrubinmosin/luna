@@ -147,6 +147,8 @@ pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview
     let (skill, name) = match entry {
         Entry::Skill(n) => (true, n),
         Entry::Instructions(n) => (false, n),
+        // Served only where it is due, the same to every chat it is served to.
+        Entry::System(n) => return Err(format!("{n} is a system skill: it has no audience to pick")),
     };
     check_name(&name)?;
     crate::log::info("library", &format!("{} {name}: for {}", if skill { "skill" } else { "instructions" }, audience.label()));

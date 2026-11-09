@@ -13,6 +13,7 @@ import {
   STALE,
   LIBRARY,
   LIBRARY_DIFF,
+  SYSTEM_COMPARE,
   CORE,
   BACKGROUND,
   HELPER_TRANSCRIPT,
@@ -33,6 +34,8 @@ export const demoState = {
   showsCanary: false,
   /** Only the scene about them has sessions with no chat. */
   showsOrphans: false,
+  /** The library's scene with an override of a system skill shows that library. */
+  library: LIBRARY,
   power: POWER
 };
 
@@ -45,8 +48,9 @@ export const demoState = {
 export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: T): T {
   if (!demoState.seeded) return fallback;
   if (cmd === 'core_state') return CORE as unknown as T;
-  if (cmd === 'library_overview' || cmd === 'library_sync') return LIBRARY as unknown as T;
+  if (cmd === 'library_overview' || cmd === 'library_sync') return demoState.library as unknown as T;
   if (cmd === 'library_diff') return LIBRARY_DIFF as unknown as T;
+  if (cmd === 'library_system_compare') return SYSTEM_COMPARE as unknown as T;
   if (cmd === 'orphan_worktrees') return (STALE[args.folder as string] ?? []).map(w => w.path) as unknown as T;
   if (cmd === 'inspect_worktrees') return (STALE[args.folder as string] ?? []) as unknown as T;
   if (cmd === 'cli_status') return (CLI[args.provider as Provider] ?? CLI.claude) as unknown as T;
