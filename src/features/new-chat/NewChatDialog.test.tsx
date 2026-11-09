@@ -31,7 +31,7 @@ vi.mock('../../ipc/trust', async importOriginal => ({
 // Every folder is one a chat can start in, unless a test says otherwise.
 vi.mock('../../ipc/sessions', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/sessions')>()),
-  chatFolderRefusal: vi.fn(() => Promise.resolve(null))
+  chatFolderCheck: vi.fn(() => Promise.resolve({ refusal: null, warning: null }))
 }));
 
 // xterm cannot run in jsdom.
@@ -70,7 +70,7 @@ const fromAccount = (value: string) => ({ value, source: 'account' as const });
 
 beforeEach(() => {
   // What a test told the settings to say goes back to nothing said.
-  vi.mocked(sessions.chatFolderRefusal).mockResolvedValue(null);
+  vi.mocked(sessions.chatFolderCheck).mockResolvedValue({ refusal: null, warning: null });
   vi.mocked(trust.claudeFolderTrusted).mockResolvedValue(true);
   vi.mocked(trust.claudeTrustFolder).mockClear();
   mocked.claudeDefaults.mockImplementation(() => Promise.resolve(STOCK_CLAUDE));
@@ -186,7 +186,7 @@ describe('NewChatDialog: creating', () => {
 
   it('says why a folder will not do, and creates nothing there', async () => {
     const why = '/repo does not exist (moved or deleted?): pick another folder';
-    vi.mocked(sessions.chatFolderRefusal).mockResolvedValue(why);
+    vi.mocked(sessions.chatFolderCheck).mockResolvedValue({ refusal: why, warning: null });
     const user = userEvent.setup();
     render(<NewChatDialog />);
     await settle();
@@ -198,8 +198,8 @@ describe('NewChatDialog: creating', () => {
 
   it('asks again as Git worktree is flipped: a folder outside git takes no worktree', async () => {
     const why = '/repo is not in a git repository: untick Git worktree, or pick a folder in one';
-    vi.mocked(sessions.chatFolderRefusal).mockImplementation((_p, _a, _f, worktree) =>
-      Promise.resolve(worktree ? why : null)
+    vi.mocked(sessions.chatFolderCheck).mockImplementation((_p, _a, _f, worktree) =>
+      Promise.resolve({ refusal: worktree ? why : null, warning: null })
     );
     const user = userEvent.setup();
     render(<NewChatDialog />);
@@ -214,6 +214,21 @@ describe('NewChatDialog: creating', () => {
     await user.click(screen.getByRole('button', { name: 'Create' }));
     const [chat] = allChats(useChats.getState().folders);
     expect(chat).toMatchObject({ worktree: false });
+  });
+
+  it('only warns where a source Luna cannot read may still make the worktree, and creates', async () => {
+    const warning = '/repo is not in a git repository: Claude Code makes a worktree there only through a hook';
+    vi.mocked(sessions.chatFolderCheck).mockResolvedValue({ refusal: null, warning });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    const worktree = screen.getByRole('checkbox', { name: 'Git worktree' });
+    if (!(worktree as HTMLInputElement).checked) await user.click(worktree);
+    await settle();
+    expect(screen.getByRole('status')).toHaveTextContent(warning);
+    expect(screen.queryByRole('alert')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ worktree: true });
   });
 });
 

@@ -98,9 +98,10 @@ hooks run unasked.
 - `worktree: true` keeps the helper apart; the spawn names the worktree the CLI
   made and its branch (`luna_session_list` shows them for every helper).
 - A `folder` that does not exist is refused at the spawn, and so is
-  `worktree: true` in a folder outside a git repository (with Claude Code, unless
-  a `WorktreeCreate` hook in the account's or the project's settings makes one):
-  each CLI would exit at once there.
+  `worktree: true` in a folder outside a git repository, where each CLI would
+  exit at once. Claude Code is let go when a `WorktreeCreate` hook may make one:
+  named in the account's or the project's settings, or possibly coming from a
+  source Luna does not read (an enabled plugin, managed settings).
 - The spawn reports what settings cannot: other live sessions in the same
   directory (`sameFolder`), whose files and git it shares. `luna_session_list` names the
   model a turn ran on, where the organization swapped the one asked for.

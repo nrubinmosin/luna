@@ -64,7 +64,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   before Create, in the pane of a chat whose folder has gone, and to an agent
   spawning a helper there. Claude Code's `WorktreeCreate` hook, which makes a
   worktree without git, is let through when the account's or the project's
-  settings name it.
+  settings name it; where it could come from a source Luna does not read (an
+  enabled plugin, managed settings), the dialog only warns.
 - The CLI canary no longer blames a new Claude Code or Codex version for an
   exit that was not its doing. A session that ends on a cause outside the CLI
   (a worktree asked for outside a git repository) or that you or Luna stopped
