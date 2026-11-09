@@ -5,7 +5,7 @@ import { ACCENT, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { claude, codex, ui } from '../providers';
-import { startFor, useNewChat } from './newchat.store';
+import { startFor, startOf, useNewChat } from './newchat.store';
 import { createChat } from './create';
 import { useSettingsDraft, type Draft } from './draft';
 import { pickFolder } from '../../ipc/cli';
@@ -65,6 +65,7 @@ export function NewChatDialog() {
   const startIn = (path: string) => startFor(useChats.getState().folders.find(f => f.path === path));
   const [worktree, setWorktree] = useState(() => startIn(folder).worktree);
   const [tools, setTools] = useState(() => startIn(folder).tools);
+  const [guard, setGuard] = useState(() => startIn(folder).guard);
   // The boxes start the way the folder picked does, so picking another one
   // resets them — a flip made for the first folder was not made for this one.
   const chooseFolder = (path: string) => {
@@ -72,6 +73,7 @@ export function NewChatDialog() {
     const start = startIn(path);
     setWorktree(start.worktree);
     setTools(start.tools);
+    setGuard(start.guard);
   };
   // Codex's hooks box starts from the Rust side, which keeps it for the
   // background helpers it starts on its own (codex/hooks.rs); asked again for
@@ -93,29 +95,34 @@ export function NewChatDialog() {
   const account = accounts.find(a => accountKey(a.provider, a.name) === accountId) ?? null;
   const provider = account?.provider ?? 'claude';
   const accountPath = account?.path ?? '';
-  // Off unless asked for here: a chat's CLI runs as it would on its own.
-  const [guard, setGuard] = useState(false);
   // Off unless asked for here, and only with Luna tools, whose server offers
   // the handoff (agents/handoff).
   const [autoHandoff, setAutoHandoff] = useState(false);
   const [handoffAt, setHandoffAt] = useState<number>(HANDOFF_AT.default);
-  // Codex runs a hook Luna gives it only with hooks' trust bypassed.
+  // Codex runs a hook Luna gives it only with hooks' trust bypassed: without
+  // them the guard box shows off, whatever the start says, as the chat will be.
   const guardable = provider !== 'codex' || hooks;
 
   // Read on every render rather than kept: keeping the start below changes it.
   const ownStart = folders.find(f => f.path === folder)?.start;
   const defaultWorktree = useNewChat(s => s.worktree);
   const defaultTools = useNewChat(s => s.tools);
-  const start = ownStart ?? { worktree: defaultWorktree, tools: defaultTools };
+  const defaultGuard = useNewChat(s => s.guard);
+  const start = startOf(ownStart, { worktree: defaultWorktree, tools: defaultTools, guard: defaultGuard });
   const startHooks = hooksStart.kept ?? hooksStart.default;
+  // A guard box Codex cannot use shows no flip of its own.
   const flipped =
-    worktree !== start.worktree || tools !== start.tools || (provider === 'codex' && hooks !== startHooks);
+    worktree !== start.worktree ||
+    tools !== start.tools ||
+    (guardable && guard !== start.guard) ||
+    (provider === 'codex' && hooks !== startHooks);
   const keptHere = !!ownStart || (provider === 'codex' && hooksStart.kept !== null);
-  // A start that is the defaults anyway is no start of the folder's own.
+  // A start that is the defaults anyway is no start of the folder's own. A
+  // guard box Codex cannot use keeps what the folder started with.
   const keepForFolder = () => {
-    useChats
-      .getState()
-      .setStart(folder, worktree === defaultWorktree && tools === defaultTools ? undefined : { worktree, tools });
+    const keptGuard = guardable ? guard : start.guard;
+    const defaults = worktree === defaultWorktree && tools === defaultTools && keptGuard === defaultGuard;
+    useChats.getState().setStart(folder, defaults ? undefined : { worktree, tools, guard: keptGuard });
     if (provider !== 'codex') return;
     const kept = hooks === hooksStart.default ? null : hooks;
     void keepCodexHooks(folder, kept).then(() => setHooksStart(s => ({ ...s, kept })));
@@ -491,6 +498,7 @@ export function NewChatDialog() {
                     onClick={() => {
                       setWorktree(start.worktree);
                       setTools(start.tools);
+                      setGuard(start.guard);
                       setHooks(startHooks);
                     }}
                     className="hover-bg"
