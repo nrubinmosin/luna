@@ -270,7 +270,8 @@ without its record never runs. Cleanup and the sweep check every component
 below the CLI root for a link before deleting (`link_free_below`), and the
 sweep takes no folder a process of Luna's still holds (`cli/in_use.rs`: a
 shared lock per running process on `in-use/<dir>`, made private and never
-through a link). The state at the root (`channel`, `bad.json`, `pinned`,
+through a link, and never removed, so a start waiting through a sweep holds
+the same file every later sweep locks). The state at the root (`channel`, `bad.json`, `pinned`,
 `canary.json`, `floor`) is written private like `current`; a `bad.json` that
 does not parse marks nothing bad, which only lets the channel choose again.
 

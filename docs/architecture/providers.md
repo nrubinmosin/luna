@@ -144,7 +144,9 @@ holds a shared lock on `<root>/in-use/<dir>` until it has exited
 (`cli/in_use.rs`, `cli::launch`), and the sweep removes a folder only while
 it holds that file's exclusive lock, so no start begins from it meanwhile.
 The window sweeps and the core spawns, hence a file lock rather than a count
-in memory; the OS lets go of it with a process that dies.
+in memory; the OS lets go of it with a process that dies. The lock files are
+never removed: a start that opened one while the sweep held it goes on to lock
+that file, which must be the one every later sweep locks too.
 
 Going back: "Use" (`cli_use_version`) makes any installed folder current and
 writes `<root>/pinned`, which the pass leaves be until a channel is chosen
