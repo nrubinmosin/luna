@@ -36,6 +36,7 @@ const claudeLimits = (over: Partial<AccountLimitsDto> = {}): AccountLimitsDto =>
   resetH5: null,
   resetWeek: null,
   scoped: [],
+  other: [],
   source: 'network',
   fetchedAtMs: Date.now(),
   stale: false,
@@ -105,6 +106,30 @@ describe('accounts store: a refresh round', () => {
     ]);
   });
 
+  it('shows no 5-hour window when the answer had none, rather than one at 0%', async () => {
+    const { ipc, state } = await load();
+    ipc.listAccounts.mockResolvedValue([work]);
+    ipc.accountLimits.mockResolvedValue(claudeLimits({ h5: null, resetH5: null }));
+    await state().refresh();
+    expect(state().accounts[0]!.limits.map(l => l.label)).toEqual(['week']);
+  });
+
+  it('keeps a window of a kind Luna does not know under the server’s label', async () => {
+    const { ipc, state } = await load();
+    ipc.listAccounts.mockResolvedValue([work]);
+    ipc.accountLimits.mockResolvedValue(
+      claudeLimits({
+        h5: null,
+        other: [{ kind: 'monthly_all', label: 'monthly (monthly_all)', used: 0.07, resetsAt: null }]
+      })
+    );
+    await state().refresh();
+    expect(state().accounts[0]!.limits.map(l => [l.id, l.label, l.short, l.used])).toEqual([
+      ['week', 'week', 'W', 0.5],
+      ['other:monthly_all:monthly (monthly_all)', 'monthly (monthly_all)', 'M', 0.07]
+    ]);
+  });
+
   it('keys a model-scoped weekly limit by the model’s initial', async () => {
     const { ipc, state } = await load();
     ipc.listAccounts.mockResolvedValue([work]);
@@ -143,6 +168,18 @@ describe('accounts store: a refresh round', () => {
     expect(a!.sync).toBe('throttled');
     expect(a!.haveUsage).toBe(true);
     expect(a!.limits.map(l => l.used)).toEqual([0.25, 0.5]);
+  });
+
+  it('drops the windows of an answer that has none left, rather than keeping the last', async () => {
+    const { ipc, state } = await load();
+    ipc.listAccounts.mockResolvedValue([gpt]);
+    const week = { id: 'primary', label: 'week', used: 0.96, windowMinutes: 10080, resetsAt: null };
+    ipc.codexLimits.mockResolvedValue(codexLimits({ windows: [week] }));
+    await state().refresh();
+    expect(state().accounts[0]!.limits.map(l => l.label)).toEqual(['week']);
+    ipc.codexLimits.mockResolvedValue(codexLimits({ haveUsage: true, windows: [] }));
+    await state().refresh();
+    expect(state().accounts[0]).toMatchObject({ haveUsage: true, limits: [], sync: 'ready' });
   });
 
   it('marks numbers off the CLI’s cache as stale', async () => {

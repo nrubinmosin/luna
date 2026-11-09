@@ -1,14 +1,16 @@
 //! Rate limits of a ChatGPT subscription, the way Codex's own `/status` gets
 //! them: `GET chatgpt.com/backend-api/wham/usage` with the access token from
 //! `<CODEX_HOME>/auth.json`. Zero tokens. When the network or the token is
-//! not there, the last `token_count` line of a rollout has the same numbers
-//! as of the last turn.
+//! not there, the newer of Luna's last answer and the last `token_count` line
+//! of a rollout (the same numbers as of the last turn) stands in.
 
 use crate::throttle::{self, now_ms};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 pub const RATE_429: &str = "rate-limited";
@@ -114,14 +116,31 @@ fn read_auth(account_path: &str) -> Option<Auth> {
     })
 }
 
+/// A window's name from its length: "5 hours" and "week" for the two Codex
+/// has had, any other length spelled out, so a new one is shown, not dropped.
 pub fn window_label(minutes: Option<i64>) -> String {
+    let count = |n: i64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
     match minutes {
         Some(300) => "5 hours".into(),
         Some(10080) => "week".into(),
-        Some(m) if m > 0 && m % 1440 == 0 => format!("{} days", m / 1440),
-        Some(m) if m > 0 && m % 60 == 0 => format!("{} hours", m / 60),
+        Some(m) if m > 0 && m % 1440 == 0 => count(m / 1440, "day"),
+        Some(m) if m > 0 && m % 60 == 0 => count(m / 60, "hour"),
         Some(m) if m > 0 => format!("{m} min"),
         _ => "limit".into(),
+    }
+}
+
+/// Whether a window length other than the two Codex has had is yet to be
+/// logged: once a run, as every poll brings it again.
+fn length_is_news(minutes: Option<i64>) -> bool {
+    static SAID: Mutex<BTreeSet<Option<i64>>> = Mutex::new(BTreeSet::new());
+    !matches!(minutes, Some(300 | 10080)) && SAID.lock().unwrap_or_else(|e| e.into_inner()).insert(minutes)
+}
+
+fn note_length(minutes: Option<i64>) {
+    if length_is_news(minutes) {
+        let length = minutes.map_or("no stated length".to_string(), |m| format!("{m} min"));
+        crate::log::info("codex-limits", &format!("a rate-limit window of {length}, new to Luna; shown as {:?}", window_label(minutes)));
     }
 }
 
@@ -129,17 +148,17 @@ fn iso(secs: Option<i64>) -> Option<String> {
     chrono::DateTime::from_timestamp(secs?, 0).map(|t| t.to_rfc3339())
 }
 
-/// One window of the `wham/usage` response.
+/// One window of the `wham/usage` response; none without its share, which
+/// is no window at 0%.
 fn window_from_api(id: &str, label: Option<&str>, w: &Value) -> Option<LimitWindow> {
-    if !w.is_object() {
-        return None;
-    }
+    let used = w["used_percent"].as_f64()? / 100.0;
     let secs = w["limit_window_seconds"].as_i64();
     let minutes = secs.filter(|s| *s > 0).map(|s| (s + 59) / 60);
+    note_length(minutes);
     Some(LimitWindow {
         id: id.into(),
         label: label.map(str::to_owned).unwrap_or_else(|| window_label(minutes)),
-        used: w["used_percent"].as_f64().unwrap_or(0.0) / 100.0,
+        used,
         window_minutes: minutes,
         resets_at: iso(w["reset_at"].as_i64()),
     })
@@ -176,14 +195,13 @@ pub fn windows_from_rollout(snapshot: &Value) -> (Vec<LimitWindow>, Option<Strin
     let mut out = vec![];
     for (id, key) in [("primary", "primary"), ("secondary", "secondary")] {
         let w = &snapshot[key];
-        if !w.is_object() {
-            continue;
-        }
+        let Some(used) = w["used_percent"].as_f64() else { continue };
         let minutes = w["window_minutes"].as_i64();
+        note_length(minutes);
         out.push(LimitWindow {
             id: id.into(),
             label: window_label(minutes),
-            used: w["used_percent"].as_f64().unwrap_or(0.0) / 100.0,
+            used: used / 100.0,
             window_minutes: minutes,
             resets_at: iso(w["resets_at"].as_i64()),
         });
@@ -217,19 +235,52 @@ fn get_usage(auth: &Auth) -> Result<Value, String> {
     resp.into_json().map_err(|e| e.to_string())
 }
 
-fn from_rollout(out: &mut CodexLimits, account_path: &str) {
-    let Some((snapshot, ts)) = super::session::latest_rate_limits(account_path) else { return };
-    let (windows, plan) = windows_from_rollout(&snapshot);
-    if windows.is_empty() {
-        return;
-    }
+/// The last answer from the endpoint, per account path, and when it came.
+fn last_answer() -> &'static Mutex<HashMap<String, (u64, Value)>> {
+    static LAST: OnceLock<Mutex<HashMap<String, (u64, Value)>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// What is known without asking the endpoint: Luna's own last answer from it,
+/// or the newest rollout's snapshot, whichever was taken later. Each is the
+/// whole picture, so the older would bring back a window the newer one no
+/// longer has. A snapshot with no window in it says nothing.
+fn from_newest_known(out: &mut CodexLimits, account_path: &str) {
+    let remembered = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
+    let rollout = super::session::latest_rate_limits(account_path).and_then(|(snapshot, ts)| {
+        let (windows, plan) = windows_from_rollout(&snapshot);
+        let at = chrono::DateTime::parse_from_rfc3339(&ts).ok().map(|t| t.timestamp_millis().max(0) as u64);
+        (!windows.is_empty()).then_some((at, windows, plan))
+    });
+    let rollout = match (remembered, rollout) {
+        (Some((said_at, _)), Some(r @ (Some(at), _, _))) if at > said_at => r,
+        (Some((said_at, body)), _) => return from_answer(out, &body, said_at),
+        (None, Some(r)) => r,
+        (None, None) => return,
+    };
+    let (at, windows, plan) = rollout;
     out.windows = windows;
     out.have_usage = true;
     out.source = Some("rollout".into());
-    out.fetched_at_ms = chrono::DateTime::parse_from_rfc3339(&ts).ok().map(|t| t.timestamp_millis() as f64);
+    out.fetched_at_ms = at.map(|at| at as f64);
     if out.plan.is_none() {
         out.plan = plan;
     }
+}
+
+/// A `wham/usage` answer, taken at `at`, into the DTO. One that carries its
+/// `rate_limit` is the whole picture even with no window in it: the windows
+/// it lacks are gone, so it is usage known (none), not a round that brought
+/// nothing, through which the UI keeps the last numbers it had.
+fn from_answer(out: &mut CodexLimits, body: &Value, at: u64) {
+    let (windows, plan) = windows_from_api(body);
+    if plan.is_some() {
+        out.plan = plan;
+    }
+    out.windows = windows;
+    out.have_usage = !out.windows.is_empty() || body["rate_limit"].is_object();
+    out.source = Some("network".into());
+    out.fetched_at_ms = Some(at as f64);
 }
 
 /// Async so the blocking HTTP work leaves the main thread free. `force` is a
@@ -251,36 +302,36 @@ fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimits, String> 
 
     if auth.expired {
         out.stale = true;
-        from_rollout(&mut out, account_path);
+        from_newest_known(&mut out, account_path);
         return Ok(out);
     }
 
     if let Some(secs) = throttle::remaining(account_path).filter(|_| !force) {
         out.rate_limited = Some(secs);
-        from_rollout(&mut out, account_path);
+        from_newest_known(&mut out, account_path);
         return Ok(out);
     }
 
     match get_usage(&auth) {
         Ok(body) => {
-            let (windows, plan) = windows_from_api(&body);
-            if plan.is_some() {
-                out.plan = plan;
-            }
-            out.windows = windows;
-            out.have_usage = !out.windows.is_empty();
-            out.source = Some("network".into());
-            out.fetched_at_ms = Some(now_ms() as f64);
+            let at = now_ms();
+            from_answer(&mut out, &body, at);
             throttle::clear(account_path);
+            // One without its rate limits says nothing to fall back on.
+            if out.have_usage {
+                if let Ok(mut m) = last_answer().lock() {
+                    m.insert(account_path.to_string(), (at, body));
+                }
+            }
         }
         Err(e) if e.starts_with(RATE_429) => {
             let secs: u64 = e.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0);
             out.rate_limited = Some(throttle::hit("codex-limits", account_path, secs));
-            from_rollout(&mut out, account_path);
+            from_newest_known(&mut out, account_path);
         }
         Err(e) => {
             crate::log::warn("codex-limits", &format!("usage failed for {account_path}: {e}"));
-            from_rollout(&mut out, account_path);
+            from_newest_known(&mut out, account_path);
             if !out.have_usage {
                 return Err(e);
             }
@@ -345,7 +396,134 @@ mod tests {
         assert_eq!(window_label(Some(300)), "5 hours");
         assert_eq!(window_label(Some(10080)), "week");
         assert_eq!(window_label(Some(2880)), "2 days");
+        assert_eq!(window_label(Some(1440)), "1 day");
+        assert_eq!(window_label(Some(60)), "1 hour");
         assert_eq!(window_label(Some(90)), "90 min");
         assert_eq!(window_label(None), "limit");
+    }
+
+    /// The answer as the endpoint gave it on 2026-11-09: the week alone.
+    #[test]
+    fn a_window_the_answer_lacks_is_absent_not_zero() {
+        let body: Value = serde_json::from_str(
+            r#"{"plan_type":"plus",
+                "rate_limit":{"allowed":true,"limit_reached":false,
+                  "primary_window":{"used_percent":37,"limit_window_seconds":604800,"reset_after_seconds":1000,"reset_at":1789000000},
+                  "secondary_window":null}}"#,
+        )
+        .unwrap();
+        let (w, _) = windows_from_api(&body);
+        assert_eq!(w.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["week"]);
+
+        // A window without its share is no window either.
+        let body = serde_json::json!({ "rate_limit": {
+            "primary_window": { "limit_window_seconds": 18000, "reset_at": 1789000000 },
+            "secondary_window": { "used_percent": 40, "limit_window_seconds": 604800, "reset_at": 1789000000 } } });
+        assert_eq!(windows_from_api(&body).0.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(), ["secondary"]);
+        let snap =
+            serde_json::json!({ "primary": { "window_minutes": 300 }, "secondary": { "used_percent": 40, "window_minutes": 10080 } });
+        assert_eq!(windows_from_rollout(&snap).0.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["week"]);
+    }
+
+    #[test]
+    fn a_window_of_a_new_length_is_kept_under_its_length() {
+        let body: Value = serde_json::from_str(
+            r#"{"rate_limit":{
+                  "primary_window":{"used_percent":12,"limit_window_seconds":86400,"reset_at":1789000000},
+                  "secondary_window":{"used_percent":64,"limit_window_seconds":2592000,"reset_at":1790000000}},
+                "additional_rate_limits":[{"limit_name":"GPT-5 Codex Spark","metered_feature":"codex_spark",
+                  "rate_limit":{"primary_window":{"used_percent":5,"limit_window_seconds":7200,"reset_at":1789001000}}}]}"#,
+        )
+        .unwrap();
+        let (w, _) = windows_from_api(&body);
+        let rows: Vec<(&str, &str, f64, Option<i64>)> =
+            w.iter().map(|w| (w.id.as_str(), w.label.as_str(), w.used, w.window_minutes)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("primary", "1 day", 0.12, Some(1440)),
+                ("secondary", "30 days", 0.64, Some(43200)),
+                ("codex_spark", "GPT-5 Codex Spark · 2 hours", 0.05, Some(120)),
+            ]
+        );
+        let snap = serde_json::json!({ "primary": { "used_percent": 3, "window_minutes": 1440, "resets_at": 1789000000 } });
+        assert_eq!(windows_from_rollout(&snap).0[0].label, "1 day");
+    }
+
+    /// An answer whose rate limits hold no window is usage known, none of it:
+    /// the UI keeps its last numbers only through a round that brought nothing.
+    #[test]
+    fn an_answer_with_no_window_left_is_usage_known_not_nothing() {
+        let mut out = CodexLimits::default();
+        let week = serde_json::json!({ "rate_limit": {
+            "primary_window": { "used_percent": 96, "limit_window_seconds": 604800, "reset_at": 1789000000 } } });
+        from_answer(&mut out, &week, 1);
+        assert_eq!((out.have_usage, out.windows.len()), (true, 1));
+
+        for empty in [
+            serde_json::json!({ "rate_limit": { "primary_window": null, "secondary_window": null } }),
+            serde_json::json!({ "rate_limit": { "primary_window": { "limit_window_seconds": 604800 } } }),
+        ] {
+            from_answer(&mut out, &empty, 2);
+            assert_eq!((out.have_usage, out.windows.len(), out.fetched_at_ms), (true, 0, Some(2.0)), "{empty}");
+        }
+
+        // A body without its rate limits says nothing about the windows.
+        from_answer(&mut out, &serde_json::json!({ "plan_type": "plus" }), 3);
+        assert!(!out.have_usage);
+    }
+
+    /// An account folder with an access token long expired, so that a fetch
+    /// falls back at once and asks nothing, and one rollout written `ago` ms
+    /// before now, with a 5-hour window at 40% and the week at 96%.
+    fn account_with_rollout(tag: &str, ago: u64) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("luna-codex-limits-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":1}"#);
+        let today = chrono::Local::now();
+        let day = dir.join("sessions").join(today.format("%Y/%m/%d").to_string());
+        std::fs::create_dir_all(&day).unwrap();
+        let auth = serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig") } });
+        std::fs::write(dir.join("auth.json"), auth.to_string()).unwrap();
+        let at = chrono::DateTime::from_timestamp_millis((now_ms() - ago) as i64).unwrap().to_rfc3339();
+        let line = serde_json::json!({ "timestamp": at, "type": "event_msg", "payload": { "type": "token_count", "info": null, "rate_limits": {
+            "primary": { "used_percent": 40, "window_minutes": 300, "resets_at": null },
+            "secondary": { "used_percent": 96, "window_minutes": 10080, "resets_at": null } } } });
+        let name = format!("rollout-{}-limits-test.jsonl", today.format("%Y-%m-%dT%H-%M-%S"));
+        std::fs::write(day.join(name), format!("{line}\n")).unwrap();
+        let path = dir.to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    #[test]
+    fn an_older_rollout_does_not_bring_back_a_window_a_newer_answer_lacks() {
+        let week_only = serde_json::json!({ "rate_limit": {
+            "primary_window": { "used_percent": 41, "limit_window_seconds": 604800, "reset_at": 1789000000 }, "secondary_window": null } });
+        let labels = |out: &CodexLimits| out.windows.iter().map(|w| w.label.clone()).collect::<Vec<_>>();
+
+        // The rollout a minute old; the endpoint's answer since has the week
+        // alone. The next fetch that cannot ask:
+        let (dir, path) = account_with_rollout("newer-answer", 60_000);
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, week_only.clone()));
+        let out = fetch_limits(&path, false).unwrap();
+        assert!(out.stale, "fell back, asked nothing");
+        assert_eq!((labels(&out), out.source.as_deref()), (vec!["week".to_string()], Some("network")));
+        last_answer().lock().unwrap().remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The other way round the rollout is the newer, and stands.
+        let (dir, path) = account_with_rollout("newer-rollout", 10_000);
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 60_000, week_only));
+        let out = fetch_limits(&path, false).unwrap();
+        assert_eq!((labels(&out), out.source.as_deref()), (vec!["5 hours".to_string(), "week".to_string()], Some("rollout")));
+        last_answer().lock().unwrap().remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_window_length_is_logged_once() {
+        assert!(!length_is_news(Some(300)) && !length_is_news(Some(10080)), "the two Codex has had");
+        assert!(length_is_news(Some(4321)));
+        assert!(!length_is_news(Some(4321)), "every poll brings it again");
     }
 }

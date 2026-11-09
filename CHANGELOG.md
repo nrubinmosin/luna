@@ -36,6 +36,22 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   picking another folder resets. Ctrl+Shift+N takes the same start. On Codex
   the box shows off, and the chat starts without it, unless hooks run unasked.
   A folder's start kept by an earlier version leaves the guard to Settings.
+- A usage window the provider did not send showed as 0%. Claude's usage
+  endpoint stopped sending the 5-hour session window, and every Claude account
+  then had a "5 hours" window at 0% with no reset, in the Accounts window, the
+  status bar and what `luna_account_list` and `luna_account_get` give agents.
+  A window that is not sent is now left out everywhere, the account choice of a
+  spawn given a list included, which judges an account by the windows it has.
+  A Codex answer with no window left no longer keeps the last ones on show,
+  and neither the CLI's cache nor a Codex rollout stands in any more for a
+  newer answer from Luna, which brought back a window that answer no longer
+  had.
+- A Claude usage row of a kind Luna did not know was dropped without a trace,
+  so a new or renamed window vanished. It is now shown under the server's own
+  name for it with its kind, "monthly (monthly_all)", and its kind is logged
+  once. A Codex window of a length other
+  than five hours or a week was already shown, named by its length; "1 day"
+  and "1 hour" no longer read "1 days" and "1 hours".
 
 ## [0.11.0] - 2026-11-09
 
