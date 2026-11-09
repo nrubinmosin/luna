@@ -95,16 +95,20 @@ read below them: the record loaded or saved (`store.rs`), a copy written
 data folder others share, a link planted on the way would otherwise take all
 of it to a folder another user holds; `handoffs` is one of the data folder's
 own names (`paths.rs` `OWN_NAMES`) for the shared-folder privacy pass. The
-drafts folder alone is checked by `boundary::sandbox_chain`'s last step
-(`secret::sandbox_dir`): on Windows its DACL may keep, beside the private
-three (this user, SYSTEM, Administrators), the allow ACEs a CLI's sandbox gave
-itself for a SID of the account form that names no account
-(`secret::sddl_private_but_sandbox`, `acl::names_account`): Codex 0.167.0's
-unelevated sandbox adds an inheritable Modify ACE for the account's capability
-SID to each `--add-dir`, which a private DACL put back would take away. Any
-other ACE (a user, a group, Everyone) and the folder is made private again,
-that grant with it; the data folder's privacy check takes such a folder as
-private too. What lies in them is checked at its own name: `handoffs.json` and
+drafts folder, last, is checked by `secret::sandbox_dir`: on Windows its DACL
+may keep, beside the private three (this user, SYSTEM, Administrators), allow
+ACEs for the SIDs its chat's CLI's sandbox has for it, and only those: for a
+Codex chat, the SID its account's `<CODEX_HOME>/cap_sid` names for the folder
+under `writable_root_by_path` (`codex/sandbox.rs` `sids_for_root`, read
+without following a link, of this user's making, at most 256 KB), as Codex
+0.167.0's unelevated sandbox adds an inheritable Modify ACE for it to each
+`--add-dir`, which a private DACL put back would take away; for a Claude Code
+chat, none. Any other ACE (a user, a group, Everyone, a SID that names no
+account but is not that one) and the folder is made private again, that grant
+with it, and the log names what went (and why the SID was not known, where
+`cap_sid` would not read). The data folder's privacy check takes such a folder
+as private where a Codex account names the SID for it (`sids_for`). What lies
+in them is checked at its own name: `handoffs.json` and
 a copy are read only as private files of this user's, by their handle, never
 through a link (`secret::read_private`; a store that is not one is not taken
 up, and the log says so), a draft only as one of this user's making

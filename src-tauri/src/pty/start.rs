@@ -613,8 +613,9 @@ pub async fn ensure_claude_session(
         let handoff = handoff_threshold(handoff, tools);
         // Its folder of copies, with the drafts folder it writes its handoff
         // in made private there (agents/handoff `drafts_of`).
-        let handoff_dir =
-            handoff.and_then(|_| crate::agents::handoff::drafts_of(&id).ok()).and_then(|_| crate::agents::handoff::dir_of(&id).ok());
+        let handoff_dir = handoff
+            .and_then(|_| crate::agents::handoff::drafts_of(&id, Provider::Claude, std::path::Path::new(&account_path)).ok())
+            .and_then(|_| crate::agents::handoff::dir_of(&id).ok());
         let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
         // The library's instructions are read as memory of a folder added to
         // the session, which has every added folder's read: not the others'.
@@ -755,7 +756,9 @@ pub async fn ensure_codex_session(
         let handoff = handoff_threshold(handoff, tools);
         // The drafts folder it writes its handoff in, given only where its
         // sandbox writes at all (codex/launch.rs `writes_files`).
-        let drafts = handoff.filter(|_| codex_launch::writes_files(sandbox)).and_then(|_| crate::agents::handoff::drafts_of(&id).ok());
+        let drafts = handoff
+            .filter(|_| codex_launch::writes_files(sandbox))
+            .and_then(|_| crate::agents::handoff::drafts_of(&id, Provider::Codex, std::path::Path::new(&account_path)).ok());
         let mut settings = serde_json::json!({
             "model": chosen_model,
             "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,

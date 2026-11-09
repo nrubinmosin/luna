@@ -96,9 +96,18 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
     };
     crate::log::info("handoff", &format!("{} was served the handoff's instructions: {said}, sha256 {}", label(caller), r.short_sha()));
     // Its drafts folder, private and its own; the folder made the chat's
-    // start makes it too, this call again where it went meanwhile.
-    let drafts = super::drafts_of(caller)?;
-    let settings = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.settings.clone()).unwrap_or_default();
+    // start makes it too, this call again where it went meanwhile, with the
+    // grant its CLI's sandbox gave itself there kept.
+    let (settings, provider, account) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let k = r.known.get(caller);
+        (
+            k.map(|k| k.settings.clone()).unwrap_or_default(),
+            k.map_or(Provider::Claude, |k| k.provider),
+            k.map(|k| k.account_path.clone()).unwrap_or_default(),
+        )
+    };
+    let drafts = super::drafts_of(caller, provider, Path::new(&account))?;
     let suggested = new_draft(&drafts)?;
     Ok(facts::how_to(&source_words(&r), &r.sha256, r.body(), &suggested.to_string_lossy(), unwritable(&settings)))
 }

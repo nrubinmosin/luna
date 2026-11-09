@@ -216,18 +216,6 @@ pub fn walk_down(top: &Path, below: &[&str], mut step: impl FnMut(&Path, usize) 
 pub fn private_chain(top: &Path, below: &[&str]) -> Result<PathBuf, String> {
     walk_down(top, below, |d, _| crate::secret::private_dir(d).map_err(|e| format!("{} is no private folder of Luna's: {e}", d.display())))
 }
-
-/// `private_chain` to a folder Luna gives a session's CLI to write in (a
-/// chat's handoff drafts): the same walk, the innermost checked by
-/// `secret::sandbox_dir`, which leaves the grant the CLI's sandbox gave itself
-/// there and nothing else.
-pub fn sandbox_chain(top: &Path, below: &[&str]) -> Result<PathBuf, String> {
-    walk_down(top, below, |d, depth| {
-        let made = if depth == below.len() { crate::secret::sandbox_dir(d) } else { crate::secret::private_dir(d) };
-        made.map_err(|e| format!("{} is no private folder of Luna's: {e}", d.display()))
-    })
-}
-
 /// The file at `path` itself, for reading a file someone other than Luna put
 /// there (a session's handoff, the library's override of the handoff's
 /// instructions): a link there opened as the link (and then refused by its
