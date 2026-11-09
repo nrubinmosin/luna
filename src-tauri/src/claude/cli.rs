@@ -3,7 +3,7 @@
 //! sha256s and sizes, signed by Anthropic's release key (`manifest_sig`), and
 //! a bare executable per platform.
 
-use crate::cli::{download_to, sane_version, Package, PackageFile, Source};
+use crate::cli::{download_to, sane_version, version_cmp, Package, PackageFile, Source};
 use crate::provider::Provider;
 use std::fs;
 use std::io::Read;
@@ -52,19 +52,6 @@ fn latest(agent: &ureq::Agent) -> Result<String, String> {
     // left in `versions/` would otherwise be flipped back to with no fetch.
     at_or_above_floor(&crate::cli::root(Provider::Claude), &version)?;
     Ok(version)
-}
-
-/// Orders two `sane_version`s by their dotted numbers (each part's leading
-/// digits; a missing part counts as 0), so 2.1.100 is above 2.1.99.
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let parts = |v: &str| -> Vec<u64> {
-        v.split('.').map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0)).collect()
-    };
-    let (a, b) = (parts(a), parts(b));
-    (0..a.len().max(b.len()))
-        .map(|i| a.get(i).unwrap_or(&0).cmp(b.get(i).unwrap_or(&0)))
-        .find(|o| o.is_ne())
-        .unwrap_or(std::cmp::Ordering::Equal)
 }
 
 /// The floor: `MIN_VERSION`, or the highest signed version accepted, if

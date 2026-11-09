@@ -12,6 +12,7 @@
 //! ```text
 //! <data>/claude-cli/
 //!   current                     text file: the version directory sessions spawn from
+//!   previous                    text file: the one `current` named before, kept to go back to
 //!   versions/<ver>/claude.exe   one directory per installed version
 //!   versions/<ver>/luna-install.json   its completion record
 //!   staging/<ver>-<random>/     a download in progress
@@ -20,6 +21,7 @@
 //!   versions/<ver>/bin/codex.exe (+ codex-path/, codex-resources/ from the package)
 //!   versions/<ver>/luna-install.json
 //!   staging/
+//!   in-use/<dir>                held (shared) by each process started from <dir> (`in_use`)
 //! ```
 //!
 //! Versions are never overwritten in place: Windows will not let a running
@@ -28,13 +30,19 @@
 //! release says the package is, given its completion record last, and
 //! renamed into `versions/` under a name nothing has (`<ver>`, or `<ver>~<n>`
 //! while an older `<ver>` directory is still there). `current` then flips to
-//! it, and old directories are swept whenever nothing holds them any more.
+//! it, `previous` to what it named before, and old directories are swept
+//! whenever nothing runs from them any more; the previous one stays, to go
+//! back to by hand ("Use" in Settings).
 //! A directory counts as installed by its record alone, so a crash
 //! mid-download or mid-unpack leaves nothing that passes for one.
 //!
 //! This module is the machinery — layout, download, checksum, status, the
 //! periodic check. Where a version comes from is each provider's `Source`
 //! (`claude::cli`, `codex::cli`).
+
+mod in_use;
+
+pub use in_use::{session_version, InUse};
 
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -89,6 +97,9 @@ const RECORD: &str = "luna-install.json";
 /// is never run (`current_in`). A tree without it is from before records,
 /// whose `current` was only ever moved to a finished install.
 const RECORDED: &str = "recorded";
+
+/// At a provider's root: the directory `current` named before its last flip.
+const PREVIOUS: &str = "previous";
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Record {
@@ -255,6 +266,42 @@ pub fn binary(provider: Provider) -> PathBuf {
     }
 }
 
+/// `binary`, for a process that is about to start: with a hold on its
+/// version directory that the caller keeps until the process has exited, so
+/// the sweep leaves that directory be (`in_use`). `session` is the chat or
+/// helper it is for, whose version `luna_session_get` then shows.
+pub fn launch(provider: Provider, session: Option<&str>) -> (PathBuf, Option<InUse>) {
+    let src = source(provider);
+    let (path, held) = launch_in(&root(provider), src.bin_rel);
+    match path {
+        Some((path, version)) => {
+            if let Some(session) = session {
+                in_use::note_session(session, provider, &version);
+            }
+            (path, held)
+        }
+        None => (PathBuf::from(src.path_fallback), None),
+    }
+}
+
+/// The exe `current` names under `root`, its version, and a hold on its
+/// directory taken before `current` is read a second time: a flip and a
+/// sweep between the two reads would have taken the directory the first one
+/// named. None for the path where nothing is current; no hold where the lock
+/// cannot be had.
+fn launch_in(root: &Path, bin_rel: &str) -> (Option<(PathBuf, String)>, Option<InUse>) {
+    let exe = |c: Current| (root.join("versions").join(&c.dir).join(bin_rel), c.version);
+    for _ in 0..3 {
+        let Some(c) = current_in(root, bin_rel) else { return (None, None) };
+        let held = in_use::hold(root, &c.dir);
+        if current_in(root, bin_rel).is_some_and(|again| again.dir == c.dir) {
+            return (Some(exe(c)), held);
+        }
+    }
+    // `current` moved under each of three reads: the latest, unheld.
+    (current_in(root, bin_rel).map(exe), None)
+}
+
 // ---------------------------------------------------------------- status --
 
 fn publish(provider: Provider, f: impl FnOnce(&mut CliStatus)) {
@@ -276,6 +323,106 @@ pub fn cli_status(provider: Provider) -> CliStatus {
 #[tauri::command]
 pub fn cli_update_now(provider: Provider) {
     std::thread::spawn(move || update(provider));
+}
+
+/// One installed version, as Settings → CLIs lists it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionRow {
+    /// Its directory under `versions/`: what "Use" names.
+    pub dir: String,
+    pub version: String,
+    pub current: bool,
+    pub previous: bool,
+    /// A process of Luna's runs from it now.
+    pub in_use: bool,
+}
+
+/// A provider's installed versions and what each is to Luna.
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CliVersions {
+    pub provider: Option<Provider>,
+    /// Newest first.
+    pub versions: Vec<VersionRow>,
+}
+
+/// Every recorded, intact install under `root`, newest first.
+fn installed_all(root: &Path, bin_rel: &str) -> Vec<(String, Record)> {
+    let Ok(entries) = fs::read_dir(root.join("versions")) else { return Vec::new() };
+    let mut out: Vec<(String, Record)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let meta = fs::symlink_metadata(entry.path()).ok()?;
+            if !plain_name(&name) || is_link(&meta) || !meta.is_dir() {
+                return None;
+            }
+            let record = read_record(&entry.path()).ok()?;
+            intact(&entry.path(), &record, bin_rel).then_some((name, record))
+        })
+        .collect();
+    out.sort_by(|a, b| version_cmp(&b.1.version, &a.1.version).then_with(|| b.0.cmp(&a.0)));
+    out
+}
+
+fn versions_in(root: &Path, bin_rel: &str) -> Vec<VersionRow> {
+    let current = current_in(root, bin_rel).map(|c| c.dir);
+    let previous = previous_in(root, bin_rel);
+    installed_all(root, bin_rel)
+        .into_iter()
+        .map(|(dir, record)| VersionRow {
+            current: current.as_deref() == Some(dir.as_str()),
+            previous: previous.as_deref() == Some(dir.as_str()),
+            in_use: in_use::busy(root, &dir),
+            version: record.version,
+            dir,
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn cli_versions(provider: Provider) -> CliVersions {
+    let src = source(provider);
+    CliVersions { provider: Some(provider), versions: versions_in(&root(provider), src.bin_rel) }
+}
+
+/// "Use" in Settings: makes the installed directory `dir` current. Running
+/// sessions keep what they run; new ones start on it.
+#[tauri::command]
+pub async fn cli_use_version(provider: Provider, dir: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || use_version(provider, &dir)).await.map_err(|e| e.to_string())?
+}
+
+fn use_version(provider: Provider, dir: &str) -> Result<(), String> {
+    let busy = &BUSY[provider.index()];
+    if busy.swap(true, Ordering::SeqCst) {
+        return Err("an update of this CLI is under way; try again once it is done".into());
+    }
+    let src = source(provider);
+    let result = use_version_in(&root(provider), src.bin_rel, dir);
+    busy.store(false, Ordering::SeqCst);
+    match &result {
+        Ok(version) => crate::log::info("cli", &format!("{} {version} is now current by hand (versions/{dir})", provider.as_str())),
+        Err(e) => crate::log::warn("cli", &format!("{} use {dir}: {e}", provider.as_str())),
+    }
+    publish(provider, |s| {
+        s.version = current_version(provider);
+        s.path = binary(provider).to_string_lossy().into_owned();
+    });
+    result.map(|_| ())
+}
+
+/// Makes the installed directory `dir` current, as the update pass would,
+/// and returns its version.
+fn use_version_in(root: &Path, bin_rel: &str, dir: &str) -> Result<String, String> {
+    let Some((_, record)) = installed_all(root, bin_rel).into_iter().find(|(d, _)| d == dir) else {
+        return Err(format!("{dir} is not an installed version"));
+    };
+    mark_recorded(root)?;
+    flip_in(root, bin_rel, dir)?;
+    prune_in(root, bin_rel);
+    Ok(record.version)
 }
 
 /// Startup: one update pass right away, then one every few hours. The first
@@ -305,6 +452,19 @@ pub fn sane_version(v: &str, what: &str) -> Result<String, String> {
         return Err(format!("unexpected version text from {what}: {:?}", v.chars().take(40).collect::<String>()));
     }
     Ok(v)
+}
+
+/// Orders two `sane_version`s by their dotted numbers (each part's leading
+/// digits; a missing part counts as 0), so 2.1.100 is above 2.1.99.
+pub(crate) fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |v: &str| -> Vec<u64> {
+        v.split('.').map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0)).collect()
+    };
+    let (a, b) = (parts(a), parts(b));
+    (0..a.len().max(b.len()))
+        .map(|i| a.get(i).unwrap_or(&0).cmp(b.get(i).unwrap_or(&0)))
+        .find(|o| o.is_ne())
+        .unwrap_or(std::cmp::Ordering::Equal)
 }
 
 /// Streams `url` into `part`, hashing as it goes, and returns the sha256 hex.
@@ -424,17 +584,39 @@ fn update_in(
         None => install_in(root, bin_rel, latest, fetch)?,
     };
     mark_recorded(root)?;
-    // The flip is the last step, so a crash anywhere above leaves `current`
-    // pointing at a directory that is known to be complete.
-    // Through a temp file: the core reads `current` for every spawn, and a
-    // read between a plain write's truncate and its bytes would find no
-    // version and spawn whatever is on PATH. Private as it is made, under a
-    // random name: in a data dir open to others a `current` of theirs would
-    // pick the binary every session runs. Synced, so a power cut leaves the
-    // old name or the new one.
-    crate::secret::write_private_synced(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))?;
+    flip_in(root, bin_rel, &dir)?;
     prune_in(root, bin_rel);
     Ok((dir, true))
+}
+
+/// Points `current` at `dir`, an installed directory, and `previous` at what
+/// `current` named before. The flip is the last step of an install, so a
+/// crash anywhere before it leaves `current` pointing at a directory that is
+/// known to be complete; `previous` is written first, so a crash between the
+/// two leaves both naming the old one.
+/// Through a temp file: the core reads `current` for every spawn, and a read
+/// between a plain write's truncate and its bytes would find no version and
+/// spawn whatever is on PATH. Private as it is made, under a random name: in
+/// a data dir open to others a `current` of theirs would pick the binary
+/// every session runs. Synced, so a power cut leaves the old name or the new
+/// one.
+fn flip_in(root: &Path, bin_rel: &str, dir: &str) -> Result<(), String> {
+    if let Some(old) = current_in(root, bin_rel).filter(|c| c.dir != dir) {
+        crate::secret::write_private_synced(&root.join(PREVIOUS), old.dir.as_bytes()).map_err(|e| format!("write {PREVIOUS}: {e}"))?;
+    }
+    crate::secret::write_private_synced(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))
+}
+
+/// The directory `previous` names, while it is still a whole install.
+fn previous_in(root: &Path, bin_rel: &str) -> Option<String> {
+    let name = fs::read_to_string(root.join(PREVIOUS)).ok()?;
+    let name = name.trim();
+    if !plain_name(name) {
+        return None;
+    }
+    let dir = root.join("versions").join(name);
+    let record = read_record(&dir).ok()?;
+    intact(&dir, &record, bin_rel).then(|| name.to_string())
 }
 
 /// Writes the `RECORDED` marker where it is not there yet.
@@ -664,11 +846,13 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
     fs::remove_dir(path)
 }
 
-/// Drops every version directory except the current one. A directory whose
-/// exe a session still runs will not go on Windows; that is fine — it goes
-/// on the next pass after the session ends.
+/// Drops every version directory but the current one, the previous one and
+/// those a process of Luna's runs from (`in_use`); such a one goes on a later
+/// pass, once nothing runs from it. On Windows a running exe would not go
+/// anyway; on Unix the hold is all that keeps a running session's directory,
+/// its helpers with it.
 fn prune_in(root: &Path, bin_rel: &str) {
-    let keep = current_in(root, bin_rel).map(|c| c.dir);
+    let keep: Vec<String> = current_in(root, bin_rel).map(|c| c.dir).into_iter().chain(previous_in(root, bin_rel)).collect();
     let versions = root.join("versions");
     if !link_free_below(root, &versions) {
         crate::log::warn("cli", &format!("{} is a link or junction; not sweeping through it", versions.display()));
@@ -677,34 +861,55 @@ fn prune_in(root: &Path, bin_rel: &str) {
     let Ok(entries) = fs::read_dir(&versions) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if Some(name.as_str()) == keep.as_deref() {
+        if keep.contains(&name) {
             continue;
         }
+        // Held until the directory is gone: nothing starts from it meanwhile.
+        let Some(sweeping) = in_use::try_sweep(root, &name) else {
+            crate::log::info("cli", &format!("keeping {name}: a process of Luna's runs from it"));
+            continue;
+        };
         let path = entry.path();
-        // A link anywhere on the way to the exe (the version directory, its
-        // `bin/`) is none of Luna's making: the directory goes by
-        // `remove_tree`, which takes a link as itself, and nothing is
-        // deleted through one.
-        if !link_free_below(root, &path.join(bin_rel)) {
-            if let Err(e) = remove_tree(&path) {
-                crate::log::info("cli", &format!("keeping {}: {e}", path.display()));
-            }
-            continue;
+        sweep(root, bin_rel, &path);
+        if fs::symlink_metadata(&path).is_err() {
+            sweeping.done();
         }
-        // The exe first: Windows refuses it while a session runs it, and the
-        // directory then stays whole. Removed from the top, it would lose the
-        // files beside the exe (Codex's codex-path/, codex-resources/) under
-        // the running session before failing on the exe itself.
-        match fs::remove_file(path.join(bin_rel)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                crate::log::info("cli", &format!("keeping {}: {e}", path.display()));
-                continue;
+    }
+    // A hold's file whose directory went another way (a crash mid-sweep).
+    for entry in fs::read_dir(root.join("in-use")).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if plain_name(&name) && fs::symlink_metadata(versions.join(&name)).is_err() {
+            if let Some(sweeping) = in_use::try_sweep(root, &name) {
+                sweeping.done();
             }
-            _ => {}
         }
-        if let Err(e) = remove_tree(&path) {
+    }
+}
+
+/// Removes one version directory, its exe first.
+fn sweep(root: &Path, bin_rel: &str, path: &Path) {
+    // A link anywhere on the way to the exe (the version directory, its
+    // `bin/`) is none of Luna's making: the directory goes by `remove_tree`,
+    // which takes a link as itself, and nothing is deleted through one.
+    if !link_free_below(root, &path.join(bin_rel)) {
+        if let Err(e) = remove_tree(path) {
             crate::log::info("cli", &format!("keeping {}: {e}", path.display()));
         }
+        return;
+    }
+    // The exe first: Windows refuses it while something runs it, and the
+    // directory then stays whole. Removed from the top, it would lose the
+    // files beside the exe (Codex's codex-path/, codex-resources/) under a
+    // process started outside Luna's count before failing on the exe itself.
+    match fs::remove_file(path.join(bin_rel)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            crate::log::info("cli", &format!("keeping {}: {e}", path.display()));
+            return;
+        }
+        _ => {}
+    }
+    if let Err(e) = remove_tree(path) {
+        crate::log::info("cli", &format!("keeping {}: {e}", path.display()));
     }
 }
 
@@ -926,6 +1131,64 @@ mod tests {
         assert!(current_in(&root, BIN).is_some_and(|c| c.version == "2.0.0"));
         let _ = remove_tree(&root);
         let _ = remove_tree(&outside);
+    }
+
+    fn dirs(root: &Path) -> Vec<String> {
+        let mut out: Vec<String> =
+            fs::read_dir(root.join("versions")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        out.sort();
+        out
+    }
+
+    /// The defect: every pass kept `current` alone, so nothing was left to go
+    /// back to, and on Unix a running session's directory went from under it.
+    #[test]
+    fn the_previous_version_and_those_in_use_survive_the_sweep() {
+        let root = scratch("keep");
+        update_in(&root, BIN, "1.0.0", &mut whole).unwrap();
+        update_in(&root, BIN, "2.0.0", &mut whole).unwrap();
+        assert_eq!(dirs(&root), ["1.0.0", "2.0.0"]);
+        assert_eq!(previous_in(&root, BIN).as_deref(), Some("1.0.0"));
+
+        // A session starts on 2.0.0 and runs on through two more updates.
+        let (exe, held) = launch_in(&root, BIN);
+        assert_eq!(exe.unwrap(), (root.join("versions").join("2.0.0").join(BIN), "2.0.0".to_string()));
+        let held = held.expect("the directory is held");
+        update_in(&root, BIN, "3.0.0", &mut whole).unwrap();
+        update_in(&root, BIN, "4.0.0", &mut whole).unwrap();
+        assert_eq!(dirs(&root), ["2.0.0", "3.0.0", "4.0.0"], "1.0.0 went; 2.0.0 runs, 3.0.0 is the previous one");
+        assert!(root.join("versions").join("2.0.0").join(FILES[1].0).is_file(), "its helpers too");
+        let rows = versions_in(&root, BIN);
+        assert_eq!(
+            rows.iter().map(|r| (r.version.as_str(), r.current, r.previous, r.in_use)).collect::<Vec<_>>(),
+            [("4.0.0", true, false, false), ("3.0.0", false, true, false), ("2.0.0", false, false, true)]
+        );
+
+        // Once it has exited, the next pass takes it.
+        drop(held);
+        prune_in(&root, BIN);
+        assert_eq!(dirs(&root), ["3.0.0", "4.0.0"]);
+        assert_eq!(entries(&root.join(in_use::DIR)), 0, "the lock files went with their directories");
+        let _ = remove_tree(&root);
+    }
+
+    #[test]
+    fn use_goes_back_to_an_installed_version_and_only_to_one() {
+        let root = scratch("use");
+        update_in(&root, BIN, "1.0.0", &mut whole).unwrap();
+        update_in(&root, BIN, "2.0.0", &mut whole).unwrap();
+        assert_eq!(use_version_in(&root, BIN, "1.0.0").unwrap(), "1.0.0");
+        assert!(current_in(&root, BIN).is_some_and(|c| c.dir == "1.0.0"));
+        assert_eq!(previous_in(&root, BIN).as_deref(), Some("2.0.0"), "and the way forward again is kept");
+        // Not installed, not a plain name, or no longer whole: refused, and
+        // `current` stays.
+        for dir in ["3.0.0", "..", "../1.0.0"] {
+            assert!(use_version_in(&root, BIN, dir).is_err(), "{dir}");
+        }
+        fs::write(root.join("versions").join("2.0.0").join(FILES[1].0), b"cut").unwrap();
+        assert!(use_version_in(&root, BIN, "2.0.0").unwrap_err().contains("not an installed version"));
+        assert!(current_in(&root, BIN).is_some_and(|c| c.dir == "1.0.0"));
+        let _ = remove_tree(&root);
     }
 
     #[test]

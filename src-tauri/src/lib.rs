@@ -207,6 +207,8 @@ macro_rules! app_handler {
             agents::privilege::set_helpers_above_caller,
             cli::cli_status,
             cli::cli_update_now,
+            cli::cli_versions,
+            cli::cli_use_version,
             claude::defaults::claude_defaults,
             claude::limits::account_limits,
             claude::trust::claude_folder_trusted,
