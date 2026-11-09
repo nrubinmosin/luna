@@ -259,7 +259,9 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
     }
-    let mut cmd = std::process::Command::new(crate::cli::binary(provider));
+    // Its version directory held until the process has exited (cli.rs `launch`).
+    let (exe, on_version) = crate::cli::launch(provider, Some(id))?;
+    let mut cmd = std::process::Command::new(exe);
     cmd.args(&args).current_dir(&dir);
     crate::pty::clean_env(&mut cmd);
     for (k, v) in &envs {
@@ -287,7 +289,12 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // that could not be made after it would leave the process running with
     // nobody to reap it or end its turn. It is handed the process once the
     // turn is recorded, and nothing if the turn does not start.
-    type Pipes = (std::process::Child, Option<std::process::ChildStdout>, Option<std::process::ChildStderr>, crate::account_use::Running);
+    type Pipes = (
+        std::process::Child,
+        Option<std::process::ChildStdout>,
+        Option<std::process::ChildStderr>,
+        (crate::account_use::Running, Option<crate::cli::InUse>),
+    );
     let (hand, take) = std::sync::mpsc::channel::<Pipes>();
     {
         let id = id.to_string();
@@ -328,6 +335,8 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 err_reader.await_last_words(&err_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
                 err_reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
+                // For the canary over a new CLI version's first sessions.
+                crate::cli::session_ended(&id, code.is_some_and(|c| c != 0));
                 turn_over(&id, code);
             })
             .map_err(thread_err)?;
@@ -432,7 +441,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     );
     // The reader waits on the other end; should it be gone, the turn still
     // ends here rather than with nobody to say so.
-    if let Err(std::sync::mpsc::SendError((child, _, _, _))) = hand.send((child, stdout, stderr, on_account)) {
+    if let Err(std::sync::mpsc::SendError((child, _, _, _))) = hand.send((child, stdout, stderr, (on_account, on_version))) {
         abandon(child, pid);
         turn_over(id, None);
     }

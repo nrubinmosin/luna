@@ -850,6 +850,7 @@ mod tests {
         assert_eq!(built, Ok(String::new()));
         let (l, mut envs) = (launch.expect("the start was caught"), envs.unwrap());
         Redact::assert_shown(&l.args, &l.envs, &l.cwd, &l.applied);
+        Redact::assert_probed(l.provider, &l.args);
         // Every pane's CLI ends its environment on the terminal it draws into
         // (`Launch::finished`); the cases below leave it out.
         assert_eq!(envs.pop(), Some(("TERM".to_string(), "xterm-256color".to_string())));

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cli-set-channel"
+description = "Enables the cli_set_channel command without any pre-configured scope."
+commands.allow = ["cli_set_channel"]
+
+[[permission]]
+identifier = "deny-cli-set-channel"
+description = "Denies the cli_set_channel command without any pre-configured scope."
+commands.deny = ["cli_set_channel"]

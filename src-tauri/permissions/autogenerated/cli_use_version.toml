@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cli-use-version"
+description = "Enables the cli_use_version command without any pre-configured scope."
+commands.allow = ["cli_use_version"]
+
+[[permission]]
+identifier = "deny-cli-use-version"
+description = "Denies the cli_use_version command without any pre-configured scope."
+commands.deny = ["cli_use_version"]
