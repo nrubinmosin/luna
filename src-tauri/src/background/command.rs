@@ -634,6 +634,7 @@ mod tests {
     fn turn(e: &Entry, id: &str, r: &Redact) -> Turn {
         let (args, dir, envs, applied) = command_for(e, id).unwrap();
         Redact::assert_shown(&args, &envs, &dir, &applied);
+        Redact::assert_probed(e.spec.provider, &args);
         let applied = r.applied(&applied, &envs);
         let args = r.args(&args);
         let data = crate::paths::data_dir();

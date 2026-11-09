@@ -43,9 +43,12 @@
 mod choice;
 mod in_use;
 mod known_good;
+mod probe;
 
 pub use choice::Channel;
 pub use in_use::{session_version, InUse};
+#[cfg(test)]
+pub(crate) use probe::covers as probe_covers;
 
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -713,7 +716,15 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
         choice::Plan::Stay(why) => return Ok(Some(why)),
         choice::Plan::Install { version, chosen } => (version, chosen),
     };
-    let target = Target { version: &version, min_safe: min_safe(provider), chosen };
+    // Marks a version that fails it bad, with why: no pass offers it again.
+    let probe = |exe: &Path| {
+        probe_in(&root, provider, exe, &version).inspect_err(|e| {
+            if let Err(m) = choice::mark_bad_in(&root, &version, &format!("failed the offline probe: {e}")) {
+                crate::log::warn("cli", &m);
+            }
+        })
+    };
+    let target = Target { version: &version, min_safe: min_safe(provider), chosen, probe: &probe };
     if let Some(why) = held_below_floor(&root, src.bin_rel, target) {
         return Ok(Some(why));
     }
@@ -740,6 +751,17 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+/// `probe::probe` of `exe` in a scratch home under `staging/`, which the next
+/// pass sweeps if this one cannot.
+fn probe_in(root: &Path, provider: Provider, exe: &Path, version: &str) -> Result<(), String> {
+    let home = clean_staging(root)?.join(format!("probe-{}", crate::secret::random_hex(4)));
+    fs::create_dir(&home).map_err(|e| format!("mkdir {}: {e}", home.display()))?;
+    crate::log::info("cli", &format!("probing {} {version}", provider.as_str()));
+    let probed = probe::probe(provider, exe, version, &home);
+    let _ = remove_tree(&home);
+    probed
+}
+
 /// What an update pass is to make current.
 #[derive(Clone, Copy)]
 struct Target<'a> {
@@ -750,6 +772,9 @@ struct Target<'a> {
     /// channel's pointer off the network: it may be gone back to below the
     /// floor while it is installed, as "Use" may.
     chosen: bool,
+    /// The offline probe (`probe`) of the exe at the path given, which a
+    /// version must pass before it becomes current.
+    probe: &'a dyn Fn(&Path) -> Result<(), String>,
 }
 
 /// Why the pass leaves `current` be rather than take `target`: a version of
@@ -809,6 +834,12 @@ fn update_in(
         (None, Err(e)) => return Err(e),
         (None, Ok(())) => install_in(root, bin_rel, version, fetch)?,
     };
+    // Whole and where it will run from, before anything runs it as a
+    // session. One that fails stays out of `current`, and the sweep takes it.
+    if let Err(e) = (target.probe)(&root.join("versions").join(&dir).join(bin_rel)) {
+        prune_in(root, bin_rel);
+        return Err(format!("{version} failed the offline probe: {e}"));
+    }
     mark_recorded(root)?;
     flip_in(root, bin_rel, &dir)?;
     prune_in(root, bin_rel);
@@ -1177,14 +1208,19 @@ mod tests {
         Ok(Package { files, verified: "test".into() })
     }
 
+    /// A probe every version passes.
+    fn passes(_: &Path) -> Result<(), String> {
+        Ok(())
+    }
+
     /// What the channel's pointer names, with no minimum of its own.
     fn pointer(version: &str) -> Target<'_> {
-        Target { version, min_safe: "0", chosen: false }
+        Target { version, min_safe: "0", chosen: false, probe: &passes }
     }
 
     /// What this Luna's list names, `known` from it.
     fn chosen(version: &str) -> Target<'_> {
-        Target { version, min_safe: "0", chosen: true }
+        Target { version, min_safe: "0", chosen: true, probe: &passes }
     }
 
     fn list(known: &[&str]) -> known_good::Entry {
@@ -1569,6 +1605,27 @@ mod tests {
         let rows: Vec<_> = v.versions.iter().map(|r| (r.version.as_str(), r.known_good, r.bad.as_deref())).collect();
         assert_eq!(rows, [("3.0.0", true, None), ("1.0.0", true, None)], "2.0.0, neither current nor previous, went");
         assert_eq!((v.floor.as_str(), v.pinned.as_deref(), v.bad.len()), ("3.0.0", Some("3.0.0"), 1));
+        let _ = remove_tree(&root);
+    }
+
+    /// A version that fails the offline probe never becomes current, and
+    /// the sweep takes it; the one before runs on.
+    #[test]
+    fn a_version_that_fails_the_probe_is_not_made_current() {
+        let root = scratch("probe");
+        update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        let probed = std::cell::RefCell::new(Vec::new());
+        let refuse = |exe: &Path| {
+            probed.borrow_mut().push(exe.to_path_buf());
+            Err("`exec` no longer lists --json".to_string())
+        };
+        let target = Target { probe: &refuse, ..pointer("2.0.0") };
+        let e = update_in(&root, BIN, target, &mut hashed).unwrap_err();
+        assert!(e.contains("2.0.0 failed the offline probe: `exec` no longer lists --json"), "{e}");
+        assert_eq!(*probed.borrow(), [root.join("versions").join("2.0.0").join(BIN)], "the exe where it would run from");
+        assert!(current_in(&root, BIN).is_some_and(|c| c.version == "1.0.0"));
+        assert_eq!(dirs(&root), ["1.0.0"], "the refused version went");
+        assert_eq!(floor_in(&root, "0"), "1.0.0");
         let _ = remove_tree(&root);
     }
 
