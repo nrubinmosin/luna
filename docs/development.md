@@ -135,8 +135,11 @@ long helper list, ...), each at 1280×720 and 1024×600, 1280×720 at 125% and
 - a popover still open after a scroll moved its button away.
 
 Shots of each scene and size and `report.json` go to `test-build/fit`
-(`-Out`); `-Scenes` and `-Sizes` narrow a rerun, by the names the output
-prints. It takes some ten minutes, so it is not a gate step: run it on a change
+(`-Out`, which must be a folder under `test-build/`); `-Scenes` and `-Sizes`
+narrow a rerun, by the names the output prints, and a name it does not know
+fails it. A popup an extra does not open fails too, rather than leave the
+scene beneath it to be measured. It takes some ten minutes, and gives up past
+forty or on a page that stops answering, so it is not a gate step: run it on a change
 to how a dialog, popover or panel is sized or scrolls (the `ui-check` skill
 says when). A screen it cannot reach gets a scene, or an entry in `EXTRAS`.
 
