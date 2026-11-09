@@ -97,10 +97,15 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
     crate::log::info("handoff", &format!("{} was served the handoff's instructions: {said}, sha256 {}", label(caller), r.short_sha()));
     // Its drafts folder, its own: made private at the chat's start, the
     // grant its CLI's sandbox gave itself there since kept (`drafts_of`).
-    let drafts = super::drafts_of(caller)?;
+    // None where that start could not make it private: the chat writes its
+    // handoff in its own workspace.
+    let suggested = match super::drafts_refused(caller) {
+        Some(_) => None,
+        None => Some(new_draft(&super::drafts_of(caller)?)?),
+    };
     let settings = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.settings.clone()).unwrap_or_default();
-    let suggested = new_draft(&drafts)?;
-    Ok(facts::how_to(&source_words(&r), &r.sha256, r.body(), &suggested.to_string_lossy(), unwritable(&settings)))
+    let suggested = suggested.map(|p| p.to_string_lossy().into_owned());
+    Ok(facts::how_to(&source_words(&r), &r.sha256, r.body(), suggested.as_deref(), unwritable(&settings)))
 }
 
 /// A name for the chat to write its handoff at, in its `drafts` folder: one of

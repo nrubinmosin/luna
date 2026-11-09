@@ -96,9 +96,43 @@ pub(super) fn copies_of(chat: &str) -> Result<PathBuf, String> {
 /// reaches the folder within the folder of copies it is given (`--add-dir`);
 /// Codex by an `--add-dir` of its own, on which its Windows sandbox then
 /// grants itself write (0.167.0), which `drafts_of` leaves.
+///
+/// One that cannot be made private (a DACL that denies this user WRITE_DAC,
+/// say, while another may write there) is not used until a start can: the
+/// chat is named no drafts folder and none of its files is taken
+/// (`drafts_refused`), the start gives its CLI none, and the log says why.
 pub fn drafts_at_start(chat: &str) -> Result<PathBuf, String> {
-    dir_of(chat)?;
-    private_chain(&root(), &[&crate::paths::id_file_name(chat), DRAFTS])
+    let made = dir_of(chat).and_then(|_| private_chain(&root(), &[&crate::paths::id_file_name(chat), DRAFTS]));
+    let mut refused = refused_drafts().lock().unwrap_or_else(|e| e.into_inner());
+    match &made {
+        Ok(_) => {
+            refused.remove(chat);
+        }
+        Err(why) => {
+            refused.insert(chat.to_string(), why.clone());
+            crate::log::warn("handoff", &format!("{}: its drafts folder is not used until a start makes it private: {why}", label(chat)));
+        }
+    }
+    made
+}
+
+/// The chats whose drafts folder their CLI's last start could not make
+/// private, with why (`drafts_at_start`).
+fn refused_drafts() -> &'static Mutex<HashMap<String, String>> {
+    static R: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+/// Why `chat`'s drafts folder is not to be named to it nor taken a file
+/// from: its CLI's last start could not make it private.
+pub(super) fn drafts_refused(chat: &str) -> Option<String> {
+    refused_drafts().lock().unwrap_or_else(|e| e.into_inner()).get(chat).cloned()
+}
+
+/// What a chat's What Luna applied panel adds to its auto-handoff where its
+/// start gave no drafts folder, the folder not made private for `why`.
+pub fn no_drafts_applied(why: &str) -> String {
+    format!("; no --add-dir: the drafts folder could not be made private ({why}), so the chat writes its handoff outside Luna's folder")
 }
 
 /// `chat`'s drafts folder while its CLI runs, before it is named to the chat
@@ -1010,6 +1044,7 @@ pub fn handoff_transcript(chat_id: String, n: u32, since: Option<u64>) -> Result
 /// `id` is gone for good: its record and its snapshots with it.
 pub fn forget(id: &str) {
     unlisted(id);
+    refused_drafts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if let Err(e) = store::remove(id) {
         crate::log::warn("handoff", &format!("{id}'s handoffs could not be forgotten on disk: {e}"));
     }

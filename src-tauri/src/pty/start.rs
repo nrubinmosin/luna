@@ -613,15 +613,15 @@ pub async fn ensure_claude_session(
         let handoff = handoff_threshold(handoff, tools);
         // Its folder of copies, with the drafts folder it writes its handoff
         // in made private there, as at every start (agents/handoff
-        // `drafts_at_start`).
-        let handoff_dir =
-            handoff.and_then(|_| crate::agents::handoff::drafts_at_start(&id).ok()).and_then(|_| crate::agents::handoff::dir_of(&id).ok());
+        // `drafts_at_start`). Where that cannot be done, neither is given,
+        // and What Luna applied says why.
+        let handoff_dir = handoff.map(|_| crate::agents::handoff::drafts_at_start(&id).and_then(|_| crate::agents::handoff::dir_of(&id)));
         let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
         // The library's instructions are read as memory of a folder added to
         // the session, which has every added folder's read: not the others'.
         let mut luna_dirs = added_dirs(&skills.args);
         luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
-        luna_dirs.extend(handoff_dir.as_ref().map(|d| d.to_string_lossy().into_owned()));
+        luna_dirs.extend(handoff_dir.as_ref().and_then(|d| d.as_ref().ok()).map(|d| d.to_string_lossy().into_owned()));
         let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
         if dir.is_some() {
             (skills.memory_off, skills.memory_kept) = claude_memory_off(&luna_dirs, &account_path, &folder, dir.as_deref());
@@ -675,7 +675,7 @@ pub async fn ensure_claude_session(
             mcp: mcp.as_ref().map(|(file, token)| (file.as_path(), token.as_str())),
             notes_dir: notes.as_deref(),
             instructions_dir: instructions.as_deref(),
-            handoff: handoff.map(|t| (t, handoff_dir.as_deref())),
+            handoff: handoff.zip(handoff_dir.as_ref()).map(|(t, dir)| (t, dir.as_deref().map_err(String::as_str))),
             skill_args: &skills.args,
         });
         Ok(Launch {
@@ -757,9 +757,9 @@ pub async fn ensure_codex_session(
         // The drafts folder it writes its handoff in, made private at every
         // start (agents/handoff `drafts_at_start`), whatever the sandbox, and
         // given only where its sandbox writes at all (codex/launch.rs
-        // `writes_files`).
-        let drafts =
-            handoff.and_then(|_| crate::agents::handoff::drafts_at_start(&id).ok()).filter(|_| codex_launch::writes_files(sandbox));
+        // `writes_files`). Where it cannot be made private, it is not given,
+        // and What Luna applied says why.
+        let drafts = handoff.map(|_| crate::agents::handoff::drafts_at_start(&id));
         let mut settings = serde_json::json!({
             "model": chosen_model,
             "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
@@ -793,7 +793,9 @@ pub async fn ensure_codex_session(
             hooks_unasked,
             guard: &guard,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
-            handoff: handoff.map(|t| (t, drafts.as_deref())),
+            handoff: handoff.zip(drafts.as_ref()).map(|(t, drafts)| {
+                (t, drafts.as_deref().map(|d| codex_launch::writes_files(sandbox).then_some(d)).map_err(String::as_str))
+            }),
             skill_args: &skills.args,
         });
         applied.extend(crate::library::audience_applied(&skills));
@@ -1587,6 +1589,32 @@ mod tests {
         let s = CodexAsk { tools: Some(true), handoff: Some(55), sandbox: "read-only", ..CodexAsk::chat() }.start(ID, &r);
         assert_eq!(s.value("auto-handoff"), Some("at 55% of the context: luna_session_handoff"));
         assert!(!s.args.iter().any(|a| a == "--add-dir"), "{:?}", s.args);
+        // A drafts folder the start cannot make private (a file at its name,
+        // here) is given to neither CLI, and the panel says why.
+        // Put there before each start: each ends with the chat forgotten, its
+        // folder with it (`started`).
+        let drafts = crate::agents::handoff::dir_of(ID).unwrap().join("drafts");
+        let refused = |start: &dyn Fn() -> Started| {
+            std::fs::create_dir_all(drafts.parent().unwrap()).unwrap();
+            let _ = std::fs::remove_dir_all(&drafts);
+            std::fs::write(&drafts, "not a folder").unwrap();
+            start()
+        };
+        for s in [
+            refused(&|| ClaudeAsk { tools: Some(true), handoff: Some(70), ..ClaudeAsk::chat() }.start(ID, &r)),
+            refused(&|| CodexAsk { tools: Some(true), handoff: Some(55), ..CodexAsk::chat() }.start(ID, &r)),
+        ] {
+            let said = s.value("auto-handoff").unwrap_or_default();
+            assert!(
+                said.contains(
+                    "luna_session_handoff; no --add-dir: the drafts folder could not be made private (<handoff-drafts> is no private \
+                     folder of Luna's: "
+                ) && said.ends_with("), so the chat writes its handoff outside Luna's folder"),
+                "{said}"
+            );
+            assert!(!s.args.iter().any(|a| a.starts_with("<handoff-")), "{:?}", s.args);
+        }
+        let _ = std::fs::remove_file(&drafts);
         // Without Luna's tools there is no server to offer the tool, and with
         // them but without the tick nothing is asked for: no word of it in the
         // start, the instructions included, which no CLI is given as a skill.

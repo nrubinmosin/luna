@@ -167,7 +167,10 @@ A chat without Luna tools cannot have it: their server is what offers it.
   window is no compaction); it goes once a handoff is under way or through.
 - The chat writes the file in a folder of its own that Luna keeps, private,
   in its data folder (`handoffs/<chat>/drafts`); a Codex chat is given it as
-  a folder its sandbox writes into. Under Codex's read-only sandbox, or in
+  a folder its sandbox writes into. Where Luna could not make that folder
+  private as the chat started, it gives and names none, and the chat writes
+  the file outside Luna's folder, in its own workspace; the **Auto-handoff**
+  line of What Luna applied says why. Under Codex's read-only sandbox, or in
   Claude Code's plan mode, it can write no file at all, and the tool's answer
   tells it so: you write the file, or give the chat a sandbox that writes.
 - The chat calls `luna_session_handoff` with the file. Luna copies
