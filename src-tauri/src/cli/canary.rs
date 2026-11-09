@@ -5,6 +5,14 @@
 //! notice, a badge in the status bar and a "Roll back" in Settings → CLIs.
 //! Nothing rolls back on its own: a person decides (ADR-0019).
 //!
+//! An exit that says nothing of the version does not count, and gives its
+//! watch to the next session: one whose last words name a cause outside the
+//! CLI (`NOT_THE_VERSION`), and one Luna stopped itself (`session_stopped`).
+//! A start Luna refuses (pty/folder.rs) never runs, so it is never watched.
+//! Known causes, not "only exits after the CLI's startup succeeded": a
+//! version that dies as it starts is the very thing this is for, and a pane's
+//! CLI gives no sign of a finished startup both CLIs share.
+//!
 //! The window flips `current` and starts a canary for the new version
 //! (`reset_in`); the core starts and reaps the sessions and counts them. So
 //! the count lives in `<root>/canary.json`, read and written under the file
@@ -32,6 +40,26 @@ pub(crate) const WARN_AT: usize = 2;
 /// An exit with an error sooner than this after the start is a failure: a
 /// CLI that cannot run its session at all, not one stopped after work.
 const EARLY: Duration = Duration::from_secs(30);
+
+/// What a CLI says as it gives up on a start for a cause outside itself, and
+/// the cause, each as it was seen (docs/cli-compatibility.md): an exit that
+/// says one of these is the folder's doing, not the version's. Claude Code
+/// 2.1.319's "Can only use --worktree in a git repository, but <folder> is
+/// not a git repository" and Codex 0.167.0's git "fatal: not a git
+/// repository" share the first; the second is Codex's own for the same.
+const NOT_THE_VERSION: &[(&str, &str)] = &[
+    ("not a git repository", "a worktree asked for outside a git repository"),
+    ("Managed worktrees require a local Git repository", "a worktree asked for outside a git repository"),
+];
+
+/// The cause outside the CLI that `said` names, if it names one. Compared
+/// with every space and line break taken out, and case aside: a pane's screen
+/// breaks a long line wherever its width falls, mid-word too.
+pub(crate) fn cause_outside(said: &str) -> Option<&'static str> {
+    let squeezed = |s: &str| s.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect::<String>();
+    let said = squeezed(said);
+    NOT_THE_VERSION.iter().find(|(words, _)| said.contains(&squeezed(words))).map(|&(_, cause)| cause)
+}
 
 /// The canary of one version, as Settings shows it.
 #[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
@@ -86,6 +114,16 @@ fn watch_in(root: &Path, version: &str) -> Result<bool, String> {
     })
 }
 
+/// A watched session on `version` said nothing of it: its watch goes to the
+/// next session.
+fn unwatch_in(root: &Path, version: &str) -> Result<(), String> {
+    locked(root, |c| {
+        if let Some(c) = c.as_mut().filter(|c| c.version == version) {
+            c.watched = c.watched.saturating_sub(1);
+        }
+    })
+}
+
 /// A watched session on `version` failed for `why`: the canary as it now
 /// stands when this failure is the one that raised the warning.
 fn fail_in(root: &Path, version: &str, why: &str) -> Result<Option<Canary>, String> {
@@ -137,11 +175,39 @@ pub(super) fn session_started(provider: Provider, root: &Path, version: &str, se
         .insert(session.to_string(), (provider, root.to_path_buf(), version.to_string(), Instant::now()));
 }
 
-/// `session`'s CLI has exited, with an error or not.
-pub fn session_ended(session: &str, error: bool) {
+/// `session`'s CLI has exited, with an error or not. `last_words`: what it
+/// left on its screen (a pane's) or its stderr (a helper's), read only for a
+/// watched session's early error, for a cause outside the CLI.
+pub fn session_ended(session: &str, error: bool, last_words: impl FnOnce() -> String) {
     let Some((provider, root, version, at)) = watching().lock().unwrap_or_else(|e| e.into_inner()).remove(session) else { return };
-    if error && at.elapsed() < EARLY {
-        failed(provider, &root, &version, &format!("{session}: exited with an error {}s after it started", at.elapsed().as_secs()));
+    if !error || at.elapsed() >= EARLY {
+        return;
+    }
+    let after = at.elapsed().as_secs();
+    match cause_outside(&last_words()) {
+        Some(cause) => {
+            crate::log::info(
+                "cli",
+                &format!("canary: {} {version}: {session} exited {after}s after it started, for {cause}: not counted", provider.as_str()),
+            );
+            if let Err(e) = unwatch_in(&root, &version) {
+                crate::log::warn("cli", &format!("canary: {e}"));
+            }
+        }
+        None => failed(provider, &root, &version, &format!("{session}: exited with an error {after}s after it started")),
+    }
+}
+
+/// Luna is stopping `session` itself — a chat deleted or restarted, a login
+/// window closed, a helper's turn stopped, Luna quitting — so whatever its CLI
+/// exits with is Luna's doing: not counted, and one stopped within `EARLY`
+/// gives its watch to the next session. Called before the stop.
+pub fn session_stopped(session: &str) {
+    let Some((_, root, version, at)) = watching().lock().unwrap_or_else(|e| e.into_inner()).remove(session) else { return };
+    if at.elapsed() < EARLY {
+        if let Err(e) = unwatch_in(&root, &version) {
+            crate::log::warn("cli", &format!("canary: {e}"));
+        }
     }
 }
 
@@ -215,9 +281,9 @@ mod tests {
         session_started(Provider::Codex, &root, "2.0.0", "canary-b");
         session_started(Provider::Codex, &root, "2.0.0", "canary-c");
         session_started(Provider::Codex, &root, "2.0.0", "canary-d");
-        session_ended("canary-a", false);
-        session_ended("canary-b", true);
-        session_ended("canary-d", true);
+        session_ended("canary-a", false, String::new);
+        session_ended("canary-b", true, String::new);
+        session_ended("canary-d", true, String::new);
         let c = read_in(&root).unwrap();
         assert_eq!((c.watched, c.failures.len(), c.warned), (3, 1, false), "d was not watched, a ended well: {c:?}");
         assert!(c.failures[0].starts_with("canary-b: exited with an error"));
@@ -227,8 +293,68 @@ mod tests {
             let started = &mut w.get_mut("canary-c").unwrap().3;
             *started = started.checked_sub(EARLY).expect("a clock half a minute old");
         }
-        session_ended("canary-c", true);
+        session_ended("canary-c", true, String::new);
         assert_eq!(read_in(&root).unwrap().failures.len(), 1);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The exit that raised a false warning on the 0.11.0 test build: Claude
+    /// Code asked for a worktree in a folder outside git (2.1.319), as a pane
+    /// of 100 columns shows it, broken mid-word; and Codex's on stderr.
+    #[test]
+    fn a_worktree_error_in_a_folder_outside_git_does_not_raise_the_canary() {
+        let root = scratch("cause");
+        reset_in(&root, "2.0.0").unwrap();
+        let claude = "Error: Can only use --worktree in a git repository, but E:\\Projects\\Personal\\luna;C is not a git rep\n\
+                      ository. Configure a WorktreeCreate hook to use --worktree with other VCS systems.";
+        let codex = "Error: git command failed: fatal: not a git repository (or any of the parent directories): .git";
+        for (id, provider, said) in [("canary-wt-a", Provider::Claude, claude), ("canary-wt-b", Provider::Codex, codex)] {
+            session_started(provider, &root, "2.0.0", id);
+            session_ended(id, true, || said.to_string());
+        }
+        let c = read_in(&root).unwrap();
+        assert_eq!((c.watched, c.failures.len(), c.warned), (0, 0, false), "not counted, and their watches given back: {c:?}");
+        // The next sessions are watched in their place, and still count.
+        for id in ["canary-wt-c", "canary-wt-d"] {
+            session_started(Provider::Claude, &root, "2.0.0", id);
+            session_ended(id, true, || "TypeError: undefined is not a function".into());
+        }
+        let c = read_in(&root).unwrap();
+        assert_eq!((c.watched, c.failures.len(), c.warned), (2, 2, true), "{c:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_session_luna_stops_is_no_failure_and_an_early_one_gives_its_watch_back() {
+        let root = scratch("stopped");
+        reset_in(&root, "2.0.0").unwrap();
+        session_started(Provider::Claude, &root, "2.0.0", "canary-stop-a");
+        session_started(Provider::Claude, &root, "2.0.0", "canary-stop-b");
+        // A login window closed at once: stopped, then its CLI exits killed.
+        session_stopped("canary-stop-a");
+        session_ended("canary-stop-a", true, String::new);
+        // One that ran its half minute and more keeps its watch.
+        {
+            let mut w = watching().lock().unwrap();
+            let started = &mut w.get_mut("canary-stop-b").unwrap().3;
+            *started = started.checked_sub(EARLY).expect("a clock half a minute old");
+        }
+        session_stopped("canary-stop-b");
+        session_ended("canary-stop-b", true, String::new);
+        let c = read_in(&root).unwrap();
+        assert_eq!((c.watched, c.failures.len()), (1, 0), "{c:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_a_cause_outside_the_cli_is_known_by_its_words() {
+        assert_eq!(cause_outside("FATAL: NOT A GIT\r\nREPOSITORY"), Some("a worktree asked for outside a git repository"));
+        assert_eq!(
+            cause_outside("Managed worktrees require a\nlocal Git repository."),
+            Some("a worktree asked for outside a git repository")
+        );
+        for said in ["", "Error: Invalid API key", "segmentation fault", "a git repository was found"] {
+            assert_eq!(cause_outside(said), None, "{said}");
+        }
     }
 }

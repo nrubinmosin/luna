@@ -36,7 +36,10 @@ nothing depends on a global install.
 - The first three sessions on a new version are watched. If two of them fail
   soon after starting, a notice says so and a chip in the status bar opens
   Settings → CLIs, where **Roll back** goes to the version before and **Keep
-  it** keeps this one. Luna never rolls back on its own.
+  it** keeps this one. Luna never rolls back on its own. A session you or Luna
+  stopped does not count, nor one that ended on something that was not the
+  CLI's fault (a worktree asked for outside a git repository); the next
+  session is watched in its place.
 - **Use** on any installed version makes it the current one and keeps it
   there until you choose a channel again (**Follow channel**); **Mark bad**
   keeps a version from being installed or used again by an update. Going back

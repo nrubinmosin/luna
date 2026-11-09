@@ -46,7 +46,9 @@ mod in_use;
 mod known_good;
 mod probe;
 
-pub use canary::{session_ended, Canary};
+#[cfg(test)]
+pub(crate) use canary::cause_outside;
+pub use canary::{session_ended, session_stopped, Canary};
 pub use choice::Channel;
 pub use in_use::{session_version, InUse};
 #[cfg(test)]
@@ -1838,8 +1840,8 @@ mod tests {
         update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
         canary::session_started(Provider::Codex, &root, "2.0.0", "canary-flip-a");
         canary::session_started(Provider::Codex, &root, "2.0.0", "canary-flip-b");
-        session_ended("canary-flip-a", true);
-        session_ended("canary-flip-b", true);
+        session_ended("canary-flip-a", true, String::new);
+        session_ended("canary-flip-b", true, String::new);
         let shown = versions_in(&root, BIN, &list(&[])).canary.unwrap();
         assert_eq!((shown.version.as_str(), shown.warned), ("2.0.0", true));
         // The same version again (nothing flipped): the warning stands.
