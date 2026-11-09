@@ -175,9 +175,34 @@ pub(super) struct Receipt {
 /// call that handed the answer over too has delivered it: this one's response
 /// being dropped then owes nothing.
 pub(super) fn hand_over(caller: &str, id: &str, turns_ended: u32, job_debt: Option<u64>) -> impl FnOnce() + Send + 'static {
+    let undo = hand_over_of(caller, id, turns_ended, job_debt, None);
+    move || {
+        if let Some(undo) = undo {
+            undo();
+        }
+    }
+}
+
+/// `hand_over` of the debt of revision `rev` alone, checked and taken under one
+/// hold of the lock: None, and nothing done, when the caller's debt there is
+/// another by now (a question asked since), which `hand_over` would take.
+pub(super) fn hand_over_rev(caller: &str, id: &str, turns_ended: u32, rev: u64) -> Option<impl FnOnce() + Send + 'static> {
+    hand_over_of(caller, id, turns_ended, None, Some(rev))
+}
+
+fn hand_over_of(
+    caller: &str,
+    id: &str,
+    turns_ended: u32,
+    job_debt: Option<u64>,
+    expected: Option<u64>,
+) -> Option<impl FnOnce() + Send + 'static> {
     let key = (caller.to_string(), id.to_string());
     let (taken, seen_before, receipt, goes_on) = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if expected.is_some_and(|rev| r.owed.get(&key).map(|o| o.rev) != Some(rev)) {
+            return None;
+        }
         let (now, seen_before) = (r.owed.get(&key).copied(), r.seen.get(&key).copied());
         let receipt = r.receipts.entry(key.clone()).or_default();
         receipt.n += 1;
@@ -201,7 +226,7 @@ pub(super) fn hand_over(caller: &str, id: &str, turns_ended: u32, job_debt: Opti
     let parent = parent_of(id).as_deref() == Some(caller);
     let taken = take_undelivered(id, caller, parent);
     let id = id.to_string();
-    move || {
+    Some(move || {
         put_undelivered_back(&id, taken);
         crate::background::save();
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -227,7 +252,7 @@ pub(super) fn hand_over(caller: &str, id: &str, turns_ended: u32, job_debt: Opti
                 None => r.seen.remove(&key),
             };
         }
-    }
+    })
 }
 
 /// Records the turn count a tool answer showed `caller` of `id`, settling
