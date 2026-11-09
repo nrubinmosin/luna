@@ -2,7 +2,7 @@
  * Making a chat, in one place: the dialog and the no-dialog shortcut both come
  * through here, so they cannot drift on trust, naming, color or placement.
  */
-import { chatFolderRefusal } from '../../ipc/sessions';
+import { chatFolderCheck } from '../../ipc/sessions';
 import { codexHooksStart } from '../../ipc/trust';
 import type { Account, Chat, ClaudeSettings, CodexSettings } from '../../shared/types';
 import { pickChatColor } from '../../shared/ui/chatColors';
@@ -61,8 +61,13 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   // trust included, as its start would refuse it. A helper opened as a chat
   // goes on in the folder it already ran in.
   if (!spec.fromHelper && accountPath) {
-    const why = await chatFolderRefusal(spec.provider, accountPath, spec.folder, spec.worktree && !spec.inWorktree);
-    if (why) throw new Error(why);
+    const { refusal } = await chatFolderCheck(
+      spec.provider,
+      accountPath,
+      spec.folder,
+      spec.worktree && !spec.inWorktree
+    );
+    if (refusal) throw new Error(refusal);
   }
   if (spec.trust && !spec.fromHelper && accountPath && !(await p.folderTrusted(accountPath, spec.folder))) {
     await p.trustFolder(accountPath, spec.folder);

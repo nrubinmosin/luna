@@ -1033,11 +1033,16 @@ mod tests {
         assert!(why.contains("does not exist"), "{why}");
         let why = refused(id, CodexAsk { folder: gone, ..CodexAsk::chat() }.ensure(id));
         assert!(why.contains("does not exist"), "{why}");
-        if !super::super::folder::in_git_repository(std::path::Path::new(&plain)) {
-            let why = refused(id, ClaudeAsk { folder: plain.clone(), worktree: true, ..ClaudeAsk::chat() }.ensure(id));
-            assert!(why.contains("not in a git repository"), "{why}");
-            let named = ClaudeAsk { folder: plain.clone(), worktree: true, worktree_name: Some("feature-x"), ..ClaudeAsk::chat() };
-            assert!(refused(id, named.ensure(id)).contains("not in a git repository"), "a named worktree too");
+        use super::super::folder::{in_git_repository, machine_has_unread_source};
+        if !in_git_repository(std::path::Path::new(&plain)) {
+            // Claude Code's refusal only where nothing Luna cannot read could
+            // give it a WorktreeCreate hook (folder.rs).
+            if !machine_has_unread_source() {
+                let why = refused(id, ClaudeAsk { folder: plain.clone(), worktree: true, ..ClaudeAsk::chat() }.ensure(id));
+                assert!(why.contains("not in a git repository"), "{why}");
+                let named = ClaudeAsk { folder: plain.clone(), worktree: true, worktree_name: Some("feature-x"), ..ClaudeAsk::chat() };
+                assert!(refused(id, named.ensure(id)).contains("not in a git repository"), "a named worktree too");
+            }
             let why = refused(id, CodexAsk { folder: plain.clone(), worktree: Some(true), ..CodexAsk::chat() }.ensure(id));
             assert!(why.contains("not in a git repository"), "{why}");
         }

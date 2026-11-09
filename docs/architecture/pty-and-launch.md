@@ -94,17 +94,29 @@ shared server (which the `-c` overrides rule out anyway). Codex refuses
 The core does not start a folder that does not exist: portable-pty would
 silently substitute the user's profile. Before anything of a start is made
 (files, token, registration, the library pass, origin's fetch), `pty/folder.rs`
-`folder_refusal` refuses a folder that is not there and a start that passes
-`--worktree` (Claude Code: any, by name too; Codex: a new session) in a folder
-with no `.git` in it or above it, which both CLIs exit on at once; Claude Code
-is let through when a `WorktreeCreate` hook is named in the account's
-`settings.json` or the project's `.claude/settings.json` or
-`settings.local.json` (a plugin's hooks are not read). The refusal is the
+`folder_check` refuses only where Luna can be sure the CLI could not start: a
+folder that is not there, and a start that passes `--worktree` (Claude Code:
+any, by name too; Codex: a new session) in a folder with no `.git` in it or
+above it, which both CLIs exit on at once. Codex makes its worktree with git
+alone. Claude Code also makes one through a `WorktreeCreate` hook, so for it
+Luna reads the account's `settings.json` and the project's
+`.claude/settings.json` and `settings.local.json`: a hook named there lets the
+start go. With none, Luna looks for a source of hooks it does not read: a
+plugin enabled in those files, the account's server-managed settings (its
+`remote-settings.json`), the machine's managed settings folder
+(`managed-settings.json`, `managed-settings.d`), Windows' `SOFTWARE\Policies\ClaudeCode`
+key (the machine's or the user's), Anthropic's macOS managed preferences. If
+any is there the start goes ahead and the dialog only warns, the CLI left to
+decide (and its exit, if it gives up, is no canary failure); if none is, the
+start is refused. The settings files are read as a project controls them: a
+regular file of at most 1 MiB, a link followed only to one, a FIFO or device at
+the name given up on without a wait (`read_settings`). The refusal is the
 start's error, which the pane shows as `[failed to start session: …]`. The same
-check answers the new-chat dialog (`chat_folder_refusal`, asked for every
-folder, account and worktree box, and again by `createChat` before it writes
-trust) and refuses a helper's spawn (`agents/spawn`). A login runs in its account
-folder and is not checked.
+check answers the new-chat dialog (`chat_folder_check`, off the window's thread,
+asked for every folder, account and worktree box; its refusal disables Create,
+its warning does not; `createChat` asks again before it writes trust) and
+refuses a helper's spawn (`agents/spawn`). A login runs in its account folder
+and is not checked.
 
 ## Golden tests
 
