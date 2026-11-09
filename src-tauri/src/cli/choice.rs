@@ -105,28 +105,32 @@ pub(super) enum Plan {
 
 /// The pass's decision from the channel, a version held by hand (its
 /// version), the shipped list, the bad marks and what the release channel's
-/// pointer said (an error where it could not be read).
+/// pointer said (an error where it could not be read). `unsafe_now`: the
+/// current version is below this Luna's minimum and runs nothing, so nothing
+/// keeps the pass on it — not a hold by hand, not a `latest` that is bad or
+/// cannot be read; the shipped list's version is taken instead.
 pub(super) fn plan(
     channel: Channel,
     pinned: Option<&str>,
     list: &Entry,
     bad: &BTreeMap<String, String>,
     latest: Result<&str, &str>,
+    unsafe_now: bool,
 ) -> Result<Plan, String> {
-    if let Some(version) = pinned {
-        return Ok(Plan::Stay(format!("held at {version} by hand; choose a channel to follow it again")));
-    }
-    match channel {
-        Channel::KnownGood => super::known_good::pick(list, &|v| bad.contains_key(v))
+    let known_good = || {
+        super::known_good::pick(list, &|v| bad.contains_key(v))
             .map(|v| Plan::Install { version: v.to_string(), chosen: true })
-            .ok_or_else(|| "every known-good version is marked bad".to_string()),
-        Channel::Latest => {
-            let latest = latest.map_err(str::to_string)?;
-            if bad.contains_key(latest) {
-                return Ok(Plan::Stay(format!("{latest}, the newest release, is marked bad")));
-            }
-            Ok(Plan::Install { version: latest.to_string(), chosen: false })
-        }
+            .ok_or_else(|| "every known-good version is marked bad".to_string())
+    };
+    match (pinned, channel) {
+        (Some(version), _) if !unsafe_now => Ok(Plan::Stay(format!("held at {version} by hand; choose a channel to follow it again"))),
+        (_, Channel::KnownGood) => known_good(),
+        (_, Channel::Latest) => match latest {
+            Ok(latest) if !bad.contains_key(latest) => Ok(Plan::Install { version: latest.to_string(), chosen: false }),
+            _ if unsafe_now => known_good(),
+            Ok(latest) => Ok(Plan::Stay(format!("{latest}, the newest release, is marked bad"))),
+            Err(e) => Err(e.to_string()),
+        },
     }
 }
 
@@ -161,22 +165,41 @@ mod tests {
     #[test]
     fn each_channel_picks_its_version_and_skips_the_bad() {
         let none = BTreeMap::new();
-        let known = plan(Channel::KnownGood, None, &list(), &none, Err("offline")).unwrap();
+        let known = plan(Channel::KnownGood, None, &list(), &none, Err("offline"), false).unwrap();
         assert_eq!(known, Plan::Install { version: "1.2.0".into(), chosen: true }, "the pointer is not needed");
-        let latest = plan(Channel::Latest, None, &list(), &none, Ok("1.5.0")).unwrap();
+        let latest = plan(Channel::Latest, None, &list(), &none, Ok("1.5.0"), false).unwrap();
         assert_eq!(latest, Plan::Install { version: "1.5.0".into(), chosen: false });
-        assert_eq!(plan(Channel::Latest, None, &list(), &none, Err("offline")).unwrap_err(), "offline");
+        assert_eq!(plan(Channel::Latest, None, &list(), &none, Err("offline"), false).unwrap_err(), "offline");
 
         let bad = BTreeMap::from([("1.2.0".to_string(), "x".to_string()), ("1.5.0".to_string(), "y".to_string())]);
         assert_eq!(
-            plan(Channel::KnownGood, None, &list(), &bad, Ok("1.5.0")).unwrap(),
+            plan(Channel::KnownGood, None, &list(), &bad, Ok("1.5.0"), false).unwrap(),
             Plan::Install { version: "1.1.0".into(), chosen: true }
         );
-        assert!(matches!(plan(Channel::Latest, None, &list(), &bad, Ok("1.5.0")).unwrap(), Plan::Stay(why) if why.contains("marked bad")));
+        assert!(
+            matches!(plan(Channel::Latest, None, &list(), &bad, Ok("1.5.0"), false).unwrap(), Plan::Stay(why) if why.contains("marked bad"))
+        );
         let all = BTreeMap::from([("1.1.0".to_string(), "x".to_string()), ("1.2.0".to_string(), "x".to_string())]);
-        assert!(plan(Channel::KnownGood, None, &list(), &all, Ok("1.5.0")).is_err());
+        assert!(plan(Channel::KnownGood, None, &list(), &all, Ok("1.5.0"), false).is_err());
         // Held by hand: nothing moves, whatever the channel says.
-        assert!(matches!(plan(Channel::Latest, Some("1.1.0"), &list(), &none, Ok("1.5.0")).unwrap(), Plan::Stay(_)));
+        assert!(matches!(plan(Channel::Latest, Some("1.1.0"), &list(), &none, Ok("1.5.0"), false).unwrap(), Plan::Stay(_)));
+    }
+
+    /// The current version is below the minimum and runs nothing: neither a
+    /// hold by hand nor a bad or unreadable `latest` keeps the pass on it.
+    #[test]
+    fn nothing_keeps_the_pass_on_a_version_below_the_minimum() {
+        let none = BTreeMap::new();
+        let moved = |p: Result<Plan, String>| p.unwrap();
+        assert_eq!(
+            moved(plan(Channel::Latest, Some("0.9.0"), &list(), &none, Ok("1.5.0"), true)),
+            Plan::Install { version: "1.5.0".into(), chosen: false }
+        );
+        let bad = BTreeMap::from([("1.5.0".to_string(), "x".to_string())]);
+        let known = Plan::Install { version: "1.2.0".into(), chosen: true };
+        assert_eq!(moved(plan(Channel::Latest, None, &list(), &bad, Ok("1.5.0"), true)), known);
+        assert_eq!(moved(plan(Channel::Latest, None, &list(), &none, Err("offline"), true)), known);
+        assert_eq!(moved(plan(Channel::KnownGood, Some("0.9.0"), &list(), &none, Err("offline"), true)), known);
     }
 
     #[test]
