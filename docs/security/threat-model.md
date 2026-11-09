@@ -312,8 +312,8 @@ binary and checksum replaced together, installed and run (F10).
 ## 5. MCP authorization matrix
 
 Callers are sessions holding a Luna MCP token. A session without Luna's tools
-can call `luna_permission` only, and only as a background helper
-(`mcp.rs:517-525`). Every other call's arguments are held to its tool's schema
+holds one only as a background Claude Code helper, for `luna_permission`
+alone (below). Every other call's arguments are held to its tool's schema
 first (`arguments_fit`, `mcp.rs:629`). A helper's helper never gets tools (`agents/spawn/mod.rs:34`); a
 caller has at most 8 descendants (`agents/spawn/mod.rs:31`).
 
@@ -329,6 +329,7 @@ caller has at most 8 descendants (`agents/spawn/mod.rs:31`).
 | `luna_session_list`, `luna_session_get`, `luna_run_list`, `luna_account_list`, `luna_account_get` | every session's metadata (state, folders, settings, transcript path); another's `ask` and `task`, and others' past spawns with their prompts and last replies (`luna_run_list`), only with `scope: "all"` (`agents/list.rs`, `mcp.rs` `runs_in_scope`: a run's lineage goes by each link's owner now while it is known, and stops at a run the log records as taken over by the person) | `scope_all`, `own_or_self` | yes |
 | `luna_notification_send`, `luna_guide_get` | notify the user, or read the guide | tools only | yes |
 | `luna_session_handoff` | the caller's own chat only: no argument names another (`arguments_fit` refuses one), and the switch is kept under the caller's id. Listed and accepted only for a person's chat (no parent, not a helper or orphan, not the dev caller) with Luna tools and auto-handoff on (`agents/handoff/mod.rs` `offers_tool`); refused while the CLI's own jobs or subagents run, naming them; one at a time per chat | `offers_tool`, `arguments_fit`, `own_jobs` | yes (`agents/handoff/tests.rs`) |
+| `luna_permission` | the caller's own held call only (no argument names a session): its CLI's ask before a tool runs, or its `AskUserQuestion`, held for its parent's `luna_session_answer`. Listed and accepted only for a background Claude Code helper, whose CLI calls it (`--permission-prompt-tool`) and hides it from its model (`--disallowedTools`, `background/command.rs`); a Codex helper, a chat and the dev caller are neither offered it nor let call it, which is refused as an unknown tool (`mcp/tools.rs` `tools_for`, `mcp/dispatch.rs` `run`) | `background::asks_through_luna` | yes (`mcp/mod.rs` `only_a_background_claude_code_helper_is_offered_the_permission_handler`) |
 
 ## 6. Limits of the least-privilege layer
 

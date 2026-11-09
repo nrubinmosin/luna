@@ -215,6 +215,14 @@ pub fn has(id: &str) -> bool {
     lock().entries.contains_key(id)
 }
 
+/// Whether `id` is a Claude Code helper, whose CLI asks Luna before a tool
+/// runs and with every `AskUserQuestion` (`luna_permission`, its
+/// `--permission-prompt-tool`). Codex's `exec` asks nobody: a Codex helper
+/// has no call to make there.
+pub fn asks_through_luna(id: &str) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.spec.provider == Provider::Claude)
+}
+
 /// Whether the person is opening helper `id` as a chat (`background_promote`).
 pub fn promoting(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.promoting)
