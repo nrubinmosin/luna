@@ -7,12 +7,16 @@
 #   ./scripts/screenshots.ps1
 #   ./scripts/screenshots.ps1 -Size 1600,1000
 #   ./scripts/screenshots.ps1 -Out test-build/shots -Scenes checks,checks-dark
+#   ./scripts/screenshots.ps1 -Out test-build/shots -Size 853,480 -Scale 1.5 -Scenes newchat
 #
 # -Out is relative to the repo root. -Scenes shoots those of src/dev/demo/scenes.ts,
-# each to a file of its name, instead of the three the README shows.
+# each to a file of its name, instead of the three the README shows. -Size is the
+# page's size in CSS pixels and -Scale the display scaling: a 1280x720 screen at
+# 150% is -Size 853,480 -Scale 1.5, and the shot comes out 1280x720.
 param(
     [string]$Out = 'docs/screenshots',
     [string]$Size = '1760,1040',
+    [double]$Scale = 1,
     [string[]]$Scenes = @()
 )
 . "$PSScriptRoot/lib.ps1"
@@ -68,7 +72,7 @@ IFS=
 shoot() {
   rm -f $SHOT_OUT/$1.png
   chromium --headless=new --no-sandbox --disable-gpu --hide-scrollbars \
-    --window-size=$SHOT_SIZE --virtual-time-budget=8000 \
+    --window-size=$SHOT_SIZE --force-device-scale-factor=$SHOT_SCALE --virtual-time-budget=8000 \
     --screenshot=$SHOT_OUT/$1.png http://localhost:1420/\?demo=$2
   test -s $SHOT_OUT/$1.png || { echo no shot $1 >&2; exit 1; }
   echo shot $1
@@ -87,12 +91,15 @@ fi
 '@
 
 $sceneList = $Scenes -join ','
+# 1.5, not the 1,5 a Russian or German locale would print.
+$scaleArg = $Scale.ToString([cultureinfo]::InvariantCulture)
 # The node_modules volume is the Windows build's too (scripts/lib.ps1 Use-BuildLock).
 Use-BuildLock {
     Invoke-Checked 'screenshots' {
         docker run --rm `
           -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
           -e SHOT_SIZE=$Size `
+          -e SHOT_SCALE=$scaleArg `
           -e SHOT_OUT="/app/$Out" `
           -e SHOT_SCENES=$sceneList `
           @fontArgs `

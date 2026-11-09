@@ -113,6 +113,9 @@ Test only on the test build, never on the Luna in use
 frontend alone on the invented chats and accounts in `src/dev/demo/` (`pnpm dev`
 + `?demo`), photographed by headless Chromium. Shooting a running Luna would
 shoot whatever is open in it, and the fixture retakes all three from one state.
+`-Size` is the page in CSS pixels and `-Scale` the display scaling, so a
+small screen is shot as it is seen: a 1280×720 screen at 150% is
+`-Size 853,480 -Scale 1.5`.
 
 ## CI
 
