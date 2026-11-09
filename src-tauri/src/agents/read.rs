@@ -4,7 +4,7 @@
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::delivery::screen_of;
 use crate::agents::lost::{lost_count, lost_whole, undelivered_note};
-use crate::agents::owed::{hand_over, looked, queue_settled, seen};
+use crate::agents::owed::{hand_over, hand_over_rev, looked, queue_settled, seen};
 use crate::agents::registry::{authorize_view, label, reg};
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -395,6 +395,10 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -
     }
 }
 
+/// What a test runs between an ack's look at the debt and its taking it.
+#[cfg(test)]
+pub(super) static BEFORE_ACK: Mutex<Option<fn()>> = Mutex::new(None);
+
 /// `luna_report_get`: the report of what the session said (`report_read`), as a
 /// look at it that starts its autoDelete count over (`looked`). With `ack` it
 /// collects the answer owed, so no notice follows, only when this report is
@@ -426,8 +430,16 @@ pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &
         && !reading.messages.is_empty()
         && !reading.cut
         && reading.cursor == end;
-    if unmoved && done && all_of_it && call.commit(hand_over(caller, id, turns_ended, None)) {
-        reading.acked = true;
+    #[cfg(test)]
+    if let Some(between) = *BEFORE_ACK.lock().unwrap_or_else(|e| e.into_inner()) {
+        between();
+    }
+    // That debt alone, checked and taken in one hold of the lock: one put in
+    // its place since the look above stays owed.
+    if unmoved && done && all_of_it {
+        if let Some(undo) = hand_over_rev(caller, id, turns_ended, owed.rev) {
+            reading.acked = call.commit(undo);
+        }
     }
     Ok(reading)
 }
@@ -523,6 +535,16 @@ mod tests {
         let got = ack();
         assert!(got.acked && !owed(), "{:?}", got.messages);
         assert!(!report_get(caller, id, None, true, &crate::mcp::Call::new()).unwrap().acked, "nothing owed: nothing to collect");
+        // A debt put in the place of the one looked at, between the look and the
+        // taking: not taken, and nothing said to be collected.
+        asked(format!("{}{}", line("user", "Do it."), line("assistant", "Done again.")));
+        fn new_debt() {
+            owe_from("ak-caller", "ak-helper", 0, 0);
+        }
+        *BEFORE_ACK.lock().unwrap() = Some(new_debt);
+        let raced = ack();
+        *BEFORE_ACK.lock().unwrap() = None;
+        assert!(!raced.acked && owed(), "the debt put in since stays owed");
 
         transcripts().lock().unwrap().remove(id);
         let _ = std::fs::remove_file(&path);
