@@ -93,7 +93,9 @@ fn from_cli(account_path: &str, bundled: bool) -> Vec<CodexModel> {
     if crate::elevation::guard().is_err() {
         return Vec::new();
     }
-    let mut cmd = Command::new(crate::cli::binary(Provider::Codex));
+    // Held while it runs, so the sweep does not take its directory meanwhile.
+    let (exe, _on_version) = crate::cli::launch(Provider::Codex, None);
+    let mut cmd = Command::new(exe);
     cmd.args(["debug", "models"]);
     if bundled {
         cmd.arg("--bundled");

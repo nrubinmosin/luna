@@ -40,6 +40,8 @@
     "allow-set-helpers-above-caller",
     "allow-cli-status",
     "allow-cli-update-now",
+    "allow-cli-versions",
+    "allow-cli-use-version",
     "allow-claude-defaults",
     "allow-account-limits",
     "allow-claude-folder-trusted",
