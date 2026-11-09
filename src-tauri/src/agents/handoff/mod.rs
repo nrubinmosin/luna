@@ -89,14 +89,30 @@ pub(super) fn copies_of(chat: &str) -> Result<PathBuf, String> {
 }
 
 /// `chat`'s drafts folder, checked from Luna's folder of handoffs down
-/// before it is named to the chat or given to its CLI
-/// (`boundary::sandbox_chain`: as `private_chain`, but the drafts folder keeps
-/// the grant a CLI's sandbox gave itself there). Claude Code reaches it within
-/// the folder of copies it is given (`--add-dir`), Codex by an `--add-dir` of
-/// its own, on which its Windows sandbox grants itself write (0.167.0).
-pub fn drafts_of(chat: &str) -> Result<PathBuf, String> {
+/// (`private_chain`, then `secret::sandbox_dir`) before it is named to the
+/// chat or given to its CLI. Claude Code reaches it within the folder of
+/// copies it is given (`--add-dir`); Codex by an `--add-dir` of its own, on
+/// which its Windows sandbox grants itself write (0.167.0) with the SID the
+/// account's `cap_sid` names for the folder (codex/sandbox.rs): that grant,
+/// and no other, the folder keeps. A Claude Code chat's keeps none, nor does
+/// a Codex chat's whose `cap_sid` will not read, which the log says.
+pub fn drafts_of(chat: &str, provider: Provider, account: &Path) -> Result<PathBuf, String> {
     dir_of(chat)?;
-    crate::boundary::sandbox_chain(&root(), &[&crate::paths::id_file_name(chat), DRAFTS])
+    let drafts = private_chain(&root(), &[&crate::paths::id_file_name(chat)])?.join(DRAFTS);
+    let (sandbox, unread) = match provider {
+        Provider::Codex if cfg!(windows) => match crate::codex::sandbox::sids_for_root(account, &drafts) {
+            Ok(sids) => (sids, None),
+            Err(why) => (Vec::new(), Some(why)),
+        },
+        _ => (Vec::new(), None),
+    };
+    let taken =
+        crate::secret::sandbox_dir(&drafts, &sandbox).map_err(|e| format!("{} is no private folder of Luna's: {e}", drafts.display()))?;
+    if !taken.is_empty() {
+        let why = unread.map(|why| format!(" (its CLI's sandbox SID is not known: {why})")).unwrap_or_default();
+        crate::log::warn("handoff", &format!("{}: made private again, taking away access for {}{why}", drafts.display(), taken.join(", ")));
+    }
+    Ok(drafts)
 }
 
 /// A session's `settings` as a caller is shown them (agents/list.rs, which
