@@ -123,6 +123,15 @@ impl Redact {
             .collect()
     }
 
+    /// That the offline probe asks a new CLI version's help for every flag
+    /// of `args` (cli/probe.rs), so a version that dropped one never becomes
+    /// current.
+    pub(crate) fn assert_probed(provider: crate::provider::Provider, args: &[String]) {
+        if let Err(e) = crate::cli::probe_covers(provider, args) {
+            panic!("{e}");
+        }
+    }
+
     /// That what was applied shows the whole process as it runs, so the two
     /// cannot drift: every flag of `args` (and the value after it), every
     /// `-c` key, every variable `envs` sets and the folder it starts in are
