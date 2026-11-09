@@ -612,10 +612,10 @@ pub async fn ensure_claude_session(
         let notes = tools.then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
         let handoff = handoff_threshold(handoff, tools);
         // Its folder of copies, with the drafts folder it writes its handoff
-        // in made private there (agents/handoff `drafts_of`).
-        let handoff_dir = handoff
-            .and_then(|_| crate::agents::handoff::drafts_of(&id, Provider::Claude, std::path::Path::new(&account_path)).ok())
-            .and_then(|_| crate::agents::handoff::dir_of(&id).ok());
+        // in made private there, as at every start (agents/handoff
+        // `drafts_at_start`).
+        let handoff_dir =
+            handoff.and_then(|_| crate::agents::handoff::drafts_at_start(&id).ok()).and_then(|_| crate::agents::handoff::dir_of(&id).ok());
         let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
         // The library's instructions are read as memory of a folder added to
         // the session, which has every added folder's read: not the others'.
@@ -754,11 +754,12 @@ pub async fn ensure_codex_session(
         let guard = codex_guard_args(&id, guard.unwrap_or(false), hooks_unasked);
         let tools = tools.unwrap_or(false);
         let handoff = handoff_threshold(handoff, tools);
-        // The drafts folder it writes its handoff in, given only where its
-        // sandbox writes at all (codex/launch.rs `writes_files`).
-        let drafts = handoff
-            .filter(|_| codex_launch::writes_files(sandbox))
-            .and_then(|_| crate::agents::handoff::drafts_of(&id, Provider::Codex, std::path::Path::new(&account_path)).ok());
+        // The drafts folder it writes its handoff in, made private at every
+        // start (agents/handoff `drafts_at_start`), whatever the sandbox, and
+        // given only where its sandbox writes at all (codex/launch.rs
+        // `writes_files`).
+        let drafts =
+            handoff.and_then(|_| crate::agents::handoff::drafts_at_start(&id).ok()).filter(|_| codex_launch::writes_files(sandbox));
         let mut settings = serde_json::json!({
             "model": chosen_model,
             "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
