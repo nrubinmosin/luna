@@ -19,6 +19,9 @@ pub(super) struct Unit {
     target: Target,
     /// What the library has for it, or why it has nothing fit to lay out.
     pub(super) source: Result<Files, String>,
+    /// Instructions for one kind of session: `source` has the line saying so
+    /// before them (audience.rs `worded`). `Both` for everything else.
+    pub(super) banner: Audience,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -114,8 +117,13 @@ pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut
         // in case only, on Windows): the same copy, noted as spelled now.
         if !ledger.written.contains_key(&key) {
             let alias = ledger.written.keys().find(|k| ident(Path::new(k)) == id).cloned();
-            if let Some(h) = alias.and_then(|a| ledger.written.remove(&a)) {
-                ledger.written.insert(key.clone(), h);
+            if let Some(a) = alias {
+                if let Some(h) = ledger.written.remove(&a) {
+                    ledger.written.insert(key.clone(), h);
+                }
+                if let Some(w) = ledger.worded.remove(&a) {
+                    ledger.worded.insert(key.clone(), w);
+                }
             }
         }
         let source = match &u.source {
@@ -137,7 +145,7 @@ pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut
                 }
                 return Err(e);
             }
-            ledger.written.insert(key.clone(), want.clone());
+            ledger.wrote(&key, want.clone(), u.banner);
             Ok(())
         };
         let status = match read_at(&u.dest, u.file) {
@@ -150,7 +158,7 @@ pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut
                     None if have == want => {
                         if act {
                             keep_blobs(dirs, source);
-                            ledger.written.insert(key.clone(), want.clone());
+                            ledger.wrote(&key, want.clone(), u.banner);
                         }
                         Ok(Status::Current)
                     }
@@ -176,7 +184,8 @@ pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut
     if act {
         let gone: Vec<String> = ledger.written.keys().filter(|k| wanted.get(&ident(Path::new(k))) != Some(*k)).cloned().collect();
         for key in gone {
-            let h = ledger.written.remove(&key).unwrap_or_default();
+            let banner = ledger.worded.get(&key).copied().unwrap_or_default();
+            let h = ledger.forget(&key).unwrap_or_default();
             let dest = PathBuf::from(&key);
             // Another spelling of a copy still wanted is that copy's file:
             // only the note goes.
@@ -188,7 +197,7 @@ pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut
                 Ok(Some(have)) if hashes(&have) == h => {
                     if let Err(e) = remove_at(&dest, is_file(&h)) {
                         crate::log::warn("library", &format!("could not take out {key}: {e}"));
-                        ledger.written.insert(key, h);
+                        ledger.wrote(&key, h, banner);
                     }
                 }
                 _ => out.kept.push(key),
@@ -226,7 +235,8 @@ pub(super) fn units(
         // of its copies out.
         let source = match instructions.as_ref().map(|found| &found[name]) {
             Ok(Ok(None)) => continue,
-            Ok(Ok(Some(text))) => Ok(Files::from([(String::new(), text.clone())])),
+            // Meant for one kind of session, it says so (audience.rs).
+            Ok(Ok(Some(text))) => Ok(Files::from([(String::new(), worded(text, instructions_audience(lib, name)))])),
             Ok(Err(e)) | Err(e) => Err(e.clone()),
         };
         out.push(Unit {
@@ -237,6 +247,7 @@ pub(super) fn units(
             shown: None,
             target: account(a),
             source,
+            banner: instructions_audience(lib, name),
         });
     }
     for name in lib.skills.keys() {
@@ -250,6 +261,7 @@ pub(super) fn units(
                 shown: None,
                 target: account(a),
                 source: files.clone(),
+                banner: Audience::Both,
             });
         }
     }
@@ -286,6 +298,7 @@ pub(super) fn units(
                     shown,
                     target: Target::Folder { path: f.path.clone(), provider: a.provider, name: a.name.clone() },
                     source,
+                    banner: Audience::Both,
                 });
             }
         }

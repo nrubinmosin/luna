@@ -39,7 +39,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and budget news |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
-| `luna_guide.md` | the full manual `luna_guide_get` returns: whole (`topic: "all"`), by section (`mcp.rs` `guide_text`: any word of a `## ` title), or with no topic its opening and the sections |
+| `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic its opening and the topics |
 
 ## How a session gets Luna
 
@@ -55,7 +55,11 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   is told what it is and to write in its task's language (`pty::helper_line`),
   naming the words instructions files use for the person (the operator, the
   user, the person at this machine) so that rules set for that person's chat do
-  not reach it: Claude Code by `--append-system-prompt` and a note after its
+  not reach it, and what it still owes of them: to stop, before its turn ends,
+  the background work it started that nothing needs any more (watchers, wait
+  loops, dev servers; not helpers it waits on, nor what its task keeps
+  running), keep each caveat with its claim, and send nothing outward unasked. The library can keep such rules from it altogether (an entry's
+  audience, [library](library.md#audiences)). Claude Code by `--append-system-prompt` and a note after its
   first prompt (`pty::helper_prompt`), as memory files outweigh an appended
   system prompt; Codex by the note after each turn's prompt, because
   `-c developer_instructions=` would replace a value Luna would have to resolve
