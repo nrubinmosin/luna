@@ -235,7 +235,8 @@ another program's and is left alone.
 - The app checks `latest.json` on GitHub Releases at startup (endpoint in
   `tauri.conf.json` → `plugins.updater.endpoints`); a release lights a chip and
   installs only on a click. A release whose `core_fingerprint` (a hash of
-  `src-tauri`, written by `build.rs`) matches the running core restarts only the
+  what the core is compiled from: `src-tauri/src`, the manifest and lock, `build.rs`
+  and `cli-known-good.json`; `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
   window. Any other stops the sessions (each asked to quit with its exit hooks,
   `stop_all_sessions` also stopping helper turns) and the chats resume from
   their transcripts.
