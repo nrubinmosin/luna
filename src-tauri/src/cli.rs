@@ -40,11 +40,13 @@
 //! periodic check. Where a version comes from is each provider's `Source`
 //! (`claude::cli`, `codex::cli`).
 
+mod canary;
 mod choice;
 mod in_use;
 mod known_good;
 mod probe;
 
+pub use canary::{session_ended, Canary};
 pub use choice::Channel;
 pub use in_use::{session_version, InUse};
 #[cfg(test)]
@@ -285,11 +287,13 @@ pub fn binary(provider: Provider) -> PathBuf {
 /// helper it is for, whose version `luna_session_get` then shows.
 pub fn launch(provider: Provider, session: Option<&str>) -> (PathBuf, Option<InUse>) {
     let src = source(provider);
-    let (path, held) = launch_in(&root(provider), src.bin_rel);
+    let root = root(provider);
+    let (path, held) = launch_in(&root, src.bin_rel);
     match path {
         Some((path, version)) => {
             if let Some(session) = session {
                 in_use::note_session(session, provider, &version);
+                canary::session_started(provider, &root, &version, session);
             }
             (path, held)
         }
@@ -373,6 +377,9 @@ pub struct CliVersions {
     pub pinned: Option<String>,
     /// Every version marked bad, installed or not, and why.
     pub bad: std::collections::BTreeMap<String, String>,
+    /// The watch over the current version's first sessions, while it is the
+    /// current one's.
+    pub canary: Option<Canary>,
 }
 
 /// Every recorded, intact install under `root`, newest first.
@@ -395,7 +402,9 @@ fn installed_all(root: &Path, bin_rel: &str) -> Vec<(String, Record)> {
 }
 
 fn versions_in(root: &Path, bin_rel: &str, known: &known_good::Entry) -> CliVersions {
-    let current = current_in(root, bin_rel).map(|c| c.dir);
+    let current = current_in(root, bin_rel);
+    let canary = canary::read_in(root).filter(|c| current.as_ref().is_some_and(|cur| cur.version == c.version));
+    let current = current.map(|c| c.dir);
     let previous = previous_in(root, bin_rel);
     let bad = choice::bad_in(root);
     let versions = installed_all(root, bin_rel)
@@ -419,7 +428,14 @@ fn versions_in(root: &Path, bin_rel: &str, known: &known_good::Entry) -> CliVers
         floor: floor_in(root, &known.min_safe),
         pinned: choice::pinned_in(root),
         bad,
+        canary,
     }
+}
+
+/// "Keep it" on a canary warning: the badge goes, the version stays.
+#[tauri::command]
+pub fn cli_canary_dismiss(provider: Provider) -> Result<(), String> {
+    canary::dismiss_in(&root(provider))
 }
 
 #[tauri::command]
@@ -859,10 +875,15 @@ fn update_in(
 /// one. Then the floor rises to the version, now that it runs.
 fn flip_in(root: &Path, bin_rel: &str, dir: &str) -> Result<(), String> {
     let record = read_record(&root.join("versions").join(dir)).map_err(|e| format!("{dir}: {e}"))?;
-    if let Some(old) = current_in(root, bin_rel).filter(|c| c.dir != dir) {
+    let old = current_in(root, bin_rel);
+    if let Some(old) = old.as_ref().filter(|c| c.dir != dir) {
         crate::secret::write_private_synced(&root.join(PREVIOUS), old.dir.as_bytes()).map_err(|e| format!("write {PREVIOUS}: {e}"))?;
     }
     crate::secret::write_private_synced(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))?;
+    // Another version from now on: its first sessions are watched afresh.
+    if old.is_none_or(|o| o.version != record.version) {
+        canary::reset_in(root, &record.version)?;
+    }
     raise_floor_in(root, &record.version)
 }
 
@@ -1626,6 +1647,29 @@ mod tests {
         assert!(current_in(&root, BIN).is_some_and(|c| c.version == "1.0.0"));
         assert_eq!(dirs(&root), ["1.0.0"], "the refused version went");
         assert_eq!(floor_in(&root, "0"), "1.0.0");
+        let _ = remove_tree(&root);
+    }
+
+    /// A new version gets a canary of its own; Settings shows it while that
+    /// version is current, and a rollback by hand watches the one gone back to.
+    #[test]
+    fn each_flip_to_another_version_starts_its_canary() {
+        let root = scratch("canary");
+        update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        canary::session_started(Provider::Codex, &root, "2.0.0", "canary-flip-a");
+        canary::session_started(Provider::Codex, &root, "2.0.0", "canary-flip-b");
+        session_ended("canary-flip-a", true);
+        session_ended("canary-flip-b", true);
+        let shown = versions_in(&root, BIN, &list(&[])).canary.unwrap();
+        assert_eq!((shown.version.as_str(), shown.warned), ("2.0.0", true));
+        // The same version again (nothing flipped): the warning stands.
+        update_in(&root, BIN, pointer("2.0.0"), &mut |_: &Path| panic!("fetched")).unwrap();
+        assert!(versions_in(&root, BIN, &list(&[])).canary.unwrap().warned);
+        // Rolled back: the old version is watched, the warning is the past.
+        use_version_in(&root, BIN, "0", "1.0.0").unwrap();
+        let shown = versions_in(&root, BIN, &list(&[])).canary.unwrap();
+        assert_eq!((shown.version.as_str(), shown.watched, shown.warned), ("1.0.0", 0, false));
         let _ = remove_tree(&root);
     }
 

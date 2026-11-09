@@ -443,6 +443,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             let code = child.lock().unwrap_or_else(|e| e.into_inner()).wait().ok().map(|st| st.exit_code());
             drop(on_account);
             drop(on_version);
+            // For the canary over a new CLI version's first sessions.
+            crate::cli::session_ended(&id, code.is_some_and(|c| c != 0));
             crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
             // The exit names only the chat. A session already spawned under

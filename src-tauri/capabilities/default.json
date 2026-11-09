@@ -44,6 +44,7 @@
     "allow-cli-use-version",
     "allow-cli-set-channel",
     "allow-cli-mark-bad",
+    "allow-cli-canary-dismiss",
     "allow-claude-defaults",
     "allow-account-limits",
     "allow-claude-folder-trusted",
