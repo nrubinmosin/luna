@@ -143,12 +143,10 @@ fn failure(text: String) -> Value {
 fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
-    // A background helper without tools holds a token for its permission
-    // handler only.
-    if name == "luna_permission" {
-        if !crate::background::has(caller) {
-            return failure("not a background helper".into());
-        }
+    // The permission handler is a Claude Code helper's CLI's, whose token may
+    // be for it alone; to anyone else it is a tool there is not, refused below
+    // as any other.
+    if name == "luna_permission" && crate::background::asks_through_luna(caller) {
         return json!({ "content": content(crate::background::permission(caller, a)) });
     }
     if !agents::has_tools(caller) {

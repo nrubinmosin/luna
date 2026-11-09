@@ -72,7 +72,10 @@ with a single ask held.
 
 Codex's `exec` asks nobody (approval `never`) and puts a question in its reply,
 unless spawned with `approval: auto-review` (`--approve-for-me`), where a
-reviewer model answers. `exec resume` refuses that flag, so the later turns
+reviewer model answers. Nothing of Codex calls `luna_permission`, so a Codex
+helper is not offered it (`background::asks_through_luna`): with Luna's tools
+its model would see it as one of them, and a call to it is refused as an
+unknown tool. `exec resume` refuses that flag, so the later turns
 pass the three settings it stands for as `-c` (`AUTO_REVIEW_OVERRIDES`).
 
 ## Leftovers
