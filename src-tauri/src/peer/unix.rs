@@ -199,16 +199,34 @@ mod tests {
         assert_eq!(seccomp_of("Seccomp:\t2\nSeccomp_filters:\t-\n"), None);
     }
 
-    /// The client half of the tests below: run as a child of the test
-    /// process (`LUNA_PEER_PROBE` names the endpoint), it connects and stays
-    /// a moment so the core can read it.
+    /// The client half of the tests below and of the live socket test: run as
+    /// a child of the test process (`LUNA_PEER_PROBE` names the endpoint), it
+    /// connects as a window does, says hello and waits for the answer, which
+    /// keeps it there while the core reads it. It prints `welcomed`, `refused
+    /// at the connect: <why>` or `refused: <why>`, and fails unless welcomed.
     #[test]
     #[ignore = "a child process of the peer tests"]
     fn probe_client() {
         let Ok(name) = std::env::var("LUNA_PEER_PROBE") else { return };
-        let s = Stream::connect(&name, std::time::Duration::from_secs(5)).expect("the probe connects");
-        std::io::Write::write_all(&mut &s, b"x").unwrap();
-        std::thread::sleep(std::time::Duration::from_secs(5));
+        let wait = std::time::Duration::from_secs(5);
+        let mut s = match Stream::connect(&name, wait) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("refused at the connect: {e}");
+                panic!("refused at the connect");
+            }
+        };
+        let _ = s.set_read_timeout(Some(wait));
+        let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, role: "ctl".into() };
+        let req = crate::ipc::Req { id: 1, cmd: "hello".into(), args: serde_json::to_value(hello).unwrap() };
+        match crate::ipc::send(&mut s, crate::ipc::REQ, &req).and_then(|()| crate::ipc::recv::<crate::ipc::Res>(&mut s, crate::ipc::RES)) {
+            Ok(res) if res.ok.is_some() => println!("welcomed"),
+            Ok(res) => panic!("refused: {:?}", res.err),
+            Err(e) => {
+                println!("refused: {e}");
+                panic!("refused");
+            }
+        }
     }
 
     /// What the peer check makes of a child of this process that `confine`
