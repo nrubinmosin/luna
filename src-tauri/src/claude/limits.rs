@@ -82,8 +82,7 @@ pub struct ScopedLimit {
 pub struct OtherLimit {
     /// The server's meter kind, which Luna has no meaning for.
     pub kind: String,
-    /// What the server calls the row: its scope's display name, its group,
-    /// both, or failing those its kind.
+    /// What the server calls the row, with its kind (`own_label`).
     pub label: String,
     pub used: f64,
     pub resets_at: Option<String>,
@@ -129,24 +128,23 @@ fn plan_from_tier(tier: &str) -> Option<String> {
     }
 }
 
-/// What the server calls a row of a kind Luna does not know: its scope's
-/// display name and its group ("Fable · monthly"), whichever it has, else its
-/// kind. A second row of the same name gets its kind too, so that each window
-/// keeps a name of its own: the quota notices tell windows apart by it.
-fn own_label(lim: &Value, kind: &str, taken: &[OtherLimit]) -> String {
+/// What a row of a kind Luna does not know is called: the server's name for
+/// it (its scope's display name and its group, "Fable · monthly", whichever it
+/// has) with its kind beside it, "monthly (monthly_all)", else its kind alone.
+/// Made of the row alone, never of the rows around it: the quota notices know
+/// a window by its label, so it must stay the same from one answer to the
+/// next whatever else comes and goes, and never be a known window's.
+fn own_label(lim: &Value, kind: &str) -> String {
     let scope = &lim["scope"];
     let name = scope["model"]["display_name"].as_str().or_else(|| scope["surface"]["display_name"].as_str()).filter(|n| !n.is_empty());
     let group = lim["group"].as_str().filter(|g| !g.is_empty());
-    let label = match (name, group) {
-        (Some(n), Some(g)) => format!("{n} · {g}"),
-        (Some(one), None) | (None, Some(one)) => one.to_string(),
-        (None, None) if kind.is_empty() => "limit".to_string(),
+    let kind = if kind.is_empty() { "no kind" } else { kind };
+    match (name, group) {
+        (Some(n), Some(g)) => format!("{n} · {g} ({kind})"),
+        (Some(one), None) | (None, Some(one)) => format!("{one} ({kind})"),
+        // A kind alone could be the name a known window goes by.
+        (None, None) if kind == "5 hours" || kind == "week" || kind.ends_with(" · week") => format!("{kind} ({kind})"),
         (None, None) => kind.to_string(),
-    };
-    if !kind.is_empty() && taken.iter().any(|o| o.label == label) {
-        format!("{label} ({kind})")
-    } else {
-        label
     }
 }
 
@@ -188,7 +186,7 @@ fn apply_limits(out: &mut AccountLimits, limits: &Value) {
                 out.scoped.push(ScopedLimit { label, used: pct, resets_at: reset });
             }
             kind => {
-                let label = own_label(lim, kind, &out.other);
+                let label = own_label(lim, kind);
                 if kind_is_news(kind) {
                     crate::log::info(
                         "limits",
@@ -236,42 +234,49 @@ pub async fn account_limits(account_path: crate::boundary::AccountPath, force: O
     tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path, force)).await.map_err(|e| e.to_string())?
 }
 
+/// The newest usage known without a request, with when it was taken, where it
+/// came from and how long it stands in for a new one: the CLI's cache in its
+/// `.claude.json` (`cfg`), or Luna's own last answer from the endpoint.
+fn newest_known(cfg: Option<&Value>, account_path: &str) -> Option<(u64, Value, &'static str, u64)> {
+    // The CLI refreshes its cache whenever a session runs — which is exactly
+    // when the numbers change. Reading it costs no request, so it cannot be
+    // throttled, and it survives the usage endpoint being down.
+    let cached = cfg.and_then(|cfg| {
+        let c = &cfg["cachedUsageUtilization"];
+        Some((c["fetchedAtMs"].as_u64()?, c["utilization"]["limits"].clone()))
+    });
+    let remembered = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
+    // One without rows to read says nothing about the windows.
+    let with_rows = |known: Option<(u64, Value)>| known.filter(|(_, limits)| limits.is_array());
+    match (with_rows(cached), with_rows(remembered)) {
+        (Some((at, limits)), Some((said_at, _))) if said_at <= at => Some((at, limits, "cache", CACHE_FRESH_MS)),
+        (_, Some((at, limits))) => Some((at, limits, "network", NETWORK_EVERY_MS)),
+        (Some((at, limits)), None) => Some((at, limits, "cache", CACHE_FRESH_MS)),
+        (None, None) => None,
+    }
+}
+
 fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String> {
     let mut out = AccountLimits { signed_in: signed_in(account_path), ..Default::default() };
 
     // Identity and plan come from the config the CLI wrote at login: no
     // request, and still correct when the network is unavailable.
-    if let Some(cfg) = read_json(&Path::new(account_path).join(".claude.json")) {
+    let cfg = read_json(&Path::new(account_path).join(".claude.json"));
+    if let Some(cfg) = &cfg {
         let acc = &cfg["oauthAccount"];
         out.email = acc["emailAddress"].as_str().map(str::to_owned);
         out.plan = plan_from_tier(acc["organizationRateLimitTier"].as_str().unwrap_or(""));
-
-        // The CLI refreshes this cache whenever a session runs — which is
-        // exactly when the numbers change. Reading it costs no request, so it
-        // cannot be throttled, and it survives the usage endpoint being down.
-        let cached = &cfg["cachedUsageUtilization"];
-        if let Some(fetched) = cached["fetchedAtMs"].as_u64() {
-            apply_limits(&mut out, &cached["utilization"]["limits"]);
-            if out.have_usage {
-                out.source = Some("cache".into());
-                out.fetched_at_ms = Some(fetched as f64);
-                if !force && now_ms().saturating_sub(fetched) < CACHE_FRESH_MS {
-                    return Ok(out);
-                }
-            }
-        }
     }
 
-    // Luna's own last answer, when it is newer than what the CLI cached.
-    let remembered = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
-    if let Some((at, limits)) = remembered {
-        if out.fetched_at_ms.is_none_or(|cached| (at as f64) > cached) {
-            apply_limits(&mut out, &limits);
-            out.source = Some("network".into());
-            out.fetched_at_ms = Some(at as f64);
-            if !force && now_ms().saturating_sub(at) < NETWORK_EVERY_MS {
-                return Ok(out);
-            }
+    // The newer of the CLI's cache and Luna's own last answer stands, and
+    // stands alone: each is the whole picture, so the older one would bring
+    // back a window the newer one no longer has.
+    if let Some((at, limits, source, fresh_for)) = newest_known(cfg.as_ref(), account_path) {
+        apply_limits(&mut out, &limits);
+        out.source = Some(source.into());
+        out.fetched_at_ms = Some(at as f64);
+        if !force && now_ms().saturating_sub(at) < fresh_for {
+            return Ok(out);
         }
     }
 
@@ -426,9 +431,9 @@ mod scoped_tests {
         assert_eq!(
             rows,
             [
-                ("monthly_all", "monthly", 0.07),
-                ("monthly_scoped", "Fable · monthly", 0.3),
-                ("daily_surface", "Claude Code", 0.02),
+                ("monthly_all", "monthly (monthly_all)", 0.07),
+                ("monthly_scoped", "Fable · monthly (monthly_scoped)", 0.3),
+                ("daily_surface", "Claude Code (daily_surface)", 0.02),
                 ("burst", "burst", 0.55),
                 ("monthly_extra", "monthly (monthly_extra)", 0.01),
             ]
@@ -438,10 +443,87 @@ mod scoped_tests {
         assert_eq!(out.h5, None);
     }
 
+    /// The quota notices know a window by its label: two windows under one
+    /// would take turns clearing and raising each other's warning.
+    #[test]
+    fn an_unknown_row_never_goes_by_a_known_windows_name() {
+        let limits = serde_json::json!([
+            { "kind": "weekly_all", "group": "weekly", "percent": 20, "resets_at": null },
+            { "kind": "weekly_extra", "group": "week", "percent": 96, "resets_at": null },
+            { "kind": "week", "percent": 50, "resets_at": null },
+            { "kind": "session_extra", "group": "5 hours", "percent": 1, "resets_at": null },
+            { "kind": "scoped_extra", "group": "week", "percent": 3, "resets_at": null, "scope": { "model": { "display_name": "Fable" } } },
+        ]);
+        let mut out = AccountLimits::default();
+        apply_limits(&mut out, &limits);
+        let labels: Vec<&str> = out.other.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["week (weekly_extra)", "week (week)", "5 hours (session_extra)", "Fable · week (scoped_extra)"]);
+        // The names the window gives the known rows (accounts.store.ts).
+        for known in ["5 hours", "week", "Fable · week"] {
+            assert!(!labels.contains(&known), "{known}");
+        }
+    }
+
+    /// A window's label is its own: the same whatever comes and goes around it.
+    #[test]
+    fn an_unknown_rows_label_does_not_hang_on_its_neighbors() {
+        let a = serde_json::json!({ "kind": "monthly_a", "group": "monthly", "percent": 90, "resets_at": null });
+        let b = serde_json::json!({ "kind": "monthly_b", "group": "monthly", "percent": 10, "resets_at": null });
+        let label_of_b = |rows: Value| {
+            let mut out = AccountLimits::default();
+            apply_limits(&mut out, &rows);
+            out.other.iter().find(|o| o.kind == "monthly_b").unwrap().label.clone()
+        };
+        let together = label_of_b(serde_json::json!([a, b]));
+        assert_eq!(together, "monthly (monthly_b)");
+        assert_eq!(label_of_b(serde_json::json!([b, a])), together, "the other order");
+        assert_eq!(label_of_b(serde_json::json!([b])), together, "alone");
+        let mut out = AccountLimits::default();
+        apply_limits(&mut out, &serde_json::json!([a, b]));
+        assert_ne!(out.other[0].label, out.other[1].label);
+    }
+
     #[test]
     fn an_unknown_kind_is_logged_once() {
         assert!(kind_is_news("ul-invented-kind"));
         assert!(!kind_is_news("ul-invented-kind"), "every poll brings it again");
         assert!(kind_is_news("ul-another-kind"));
+    }
+
+    /// An account folder with the CLI's cache in `.claude.json`, taken `ago`
+    /// ms before now, and no credentials: nothing here may reach the network.
+    fn account_with_cache(tag: &str, ago: u64, limits: Value) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("luna-limits-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = serde_json::json!({ "cachedUsageUtilization": { "fetchedAtMs": now_ms() - ago, "utilization": { "limits": limits } } });
+        std::fs::write(dir.join(".claude.json"), cfg.to_string()).unwrap();
+        let path = dir.to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    #[test]
+    fn an_older_cli_cache_does_not_bring_back_a_window_a_newer_answer_lacks() {
+        let with_session = serde_json::json!([
+            { "kind": "session", "percent": 12, "resets_at": null },
+            { "kind": "weekly_all", "percent": 40, "resets_at": null },
+        ]);
+        let without = serde_json::json!([{ "kind": "weekly_all", "percent": 41, "resets_at": null }]);
+
+        // The CLI cached a minute ago, still fresh; a click on refresh has
+        // since brought an answer with no session window. The next poll:
+        let (dir, path) = account_with_cache("newer-answer", 60_000, with_session.clone());
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, without.clone()));
+        let out = fetch_limits(&path, false).unwrap();
+        assert_eq!((out.h5, out.week, out.source.as_deref()), (None, Some(0.41), Some("network")));
+        last_answer().lock().unwrap().remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The other way round the cache is the newer, and stands.
+        let (dir, path) = account_with_cache("newer-cache", 10_000, with_session);
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 60_000, without));
+        let out = fetch_limits(&path, false).unwrap();
+        assert_eq!((out.h5, out.week, out.source.as_deref()), (Some(0.12), Some(0.4), Some("cache")));
+        last_answer().lock().unwrap().remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -35,12 +35,17 @@ chat or helper runs on it.
 ## Limits
 
 - **Claude Code:** the OAuth token from `<account>/.credentials.json`, then
-  `api.anthropic.com/api/oauth/usage` (the endpoint `/usage` uses); the CLI's
-  cache in `.claude.json` answers while fresh. Its `limits` rows by `kind`:
-  `session` → 5 hours, `weekly_all` → week, each `weekly_scoped` → its model's
-  week. A row of another kind is kept (`other`) under the server's own name for
-  it (the scope's `display_name`, the `group`, both, else the kind), its kind
-  logged once a run.
+  `api.anthropic.com/api/oauth/usage` (the endpoint `/usage` uses). The newer
+  of the CLI's cache in `.claude.json` and Luna's own last answer answers while
+  fresh (5 and 10 minutes), never the older: it could bring back a window the
+  newer one lacks. Its `limits` rows by `kind`: `session` → 5 hours,
+  `weekly_all` → week, each `weekly_scoped` → its model's week. A row of
+  another kind is kept (`other`) under the server's own name for it (the
+  scope's `display_name`, the `group`, or both) with its kind beside it,
+  "monthly (monthly_all)", else the kind alone; its kind is logged once a run.
+  The label is made of the row alone and is never a known window's: the quota
+  notices know a window by its label, so it may not change with the rows
+  around it.
 - **Codex:** `tokens.access_token` / `account_id` from `<account>/auth.json`
   (email and plan from the `id_token` claims), then
   `chatgpt.com/backend-api/wham/usage` (what `/status` reads): `primary`,
@@ -51,8 +56,10 @@ chat or helper runs on it.
 - **A window the provider did not send is absent, never 0%.** Claude's `h5`
   and `week` are `null` without their row, and each answer replaces the last
   whole, so a window the CLI's cache had and a newer answer lacks is gone; a
-  Codex window that is `null` is left out. A row without its percent is no
-  window either. The UI (`accounts.store.ts`) builds its rows from what is
+  Codex window that is `null` is left out, and an answer whose `rate_limit`
+  holds no window at all is usage known (none), not a round that brought
+  nothing, through which the UI keeps its last numbers. A row without its
+  percent is no window either. The UI (`accounts.store.ts`) builds its rows from what is
   there, and agents get those rows as they are (`luna_account_list`, the quota
   notices, the account choice of a spawn given a list), so a missing window is
   no row anywhere. Seen 2026-11-09: Claude's endpoint sent no `session` row,
