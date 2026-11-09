@@ -356,6 +356,29 @@ describe('NewChatDialog: where the wait guard starts', () => {
     expect(allChats(useChats.getState().folders)[0]).toMatchObject({ hooksUnasked: false, guard: false });
   });
 
+  it('leaves a guard Codex could not show to Settings when another box is kept', async () => {
+    // A start an earlier Luna kept, which says nothing of the guard.
+    useChats.getState().setStart('/repo', { worktree: false, tools: false });
+    useNewChat.getState().remember('/repo', { provider: 'codex', name: 'gpt' });
+    const user = userEvent.setup();
+    const first = render(<NewChatDialog />);
+    await settle();
+    await user.click(screen.getByRole('checkbox', { name: 'Luna tools' }));
+    await user.click(screen.getByText('keep for this folder'));
+    const kept = useChats.getState().folders.find(f => f.path === '/repo')?.start;
+    expect(kept).toMatchObject({ worktree: false, tools: true });
+    expect(kept?.guard).toBeUndefined();
+    first.unmount();
+
+    // Settings turns the guard on: a Claude Code chat there follows it.
+    useNewChat.getState().setDefault('guard', true);
+    useNewChat.getState().remember('/repo', { provider: 'claude', name: 'work' });
+    useNewChat.getState().openDialog('/repo');
+    render(<NewChatDialog />);
+    expect(guardBox()).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Luna tools' })).toBeChecked();
+  });
+
   it('takes the start on Codex once its hooks run unasked', async () => {
     useNewChat.getState().setDefault('guard', true);
     useNewChat.getState().remember('/repo', { provider: 'codex', name: 'gpt' });
