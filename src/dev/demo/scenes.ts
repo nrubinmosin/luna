@@ -93,6 +93,7 @@ const SCENES: Scene[] = [
 export function seedDemo(scene: Scene) {
   demoState.seeded = true;
   demoState.showsChecks = scene.startsWith('checks');
+  demoState.showsCanary = scene.startsWith('settings-clis');
   useBackground.setState({ helpers: BACKGROUND });
   // The shell store has read the theme by now; tell it, not localStorage.
   useShell.setState({ theme: scene.endsWith('dark') ? 'dark' : 'light', pinned: true });

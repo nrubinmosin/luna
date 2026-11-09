@@ -3,6 +3,7 @@ import type { BackgroundHelperDto } from './agents';
 import type { CliStatusDto } from './cli';
 import type { CoreStateDto } from './coreProcess';
 import type { PowerStateDto } from './power';
+import type { Provider } from '../shared/types';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
 
@@ -21,6 +22,12 @@ export const onPtyOutput = (cb: (p: PtyOutput) => void): Promise<UnlistenFn> =>
 
 export const onCliStatus = (cb: (s: CliStatusDto) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<CliStatusDto>('cli://status', e => cb(e.payload)) : Promise.resolve(() => {});
+
+/** The canary over a new CLI version's first sessions has warned (cli/canary.rs). */
+export const onCliCanary = (cb: (c: { provider: Provider; version: string }) => void): Promise<UnlistenFn> =>
+  tauriAvailable
+    ? listen<{ provider: Provider; version: string }>('cli://canary', e => cb(e.payload))
+    : Promise.resolve(() => {});
 
 export const onPtyExit = (cb: (p: PtyExit) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<PtyExit>('pty://exit', e => cb(e.payload)) : Promise.resolve(() => {});

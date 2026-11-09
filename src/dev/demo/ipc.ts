@@ -2,6 +2,7 @@
 import type { Provider } from '../../shared/types';
 import {
   CLI,
+  CLI_VERSIONS,
   ROOT,
   POWER,
   DEFAULTS,
@@ -27,6 +28,8 @@ export const demoState = {
   seeded: false,
   /** Only the scenes about them show any: the README's shots have no such chip. */
   showsChecks: false,
+  /** Only Settings → CLIs shows a canary warning, and its chip with it. */
+  showsCanary: false,
   power: POWER
 };
 
@@ -44,6 +47,10 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'orphan_worktrees') return (STALE[args.folder as string] ?? []).map(w => w.path) as unknown as T;
   if (cmd === 'inspect_worktrees') return (STALE[args.folder as string] ?? []) as unknown as T;
   if (cmd === 'cli_status') return (CLI[args.provider as Provider] ?? CLI.claude) as unknown as T;
+  if (cmd === 'cli_versions') {
+    const v = CLI_VERSIONS[args.provider as Provider] ?? CLI_VERSIONS.claude;
+    return (demoState.showsCanary ? v : { ...v, canary: null }) as unknown as T;
+  }
   if (cmd === 'get_accounts_root') return ROOT as unknown as T;
   if (cmd === 'claude_defaults') return DEFAULTS as unknown as T;
   if (cmd === 'codex_defaults') return CODEX_DEFAULTS as unknown as T;

@@ -48,9 +48,9 @@ pub use leftovers::*;
 /// A core's death, for a test of what a tie does to a job across the crate.
 #[cfg(all(test, windows))]
 pub use imp::close_as_in_a_death;
-#[cfg(windows)]
-pub use imp::resume;
 pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, pin, tie, Job, Pin};
+#[cfg(windows)]
+pub use imp::{resume, KillJob};
 
 /// When a process was created, epoch ms, where the platform says.
 pub fn created_ms(pid: u32) -> Option<u64> {

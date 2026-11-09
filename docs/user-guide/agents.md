@@ -222,7 +222,8 @@ one of your own chats an agent may answer only a question its model asked
 `luna_session_list` shows per helper its state, the first line of its task and when it last
 did anything; `luna_session_get` adds its transcript and the CLI's own conversation id, its
 branch and commit, when its turn began, the model it
-ran on (none until a model has answered) and how full its context is after its last turn.
+ran on (none until a model has answered), how full its context is after its last turn and
+the version of the CLI its process last started from (`cliVersion`).
 `luna_account_list` names the accounts agents may use (the account alone is enough: it brings
 its own CLI) with their usage as the Accounts window shows it; `luna_account_get` adds the
 settings a helper would get there (read from the account's and the project's settings the way

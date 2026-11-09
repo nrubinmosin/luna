@@ -1,4 +1,4 @@
-//! Auto-handoff (docs/adr/0019-session-self-handoff.md). A person's chat with
+//! Auto-handoff (docs/adr/0020-session-self-handoff.md). A person's chat with
 //! Luna's tools that has it on (`handoff` in its settings: the threshold, in
 //! percent of its context window) is told, once a turn ends past it, to write a
 //! handoff and call `luna_session_handoff`, the one tool only such a chat is

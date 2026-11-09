@@ -1,4 +1,4 @@
-# ADR-0019: Hand a chat over to a fresh conversation in place, on its own word
+# ADR-0020: Hand a chat over to a fresh conversation in place, on its own word
 
 - **Status:** Accepted
 - **Date:** 2026-11-09

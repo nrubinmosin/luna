@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 /** The Settings dialog's pages, in the order its navigation lists them. */
-export const SETTINGS_PAGES = ['general', 'chats', 'agents', 'links', 'updates'] as const;
+export const SETTINGS_PAGES = ['general', 'chats', 'agents', 'links', 'clis', 'updates'] as const;
 export type SettingsPage = (typeof SETTINGS_PAGES)[number];
 
 /** Whether Settings is open, and on which page. The page outlives a close, so
