@@ -137,7 +137,8 @@ A chat without Luna tools cannot have it: their server is what offers it.
   stop conditions, what is done and what remains, decisions, approvals and open
   questions, branches and SHAs, helpers and what each was asked, checks, the next
   action). A firmer one follows near where the CLI would compact the conversation
-  by itself. Nothing switches unless the chat asks.
+  by itself. A conversation a handoff began is asked only once it has grown 5
+  points past where it began. Nothing switches unless the chat asks.
 - The chat writes the file and calls `luna_session_handoff`. Luna copies it into
   its data folder and, once the chat is at rest, types `/clear` (Claude Code) or
   `/new` (Codex) and then a prompt opening `[Luna handoff N` that points the new

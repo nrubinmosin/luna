@@ -411,7 +411,10 @@ registry settings, the threshold in percent, passed by the window at every start
   the turn over, `Context::of` its transcript; past the threshold one line in
   `Registry::news` (the notifier types it), past `firm_at` (threshold + 10, kept
   within 85-95) a firmer one; once each per conversation (`Told`, by the
-  transcript's name). A switch scheduled drops a notice not yet typed.
+  transcript's name). A conversation a handoff began (`Record::fresh`) keeps
+  its first reading as a floor and is asked only past it by `GROWTH` (5
+  points): one that begins above the threshold is not sent straight into the
+  next handoff. A switch scheduled drops a notice not yet typed.
 - **The copy.** `file.rs`: absolute, `.md` / `.markdown` / `.txt`, opened with no
   link followed and checked on its handle, at most 128 KB of UTF-8 text, refused
   inside the data dir after `canonicalize`; written new and private as
@@ -432,8 +435,9 @@ registry settings, the threshold in percent, passed by the window at every start
 - **Failures.** 60 s without a new conversation, 60 s without the prompt in the
   new transcript, 30 min without rest, 10 min with its CLI not running, or the
   CLI's own jobs at rest: given up, kept on record (`Past`), the chat told by a
-  line in `news` (before the reset: it goes on as it was; after: what it is, the
-  prompt again) and the desktop by a notification. A draft holds it as long as
+  line in `news` (before the reset: it goes on as it was, and may call again
+  only if the tool is still its; after: what it is, the prompt again) and the
+  desktop by a notification. A draft holds it as long as
   it stands, told to the desktop after a minute.
 - **A core restart.** `from_bytes`: a switch in `Resetting` or `Prompting` is
   `Recovering`. Once the chat is back and at rest: on the conversation it left,

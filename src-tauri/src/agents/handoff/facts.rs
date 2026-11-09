@@ -210,16 +210,19 @@ pub(super) fn prompt(
 }
 
 /// The line into the chat when a handoff is given up. Before the reset took,
-/// the conversation it is in is the one that asked: it goes on. After, it is
-/// the new one, which has to hear what it is and where to start.
-pub(super) fn failed_line(n: u32, why: &str, snapshot: &str, reset: bool, prompt: &str) -> String {
+/// the conversation it is in is the one that asked: it goes on, and may call
+/// again only where the tool is still its (`offered`). After, it is the new
+/// one, which has to hear what it is and where to start.
+pub(super) fn failed_line(n: u32, why: &str, snapshot: &str, reset: bool, offered: bool, prompt: &str) -> String {
     if reset {
         format!("Handoff {n} cleared the conversation, but Luna's prompt for the new one did not go in ({why}). It was:\n{prompt}")
     } else {
-        format!(
-            "Handoff {n} did not go through: {why}. This conversation goes on as it was; your handoff's copy is at \
-             {snapshot}. Call luna_session_handoff again once what stood in the way is done."
-        )
+        let next = if offered {
+            "Call luna_session_handoff again once what stood in the way is done."
+        } else {
+            "Auto-handoff is off for this chat now: luna_session_handoff refuses until the person turns it on again."
+        };
+        format!("Handoff {n} did not go through: {why}. This conversation goes on as it was; your handoff's copy is at {snapshot}. {next}")
     }
 }
 

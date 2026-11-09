@@ -180,6 +180,7 @@ fn a_handoff_given_up_before_its_reset_tells_the_old_conversation() {
     let news: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "gu-me").map(|(_, l)| l.clone()).collect();
     assert_eq!(news.len(), 1);
     assert!(news[0].contains("did not go through") && news[0].contains("goes on as it was") && !news[0].contains("PROMPT"), "{}", news[0]);
+    assert!(news[0].contains("Call luna_session_handoff again"), "the tool is still its: {}", news[0]);
     assert_eq!(mark_of("gu-me").map(|m| (m.state, m.why.is_some())), Some(("failed", true)));
     // After the reset, the new conversation hears where to start.
     reg().lock().unwrap().news.retain(|(c, _)| c != "gu-me");
@@ -208,6 +209,8 @@ fn turning_it_off_gives_up_a_scheduled_handoff_and_the_setting_follows_at_once()
     assert!(!offers_tool("ts-me") && crate::agents::settings_of("ts-me").get("handoff").is_none());
     assert!(!holds_text("ts-me"));
     assert_eq!(mark_of("ts-me").and_then(|m| m.why), Some("auto-handoff was turned off for this chat".into()));
+    let told: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "ts-me").map(|(_, l)| l.clone()).collect();
+    assert!(told[0].contains("refuses until the person turns it on"), "not asked to call a tool it no longer has: {}", told[0]);
     reg().lock().unwrap().news.retain(|(c, _)| c != "ts-me");
     done_with(&["ts-me"], &dir);
 }
