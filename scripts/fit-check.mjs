@@ -49,13 +49,17 @@ const clickText = (selector, text) =>
   );
 /** Scrolls the open dialog's body by 60px, whichever way it can go, and says
  *  whether it moved: a body that fits has nothing to scroll. */
-const scrollBody = `${wait(300)} { const b = document.querySelector('.scrim > .window > .window-body'); const was = b.scrollTop; b.scrollTop = was > 60 ? was - 60 : was + 60; return b.scrollTop !== was; }`;
+const scrollBody = `const b = document.querySelector('.scrim > .window > .window-body'); const was = b.scrollTop; b.scrollTop = was > 60 ? was - 60 : was + 60; return b.scrollTop !== was;`;
+const has = selector => `document.querySelector(${JSON.stringify(selector)})`;
+const linkChooser = `[...document.querySelectorAll('.window')].find(w => w.textContent.includes('Copy link'))`;
 
 /** What only a click (or a store a click would set) opens: a scene to start
- *  from and what to do in it. `closes`: no popup may be left open once the
- *  setup says it scrolled something. */
+ *  from, what to do in it, and what must then be open (`opens`, a page
+ *  expression), or the check would measure the scene beneath and pass.
+ *  `then` runs once it is open; with `closes`, no popup may be left open
+ *  after it if it says it scrolled something. */
 const EXTRAS = [
-  { name: 'newchat-picker', scene: 'newchat', setup: click('.picker-face') },
+  { name: 'newchat-picker', scene: 'newchat', setup: click('.picker-face'), opens: has('.picker-list') },
   {
     // The account box at the very bottom of the dialog's body, then opened:
     // the body's content pushed 320px down, so it scrolls there at any size.
@@ -65,25 +69,52 @@ const EXTRAS = [
       `const body = document.querySelector('.scrim > .window > .window-body'); const face = document.querySelector('.picker-face');` +
       `body.firstElementChild.style.marginTop = '320px'; ${wait(100)}` +
       `body.scrollTop += face.getBoundingClientRect().bottom - body.getBoundingClientRect().bottom + 6; ${wait(200)}` +
-      `face.click();`
+      `face.click();`,
+    opens: has('.picker-list')
   },
-  { name: 'newchat-picker-scroll', scene: 'newchat', setup: click('.picker-face') + scrollBody, closes: true },
-  { name: 'settings-links-menu', scene: 'settings-links', setup: click('[aria-haspopup="menu"]') },
-  { name: 'library-editor', scene: 'library', setup: click('[title$="SKILL.md"]') },
-  { name: 'library-addfolder', scene: 'library', setup: clickText('button', 'Add a folder…') },
-  { name: 'library-reach', scene: 'library', setup: click('.picker-face') },
-  { name: 'library-reach-scroll', scene: 'library', setup: click('.picker-face') + scrollBody, closes: true },
+  {
+    name: 'newchat-picker-scroll',
+    scene: 'newchat',
+    setup: click('.picker-face'),
+    opens: has('.picker-list'),
+    then: scrollBody,
+    closes: true
+  },
+  {
+    name: 'settings-links-menu',
+    scene: 'settings-links',
+    setup: click('[aria-haspopup="menu"]'),
+    opens: has('[role=menu]')
+  },
+  { name: 'library-editor', scene: 'library', setup: click('[title$="SKILL.md"]'), opens: has('.config-text') },
+  {
+    name: 'library-addfolder',
+    scene: 'library',
+    setup: clickText('button', 'Add a folder…'),
+    opens: has('[role=menu]')
+  },
+  { name: 'library-reach', scene: 'library', setup: click('.picker-face'), opens: has('.popover') },
+  {
+    name: 'library-reach-scroll',
+    scene: 'library',
+    setup: click('.picker-face'),
+    opens: has('.popover'),
+    then: scrollBody,
+    closes: true
+  },
   {
     name: 'handoff-previous',
     scene: 'handoff',
     setup:
-      `document.querySelector('.scrim')?.click(); ${wait(300)}` + clickText('.handoff-link', 'previous conversation')
+      `document.querySelector('.scrim')?.click(); ${wait(300)}` + clickText('.handoff-link', 'previous conversation'),
+    opens: has('.helper-view')
   },
-  { name: 'color', scene: 'main', setup: click('[data-glyph="swatch"]') },
+  { name: 'color', scene: 'main', setup: click('[data-glyph="swatch"]'), opens: has('.popover .swatch') },
   {
     name: 'link',
     scene: 'main',
-    setup: `${store('features/browsers/browsers.store.ts')}.useLinkChooser.getState().show('https://example.com/a/rather/long/link?with=query', 'demo-1', innerWidth - 120, innerHeight - 60);`
+    setup: `${store('features/browsers/browsers.store.ts')}.useLinkChooser.getState().show('https://example.com/a/rather/long/link?with=query', 'demo-1', innerWidth - 120, innerHeight - 60);`,
+    opens: linkChooser
   },
   {
     // More browsers than any window is tall.
@@ -93,7 +124,8 @@ const EXTRAS = [
       `const s = ${store('features/browsers/browsers.store.ts')};` +
       `s.useLinkChooser.getState().show('https://example.com/a/rather/long/link?with=query', 'demo-1', innerWidth - 120, innerHeight - 60); ${wait(400)}` +
       `const d = s.useBrowsers.getState().data;` +
-      `s.useBrowsers.setState({ data: { ...d, found: Array.from({ length: 24 }, (_, i) => ({ id: 'b' + i, name: 'Browser profile ' + i, command: 'x %1' })) } });`
+      `s.useBrowsers.setState({ data: { ...d, found: Array.from({ length: 24 }, (_, i) => ({ id: 'b' + i, name: 'Browser profile ' + i, command: 'x %1' })) } });`,
+    opens: `${linkChooser}?.textContent.includes('Browser profile 23')`
   },
   {
     // Three helpers done: every button of each row enabled, Open as chat too.
@@ -103,7 +135,8 @@ const EXTRAS = [
       `const s = ${store('features/agents/background.store.ts')}.useBackground;` +
       `const h = s.getState().helpers.find(x => x.parent === 'demo-1');` +
       `s.setState({ helpers: ['reviewer-handoff', 'reviewer-0.12', 'reviewer-library'].map((name, i) => ({ ...h, id: h.id + '-' + i, name, state: 'idle', leftRunning: [] })) }); ${wait(300)}` +
-      click('.chat-row[data-active="yes"] .kids')
+      click('.chat-row[data-active="yes"] .kids'),
+    opens: `${has('.popover')}?.textContent.includes('reviewer-library')`
   },
   {
     // A chat's helpers, more than any window is tall.
@@ -113,7 +146,8 @@ const EXTRAS = [
       `const s = ${store('features/agents/background.store.ts')}.useBackground;` +
       `const h = s.getState().helpers.find(x => x.parent === 'demo-1');` +
       `s.setState({ helpers: Array.from({ length: 14 }, (_, i) => ({ ...h, id: h.id + '-' + i, name: 'helper ' + i })) }); ${wait(300)}` +
-      click('.chat-row[data-active="yes"] .kids')
+      click('.chat-row[data-active="yes"] .kids'),
+    opens: `${has('.popover')}?.textContent.includes('helper 13')`
   }
 ];
 
@@ -215,13 +249,14 @@ function problems(measured, closes) {
   return found;
 }
 
-/** A DevTools session on the first page of a Chromium started here. */
+/** How long one DevTools request may take, and the whole run. */
+const REQUEST_MS = 30_000;
+const RUN_MS = 40 * 60_000;
+
+/** A DevTools session on the first page of the Chromium started below. Every
+ *  request has a deadline, and the socket closing fails whatever waits on it:
+ *  a stalled page fails the run rather than hold it. */
 async function devtools() {
-  const browser = spawn(
-    'chromium',
-    ['--headless=new', '--no-sandbox', '--disable-gpu', '--remote-debugging-port=9222', 'about:blank'],
-    { stdio: 'ignore' }
-  );
   let page;
   for (let i = 0; i < 150 && !page; i++) {
     try {
@@ -236,25 +271,35 @@ async function devtools() {
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     ws.onopen = resolve;
-    ws.onerror = reject;
+    ws.onerror = () => reject(new Error('could not connect to Chromium'));
   });
   let seq = 0;
   const pending = new Map();
   let onLoad = null;
+  const settle = (id, error, result) => {
+    const waiting = pending.get(id);
+    if (!waiting) return;
+    pending.delete(id);
+    clearTimeout(waiting.timer);
+    if (error) waiting.reject(error);
+    else waiting.resolve(result);
+  };
   ws.onmessage = ev => {
     const m = JSON.parse(String(ev.data));
-    const waiting = m.id && pending.get(m.id);
-    if (waiting) {
-      pending.delete(m.id);
-      if (m.error) waiting.reject(new Error(m.error.message));
-      else waiting.resolve(m.result);
-    } else if (m.method === 'Page.loadEventFired') onLoad?.();
+    if (m.id) settle(m.id, m.error && new Error(m.error.message), m.result);
+    else if (m.method === 'Page.loadEventFired') onLoad?.();
+  };
+  ws.onclose = () => {
+    for (const id of [...pending.keys()]) settle(id, new Error('Chromium went away'));
   };
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
+      if (ws.readyState !== WebSocket.OPEN) return reject(new Error('Chromium went away'));
       seq += 1;
-      pending.set(seq, { resolve, reject });
-      ws.send(JSON.stringify({ id: seq, method, params }));
+      const id = seq;
+      const timer = setTimeout(() => settle(id, new Error(`${method} took over ${REQUEST_MS / 1000}s`)), REQUEST_MS);
+      pending.set(id, { resolve, reject, timer });
+      ws.send(JSON.stringify({ id, method, params }));
     });
   const evaluate = async expression => {
     const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
@@ -271,26 +316,42 @@ async function devtools() {
   };
   await send('Page.enable');
   await send('Runtime.enable');
-  return { send, evaluate, open, close: () => (ws.close(), browser.kill('SIGKILL')) };
+  return { send, evaluate, open };
+}
+
+/** The names a filter gives, or null for all; a name it does not know is an
+ *  error, so a typo never passes as a check of nothing. */
+function pick(arg, known, what) {
+  if (!arg || arg === '-') return null;
+  const names = arg.split(',').filter(Boolean);
+  const unknown = names.filter(n => !known.includes(n));
+  if (unknown.length || !names.length) {
+    throw new Error(`no ${what} called ${unknown.join(', ') || '(empty)'}; there are ${known.join(', ')}`);
+  }
+  return names;
 }
 
 async function main() {
   const [out, scenesArg, sizesArg] = process.argv.slice(2);
   if (!out) throw new Error('usage: node scripts/fit-check.mjs <out> [scene,...] [size,...]');
-  const pick = arg => (arg && arg !== '-' ? arg.split(',') : null);
-  const onlyScenes = pick(scenesArg);
-  const onlySizes = pick(sizesArg);
   mkdirSync(out, { recursive: true });
 
   const cdp = await devtools();
   // The scenes are the demo's own list, read from the page it serves.
   await cdp.open(`${BASE}?demo`);
-  const sceneNames = await cdp.evaluate(`(async () => (await import('/src/dev/demo/scenes.ts')).SCENES ?? [])()`);
-  const runs = [
-    { name: 'main' },
-    ...sceneNames.filter(s => !s.endsWith('-dark')).map(name => ({ name })),
-    ...EXTRAS
-  ].filter(r => !onlyScenes || onlyScenes.includes(r.name));
+  const sceneNames = await cdp.evaluate(`(async () => (await import('/src/dev/demo/scenes.ts')).SCENES)()`);
+  const all = [{ name: 'main' }, ...sceneNames.filter(s => !s.endsWith('-dark')).map(name => ({ name })), ...EXTRAS];
+  const onlyScenes = pick(
+    scenesArg,
+    all.map(r => r.name),
+    'scene'
+  );
+  const onlySizes = pick(
+    sizesArg,
+    SIZES.map(z => z.name),
+    'size'
+  );
+  const runs = all.filter(r => !onlyScenes || onlyScenes.includes(r.name));
   const sizes = SIZES.filter(z => !onlySizes || onlySizes.includes(z.name));
 
   const report = {};
@@ -310,11 +371,16 @@ async function main() {
       let scrolled = false;
       if (run.setup) {
         try {
-          scrolled = (await cdp.evaluate(`(async () => { ${run.setup} })()`)) === true;
+          await cdp.evaluate(`(async () => { ${run.setup} })()`);
+          await new Promise(r => setTimeout(r, 900));
+          if (!(await cdp.evaluate(`!!(${run.opens})`))) throw new Error(`nothing opened (${run.opens})`);
+          if (run.then) {
+            scrolled = (await cdp.evaluate(`(async () => { ${run.then} })()`)) === true;
+            await new Promise(r => setTimeout(r, 900));
+          }
         } catch (e) {
           found.push(`could not open it: ${String(e).split('\n')[0]}`);
         }
-        await new Promise(r => setTimeout(r, 900));
       }
       const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
       writeFileSync(`${out}/${run.name}__${size.name}.png`, Buffer.from(shot.data, 'base64'));
@@ -327,11 +393,31 @@ async function main() {
       );
     }
   }
-  cdp.close();
   writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
   const total = Object.keys(report).length;
   console.log(failed ? `${failed} of ${total} scene-sizes have problems` : `all ${total} scene-sizes fit`);
-  process.exit(failed ? 1 : 0);
+  return failed ? 1 : 0;
 }
 
-await main();
+// Chromium goes however the run ends: with its result, an error, or the whole
+// run's deadline passing.
+const browser = spawn(
+  'chromium',
+  ['--headless=new', '--no-sandbox', '--disable-gpu', '--remote-debugging-port=9222', 'about:blank'],
+  { stdio: 'ignore' }
+);
+const deadline = setTimeout(() => {
+  console.error(`fit check: not done after ${RUN_MS / 60_000} minutes, given up`);
+  browser.kill('SIGKILL');
+  process.exit(1);
+}, RUN_MS);
+let code = 1;
+try {
+  code = await main();
+} catch (e) {
+  console.error(`fit check: ${e instanceof Error ? e.message : String(e)}`);
+} finally {
+  clearTimeout(deadline);
+  browser.kill('SIGKILL');
+}
+process.exit(code);

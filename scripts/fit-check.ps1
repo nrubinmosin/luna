@@ -19,10 +19,20 @@ param(
 )
 . "$PSScriptRoot/lib.ps1"
 
+# The shots stay in test-build/, which git ignores: an -Out anywhere else is
+# refused before anything is made there.
+$testBuild = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'test-build')).TrimEnd('\', '/')
+$outFull = [IO.Path]::GetFullPath($Out, $RepoRoot).TrimEnd('\', '/')
+$ignoreCase = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+if (-not $outFull.StartsWith($testBuild + [IO.Path]::DirectorySeparatorChar, $ignoreCase)) {
+    throw "-Out must be a folder under $testBuild, not $outFull"
+}
+$outInRepo = [IO.Path]::GetRelativePath($RepoRoot, $outFull) -replace '\\', '/'
+
 $image = Build-Image luna-shots screenshots.Dockerfile
 
 Initialize-HostDirs 'node_modules', 'test-build'
-New-Item -ItemType Directory -Force (Join-Path $RepoRoot $Out) | Out-Null
+New-Item -ItemType Directory -Force $outFull | Out-Null
 
 # The UI's own faces, as screenshots.ps1 mounts them: text in a substitute
 # face wraps elsewhere, and where text wraps is what decides what fits.
@@ -56,6 +66,9 @@ if test -z $up; then
   cat /tmp/vite.log >&2
   exit 1
 fi
+# With IFS empty nothing below is split, so a folder with a space in it stays
+# one argument (as in screenshots.ps1).
+IFS=
 node scripts/fit-check.mjs /app/$FIT_OUT ${FIT_SCENES:--} ${FIT_SIZES:--}
 '@
 
@@ -64,7 +77,7 @@ Use-BuildLock {
     Invoke-Checked 'fit check' {
         docker run --rm `
           -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-          -e FIT_OUT=$Out `
+          -e FIT_OUT=$outInRepo `
           -e FIT_SCENES=$($Scenes -join ',') `
           -e FIT_SIZES=$($Sizes -join ',') `
           @fontArgs `
