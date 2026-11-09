@@ -57,8 +57,7 @@ the window at every start (`ensure_*_session`) and set on a running chat by
 `luna_session_handoff` without `file` (`served::instructions`) answers as plain
 text: the steps (the CLI's own jobs ended, the file written, the call with
 `file`, the turn ended), where the file goes (`<data>/handoffs/<chat>/drafts/
-handoff.md`, the folder made private, `drafts_of`; or any file outside the
-data dir), what Luna adds to the next conversation itself (`LUNA_ADDS`, the one
+handoff.md`, `drafts_of`; or any file outside the data dir), what Luna adds to the next conversation itself (`LUNA_ADDS`, the one
 list of it), and the instructions past their front matter, naming whose they
 are and their SHA-256. A chat that can write no file (Codex's read-only
 sandboxes, Claude Code's plan mode: `unwritable`) is told so.
@@ -79,6 +78,16 @@ it, a firm notice carrying the checklist sets it where nothing was, `told_of`),
 copied into the switch the next call with `file` schedules
 (`Switch::instructions`) and into its `Past`, and let go once a handoff goes
 through.
+
+**Luna's folders.** `handoffs`, a chat's folder in it and its `drafts` are
+checked top down (`private_chain`, `secret::private_dir` at each level: a
+folder, no link or junction, this user's, private) before anything is made or
+read below them: the record loaded or saved (`store.rs`), a copy written
+(`copies_of`), the drafts folder named or given to a CLI (`drafts_of`). In a
+data folder others share, a link planted on the way would otherwise take all
+of it to a folder another user holds; `handoffs` is one of the data folder's
+own names (`paths.rs` `OWN_NAMES`) for the shared-folder privacy pass. A chat
+deleted has its folder removed only where neither it nor `handoffs` is a link.
 
 ## The threshold
 

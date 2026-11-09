@@ -74,13 +74,39 @@ pub fn dir_of(chat: &str) -> Result<PathBuf, String> {
 /// folder may be shared, and a handoff quotes the person and the project.
 pub(super) const DRAFTS: &str = "drafts";
 
-/// `chat`'s drafts folder, made private where it is not there yet. Claude
-/// Code reaches it within the folder of copies it is given (`--add-dir`),
-/// Codex by an `--add-dir` of its own, which its sandbox writes into.
-pub fn drafts_of(chat: &str) -> Result<PathBuf, String> {
-    let dir = dir_of(chat)?.join(DRAFTS);
-    crate::secret::private_dir(&dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
+/// `top` and the folders `below` it, in turn, each made where it is not there
+/// yet and checked where it is before anything is made below it: a folder,
+/// no link or junction, this user's, private (`secret::private_dir`, which
+/// checks the one folder it is given). In a data folder others share
+/// (paths.rs `scope`), a link planted at any of them would lead what Luna
+/// writes there, and what it gives a CLI to write in, to a folder another
+/// user holds. The innermost.
+pub(super) fn private_chain(top: &Path, below: &[&str]) -> Result<PathBuf, String> {
+    let make = |d: &Path| crate::secret::private_dir(d).map_err(|e| format!("{} is no private folder of Luna's: {e}", d.display()));
+    let mut dir = top.to_path_buf();
+    make(&dir)?;
+    for name in below {
+        dir.push(name);
+        make(&dir)?;
+    }
     Ok(dir)
+}
+
+/// `chat`'s folder of copies, checked from Luna's folder of handoffs down
+/// (`private_chain`) before a copy is written in it.
+pub(super) fn copies_of(chat: &str) -> Result<PathBuf, String> {
+    dir_of(chat)?;
+    private_chain(&root(), &[&crate::paths::id_file_name(chat)])
+}
+
+/// `chat`'s drafts folder, checked from Luna's folder of handoffs down
+/// (`private_chain`) before it is named to the chat or given to its CLI.
+/// Claude Code reaches it within the folder of copies it is given
+/// (`--add-dir`), Codex by an `--add-dir` of its own, which its sandbox
+/// writes into.
+pub fn drafts_of(chat: &str) -> Result<PathBuf, String> {
+    dir_of(chat)?;
+    private_chain(&root(), &[&crate::paths::id_file_name(chat), DRAFTS])
 }
 
 /// A session's `settings` as a caller is shown them (agents/list.rs, which
@@ -188,7 +214,8 @@ pub fn handoff(caller: &str, file: &str) -> Result<Value, String> {
 /// its way into the chat goes in first, into the conversation that will hand
 /// it on, and none starts once the switch is there.
 fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Result<Value, String> {
-    let dir = dir_of(caller)?;
+    // Checked before the copy goes in it, and before what is in it is read.
+    let dir = copies_of(caller)?;
     // Past any copy on disk: one a core left behind as it stopped between the
     // copy and its record (a number reserved is not saved) is never reused.
     let free = file::next_free(&dir);
@@ -926,10 +953,13 @@ pub fn forget(id: &str) {
     if let Err(e) = store::remove(id) {
         crate::log::warn("handoff", &format!("{id}'s handoffs could not be forgotten on disk: {e}"));
     }
-    if let Ok(dir) = dir_of(id) {
-        if dir.is_dir() {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
+    // Only where the folder of handoffs and the chat's are Luna's own
+    // folders, no link on the way: a planted one would take the removal to
+    // wherever it leads.
+    let Ok(dir) = dir_of(id) else { return };
+    let real_dir = |d: &Path| std::fs::symlink_metadata(d).is_ok_and(|m| m.is_dir() && !crate::boundary::is_link(&m));
+    if real_dir(&root()) && real_dir(&dir) {
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

@@ -113,8 +113,16 @@ pub(super) fn records() -> MutexGuard<'static, Records> {
 fn static_records() -> &'static Mutex<Records> {
     static R: OnceLock<Mutex<Records>> = OnceLock::new();
     R.get_or_init(|| {
+        // Read only from a folder that is Luna's (`private_chain`): one a link
+        // leads elsewhere holds no record of Luna's.
         #[cfg(not(test))]
-        let loaded = std::fs::read(file()).map(|b| from_bytes(&b, crate::throttle::now_ms())).unwrap_or_default();
+        let loaded = match super::private_chain(&super::root(), &[]) {
+            Ok(_) => std::fs::read(file()).map(|b| from_bytes(&b, crate::throttle::now_ms())).unwrap_or_default(),
+            Err(e) => {
+                crate::log::warn("handoff", &format!("handoffs are not read: {e}"));
+                Records::new()
+            }
+        };
         #[cfg(test)]
         let loaded = Records::new();
         Mutex::new(loaded)
@@ -152,9 +160,10 @@ pub(super) fn from_bytes(bytes: &[u8], now: u64) -> Records {
 fn save(r: &Records) -> Result<(), String> {
     let path = file();
     let bytes = serde_json::to_vec_pretty(r).map_err(|e| format!("could not put the handoffs into words: {e}"))?;
-    std::fs::create_dir_all(super::root())
-        .and_then(|()| crate::secret::write_private_synced(&path, &bytes))
-        .map_err(|e| format!("could not save {}: {e}", path.display()))
+    // Its folder checked first (`private_chain`): a record written through a
+    // link would be another user's to forge.
+    super::private_chain(&super::root(), &[])?;
+    crate::secret::write_private_synced(&path, &bytes).map_err(|e| format!("could not save {}: {e}", path.display()))
 }
 
 /// A test's records stay in memory; a chat a test names here fails to save,

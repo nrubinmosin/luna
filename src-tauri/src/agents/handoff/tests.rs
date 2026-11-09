@@ -460,6 +460,51 @@ fn nobody_but_a_chat_with_auto_handoff_on_hears_of_it() {
     }
 }
 
+/// The folder of handoffs, a chat's, its drafts: each checked, top down,
+/// before anything is made below it or given to a CLI. A link planted at any
+/// of them (a junction on Windows), or a folder of another user's on the way,
+/// is refused, nothing made through it, and no drafts folder is named.
+#[test]
+fn a_link_or_a_strangers_folder_on_the_way_to_the_drafts_is_refused() {
+    let base = std::env::temp_dir().join(format!("luna-handoff-chain-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let names = ["c1", DRAFTS];
+    let made = private_chain(&base.join("ok").join("handoffs"), &names).unwrap();
+    assert_eq!(made, base.join("ok").join("handoffs").join("c1").join(DRAFTS));
+    assert!(made.is_dir());
+    #[cfg(windows)]
+    assert!(crate::secret::acl::is_private(&made).unwrap() && crate::secret::acl::is_private(made.parent().unwrap()).unwrap());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for d in [&made, &made.parent().unwrap().to_path_buf()] {
+            assert_eq!(std::fs::metadata(d).unwrap().permissions().mode() & 0o777, 0o700, "{}", d.display());
+        }
+    }
+    for at in 0..=names.len() {
+        let top = base.join(format!("link{at}")).join("handoffs");
+        let elsewhere = base.join(format!("elsewhere{at}"));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let planted = names[..at].iter().fold(top.clone(), |p, n| p.join(n));
+        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+        assert!(file::tests::dir_link(&elsewhere, &planted), "a link at {}", planted.display());
+        let e = private_chain(&top, &names).unwrap_err();
+        assert!(e.contains("no private folder of Luna's"), "{}: {e}", planted.display());
+        assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing made through the link at {}", planted.display());
+    }
+    // A folder of another user's on the way: where this test may hand one over.
+    #[cfg(unix)]
+    if unsafe { libc::geteuid() } == 0 {
+        let top = base.join("stranger").join("handoffs");
+        std::fs::create_dir_all(top.join("c1")).unwrap();
+        std::os::unix::fs::chown(top.join("c1"), Some(4242), Some(4242)).unwrap();
+        let e = private_chain(&top, &names).unwrap_err();
+        assert!(e.contains("another user"), "{e}");
+        assert!(!top.join("c1").join(DRAFTS).exists(), "nothing made in it");
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 #[test]
 fn the_chats_own_drafts_folder_is_where_it_writes_and_what_is_taken() {
     chat("hodr-me", Some(70));

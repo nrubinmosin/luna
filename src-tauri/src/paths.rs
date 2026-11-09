@@ -101,6 +101,7 @@ const OWN_NAMES: &[&str] = &[
     "claude-cli",
     "codex-cli",
     "core",
+    "handoffs",
     "helpers.json",
     "hooks",
     "library",
