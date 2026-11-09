@@ -77,12 +77,18 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its environment and that file's `env`,
   as an inherited `0` would turn auto-memory on ahead of the setting. Codex:
   `-c features.apps=false` and `-c mcp_servers.<name>.enabled=false` for each
-  bare-key server of the account's `config.toml` (`connectors_off`), one it
+  server of the account's `config.toml` (`connectors_off`), one it
   calls `luna` too unless Luna gives the run its own; then Codex merges the
   two key by key, and an account's `luna` setting more than Luna's replaces
-  stops the start. A config that will not read stops it as well. The
+  stops the start. A config that will not read stops it as well, and so does
+  a server whose name a `-c` key cannot spell (a dot, a character outside
+  letters, digits, `_` and `-`): it could not be turned off. The
   project's `.codex/` and plugins' servers stay, as overriding a server no
-  layer defines fails the run. A chat the window starts is never a helper
+  layer defines fails the run; `servers_left_on` (codex/config.rs) lists them,
+  plugins as Codex 0.167.0 resolves them across the account's and the project's
+  layers (`plugins_on`),
+  in the spawn's `mcpLeftOn` and as `helper.mcp-left-on` in "What Luna
+  applied". A chat the window starts is never a helper
   (`ensure_*_session` registers it with no parent), so it keeps its account's
   servers, as one started by hand would.
 

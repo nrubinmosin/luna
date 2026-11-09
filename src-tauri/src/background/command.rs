@@ -255,6 +255,8 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
                 let off = crate::codex::launch::connectors_off(&servers, supplied)?;
                 applied.push(crate::codex::launch::connectors_off_applied(&off));
                 args.extend(off);
+                let left = crate::codex::config::servers_left_on(&s.account_path, &dir);
+                applied.extend(crate::codex::launch::left_on_applied(&left));
             }
             if let Some((mcp, token)) = luna {
                 args.extend(mcp);
@@ -1088,7 +1090,7 @@ mod tests {
         const ID: &str = "golden-bg-codex-servers";
         let account = std::env::temp_dir().join(format!("luna-golden-codex-servers-{}", std::process::id()));
         std::fs::create_dir_all(&account).unwrap();
-        let config = "[mcp_servers.gmail]\ncommand = \"node\"\n\n[mcp_servers.\"team.slack\"]\nurl = \"https://x\"\n\n\
+        let config = "[mcp_servers.gmail]\ncommand = \"node\"\n\n\
                       [mcp_servers.luna]\nurl = \"https://y\"\n\n[mcp_servers.Zoho_CRM-2]\nurl = \"https://z\"\n";
         std::fs::write(account.join("config.toml"), config).unwrap();
         let account = account.to_string_lossy().into_owned();
@@ -1099,9 +1101,8 @@ mod tests {
         let mut want = strings(&["exec", "-C", "C:\\p"]);
         want.extend(codex_turn(true));
         want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
-        // A name a `-c` key cannot spell is left on: overriding it would fail the
-        // run. One the account calls `luna` is its own, not Luna's, which this
-        // helper without tools is not given: off as well.
+        // One the account calls `luna` is its own, not Luna's, which this helper
+        // without tools is not given: off as well.
         want.extend(apps_off());
         want.extend(strings(&[
             "-c",
@@ -1113,6 +1114,24 @@ mod tests {
             "-",
         ]));
         assert_eq!(t.args, want);
+        assert_eq!(t.value("helper.mcp-left-on"), None, "nothing else to keep");
+        // A name a `-c` key cannot spell cannot be turned off: no turn, rather
+        // than one that keeps it.
+        let file = std::path::Path::new(&account).join("config.toml");
+        std::fs::write(&file, format!("{config}\n[mcp_servers.\"team.slack\"]\nurl = \"https://x\"\n")).unwrap();
+        let err = command_for(&e, ID).err().unwrap();
+        assert!(err.contains("not started") && err.contains("\"team.slack\""), "{err}");
+        std::fs::write(&file, config).unwrap();
+        // What Codex cannot turn off for a run is listed: a project's servers.
+        let project = std::path::Path::new(&account).join("project");
+        std::fs::create_dir_all(project.join(".codex")).unwrap();
+        std::fs::write(project.join(".codex").join("config.toml"), "[mcp_servers.docs]\ncommand = \"x\"\n").unwrap();
+        let mut in_project = entry(Provider::Codex);
+        in_project.spec.account_path = account.clone();
+        in_project.spec.folder = project.to_string_lossy().into_owned();
+        let (_, _, _, applied) = command_for(&in_project, ID).unwrap();
+        let left = applied.iter().find(|a| a.key == "helper.mcp-left-on").map(|a| a.value.clone());
+        assert!(left.as_deref().is_some_and(|l| l.starts_with("server \"docs\" of ")), "{left:?}");
         // With tools, Luna's own is `luna`: the account's, a url alone, is replaced
         // whole and turned on; one with more of its own stops the start.
         e.spec.tools = true;

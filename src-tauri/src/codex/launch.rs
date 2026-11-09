@@ -237,10 +237,11 @@ pub(crate) const AUTO_REVIEW_OVERRIDES: [&str; 3] =
 /// (`servers`: name and keys, codex/config.rs `mcp_servers`), turned off for the
 /// run (`mcp_servers.<name>.enabled`; 0.167.0). Codex has no switch for all
 /// servers at once, and an override naming a server no layer defines fails the
-/// run's config ("invalid transport"), as does one for a name a `-c` key cannot
-/// spell, split as it is at every dot: only the account's own, bare-key names,
-/// are named here. A project's `.codex/` and a plugin's servers stay on
-/// (docs/security/threat-model.md).
+/// run's config ("invalid transport"): only the account's own servers are named
+/// here. One whose name a `-c` key cannot spell, split as it is at every dot,
+/// cannot be turned off for a run, so the helper is not started rather than
+/// kept with it. A project's `.codex/` and a plugin's servers stay on, and are
+/// listed (codex/config.rs `servers_left_on`, docs/security/threat-model.md).
 ///
 /// A server the account calls `luna` is no exception: off, unless Luna gives the
 /// run its own (`luna_supplied`, `mcp_args`). Then Codex merges the two key by
@@ -250,7 +251,15 @@ pub(crate) const AUTO_REVIEW_OVERRIDES: [&str; 3] =
 pub(crate) fn connectors_off(servers: &[(String, Vec<String>)], luna_supplied: bool) -> Result<Vec<String>, String> {
     let mut args = vec!["-c".to_string(), "features.apps=false".to_string()];
     let bare = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    for (name, keys) in servers.iter().filter(|(n, _)| bare(n)) {
+    let unspellable: Vec<String> = servers.iter().filter(|(n, _)| !bare(n)).map(|(n, _)| format!("{n:?}")).collect();
+    if !unspellable.is_empty() {
+        return Err(format!(
+            "the helper is not started: its account's config.toml defines MCP servers that Codex cannot turn off for one run, \
+             as a -c key splits a name at every dot: {}; rename them to letters, digits, _ and - only, or spawn with connectors: true",
+            unspellable.join(", ")
+        ));
+    }
+    for (name, keys) in servers {
         args.push("-c".into());
         if name != LUNA_SERVER || !luna_supplied {
             args.push(format!("mcp_servers.{name}.enabled=false"));
@@ -273,6 +282,12 @@ pub(crate) fn connectors_off(servers: &[(String, Vec<String>)], luna_supplied: b
 /// `connectors_off`'s overrides as applied: what a helper is kept to.
 pub(crate) fn connectors_off_applied(off: &[String]) -> Applied {
     Item::HelperMcpAlone.with(off.iter().filter(|a| *a != "-c").map(|v| format!("-c {v}")).collect::<Vec<_>>().join(", "))
+}
+
+/// The servers a helper keeps despite `connectors_off` (codex/config.rs
+/// `servers_left_on`), as applied; none when it keeps none.
+pub(crate) fn left_on_applied(left: &[String]) -> Option<Applied> {
+    (!left.is_empty()).then(|| Item::HelperMcpLeftOn.with(left.join("\n")))
 }
 
 /// The name Luna's own MCP server goes by in a Codex session (`mcp_args`).
@@ -452,13 +467,20 @@ mod tests {
             n.iter().map(|(name, keys)| (name.to_string(), keys.iter().map(|k| k.to_string()).collect())).collect::<Vec<_>>()
         };
         assert_eq!(connectors_off(&[], false).unwrap(), ["-c", "features.apps=false"]);
-        let account =
-            servers(&[("gmail", &["command"]), ("team.slack", &["url"]), ("", &[]), ("Zoho_CRM-2", &["url"]), ("café", &["url"])]);
+        let account = servers(&[("gmail", &["command"]), ("Zoho_CRM-2", &["url"])]);
         assert_eq!(
             connectors_off(&account, false).unwrap(),
             ["-c", "features.apps=false", "-c", "mcp_servers.gmail.enabled=false", "-c", "mcp_servers.Zoho_CRM-2.enabled=false"],
-            "a name a -c key cannot spell is not tried"
         );
+        // A name a -c key cannot spell cannot be turned off: no helper rather
+        // than one that keeps it, whether Luna gives the run a server or not.
+        for odd in ["team.slack", "", "café"] {
+            let account = servers(&[("gmail", &["command"]), (odd, &["url"])]);
+            for supplied in [false, true] {
+                let e = connectors_off(&account, supplied).unwrap_err();
+                assert!(e.contains("not started") && e.contains(&format!("{odd:?}")) && e.contains("connectors: true"), "{e}");
+            }
+        }
         // An account's own `luna`: off when Luna gives the run no server of its own.
         let theirs = servers(&[("luna", &["command", "args"])]);
         assert_eq!(connectors_off(&theirs, false).unwrap(), ["-c", "features.apps=false", "-c", "mcp_servers.luna.enabled=false"]);

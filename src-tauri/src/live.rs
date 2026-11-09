@@ -17,13 +17,21 @@
 //!
 //! Run from its own folder (test-build/live-tests), the test executable's data
 //! dir is that folder: its hub, settings and helper records share nothing with
-//! a test build running beside it. No managed CLI is there, so the CLI is
-//! found on PATH, as Luna finds one before its first download; the script puts
-//! the test build's managed copy first on it.
+//! a test build running beside it. No managed CLI is there, so the CLI is the
+//! one the script resolved and names by its full path (cli.rs `live_cli`): the
+//! test build's managed copy, or else the one on PATH.
 
 use crate::provider::Provider;
 use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
+
+/// The Codex the live suite runs by hand (`codex sandbox`), as its sessions
+/// start it (cli.rs `launch`).
+fn live_codex() -> PathBuf {
+    crate::cli::binary(Provider::Codex)
+        .or_else(|| crate::cli::live_cli(Provider::Codex))
+        .expect("no Codex: run the live suite through scripts/live-tests.ps1, which sets LUNA_LIVE_CODEX_CLI")
+}
 use std::time::{Duration, Instant};
 
 /// How long one test waits on its helper's turn, unless LUNA_LIVE_TIMEOUT_S
@@ -405,7 +413,7 @@ fn codex_sandboxes_reach_the_core_folder_as_the_threat_model_says() {
         ["sh", "-c", script, "sh", &path].map(String::from).to_vec()
     };
     let run = |overrides: Vec<String>, sandbox: &str| {
-        let mut cmd = std::process::Command::new(crate::cli::binary(Provider::Codex));
+        let mut cmd = std::process::Command::new(live_codex());
         cmd.arg("sandbox")
             .args(&overrides)
             .args(crate::codex::launch::codex_windows_sandbox(sandbox).map(|sb| ["-c".to_string(), sb]).into_iter().flatten());
@@ -518,7 +526,7 @@ fn the_windows_peer_check_refuses_a_sandboxed_codex() {
     // not survive the argv on Windows, where a `permissions.<p>.extends=…`
     // key, as Luna's own profiles pass it, does.
     std::fs::write(home.join("config.toml"), "[permissions.luna-peer]\nextends = \":workspace\"\n").expect("the Codex config");
-    let codex = crate::cli::binary(Provider::Codex);
+    let codex = live_codex();
     let url = format!("http://127.0.0.1:{port}/");
     let sandbox_path = crate::pty::codex_sandbox_path("read-only");
 
@@ -633,7 +641,7 @@ fn serve_welcomes_a_plain_client_and_refuses_a_sandboxed_one() {
     // (b) A sandboxed Codex connecting (dumb curl) is refused before the hello.
     let home = crate::paths::data_dir().join("live-serve-home");
     std::fs::create_dir_all(&home).expect("a Codex home");
-    let codex = crate::cli::binary(Provider::Codex);
+    let codex = live_codex();
     let url = format!("http://127.0.0.1:{port}/");
     let sandbox_path = crate::pty::codex_sandbox_path("read-only");
     let mut cmd = std::process::Command::new(&codex);

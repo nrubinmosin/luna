@@ -218,9 +218,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         .openpty(PtySize { rows: INITIAL_ROWS, cols: INITIAL_COLS, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
 
-    // Luna's own copy of the CLI (see cli.rs), or the bare name on PATH until
-    // the first download has landed; its version directory held, like the
-    // account, until the process has exited.
+    // Luna's own copy of the CLI (see cli.rs), nothing else; its version
+    // directory held, like the account, until the process has exited.
     let (exe, on_version) = crate::cli::launch(provider, Some(&id))?;
     let mut cmd = CommandBuilder::new(exe);
     cmd.cwd(&cwd);

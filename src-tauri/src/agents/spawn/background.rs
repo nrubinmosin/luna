@@ -254,7 +254,16 @@ pub(in crate::agents) fn spawn_background(
         }
     }
     let worktree_pending = own_worktree && worktree.path.is_none();
-    Ok(Spawned { id, turns_ended: 0, settings, same_folder, worktree, worktree_pending, account_choice: None })
+    let mcp_left_on = mcp_left_on(&id);
+    Ok(Spawned { id, turns_ended: 0, settings, same_folder, worktree, worktree_pending, mcp_left_on, account_choice: None })
+}
+
+/// What its first turn's "What Luna applied" lists as kept despite
+/// `connectors: false` (codex/launch.rs `left_on_applied`), one per line.
+fn mcp_left_on(id: &str) -> Vec<String> {
+    let launch = crate::agents::applied_of(id).map(|(a, _, _)| a).unwrap_or_default();
+    let key = crate::applied::Item::HelperMcpLeftOn.key();
+    launch.iter().filter(|a| a.key == key).flat_map(|a| a.value.lines().map(str::to_owned)).collect()
 }
 
 #[cfg(test)]

@@ -30,7 +30,7 @@ const BIN_REL: &str = "bin/codex.exe";
 #[cfg(not(windows))]
 const BIN_REL: &str = "bin/codex";
 
-pub static SOURCE: Source = Source { root_name: "codex-cli", bin_rel: BIN_REL, path_fallback: "codex", latest, fetch };
+pub static SOURCE: Source = Source { root_name: "codex-cli", bin_rel: BIN_REL, latest, fetch };
 
 fn target() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {

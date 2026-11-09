@@ -58,6 +58,76 @@ pub fn helper_mcp_servers(account_path: &str) -> Result<Vec<(String, Vec<String>
     })
 }
 
+/// What a helper started without connectors still has (codex/launch.rs
+/// `connectors_off` turns off only the account's own servers), one line each,
+/// for the spawn's result and "What Luna applied": the servers of each
+/// `.codex/config.toml` Codex reads as a project layer — the folder's and its
+/// parents' up to the project root, the one holding `.git`, or the folder's
+/// alone outside a repository; a helper's folder is trusted for its run — and
+/// the plugins on in the config Codex merges for the run, which may bring
+/// servers of their own (`plugins_on`). Not the plugins of Luna's library:
+/// they hold skills only (library/folders.rs).
+pub fn servers_left_on(account_path: &str, folder: &str) -> Vec<String> {
+    let mut left = Vec::new();
+    let folder = Path::new(folder);
+    let root = folder.ancestors().find(|d| d.join(".git").exists());
+    let layers: Vec<&Path> = match root {
+        Some(root) => folder.ancestors().take_while(|d| *d != root).chain([root]).collect(),
+        None => vec![folder],
+    };
+    let account = Path::new(account_path);
+    // Lowest first, as Codex merges them: the account, then the project's
+    // layers from its root down to the folder.
+    let mut docs = vec![read_or_empty(&account.join("config.toml"))];
+    for dir in layers.into_iter().rev() {
+        let codex = dir.join(".codex");
+        if crate::pty::same_dir(&codex.to_string_lossy(), &account.to_string_lossy()) {
+            continue;
+        }
+        let file = codex.join("config.toml");
+        let doc = read_or_empty(&file);
+        if let Some(servers) = doc.get("mcp_servers").and_then(|t| t.as_table_like()) {
+            left.extend(servers.iter().map(|(name, _)| format!("server {name:?} of {}", file.display())));
+        }
+        docs.push(doc);
+    }
+    let luna = format!("@{}", crate::library::CODEX_MARKET);
+    left.extend(
+        plugins_on(&docs)
+            .into_iter()
+            .filter(|name| !name.ends_with(&luna))
+            .map(|name| format!("plugin {name:?}: the servers it brings, if any")),
+    );
+    left
+}
+
+/// The plugins on in `layers` merged lowest first, as Codex 0.167.0 merges
+/// its config stack: table by table, so a later layer's `enabled` replaces
+/// an earlier one's and a table that does not say keeps it
+/// (codex-rs/config/src/merge.rs). A plugin named under `[plugins]` is on
+/// unless its merged `enabled` is false; one that says nothing follows
+/// `[plugins._default] enabled`, true without it (core-plugins/src/loader.rs
+/// `load_plugins_from_layer_stack_with_scope`, config/src/types.rs
+/// `allows_plugin`). Sorted, as Codex loads them.
+fn plugins_on(layers: &[DocumentMut]) -> Vec<String> {
+    const DEFAULT: &str = "_default";
+    let mut said: std::collections::BTreeMap<String, Option<bool>> = Default::default();
+    let mut default = None;
+    for doc in layers {
+        let Some(plugins) = doc.get("plugins").and_then(|t| t.as_table_like()) else { continue };
+        for (name, v) in plugins.iter() {
+            let enabled = v.get("enabled").and_then(|e| e.as_bool());
+            if name == DEFAULT {
+                default = enabled.or(default);
+                continue;
+            }
+            let entry = said.entry(name.to_string()).or_default();
+            *entry = enabled.or(*entry);
+        }
+    }
+    said.into_iter().filter(|(_, enabled)| enabled.unwrap_or(default.unwrap_or(true))).map(|(name, _)| name).collect()
+}
+
 /// For lookups only: a config that will not parse simply has nothing to say.
 /// One look, as nothing is written back.
 pub fn read_or_empty(path: &Path) -> DocumentMut {
@@ -115,6 +185,79 @@ mod tests {
         std::fs::write(root.join("config.toml"), "[mcp_servers.gmail\ncommand = ").unwrap();
         assert!(mcp_servers(&account).is_err());
         assert!(helper_mcp_servers(&account).unwrap_err().contains("not started"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn what_a_helper_keeps_is_its_projects_servers_and_its_accounts_plugins() {
+        let root = std::env::temp_dir().join(format!("luna-codex-left-on-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (account, repo) = (root.join("acc"), root.join("repo"));
+        let sub = repo.join("crates").join("app");
+        for d in [&account, &repo.join(".git"), &sub.join(".codex"), &repo.join(".codex"), &root.join(".codex")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (a, s) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
+        assert!(servers_left_on(&a, &s).is_empty(), "no config anywhere");
+        let write = |dir: &Path, text: &str| std::fs::write(dir.join("config.toml"), text).unwrap();
+        write(&repo.join(".codex"), "[mcp_servers.docs]\ncommand = \"x\"\n");
+        write(&sub.join(".codex"), "[mcp_servers.\"team.db\"]\nurl = \"u\"\n");
+        // Above the repository's root: not a layer of this project.
+        write(&root.join(".codex"), "[mcp_servers.above]\ncommand = \"x\"\n");
+        write(
+            &account,
+            "[mcp_servers.gmail]\ncommand = \"x\"\n[plugins.\"crm@market\"]\nenabled = true\n\
+             [plugins.\"off@market\"]\nenabled = false\n[plugins.\"repo@luna\"]\nenabled = true\n",
+        );
+        let left = servers_left_on(&a, &s);
+        assert_eq!(left.len(), 3, "{left:?}");
+        assert!(left[0].starts_with("server \"docs\" of ") && left[0].contains("repo"), "root first: {left:?}");
+        assert!(left[1].starts_with("server \"team.db\" of "), "{left:?}");
+        assert!(left[2].starts_with("plugin \"crm@market\""), "{left:?}");
+        assert!(!left.iter().any(|l| l.contains("above") || l.contains("gmail") || l.contains("off@") || l.contains("@luna")));
+        // Outside a repository, the folder's own layer alone.
+        let _ = std::fs::remove_dir_all(repo.join(".git"));
+        let left = servers_left_on(&a, &s);
+        assert!(left[0].starts_with("server \"team.db\"") && left.len() == 2, "{left:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The plugins a helper keeps are those on in the config Codex merges for
+    /// its run, the account's and then each project layer, a later one's
+    /// `enabled` over an earlier one's (codex-rs/config merge.rs; core-plugins
+    /// loader.rs and marketplace_policy.rs at rust-v0.167.0).
+    #[test]
+    fn plugins_left_on_follow_the_layers_as_codex_merges_them() {
+        let root = std::env::temp_dir().join(format!("luna-codex-plugins-on-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (account, repo) = (root.join("acc"), root.join("repo"));
+        for d in [&account, &repo.join(".git"), &repo.join(".codex")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (a, r) = (account.to_string_lossy().into_owned(), repo.to_string_lossy().into_owned());
+        let write = |dir: &Path, text: &str| std::fs::write(dir.join("config.toml"), text).unwrap();
+        let plugins = |left: Vec<String>| left.into_iter().filter(|l| l.starts_with("plugin ")).collect::<Vec<_>>();
+        let named = |id: &str| format!("plugin {id:?}: the servers it brings, if any");
+
+        // On in the project alone.
+        write(&account, "");
+        write(&repo.join(".codex"), "[plugins.\"crm@market\"]\nenabled = true\n");
+        assert_eq!(plugins(servers_left_on(&a, &r)), [named("crm@market")], "the project's own");
+        // On in the account, off in the project.
+        write(&account, "[plugins.\"crm@market\"]\nenabled = true\n");
+        write(&repo.join(".codex"), "[plugins.\"crm@market\"]\nenabled = false\n");
+        assert!(plugins(servers_left_on(&a, &r)).is_empty(), "the project turns it off");
+        // Off in the account, on in the project.
+        write(&account, "[plugins.\"crm@market\"]\nenabled = false\n");
+        write(&repo.join(".codex"), "[plugins.\"crm@market\"]\nenabled = true\n");
+        assert_eq!(plugins(servers_left_on(&a, &r)), [named("crm@market")], "the project turns it on");
+        // A later table that does not say `enabled` keeps the earlier one's.
+        write(&repo.join(".codex"), "[plugins.\"crm@market\"]\nrelease_id = \"r\"\n");
+        assert!(plugins(servers_left_on(&a, &r)).is_empty(), "still off");
+        // `_default` stands for one that says nothing, and is no plugin itself.
+        write(&account, "[plugins._default]\nenabled = false\n[plugins.\"crm@market\"]\n[plugins.\"web@market\"]\nenabled = true\n");
+        write(&repo.join(".codex"), "");
+        assert_eq!(plugins(servers_left_on(&a, &r)), [named("web@market")], "the default off, one turned on");
         let _ = std::fs::remove_dir_all(&root);
     }
 
