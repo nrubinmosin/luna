@@ -160,11 +160,13 @@ pub(super) fn read_checked(file: &str, data_dir: &Path, own: &Path) -> Result<(P
     // (a `handoffs` or a drafts folder planted as one) is no drafts folder of
     // Luna's, whose file anyone could have put there.
     let real = std::fs::canonicalize(&path).map_err(|e| format!("file: {}: {e}", path.display()))?;
+    let mut a_draft = false;
     if let Ok(data) = std::fs::canonicalize(data_dir) {
         let sep = std::path::MAIN_SEPARATOR;
         let named_inside = crate::paths::path_key(&path.to_string_lossy())
             .starts_with(&format!("{}{sep}", crate::paths::path_key(&data_dir.to_string_lossy())));
-        if (real.starts_with(&data) || named_inside) && !own_draft(&real, data_dir, &data, own) {
+        a_draft = real.starts_with(&data) || named_inside;
+        if a_draft && !own_draft(&real, data_dir, &data, own) {
             return Err(format!(
                 "file: {} is inside Luna's own folder; write the handoff in this chat's drafts folder (luna_session_handoff \
                  without file names it) or outside Luna's folder",
@@ -178,6 +180,13 @@ pub(super) fn read_checked(file: &str, data_dir: &Path, own: &Path) -> Result<(P
     let opened = f.metadata().map_err(|e| format!("file: {}: {e}", path.display()))?;
     if is_link(&opened) || !opened.is_file() {
         return Err(format!("file: {} is a link, a junction or not a file; give the file itself", path.display()));
+    }
+    // In Luna's folder, the chat's own making: a file of one name this user
+    // holds, not one another left there before the folder was Luna's alone.
+    if a_draft {
+        if let Err(why) = crate::secret::own_file(&f).map_err(|e| e.to_string())? {
+            return Err(format!("file: {} is not this user's own ({why}); write the handoff anew", path.display()));
+        }
     }
     let mut bytes = Vec::new();
     f.by_ref().take(MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("file: {}: {e}", path.display()))?;
@@ -372,6 +381,15 @@ pub(super) mod tests {
         let take = |file: &Path, own: &Path, n| snapshot("file-drafts", &file.to_string_lossy(), &data, own, n);
         let mine = write(own.join("drafts").join("handoff.md"));
         assert_eq!(std::fs::read_to_string(take(&mine, &own, 1).unwrap().path).unwrap(), "# Goal\nShip it.\n");
+        // One another user left in it, where this test may hand one over: not
+        // the chat's own making.
+        #[cfg(unix)]
+        if unsafe { libc::geteuid() } == 0 {
+            let left = write(own.join("drafts").join("left.md"));
+            std::os::unix::fs::chown(&left, Some(4242), Some(4242)).unwrap();
+            let e = take(&left, &own, 9).unwrap_err();
+            assert!(e.contains("not this user's own"), "{e}");
+        }
         // Another chat's drafts, its own folder of copies, a folder below its
         // drafts: Luna's folder, refused.
         for (file, n) in [

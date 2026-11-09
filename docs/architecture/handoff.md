@@ -86,8 +86,14 @@ read below them: the record loaded or saved (`store.rs`), a copy written
 (`copies_of`), the drafts folder named or given to a CLI (`drafts_of`). In a
 data folder others share, a link planted on the way would otherwise take all
 of it to a folder another user holds; `handoffs` is one of the data folder's
-own names (`paths.rs` `OWN_NAMES`) for the shared-folder privacy pass. A chat
-deleted has its folder removed only where neither it nor `handoffs` is a link.
+own names (`paths.rs` `OWN_NAMES`) for the shared-folder privacy pass. What
+lies in them is checked at its own name: `handoffs.json` and a copy are read
+only as private files of this user's, by their handle, never through a link
+(`secret::read_private`; a store that is not one is not taken up, and the log
+says so), a draft only as one of this user's making (`secret::own_file`), and
+a save renames a new private file into place, over a link rather than through
+it. A chat deleted has its folder removed only where neither it nor
+`handoffs` is a link.
 
 ## The threshold
 
