@@ -27,6 +27,8 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) mcp: Option<(&'a Path, &'a str)>,
     pub(crate) notes_dir: Option<&'a Path>,
     pub(crate) instructions_dir: Option<&'a Path>,
+    /// Auto-handoff's threshold, and the folder its copies are kept in.
+    pub(crate) handoff: Option<(u8, Option<&'a Path>)>,
     pub(crate) skill_args: &'a [String],
 }
 
@@ -97,6 +99,17 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.push("--add-dir".into());
         args.push(path(dir));
         applied.push(instructions_applied(&path(dir)));
+    }
+    // Auto-handoff (agents/handoff): the copy of a handoff is what the next
+    // conversation reads first, from a folder of the chat's own, without asking.
+    if let Some((threshold, dir)) = s.handoff {
+        let mut value = format!("at {threshold}% of the context: luna_session_handoff");
+        if let Some(dir) = dir {
+            args.push("--add-dir".into());
+            args.push(path(dir));
+            value.push_str(&format!("; --add-dir {}", path(dir)));
+        }
+        applied.push(Item::AutoHandoff.with(value));
     }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(skills_applied(s.skill_args));

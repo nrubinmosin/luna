@@ -92,6 +92,44 @@ export const FOLDERS: Folder[] = [
   { id: 'f-2', path: 'C:\\src\\notes', open: true, picked: true, chats: CHATS.slice(3) }
 ];
 
+/** The same, the first chat set to hand off at 70% and gone on past its
+ *  second handoff a little while ago. */
+export const HANDED_OFF: Folder[] = FOLDERS.map(f => ({
+  ...f,
+  chats: f.chats.map(c =>
+    c.id === 'demo-1'
+      ? {
+          ...c,
+          context: 0.09,
+          autoHandoff: true,
+          handoffAt: 70,
+          handoff: { n: 2, at: Date.now() - 42 * 60_000, state: 'done' as const, previous: true }
+        }
+      : c
+  )
+}));
+
+/** Luna's copy of that handoff. */
+export const HANDOFF_FILE = `# Handoff 2: the updater offers a build its own version
+
+## Objective, scope, stop conditions
+Stop the updater offering the running build as an update. Scope: src-tauri/src/updater and its tests.
+Stop and ask before touching the release workflow.
+
+## Done, and what remains
+- Found it: the version compare ignores the build stamp.
+- Remaining: the fix, a unit test that fails without it, the gate.
+
+## Decisions
+- Compare by the full version with its stamp; rejected: a second manifest field (needs a release).
+
+## Helpers
+- cmw3kq1 "tests": runs the suite on the fix; its report comes as a notice.
+
+## Next action
+Write the test in updater/check.rs, then the fix.
+`;
+
 const claudeLimits = (h5: number, week: number, fable: number, h5In: number, weekIn: number): Account['limits'] => [
   { id: 'h5', label: '5 hours', short: '5H', used: h5, resetAt: hoursFromNow(h5In) },
   { id: 'week', label: 'week', short: 'W', used: week, resetAt: hoursFromNow(weekIn) },

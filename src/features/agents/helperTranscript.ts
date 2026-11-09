@@ -5,7 +5,11 @@
  * runs, now and then between turns, as a person may send it on its way.
  */
 import { useEffect, useState } from 'react';
-import { backgroundTranscript, type HelperMessageDto } from '../../ipc/agents';
+import { backgroundTranscript, type HelperMessageDto, type HelperTranscriptDto } from '../../ipc/agents';
+
+/** One look at a conversation from a cursor on: a helper's (the default), or
+ *  one a chat's handoff left (`handoffTranscript`). */
+export type TranscriptLook = (since: number | null, file: string | null) => Promise<HelperTranscriptDto>;
 
 /** How often the view looks while a turn runs, and between turns. */
 export const TAIL_RUNNING_MS = 1000;
@@ -30,9 +34,10 @@ export interface HelperTranscript {
 /**
  * Tails helper `id`'s conversation for as long as the caller is mounted and
  * `open`. Each look reads only what came since the last (`cursor`); a new
- * transcript file starts the view over.
+ * transcript file starts the view over. `read` is how a look is taken, for a
+ * conversation that is not a helper's; `id` keys it all the same.
  */
-export function useHelperTranscript(id: string, open = true): HelperTranscript {
+export function useHelperTranscript(id: string, open = true, read?: TranscriptLook): HelperTranscript {
   const [state, setState] = useState<HelperTranscript>({
     messages: [],
     running: false,
@@ -49,7 +54,7 @@ export function useHelperTranscript(id: string, open = true): HelperTranscript {
     let timer: number | undefined;
     const look = async () => {
       try {
-        const t = await backgroundTranscript(id, cursor, file);
+        const t = await (read ? read(cursor, file) : backgroundTranscript(id, cursor, file));
         if (!live) return;
         const fresh = t.file !== file;
         cursor = t.cursor;
@@ -80,6 +85,8 @@ export function useHelperTranscript(id: string, open = true): HelperTranscript {
       live = false;
       window.clearTimeout(timer);
     };
+    // `read` is made afresh by each render of its caller; `id` stands for it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, open]);
   return state;
 }

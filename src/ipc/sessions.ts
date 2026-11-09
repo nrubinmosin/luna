@@ -1,5 +1,14 @@
 import { call } from './core';
-import type { CodexApproval, CodexEffort, CodexSandbox, Effort, ModelLabel, PermMode, Provider } from '../shared/types';
+import type {
+  CodexApproval,
+  CodexEffort,
+  CodexSandbox,
+  Effort,
+  HandoffMark,
+  ModelLabel,
+  PermMode,
+  Provider
+} from '../shared/types';
 import { MODEL_CLI, PERM_CLI } from '../shared/types';
 
 export interface ClaudeSessionSpec {
@@ -21,6 +30,8 @@ export interface ClaudeSessionSpec {
   agent?: string | null;
   /** The guard against endless waits, as the chat's person asked. */
   guard?: boolean;
+  /** Auto-handoff's threshold in percent, or none (agents/handoff). */
+  handoff?: number | null;
 }
 
 export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
@@ -40,7 +51,8 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
       tools: spec.tools ?? false,
       readOnly: spec.readOnly ?? false,
       agent: spec.agent ?? null,
-      guard: spec.guard ?? false
+      guard: spec.guard ?? false,
+      handoff: spec.handoff ?? null
     },
     ''
   );
@@ -64,6 +76,8 @@ export interface CodexSessionSpec {
   hooksUnasked?: boolean;
   /** The guard against endless waits, as the chat's person asked. */
   guard?: boolean;
+  /** Auto-handoff's threshold in percent, or none (agents/handoff). */
+  handoff?: number | null;
 }
 
 export const ensureCodexSession = (spec: CodexSessionSpec) =>
@@ -82,7 +96,8 @@ export const ensureCodexSession = (spec: CodexSessionSpec) =>
       login: spec.login ?? false,
       tools: spec.tools ?? false,
       hooksUnasked: spec.hooksUnasked ?? false,
-      guard: spec.guard ?? false
+      guard: spec.guard ?? false,
+      handoff: spec.handoff ?? null
     },
     ''
   );
@@ -121,6 +136,8 @@ export interface SessionMetaDto {
    *  not from a prompt of its CLI's: the user may clear it by hand, by this key
    *  of the ending it was shown on. */
   marked: string | null;
+  /** Its latest handoff, under way or past (agents/handoff). */
+  handoff: HandoffMark | null;
 }
 
 export interface CliTitleDto {

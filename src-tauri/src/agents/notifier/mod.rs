@@ -128,7 +128,7 @@ pub(super) enum Settled {
 /// Whether a notice may go into `caller` now: its CLI is up and between turns
 /// and nobody is typing into it. A draft in its composer is `type_text`'s to
 /// put aside, or to keep the notice back for.
-fn ready_for_notice(pty: &crate::pty::PtyManager, caller: &str) -> bool {
+pub(in crate::agents) fn ready_for_notice(pty: &crate::pty::PtyManager, caller: &str) -> bool {
     // A background caller takes it as its next turn, between turns.
     if crate::background::has(caller) {
         return crate::activity::turn_state(caller).is_some_and(|t| t.turn == crate::activity::Turn::Idle);
@@ -447,8 +447,7 @@ pub(super) fn notifier() {
         company_since.retain(|c, _| by_caller.contains_key(c));
         reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.retain(|c, _| by_caller.contains_key(c));
         for (caller, items) in by_caller {
-            // The last notice is still going in: it starts a turn of its own.
-            if TypingInto::under_way(&caller) {
+            if notice_waits(&caller) {
                 idle_looks.insert(caller, 0);
                 continue;
             }
@@ -573,6 +572,14 @@ pub(super) fn notifier() {
             }
         }
     }
+}
+
+/// Whether a notice for `caller` waits, whatever it says: the last one is
+/// still going in, and starts a turn of its own; or a handoff of it is under
+/// way, and what is said now goes to the new conversation once its prompt is
+/// in (agents/handoff).
+pub(in crate::agents) fn notice_waits(caller: &str) -> bool {
+    TypingInto::under_way(caller) || crate::agents::handoff::holds_text(caller)
 }
 
 /// A debt a notice was put together on has become another since (`Owed::rev`), or

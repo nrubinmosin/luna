@@ -58,6 +58,9 @@ pub struct SessionMeta {
     /// words a turn later are another ending.
     #[serde(skip)]
     pub last_said_at: Option<String>,
+    /// Its latest handoff, under way or past, for the divider in its pane
+    /// (agents/handoff).
+    pub handoff: Option<crate::agents::HandoffMark>,
 }
 
 /// A session's title as its CLI has it, and whether the user typed it.

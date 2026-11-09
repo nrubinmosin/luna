@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Chat, Folder, FolderStart, GroupId, NameSource } from '../../shared/types';
+import type { Chat, Folder, FolderStart, GroupId, HandoffMark, NameSource } from '../../shared/types';
 import { useNewChat } from '../new-chat/newchat.store';
 import { usePanes } from '../panes/panes.store';
 import { forget } from '../panes/terminals';
@@ -21,6 +21,11 @@ interface ChatsState {
   dismissGuardNotice: () => void;
   /** The chat's wait guard, from its CLI's next start. */
   setGuard: (chatId: string, on: boolean) => void;
+  /** The chat's auto-handoff and its threshold (handoff.ts `applyAutoHandoff`
+   *  tells the core). */
+  setAutoHandoff: (chatId: string, on: boolean, at: number) => void;
+  /** Its latest handoff, as the core said. */
+  setHandoffMark: (chatId: string, mark: HandoffMark | null) => void;
   /** `byPerson`: launched by the user from the new-chat dialog, which makes
    *  the folder one the dialog offers; a helper opened as a chat is not. */
   addChat: (folderPath: string, chat: Chat, byPerson: boolean) => void;
@@ -260,6 +265,25 @@ export const useChats = create<ChatsState>()(
             chats: f.chats.map(c => (c.id === chatId ? { ...c, guard } : c))
           }))
         })),
+
+      setAutoHandoff: (chatId, autoHandoff, handoffAt) =>
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c => (c.id === chatId ? { ...c, autoHandoff, handoffAt } : c))
+          }))
+        })),
+
+      setHandoffMark: (chatId, mark) => {
+        const c = get().findChat(chatId);
+        if (!c || JSON.stringify(c.handoff ?? null) === JSON.stringify(mark)) return;
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(x => (x.id === chatId ? { ...x, handoff: mark } : x))
+          }))
+        }));
+      },
 
       setColor: (chatId, color) =>
         set(s => ({

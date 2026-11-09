@@ -40,6 +40,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Added
 
+- **Auto-handoff** for a chat with Luna tools, ticked in the new-chat dialog
+  or the chat's What Luna applied panel with a threshold (70% of the context
+  unless changed). Past it, at a turn's end, Luna asks the chat for a handoff
+  file, with the steps and its sections, and a firmer second time near where
+  the CLI would compact. On the chat's call of `luna_session_handoff`, offered
+  to that chat alone, Luna copies the file, waits for the chat to be at rest
+  (a draft holds it), types `/clear` (Claude Code) or `/new` (Codex) and then a
+  prompt pointing the new conversation at the copy, with the facts Luna knows:
+  helpers and their state, branches, answers owed, text not yet delivered,
+  accounts, the chat's settings. Helpers, debts and notices carry on; the chat
+  keeps its row, and a divider over its terminal opens the handoff and the
+  conversation before. A switch a core restart cuts off is taken up where it
+  stood; one that fails leaves the old conversation going, with a notice. See
+  docs/user-guide/chats.md and ADR-0019.
 - Each skill and instructions file in the library is for your own chats, for
   helpers, or for both (the default), picked in the Skills & instructions
   window's new **For** column. Claude Code sessions of the other kind are

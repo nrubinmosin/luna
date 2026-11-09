@@ -92,6 +92,8 @@ items! {
         "A helper has nobody to stop a command that waits forever: such a command is refused before it runs.";
     LunaTools = "luna-tools", UserAction,
         "The Luna tools box (or the agent that spawned it): Luna's MCP server, its tools allowed without a prompt.";
+    AutoHandoff = "auto-handoff", UserAction,
+        "The Auto-handoff box: past this share of its context Luna asks the chat for a handoff, and offers it luna_session_handoff, which starts its next conversation from that file; the copies are in a folder it reads without asking.";
     NotesDir = "notes-dir", Runtime,
         "Long prompts, messages and helpers' answers from Luna arrive as files there, readable without asking.";
     HelperIdentity = "helper.identity", Runtime,

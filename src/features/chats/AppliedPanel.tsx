@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { appliedByLuna, type Applied, type AppliedClass, type AppliedView } from '../../ipc/applied';
 import type { Chat } from '../../shared/types';
 import { useChats } from './chats.store';
+import { HandoffBox } from './Handoff';
 
 /** The classes in the order they are shown, each with what it means. */
 export const CLASSES: { cls: AppliedClass; title: string; means: string }[] = [
@@ -143,6 +144,7 @@ export function AppliedPanel({ chat, onClose }: { chat: Chat; onClose: () => voi
             and Luna&apos;s local addresses are not shown; files are named by their path.
           </div>
           <GuardBox chat={chat} />
+          <HandoffBox chat={chat} />
           {view?.incomplete && (
             <div
               role="alert"

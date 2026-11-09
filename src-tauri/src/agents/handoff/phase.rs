@@ -1,0 +1,476 @@
+//! The switch from one conversation of a chat to the next, as a machine whose
+//! every phase is saved (store.rs): `next` says what a look at the chat calls
+//! for, and `run` does it through a `Term`, the chat's terminal or a test's
+//! stand-in for one.
+//!
+//! Scheduled → (the chat at rest on two looks, no draft, no job of its own)
+//! Resetting: the reset command typed → (the CLI on another conversation)
+//! Prompting: the continuation prompt typed → (the new transcript holds it)
+//! done. A core that stops in Resetting or Prompting leaves the switch
+//! Recovering: once the chat is back and at rest, what it is on says which —
+//! the old conversation (tried again from Scheduled), or the new one with the
+//! prompt in it (done) or without (typed now).
+
+use crate::provider::Provider;
+use serde::{Deserialize, Serialize};
+
+/// Looks in a row the chat is found at rest before the reset goes in: a turn
+/// that has just ended may still be followed by one it queued.
+pub(super) const REST_LOOKS: u32 = 2;
+/// How long the CLI gets to be on a new conversation after the reset command.
+pub(super) const RESET_WAIT_MS: u64 = 60_000;
+/// How long the new conversation gets to hold the continuation prompt: Codex
+/// writes a new thread's rollout only with its first turn.
+pub(super) const PROMPT_WAIT_MS: u64 = 60_000;
+/// How long a scheduled handoff waits for the chat to come to rest: past its
+/// own turn, a person typing, a draft. A draft holds it as long as it stands.
+pub(super) const REST_MAX_MS: u64 = 30 * 60_000;
+/// How long a chat that is not running gets to come back: a core restart has
+/// the window start its CLI again, seconds later.
+pub(super) const RETURN_MS: u64 = 10 * 60_000;
+/// Resets tried before a handoff is given up: one, and one more after a core
+/// stopped in the middle of the first.
+pub(super) const MAX_ATTEMPTS: u32 = 2;
+
+/// Where a handoff stands.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(tag = "phase", rename_all = "camelCase")]
+pub(in crate::agents) enum Phase {
+    /// The snapshot is taken; the chat's notices and the text sent to it wait.
+    Scheduled,
+    /// The reset command went in at `at`.
+    Resetting { at: u64 },
+    /// The continuation prompt went in at `at`.
+    Prompting { at: u64 },
+    /// A core stopped in the middle of the switch; the next looked from `since`.
+    Recovering { since: u64 },
+}
+
+/// The conversation a handoff leaves: the CLI's id for it (Claude Code's
+/// session id, the start of Codex's thread id), and its transcript.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::agents) struct Before {
+    pub conversation: Option<String>,
+    pub transcript: Option<String>,
+}
+
+/// A handoff under way.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::agents) struct Switch {
+    pub n: u32,
+    pub provider: Provider,
+    /// Luna's copy of the file, and its SHA-256.
+    pub snapshot: String,
+    pub sha256: String,
+    /// The file as the session named it.
+    pub source: String,
+    pub scheduled_at: u64,
+    pub phase: Phase,
+    pub before: Before,
+    /// Resets typed so far.
+    #[serde(default)]
+    pub attempts: u32,
+}
+
+/// What a look at the chat finds.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Look {
+    pub now: u64,
+    /// Its CLI runs.
+    pub alive: bool,
+    /// Between turns, drawn, nobody typing into it for a while
+    /// (notifier `ready_for_notice`).
+    pub at_rest: bool,
+    /// A person's draft is in its composer.
+    pub draft: bool,
+    /// What its CLI runs of its own (activity `own_jobs`).
+    pub jobs: Vec<String>,
+    /// The conversation its CLI is on now, as `Before::conversation` says one.
+    pub conversation: Option<String>,
+    /// A transcript other than the one left holds this handoff's prompt.
+    pub prompted: bool,
+}
+
+/// What a look calls for.
+#[derive(Debug, PartialEq)]
+pub(super) enum Step {
+    Wait,
+    /// Waiting on a person's draft.
+    Deferred,
+    /// Type the reset command.
+    Reset,
+    /// Type the continuation prompt.
+    Prompt,
+    /// Back to `Scheduled`: the reset did not hold across a core's going.
+    Retry,
+    Done,
+    Fail(String),
+}
+
+/// What `look` calls for in switch `s`, the chat found at rest on `rest_looks`
+/// looks in a row.
+pub(super) fn next(s: &Switch, look: &Look, rest_looks: u32) -> Step {
+    // The CLI says it is on another conversation: Claude Code's registry, the
+    // thread in Codex's title.
+    let moved = look.conversation.is_some() && look.conversation != s.before.conversation;
+    match s.phase {
+        Phase::Scheduled => {
+            if !look.alive {
+                return if look.now.saturating_sub(s.scheduled_at) > RETURN_MS {
+                    Step::Fail("its CLI is not running".into())
+                } else {
+                    Step::Wait
+                };
+            }
+            if look.draft {
+                return Step::Deferred;
+            }
+            if !look.at_rest {
+                return if look.now.saturating_sub(s.scheduled_at) > REST_MAX_MS {
+                    Step::Fail(format!("the chat did not come to rest within {} minutes", REST_MAX_MS / 60_000))
+                } else {
+                    Step::Wait
+                };
+            }
+            if !look.jobs.is_empty() {
+                return Step::Fail(format!(
+                    "its CLI's own jobs are running ({}), which cannot cross to a new conversation",
+                    look.jobs.join(", ")
+                ));
+            }
+            if rest_looks < REST_LOOKS {
+                Step::Wait
+            } else {
+                Step::Reset
+            }
+        }
+        Phase::Resetting { at } => {
+            if moved {
+                Step::Prompt
+            } else if look.now.saturating_sub(at) > RESET_WAIT_MS {
+                Step::Fail(format!("the CLI did not start a new conversation within {} s of the reset", RESET_WAIT_MS / 1000))
+            } else {
+                Step::Wait
+            }
+        }
+        Phase::Prompting { at } => {
+            if look.prompted {
+                Step::Done
+            } else if look.now.saturating_sub(at) > PROMPT_WAIT_MS {
+                Step::Fail(format!("the new conversation did not take Luna's prompt within {} s", PROMPT_WAIT_MS / 1000))
+            } else {
+                Step::Wait
+            }
+        }
+        Phase::Recovering { since } => {
+            if !look.alive || !look.at_rest {
+                return if look.now.saturating_sub(since) > RETURN_MS {
+                    Step::Fail("the chat did not come back after Luna's core restarted".into())
+                } else {
+                    Step::Wait
+                };
+            }
+            if look.prompted {
+                Step::Done
+            } else if moved {
+                Step::Prompt
+            } else if s.attempts >= MAX_ATTEMPTS {
+                Step::Fail(format!("the reset did not hold in {MAX_ATTEMPTS} tries"))
+            } else {
+                Step::Retry
+            }
+        }
+    }
+}
+
+/// The command that starts a new conversation in the chat's CLI: fixed text,
+/// never anything a session wrote.
+pub(super) fn reset_command(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Claude => "/clear",
+        Provider::Codex => "/new",
+    }
+}
+
+/// The chat's terminal, as the switch drives it.
+pub(super) trait Term {
+    fn look(&self, chat: &str, s: &Switch) -> Look;
+    /// Types `text` as a prompt, a person's keys held back meanwhile.
+    fn type_line(&self, chat: &str, text: &str) -> Result<(), String>;
+    /// Between looks.
+    fn pause(&self);
+}
+
+/// What the switch came to.
+#[derive(Debug, PartialEq)]
+pub(super) enum Ended {
+    Done,
+    /// Given up, and whether the reset had gone through by then: the old
+    /// conversation is gone, and the new one is to hear what it missed.
+    Failed {
+        why: String,
+        reset: bool,
+    },
+    /// Handed back to the beat: the chat is not ready for the next step.
+    Back,
+}
+
+/// Runs the switch of `chat` from where its phase stands to its end, or back
+/// to the beat when the chat is not ready: types the reset and the prompt as
+/// `next` calls for them, saving each phase before its text goes in, so a
+/// core that stops in between knows to look. `prompt` is the continuation
+/// prompt for this switch. Holds nothing of its own: the terminal is the
+/// caller's to claim for the whole of it.
+pub(super) fn run(term: &dyn Term, chat: &str, prompt: &str, phases: &dyn Phases) -> Ended {
+    loop {
+        let Some(s) = phases.switch_of(chat) else { return Ended::Back };
+        let look = term.look(chat, &s);
+        let reset_done = matches!(s.phase, Phase::Prompting { .. })
+            || (matches!(s.phase, Phase::Resetting { .. } | Phase::Recovering { .. })
+                && look.conversation.is_some()
+                && look.conversation != s.before.conversation);
+        match next(&s, &look, REST_LOOKS) {
+            Step::Reset => {
+                phases.set(chat, Phase::Resetting { at: look.now }, s.attempts + 1);
+                if let Err(e) = term.type_line(chat, reset_command(s.provider)) {
+                    return Ended::Failed { why: format!("the reset could not be typed: {e}"), reset: false };
+                }
+            }
+            Step::Prompt => {
+                phases.set(chat, Phase::Prompting { at: look.now }, s.attempts);
+                if let Err(e) = term.type_line(chat, prompt) {
+                    return Ended::Failed { why: format!("the prompt could not be typed: {e}"), reset: true };
+                }
+            }
+            Step::Wait if matches!(s.phase, Phase::Resetting { .. } | Phase::Prompting { .. }) => term.pause(),
+            // Not this run's to wait out: the beat looks again, and starts a
+            // run once the chat is ready.
+            Step::Wait | Step::Deferred => return Ended::Back,
+            Step::Retry => {
+                phases.set(chat, Phase::Scheduled, s.attempts);
+                return Ended::Back;
+            }
+            Step::Done => return Ended::Done,
+            Step::Fail(why) => return Ended::Failed { why, reset: reset_done },
+        }
+    }
+}
+
+/// Where switches are kept, for `run`: the store, or a test's.
+pub(super) trait Phases {
+    fn switch_of(&self, chat: &str) -> Option<Switch>;
+    /// Saves `phase` and the resets typed so far before anything is typed.
+    fn set(&self, chat: &str, phase: Phase, attempts: u32);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    fn switch(provider: Provider) -> Switch {
+        Switch {
+            n: 3,
+            provider,
+            snapshot: "/data/handoffs/c1/3.md".into(),
+            sha256: "ab".into(),
+            source: "/work/handoff.md".into(),
+            scheduled_at: 1_000,
+            phase: Phase::Scheduled,
+            before: Before { conversation: Some("old".into()), transcript: Some("/t/old.jsonl".into()) },
+            attempts: 0,
+        }
+    }
+
+    fn rest(now: u64) -> Look {
+        Look { now, alive: true, at_rest: true, conversation: Some("old".into()), ..Default::default() }
+    }
+
+    #[test]
+    fn a_scheduled_handoff_waits_for_rest_and_resets_on_the_second_look() {
+        let s = switch(Provider::Claude);
+        assert_eq!(next(&s, &rest(2_000), 0), Step::Wait);
+        assert_eq!(next(&s, &rest(2_000), 1), Step::Wait, "a turn it queued may follow");
+        assert_eq!(next(&s, &rest(2_000), 2), Step::Reset);
+        let busy = Look { at_rest: false, ..rest(2_000) };
+        assert_eq!(next(&s, &busy, 5), Step::Wait);
+        assert!(matches!(next(&s, &Look { now: 1_000 + REST_MAX_MS + 1, ..busy }, 5), Step::Fail(w) if w.contains("come to rest")));
+        let gone = Look { alive: false, ..rest(2_000) };
+        assert_eq!(next(&s, &gone, 5), Step::Wait, "a CLI starting again after a core restart");
+        assert!(matches!(next(&s, &Look { now: 1_000 + RETURN_MS + 1, ..gone }, 5), Step::Fail(w) if w.contains("not running")));
+    }
+
+    #[test]
+    fn a_draft_defers_the_reset_however_long_it_stands() {
+        let s = switch(Provider::Codex);
+        let draft = Look { draft: true, ..rest(1_000 + REST_MAX_MS * 10) };
+        assert_eq!(next(&s, &draft, 9), Step::Deferred, "the person's: never given up on, never typed over");
+        assert_eq!(next(&s, &rest(5_000), 2), Step::Reset, "cleared: on it goes");
+    }
+
+    #[test]
+    fn jobs_of_the_clis_own_fail_the_switch_with_their_names() {
+        let s = switch(Provider::Claude);
+        let jobs = Look { jobs: vec!["tail.exe (pid 7)".into(), "1 subagent".into()], ..rest(2_000) };
+        match next(&s, &jobs, 2) {
+            Step::Fail(why) => assert!(why.contains("tail.exe (pid 7), 1 subagent"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn each_phase_moves_on_what_the_cli_shows_or_fails_past_its_wait() {
+        let mut s = switch(Provider::Claude);
+        s.phase = Phase::Resetting { at: 10_000 };
+        assert_eq!(next(&s, &rest(11_000), 0), Step::Wait);
+        let moved = Look { conversation: Some("new".into()), ..rest(11_000) };
+        assert_eq!(next(&s, &moved, 0), Step::Prompt);
+        assert!(matches!(next(&s, &rest(10_000 + RESET_WAIT_MS + 1), 0), Step::Fail(w) if w.contains("new conversation")));
+        s.phase = Phase::Prompting { at: 20_000 };
+        assert_eq!(next(&s, &moved, 0), Step::Wait);
+        assert_eq!(next(&s, &Look { prompted: true, ..moved.clone() }, 0), Step::Done);
+        assert!(matches!(next(&s, &Look { now: 20_000 + PROMPT_WAIT_MS + 1, ..moved }, 0), Step::Fail(w) if w.contains("prompt")));
+    }
+
+    #[test]
+    fn after_a_core_restart_what_the_chat_is_on_says_resume_or_roll_back() {
+        let mut s = switch(Provider::Codex);
+        s.phase = Phase::Recovering { since: 50_000 };
+        s.attempts = 1;
+        // Not back yet: wait for it, but not for ever.
+        assert_eq!(next(&s, &Look { alive: false, ..rest(51_000) }, 0), Step::Wait);
+        assert!(matches!(next(&s, &Look { alive: false, ..rest(50_000 + RETURN_MS + 1) }, 0), Step::Fail(_)));
+        // On the conversation it left: the reset did not hold; once more.
+        assert_eq!(next(&s, &rest(51_000), 0), Step::Retry);
+        s.attempts = MAX_ATTEMPTS;
+        assert!(matches!(next(&s, &rest(51_000), 0), Step::Fail(w) if w.contains("did not hold")));
+        // On a new one: the prompt, unless it is in already.
+        let moved = Look { conversation: Some("new".into()), ..rest(51_000) };
+        assert_eq!(next(&s, &moved, 0), Step::Prompt);
+        assert_eq!(next(&s, &Look { prompted: true, ..moved }, 0), Step::Done);
+    }
+
+    /// A chat's terminal as a test has it: what typing does to it is the
+    /// test's to say.
+    struct Fake {
+        look: RefCell<Look>,
+        typed: RefCell<Vec<String>>,
+        on_type: Box<dyn Fn(&str, &mut Look)>,
+        clock: RefCell<u64>,
+    }
+
+    impl Term for Fake {
+        fn look(&self, _: &str, _: &Switch) -> Look {
+            Look { now: *self.clock.borrow(), ..self.look.borrow().clone() }
+        }
+        fn type_line(&self, _: &str, text: &str) -> Result<(), String> {
+            self.typed.borrow_mut().push(text.to_string());
+            (self.on_type)(text, &mut self.look.borrow_mut());
+            Ok(())
+        }
+        fn pause(&self) {
+            *self.clock.borrow_mut() += 1_000;
+        }
+    }
+
+    struct Kept(RefCell<HashMap<String, Switch>>);
+
+    impl Phases for Kept {
+        fn switch_of(&self, chat: &str) -> Option<Switch> {
+            self.0.borrow().get(chat).cloned()
+        }
+        fn set(&self, chat: &str, phase: Phase, attempts: u32) {
+            if let Some(s) = self.0.borrow_mut().get_mut(chat) {
+                s.phase = phase;
+                s.attempts = attempts;
+            }
+        }
+    }
+
+    fn fake(on_type: impl Fn(&str, &mut Look) + 'static) -> Fake {
+        Fake { look: RefCell::new(rest(5_000)), typed: RefCell::default(), on_type: Box::new(on_type), clock: RefCell::new(5_000) }
+    }
+
+    fn kept(s: Switch) -> Kept {
+        Kept(RefCell::new(HashMap::from([("c1".to_string(), s)])))
+    }
+
+    #[test]
+    fn a_run_types_the_reset_then_the_prompt_and_ends_once_it_is_in() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            // The CLI goes on in a new conversation at its reset command; Codex
+            // writes its file only with the prompt.
+            let t = fake(move |text, l| {
+                if text == reset_command(provider) {
+                    l.conversation = Some("new".into());
+                } else {
+                    l.prompted = true;
+                }
+            });
+            let phases = kept(switch(provider));
+            assert_eq!(run(&t, "c1", "[Luna handoff 3, …]", &phases), Ended::Done, "{provider:?}");
+            assert_eq!(*t.typed.borrow(), [reset_command(provider), "[Luna handoff 3, …]"]);
+            assert_eq!(phases.switch_of("c1").unwrap().attempts, 1);
+        }
+    }
+
+    #[test]
+    fn a_reset_that_never_shows_fails_with_the_old_conversation_kept() {
+        let t = fake(|_, _| {});
+        let phases = kept(switch(Provider::Claude));
+        match run(&t, "c1", "prompt", &phases) {
+            Ended::Failed { why, reset } => {
+                assert!(why.contains("did not start a new conversation"), "{why}");
+                assert!(!reset, "the old conversation is still the one it is on");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(*t.typed.borrow(), ["/clear"], "no prompt into the old conversation");
+    }
+
+    #[test]
+    fn a_prompt_that_never_lands_fails_after_the_reset() {
+        let t = fake(|text, l| {
+            if text == "/new" {
+                l.conversation = Some("new".into());
+            }
+        });
+        let phases = kept(switch(Provider::Codex));
+        assert!(matches!(run(&t, "c1", "prompt", &phases), Ended::Failed { reset: true, .. }));
+    }
+
+    #[test]
+    fn a_run_on_a_chat_not_ready_hands_back_without_typing() {
+        let t = fake(|_, _| {});
+        t.look.borrow_mut().draft = true;
+        let phases = kept(switch(Provider::Claude));
+        assert_eq!(run(&t, "c1", "prompt", &phases), Ended::Back);
+        assert!(t.typed.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_run_after_a_restart_types_only_what_is_missing() {
+        // The core went after the reset: the chat is back on the new
+        // conversation, without the prompt.
+        let t = fake(|_, l| l.prompted = true);
+        t.look.borrow_mut().conversation = Some("new".into());
+        let mut s = switch(Provider::Claude);
+        s.phase = Phase::Recovering { since: 4_000 };
+        s.attempts = 1;
+        let phases = kept(s);
+        assert_eq!(run(&t, "c1", "prompt", &phases), Ended::Done);
+        assert_eq!(*t.typed.borrow(), ["prompt"], "no second reset");
+        // Back on the conversation it left: Scheduled again, nothing typed yet.
+        let t = fake(|_, _| {});
+        let mut s = switch(Provider::Codex);
+        s.phase = Phase::Recovering { since: 4_000 };
+        s.attempts = 1;
+        let phases = kept(s);
+        assert_eq!(run(&t, "c1", "prompt", &phases), Ended::Back);
+        assert_eq!(phases.switch_of("c1").unwrap().phase, Phase::Scheduled);
+        assert!(t.typed.borrow().is_empty());
+    }
+}
