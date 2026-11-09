@@ -503,10 +503,14 @@
   color: var(--row-sel-ink);
 }
 
-/* Popovers (the color picker): an XP menu, rising from where it was asked for. */
+/* Popovers (the color picker): an XP menu, rising from where it was asked for.
+   A long one (a helper list, a menu of accounts) scrolls rather than run off
+   a short window; each places itself by its measured height, so this caps it. */
 [data-app] .popover {
   position: fixed;
   z-index: 90;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   padding: 7px;
   border-radius: 6px;
   border: 1px solid var(--line);

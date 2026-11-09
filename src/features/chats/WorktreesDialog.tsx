@@ -157,11 +157,7 @@ function Window() {
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{
-          width: 620,
-          maxWidth: 'calc(100vw - 32px)',
-          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
-        }}
+        style={{ width: 620, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Stale worktrees</div>
@@ -284,14 +280,14 @@ function Window() {
               {risky} ticked worktree{risky > 1 ? 's' : ''} hold{risky === 1 ? 's' : ''} work that will be lost.
             </div>
           )}
-          <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button onClick={close} disabled={working}>
-              Close
-            </button>
-            <button className="danger" disabled={working || picked.size === 0} onClick={() => void remove([...picked])}>
-              {working ? 'Deleting…' : `Delete selected (${picked.size})`}
-            </button>
-          </div>
+        </div>
+        <div className="dialog-foot">
+          <button onClick={close} disabled={working}>
+            Close
+          </button>
+          <button className="danger" disabled={working || picked.size === 0} onClick={() => void remove([...picked])}>
+            {working ? 'Deleting…' : `Delete selected (${picked.size})`}
+          </button>
         </div>
       </div>
     </div>,

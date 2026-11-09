@@ -100,12 +100,13 @@ export function ConfirmDialog({
         <div className="window-body">
           <div style={{ fontSize: 'var(--fs-4)', lineHeight: 1.5, color: 'var(--dim)' }}>{body}</div>
           {extra && <div style={{ marginTop: 12 }}>{extra}</div>}
-          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button onClick={onCancel}>Cancel</button>
-            <button onClick={onConfirm} className={danger ? 'danger' : 'primary'}>
-              {confirmLabel}
-            </button>
-          </div>
+        </div>
+        {/* Below the body, which scrolls when the notes or the list run long. */}
+        <div className="dialog-foot" style={{ paddingTop: 6 }}>
+          <button onClick={onCancel}>Cancel</button>
+          <button onClick={onConfirm} className={danger ? 'danger' : 'primary'}>
+            {confirmLabel}
+          </button>
         </div>
       </div>
     </div>,

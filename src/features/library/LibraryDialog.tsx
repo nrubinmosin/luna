@@ -107,7 +107,6 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
         className="window"
         style={{
           width: WINDOW_WIDTH + FOLDER_WIDTH * Math.max(0, (o?.folders.length ?? 0) - 1),
-          maxWidth: 'calc(100vw - 32px)',
           boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
         }}
       >
@@ -117,7 +116,7 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
             <button aria-label="Close" onClick={onClose} />
           </div>
         </div>
-        <div className="window-body" style={{ maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
+        <div className="window-body">
           {!o ? (
             <div style={{ fontSize: 'var(--fs-3)', color: error ? RED : 'var(--faint)' }}>
               {error ?? 'Reading the library…'}

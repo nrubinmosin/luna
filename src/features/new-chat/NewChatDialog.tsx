@@ -593,13 +593,13 @@ export function NewChatDialog() {
           ) : (
             <claude.Fields draft={claudeDraft} origin={originOf(claudeDraft, claude.describe)} />
           )}
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 2 }}>
-            <button onClick={onClose}>Cancel</button>
-            <button onClick={() => void create()} disabled={!canCreate || creating} className="primary">
-              {creating ? 'Creating…' : 'Create'}
-            </button>
-          </div>
+        </div>
+        {/* Out of the body, which scrolls on a short screen: Create stays in reach. */}
+        <div className="dialog-foot">
+          <button onClick={onClose}>Cancel</button>
+          <button onClick={() => void create()} disabled={!canCreate || creating} className="primary">
+            {creating ? 'Creating…' : 'Create'}
+          </button>
         </div>
       </div>
     </div>

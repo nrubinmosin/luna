@@ -72,11 +72,7 @@ export function AccountsWindow() {
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{
-          width: 640,
-          maxWidth: 'calc(100vw - 32px)',
-          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
-        }}
+        style={{ width: 640, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Accounts</div>
@@ -84,7 +80,7 @@ export function AccountsWindow() {
             <button aria-label="Close" onClick={close} />
           </div>
         </div>
-        <div className="window-body" style={{ maxHeight: 'calc(100vh - 140px)', overflowY: 'auto' }}>
+        <div className="window-body">
           <AccountsPanel />
         </div>
       </div>

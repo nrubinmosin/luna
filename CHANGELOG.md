@@ -73,6 +73,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   is not counted, and the next session is watched in its place. On the
   0.11.0 test build two chats in a folder outside git raised "2 of the 2
   sessions ... failed soon after starting" for Claude Code 2.1.319.
+- On a short screen (1024×600, or a laptop at 125% or 150%) the bottom of New
+  chat was cut off with no way to scroll to it, Create and Cancel included; at
+  150% so were the buttons of a long confirmation (an update's notes with
+  sessions running) and the bottom of the sign-in window. Every dialog now
+  fits the window: its title bar and its buttons stay in view and the part
+  between them scrolls. A long menu or popover (a chat's helpers, an
+  exception's accounts) scrolls rather than run off the window.
 
 ## [0.11.0] - 2026-11-09
 
