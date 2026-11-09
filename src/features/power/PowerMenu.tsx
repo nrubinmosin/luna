@@ -128,7 +128,7 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
             )}
           </div>
 
-          <div style={{ marginBottom: 14 }}>
+          <div>
             <div style={label}>When every session is done</div>
             <div style={{ display: 'flex', gap: 8 }}>
               <select
@@ -195,19 +195,18 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
               </div>
             )}
           </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            {armed ? (
-              <button onClick={() => void disarm()} className="danger">
-                Disarm
-              </button>
-            ) : (
-              <button onClick={() => void arm(action, quiet, drain)} className="primary">
-                Arm
-              </button>
-            )}
-            <button onClick={onClose}>Close</button>
-          </div>
+        </div>
+        <div className="dialog-foot">
+          {armed ? (
+            <button onClick={() => void disarm()} className="danger">
+              Disarm
+            </button>
+          ) : (
+            <button onClick={() => void arm(action, quiet, drain)} className="primary">
+              Arm
+            </button>
+          )}
+          <button onClick={onClose}>Close</button>
         </div>
       </div>
     </div>,

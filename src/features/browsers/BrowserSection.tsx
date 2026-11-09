@@ -6,6 +6,7 @@ import { useChats } from '../chats/chats.store';
 import { PROVIDER_LABEL } from '../../shared/types';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { focusables } from '../../shared/ui/modal';
+import { useCloseWhenMoved } from '../../shared/ui/popover';
 import { CommandLine, Group, List, ListItem, Row } from '../settings/SettingsRows';
 import { choices, useBrowsers } from './browsers.store';
 
@@ -221,6 +222,8 @@ function AddException({
       window.removeEventListener('keydown', onKey, true);
     };
   }, [open]);
+
+  useCloseWhenMoved(open, face, () => setOpen(false));
 
   // A menu as the ARIA pattern has it: its items are out of the tab order
   // and the arrows, Home and End move between them. Tab and Shift+Tab close

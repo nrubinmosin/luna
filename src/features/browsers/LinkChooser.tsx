@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { openLink } from '../../ipc/browsers';
 import { useDialogHost } from '../../shared/ui/dialogHost';
@@ -16,6 +16,20 @@ export function LinkChooser() {
   const remembered = useChats(s => (at ? (s.findChat(at.chatId)?.browser ?? null) : null));
   const [remember, setRemember] = useState(false);
   const host = useDialogHost();
+  // Placed by its own size, measured, at the pointer and clamped to the
+  // window; past the window's height it scrolls.
+  const box = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const count = choices(data).length;
+  useLayoutEffect(() => {
+    if (!at || !box.current) return;
+    const w = box.current.offsetWidth;
+    const h = box.current.offsetHeight;
+    setPos({
+      left: Math.max(8, Math.min(at.x, window.innerWidth - w - 8)),
+      top: Math.max(8, Math.min(at.y, window.innerHeight - h - 8))
+    });
+  }, [at, host, count, remembered]);
 
   useEffect(() => {
     if (!at) return;
@@ -41,14 +55,17 @@ export function LinkChooser() {
   return createPortal(
     <div onClick={hide} onContextMenu={hide} style={{ position: 'fixed', inset: 0, zIndex: 80 }}>
       <div
+        ref={box}
         onClick={e => e.stopPropagation()}
         className="window"
         style={{
           position: 'fixed',
-          left: Math.min(at.x, window.innerWidth - 300),
-          top: Math.min(at.y, window.innerHeight - 260),
+          left: pos?.left ?? -9999,
+          top: pos?.top ?? 0,
           minWidth: 240,
           maxWidth: 360,
+          maxHeight: 'calc(100vh - 16px)',
+          overflowY: 'auto',
           padding: '4px 0',
           boxShadow: 'var(--shadow)'
         }}

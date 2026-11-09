@@ -99,8 +99,6 @@ export function ConversationView({
         style={{
           width: 'min(760px, 92vw)',
           height: 'min(640px, 86vh)',
-          display: 'flex',
-          flexDirection: 'column',
           boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
         }}
       >
@@ -113,10 +111,7 @@ export function ConversationView({
             <button aria-label="Close" onClick={onClose} />
           </div>
         </div>
-        <div
-          className="window-body"
-          style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', minHeight: 0, gap: 6 }}
-        >
+        <div className="window-body" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {header}
           <div style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)' }} data-testid="helper-view-status">
             {status}

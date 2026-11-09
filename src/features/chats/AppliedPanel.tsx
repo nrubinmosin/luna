@@ -138,7 +138,7 @@ export function AppliedPanel({ chat, onClose }: { chat: Chat; onClose: () => voi
             <button aria-label="Close" onClick={onClose} />
           </div>
         </div>
-        <div className="window-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+        <div className="window-body" style={{ maxHeight: '70vh' }}>
           <div style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)', lineHeight: 1.45 }}>
             Luna adds to a CLI only what it needs to run it, what keeps its own secrets safe, and what you chose. Tokens
             and Luna&apos;s local addresses are not shown; files are named by their path.

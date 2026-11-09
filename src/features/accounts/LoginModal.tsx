@@ -164,12 +164,10 @@ export function LoginModal({ account }: { account: Account }) {
         style={{
           width: 720,
           height: 500,
-          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)',
-          display: 'flex',
-          flexDirection: 'column'
+          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
         }}
       >
-        <div className="title-bar" style={{ flex: 'none', gap: 8 }}>
+        <div className="title-bar" style={{ gap: 8 }}>
           <div className="title-bar-text" style={{ flex: 'none' }}>
             Sign in — {account.name} · {PROVIDER_LABEL[account.provider]}
           </div>

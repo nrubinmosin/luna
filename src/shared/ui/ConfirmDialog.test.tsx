@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { expectInDialogFoot } from '../../test/dialog';
 import { ConfirmDialog } from './ConfirmDialog';
 
 function open(props: Partial<Parameters<typeof ConfirmDialog>[0]> = {}) {
@@ -118,6 +119,12 @@ describe('ConfirmDialog', () => {
     await user.keyboard('{Enter}');
     expect(onCancel).toHaveBeenCalledOnce();
     expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('keeps its buttons below the body, which is what scrolls on a short screen', () => {
+    open({ confirmLabel: 'Delete for good' });
+    expectInDialogFoot(screen.getByRole('button', { name: 'Delete for good' }));
+    expectInDialogFoot(screen.getByRole('button', { name: 'Cancel' }));
   });
 
   it('stops listening for keys once closed', async () => {

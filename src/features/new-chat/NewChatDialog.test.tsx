@@ -6,6 +6,7 @@ import * as sessions from '../../ipc/sessions';
 import * as trust from '../../ipc/trust';
 import type { ClaudeDefaultsDto, CodexDefaultsDto } from '../../ipc/defaults';
 import type { Account } from '../../shared/types';
+import { expectInDialogFoot } from '../../test/dialog';
 import { useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from '../chats/chats.store';
 import { quickChat } from './create';
@@ -111,6 +112,12 @@ describe('NewChatDialog: creating', () => {
     expect(useChats.getState().folderOf(chat!.id)?.path).toBe('/repo');
     expect(useNewChat.getState().open).toBe(false);
     expect(useNewChat.getState().lastAccount).toEqual({ provider: 'claude', name: 'work' });
+  });
+
+  it('keeps Create and Cancel below the body, which is what scrolls on a short screen', () => {
+    render(<NewChatDialog />);
+    expectInDialogFoot(screen.getByRole('button', { name: 'Create' }));
+    expectInDialogFoot(screen.getByRole('button', { name: 'Cancel' }));
   });
 
   it('takes Claude Code’s model, effort and permission mode from the account’s settings', async () => {

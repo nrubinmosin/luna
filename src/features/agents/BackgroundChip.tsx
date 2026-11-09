@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { backgroundDelete, backgroundKill, type BackgroundHelperDto } from '../../ipc/agents';
 import { Icon } from '../../shared/ui/icons';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { useDialogHost } from '../../shared/ui/dialogHost';
+import { useCloseWhenMoved } from '../../shared/ui/popover';
 import { sinceLabel } from '../../shared/lib/format';
 import { logWarn } from '../../shared/lib/log';
 import { allChats, useChats } from '../chats/chats.store';
@@ -24,6 +25,11 @@ const STATE_LABEL: Record<string, string> = {
 
 /** How long a chip glows after a helper of its chat was spawned. */
 const NEW_MS = 5000;
+
+/** A helper's four buttons (slim, each as wide as its label on one line) share
+ *  out its row: at XP's 75px minimum the four would stand past the popover's
+ *  edge, and "Open as chat" break onto two lines. */
+const ACTION: CSSProperties = { flex: '1 1 auto', whiteSpace: 'nowrap' };
 
 /** What it runs on: "sonnet · medium · team · worktree". */
 function setupLine(h: BackgroundHelperDto): string {
@@ -222,6 +228,8 @@ function HelperList({
     setPos({ left, top: below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : below });
   }, [anchor, host, helpers.length]);
 
+  useCloseWhenMoved(true, anchor, onClose);
+
   // Any click the list didn't swallow dismisses it, and so does Escape.
   useEffect(() => {
     const close = () => onClose();
@@ -300,10 +308,17 @@ function HelperList({
               </div>
             )}
             <div style={{ display: 'flex', gap: 6 }}>
-              <button title="Its conversation as it goes, read-only" onClick={() => onWatch(h.id)}>
+              <button
+                className="slim"
+                style={ACTION}
+                title="Its conversation as it goes, read-only"
+                onClick={() => onWatch(h.id)}
+              >
                 Watch
               </button>
               <button
+                className="slim"
+                style={ACTION}
                 disabled={busy || left.length > 0}
                 title={
                   busy
@@ -317,6 +332,8 @@ function HelperList({
                 Open as chat
               </button>
               <button
+                className="slim"
+                style={ACTION}
                 disabled={!busy && left.length === 0}
                 title={left.length > 0 ? `End what its turn left running: ${left.join(', ')}` : undefined}
                 onClick={act('stopping a helper', () => backgroundKill(h.id))}
@@ -324,6 +341,8 @@ function HelperList({
                 Stop
               </button>
               <button
+                className="slim"
+                style={ACTION}
                 disabled={busy || left.length > 0}
                 title={busy || left.length > 0 ? 'Stop it first: it is at work' : 'Delete it, and the worktree it made'}
                 onClick={act('deleting a helper', async () => {
