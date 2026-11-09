@@ -152,6 +152,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - **Breaking for agents:** `luna_answer`'s `keys` (raw keystrokes for a
   helper's screen); a helper has none, and a dialog in your own chat is yours.
 
+### Fixed
+
+- A Codex helper spawned with `approval: "auto-review"` failed every turn
+  after its first: `codex exec resume` refuses `--approve-for-me`, so its
+  later turns pass the three settings that flag stands for instead.
+
 ## [0.10.2] - 2026-11-08
 
 A security release for the agent tools and the app window: an agent reaches
