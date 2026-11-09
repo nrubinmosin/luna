@@ -65,6 +65,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   spawning a helper there. Claude Code's `WorktreeCreate` hook, which makes a
   worktree without git, is let through when the account's or the project's
   settings name it.
+- The CLI canary no longer blames a new Claude Code or Codex version for an
+  exit that was not its doing. A session that ends on a cause outside the CLI
+  (a worktree asked for outside a git repository) or that you or Luna stopped
+  (a chat deleted or restarted, the sign-in window closed, a helper stopped)
+  is not counted, and the next session is watched in its place. On the
+  0.11.0 test build two chats in a folder outside git raised "2 of the 2
+  sessions ... failed soon after starting" for Claude Code 2.1.319.
 
 ## [0.11.0] - 2026-11-09
 

@@ -3,7 +3,7 @@
 //! its cursor queries and notice when it has gone.
 
 use super::control::end_leftovers;
-use super::screen::{as_key_events, cursor_at, Modes};
+use super::screen::{as_key_events, cursor_at, render_screen, Modes};
 use super::{manager, now_ms, Input, Session};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -442,8 +442,12 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             let code = child.lock().unwrap_or_else(|e| e.into_inner()).wait().ok().map(|st| st.exit_code());
             drop(on_account);
             drop(on_version);
-            // For the canary over a new CLI version's first sessions.
-            crate::cli::session_ended(&id, code.is_some_and(|c| c != 0));
+            // For the canary over a new CLI version's first sessions, with the
+            // screen it left for what it said as it went.
+            crate::cli::session_ended(&id, code.is_some_and(|c| c != 0), || {
+                let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
+                last_screen(scrollback.lock().unwrap_or_else(|e| e.into_inner()).make_contiguous(), rows, cols)
+            });
             crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
             // The exit names only the chat. A session already spawned under
@@ -564,6 +568,16 @@ pub(crate) fn finish_spec(envs: &mut Vec<(&'static str, String)>, applied: &mut 
     applied.push(Item::InheritedCleared.with(format!("unset {}", removed_env().join(", "))));
 }
 
+/// The screen a CLI left as it exited, drawn from the end of its output: what
+/// it said as it gave up on a start, for the canary (cli/canary.rs).
+fn last_screen(output: &[u8], rows: u16, cols: u16) -> String {
+    render_screen(&output[output.len().saturating_sub(LAST_SCREEN)..], rows, cols)
+}
+
+/// How much of the end of a CLI's output `last_screen` draws: far more than a
+/// screen's worth for a CLI that printed an error and went.
+const LAST_SCREEN: usize = 64 * 1024;
+
 /// Cuts the cursor queries (DSR) out of a read. Returns the output between
 /// them, a query following every piece but the last; `carry` keeps the start
 /// of a query split across reads for the next one.
@@ -628,6 +642,25 @@ mod tests {
         // A held-back escape that turns out to be something else goes through.
         assert_eq!(split_dsr(&mut carry, b"\x1b"), vec![b"".to_vec()]);
         assert_eq!(split_dsr(&mut carry, b"[31m"), vec![b"\x1b[31m".to_vec()]);
+    }
+
+    #[test]
+    fn a_panes_last_screen_shows_the_canary_claude_codes_worktree_error() {
+        // As Claude Code 2.1.319 writes it to stderr, red with the folder in
+        // bold, into a pane nobody has sized, after more output than is drawn;
+        // and as a console host may paint it again, a row at a time, the line
+        // broken at the 100th column, mid-word.
+        let written = b"\x1b[31mError: Can only use --worktree in a git repository, but \x1b[1mE:\\Projects\\Personal\\luna;C\x1b[22m \
+                        is not a git repository. Configure a WorktreeCreate hook to use --worktree with other VCS systems.\x1b[39m\r\n";
+        let painted = b"Error: Can only use --worktree in a git repository, but E:\\Projects\\Personal\\luna;C is not a git rep\r\n\
+                        ository. Configure a WorktreeCreate hook to use --worktree with other VCS systems.\r\n";
+        for said in [&written[..], &painted[..]] {
+            let mut output = b"earlier output\r\n".repeat(LAST_SCREEN / 8);
+            output.extend_from_slice(said);
+            let screen = last_screen(&output, INITIAL_ROWS, INITIAL_COLS);
+            assert_eq!(crate::cli::cause_outside(&screen), Some("a worktree asked for outside a git repository"), "{screen}");
+        }
+        assert_eq!(crate::cli::cause_outside(&last_screen(b"error: unexpected argument '--x'\r\n", INITIAL_ROWS, INITIAL_COLS)), None);
     }
 
     #[test]
