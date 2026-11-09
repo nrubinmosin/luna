@@ -76,11 +76,17 @@ from it what is not for its kind, in `folder_args`:
   `developer_instructions` only adds, `model_instructions_file` replaces the base
   prompt). So `units` lays instructions for one kind out `worded`: a line before
   them saying whose they are. Claude Code copies get the same line, for the
-  sessions Luna does not start. `library_resolve` taking such a copy in strips
-  the line while it is still word for word (`unworded`).
+  sessions Luna does not start. The ledger notes which line Luna wrote at each
+  destination (`Ledger::worded`); `library_resolve` taking a copy in strips
+  that line alone, while it and the blank line after it are still there word
+  for word with either line ending (`unworded`), so the same words in a copy
+  Luna wrote no line into stay the person's.
 - What the audience decided goes in `SessionSkills::audience` and is applied
   as `library.audience` (a UserAction, ADR-0016) beside the mechanism's own
-  items (`library.hidden-skills`, `library.account-instructions-off`).
+  items (`library.hidden-skills`, `library.account-instructions-off`). A Codex
+  session is said to be told whose its instructions are only when the
+  account's `AGENTS.md` opens on that line now (`carries_banner`); a copy
+  changed there, skipped or not written is `library.audience-unkept` instead.
 - Nothing is written into an account per launch: the wording is part of the
   copy, written by the pass like any other change of the library.
 

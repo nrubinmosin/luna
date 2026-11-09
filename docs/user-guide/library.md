@@ -47,14 +47,18 @@ skill only your chat uses cost it context and mislead it.
   they are ("For the person's own chats only: …" or "For helper sessions only:
   …"), and Luna's note to every helper says it is a helper. That line goes into
   the Claude Code copy too, for sessions Luna does not start; changing the
-  audience rewrites the copies, and taking a copy into the library takes the
-  line off.
+  audience rewrites the copies, and taking a copy into the library takes off
+  the line Luna wrote there (even if an editor changed its line endings), and
+  nothing else: the same words in a copy Luna wrote no line into stay yours.
 - An account gets one instructions file, so instructions for your chats only
   leave a Claude Code helper with none from the library; a Codex helper reads
   them, worded as yours.
 - **What Luna applied** for a session lists what the audience kept from it
   (or, on Codex, which instructions say they are for the other kind) under
-  your choices.
+  your choices. Where it could not keep them out it says so: a Codex copy
+  changed there, left out or not yet written does not say whose it is; and in
+  the rare project whose folder name Claude Code's matcher would confuse with
+  the account's, the account's `CLAUDE.md` is read after all.
 
 ## Folders
 

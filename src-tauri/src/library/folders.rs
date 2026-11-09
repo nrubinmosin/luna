@@ -333,6 +333,9 @@ pub struct SessionSkills {
     /// What of the above the entries' audience decided (library/audience.rs),
     /// said as what Luna applied (`audience_applied`).
     pub audience: Vec<String>,
+    /// Codex: instructions not meant for this kind of session that it reads
+    /// all the same, its account's copy not saying whose they are.
+    pub unkept: Vec<String>,
 }
 
 /// What a session Luna starts gets of the library's folders, for each folder
@@ -431,10 +434,16 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
                 }
             }
         }
-        // Read in every session, whoever's: the copy says whose it is.
+        // Read in every session, whoever's: the copy says whose it is, where
+        // it does — one changed there, left out or not written does not.
         Provider::Codex => {
             if let Some(n) = account_has.filter(|&n| !fits(n)) {
-                out.audience.push(worded_note(n, instructions_audience(lib, n)));
+                let audience = instructions_audience(lib, n);
+                if carries_banner(&Path::new(&a.path).join(instructions_name(a.provider)), audience) {
+                    out.audience.push(worded_note(n, audience));
+                } else {
+                    out.unkept.push(unworded_note(n, audience));
+                }
             }
         }
     }

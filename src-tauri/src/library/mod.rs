@@ -201,6 +201,29 @@ pub fn laid_out_in(account_path: &str) -> Vec<String> {
 #[derive(Serialize, Deserialize, Default)]
 struct Ledger {
     written: BTreeMap<String, Hashes>,
+    /// The instructions copies Luna wrote with a line before them saying whose
+    /// they are (audience.rs `worded`), by destination, with the audience it
+    /// named: only that line, and only there, comes off when such a copy is
+    /// taken into the library.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    worded: BTreeMap<String, Audience>,
+}
+
+impl Ledger {
+    /// What Luna has now written at `key`: these files, said for `banner`'s
+    /// sessions alone where that is not every session's.
+    fn wrote(&mut self, key: &str, hashes: Hashes, banner: Audience) {
+        self.written.insert(key.to_string(), hashes);
+        match banner {
+            Audience::Both => self.worded.remove(key),
+            other => self.worded.insert(key.to_string(), other),
+        };
+    }
+    /// Luna's note of `key` gone, files and line alike.
+    fn forget(&mut self, key: &str) -> Option<Hashes> {
+        self.worded.remove(key);
+        self.written.remove(key)
+    }
 }
 
 impl Ledger {

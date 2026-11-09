@@ -162,7 +162,8 @@ enum Located {
     /// file, the skill's name for a skill, what the copy is to hold — the
     /// library's, under the name it goes by there (`shown`) where that is
     /// another — or why the library has nothing fit for it.
-    Copy { from: PathBuf, file: bool, skill: Option<String>, shown: Option<String>, source: Result<Files, String> },
+    /// `banner`: the line saying whose the library's copy is (pass.rs `Unit`).
+    Copy { from: PathBuf, file: bool, skill: Option<String>, shown: Option<String>, source: Result<Files, String>, banner: Audience },
     /// An account's instructions file where no instructions of the library go.
     Unclaimed(AccountInfo),
 }
@@ -177,7 +178,7 @@ fn locate(dirs: &Dirs, dest: &str) -> Result<Located, String> {
             (None, Some(i)) => dirs.instructions_file(i),
             (None, None) => return Err(format!("{dest} is laid out from nothing")),
         };
-        return Ok(Located::Copy { from, file: u.file, skill: u.skill, shown: u.shown, source: u.source });
+        return Ok(Located::Copy { from, file: u.file, skill: u.skill, shown: u.shown, source: u.source, banner: u.banner });
     }
     match accounts.into_iter().find(|a| Path::new(&a.path).join(instructions_name(a.provider)).to_string_lossy() == dest) {
         Some(a) => Ok(Located::Unclaimed(a)),
@@ -197,7 +198,7 @@ fn take_unclaimed(dirs: &Dirs, ledger: &mut Ledger, dest: &str, a: &AccountInfo)
     let name = new_instructions_name(dirs, &a.name);
     write_at(&dirs.instructions_file(&name), true, &there)?;
     keep_blobs(dirs, &there);
-    ledger.written.insert(dest.to_string(), hashes(&there));
+    ledger.wrote(dest, hashes(&there), Audience::Both);
     ledger.save(dirs)?;
     let key = format!("{}/{}", a.provider.as_str(), a.name);
     crate::settings::update(|s| give_instructions(&mut s.library, Some(&name), vec![key]))?;
@@ -219,8 +220,8 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
         return Err(format!("{dest} is in the library itself"));
     }
     let mut ledger = Ledger::load(&dirs);
-    let (from, file, skill, shown, source) = match located {
-        Located::Copy { from, file, skill, shown, source } => (from, file, skill, shown, source),
+    let (from, file, skill, shown, source, banner) = match located {
+        Located::Copy { from, file, skill, shown, source, banner } => (from, file, skill, shown, source, banner),
         Located::Unclaimed(a) if take => {
             take_unclaimed(&dirs, &mut ledger, &dest, &a)?;
             return overview_locked(true);
@@ -231,12 +232,16 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
     if take {
         let there = there.ok_or("Nothing is there to take")?;
         // A copy under another name goes back under the skill's own;
-        // instructions without the line saying whose they are (`worded`).
+        // instructions without the line Luna wrote there saying whose they
+        // are, as its ledger has it (`unworded`).
+        let wrote = ledger.worded.get(&dest).copied().unwrap_or_default();
         let taken = match (&skill, &shown) {
             (Some(name), Some(_)) => with_name(there.clone(), name),
-            (None, _) => there.iter().map(|(k, v)| (k.clone(), unworded(v))).collect(),
+            (None, _) => there.iter().map(|(k, v)| (k.clone(), unworded(v, wrote))).collect(),
             _ => there.clone(),
         };
+        // What stays there still has the line, unless it came off nothing.
+        let still = if skill.is_none() && taken != there { wrote } else { Audience::Both };
         if let Some(name) = &skill {
             let text = taken.get(SKILL_FILE).ok_or("There is no SKILL.md there")?;
             check_skill(name, &String::from_utf8_lossy(text))?;
@@ -246,7 +251,7 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
         }
         write_at(&from, file, &taken)?;
         keep_blobs(&dirs, &there);
-        ledger.written.insert(dest.clone(), hashes(&there));
+        ledger.wrote(&dest, hashes(&there), still);
         crate::log::info("library", &format!("took {dest} into the library"));
     } else {
         let library = source.map_err(|e| format!("The library has nothing fit for it: {e}"))?;
@@ -259,7 +264,7 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
         }
         write_at(&to, file, &library)?;
         keep_blobs(&dirs, &library);
-        ledger.written.insert(dest.clone(), hashes(&library));
+        ledger.wrote(&dest, hashes(&library), banner);
         crate::log::info("library", &format!("put the library's copy back at {dest}"));
     }
     ledger.save(&dirs)?;
