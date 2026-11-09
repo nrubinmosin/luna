@@ -15,7 +15,8 @@
 //! That layout is kept as-is under `versions/<ver>/`. The release publishes
 //! no hash of the files inside; what pins them is the tarball's sha256 and
 //! the size each tar header gives, which `cli::validate` holds the unpacked
-//! directory to.
+//! directory to. It then records each file's sha256 as unpacked, which going
+//! back to the version later holds it to again (`cli::reverify`).
 
 use crate::cli::{download_to, sane_version, Package, PackageFile, Source};
 use std::fs;

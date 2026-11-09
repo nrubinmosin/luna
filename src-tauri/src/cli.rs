@@ -487,10 +487,16 @@ fn use_version_in(root: &Path, bin_rel: &str, min_safe: &str, dir: &str) -> Resu
     if version_cmp(&record.version, min_safe).is_lt() {
         return Err(format!("{} is older than {min_safe}, the oldest this Luna lets run", record.version));
     }
+    // Held to its record again whichever way it goes: a version gone back to
+    // has sat on disk unwatched since it ran. Below the floor every file
+    // must have a sha256 to be held to; above it, a record from before every
+    // file got one (Codex's) is held to what it has.
     let floor = floor_in(root, min_safe);
-    if version_cmp(&record.version, &floor).is_lt() {
-        reverify(&root.join("versions").join(dir), &record).map_err(|e| format!("{} is below {floor}, and {e}", record.version))?;
-    }
+    let below = version_cmp(&record.version, &floor).is_lt();
+    reverify(&root.join("versions").join(dir), &record, below).map_err(|e| match below {
+        true => format!("{} is below {floor}, and {e}", record.version),
+        false => format!("{}: {e}", record.version),
+    })?;
     mark_recorded(root)?;
     flip_in(root, bin_rel, dir)?;
     prune_in(root, bin_rel);
@@ -542,13 +548,17 @@ fn raise_floor_in(root: &Path, version: &str) -> Result<(), String> {
     crate::secret::write_private_synced(&root.join(FLOOR), version.as_bytes()).map_err(|e| format!("write {FLOOR}: {e}"))
 }
 
-/// Every file of an install held again to the sha256 its record kept: for a
-/// version gone back to below the floor, where nothing newer vouches for it.
-/// A record without a hash for each file cannot be held so.
-fn reverify(dir: &Path, record: &Record) -> Result<(), String> {
+/// Every file of an install held again to the sha256 its record kept, for a
+/// version gone back to. `all`: below the floor, where nothing newer vouches
+/// for it, a record without a hash for each file cannot be held so and is
+/// refused; otherwise such a file is passed over.
+fn reverify(dir: &Path, record: &Record, all: bool) -> Result<(), String> {
     for f in &record.files {
         let Some(want) = &f.sha256 else {
-            return Err(format!("its record keeps no sha256 for {} to check it against", f.path));
+            if all {
+                return Err(format!("its record keeps no sha256 for {} to check it against", f.path));
+            }
+            continue;
         };
         let path = dir.join(&f.path);
         let meta = fs::symlink_metadata(&path).map_err(|e| format!("{} is missing: {e}", f.path))?;
@@ -793,7 +803,7 @@ fn update_in(
         (Some(dir), Ok(())) => dir,
         (Some(dir), Err(_)) => {
             let record = read_record(&root.join("versions").join(&dir)).map_err(|e| format!("{dir}: {e}"))?;
-            reverify(&root.join("versions").join(&dir), &record).map_err(|e| format!("{version}: {e}"))?;
+            reverify(&root.join("versions").join(&dir), &record, true).map_err(|e| format!("{version}: {e}"))?;
             dir
         }
         (None, Err(e)) => return Err(e),
@@ -948,13 +958,18 @@ pub(crate) fn validate(dir: &Path, version: &str, bin_rel: &str, package: Packag
         if meta.len() != f.size {
             return Err(format!("{version}: {} is {} bytes, the package says {}", f.rel, meta.len(), f.size));
         }
+        // Every file's sha256 goes into the record, the release's or, where
+        // it publishes none (Codex's files inside its tarball), the one it
+        // has now, held to the release's sizes and its tarball's checksum:
+        // what going back to the version later checks it against again
+        // (`reverify`).
+        let got = sha256_of(&path)?;
         if let Some(want) = &f.sha256 {
-            let got = sha256_of(&path)?;
             if !got.eq_ignore_ascii_case(want) {
                 return Err(format!("{version}: checksum mismatch for {}: expected {want}, got {got}", f.rel));
             }
         }
-        files.push(RecordFile { path: f.rel, size: f.size, sha256: f.sha256.map(|h| h.to_ascii_lowercase()) });
+        files.push(RecordFile { path: f.rel, size: f.size, sha256: Some(got) });
     }
     Ok(Record { version: version.into(), verified: package.verified, files })
 }
@@ -1489,14 +1504,43 @@ mod tests {
         // Below the minimum: refused whatever its files.
         update_in(&root, BIN, pointer("3.0.0"), &mut hashed).unwrap();
         assert!(use_version_in(&root, BIN, "2.5.0", "2.0.0").unwrap_err().contains("older than 2.5.0"));
-        // A record with sizes alone cannot be checked so: not below the floor.
-        let plain = scratch("below-plain");
-        update_in(&plain, BIN, pointer("1.0.0"), &mut whole).unwrap();
-        update_in(&plain, BIN, pointer("2.0.0"), &mut whole).unwrap();
-        assert!(use_version_in(&plain, BIN, "0", "1.0.0").unwrap_err().contains("keeps no sha256"));
-        assert!(current_in(&plain, BIN).is_some_and(|c| c.version == "2.0.0"));
         let _ = remove_tree(&root);
-        let _ = remove_tree(&plain);
+    }
+
+    /// Codex's release vouches for its tarball, not the files in it: each
+    /// file's sha256 as unpacked goes into the record, for "Use" to hold the
+    /// version to again. Before, its records kept sizes alone.
+    #[test]
+    fn every_file_is_recorded_with_its_sha256_and_held_to_it_on_the_way_back() {
+        let root = scratch("hashes");
+        update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
+        let record = read_record(&root.join("versions").join("1.0.0")).unwrap();
+        for (f, (_, bytes)) in record.files.iter().zip(FILES) {
+            assert_eq!(f.sha256.as_deref(), Some(format!("{:x}", Sha256::digest(bytes)).as_str()), "{}", f.path);
+        }
+        update_in(&root, BIN, pointer("2.0.0"), &mut whole).unwrap();
+        // A helper altered at its size: sizes pass, the hash does not.
+        fs::write(root.join("versions").join("1.0.0").join(FILES[1].0), b"THE SANDBOX HELPER").unwrap();
+        assert!(current_in(&root, BIN).is_some(), "intact by size");
+        assert!(use_version_in(&root, BIN, "0", "1.0.0").unwrap_err().contains("no longer matches its sha256"));
+
+        // A record from before, with sizes alone: not gone back to below the
+        // floor, where nothing else vouches for it...
+        let legacy = scratch("hashes-legacy");
+        update_in(&legacy, BIN, pointer("1.0.0"), &mut whole).unwrap();
+        update_in(&legacy, BIN, pointer("2.0.0"), &mut whole).unwrap();
+        for dir in ["1.0.0", "2.0.0"] {
+            let path = legacy.join("versions").join(dir).join(RECORD);
+            let mut record: Record = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            record.files.iter_mut().for_each(|f| f.sha256 = None);
+            fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        }
+        assert!(use_version_in(&legacy, BIN, "0", "1.0.0").unwrap_err().contains("keeps no sha256"));
+        assert!(current_in(&legacy, BIN).is_some_and(|c| c.version == "2.0.0"));
+        // ...while one at the floor is held to what it has.
+        assert_eq!(use_version_in(&legacy, BIN, "0", "2.0.0").unwrap(), "2.0.0");
+        let _ = remove_tree(&root);
+        let _ = remove_tree(&legacy);
     }
 
     /// The known-good channel after `latest` had moved on: back to the
