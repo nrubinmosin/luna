@@ -290,7 +290,7 @@ pub fn binary(provider: Provider) -> PathBuf {
 pub fn launch(provider: Provider, session: Option<&str>) -> Result<(PathBuf, Option<InUse>), String> {
     let src = source(provider);
     let root = root(provider);
-    match launch_in(&root, src.bin_rel)? {
+    match launch_in(&root, src.bin_rel, min_safe(provider))? {
         Some((path, version, held)) => {
             if let Some(session) = session {
                 in_use::note_session(session, provider, &version);
@@ -311,13 +311,22 @@ const HOLD_TRIES: u32 = 5;
 /// sweep between the two reads would have taken the directory the first one
 /// named. None where nothing is current. An Err rather than a start without
 /// the hold: the sweep could later take the folder from under the process.
-fn launch_in(root: &Path, bin_rel: &str) -> Result<Option<(PathBuf, String, InUse)>, String> {
+/// An Err too, never the CLI on PATH, for a current version below `min_safe`:
+/// a Luna release that raised its minimum runs nothing older, whatever
+/// `current` or a version held by hand says, until the next pass moves it.
+fn launch_in(root: &Path, bin_rel: &str, min_safe: &str) -> Result<Option<(PathBuf, String, InUse)>, String> {
     let mut why = String::new();
     for attempt in 0..HOLD_TRIES {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(20 * u64::from(attempt)));
         }
         let Some(c) = current_in(root, bin_rel) else { return Ok(None) };
+        if version_cmp(&c.version, min_safe).is_lt() {
+            return Err(format!(
+                "not started: version {} is older than {min_safe}, the oldest this Luna lets run; Settings → CLIs installs a newer one",
+                c.version
+            ));
+        }
         let Some(held) = in_use::hold(root, &c.dir) else {
             why = format!("cannot hold {} in {} (a lock file there cannot be had)", c.dir, root.join(in_use::DIR).display());
             continue;
@@ -732,17 +741,22 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
     if let Ok(l) = &latest {
         publish(provider, |s| s.latest = Some(l.clone()));
     }
+    let min = min_safe(provider);
     let pinned = choice::pinned_in(&root).and_then(|dir| match installed_all(&root, src.bin_rel).into_iter().find(|(d, _)| *d == dir) {
-        Some((_, record)) => Some(record.version),
-        None => {
-            // Held at a version that is gone: nothing left to hold.
+        Some((_, record)) if version_cmp(&record.version, min).is_ge() => Some(record.version),
+        // Held at a version that is gone, or that this Luna no longer lets
+        // run (its minimum rose): nothing left to hold.
+        _ => {
             let _ = choice::unpin_in(&root);
             None
         }
     });
+    // A current version below the minimum runs no session (`launch_in`):
+    // the pass moves off it whatever would otherwise keep it.
+    let unsafe_now = current_in(&root, src.bin_rel).is_some_and(|c| version_cmp(&c.version, min).is_lt());
     let bad = choice::bad_in(&root);
     let latest = latest.as_ref().map(String::as_str).map_err(String::as_str);
-    let (version, chosen) = match choice::plan(channel, pinned.as_deref(), known_good::entry(provider), &bad, latest)? {
+    let (version, chosen) = match choice::plan(channel, pinned.as_deref(), known_good::entry(provider), &bad, latest, unsafe_now)? {
         choice::Plan::Stay(why) => return Ok(Some(why)),
         choice::Plan::Install { version, chosen } => (version, chosen),
     };
@@ -758,8 +772,8 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
             }
         })
     };
-    let target = Target { version: &version, min_safe: min_safe(provider), chosen, probe: &probe };
-    if let Some(why) = held_below_floor(&root, src.bin_rel, target) {
+    let target = Target { version: &version, min_safe: min, chosen, probe: &probe };
+    if let Some(why) = held_below_floor(&root, src.bin_rel, target).filter(|_| !unsafe_now) {
         return Ok(Some(why));
     }
 
@@ -1491,7 +1505,7 @@ mod tests {
         assert_eq!(previous_in(&root, BIN).as_deref(), Some("1.0.0"));
 
         // A session starts on 2.0.0 and runs on through two more updates.
-        let (exe, version, held) = launch_in(&root, BIN).unwrap().unwrap();
+        let (exe, version, held) = launch_in(&root, BIN, "0").unwrap().unwrap();
         assert_eq!((exe, version.as_str()), (root.join("versions").join("2.0.0").join(BIN), "2.0.0"));
         update_in(&root, BIN, pointer("3.0.0"), &mut whole).unwrap();
         update_in(&root, BIN, pointer("4.0.0"), &mut whole).unwrap();
@@ -1517,16 +1531,31 @@ mod tests {
     #[test]
     fn a_managed_copy_that_cannot_be_held_is_not_started() {
         let root = scratch("unheld");
-        assert!(launch_in(&root, BIN).unwrap().is_none(), "nothing current: the CLI on PATH");
+        assert!(launch_in(&root, BIN, "0").unwrap().is_none(), "nothing current: the CLI on PATH");
         update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
         // The locks' folder taken by a file: no lock can be had there.
         remove_tree(&root.join(in_use::DIR)).ok();
         fs::write(root.join(in_use::DIR), b"not a folder").unwrap();
-        let refused = launch_in(&root, BIN).err().expect("refused");
+        let refused = launch_in(&root, BIN, "0").err().expect("refused");
         assert!(refused.contains("not started: cannot hold 1.0.0"), "{refused}");
         // Held again once the lock can be had.
         fs::remove_file(root.join(in_use::DIR)).unwrap();
-        assert!(launch_in(&root, BIN).unwrap().is_some());
+        assert!(launch_in(&root, BIN, "0").unwrap().is_some());
+        let _ = remove_tree(&root);
+    }
+
+    /// A Luna release that raised the minimum: the current version below it
+    /// starts nothing, held by hand or not, and the CLI on PATH does not stand
+    /// in for it.
+    #[test]
+    fn a_current_version_below_the_minimum_starts_nothing() {
+        let root = scratch("unsafe");
+        update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        use_version_in(&root, BIN, "0", "1.0.0").unwrap();
+        choice::pin_in(&root, "1.0.0").unwrap();
+        let refused = launch_in(&root, BIN, "1.5.0").err().expect("refused");
+        assert!(refused.contains("1.0.0 is older than 1.5.0"), "{refused}");
+        assert!(launch_in(&root, BIN, "1.0.0").unwrap().is_some(), "at the minimum it runs");
         let _ = remove_tree(&root);
     }
 
