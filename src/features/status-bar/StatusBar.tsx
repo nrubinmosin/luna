@@ -97,7 +97,7 @@ function UpdateChips() {
         <div
           key={`canary-${p}`}
           onClick={() => useSettings.getState().setOpen(true, 'clis')}
-          title={`${PROVIDER_LABEL[p]} ${warning.version} may be broken: ${warning.failures.length} of its first ${warning.watched} sessions failed. Click to roll back or keep it.`}
+          title={`${PROVIDER_LABEL[p]} ${warning.version} may be broken: ${warning.failures.length} of the ${warning.watched} sessions started on it so far failed. Click to roll back or keep it.`}
           className="sb-field click"
           style={chipStyle(true)}
         >

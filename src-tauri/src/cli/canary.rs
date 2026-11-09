@@ -162,7 +162,7 @@ fn warn(provider: Provider, canary: &Canary) {
         Provider::Codex => "Codex",
     };
     let body = format!(
-        "{} of the first {} sessions on {name} {} failed soon after starting. Settings → CLIs can roll back to the version before.",
+        "{} of the {} sessions started on {name} {} so far failed soon after starting. Settings → CLIs can roll back to the version before.",
         canary.failures.len(),
         canary.watched,
         canary.version

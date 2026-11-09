@@ -111,7 +111,7 @@ function CliGroup({ provider, about }: { provider: Provider; about?: About }) {
       {warning && (
         <Row
           label={`${name} ${warning.version} may be broken`}
-          note={`${warning.failures.length} of the first ${warning.watched} sessions on it failed soon after starting. Running sessions keep their version either way.`}
+          note={`${warning.failures.length} of the ${warning.watched} sessions started on it so far failed soon after starting. Running sessions keep their version either way.`}
           warn
           control={
             <>
