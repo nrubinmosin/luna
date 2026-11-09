@@ -379,6 +379,11 @@ pub struct SessionDetail {
     /// The CLI's own id for the conversation (`--resume`, `codex resume`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The version of Luna's copy of the CLI its process last started from
+    /// (cli.rs `launch`); none for one on the CLI from PATH, or not started
+    /// since this core began.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<String>,
 }
 
 pub fn session_get(caller: &str, id: &str, all: bool) -> Result<SessionDetail, String> {
@@ -389,7 +394,7 @@ pub fn session_get(caller: &str, id: &str, all: bool) -> Result<SessionDetail, S
     let cwd = pty.probe(id).map(|p| p.cwd).or_else(|| crate::background::working_dir(id)).filter(|c| !crate::pty::same_dir(c, &folder));
     let transcript = transcript_path(pty, id).map(|p| p.to_string_lossy().into_owned());
     let session_id = crate::background::session_id(id).or_else(|| pty.probe(id).as_ref().and_then(disk_meta).and_then(|m| m.session_id));
-    Ok(SessionDetail { row, folder, cwd, transcript, session_id })
+    Ok(SessionDetail { row, folder, cwd, transcript, session_id, cli_version: crate::cli::session_version(id) })
 }
 
 /// One row of `luna_account_list`: an account agents may spawn on, and its

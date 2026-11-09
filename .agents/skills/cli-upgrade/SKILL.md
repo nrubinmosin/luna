@@ -5,19 +5,27 @@ description: Bring Luna up to a new Claude Code or Codex CLI version — find wh
 
 # CLI upgrade
 
-Luna downloads each CLI's latest release on its own (`cli.rs`), so a new
-version reaches users whether or not Luna is ready for it. Luna depends on
-much more than flags: it reads the CLI's stream, transcripts, rollouts and
-even its screen, and each of those is pinned by a test against what one
-version did. The job is to find every place the new version differs, decide
-for each whether Luna must change, and leave the tests saying the new truth.
+Luna installs on its own the newest version on the known-good list compiled
+into each release (`src-tauri/cli-known-good.json`), and on the `latest`
+channel each new release once it passes an offline probe of its flags
+(ADR-0019). So a new version reaches most users only once this process has
+put it on the list, and reaches users on `latest` within hours whether or not
+Luna is ready for it. Luna depends on much more than flags: it reads the
+CLI's stream, transcripts, rollouts and even its screen, and each of those is
+pinned by a test against what one version did. The job is to find every place
+the new version differs, decide for each whether Luna must change, and leave
+the tests, and the list, saying the new truth.
 
 ## 1. Get the facts from the real thing
 
 - **The binary.** The test build's managed copy is the one to look at:
   `test-build/claude-cli/versions/<v>/claude.exe`,
   `test-build/codex-cli/versions/<v>/bin/codex.exe` (`current` names the
-  version; starting the test build with `-Background` downloads the latest).
+  version). The test build installs the known-good version like any Luna;
+  to get the new one, put that CLI on `latest` (Settings → CLIs, or the word
+  `latest` in `test-build/<cli>-cli/channel` before it starts) and start it
+  with `-Background`. A version that fails the offline probe is marked bad
+  in `bad.json` with why: that is already a finding.
   Diff the `--help` of every command Luna launches (the launch files below
   say which: `claude`, `codex`, `codex exec` and so on) between the old and
   the new version; keep both outputs under `test-build/` as evidence.
@@ -33,7 +41,7 @@ for each whether Luna must change, and leave the tests saying the new truth.
 
 | Surface | Where Luna has it | Pinned by |
 |---|---|---|
-| Launch flags, env, config overrides | `claude/launch.rs`, `codex/launch.rs`, `pty/start.rs`, `background/command.rs`, `codex/config.rs` | golden launch tests (`golden.rs`) |
+| Launch flags, env, config overrides | `claude/launch.rs`, `codex/launch.rs`, `pty/start.rs`, `background/command.rs`, `codex/config.rs` | golden launch tests (`golden.rs`); the offline probe's flag table (`cli/probe.rs` `COMMANDS`), held to every golden argument list and to the help fixtures in `cli/testdata/` |
 | Hooks and their payloads | Claude `--settings` hooks (`pty/start.rs`, `hub.rs`), Codex hooks and their trust (`codex/hooks.rs`) | hub tests |
 | Headless stream events | `background/events.rs` | recorded events in its tests |
 | Transcripts / rollouts | `claude/session/` (`transcript.rs`, `ending.rs`, `titles.rs`), `codex/session/` (`read.rs`, `rollouts.rs`, `scan.rs`) | fixtures "as version X writes it" |
@@ -80,9 +88,20 @@ first"). Then:
 - `./scripts/gate.ps1`, then `./scripts/windows-tests.ps1 -Build -Run`.
 - The live suite on the new version (`live-test` skill): it is the only level
   that sees a CLI's real stream, MCP client and flags.
+- Once all three pass, add the version to the known-good list: its CLI's
+  `knownGood` in `src-tauri/cli-known-good.json`, in the same change as the
+  rest. That is what lets users on the default channel have it, with the next
+  Luna release. Raise `minSafe` only when an older version is found unsafe (a
+  security fix in the CLI), and say why in the commit: nothing below it runs
+  anywhere, rollbacks included. Where the new version's `--help` differs from
+  the newest fixture, add its own (`<cli>-<ver>-…-help.txt` in
+  `src-tauri/src/cli/testdata/`) beside the old ones, and point the probe's
+  test at it. A version not checked this way stays off the list, whatever
+  else changed.
 
 ## Report
 
 Per CLI: old → new version; each change found with its source (help diff,
 changelog line, observed output); what Luna changed or why nothing; tests and
-goldens touched and why; gate, Windows tests and live results.
+goldens touched and why; gate, Windows tests and live results; what went
+onto the known-good list (or why not), and `minSafe` if it moved.

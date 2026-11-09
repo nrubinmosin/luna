@@ -15,6 +15,7 @@ import { BoardSection } from './sections/BoardSection';
 import { NotificationsSection } from './sections/NotificationsSection';
 import { WaitingSection } from './sections/WaitingSection';
 import { VersionsSection } from './sections/VersionsSection';
+import { ClisSection } from './sections/ClisSection';
 import './settings.css';
 
 /** Each page: its name in the list, its icon, and its groups. */
@@ -61,6 +62,7 @@ const PAGES: Record<SettingsPage, { title: string; icon: IconName; body: () => R
       </>
     )
   },
+  clis: { title: 'CLIs', icon: 'download', body: () => <ClisSection /> },
   updates: { title: 'Updates', icon: 'update', body: () => <VersionsSection /> }
 };
 

@@ -50,19 +50,25 @@ and a why. Per provider:
 `cli.rs` keeps Luna's own copies in `<data>/claude-cli/versions/<ver>/claude.exe`
 and `<data>/codex-cli/versions/<ver>/bin/codex.exe`, with `current` naming the
 active version folder ([ADR-0013](../adr/0013-own-cli-binaries.md)). Versions are
-never overwritten; old ones are swept once nobody holds them; `PATH` is the
-fallback until a copy exists. Each channel is checked every six hours. Claude
+never overwritten; `PATH` is the fallback until a copy exists. Which version
+the pass installs is the provider's channel
+([ADR-0019](../adr/0019-cli-channels-and-rollback.md), `cli/choice.rs`):
+`known-good` (the default) takes the newest version on the list compiled into
+the release (`src-tauri/cli-known-good.json`, `cli/known_good.rs`) not marked
+bad, fetched by its version; `latest` takes what the CLI's pointer names. Each
+is checked every six hours. Claude
 Code's `manifest.json` is verified against its detached signature
 (`manifest.json.sig`) and Anthropic's release key, pinned in
 `claude/manifest_sig.rs`; the exe then against that manifest's sha256 and
 size. A new key reaches Luna only with a Luna release. The manifest must name
 the version it was fetched for (a signed older manifest served under a newer
-version's URLs is a relabel), and no version below the floor is taken: the
-highest one whose signed manifest Luna has accepted (`<root>/signed-floor`), or
-`MIN_VERSION` (2.1.319, the one last checked live) on a fresh tree. The
-`latest` pointer is not signed, so this is what keeps an old signed release
-from being replayed; a release Anthropic itself pulls back is refused as well,
-logged, until a newer one comes. Codex comes as the
+version's URLs is a relabel). No version below the floor is downloaded or
+taken from a pointer: the highest version that has been current
+(`<root>/floor`, raised by `flip_in`; Claude Code's older `signed-floor` still
+counts), or the list's `minSafe` on a fresh tree. The pointers are not
+signed, so this is what keeps an old release from being replayed; a release
+Anthropic pulls back is refused as well, logged, until a newer one comes.
+Codex comes as the
 package tarball, the only asset with a line in `codex-package_SHA256SUMS`, which
 also carries `codex-command-runner.exe` and the other Windows sandbox helpers; it
 is unpacked whole into the version folder.
@@ -88,10 +94,11 @@ An install is all or nothing:
    The second unpacks with the PAX records applied, budgeting each entry's
    size as the reader takes it. `validate` checks
    each is a regular file, not a link, at that size and, where given, that
-   hash, and that the executable is among them.
+   hash, and that the executable is among them; it records every file's
+   sha256, the release's or the one it has as unpacked.
 3. **Record.** Every file is flushed to disk (`sync_all`), then
    `luna-install.json` (version, how it was verified, every file with its size
-   and hash where known) is written into the staged folder and flushed, then on
+   and hash) is written into the staged folder and flushed, then on
    Unix every folder below is fsynced: a rename that survives a power cut finds
    whole files, not names and sizes over contents still in the cache.
 4. **Promotion.** One rename of the staged folder into `versions/` under a name
@@ -102,10 +109,22 @@ An install is all or nothing:
    (administrator only): NTFS journals the rename, so after a crash it is whole
    or absent, but a recent one may be undone; then the staged copy is still in
    `staging/` and the next pass sweeps it and fetches again.
-5. **Flip.** The first time, `<root>/recorded` is written. Then `current` is
+5. **Probe.** The installed exe is run offline in a scratch home under
+   `staging/` (`cli/probe.rs`): `--version` must name the version, the
+   `--help` of each command Luna launches must list every flag Luna passes
+   there (the table `COMMANDS`, which the golden launch tests hold to every
+   argument list they pin, and fixtures hold to the listed versions' help),
+   and Codex must load its configuration with Luna's hook and MCP overrides
+   (`features list`). A version that fails is marked bad and swept.
+6. **Flip.** The first time, `<root>/recorded` is written. Then `previous` is
+   set to what `current` named, the floor rises to the version and a canary
+   starts for it (`cli/canary.rs`), all before `current` is
    rewritten through a temp name, flushed before its rename (and its folder
-   fsynced on Unix, `secret::write_private_synced`), to the new folder's name,
-   and the sweep runs.
+   fsynced on Unix, `secret::write_private_synced`), to the new folder's name:
+   a crash or a failed write leaves the old version current under the new
+   floor at worst, never the reverse. Each pass first raises the floor to
+   what is current (`reconcile_in`), which mends a tree an older order left.
+   Then the sweep runs.
 
 A folder counts as installed only by its record, with every file it lists
 present at its size; that is checked for each spawn, the hashes only at
@@ -115,6 +134,26 @@ moved only to finished installs); the update pass still fetches its version
 again beside it, and the sweep removes the old one once nothing holds it. In a
 tree with `recorded`, a folder without its record is refused, whatever is in
 it.
+
+The sweep keeps `current`, `previous` and every folder a process of Luna's
+runs from: each process the core or the window starts from a managed copy
+holds a shared lock on `<root>/in-use/<dir>` until it has exited
+(`cli/in_use.rs`, `cli::launch`), and the sweep removes a folder only while
+it holds that file's exclusive lock, so no start begins from it meanwhile.
+The window sweeps and the core spawns, hence a file lock rather than a count
+in memory; the OS lets go of it with a process that dies.
+
+Going back: "Use" (`cli_use_version`) makes any installed folder current and
+writes `<root>/pinned`, which the pass leaves be until a channel is chosen
+again. It holds every file to the sha256 its record kept first; below the
+floor every file must have one, and nothing below `minSafe` is taken. "Mark
+bad" (`cli_mark_bad`) writes `<root>/bad.json`, which no pass installs or
+makes current. The canary counts the first three sessions on a new version
+in `<root>/canary.json` (the core counts, the window resets it on a flip,
+both under `canary.lock`): two whose CLI exits with an error within half a
+minute raise a desktop notice and `cli://canary`, which the status bar and
+Settings → CLIs show. Nothing rolls back on its own. In the test build a
+file `canary-fail` at the provider's root fails each watched session.
 
 The sweep and the cleanup delete nothing through a link or junction: each
 entry is checked with `symlink_metadata` on every component from the CLI root

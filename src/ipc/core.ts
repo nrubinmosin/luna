@@ -14,6 +14,8 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   saved_title: 5000,
   ensure_claude_session: 30_000,
   ensure_codex_session: 30_000,
+  // Hashes every file of the version again: Codex's are half a gigabyte.
+  cli_use_version: 20_000,
   // Reads every account's files, and looks twice at a blank one.
   recommendations: 5000,
   apply_recommendation: 5000,

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cli-versions"
+description = "Enables the cli_versions command without any pre-configured scope."
+commands.allow = ["cli_versions"]
+
+[[permission]]
+identifier = "deny-cli-versions"
+description = "Denies the cli_versions command without any pre-configured scope."
+commands.deny = ["cli_versions"]

@@ -55,7 +55,7 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_get",
-            "description": "One session whole: its row with settings, folder, cwd, transcript, worktree, branch, sha, turnStartedAt, context, resolvedModel, leftRunning and ask (another's ask: scope all).",
+            "description": "One session whole: its row with settings, folder, cwd, transcript, worktree, branch, sha, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask (another's ask: scope all).",
             "inputSchema": s(json!({ "id": string, "scope": scope }), &["id"]),
             "annotations": reads
         },

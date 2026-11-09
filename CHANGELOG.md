@@ -63,11 +63,35 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   read-only and live: what its agent asked and what it said, tool calls marked,
   updating every second while it works. A long conversation shows its latest
   part, without very long entries such as a tool's whole output, and says so.
+- Each CLI follows a channel, chosen in the new Settings → CLIs: **Known-good**
+  (the default) installs the newest version this Luna release lists as checked
+  with it (`src-tauri/cli-known-good.json`, which also names the oldest version
+  allowed to run); **Latest** installs each new release, as before. A new
+  version is run once offline before it is used (its version, every flag Luna
+  passes in each command's help, Codex's hooks config) and marked bad if it
+  fails. The first three sessions on a new version are watched; two that fail
+  soon after starting bring a notice, a status-bar chip and **Roll back** in
+  Settings. Nothing rolls back on its own. See docs/user-guide/updates.md and
+  ADR-0019.
+- Settings → CLIs lists the installed versions of each CLI, tagged current,
+  previous, known-good, in use or bad, with **Use** to go back to one (its
+  files checked against their checksums first, and held there until you
+  follow the channel again) and **Mark bad**.
+- `luna_session_get` shows the CLI version a session's process last started
+  from (`cliVersion`).
 
 ### Changed
 
+- The version before the current CLI is always kept, and so is any version a
+  session still runs on: an update no longer sweeps them, which on Linux and
+  macOS could delete a running Codex session's folder. Each Codex install now
+  records every file's checksum, not only its size.
+- The floor below which no CLI version is downloaded rises when a version
+  becomes current rather than when it is downloaded, and Codex has one too.
+- Settings → Updates shows Luna and the core; the CLIs moved to their own page.
+
 - Settings is a wide dialog with its pages listed on the left (General, Chats,
-  Agents & trust, Links, Updates) and only the page scrolling, in place of one
+  Agents & trust, Links, CLIs, Updates) and only the page scrolling, in place of one
   narrow column of ten sections. Every setting is a row with its control on
   the right and one line on what it does; what a change costs (helpers above
   their chat, a deleted worktree's uncommitted work, accounts moved by hand)
