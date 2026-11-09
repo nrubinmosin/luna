@@ -927,14 +927,14 @@ fn past_of(chat: &str, n: u32) -> Result<(String, Option<String>, Provider), Str
 }
 
 /// The window's "open handoff": Luna's copy of handoff `n`, as text. The path
-/// is the record's, never the window's.
+/// is the record's, never the window's, and the copy is read only as the
+/// private file Luna made (`secret::read_private`), never through a link put
+/// at its name since.
 pub fn handoff_file(chat_id: String, n: u32) -> Result<String, String> {
     let (snapshot, ..) = past_of(&chat_id, n)?;
-    let mut bytes = Vec::new();
-    use std::io::Read;
-    std::fs::File::open(&snapshot)
-        .and_then(|f| f.take(file::MAX_BYTES).read_to_end(&mut bytes))
-        .map_err(|e| format!("handoff {n}'s copy: {e}"))?;
+    let bytes = crate::secret::read_private(Path::new(&snapshot), file::MAX_BYTES)
+        .map_err(|e| format!("handoff {n}'s copy: {e}"))?
+        .ok_or_else(|| format!("handoff {n}'s copy is gone"))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 

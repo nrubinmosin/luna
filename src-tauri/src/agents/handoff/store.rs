@@ -117,7 +117,7 @@ fn static_records() -> &'static Mutex<Records> {
         // leads elsewhere holds no record of Luna's.
         #[cfg(not(test))]
         let loaded = match super::private_chain(&super::root(), &[]) {
-            Ok(_) => std::fs::read(file()).map(|b| from_bytes(&b, crate::throttle::now_ms())).unwrap_or_default(),
+            Ok(_) => load(&file(), crate::throttle::now_ms()),
             Err(e) => {
                 crate::log::warn("handoff", &format!("handoffs are not read: {e}"));
                 Records::new()
@@ -154,16 +154,43 @@ pub(super) fn from_bytes(bytes: &[u8], now: u64) -> Records {
     r
 }
 
+/// The most the record may hold as it is read back: KEPT handoffs a chat,
+/// for many chats, is far less.
+const MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// What a core saved at `path`, as this one takes it up (`from_bytes`): read
+/// only as a private file of this user's, opened as itself
+/// (`secret::read_private`). A link there, or a file others could have
+/// written, is no record of Luna's: none is taken up, and the log says why;
+/// the next save puts Luna's own in its place (`write`).
+fn load(path: &std::path::Path, now: u64) -> Records {
+    match crate::secret::read_private(path, MAX_BYTES) {
+        Ok(Some(bytes)) => from_bytes(&bytes, now),
+        Ok(None) => Records::new(),
+        Err(e) => {
+            crate::log::warn("handoff", &format!("handoffs are not read: {e}"));
+            Records::new()
+        }
+    }
+}
+
+/// The records written to `path`, on disk (flushed, the folder too where it
+/// can be) before it returns: a new private file renamed into place
+/// (`secret::write_private_synced`), which takes the place of a link at the
+/// name, never writing through it.
+fn write(path: &std::path::Path, r: &Records) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(r).map_err(|e| format!("could not put the handoffs into words: {e}"))?;
+    crate::secret::write_private_synced(path, &bytes).map_err(|e| format!("could not save {}: {e}", path.display()))
+}
+
 /// Writes the records out as they are, called with their lock held, on disk
-/// (flushed, the folder too where it can be) before it returns.
+/// before it returns.
 #[cfg(not(test))]
 fn save(r: &Records) -> Result<(), String> {
-    let path = file();
-    let bytes = serde_json::to_vec_pretty(r).map_err(|e| format!("could not put the handoffs into words: {e}"))?;
     // Its folder checked first (`private_chain`): a record written through a
     // link would be another user's to forge.
     super::private_chain(&super::root(), &[])?;
-    crate::secret::write_private_synced(&path, &bytes).map_err(|e| format!("could not save {}: {e}", path.display()))
+    write(&file(), r)
 }
 
 /// A test's records stay in memory; a chat a test names here fails to save,
@@ -255,6 +282,58 @@ mod tests {
         let waiting = back["waiting"].switch.as_ref().unwrap();
         assert_eq!((waiting.phase, waiting.scheduled_at, waiting.attempts), (Phase::Scheduled, 900, 1));
         assert!(from_bytes(b"not json", 1).is_empty());
+    }
+
+    /// `handoffs.json` planted as a link, to a folder (a junction on Windows)
+    /// or a file someone else holds, is not read and not written through: a
+    /// save takes the name back for Luna's own file, or fails, and what the
+    /// link led to is left as it was. A file others may write is not read.
+    #[test]
+    fn a_store_planted_as_a_link_is_neither_read_nor_written_through() {
+        let dir = std::env::temp_dir().join(format!("luna-handoff-store-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let forged = serde_json::to_vec(&Records::from([("c1".to_string(), Record { last: 7, ..Default::default() })])).unwrap();
+        let mine = Records::from([("c2".to_string(), Record { last: 1, ..Default::default() })]);
+        // A folder link at the name.
+        let theirs = dir.join("theirs");
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(theirs.join("handoffs.json"), &forged).unwrap();
+        let at = dir.join("handoffs.json");
+        assert!(super::super::file::tests::dir_link(&theirs, &at));
+        assert!(load(&at, 1).is_empty(), "not read");
+        let _ = write(&at, &mine);
+        assert_eq!(std::fs::read(theirs.join("handoffs.json")).unwrap(), forged, "nothing written through it");
+        assert_eq!(std::fs::read_dir(&theirs).unwrap().count(), 1);
+        // A file link at the name, where this machine lets a test make one.
+        let file_at = dir.join("store.json");
+        let target = dir.join("theirs.json");
+        std::fs::write(&target, &forged).unwrap();
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&target, &file_at).is_ok();
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&target, &file_at).is_ok();
+        if made {
+            assert!(load(&file_at, 1).is_empty(), "not read");
+            write(&file_at, &mine).unwrap();
+            assert_eq!(std::fs::read(&target).unwrap(), forged, "what it led to is as it was");
+            assert!(!std::fs::symlink_metadata(&file_at).unwrap().file_type().is_symlink(), "the name is Luna's file now");
+            assert_eq!(load(&file_at, 1)["c2"].last, 1);
+        }
+        // A plain file others may write: not read.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let open = dir.join("open.json");
+            std::fs::write(&open, &forged).unwrap();
+            std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(load(&open, 1).is_empty());
+        }
+        // Luna's own, written and read back.
+        let own = dir.join("own.json");
+        write(&own, &mine).unwrap();
+        assert_eq!(load(&own, 1)["c2"].last, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

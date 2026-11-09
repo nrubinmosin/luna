@@ -859,6 +859,46 @@ fn found(file: &std::fs::File) -> io::Result<Found> {
     }
 }
 
+/// What a private file of Luna's at `path` holds, at most `max` bytes: read
+/// only where it is one, by what its handle says (`found`), opened without
+/// following a link at it or waiting on a FIFO (`boundary::open_no_follow`):
+/// a plain file of one name, of a trusted owner, nobody else may open. None
+/// where nothing is there. Anything else is refused, not read: a link there
+/// leads to a file anyone may have made, and one others may write is not
+/// Luna's word.
+pub fn read_private(path: &Path, max: u64) -> io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let refused = |why: String| io::Error::other(format!("{} is not this user's alone ({why}): not read", path.display()));
+    let file = match crate::boundary::open_no_follow(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        // A link (Unix's `O_NOFOLLOW`), a folder or a junction (which
+        // Windows will not open as a file), one this user may not read.
+        Err(e) => return Err(refused(e.to_string())),
+    };
+    match found(&file)? {
+        Found::Private => {}
+        Found::Loose(why) | Found::Foreign(why) => return Err(refused(why)),
+    }
+    let mut bytes = Vec::new();
+    file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(io::Error::other(format!("{} is over {max} bytes: not read", path.display())));
+    }
+    Ok(Some(bytes))
+}
+
+/// Whether the file open on `file` is of this user's making, private or not:
+/// a plain file of one name a trusted owner holds (`found`). For a file a
+/// session of this user's wrote in a folder of Luna's (a handoff's draft),
+/// which its CLI makes as it makes any file. Why not, where it is not.
+pub fn own_file(file: &std::fs::File) -> io::Result<Result<(), String>> {
+    Ok(match found(file)? {
+        Found::Private | Found::Loose(_) => Ok(()),
+        Found::Foreign(why) => Err(why),
+    })
+}
+
 /// Makes the file open on `file` this user's alone, through its handle:
 /// 0600 on Unix (`fchmod`), the protected DACL on Windows.
 fn tighten(file: &std::fs::File) -> io::Result<()> {
