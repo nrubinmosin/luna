@@ -208,7 +208,17 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
                 applied.push(crate::codex::launch::guard_applied(true));
             }
             args.extend(guard_args);
-            if s.auto_review {
+            if s.auto_review && e.session.is_some() {
+                // `exec resume` refuses `--approve-for-me` (0.167.0: "unexpected
+                // argument") but takes `-c`: the overrides the flag stands for, given
+                // each turn rather than left to what the thread may have kept.
+                for o in crate::codex::launch::AUTO_REVIEW_OVERRIDES {
+                    args.extend(["-c".into(), o.to_string()]);
+                }
+                let [reviewer, policy, sandbox] = crate::codex::launch::AUTO_REVIEW_OVERRIDES;
+                applied.push(Item::Approval.with(format!("-c {reviewer} -c {policy}")));
+                applied.push(Item::Sandbox.with(format!("-c {sandbox}")));
+            } else if s.auto_review {
                 args.push("--approve-for-me".into());
                 applied.push(Item::Approval.with("--approve-for-me"));
                 let sandbox = crate::codex::launch::AUTO_REVIEW_SANDBOX;
@@ -567,6 +577,22 @@ mod tests {
         assert!(args.contains(&"--approve-for-me".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("approvals_reviewer=")), "its own flag says who reviews");
         assert!(!args.iter().any(|a| a.starts_with("approval_policy=") || a.starts_with("sandbox_mode=")), "Codex refuses them beside it");
+        // A later turn resumes, and `exec resume` refuses the flag: the overrides it
+        // stands for, in its place.
+        e.session = Some("t-1".into());
+        let (args, _, _, applied) = command_for(&e, "x").unwrap();
+        assert!(args.starts_with(&strings(&["exec", "resume", "t-1"])), "{args:?}");
+        assert!(!args.contains(&"--approve-for-me".to_string()), "{args:?}");
+        let overrides = strings(&[
+            "-c",
+            "approvals_reviewer=\"auto_review\"",
+            "-c",
+            "approval_policy=\"on-request\"",
+            "-c",
+            "sandbox_mode=\"workspace-write\"",
+        ]);
+        assert!(args.windows(6).any(|w| w == overrides.as_slice()), "{args:?}");
+        assert!(serde_json::to_string(&applied).unwrap().contains("approvals_reviewer"), "the Applied list says what went");
     }
 
     #[test]
@@ -989,6 +1015,32 @@ mod tests {
             }
             assert_eq!(t.envs, envs, "{mode} {auto_review}");
         }
+        // The reviewer's later turns resume, and `exec resume` has no
+        // `--approve-for-me`: the overrides it stands for, in its place.
+        let id = "golden-bg-codex-auto-review-resume";
+        let r = Redact::for_chat(id);
+        let mut e = entry(Provider::Codex);
+        e.spec.mode = "workspace-write".into();
+        e.spec.auto_review = true;
+        e.session = Some("t-1".into());
+        let t = turn(&e, id, &r);
+        let mut want = strings(&["exec", "resume", "t-1"]);
+        want.extend(codex_turn(true));
+        want.extend(strings(&[
+            "-c",
+            "approvals_reviewer=\"auto_review\"",
+            "-c",
+            "approval_policy=\"on-request\"",
+            "-c",
+            "sandbox_mode=\"workspace-write\"",
+        ]));
+        want.extend(golden::codex_windows_sandbox());
+        want.extend(strings(&["-c", "check_for_update_on_startup=false"]));
+        want.extend(apps_off());
+        want.push("-".into());
+        assert_eq!(t.args, want);
+        assert_eq!(t.value("approval"), Some("-c approvals_reviewer=\"auto_review\" -c approval_policy=\"on-request\""));
+        assert_eq!(t.value("sandbox"), Some("-c sandbox_mode=\"workspace-write\""));
     }
 
     #[test]

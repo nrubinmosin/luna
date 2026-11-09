@@ -72,7 +72,8 @@ with a single ask held.
 
 Codex's `exec` asks nobody (approval `never`) and puts a question in its reply,
 unless spawned with `approval: auto-review` (`--approve-for-me`), where a
-reviewer model answers.
+reviewer model answers. `exec resume` refuses that flag, so the later turns
+pass the three settings it stands for as `-c` (`AUTO_REVIEW_OVERRIDES`).
 
 ## Leftovers
 
