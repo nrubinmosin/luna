@@ -26,9 +26,10 @@
 //!   too; it still refuses another namespace or more seccomp filters than
 //!   its own, but a client confined by Landlock alone is not seen: the kernel
 //!   shows no Landlock domain to anyone else (`note_launch`, ADR-0021). The
-//!   pid is held by a pidfd where the kernel gives one (`SO_PEERPIDFD`, 6.5),
-//!   so what `/proc` said is known to be of the process that connected, not
-//!   of one that took its pid since.
+//!   pid is held by a pidfd (`SO_PEERPIDFD`, 6.5), so what `/proc` said is
+//!   known to be of the process that connected, not of one that took its pid
+//!   since. Failing to get one refuses, except on a kernel that does not know
+//!   the option, where the pid alone is checked (a residual there).
 //! - macOS: the uid (`getpeereid`) and that the pid can be read
 //!   (`LOCAL_PEERPID`). A Seatbelt sandbox is not seen there.
 //!

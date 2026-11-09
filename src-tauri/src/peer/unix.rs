@@ -59,18 +59,52 @@ pub(super) fn core_facts(refuses_work: bool) -> Option<CoreFacts> {
 #[cfg(target_os = "linux")]
 const SO_PEERPIDFD: libc::c_int = 77;
 
-/// A pidfd for the process at the other end of `fd`, where the kernel gives
-/// one: None on a kernel before 6.5.
+/// What the kernel answered when asked for the peer's pidfd.
 #[cfg(target_os = "linux")]
-fn peer_pidfd(fd: std::os::fd::RawFd) -> Option<std::os::fd::OwnedFd> {
+#[derive(Debug, PartialEq)]
+enum Pidfd {
+    /// One for the process that connected.
+    Held,
+    /// The kernel does not know the option (before 6.5): the check goes on
+    /// with the pid alone, which a process taking the pid of one gone could
+    /// pass for it (a residual on those kernels).
+    Unsupported,
+    /// Anything else, a peer reaped before it was asked (`EINVAL` on 6.8) or
+    /// no descriptor left among them: refused, since `/proc/<pid>` read then
+    /// could be another process's.
+    Failed(i32),
+}
+
+/// `getsockopt(SO_PEERPIDFD)`'s outcome: `rc`, the descriptor it wrote, and
+/// the errno when it failed. Only `ENOPROTOOPT`, what the kernel says of an
+/// option it does not know (net/core/sock.c), is a kernel without it.
+#[cfg(target_os = "linux")]
+fn pidfd_kind(rc: libc::c_int, pidfd: libc::c_int, errno: i32) -> Pidfd {
+    match (rc, pidfd) {
+        (0, fd) if fd >= 0 => Pidfd::Held,
+        (0, _) => Pidfd::Failed(libc::EBADF),
+        _ if errno == libc::ENOPROTOOPT => Pidfd::Unsupported,
+        _ => Pidfd::Failed(errno),
+    }
+}
+
+/// A pidfd for the process at the other end of `fd`; None on a kernel before
+/// 6.5, which does not know the option; an error otherwise (refused).
+#[cfg(target_os = "linux")]
+fn peer_pidfd(fd: std::os::fd::RawFd) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
     use std::os::fd::FromRawFd;
     let mut pidfd: libc::c_int = -1;
     let mut len = size_of::<libc::c_int>() as libc::socklen_t;
     // SAFETY: a socket of this process; `pidfd` and `len` match. The fd it
     // returns is this process's to close, which `OwnedFd` does.
     let rc = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, SO_PEERPIDFD, (&mut pidfd as *mut libc::c_int).cast(), &mut len) };
-    // SAFETY: a fresh descriptor the call handed over.
-    (rc == 0 && pidfd >= 0).then(|| unsafe { std::os::fd::OwnedFd::from_raw_fd(pidfd) })
+    let errno = if rc == 0 { 0 } else { std::io::Error::last_os_error().raw_os_error().unwrap_or(0) };
+    match pidfd_kind(rc, pidfd, errno) {
+        // SAFETY: a fresh descriptor the call handed over.
+        Pidfd::Held => Ok(Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(pidfd) })),
+        Pidfd::Unsupported => Ok(None),
+        Pidfd::Failed(errno) => Err(std::io::Error::from_raw_os_error(errno)),
+    }
 }
 
 /// Whether the process a pidfd stands for is still there: if it is, its pid
@@ -91,7 +125,7 @@ pub(super) fn peer_facts(stream: &Stream) -> Option<PeerFacts> {
     let fd = stream.raw();
     let cred = crate::endpoint::peer_cred(fd).ok()?;
     let pid = u32::try_from(cred.pid).ok().filter(|&p| p != 0)?;
-    let pidfd = peer_pidfd(fd);
+    let pidfd = peer_pidfd(fd).ok()?;
     let proc = |what: &str| format!("/proc/{pid}/{what}");
     let theirs = std::fs::read_link(proc("ns/user")).ok()?;
     let mine = std::fs::read_link("/proc/self/ns/user").ok()?;
@@ -230,6 +264,59 @@ mod tests {
         .expect("no_new_privs can always be set");
         assert!(facts.as_ref().is_some_and(|f| f.no_new_privs), "{facts:?}");
         assert!(refused.is_some_and(|r| r.contains("no_new_privs")), "{facts:?}");
+    }
+
+    /// Only a kernel that does not know `SO_PEERPIDFD` (before 6.5) lets the
+    /// check go on without a pidfd. Any other failure, such as a peer reaped
+    /// before it was asked (`EINVAL` on 6.8) or no descriptor left, refuses:
+    /// read without the pidfd, `/proc/<pid>` could be another process's.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_a_kernel_without_the_option_goes_on_without_a_pidfd() {
+        assert_eq!(pidfd_kind(0, 7, 0), Pidfd::Held);
+        assert_eq!(pidfd_kind(-1, -1, libc::ENOPROTOOPT), Pidfd::Unsupported);
+        for errno in [libc::EINVAL, libc::EMFILE, libc::ENFILE, libc::ESRCH, libc::ENOMEM, libc::EFAULT] {
+            assert_eq!(pidfd_kind(-1, -1, errno), Pidfd::Failed(errno), "errno {errno}");
+        }
+        assert!(matches!(pidfd_kind(0, -1, 0), Pidfd::Failed(_)), "a success that hands over no descriptor");
+    }
+
+    /// What a kernel before 6.5 answers for `SO_PEERPIDFD`, seen on this one
+    /// with an option no kernel knows: `ENOPROTOOPT` (net/core/sock.c).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_option_the_kernel_does_not_know_reads_as_enoprotoopt() {
+        let (_l, client, _server) = crate::endpoint::tests::pair();
+        let mut value: libc::c_int = 0;
+        let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: a socket of this process; `value` and `len` match.
+        let rc = unsafe { libc::getsockopt(client.raw(), libc::SOL_SOCKET, 0x7fff, (&mut value as *mut libc::c_int).cast(), &mut len) };
+        assert_eq!((rc, std::io::Error::last_os_error().raw_os_error()), (-1, Some(libc::ENOPROTOOPT)));
+    }
+
+    /// A peer gone and reaped before the core reads it is refused, and on a
+    /// kernel that knows `SO_PEERPIDFD` never read without a pidfd.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_peer_reaped_before_it_is_read_is_refused() {
+        let name = crate::endpoint::tests::test_name();
+        let listener = crate::endpoint::Listener::bind(&name).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "peer::imp::tests::probe_client", "--ignored", "--quiet"])
+            .env("LUNA_PEER_PROBE", &name)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let server = listener.accept().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+        match peer_pidfd(server.raw()) {
+            Err(_) => {}
+            Ok(Some(pidfd)) => assert!(!still_there(&pidfd), "a reaped peer reads as there"),
+            Ok(None) => panic!("a kernel that knows SO_PEERPIDFD went on without one"),
+        }
+        assert_eq!(peer_facts(&server), None);
     }
 
     /// Confines the child as a seccomp sandbox does: no_new_privs, then one

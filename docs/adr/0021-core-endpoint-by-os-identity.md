@@ -64,9 +64,10 @@ of this user, as the OS attests at connect.
   which is `0700`. The core reads the kernel's record of the client
   (`SO_PEERCRED`; macOS `getpeereid` and `LOCAL_PEERPID`) and on Linux, from
   `/proc/<pid>`, its user namespace, `no_new_privs` and seccomp state (mode
-  and filter count); where the kernel gives a pidfd for the peer
-  (`SO_PEERPIDFD`, 6.5) the facts count only if that process is still there
-  after they were read.
+  and filter count); the facts count only if the pidfd the kernel gives for
+  the peer (`SO_PEERPIDFD`, 6.5) shows that process still there after they
+  were read. Any failure to get one refuses, except on a kernel that does not
+  know the option (`ENOPROTOOPT`), where the pid alone is checked.
 - **The decision** (`peer/mod.rs` `verdict`), pure and fail closed: refused when
   the facts cannot be read, the token is restricted or an AppContainer, the
   process is in another user namespace, `no_new_privs` is set where the core's
@@ -129,7 +130,10 @@ socket is off Windows; nothing in it lets anyone in any more.
   Landlock's ABI; checked against the kernel's documentation and source and on
   6.18, where a Landlock-restricted process's status differs from a plain one's
   only in `NoNewPrivs`). Such a core still refuses another namespace or an
-  added seccomp filter, and says once at its start that it runs so. A
+  added seccomp filter, and says once at its start that it runs so. On a
+  kernel before 6.5, without `SO_PEERPIDFD`, a confined client that leaves its
+  connection to another process and exits could, should an unconfined process
+  take its pid before the core reads `/proc`, be read as that process. A
   protocol-1 core until it is replaced. A
   Luna older than 0.12 meeting a 0.12 core (a downgrade) does not find it and
   shows the core down until the newer core is stopped (tray Quit or its
