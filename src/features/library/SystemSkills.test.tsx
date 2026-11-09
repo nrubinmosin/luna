@@ -47,7 +47,8 @@ const overview = (system: SystemSkillState, skills: LibrarySkillDto[] = []): Lib
   foundInstructions: [],
   overridden: [],
   kept: [],
-  system: [system]
+  system: [system],
+  systemAside: []
 });
 const reserved: LibrarySkillDto = {
   name: 'session-handoff',
@@ -91,6 +92,13 @@ describe('SystemSkills', () => {
     expect(screen.getByText(/Yours is broken: SKILL.md is over 64 KB\. Luna’s own is used/)).toBeInTheDocument();
     expect(button('Compare with Luna’s')).toBeEnabled();
     expect(button('Back to Luna’s')).toBeEnabled();
+  });
+
+  it('names a former override kept aside, which nothing reads', () => {
+    const kept = 'C:\\lib\\system\\.session-handoff.leaving-ab12';
+    render(<SystemSkills o={{ ...overview(state({})), systemAside: [kept] }} act={vi.fn()} edit={vi.fn()} />);
+    expect(screen.getByRole('alert')).toHaveTextContent(`Kept aside, not served: ${kept}`);
+    expect(screen.getByText('Luna’s own: 0.12.0, sha 3054a9e14c77')).toBeInTheDocument();
   });
 
   it('opens the editor on the system skill', async () => {

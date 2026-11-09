@@ -416,13 +416,21 @@ pub fn library_system_compare(name: String) -> Result<SystemCompare, String> {
 }
 
 /// Back to Luna's own text for a system skill: the override goes to Luna's
-/// backups.
+/// backups, or stays aside in `system/` where they would not take it whole,
+/// which the overview names (`system_aside`).
 #[tauri::command(async)]
 pub fn library_system_reset(name: String) -> Result<Overview, String> {
     luna_text(&name)?;
     let _guard = lock();
-    if let Some(saved) = reset_system(&Dirs::current(), &name)? {
-        crate::log::info("library", &format!("system skill {name}: back to Luna's own, the override kept in {}", saved.display()));
+    match reset_system(&Dirs::current(), &name)? {
+        Some(Moved::Backup(saved)) => {
+            crate::log::info("library", &format!("system skill {name}: back to Luna's own, the override kept in {}", saved.display()))
+        }
+        Some(Moved::Aside(kept)) => crate::log::warn(
+            "library",
+            &format!("system skill {name}: back to Luna's own, the override set aside at {}, not in the backups", kept.display()),
+        ),
+        None => {}
     }
     overview_locked(false)
 }

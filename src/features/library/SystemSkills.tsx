@@ -195,6 +195,27 @@ export function SystemSkills({
       {o.system.map(s => (
         <SystemSkill key={s.name} s={s} act={act} edit={edit} />
       ))}
+      {o.systemAside.map(path => (
+        <div
+          key={path}
+          role="alert"
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 6,
+            marginTop: 6,
+            fontSize: 'var(--fs-2)',
+            color: 'var(--dim)',
+            lineHeight: 1.4
+          }}
+        >
+          <Icon name="warn" size={14} />
+          <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+            Kept aside, not served: <code>{path}</code>. A former override that Luna’s backups, on another drive, did
+            not take whole, or one replaced that could not be moved there. Nothing reads it: move or delete it yourself.
+          </span>
+        </div>
+      ))}
       <Note>
         Luna’s own text, built in and of its version, unless you write your own: one override in the library, under{' '}
         <code>system/</code>, for every chat it is served to. One that will not do is not used: Luna’s own is, and the

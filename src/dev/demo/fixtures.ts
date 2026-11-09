@@ -660,6 +660,7 @@ export const LIBRARY: LibraryOverviewDto = {
   ],
   overridden: [],
   kept: [],
+  systemAside: [],
   system: [
     {
       name: 'session-handoff',
