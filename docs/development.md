@@ -58,6 +58,7 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 | `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained; needs only the system WebView2) |
 | `./scripts/build-windows.ps1 -Installer` | the signed NSIS setup, `…/release/bundle/nsis/Luna_*_x64-setup.exe` |
 | `./scripts/screenshots.ps1 -Out test-build/shots` | headless shots of the UI on the demo data |
+| `./scripts/fit-check.ps1` | every demo scene and popup at small screen sizes; fails on a control out of reach ([below](#fit-on-small-screens)) |
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
 | `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
@@ -116,6 +117,28 @@ shoot whatever is open in it, and the fixture retakes all three from one state.
 `-Size` is the page in CSS pixels and `-Scale` the display scaling, so a
 small screen is shot as it is seen: a 1280×720 screen at 150% is
 `-Size 853,480 -Scale 1.5`.
+
+## Fit on small screens
+
+`./scripts/fit-check.ps1` serves the same demo in the same image and drives
+headless Chromium over its DevTools protocol (`scripts/fit-check.mjs`). It
+opens every scene of `src/dev/demo/scenes.ts` (the `-dark` twins left out:
+the theme changes no size) and the popups that only a click opens (its
+`EXTRAS`: the account list, the library's pickers, the link chooser, a chat's
+long helper list, ...), each at 1280×720 and 1024×600, 1280×720 at 125% and
+150%, and 1024×600 at 150% (683×400 CSS pixels). It fails on:
+
+- a control of a dialog, popover, menu or the board that is neither on screen
+  nor inside a scroller that is (scrolling to it is fine);
+- a popover, menu or drop-down cut off where it stands, by the window or by
+  anything round it that clips;
+- a popover still open after a scroll moved its button away.
+
+Shots of each scene and size and `report.json` go to `test-build/fit`
+(`-Out`); `-Scenes` and `-Sizes` narrow a rerun, by the names the output
+prints. It takes some ten minutes, so it is not a gate step: run it on a change
+to how a dialog, popover or panel is sized or scrolls (the `ui-check` skill
+says when). A screen it cannot reach gets a scene, or an entry in `EXTRAS`.
 
 ## CI
 
