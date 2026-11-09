@@ -83,6 +83,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   run off the window, and one closes once a scroll moves its button away
   rather than stay over the wrong row. New chat's account list opens over the
   dialog, below its box or above it, wherever there is more room.
+- In a chat's list of helpers, each helper's Delete stood past the list's
+  right edge and "Open as chat" broke onto two lines; a helper's four buttons
+  now fit its row, each label on one line.
 
 ## [0.11.0] - 2026-11-09
 
