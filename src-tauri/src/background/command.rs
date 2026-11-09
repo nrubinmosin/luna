@@ -127,12 +127,21 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             // the guard against endless waits, a helper's as any (guard.rs).
             let mut skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir, crate::library::SessionKind::Helper);
             let instructions = crate::pty::claude_instructions_dir(id, skills.instructions.as_deref());
-            if instructions.is_some() {
-                let mut luna_dirs: Vec<String> = skills.args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect();
-                luna_dirs.extend(notes);
-                let own = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
+            let mut luna_dirs: Vec<String> = skills.args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect();
+            luna_dirs.extend(notes);
+            let own = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
+            if own.is_some() {
                 (skills.memory_off, skills.memory_kept) = crate::pty::claude_memory_off(&luna_dirs, &s.account_path, &dir, own.as_deref());
             }
+            // The account's instructions left out only where that takes
+            // nothing of the project's own.
+            (skills.excluded, skills.excluded_kept) = crate::pty::claude_account_excludes(
+                std::mem::take(&mut skills.excluded),
+                &luna_dirs,
+                &s.account_path,
+                &dir,
+                own.as_deref(),
+            );
             let (settings, holds) = crate::pty::claude_settings_file(id, false, guard.then_some(Item::HelperGuard), &skills, Some(helper))?;
             args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
             applied.extend(holds);

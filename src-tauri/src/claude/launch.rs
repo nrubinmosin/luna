@@ -170,6 +170,7 @@ pub(crate) fn settings_applied(
                 .with(format!("claudeMdExcludes {}", library.excluded.iter().map(|p| glob_literal(p)).collect::<Vec<_>>().join(", "))),
         );
     }
+    applied.extend(library.excluded_kept.iter().map(|note| Item::LibraryAccountInstructionsKept.with(note)));
     applied.extend(crate::library::audience_applied(library));
     if !library.memory_off.is_empty() {
         applied.push(Item::MemoryNarrowed.with(format!("claudeMdExcludes {}", library.memory_off.join(", "))));

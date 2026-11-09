@@ -138,6 +138,8 @@ items! {
         "The library keeps these skills from this session: a folder it works in, or whose sessions you set them for.";
     LibraryAccountInstructions = "library.account-instructions-off", UserAction,
         "The library gives this session other instructions than the account's own, or none: a folder it works in, or whose sessions you set them for.";
+    LibraryAccountInstructionsKept = "library.account-instructions-kept", Workaround,
+        "The account's instructions are read after all: the only pattern that leaves them out would also match this project's own instructions in Claude Code's matcher.";
     LibraryAudience = "library.audience", UserAction,
         "In the Library window you set these for the person's own chats or for helpers only, and this session is the other kind.";
     LibraryInstructions = "library.instructions", UserAction,
