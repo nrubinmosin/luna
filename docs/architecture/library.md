@@ -19,13 +19,14 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | --- | --- |
 | `library/mod.rs` | the library's folders, the ledger, the pass lock |
 | `library/reach.rs` | whom a skill or instructions file is for |
+| `library/audience.rs` | whose sessions one is for (chats, helpers, both); the wording of a copy for one kind |
 | `library/skills.rs` | the library's own files, read and checked |
 | `library/files.rs` | copies on disk, blobs, backups |
 | `library/folders.rs` | what waits for a named folder's sessions; `session_args` |
 | `library/pass.rs` | one pass over every copy |
 | `library/overview.rs` | what the window is shown |
 | `library/commands.rs` | the window's commands |
-| `src/features/library/` | the Skills & instructions window, grids, `ReachPicker`, `FolderCell`, `LibraryEditor`, `diff.ts` |
+| `src/features/library/` | the Skills & instructions window, grids, `ReachPicker`, `AudiencePicker`, `FolderCell`, `LibraryEditor`, `diff.ts` |
 
 ## Reaches
 
@@ -42,6 +43,52 @@ instructions go can be taken in as new instructions named after it. The old
 single `instructions.md` moves to `instructions/main.md` at the first pass; with
 both present neither is touched and every instructions unit is `failed` until
 resolved.
+
+## Audiences
+
+Each instructions file and skill has an **audience** in `settings.json`
+(`library.audience.instructions` / `.skills`, by name; absent is `both`):
+`chats` (the person's own, run in a pane), `helpers` (run headless by
+`background/`), or `both` (`library/audience.rs`). Renaming or deleting an entry
+carries its audience along. `session_args` takes the start's `SessionKind`
+(`Chat` from `pty/start.rs`, `Helper` from `background/command.rs`) and keeps
+from it what is not for its kind, in `folder_args`:
+
+- **Claude Code:** the instructions a session would read — a folder's
+  (`folder_instructions`), else the account's own (`chosen`) — if not for its
+  kind, are none: the account's `CLAUDE.md` goes in `claudeMdExcludes` and
+  nothing replaces it. A skill not for its kind is hidden wherever it would
+  come from (the account's copy, a folder's) in `skillOverrides`
+  (`hidden_here`). No per-launch helper variant of the account's file is
+  written: it would be a second copy to keep current, and an account gets one
+  instructions file, so a chats-only file leaves a Claude Code helper with no
+  library instructions rather than other ones. The account's file is left out
+  by its path taken literally (`glob_literal`), and only where that pattern
+  cannot also match one of the session's own instruction files in Claude
+  Code's matcher (`pty::claude_account_excludes`, through #30's
+  `keep_own_memory`): one that could is read after all and said as the
+  Workaround `library.account-instructions-kept`.
+- **Codex:** skills as above, in the one `-c skills.config`. Its account's
+  `AGENTS.md` cannot be left out of one session (0.167.0: the user-instructions
+  provider in `codex-rs/codex-home/src/instructions/mod.rs` reads
+  `AGENTS.override.md` or `AGENTS.md` from `CODEX_HOME`, and
+  `codex-rs/cli/src/main.rs` installs it with no config switch;
+  `developer_instructions` only adds, `model_instructions_file` replaces the base
+  prompt). So `units` lays instructions for one kind out `worded`: a line before
+  them saying whose they are. Claude Code copies get the same line, for the
+  sessions Luna does not start. The ledger notes which line Luna wrote at each
+  destination (`Ledger::worded`); `library_resolve` taking a copy in strips
+  that line alone, while it and the blank line after it are still there word
+  for word with either line ending (`unworded`), so the same words in a copy
+  Luna wrote no line into stay the person's.
+- What the audience decided goes in `SessionSkills::audience` and is applied
+  as `library.audience` (a UserAction, ADR-0016) beside the mechanism's own
+  items (`library.hidden-skills`, `library.account-instructions-off`). A Codex
+  session is said to be told whose its instructions are only when the
+  account's `AGENTS.md` opens on that line now (`carries_banner`); a copy
+  changed there, skipped or not written is `library.audience-unkept` instead.
+- Nothing is written into an account per launch: the wording is part of the
+  copy, written by the pass like any other change of the library.
 
 ## Folders
 

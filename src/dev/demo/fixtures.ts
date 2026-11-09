@@ -386,7 +386,8 @@ export const STALE: Record<string, WorktreeInfoDto[]> = {
 // there, under another name as the repository has its own — and a draft that
 // does not do yet, turned off in the repository; instructions for everyone, others for the work account
 // alone (edited by hand there since Luna wrote them), a blank draft, and a
-// Codex account kept on its own file.
+// Codex account kept on its own file. The instructions for everyone and the
+// review skill are for the person's own chats, kept from helpers.
 const REPO = 'C:\\src\\asuri-app';
 const WAITING = 'C:\\Users\\me\\AppData\\Local\\luna\\library-folders\\asuri-app';
 const accountsDir = (vendor: string, name: string) => `C:\\Users\\me\\Documents\\luna-accounts\\${vendor}\\${name}`;
@@ -404,13 +405,20 @@ export const LIBRARY: LibraryOverviewDto = {
   isDefault: true,
   found: true,
   instructions: [
-    { name: 'main', description: 'Working with me', problem: null, accounts: ['all'] },
-    { name: 'terse', description: '', problem: 'Blank: laid out nowhere until it has something in it', accounts: [] },
+    { name: 'main', description: 'Working with me', problem: null, accounts: ['all'], audience: 'chats' },
+    {
+      name: 'terse',
+      description: '',
+      problem: 'Blank: laid out nowhere until it has something in it',
+      accounts: [],
+      audience: 'both'
+    },
     {
       name: 'work',
       description: 'At work: the monorepo, its CI and who reviews what',
       problem: null,
-      accounts: ['claude/work']
+      accounts: ['claude/work'],
+      audience: 'both'
     }
   ],
   noInstructions: ['codex/team'],
@@ -421,14 +429,22 @@ export const LIBRARY: LibraryOverviewDto = {
       name: 'luna-review',
       description: 'Hand a finished change to a model of the other CLI through Luna and fold its findings back in.',
       problem: null,
-      accounts: ['claude']
+      accounts: ['claude'],
+      audience: 'chats'
     },
-    { name: 'migrations', description: '', problem: 'The front matter has no description', accounts: ['claude'] },
+    {
+      name: 'migrations',
+      description: '',
+      problem: 'The front matter has no description',
+      accounts: ['claude'],
+      audience: 'both'
+    },
     {
       name: 'release-notes',
       description: 'Write the release notes from the commits since the last tag, in the house style.',
       problem: null,
-      accounts: []
+      accounts: [],
+      audience: 'both'
     }
   ],
   accounts: [

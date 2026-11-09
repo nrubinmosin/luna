@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-library-set-audience"
+description = "Enables the library_set_audience command without any pre-configured scope."
+commands.allow = ["library_set_audience"]
+
+[[permission]]
+identifier = "deny-library-set-audience"
+description = "Denies the library_set_audience command without any pre-configured scope."
+commands.deny = ["library_set_audience"]

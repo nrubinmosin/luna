@@ -74,6 +74,38 @@ pub struct LibrarySettings {
     pub folders: Vec<LibraryFolder>,
     /// Destinations left out on purpose, by path.
     pub skipped: Vec<String>,
+    /// Whose sessions an instructions file or a skill is for, where that is
+    /// not every session's (library/audience.rs).
+    #[serde(skip_serializing_if = "Audiences::is_empty")]
+    pub audience: Audiences,
+}
+
+/// Whose sessions a library entry is for: the person's own chats, the
+/// helpers other sessions start, or both.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Audience {
+    #[default]
+    Both,
+    Chats,
+    Helpers,
+}
+
+/// The library's entries whose audience is not both, by kind and name: an
+/// instructions file and a skill may share a name.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Audiences {
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub instructions: std::collections::BTreeMap<String, Audience>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub skills: std::collections::BTreeMap<String, Audience>,
+}
+
+impl Audiences {
+    pub fn is_empty(&self) -> bool {
+        self.instructions.is_empty() && self.skills.is_empty()
+    }
 }
 
 /// The library's settings as the file may hold them: before a reach, the
@@ -94,6 +126,7 @@ struct LibrarySettingsFile {
     folders: Vec<LibraryFolderFile>,
     folders_only: Vec<String>,
     skipped: Vec<String>,
+    audience: Audiences,
 }
 
 #[derive(Deserialize, Default)]
@@ -174,6 +207,7 @@ impl From<LibrarySettingsFile> for LibrarySettings {
             skills,
             folders,
             skipped: f.skipped,
+            audience: f.audience,
         }
     }
 }
@@ -374,6 +408,19 @@ mod tests {
         assert_ne!(stamp(&path), before);
         assert_eq!(read(&path).unwrap().quiet_window_s, 60);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_audience_is_kept_by_kind_and_name_and_both_is_not_written() {
+        let read: Settings =
+            serde_json::from_str(r#"{"library": {"audience": {"skills": {"council": "chats"}, "instructions": {"main": "helpers"}}}}"#)
+                .unwrap();
+        assert_eq!(read.library.audience.skills["council"], Audience::Chats);
+        assert_eq!(read.library.audience.instructions["main"], Audience::Helpers);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();
+        assert_eq!(back.library.audience.skills, read.library.audience.skills);
+        let json = serde_json::to_value(Settings::default()).unwrap();
+        assert!(json["library"].get("audience").is_none(), "nothing set, nothing written: {json}");
     }
 
     #[test]
