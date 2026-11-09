@@ -190,12 +190,17 @@ pub struct AppliedView {
     /// Why `account` may be missing writes Luna made: its ledger would not
     /// read, or a write was not noted in it. None when it is whole.
     pub incomplete: Option<String>,
+    /// For a chat with auto-handoff on: the instructions it would be served
+    /// to write its handoff by, as of now, and the skills of the same name
+    /// its CLI may list (agents/handoff `applied_of`).
+    pub handoff: Option<crate::agents::handoff::HandoffApplied>,
 }
 
 /// The window's "What Luna applied" for `chat_id`.
 pub fn applied_by_luna(chat_id: String) -> AppliedView {
+    let handoff = crate::agents::handoff::applied_of(&chat_id);
     let Some((launch, account_path, folder)) = crate::agents::applied_of(&chat_id) else {
-        return AppliedView::default();
+        return AppliedView { handoff, ..AppliedView::default() };
     };
     let (recorded, incomplete) = match recorded(&account_path) {
         Ok(r) => (r, None),
@@ -211,7 +216,7 @@ pub fn applied_by_luna(chat_id: String) -> AppliedView {
     if !laid.is_empty() {
         account.push(Item::LibraryLayout.with(laid.join("\n")));
     }
-    AppliedView { launch, account, incomplete }
+    AppliedView { launch, account, incomplete, handoff }
 }
 
 /// A write into an account outside a launch, as the ledger keeps it.

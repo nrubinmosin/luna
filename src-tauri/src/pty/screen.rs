@@ -61,6 +61,8 @@ pub struct SessionMeta {
     /// Its latest handoff, under way or past, for the divider in its pane
     /// (agents/handoff).
     pub handoff: Option<crate::agents::HandoffMark>,
+    /// A handoff it was asked for and has not made, for its pane's chip.
+    pub handoff_asked: Option<crate::agents::HandoffAsked>,
 }
 
 /// A session's title as its CLI has it, and whether the user typed it.

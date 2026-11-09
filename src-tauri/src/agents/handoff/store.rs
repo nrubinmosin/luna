@@ -1,11 +1,13 @@
 //! What is kept of each chat's handoffs, in `<data>/handoffs/handoffs.json`:
 //! the number last given out, what the chat was told of its context and in
-//! which conversation, the handoff under way with its phase, and those through
-//! or given up. Saved at every change, under the lock it is changed under, and
-//! on disk before the change counts (`change`): what is typed into a chat next
-//! goes by it, and a core started later goes on from there (`from_bytes`).
+//! which conversation, the instructions it was last served, the handoff under
+//! way with its phase, and those through or given up. Saved at every change,
+//! under the lock it is changed under, and on disk before the change counts
+//! (`change`): what is typed into a chat next goes by it, and a core started
+//! later goes on from there (`from_bytes`).
 
 use super::phase::{Phase, Switch};
+use super::served::Served;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -23,6 +25,18 @@ pub(super) struct Told {
     pub level: u8,
     #[serde(default)]
     pub floor: u64,
+    /// The share of its context at each notice it was sent, compactions
+    /// between them or not: what the window shows while no handoff follows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asked: Vec<u64>,
+    /// How often its CLI compacted it after a notice, no handoff between
+    /// (watch.rs `told_now`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub compacted: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// A handoff through, or given up.
@@ -41,6 +55,10 @@ pub(super) struct Past {
     /// Why it was given up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The instructions the chat was served to write it by; none when it
+    /// went by the notices alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<Served>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
@@ -59,6 +77,10 @@ pub(super) struct Record {
     pub fresh: bool,
     #[serde(default)]
     pub past: Vec<Past>,
+    /// The instructions `luna_session_handoff` last served the chat, for the
+    /// handoff it writes by them; let go once one goes through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served: Option<Served>,
     /// The number a call is copying its file under, its I/O done outside
     /// the lock: one at a time per chat. Never saved: a core that stops in
     /// the middle leaves no copy anyone schedules from.
@@ -196,6 +218,7 @@ mod tests {
             phase,
             before: Before::default(),
             attempts: 1,
+            instructions: None,
         };
         let mut saved = Records::new();
         for (chat, phase) in [

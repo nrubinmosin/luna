@@ -140,6 +140,11 @@ fn failure(text: String) -> Value {
     json!({ "content": [{ "type": "text", "text": text }], "isError": true })
 }
 
+/// A call of a tool there is not, with the tools every tooled session has.
+fn unknown_tool(name: &str) -> String {
+    format!("unknown tool {name}; the tools: {}", names().join(", "))
+}
+
 fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
@@ -157,6 +162,12 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             "{name} is gone since Luna 0.11; the tools now: {}. luna_guide_get says which does what.",
             names().join(", ")
         ));
+    }
+    // Auto-handoff's tool is no tool at all to a session it is not offered
+    // to: refused as one there is not, before its arguments are looked at, so
+    // the refusal says nothing of it (agents/handoff `offers_tool`).
+    if name == "luna_session_handoff" && !agents::handoff::offers_tool(caller) {
+        return failure(unknown_tool(name));
     }
     if let Err(e) = arguments_fit(name, a) {
         return failure(e);
@@ -405,8 +416,17 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
             crate::power::arm_for_agent(caller, a["action"].as_str().unwrap_or(""), a["quietSec"].as_u64(), a["drain"].as_bool())
         }
         // The caller's own chat, by its token: there is no other to name.
-        "luna_session_handoff" => agents::handoff(caller, a["file"].as_str().unwrap_or("")),
-        _ => Err(format!("unknown tool {name}; the tools: {}", names().join(", "))),
+        "luna_session_handoff" => match a["file"].as_str().map(str::trim).filter(|f| !f.is_empty()) {
+            Some(file) => agents::handoff(caller, file),
+            // How to write it: plain text to read, the guide's way.
+            None => {
+                return match agents::handoff::instructions(caller) {
+                    Ok(text) => json!({ "content": [{ "type": "text", "text": text }] }),
+                    Err(e) => failure(e),
+                };
+            }
+        },
+        _ => Err(unknown_tool(name)),
     };
     match out {
         Ok(v) => json!({ "content": content(v) }),

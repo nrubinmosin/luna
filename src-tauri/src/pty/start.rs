@@ -1570,13 +1570,21 @@ mod tests {
         // Codex: no flag of its own, the tool and the notices are Luna's.
         let s = CodexAsk { tools: Some(true), handoff: Some(55), ..CodexAsk::chat() }.start(ID, &r);
         assert_eq!(s.value("auto-handoff"), Some("at 55% of the context: luna_session_handoff"));
-        // Without Luna's tools there is no server to offer the tool: nothing.
+        // Without Luna's tools there is no server to offer the tool, and with
+        // them but without the tick nothing is asked for: no word of it in the
+        // start, the instructions included, which no CLI is given as a skill.
         for s in [
             ClaudeAsk { handoff: Some(70), ..ClaudeAsk::chat() }.start(ID, &r),
             CodexAsk { handoff: Some(70), ..CodexAsk::chat() }.start(ID, &r),
             ClaudeAsk { tools: Some(true), handoff: Some(99), ..ClaudeAsk::chat() }.start(ID, &r),
+            ClaudeAsk { tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r),
+            CodexAsk { tools: Some(true), ..CodexAsk::chat() }.start(ID, &r),
         ] {
             assert!(!s.keys().contains(&"auto-handoff") && !s.args.iter().any(|a| a == "<handoff-dir>"), "{:?}", s.args);
+            let said = format!("{:?}{:?}", s.args, s.envs).to_lowercase();
+            for word in ["luna_session_handoff", "session-handoff", "handoffs"] {
+                assert!(!said.contains(word), "{word}: {said}");
+            }
         }
     }
 

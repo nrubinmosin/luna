@@ -93,13 +93,15 @@ fn readers() -> &'static Readers {
 /// The extensions a handoff file may have.
 const EXTENSIONS: [&str; 3] = ["md", "markdown", "txt"];
 
-/// A file taken: Luna's copy, its hash, and the path it was named by.
+/// A file taken: Luna's copy, its hash, the path it was named by, and its text
+/// as copied.
 #[derive(Debug)]
 pub(super) struct Snapshot {
     pub path: PathBuf,
     pub sha256: String,
     pub source: String,
     pub size: usize,
+    pub text: String,
 }
 
 /// What a test has happen as a file is read, by its path: a slow share, a
@@ -228,7 +230,9 @@ pub(super) fn snapshot_within(
         return Err(format!("could not write {}: {e}", path.display()));
     }
     let sha256 = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-    Ok(Snapshot { path, sha256, source: source.to_string_lossy().into_owned(), size: bytes.len() })
+    // UTF-8 already, as `read_checked` took it.
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    Ok(Snapshot { path, sha256, source: source.to_string_lossy().into_owned(), size: bytes.len(), text })
 }
 
 /// The first handoff number past every copy in `dir` (`<n>.md`, `<n>-facts.md`).
