@@ -241,8 +241,10 @@ releases (`codex/cli.rs`), both over HTTPS.
   pointed there and the session variables stripped (`pty::clean_env`), never
   in an elevated process (the pass runs in the window, which may be: there
   it holds off, F11), each run bounded to 30 s and 1 MiB of output per
-  stream, everything it started ended after (a Job Object on Windows, its
-  own process group on Unix); one that fails is
+  stream, everything it started ended after (on Windows a kill-on-close Job
+  Object of the probe's own, the CLI created suspended and never run outside
+  it, every member terminated, windowed ones included; on Unix its own
+  process group); one that fails is
   marked bad and swept. Going back to an installed version ("Use",
   `cli_use_version`) holds every file to its recorded sha256 again; below the
   floor every file must have one.
@@ -283,7 +285,7 @@ binary and checksum replaced together, installed and run (F10).
 | D | A new version breaks every session started on it | mitigated: an offline probe before it becomes current (`cli/probe.rs`), a canary over its first sessions that warns (`cli/canary.rs`), the previous version always kept and "Use" to go back; no automatic rollback (ADR-0019) |
 | D, E | The sweep deletes a version folder under a running session (Unix: a Codex session's helpers) | mitigated: a shared lock per running process, the sweep only under the exclusive one (`cli/in_use.rs`); a launch whose lock cannot be had is refused, never started unheld (`cli.rs` `launch_in`) |
 | E | The update pass, in a window started as administrator, runs a new CLI for its probe elevated | mitigated: `probe` refuses through `elevation::guard`, and an elevated window's pass fetches, probes and marks nothing (`cli.rs` `held_for_elevation`) |
-| D | A probed CLI hangs, writes without end, or leaves a process holding its output | mitigated: one deadline over the run and its output, 1 MiB kept per stream, its whole tree ended (`cli/probe.rs` `run_within`) |
+| D | A probed CLI hangs, writes without end, or leaves a process holding its output | mitigated: one deadline over the run and its output, 1 MiB kept per stream, its whole tree ended (`cli/probe.rs` `run_within`; on Windows a mandatory `procs::KillJob`, terminated whole) |
 | T | A Luna release raises `minSafe`, and the version current (or held by hand) is below it | mitigated: no launch of it, no PATH stand-in, the hold dropped and the shipped list's version taken (`cli.rs` `launch_in`, `update_inner`, `cli/choice.rs`) |
 | T, D | Codex's tarball, matching its checksum, unpacks without bound (a gzip bomb, a PAX size override, a huge metadata record) | mitigated: the stream, each metadata record, the entries and their bytes are capped, a PAX size override refused (`codex/cli.rs`, `unpack_capped`) |
 | T, S | Codex release origin compromised: binary and checksum replaced together | open (F10) |
