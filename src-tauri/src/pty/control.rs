@@ -202,6 +202,8 @@ async fn take_and_shut_down(state: &PtyManager, id: &str) {
         state.sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id)
     };
     if let Some(s) = session {
+        // Its exit is Luna's doing, not its CLI version's.
+        crate::cli::session_stopped(id);
         let _ = tauri::async_runtime::spawn_blocking(move || shut_down(s, GRACE)).await;
     }
 }
@@ -412,7 +414,7 @@ impl PtyManager {
 
         let _ = crate::media::clear_media(id.to_string());
         for sub in ["hooks", "mcp"] {
-            let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{id}.json")));
+            let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{}.json", crate::paths::id_file_name(id))));
         }
         claude_instructions_dir(id, None);
         crate::log::info("delete", &format!("chat {}, worktree {resolved:?}, dropping {drop_worktree}", crate::agents::label(id)));
@@ -431,11 +433,19 @@ impl PtyManager {
     /// Asks every live session to quit, each with `grace` to do it on its
     /// own, and returns how many there were. Blocks; for the shutdown path.
     pub fn shut_down_all(&self, grace: std::time::Duration) -> usize {
-        let taken: Vec<Session> = {
+        let taken: Vec<(String, Session)> = {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let ids: Vec<String> = sessions.iter().filter(|(_, s)| s.alive.load(Ordering::SeqCst)).map(|(id, _)| id.clone()).collect();
-            ids.into_iter().filter_map(|id| sessions.remove(&id)).collect()
+            ids.into_iter().filter_map(|id| sessions.remove(&id).map(|s| (id, s))).collect()
         };
+        // Their exits are Luna's doing, not their CLI versions'.
+        let taken: Vec<Session> = taken
+            .into_iter()
+            .map(|(id, s)| {
+                crate::cli::session_stopped(&id);
+                s
+            })
+            .collect();
         let n = taken.len();
         let handles: Vec<_> = taken.into_iter().map(|s| std::thread::spawn(move || shut_down(s, grace))).collect();
         for h in handles {

@@ -376,6 +376,50 @@ pub fn path_key_loose(p: &str) -> String {
     }
 }
 
+/// A session id as the name of a file or folder of its own under the data dir
+/// (`hooks/`, `mcp/`, `media/`, `handoffs/`, a note's name): the one spelling
+/// every such path takes. Lowercase letters, digits, `-` and `_` stay as they
+/// are, which is every id Luna mints, so the files of a chat keep their names;
+/// any other byte becomes `.` and two hex digits. A capital is one of them, so
+/// two ids a case-insensitive volume would take for one name stay two, and `.`
+/// is one, so no two ids meet in one name. That leaves nothing a file system
+/// refuses, Windows' `:` of the login sessions' `login:<provider>:<name>`
+/// among it. What Windows reserves (`nul`, `con`, `com1`...) has its first
+/// letter written out as well, an empty id is `.~`, and one whose name would
+/// run past `ID_NAME_MAX` is cut there and ends on `.~` and a digest of the
+/// whole id: no other id is written with a `~`.
+pub fn id_file_name(id: &str) -> String {
+    use std::fmt::Write;
+    if id.is_empty() {
+        return ".~".into();
+    }
+    let mut name = String::with_capacity(id.len());
+    for b in id.bytes() {
+        if b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_' {
+            name.push(char::from(b));
+        } else {
+            let _ = write!(name, ".{b:02x}");
+        }
+    }
+    let stem = name.split('.').next().unwrap_or_default();
+    let reserved = matches!(stem, "con" | "prn" | "aux" | "nul")
+        || (stem.len() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) && stem.ends_with(|c: char| c.is_ascii_digit()));
+    if reserved {
+        name = format!(".{:02x}{}", name.as_bytes()[0], &name[1..]);
+    }
+    if name.len() > ID_NAME_MAX {
+        use sha2::{Digest, Sha256};
+        let digest: String = Sha256::digest(id.as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+        name.truncate(ID_NAME_MAX - digest.len() - 2);
+        name = format!("{name}.~{digest}");
+    }
+    name
+}
+
+/// How long `id_file_name` lets a name run, room left for an extension: a
+/// name of a path has 255 at most on the volumes Luna runs on.
+const ID_NAME_MAX: usize = 160;
+
 /// The WebView's profile: localStorage, which holds the chats and the
 /// layout, and the browser's caches. Windows only. Elsewhere the exe's folder
 /// is an app bundle or a system path, so the data dir is in the user's folder
@@ -428,6 +472,59 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_id_becomes_a_file_name_every_volume_takes_and_no_other_id_shares() {
+        // Every id Luna mints is its own name: the files of a chat keep theirs.
+        for id in ["cmw8yfdg51", "golden-claude-chat", "dev", "0a1b2c3d-0000-4000-8000-00000000c1a0", "hofg_me"] {
+            assert_eq!(id_file_name(id), id);
+        }
+        assert_eq!(id_file_name("login:claude:gfd"), "login.3aclaude.3agfd");
+        let ids: Vec<String> = [
+            "login:claude:gfd",
+            "login:codex:gfd",
+            "login:claude:Work",
+            "login:claude:work",
+            "login.3aclaude.3agfd",
+            "login_claude_gfd",
+            "login:claude:gfd ",
+            "login:claude:gfd.",
+            // An account named in another script.
+            "login:claude:\u{440}\u{430}\u{431}\u{43e}\u{442}\u{430}",
+            "a/b",
+            "a\\b",
+            "..",
+            ".",
+            "",
+            ".~",
+            "nul",
+            "NUL",
+            "con.json",
+            "com1",
+            "lpt9",
+            "c",
+            "Ab",
+            "ab",
+        ]
+        .into_iter()
+        .map(String::from)
+        .chain(["x".repeat(400), format!("{}y", "x".repeat(399)), "X".repeat(200)])
+        .collect();
+        let mut seen = std::collections::HashMap::new();
+        for id in &ids {
+            let name = id_file_name(id);
+            // Nothing Windows, macOS or Linux refuses in a name, nothing a
+            // case-insensitive volume would take for another, no `.` or `..`.
+            assert!(!name.is_empty() && name.len() <= ID_NAME_MAX, "{id:?}: {name}");
+            assert!(name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-_.~".contains(&b)), "{id:?}: {name}");
+            assert!(name != "." && name != ".." && !name.ends_with('.'), "{id:?}: {name}");
+            let stem = name.split('.').next().unwrap();
+            assert!(!["con", "prn", "aux", "nul", "com1", "lpt9"].contains(&stem), "{id:?}: {name} is a device on Windows");
+            if let Some(other) = seen.insert(name.clone(), id) {
+                panic!("{other:?} and {id:?} both become {name}");
+            }
+        }
+    }
 
     #[test]
     fn a_path_in_another_case_or_with_other_separators_is_the_same_only_on_windows() {

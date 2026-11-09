@@ -5,6 +5,8 @@
 //! - `start`: the commands that start a chat's CLI, and what each start
 //!   settles under the chat's spawn gate (its token, the files it reads,
 //!   what its sandbox and guard take from this machine).
+//! - `folder`: the folder a session is to start in, refused before anything
+//!   of the start is made when its CLI could not run there.
 //! - `spawn`: the process in its pty, and the threads that write to it, read
 //!   it and notice it has gone.
 //! - `control`: keys, resizes, quitting and killing, deleting a chat.
@@ -17,6 +19,7 @@
 //! `codex::launch`.
 
 mod control;
+pub(crate) mod folder;
 pub(crate) mod probe;
 mod screen;
 mod spawn;
@@ -25,6 +28,7 @@ mod start;
 pub(crate) use control::{
     delete_session, kill_session, kill_tree, orphan_sessions, resize_session, stop_all_sessions, write_session, KeyHold, GRACE,
 };
+pub(crate) use folder::folder_refusal;
 pub(crate) use probe::{
     complete_lines, complete_lines_in, live_cwds, lossy_lines, prune_session_files_periodically, read_lossy_lines, session_meta, tail,
     ActivityProbe,

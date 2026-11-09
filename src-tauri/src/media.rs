@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Pasted / dropped attachments are copied here so the CLI has a stable
 /// absolute path to read, independent of wherever the original lived.
 fn media_root(chat_id: &str) -> PathBuf {
-    crate::paths::data_dir().join("media").join(sanitize(chat_id))
+    crate::paths::data_dir().join("media").join(crate::paths::id_file_name(chat_id))
 }
 
 /// Windows caps a path component at 255; this leaves room for the stamp prefix.

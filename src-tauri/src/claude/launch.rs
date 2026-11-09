@@ -19,8 +19,9 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) resume: Option<&'a str>,
     /// `--worktree`, by this name if it has one.
     pub(crate) worktree: Option<Option<&'a str>>,
-    /// The `--settings` file, and what it holds (`settings_applied`).
-    pub(crate) settings_file: Option<(&'a Path, &'a [Applied])>,
+    /// `--settings`: a file's path, or inline JSON (a login's), and what it
+    /// holds (`settings_applied`).
+    pub(crate) settings: Option<(&'a str, &'a [Applied])>,
     pub(crate) agent: Option<&'a str>,
     pub(crate) read_only: bool,
     /// Luna's MCP config file and the token its header takes.
@@ -62,9 +63,9 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         applied.push(Item::Worktree.with(&arg));
         args.push(arg);
     }
-    if let Some((settings, holds)) = s.settings_file {
+    if let Some((settings, holds)) = s.settings {
         args.push("--settings".into());
-        args.push(path(settings));
+        args.push(settings.to_string());
         applied.extend(holds.iter().cloned());
     }
     if let Some(agent) = s.agent {

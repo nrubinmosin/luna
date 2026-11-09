@@ -57,7 +57,7 @@ pub fn dir_of(chat: &str) -> Result<PathBuf, String> {
     if !plain {
         return Err(format!("{chat} is not a chat id Luna keeps handoffs for"));
     }
-    Ok(root().join(chat))
+    Ok(root().join(crate::paths::id_file_name(chat)))
 }
 
 /// The threshold `settings` holds, if auto-handoff is on in them.

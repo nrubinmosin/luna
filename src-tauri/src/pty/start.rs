@@ -7,6 +7,7 @@
 //! helper's turn (background/command.rs) settles the same through the
 //! functions here.
 
+use super::folder::folder_refusal;
 use super::same_dir;
 use super::spawn::{spawn, Launch};
 use crate::claude::launch::{self as claude_launch, claude_settings, with_role, HelperSettings, CLAUDE_MCP_TOKEN_ENV};
@@ -27,8 +28,9 @@ use std::sync::Mutex;
 /// account's instructions and the other memory in `claudeMdExcludes`.
 /// Always: Luna's `core/` denied to its file tools (`claude_read_deny`), so
 /// there is always a file to write. Written to a file under the data dir
-/// (`hooks/`, named for what it first held) rather than passed inline, so the
-/// command line stays readable and quoting is not a concern. Err if it cannot
+/// (`hooks/`, named for what it first held, the chat's id spelled as a file
+/// name by `paths::id_file_name`) rather than passed inline, so the command
+/// line stays readable and quoting is not a concern. Err if it cannot
 /// be written: a session carries the core-folder deny or does not start
 /// (threat model F3), so the caller refuses the launch rather than run without
 /// it. With the file, what it holds as applied (claude/launch.rs
@@ -47,13 +49,29 @@ pub(crate) fn claude_settings_file(
     // Owner-only: the hook URLs in it carry the hub's secret.
     let dir = crate::paths::data_dir().join("hooks");
     crate::secret::private_dir(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
-    let path = dir.join(format!("{chat_id}.json"));
+    let path = dir.join(format!("{}.json", crate::paths::id_file_name(chat_id)));
     let json = serde_json::to_string_pretty(&settings).map_err(|e| format!("the settings do not serialize: {e}"))?;
     crate::secret::write_private(&path, json.as_bytes()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     let mut applied =
         claude_launch::settings_applied(&path.to_string_lossy(), hook_url.is_some(), guard.filter(|_| guard_url.is_some()), library, &core);
     applied.extend(helper.map(|h| claude_launch::helper_settings_applied(h, &path.to_string_lossy())).unwrap_or_default());
     Ok((path, applied))
+}
+
+/// A login session's `--settings` (the providers' `loginSession`): the
+/// core-folder deny every session carries (threat model F3) and nothing else,
+/// as inline JSON, which Claude Code reads in place of a file's path when it
+/// is wrapped in braces (2.1.319). A sign-in has no use for hooks, tools or
+/// the library, so it is given no file of Luna's at all; its id,
+/// `login:<provider>:<name>`, once named one (`hooks/login:claude:<name>.json`),
+/// which Windows refuses (os error 123), and the login never started. With
+/// what it holds as applied.
+pub(crate) fn claude_login_settings() -> (String, Vec<crate::applied::Applied>) {
+    let core = crate::ipc::core_dir().to_string_lossy().into_owned();
+    let none = crate::library::SessionSkills::default();
+    let json = serde_json::Value::Object(claude_settings(None, None, &none, &core, None)).to_string();
+    let applied = claude_launch::settings_applied(&json, false, None, &none, &core);
+    (json, applied)
 }
 
 /// The folders a Claude Code session in `folder` on `account_path` would be
@@ -249,7 +267,7 @@ fn added_dirs(args: &[String]) -> Vec<String> {
 /// prompt its session started with, and reads memory again. Written at every
 /// start; with nothing to give, gone, and None.
 pub(crate) fn claude_instructions_dir(chat_id: &str, file: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
-    let dir = crate::paths::data_dir().join("hooks").join(chat_id);
+    let dir = crate::paths::data_dir().join("hooks").join(crate::paths::id_file_name(chat_id));
     let Some(file) = file else {
         let _ = std::fs::remove_dir_all(&dir);
         return None;
@@ -294,7 +312,7 @@ pub(crate) fn claude_mcp_file(chat_id: &str) -> Option<std::path::PathBuf> {
     });
     let dir = crate::paths::data_dir().join("mcp");
     crate::secret::private_dir(&dir).ok()?;
-    let path = dir.join(format!("{chat_id}.json"));
+    let path = dir.join(format!("{}.json", crate::paths::id_file_name(chat_id)));
     crate::secret::write_private(&path, serde_json::to_string_pretty(&config).ok()?.as_bytes()).ok()?;
     Some(path)
 }
@@ -558,6 +576,16 @@ pub async fn ensure_claude_session(
     not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
+        // A login session runs in the account folder itself (the providers'
+        // `loginSession`).
+        let login = same_dir(&folder, &account_path);
+        // A folder its CLI could not start in, refused before anything of the
+        // start is made (folder.rs): any start with `--worktree` needs a git
+        // repository, a named worktree's included, which Claude Code makes
+        // again if it is gone.
+        if let Some(why) = (!login).then(|| folder_refusal(Provider::Claude, &folder, &account_path, worktree)).flatten() {
+            return Err(why);
+        }
         // `--resume` of a session with no transcript fails with "No
         // conversation found" and leaves the pane at a dead CLI: a chat that
         // was opened and never typed into starts afresh instead.
@@ -573,17 +601,17 @@ pub async fn ensure_claude_session(
         // The skills the library gives sessions in this folder and keeps from
         // them, at every start (library/folders.rs `session_args`); not to a login
         // session.
-        let login = same_dir(&folder, &account_path);
         let mut skills = if login {
             crate::library::SessionSkills::default()
         } else {
             crate::library::lay_out("before a session starts");
             crate::library::session_args(Provider::Claude, &account_path, &folder, crate::library::SessionKind::Chat)
         };
-        let notes = tools.unwrap_or(false).then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
-        let handoff = handoff_threshold(handoff, tools.unwrap_or(false));
-        let handoff_dir =
-            handoff.and_then(|_| crate::agents::handoff::dir_of(&id).ok()).filter(|dir| !login && std::fs::create_dir_all(dir).is_ok());
+        // A login session is no chat: no tools, so no notes or handoff either.
+        let tools = tools.unwrap_or(false) && !login;
+        let notes = tools.then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
+        let handoff = handoff_threshold(handoff, tools);
+        let handoff_dir = handoff.and_then(|_| crate::agents::handoff::dir_of(&id).ok()).filter(|dir| std::fs::create_dir_all(dir).is_ok());
         let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
         // The library's instructions are read as memory of a folder added to
         // the session, which has every added folder's read: not the others'.
@@ -606,9 +634,13 @@ pub async fn ensure_claude_session(
         let guard = guard.unwrap_or(false).then_some(crate::applied::Item::Guard);
         // Mandatory: it carries the core-folder deny (threat model F3). If it
         // cannot be written, the session does not start rather than run
-        // without it.
-        let (settings_file, settings_applied) = claude_settings_file(&id, true, guard, &skills, None)?;
-        let tools = tools.unwrap_or(false);
+        // without it. A login session's goes inline (`claude_login_settings`).
+        let (settings_given, settings_applied) = if login {
+            claude_login_settings()
+        } else {
+            let (file, applied) = claude_settings_file(&id, true, guard, &skills, None)?;
+            (file.to_string_lossy().into_owned(), applied)
+        };
         let read_only = read_only.unwrap_or(false);
         let agent = agent.filter(|a| !a.is_empty());
         let mut settings = with_role(
@@ -621,8 +653,7 @@ pub async fn ensure_claude_session(
         if let Some(t) = handoff {
             settings["handoff"] = serde_json::json!(t);
         }
-        // A login session runs in the account folder itself (the providers'
-        // `loginSession`): not a chat, so not one agents may see or write to.
+        // A login session is not a chat, so not one agents may see or write to.
         let token =
             if login { None } else { crate::agents::register(&id, Provider::Claude, &folder, &account_path, None, tools, settings) };
         let mcp = token.and_then(|t| Some((claude_mcp_file(&id)?, t)));
@@ -634,7 +665,7 @@ pub async fn ensure_claude_session(
             permission_mode: &permission_mode,
             resume: resume.as_deref(),
             worktree: worktree.then_some(worktree_name.as_deref()),
-            settings_file: Some((&settings_file, &settings_applied)),
+            settings: Some((&settings_given, &settings_applied)),
             agent: agent.as_deref(),
             read_only,
             mcp: mcp.as_ref().map(|(file, token)| (file.as_path(), token.as_str())),
@@ -692,6 +723,12 @@ pub async fn ensure_codex_session(
             let applied = vec![crate::applied::Item::Account.with(format!("CODEX_HOME={account_path}"))];
             let describe = "login".into();
             return Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume: None, describe, applied });
+        }
+        // A folder Codex could not start in, refused before anything of the
+        // start is made (folder.rs): `--worktree` goes only to a new session.
+        let new_worktree = worktree.unwrap_or(false) && resume.is_none();
+        if let Some(why) = folder_refusal(Provider::Codex, &folder, &account_path, new_worktree) {
+            return Err(why);
         }
         // A project under a folder trusted on this machine starts trusted
         // without an entry in the account's config, and so does one
@@ -837,7 +874,8 @@ mod tests {
 
     use crate::golden::{self, pairs, strings, Redact};
 
-    const FOLDER: &str = "/golden/project";
+    /// The project folder, as what is compared has it (`golden::project`).
+    const FOLDER: &str = golden::PROJECT;
 
     /// A start as `spawn` would have run it, placeholders in, with the
     /// settings, MCP and instructions files it was given read back (and
@@ -884,7 +922,7 @@ mod tests {
         let args = r.args(&l.args);
         let data = crate::paths::data_dir();
         let read = |sub: &str, placeholder: &str| {
-            let path = data.join(sub).join(format!("{id}.json"));
+            let path = data.join(sub).join(format!("{}.json", crate::paths::id_file_name(id)));
             let v = args.iter().any(|a| a == placeholder).then(|| r.file(&path.to_string_lossy()));
             let _ = std::fs::remove_file(&path);
             v
@@ -927,7 +965,7 @@ mod tests {
     impl ClaudeAsk {
         fn chat() -> Self {
             ClaudeAsk {
-                folder: FOLDER.into(),
+                folder: golden::project(),
                 account: "/golden/acc-claude".into(),
                 model: "opus",
                 effort: "high",
@@ -944,28 +982,78 @@ mod tests {
         }
 
         fn start(self, id: &str, r: &Redact) -> Started {
+            started(id, r, self.ensure(id))
+        }
+
+        fn ensure(self, id: &str) -> impl std::future::Future<Output = Result<String, String>> {
             let s = |v: Option<&str>| v.map(str::to_owned);
-            started(
-                id,
-                r,
-                ensure_claude_session(
-                    id.into(),
-                    self.folder,
-                    self.account,
-                    self.model.into(),
-                    self.effort.into(),
-                    self.mode.into(),
-                    self.worktree,
-                    s(self.worktree_name),
-                    self.resume,
-                    self.tools,
-                    self.read_only,
-                    s(self.agent),
-                    self.guard,
-                    self.handoff,
-                ),
+            ensure_claude_session(
+                id.into(),
+                self.folder,
+                self.account,
+                self.model.into(),
+                self.effort.into(),
+                self.mode.into(),
+                self.worktree,
+                s(self.worktree_name),
+                self.resume,
+                self.tools,
+                self.read_only,
+                s(self.agent),
+                self.guard,
+                self.handoff,
             )
         }
+    }
+
+    /// A start refused before anything of it was built: no launch caught,
+    /// and so no CLI started, nothing for the canary to watch. Its reason back.
+    fn refused(id: &str, start: impl std::future::Future<Output = Result<String, String>>) -> String {
+        capture::expect(id);
+        let got = tauri::async_runtime::block_on(start);
+        let launch = capture::take(id);
+        crate::agents::forget(id);
+        assert!(launch.is_none(), "{id}: a launch was built");
+        got.expect_err("refused")
+    }
+
+    /// A folder the CLI could not start in is refused by either CLI's start
+    /// before its files are written, a token minted or a CLI run: one that is
+    /// not there, and a worktree outside a git repository, which Claude Code
+    /// 2.1.319 and Codex 0.167.0 each exit on at once. So the CLI canary,
+    /// which watches only what runs, never counts it.
+    #[test]
+    fn a_start_in_a_folder_its_cli_cannot_run_in_is_refused_before_anything_is_made() {
+        let root = std::env::temp_dir().join(format!("luna-golden-folders-{}", std::process::id()));
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let (gone, plain) = (root.join("luna;C").to_string_lossy().into_owned(), plain.to_string_lossy().into_owned());
+        let id = "golden-refused";
+        let why = refused(id, ClaudeAsk { folder: gone.clone(), ..ClaudeAsk::chat() }.ensure(id));
+        assert!(why.contains("does not exist"), "{why}");
+        let why = refused(id, CodexAsk { folder: gone, ..CodexAsk::chat() }.ensure(id));
+        assert!(why.contains("does not exist"), "{why}");
+        use super::super::folder::{in_git_repository, machine_has_unread_source};
+        if !in_git_repository(std::path::Path::new(&plain)) {
+            // Claude Code's refusal only where nothing Luna cannot read could
+            // give it a WorktreeCreate hook (folder.rs).
+            if !machine_has_unread_source() {
+                let why = refused(id, ClaudeAsk { folder: plain.clone(), worktree: true, ..ClaudeAsk::chat() }.ensure(id));
+                assert!(why.contains("not in a git repository"), "{why}");
+                let named = ClaudeAsk { folder: plain.clone(), worktree: true, worktree_name: Some("feature-x"), ..ClaudeAsk::chat() };
+                assert!(refused(id, named.ensure(id)).contains("not in a git repository"), "a named worktree too");
+            }
+            let why = refused(id, CodexAsk { folder: plain.clone(), worktree: Some(true), ..CodexAsk::chat() }.ensure(id));
+            assert!(why.contains("not in a git repository"), "{why}");
+        }
+        let data = crate::paths::data_dir();
+        for file in [data.join("hooks").join(format!("{id}.json")), data.join("mcp").join(format!("{id}.json"))] {
+            assert!(!file.exists(), "{} was written", file.display());
+        }
+        // The same folder without a worktree starts as ever.
+        let r = Redact::for_chat(id).with(plain.clone(), "<plain>");
+        assert_eq!(ClaudeAsk { folder: plain, ..ClaudeAsk::chat() }.start(id, &r).cwd, "<plain>");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The variables every start goes without, as applied.
@@ -1123,7 +1211,15 @@ mod tests {
         const ID: &str = "golden-claude-login";
         const ACC: &str = "/golden/acc-claude-login";
         let r = Redact::for_chat(ID);
-        let s = ClaudeAsk { folder: ACC.into(), account: ACC.into(), tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
+        let s = ClaudeAsk {
+            folder: ACC.into(),
+            account: ACC.into(),
+            tools: Some(true),
+            guard: Some(true),
+            handoff: Some(50),
+            ..ClaudeAsk::chat()
+        }
+        .start(ID, &r);
         assert_eq!(
             s.args,
             strings(&[
@@ -1134,15 +1230,44 @@ mod tests {
                 "--permission-mode",
                 "default",
                 "--settings",
-                "<settings-file>",
-                "--add-dir",
-                "<notes-dir>",
+                r#"{"permissions":{"deny":["Read(//<core-dir>/**)"]}}"#,
             ])
         );
         assert_eq!(s.envs, claude_envs(ID, ACC), "no token: not a chat agents may reach");
-        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)), "no guard: its person did not ask");
-        assert_eq!(s.mcp, None);
+        assert!(s.settings.is_none() && s.mcp.is_none() && s.instructions.is_none(), "no file of Luna's: the core's deny goes inline");
         assert_eq!(s.cwd, ACC);
+        assert_eq!(s.value("core-read-deny").map(|v| v.starts_with("permissions.deny Read(//<core-dir>/**) in --settings {")), Some(true));
+        assert!(
+            !s.keys().iter().any(|k| ["activity-hooks", "guard", "luna-tools", "notes-dir", "auto-handoff"].contains(k)),
+            "{:?}",
+            s.keys()
+        );
+    }
+
+    /// The login pane's own id, `login:<provider>:<name>` (LoginModal.tsx):
+    /// a start under it writes nothing under the data dir, and so no name with
+    /// a `:`, which Windows refuses (os error 123) and which once kept every
+    /// Claude Code login from starting.
+    #[test]
+    fn a_login_start_writes_no_file_of_its_own() {
+        const ID: &str = "login:claude:golden";
+        let account = std::env::temp_dir().join(format!("luna-golden-login-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let data = crate::paths::data_dir();
+        let names = |sub: &str| -> Vec<String> {
+            std::fs::read_dir(data.join(sub))
+                .map_or_else(|_| Vec::new(), |d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        };
+        let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
+        let s = ClaudeAsk { folder: acc.clone(), account: acc, tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(s.cwd, "<acc>");
+        assert!(s.args.iter().all(|a| !a.contains("login")), "{:?}", s.args);
+        for sub in ["hooks", "mcp", "handoffs", "media"] {
+            let named: Vec<String> = names(sub).into_iter().filter(|n| n.contains(':') || n.starts_with("login")).collect();
+            assert!(named.is_empty(), "{sub}/ holds {named:?}");
+        }
+        let _ = std::fs::remove_dir_all(&account);
     }
 
     /// A chat the window runs is the person's, never a helper: with tools, a role
@@ -1312,7 +1437,7 @@ mod tests {
     impl CodexAsk {
         fn chat() -> Self {
             CodexAsk {
-                folder: FOLDER.into(),
+                folder: golden::project(),
                 account: CODEX_ACC.into(),
                 model: Some("gpt-5.5"),
                 effort: "medium",
@@ -1329,26 +1454,26 @@ mod tests {
         }
 
         fn start(self, id: &str, r: &Redact) -> Started {
+            started(id, r, self.ensure(id))
+        }
+
+        fn ensure(self, id: &str) -> impl std::future::Future<Output = Result<String, String>> {
             let s = |v: Option<&str>| v.map(str::to_owned);
-            started(
-                id,
-                r,
-                ensure_codex_session(
-                    id.into(),
-                    self.folder,
-                    self.account,
-                    s(self.model),
-                    self.effort.into(),
-                    self.approval.into(),
-                    self.sandbox.into(),
-                    self.worktree,
-                    s(self.resume),
-                    self.login,
-                    self.tools,
-                    self.hooks_unasked,
-                    self.guard,
-                    self.handoff,
-                ),
+            ensure_codex_session(
+                id.into(),
+                self.folder,
+                self.account,
+                s(self.model),
+                self.effort.into(),
+                self.approval.into(),
+                self.sandbox.into(),
+                self.worktree,
+                s(self.resume),
+                self.login,
+                self.tools,
+                self.hooks_unasked,
+                self.guard,
+                self.handoff,
             )
         }
     }

@@ -36,6 +36,8 @@ pub fn kill(id: &str) -> Vec<String> {
         (pid, job, pid.map(crate::procs::pin))
     };
     reg().1.notify_all();
+    // Its turn's exit is Luna's doing, not its CLI version's.
+    crate::cli::session_stopped(id);
     crate::pty::kill_tree(pid);
     let Some(job) = job else { return Vec::new() };
     let ended = crate::procs::end_leftovers(&job, None);
@@ -334,7 +336,7 @@ pub fn remove(id: &str) -> Option<String> {
     reg().1.notify_all();
     // What each of its turns was started with, as a chat's go when it is deleted.
     for sub in ["hooks", "mcp"] {
-        let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{id}.json")));
+        let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{}.json", crate::paths::id_file_name(id))));
     }
     crate::pty::claude_instructions_dir(id, None);
     changed();
