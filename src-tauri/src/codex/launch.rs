@@ -217,6 +217,14 @@ pub(crate) fn no_update_check() -> [String; 2] {
     ["-c".into(), NO_UPDATE_CHECK.into()]
 }
 
+/// What `--approve-for-me` stands for, as `-c` overrides: Codex 0.167.0 turns the
+/// flag into exactly these (`take_auto_review_config_overrides`,
+/// utils/cli/src/shared_options.rs at rust-v0.167.0). `codex exec resume` has no
+/// such flag ("unexpected argument") but takes `-c`, so a helper's later turns
+/// pass these.
+pub(crate) const AUTO_REVIEW_OVERRIDES: [&str; 3] =
+    ["approvals_reviewer=\"auto_review\"", "approval_policy=\"on-request\"", "sandbox_mode=\"workspace-write\""];
+
 /// What keeps a Codex helper to Luna's MCP server, as a Claude Code one is kept
 /// by `--strict-mcp-config`: its account's apps (ChatGPT's connectors, the
 /// stable `features.apps`) and each server its account's `config.toml` defines
