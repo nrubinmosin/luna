@@ -89,13 +89,14 @@ pub(super) fn copies_of(chat: &str) -> Result<PathBuf, String> {
 }
 
 /// `chat`'s drafts folder, checked from Luna's folder of handoffs down
-/// (`private_chain`) before it is named to the chat or given to its CLI.
-/// Claude Code reaches it within the folder of copies it is given
-/// (`--add-dir`), Codex by an `--add-dir` of its own, which its sandbox
-/// writes into.
+/// before it is named to the chat or given to its CLI
+/// (`boundary::sandbox_chain`: as `private_chain`, but the drafts folder keeps
+/// the grant a CLI's sandbox gave itself there). Claude Code reaches it within
+/// the folder of copies it is given (`--add-dir`), Codex by an `--add-dir` of
+/// its own, on which its Windows sandbox grants itself write (0.167.0).
 pub fn drafts_of(chat: &str) -> Result<PathBuf, String> {
     dir_of(chat)?;
-    private_chain(&root(), &[&crate::paths::id_file_name(chat), DRAFTS])
+    crate::boundary::sandbox_chain(&root(), &[&crate::paths::id_file_name(chat), DRAFTS])
 }
 
 /// A session's `settings` as a caller is shown them (agents/list.rs, which

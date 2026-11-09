@@ -56,10 +56,11 @@ the window at every start (`ensure_*_session`) and set on a running chat by
 
 `luna_session_handoff` without `file` (`served::instructions`) answers as plain
 text: the steps (the CLI's own jobs ended, the file written, the call with
-`file`, the turn ended), where the file goes (a file of its own in
-`<data>/handoffs/<chat>/drafts/`, `handoff-<random>.md`, made new, empty and
-private for the answer, `new_draft`, so no link at a name used before is handed
-over; or any file outside the data dir), what Luna adds to the next conversation itself (`LUNA_ADDS`, the one
+`file`, the turn ended), where the file goes (a name of its own in
+`<data>/handoffs/<chat>/drafts/`, `handoff-<random>.md`, not there yet, for the
+CLI to make the file at, `new_draft`: a file Luna made first, private, Codex's
+Windows sandbox could not write, and in the checked private folder nothing can
+be put at a name nobody knows yet; or any file outside the data dir), what Luna adds to the next conversation itself (`LUNA_ADDS`, the one
 list of it), and the instructions past their front matter, naming whose they
 are and their SHA-256. A chat that can write no file (Codex's read-only
 sandboxes, Claude Code's plan mode: `unwritable`) is told so.
@@ -93,11 +94,22 @@ read below them: the record loaded or saved (`store.rs`), a copy written
 (`copies_of`), the drafts folder named or given to a CLI (`drafts_of`). In a
 data folder others share, a link planted on the way would otherwise take all
 of it to a folder another user holds; `handoffs` is one of the data folder's
-own names (`paths.rs` `OWN_NAMES`) for the shared-folder privacy pass. What
-lies in them is checked at its own name: `handoffs.json` and a copy are read
-only as private files of this user's, by their handle, never through a link
-(`secret::read_private`; a store that is not one is not taken up, and the log
-says so), a draft only as one of this user's making (`secret::own_file`), and
+own names (`paths.rs` `OWN_NAMES`) for the shared-folder privacy pass. The
+drafts folder alone is checked by `boundary::sandbox_chain`'s last step
+(`secret::sandbox_dir`): on Windows its DACL may keep, beside the private
+three (this user, SYSTEM, Administrators), the allow ACEs a CLI's sandbox gave
+itself for a SID of the account form that names no account
+(`secret::sddl_private_but_sandbox`, `acl::names_account`): Codex 0.167.0's
+unelevated sandbox adds an inheritable Modify ACE for the account's capability
+SID to each `--add-dir`, which a private DACL put back would take away. Any
+other ACE (a user, a group, Everyone) and the folder is made private again,
+that grant with it; the data folder's privacy check takes such a folder as
+private too. What lies in them is checked at its own name: `handoffs.json` and
+a copy are read only as private files of this user's, by their handle, never
+through a link (`secret::read_private`; a store that is not one is not taken
+up, and the log says so), a draft only as one of this user's making
+(`secret::own_file`: owned by this user or what this process makes files as,
+of one name, open to its sandbox's SID as it inherits the folder's grant), and
 a save renames a new private file into place, over a link rather than through
 it. A chat deleted has its folder removed only where neither it nor
 `handoffs` is a link.

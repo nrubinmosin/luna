@@ -103,16 +103,24 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
     Ok(facts::how_to(&source_words(&r), &r.sha256, r.body(), &suggested.to_string_lossy(), unwritable(&settings)))
 }
 
-/// A file for the chat to write its handoff in, in its `drafts` folder: a
-/// name of its own, made here new, empty and private (`secret::create_private`,
-/// which makes nothing where anything is), so the path named to the chat is a
-/// plain file of this user's. A name used before could hold a link put there
-/// while the folder was still others' to write, and a write through it would
-/// land wherever it leads before the handoff's own check refuses the draft.
+/// A name for the chat to write its handoff at, in its `drafts` folder: one of
+/// its own, random and not there yet. Nothing is made at it: the CLI makes the
+/// file, as its own (a file Luna made first, private, Codex's Windows sandbox
+/// could not write, 0.167.0: its grant on the folder reaches only what inherits
+/// it). Nothing can be put at the name first either: the folder is checked
+/// private (`drafts_of`), open to none but this user and the CLI's own sandbox,
+/// and the name is not known until it is given. A name used before could
+/// hold a link put there while the folder was still others' to write.
 pub(super) fn new_draft(drafts: &Path) -> Result<std::path::PathBuf, String> {
-    let path = drafts.join(format!("handoff-{}.md", crate::secret::random_hex(4)));
-    crate::secret::create_private(&path).map_err(|e| format!("could not make {}: {e}", path.display()))?;
-    Ok(path)
+    for _ in 0..8 {
+        let path = drafts.join(format!("handoff-{}.md", crate::secret::random_hex(8)));
+        match std::fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(path),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+            Ok(_) => continue,
+        }
+    }
+    Err(format!("no free name for a handoff in {}", drafts.display()))
 }
 
 /// Why a chat run with `settings` can write no file, its handoff included:
