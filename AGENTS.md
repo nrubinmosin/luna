@@ -31,6 +31,13 @@ Rules for anyone (person or agent) changing Luna.
 - There is no local Rust or Node toolchain: everything builds in Docker, on
   the versions pinned in `src-tauri/rust-toolchain.toml` and `.node-version`.
   The scripts take PowerShell 7.4+ (pwsh).
+- Run `docker` from pwsh, not from Git Bash (the shell of Claude Code's Bash
+  tool on Windows). There MSYS rewrites a bind mount like
+  `-v /e/Projects/x:/app` into `E:\Projects\x;C:\<Git's folder>\app`, and
+  Docker makes an empty folder `E:\Projects\x;C` beside the project, which
+  then turns up as a project folder. If it has to be Git Bash, put
+  `MSYS_NO_PATHCONV=1` before the command and give the host path with its
+  drive letter (`-v E:/Projects/x:/app`).
 - `src-tauri/gen/schemas/` is not tracked: tauri-build writes it on every
   build, and `capabilities/*.json` point their `$schema` at it. In a fresh
   clone, `./scripts/gate.ps1 -Group windows` (or any Windows build) writes it.
