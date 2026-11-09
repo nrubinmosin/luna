@@ -657,6 +657,22 @@ mod tests {
         }
     }
 
+    /// Every session with Luna's tools reads the same guide, instructions and
+    /// tool list; auto-handoff, which only a chat with it on is to know of, is
+    /// in none of them: no topic, no section, no word in the index, the enum or
+    /// a tool's description. That chat has it from the tool itself.
+    #[test]
+    fn what_every_tooled_session_reads_says_nothing_of_auto_handoff() {
+        assert!(TOPICS.iter().all(|(topic, title)| !topic.contains("handoff") && !title.to_lowercase().contains("handoff")));
+        for (title, text) in sections() {
+            assert!(!text.to_lowercase().contains("handoff"), "{title}");
+        }
+        assert!(!guide_text(None).unwrap().to_lowercase().contains("handoff"));
+        assert!(guide_text(Some("luna_session_handoff")).is_err());
+        assert!(!GUIDE.to_lowercase().contains("handoff") && !INSTRUCTIONS.to_lowercase().contains("handoff"));
+        assert!(!tools().to_string().to_lowercase().contains("handoff"));
+    }
+
     #[test]
     fn the_instructions_name_the_notice_tag() {
         // What a model is told to look for is what every notice opens with.
