@@ -27,6 +27,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   sessions it runs and, with none, to stop, as a core of another build always
   was; with sessions the banner asks you to restart it.
 
+### Fixed
+
+- The new-chat dialog's Wait guard started off every time, with no default in
+  Settings and nothing kept for a folder. It now starts like the other boxes:
+  from Settings → Chats (off unless you turn it on), or from the folder's own
+  start, which "keep for this folder" now keeps it in, "back to …" restores and
+  picking another folder resets. Ctrl+Shift+N takes the same start. On Codex
+  the box shows off, and the chat starts without it, unless hooks run unasked.
+  A folder's start kept by an earlier version leaves the guard to Settings.
+
 ## [0.11.0] - 2026-11-09
 
 Settings is a dialog of pages, each CLI follows a known-good or latest channel

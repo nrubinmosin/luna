@@ -7,6 +7,7 @@ import type { ClaudeDefaultsDto, CodexDefaultsDto } from '../../ipc/defaults';
 import type { Account } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from '../chats/chats.store';
+import { quickChat } from './create';
 import { NewChatDialog } from './NewChatDialog';
 import { useNewChat } from './newchat.store';
 
@@ -281,5 +282,109 @@ describe('NewChatDialog: what Luna adds only when asked', () => {
     expect(screen.getByRole('checkbox', { name: 'Wait guard' })).toBeDisabled();
     await user.click(screen.getByRole('checkbox', { name: 'Hooks unasked' }));
     expect(screen.getByRole('checkbox', { name: 'Wait guard' })).toBeEnabled();
+  });
+});
+
+describe('NewChatDialog: where the wait guard starts', () => {
+  const guardBox = () => screen.getByRole('checkbox', { name: 'Wait guard' });
+
+  it('starts as Settings has it, and makes the chat so', async () => {
+    useNewChat.getState().setDefault('guard', true);
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    expect(guardBox()).toBeChecked();
+    expect(screen.getByText('as set in Settings')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ guard: true });
+  });
+
+  it('is kept for the folder with the other boxes, and back to that start; the defaults anyway keep nothing', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    expect(guardBox()).not.toBeChecked();
+    await user.click(guardBox());
+    expect(screen.getByText('back to the default')).toBeInTheDocument();
+    await user.click(screen.getByText('keep for this folder'));
+    const startOfRepo = () => useChats.getState().folders.find(f => f.path === '/repo')?.start;
+    expect(startOfRepo()).toEqual({ worktree: true, tools: false, guard: true });
+    expect(screen.getByText('as kept for this folder')).toBeInTheDocument();
+
+    await user.click(guardBox());
+    await user.click(screen.getByText('back to this folder’s start'));
+    expect(guardBox()).toBeChecked();
+
+    // Flipped back to what Settings says, the folder has no start of its own.
+    await user.click(guardBox());
+    await user.click(screen.getByText('keep for this folder'));
+    expect(startOfRepo()).toBeUndefined();
+    expect(screen.getByText('as set in Settings')).toBeInTheDocument();
+  });
+
+  it('starts afresh in another folder, as that folder starts', async () => {
+    useChats.getState().setStart('/repo', { worktree: true, tools: false, guard: true });
+    useChats.getState().rememberFolder('/other');
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    expect(guardBox()).toBeChecked();
+    await user.click(screen.getByTitle('/other'));
+    expect(guardBox()).not.toBeChecked();
+    await user.click(screen.getByTitle('/repo'));
+    expect(guardBox()).toBeChecked();
+  });
+
+  it('follows the default where a folder’s start was kept before it had the guard', () => {
+    // As an earlier Luna stored it: the two boxes it knew, no guard.
+    useChats.getState().setStart('/repo', { worktree: false, tools: true });
+    useNewChat.getState().setDefault('guard', true);
+    render(<NewChatDialog />);
+    expect(guardBox()).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Git worktree' })).not.toBeChecked();
+    expect(screen.getByText('as kept for this folder')).toBeInTheDocument();
+  });
+
+  it('shows off on Codex without hooks unasked, whatever the start says, and makes the chat so', async () => {
+    useNewChat.getState().setDefault('guard', true);
+    useNewChat.getState().remember('/repo', { provider: 'codex', name: 'gpt' });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(guardBox()).not.toBeChecked();
+    expect(guardBox()).toBeDisabled();
+    // Nothing on screen differs from the start, so nothing says it does.
+    expect(screen.getByText('as set in Settings')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ hooksUnasked: false, guard: false });
+  });
+
+  it('takes the start on Codex once its hooks run unasked', async () => {
+    useNewChat.getState().setDefault('guard', true);
+    useNewChat.getState().remember('/repo', { provider: 'codex', name: 'gpt' });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    await user.click(screen.getByRole('checkbox', { name: 'Hooks unasked' }));
+    expect(guardBox()).toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ hooksUnasked: true, guard: true });
+  });
+});
+
+describe('quick chat: the wait guard', () => {
+  it('starts as the folder’s start has it', async () => {
+    useChats.getState().setStart('/repo', { worktree: false, tools: false, guard: true });
+    useNewChat.getState().remember('/repo', { provider: 'claude', name: 'work' });
+    await quickChat();
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ provider: 'claude', guard: true });
+  });
+
+  it('on Codex, only with the folder’s hooks unasked', async () => {
+    useNewChat.getState().setDefault('guard', true);
+    useNewChat.getState().remember('/repo', { provider: 'codex', name: 'gpt' });
+    await quickChat();
+    vi.mocked(trust.codexHooksStart).mockResolvedValueOnce({ default: false, kept: true });
+    await quickChat();
+    const [without, unasked] = allChats(useChats.getState().folders);
+    expect(without).toMatchObject({ hooksUnasked: false, guard: false });
+    expect(unasked).toMatchObject({ hooksUnasked: true, guard: true });
   });
 });

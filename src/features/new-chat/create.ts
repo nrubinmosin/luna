@@ -17,7 +17,7 @@ export type ChatSpec = {
   worktree: boolean;
   /** Attach Luna's MCP tools so the session can spawn and drive others. */
   tools?: boolean;
-  /** The guard against endless waits (ticked in the dialog). */
+  /** The guard against endless waits (ticked in the dialog, or the start's). */
   guard?: boolean;
   /** Auto-handoff (ticked in the dialog, with Luna tools) and its threshold. */
   autoHandoff?: boolean;
@@ -144,14 +144,15 @@ export async function quickChat(): Promise<void> {
 
   // The folder's own start, else the defaults from Settings — not the chat on
   // screen, which may have been a one-off.
-  const { worktree, tools } = startFor(chats.folders.find(f => f.path === folder));
+  const { worktree, tools, guard } = startFor(chats.folders.find(f => f.path === folder));
   try {
     if (account.provider === 'claude') {
       const { values } = await claude.settingsDefaults(account.path, folder);
-      await createChat({ provider: 'claude', folder, account, settings: values, worktree, tools });
+      await createChat({ provider: 'claude', folder, account, settings: values, worktree, tools, guard });
     } else {
       const { values } = await codex.settingsDefaults(account.path, folder);
       const hooks = await codexHooksStart(folder);
+      const hooksUnasked = hooks.kept ?? hooks.default;
       await createChat({
         provider: 'codex',
         folder,
@@ -159,7 +160,9 @@ export async function quickChat(): Promise<void> {
         settings: values,
         worktree,
         tools,
-        hooksUnasked: hooks.kept ?? hooks.default
+        hooksUnasked,
+        // Codex runs the guard's hook only with hooks unasked, as in the dialog.
+        guard: guard && hooksUnasked
       });
     }
   } catch {
