@@ -50,7 +50,10 @@ and a why. Per provider:
 `cli.rs` keeps Luna's own copies in `<data>/claude-cli/versions/<ver>/claude.exe`
 and `<data>/codex-cli/versions/<ver>/bin/codex.exe`, with `current` naming the
 active version folder ([ADR-0013](../adr/0013-own-cli-binaries.md)). Versions are
-never overwritten; `PATH` is the fallback until a copy exists. Which version
+never overwritten. Nothing else is started, the CLI on `PATH` included: until
+the first copy is installed a session is refused as not installed yet, and a
+`current` that names a missing, incomplete or unrecorded directory is refused as
+damaged (`cli.rs` `launch_in`), never replaced by whatever a bare name finds. Which version
 the pass installs is the provider's channel
 ([ADR-0019](../adr/0019-cli-channels-and-rollback.md), `cli/choice.rs`):
 `known-good` (the default) takes the newest version on the list compiled into

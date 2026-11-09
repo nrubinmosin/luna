@@ -18,7 +18,7 @@ const BIN_NAME: &str = "claude.exe";
 #[cfg(not(windows))]
 const BIN_NAME: &str = "claude";
 
-pub static SOURCE: Source = Source { root_name: "claude-cli", bin_rel: BIN_NAME, path_fallback: "claude", latest, fetch };
+pub static SOURCE: Source = Source { root_name: "claude-cli", bin_rel: BIN_NAME, latest, fetch };
 
 fn platform() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {

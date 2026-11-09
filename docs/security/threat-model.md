@@ -44,7 +44,7 @@ flowchart LR
   S -- "HTTPS" --> API
   W -- "HTTPS, minisign-verified" --> GH
   C -- "HTTPS; Claude Code: manifest signed by a pinned key,<br/>Codex: sha256 from the same origin<br/>cli.rs, claude/cli.rs, codex/cli.rs" --> VR
-  C -- "install, then exec<br/>(else PATH fallback)" --> D
+  C -- "install, then exec<br/>(the managed copy only)" --> D
 ```
 
 ## 2. Assets
@@ -302,7 +302,7 @@ binary and checksum replaced together, installed and run (F10).
 | T, E | Archive extraction writes outside the version folder, or fills the disk | mitigated: Codex entries go through `unpack_in`, which refuses paths that climb out, links are refused, entries and bytes are capped (`codex/cli.rs`, `unpack_capped`); Claude Code is a single file renamed after the hash check |
 | T, D | A crash or power cut mid-install leaves a version that runs incomplete | mitigated: only a recorded version runs; files and record are flushed before the rename that publishes them (`cli.rs`, `persist`) |
 | T, E | A link or junction planted below the CLI root turns a cleanup into a delete outside it | mitigated: `link_free_below` on every path deleted, `remove_tree` removes a link as itself (`cli.rs`). Check-then-use remains (R6) |
-| T, E | Before the first download completes, a session runs the bare name from `PATH` (`cli.rs`, `binary`) | accepted: whatever the user installed. Unverified: on Windows the lookup may consider the session's working directory first; needs a test with a planted `claude.exe` |
+| T, E | Before the first download completes, or with its managed copy damaged, a session runs the bare name from `PATH`, which no signature, checksum, probe or `minSafe` has checked, and which a lookup may find in the session's working directory | fixed (0.11.0): only the managed copy `current` names is started (`cli.rs` `launch_in`); nothing installed yet and a damaged copy (`current` unreadable or naming no version directory, files missing from its record, no record in a tree Luna installed) are each refused with what they are, never replaced by the CLI on `PATH`. Tested: `cli.rs` `nothing_installed_or_a_damaged_copy_starts_nothing`. The live suite's test executables take the CLI its script resolves, by its full path (`live_cli`, `#[cfg(test)]` only) |
 
 ## 5. MCP authorization matrix
 

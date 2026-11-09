@@ -380,7 +380,7 @@ pub struct SessionDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// The version of Luna's copy of the CLI its process last started from
-    /// (cli.rs `launch`); none for one on the CLI from PATH, or not started
+    /// (cli.rs `launch`); none for one the live suite started, or not started
     /// since this core began.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cli_version: Option<String>,

@@ -9,7 +9,7 @@ export interface CliStatusDto {
   phase: 'idle' | 'checking' | 'downloading' | 'error';
   /** Version Luna's own copy is at; null until the first download lands. */
   version: string | null;
-  /** The binary sessions spawn — the bare name on PATH while there is no managed copy. */
+  /** The binary sessions spawn; empty while there is no managed copy to start. */
   path: string;
   /** The newest the CLI's own release channel offers, once a check has come back. */
   latest: string | null;
