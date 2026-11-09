@@ -99,11 +99,7 @@ export function RecommendedDialog({
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{
-          width: 600,
-          maxWidth: 'calc(100vw - 32px)',
-          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
-        }}
+        style={{ width: 600, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Recommended settings — {account.name}</div>
@@ -212,15 +208,15 @@ export function RecommendedDialog({
             })}
           </div>
           {error && <div style={{ fontSize: 'var(--fs-3)', color: 'oklch(.58 .2 25)' }}>{error}</div>}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
-            {done && !busy && !changes && (
-              <span style={{ flex: 1, fontSize: 'var(--fs-3)', color: 'var(--dim)' }}>Written to {file}.</span>
-            )}
-            <button onClick={onClose}>Close</button>
-            <button className="primary" disabled={busy || !changes} onClick={() => void apply()}>
-              {busy ? 'Applying…' : `Apply ${changes}`.trim()}
-            </button>
-          </div>
+        </div>
+        <div className="dialog-foot">
+          {done && !busy && !changes && (
+            <span style={{ flex: 1, fontSize: 'var(--fs-3)', color: 'var(--dim)' }}>Written to {file}.</span>
+          )}
+          <button onClick={onClose}>Close</button>
+          <button className="primary" disabled={busy || !changes} onClick={() => void apply()}>
+            {busy ? 'Applying…' : `Apply ${changes}`.trim()}
+          </button>
         </div>
       </div>
     </div>,

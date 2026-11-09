@@ -219,14 +219,11 @@ export function ConfigEditor({ account, onClose }: { account: Account; onClose: 
         className="window"
         style={{
           width: 760,
-          maxWidth: 'calc(100vw - 32px)',
           height: 'min(640px, calc(100vh - 48px))',
-          display: 'flex',
-          flexDirection: 'column',
           boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
         }}
       >
-        <div className="title-bar" style={{ flex: 'none' }}>
+        <div className="title-bar">
           <div className="title-bar-text">
             {fileName} — {account.name}
           </div>
@@ -234,10 +231,7 @@ export function ConfigEditor({ account, onClose }: { account: Account; onClose: 
             <button aria-label="Close" onClick={close} />
           </div>
         </div>
-        <div
-          className="window-body"
-          style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8 }}
-        >
+        <div className="window-body" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div
             style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-2)', color: 'var(--faint)' }}
           >
@@ -267,20 +261,20 @@ export function ConfigEditor({ account, onClose }: { account: Account; onClose: 
               </span>
             ) : null}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button
-              onClick={() => void format()}
-              disabled={!!problem || !file}
-              title="Lay the file out the way the CLI writes it; saving does this too"
-            >
-              Format
-            </button>
-            <span style={{ flex: 1 }} />
-            <button onClick={close}>Close</button>
-            <button className="primary" onClick={() => void save()} disabled={!dirty || saving || !!problem}>
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-          </div>
+        </div>
+        <div className="dialog-foot">
+          <button
+            onClick={() => void format()}
+            disabled={!!problem || !file}
+            title="Lay the file out the way the CLI writes it; saving does this too"
+          >
+            Format
+          </button>
+          <span style={{ flex: 1 }} />
+          <button onClick={close}>Close</button>
+          <button className="primary" onClick={() => void save()} disabled={!dirty || saving || !!problem}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
         </div>
       </div>
     </div>,

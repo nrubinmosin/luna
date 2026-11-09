@@ -129,6 +129,10 @@ buttons, fields, checkboxes, radios and scrollbars are redrawn in
   transcript text is drawn as text; the CSP forbids inline script
   ([ADR-0008](../adr/0008-strict-csp-with-inline-styles.md)).
 - A provider-specific concept lives under `features/providers/<cli>/`.
+- A dialog is a `.window` straight on its `.scrim`: `windows.css` holds it to
+  the app's window less a margin, its title bar on top and its action row, a
+  `.dialog-foot` after the `.window-body`, at the bottom, and the body scrolls
+  what does not fit. A long `.popover` scrolls the same way.
 
 ## Testing
 

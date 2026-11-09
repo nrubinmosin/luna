@@ -49,7 +49,8 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Something broke in the UI</div>
                 <pre
                   style={{
-                    maxHeight: 240,
+                    // Shorter on a short window, so the buttons below stay on it.
+                    maxHeight: 'min(240px, calc(100vh - 220px))',
                     overflow: 'auto',
                     margin: 0,
                     padding: 8,
