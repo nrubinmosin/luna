@@ -17,6 +17,13 @@ into or browsed to.
 
 The account decides which CLI runs, and the rest of the dialog follows.
 
+A folder a chat could not start in is said under the folder list, and Create
+waits until another is picked: one that no longer exists, or, with **Git
+worktree** ticked, one outside a git repository (both CLIs make their worktree
+with git; Claude Code also through a `WorktreeCreate` hook in the account's or
+the project's settings, which Luna lets through). A chat whose folder has gone
+since says the same in its pane instead of starting.
+
 These boxes add something to the CLI only when you ask for it:
 
 - **Trust this folder in "<account>"** shows when the account has not trusted

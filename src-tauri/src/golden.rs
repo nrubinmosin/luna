@@ -37,6 +37,7 @@ impl Redact {
             .with(path(data.join("handoffs").join(&name)), "<handoff-dir>")
             .with(crate::claude::launch::claude_read_deny(&core, cfg!(windows)), "Read(//<core-dir>/**)")
             .with(core, "<core-dir>")
+            .with(project(), PROJECT)
     }
 
     pub(crate) fn with(mut self, from: impl Into<String>, to: &str) -> Self {
@@ -177,6 +178,23 @@ impl Redact {
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
         serde_json::from_str(&self.text(&text)).unwrap()
     }
+}
+
+/// What the golden starts' project folder is put as.
+pub(crate) const PROJECT: &str = "/golden/project";
+
+/// The project folder the golden starts run in: one that is there, as a start
+/// refuses a folder that is not (pty/folder.rs), with a `.git` folder of its
+/// own, enough for a worktree to be asked for in it. Made once, empty, and
+/// put as `PROJECT` in what is compared.
+pub(crate) fn project() -> String {
+    static DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join("luna-golden-project");
+        std::fs::create_dir_all(dir.join(".git")).expect("the golden project folder");
+        dir.to_string_lossy().into_owned()
+    })
+    .clone()
 }
 
 /// The `CLAUDE.md` a start of chat `id` copied into its instructions folder,

@@ -44,6 +44,11 @@ New-Item -ItemType Directory -Force $out | Out-Null
 # `reaches_luna`): said before a build rather than by the dev caller's first
 # spawn.
 if ($DevFolder) {
+    # A folder that is not there is refused at the dev caller's first spawn
+    # (pty/folder.rs); said here, before a build.
+    if (-not (Test-Path -LiteralPath $DevFolder -PathType Container)) {
+        throw "-DevFolder $DevFolder is not a folder that exists"
+    }
     $outFull = [IO.Path]::GetFullPath($out).TrimEnd('\') + '\'
     $folderFull = [IO.Path]::GetFullPath($DevFolder, (Get-Location).Path).TrimEnd('\') + '\'
     $ignoreCase = [StringComparison]::OrdinalIgnoreCase

@@ -58,6 +58,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   (its one setting, the core-folder deny, goes on the command line), and every
   file Luna names for a session spells the session's id as a name every
   volume takes. Codex's login wrote nothing of the kind and was not affected.
+- A chat is no longer started in a folder its CLI cannot run in. A folder that
+  no longer exists, or a Git worktree asked for outside a git repository (where
+  Claude Code and Codex both exit at once), is said in the New chat dialog
+  before Create, in the pane of a chat whose folder has gone, and to an agent
+  spawning a helper there. Claude Code's `WorktreeCreate` hook, which makes a
+  worktree without git, is let through when the account's or the project's
+  settings name it.
 
 ## [0.11.0] - 2026-11-09
 

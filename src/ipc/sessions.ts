@@ -11,6 +11,13 @@ import type {
 } from '../shared/types';
 import { MODEL_CLI, PERM_CLI } from '../shared/types';
 
+/** Why a chat of `provider` on this account could not start in `folder`,
+ *  `worktree` saying whether it is to make one: a folder that is not there,
+ *  or a worktree outside a git repository. Null when nothing stands in the
+ *  way; the start refuses the same (pty/folder.rs). */
+export const chatFolderRefusal = (provider: Provider, accountPath: string, folder: string, worktree: boolean) =>
+  call<string | null>('chat_folder_refusal', { provider, accountPath, folder, worktree }, null);
+
 export interface ClaudeSessionSpec {
   chatId: string;
   folder: string;
