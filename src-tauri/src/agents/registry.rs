@@ -513,7 +513,7 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
     // A helper that only waits out autoDelete holds no place under its chat's
     // cap (`under_cap`); text sets it to work, and in a place again: one there
     // must be, taken here under the lock the cap is counted under.
-    if r.auto.get(target).is_some_and(|a| a.idle_since.is_some()) {
+    if r.auto.get(target).is_some_and(|a| a.released) {
         let (counted, coming) = under_cap(&r, target, None);
         if counted.len() + coming >= MAX_DESCENDANTS {
             return Err(format!(
@@ -527,6 +527,7 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
     // decides under: it cannot be taken for deletion while this is delivered.
     if let Some(a) = r.auto.get_mut(target) {
         a.idle_since = None;
+        a.released = false;
     }
     Ok(known)
 }
@@ -606,7 +607,7 @@ mod tests {
         for id in &kids {
             register(id, Provider::Claude, "C:\\p", account, Some("dc-top"), false, none.clone());
             // Its answer delivered, waiting out autoDelete: no place taken.
-            reg().lock().unwrap().auto.insert(id.clone(), Auto { idle_since: Some(1), deleting: false });
+            reg().lock().unwrap().auto.insert(id.clone(), Auto { idle_since: Some(1), deleting: false, released: true });
         }
         // Each sent to takes a place again, as long as there is one.
         for id in &kids[..8] {
@@ -615,8 +616,14 @@ mod tests {
         for id in &kids[8..] {
             let e = authorize_send("dc-top", id).err().unwrap();
             assert!(e.contains("delete one first") && e.contains("dc-kid-0"), "{e}");
-            assert!(reg().lock().unwrap().auto[id].idle_since.is_some(), "refused, it stays as it was");
+            assert!(reg().lock().unwrap().auto[id].released, "refused, it stays as it was");
         }
+        // A read starts its autoDelete clock over, and sets no work going: the
+        // place is still to be taken when text does.
+        crate::agents::owed::looked(&kids[9]);
+        assert!(reg().lock().unwrap().auto[&kids[9]].idle_since.is_none());
+        let e = authorize_send("dc-top", &kids[9]).err().unwrap();
+        assert!(e.contains("delete one first"), "read first, then sent to: still counted: {e}");
         for id in kids.iter().map(String::as_str).chain(["dc-top"]) {
             reg().lock().unwrap().auto.remove(id);
             forget(id);
