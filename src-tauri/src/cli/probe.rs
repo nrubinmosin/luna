@@ -196,14 +196,26 @@ fn run(provider: Provider, exe: &Path, home: &Path, args: &[String]) -> Result<(
 /// The probe of `exe`, staged as `version`, run in `home`, a scratch folder
 /// it may write into. Err says what failed, for the bad mark and the log.
 pub(crate) fn probe(provider: Provider, exe: &Path, version: &str, home: &Path) -> Result<(), String> {
-    let (code, text) = run(provider, exe, home, &["--version".into()])?;
+    // The update pass runs in the window, which stays elevated when a core
+    // is started de-elevated from it (elevation.rs): a CLI run from here
+    // would run as administrator, which no session of Luna's ever does (F11).
+    crate::elevation::guard()?;
+    probe_with(provider, version, &|args: &[String]| run(provider, exe, home, args))
+}
+
+/// What a run of the CLI with these arguments gave: its exit code and output.
+type Runner<'a> = &'a dyn Fn(&[String]) -> Result<(Option<i32>, String), String>;
+
+/// The probe's checks, on what `run` says the CLI answers.
+fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), String> {
+    let (code, text) = run(&["--version".into()])?;
     if code != Some(0) || !listed(&text, version) {
         return Err(format!("`--version` said {:?}, not {version}", text.trim().chars().take(80).collect::<String>()));
     }
     for command in commands(provider) {
         let mut args: Vec<String> = command.path.iter().map(|s| s.to_string()).collect();
         args.push("--help".into());
-        let (code, help) = run(provider, exe, home, &args)?;
+        let (code, help) = run(&args)?;
         let words = if command.path.is_empty() { "the command".to_string() } else { format!("`{}`", command.path.join(" ")) };
         if code != Some(0) {
             return Err(format!("{words} --help failed: {}", help.trim().chars().take(200).collect::<String>()));
@@ -216,7 +228,7 @@ pub(crate) fn probe(provider: Provider, exe: &Path, version: &str, home: &Path) 
     if provider == Provider::Codex {
         let mut args = codex_overrides();
         args.extend(["features".to_string(), "list".to_string()]);
-        let (code, text) = run(provider, exe, home, &args)?;
+        let (code, text) = run(&args)?;
         if code != Some(0) || text.contains("failed to load") {
             return Err(format!(
                 "it refuses the hooks and MCP overrides Luna gives it: {}",
@@ -279,6 +291,18 @@ mod tests {
         }
     }
 
+    /// The update pass runs in the window, elevated when Luna was started
+    /// so: the probe runs nothing there, not even a CLI that is not there
+    /// (which would fail as "could not run").
+    #[test]
+    fn an_elevated_process_runs_no_probe() {
+        crate::elevation::refuse_here(Some("runs as administrator"));
+        let why = crate::elevation::refusal().unwrap();
+        let refused = probe(Provider::Codex, Path::new("no-such-codex-exe"), "0.167.0", &std::env::temp_dir());
+        crate::elevation::refuse_here(None);
+        assert_eq!(refused.unwrap_err(), why, "refused before anything was started");
+    }
+
     #[test]
     fn a_flag_is_listed_only_as_a_word_of_its_own() {
         let help = "  -m, --model <MODEL>   the model\n  --modelx  other\n  --json\n";
@@ -298,26 +322,35 @@ mod tests {
         assert!(covers(Provider::Claude, &s(&["--no-such-flag"])).is_err());
     }
 
-    /// The probe end to end on a stand-in for the CLI: a script that answers
-    /// `--version` and `--help` as a fixture says.
-    #[cfg(unix)]
+    /// The probe's checks on a stand-in for the CLI that answers `--version`
+    /// and `--help` as a fixture says, and Codex's config load as given.
     #[test]
     fn a_stand_in_without_a_flag_or_at_another_version_fails_the_probe() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("luna-cli-stand-in-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let help = dir.join("help.txt");
-        std::fs::write(&help, CLAUDE_HELP[0].1).unwrap();
-        let exe = dir.join("claude");
-        let script =
-            format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo '2.1.318 (Claude Code)'; else cat '{}'; fi\n", help.display());
-        std::fs::write(&exe, script).unwrap();
-        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        probe(Provider::Claude, &exe, "2.1.318", &dir).unwrap();
-        assert!(probe(Provider::Claude, &exe, "2.1.319", &dir).unwrap_err().contains("--version"));
-        std::fs::write(&help, CLAUDE_HELP[0].1.replace("--effort", "--effortless")).unwrap();
-        assert!(probe(Provider::Claude, &exe, "2.1.318", &dir).unwrap_err().contains("no longer lists --effort"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let claude = |help: String| {
+            move |args: &[String]| -> Result<(Option<i32>, String), String> {
+                Ok((Some(0), if args == ["--version"] { "2.1.318 (Claude Code)".into() } else { help.clone() }))
+            }
+        };
+        let fine = claude(CLAUDE_HELP[0].1.to_string());
+        probe_with(Provider::Claude, "2.1.318", &fine).unwrap();
+        assert!(probe_with(Provider::Claude, "2.1.319", &fine).unwrap_err().contains("--version"));
+        let dropped = claude(CLAUDE_HELP[0].1.replace("--effort", "--effortless"));
+        assert!(probe_with(Provider::Claude, "2.1.318", &dropped).unwrap_err().contains("no longer lists --effort"));
+
+        let codex = |config: (Option<i32>, &'static str)| {
+            move |args: &[String]| -> Result<(Option<i32>, String), String> {
+                if args == ["--version"] {
+                    return Ok((Some(0), "codex-cli 0.167.0".into()));
+                }
+                if args.ends_with(&["features".to_string(), "list".to_string()]) {
+                    return Ok((config.0, config.1.into()));
+                }
+                let path = args[..args.len() - 1].join(" ");
+                Ok((Some(0), CODEX_HELP.iter().find(|(p, _)| *p == path).map(|(_, h)| h.to_string()).unwrap()))
+            }
+        };
+        probe_with(Provider::Codex, "0.167.0", &codex((Some(0), "apps  stable  true"))).unwrap();
+        let refused = probe_with(Provider::Codex, "0.167.0", &codex((Some(1), "Error: failed to load bootstrap configuration")));
+        assert!(refused.unwrap_err().contains("refuses the hooks and MCP overrides"));
     }
 }

@@ -710,6 +710,9 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
         s.error = None;
         s.channel = channel;
     });
+    if let Some(why) = held_for_elevation() {
+        return Ok(Some(why));
+    }
     let src = source(provider);
     let agent = http();
     // Asked on either channel: on the known-good one it is news for the
@@ -733,8 +736,12 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
         choice::Plan::Install { version, chosen } => (version, chosen),
     };
     // Marks a version that fails it bad, with why: no pass offers it again.
+    // A probe refused for elevation says nothing of the version.
     let probe = |exe: &Path| {
         probe_in(&root, provider, exe, &version).inspect_err(|e| {
+            if crate::elevation::refusal().is_some() {
+                return;
+            }
             if let Err(m) = choice::mark_bad_in(&root, &version, &format!("failed the offline probe: {e}")) {
                 crate::log::warn("cli", &m);
             }
@@ -765,6 +772,14 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
         crate::log::info("cli", &format!("{} {version} is now current (versions/{dir})", provider.as_str()));
     }
     Ok(None)
+}
+
+/// Why the pass changes nothing in a process that runs as administrator: a
+/// new version would have to pass the offline probe, which runs the CLI, and
+/// nothing of Luna's runs a CLI elevated (elevation.rs, F11). Nothing is
+/// fetched or marked bad meanwhile; the next pass of a Luna not run so goes on.
+fn held_for_elevation() -> Option<String> {
+    crate::elevation::refusal().map(|why| format!("no CLI update while Luna runs as administrator: {why}"))
 }
 
 /// `probe::probe` of `exe` in a scratch home under `staging/`, which the next
@@ -1671,6 +1686,18 @@ mod tests {
         let shown = versions_in(&root, BIN, &list(&[])).canary.unwrap();
         assert_eq!((shown.version.as_str(), shown.watched, shown.warned), ("1.0.0", 0, false));
         let _ = remove_tree(&root);
+    }
+
+    /// F11: the pass holds off in an elevated window rather than probe, and
+    /// says why.
+    #[test]
+    fn an_elevated_window_holds_the_update_pass() {
+        // As the OS has it (the Linux check runs as root), then refused here.
+        assert_eq!(held_for_elevation().is_some(), crate::elevation::refusal().is_some());
+        crate::elevation::refuse_here(Some("runs as administrator"));
+        let (held, why) = (held_for_elevation(), crate::elevation::refusal().unwrap());
+        crate::elevation::refuse_here(None);
+        assert!(held.is_some_and(|w| w.contains("as administrator") && w.contains(why)));
     }
 
     #[test]
