@@ -13,12 +13,15 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 pub(super) const KEPT: usize = 20;
 
 /// The threshold notices a chat has had in one conversation: 1 the first, 2
-/// the firmer one.
+/// the firmer one; and for one a handoff began, the share of its context it
+/// began at (watch.rs `level`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Told {
     pub conversation: String,
     pub level: u8,
+    #[serde(default)]
+    pub floor: u64,
 }
 
 /// A handoff through, or given up.
@@ -49,6 +52,10 @@ pub(super) struct Record {
     pub told: Option<Told>,
     #[serde(default)]
     pub switch: Option<Switch>,
+    /// A handoff went through, and the conversation it began is yet to be
+    /// looked at: its first reading is its floor.
+    #[serde(default)]
+    pub fresh: bool,
     #[serde(default)]
     pub past: Vec<Past>,
 }

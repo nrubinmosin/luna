@@ -407,6 +407,7 @@ fn finish(chat: &str, ended: Ended, prompt: &str) {
             done,
             why: why.clone(),
         });
+        r.fresh = done;
         let over = r.past.len().saturating_sub(store::KEPT);
         let gone: Vec<store::Past> = r.past.drain(..over).collect();
         Some((s, gone))
@@ -422,7 +423,7 @@ fn finish(chat: &str, ended: Ended, prompt: &str) {
         }
         Some(why) => {
             crate::log::warn("handoff", &format!("{} gave up handoff {}: {why}", label(chat), s.n));
-            let line = facts::failed_line(s.n, &why, &s.snapshot, reset, prompt);
+            let line = facts::failed_line(s.n, &why, &s.snapshot, reset, offers_tool(chat), prompt);
             reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), line));
             crate::agents::save_chats();
             let name = chat_name(chat).unwrap_or_else(|| chat.to_string());
@@ -482,12 +483,23 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         let Some(path) = transcript_path(pty, &chat) else { continue };
         let Some(context) = crate::background::Context::of(&path, provider) else { continue };
         let conversation = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let level = watch::level(context.pct, threshold);
-        let told = store::records().get(&chat).and_then(|r| r.told.clone());
-        if !watch::due(told.as_ref(), &conversation, level) {
+        let (told, fresh) = store::records().get(&chat).map(|r| (r.told.clone(), r.fresh)).unwrap_or_default();
+        let now = watch::told_now(told.as_ref(), &conversation, context.pct, fresh);
+        let level = watch::level(context.pct, threshold, now.floor);
+        if !watch::due(&now, level) {
+            // A conversation looked at for the first time keeps its floor.
+            if told.as_ref() != Some(&now) {
+                store::change(&chat, |r| {
+                    r.told = Some(now);
+                    r.fresh = false;
+                });
+            }
             continue;
         }
-        store::change(&chat, |r| r.told = Some(store::Told { conversation, level }));
+        store::change(&chat, |r| {
+            r.told = Some(store::Told { level, ..now });
+            r.fresh = false;
+        });
         let line = facts::notice(context.pct, threshold, level == 2);
         reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.clone(), line));
         crate::agents::save_chats();

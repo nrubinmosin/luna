@@ -755,7 +755,7 @@ fn deliver_notice(
         .map(|(id, _, _)| label(id))
         .chain(quota_lines.iter().map(|n| format!("{} at {}%", n.key.1, n.told.level)))
         .chain(spawn_lines.iter().map(|(request, _)| format!("spawn {request}")))
-        .chain(news_lines.iter().map(|_| "a helper's going".to_string()))
+        .chain(news_lines.iter().map(|_| "news no debt brings".to_string()))
         .chain(budget_lines.iter().map(|n| format!("the budget of {}", label(&n.id))))
         .collect::<Vec<_>>()
         .join(", ");
