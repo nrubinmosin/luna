@@ -117,11 +117,14 @@ An install is all or nothing:
    and Codex must load its configuration with Luna's hook and MCP overrides
    (`features list`). A version that fails is marked bad and swept.
 6. **Flip.** The first time, `<root>/recorded` is written. Then `previous` is
-   set to what `current` named, and `current` is
+   set to what `current` named, the floor rises to the version and a canary
+   starts for it (`cli/canary.rs`), all before `current` is
    rewritten through a temp name, flushed before its rename (and its folder
-   fsynced on Unix, `secret::write_private_synced`), to the new folder's name.
-   The floor rises to the version, a canary starts for it
-   (`cli/canary.rs`), and the sweep runs.
+   fsynced on Unix, `secret::write_private_synced`), to the new folder's name:
+   a crash or a failed write leaves the old version current under the new
+   floor at worst, never the reverse. Each pass first raises the floor to
+   what is current (`reconcile_in`), which mends a tree an older order left.
+   Then the sweep runs.
 
 A folder counts as installed only by its record, with every file it lists
 present at its size; that is checked for each spawn, the hashes only at

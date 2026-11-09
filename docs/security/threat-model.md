@@ -245,8 +245,9 @@ releases (`codex/cli.rs`), both over HTTPS.
 [providers.md](../architecture/providers.md#cli-binaries)): fetched into
 `<root>/staging/`, held to what the source vouched for (`validate`), every
 file and the completion record `luna-install.json` flushed to disk, renamed
-into `versions/` under a name no folder has, probed, `previous` and then
-`current` flushed and renamed into place last, and the floor raised. A
+into `versions/` under a name no folder has, probed, `previous` written, the
+floor raised and the canary reset, and `current` flushed and renamed into
+place last; each pass first raises the floor to what is current. A
 version runs only with its record intact; once `recorded` is at the root, one
 without its record never runs. Cleanup and the sweep check every component
 below the CLI root for a link before deleting (`link_free_below`), and the

@@ -863,6 +863,7 @@ fn update_in(
     fetch: &mut dyn FnMut(&Path) -> Result<Package, String>,
 ) -> Result<(String, bool), String> {
     let version = target.version;
+    reconcile_in(root, bin_rel)?;
     if let Some(c) = current_in(root, bin_rel).filter(|c| c.recorded && c.version == version) {
         // `current` names a recorded install, so this code installed here:
         // a marker missing is one a crash or a cleanup took after the fact.
@@ -919,12 +920,28 @@ fn flip_in(root: &Path, bin_rel: &str, dir: &str) -> Result<(), String> {
     if let Some(old) = old.as_ref().filter(|c| c.dir != dir) {
         crate::secret::write_private_synced(&root.join(PREVIOUS), old.dir.as_bytes()).map_err(|e| format!("write {PREVIOUS}: {e}"))?;
     }
-    crate::secret::write_private_synced(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))?;
+    // Everything that goes with the switch is on disk before `current`
+    // names the version, so a crash or a failed write anywhere leaves the
+    // old version current under a floor that is, at worst, already the new
+    // one's: never the new version current under the old floor, which the
+    // unsigned pointer could then undercut. `reconcile_in` mends a tree
+    // from before this order.
+    raise_floor_in(root, &record.version)?;
     // Another version from now on: its first sessions are watched afresh.
     if old.is_none_or(|o| o.version != record.version) {
         canary::reset_in(root, &record.version)?;
     }
-    raise_floor_in(root, &record.version)
+    crate::secret::write_private_synced(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))
+}
+
+/// The floor up to the current version, before a pass takes anything: a
+/// switch cut short by a crash (or made before the floor rose with the
+/// switch) can have left the floor below what is current.
+fn reconcile_in(root: &Path, bin_rel: &str) -> Result<(), String> {
+    match current_in(root, bin_rel).filter(|c| c.recorded) {
+        Some(c) => raise_floor_in(root, &c.version),
+        None => Ok(()),
+    }
 }
 
 /// The directory `previous` names, while it is still a whole install.
@@ -1756,6 +1773,46 @@ mod tests {
         let (held, why) = (held_for_elevation(), crate::elevation::refusal().unwrap());
         crate::elevation::refuse_here(None);
         assert!(held.is_some_and(|w| w.contains("as administrator") && w.contains(why)));
+    }
+
+    /// The switch writes the floor (and the canary) before `current`: a
+    /// write of `current` that fails leaves the old version named under the
+    /// new floor, never the new one under the old floor.
+    #[test]
+    fn the_floor_is_on_disk_before_current_names_the_version() {
+        let root = scratch("journal");
+        update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        use_version_in(&root, BIN, "0", "1.0.0").unwrap();
+        // `current` cannot be replaced: a folder with something in it stands
+        // at its name, so the rename onto it fails.
+        fs::remove_file(root.join("current")).unwrap();
+        fs::create_dir(root.join("current")).unwrap();
+        fs::write(root.join("current").join("keep"), b"x").unwrap();
+        let refused = flip_in(&root, BIN, "2.0.0");
+        assert!(refused.unwrap_err().contains("write current"));
+        assert_eq!(floor_in(&root, "0"), "2.0.0", "the floor went first");
+        assert_eq!(canary::read_in(&root).unwrap().version, "2.0.0", "and the canary");
+        let _ = remove_tree(&root);
+    }
+
+    /// A tree a crash left with the new version current under the old floor
+    /// (the order before): the next pass mends the floor before it takes
+    /// anything, so the pointer cannot name a version below what runs.
+    #[test]
+    fn a_pass_mends_a_floor_left_below_the_current_version() {
+        let root = scratch("reconcile");
+        update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        // As a crash between `current` and the floor left it.
+        fs::write(root.join(FLOOR), "1.0.0").unwrap();
+        let refused = update_in(&root, BIN, pointer("1.5.0"), &mut |_: &Path| panic!("fetched")).unwrap_err();
+        assert!(refused.contains("refusing 1.5.0: older than 2.0.0"), "{refused}");
+        fs::write(root.join(FLOOR), "1.0.0").unwrap();
+        // The pass with nothing to do mends it too.
+        update_in(&root, BIN, pointer("2.0.0"), &mut |_: &Path| panic!("fetched")).unwrap();
+        assert_eq!(fs::read_to_string(root.join(FLOOR)).unwrap(), "2.0.0");
+        let _ = remove_tree(&root);
     }
 
     #[test]
