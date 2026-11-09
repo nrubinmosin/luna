@@ -99,8 +99,20 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
     // start makes it too, this call again where it went meanwhile.
     let drafts = super::drafts_of(caller)?;
     let settings = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.settings.clone()).unwrap_or_default();
-    let suggested = drafts.join("handoff.md");
+    let suggested = new_draft(&drafts)?;
     Ok(facts::how_to(&source_words(&r), &r.sha256, r.body(), &suggested.to_string_lossy(), unwritable(&settings)))
+}
+
+/// A file for the chat to write its handoff in, in its `drafts` folder: a
+/// name of its own, made here new, empty and private (`secret::create_private`,
+/// which makes nothing where anything is), so the path named to the chat is a
+/// plain file of this user's. A name used before could hold a link put there
+/// while the folder was still others' to write, and a write through it would
+/// land wherever it leads before the handoff's own check refuses the draft.
+pub(super) fn new_draft(drafts: &Path) -> Result<std::path::PathBuf, String> {
+    let path = drafts.join(format!("handoff-{}.md", crate::secret::random_hex(4)));
+    crate::secret::create_private(&path).map_err(|e| format!("could not make {}: {e}", path.display()))?;
+    Ok(path)
 }
 
 /// Why a chat run with `settings` can write no file, its handoff included:

@@ -41,6 +41,7 @@ use crate::throttle::now_ms;
 use phase::{Before, Ended, Look, Phase, Phases, Refused, Step, Switch, Term, Typed};
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -442,10 +443,7 @@ fn start_switch(chat: &str, s: &Switch) {
     let started = std::thread::Builder::new().name("luna-handoff-switch".into()).spawn(move || {
         let _running = Running(id.clone());
         let Some(_typing) = TypingInto::wait_for(&id, TYPING_WAIT) else { return };
-        // The facts as they are when the prompt goes in, past the reset.
-        let prompt = || continuation(&id, &s);
-        let ended = phase::run(&Pty, &id, s.n, &prompt, &Stored);
-        finish(&id, s.n, ended, &prompt);
+        switch_on(&Pty, &id, &s);
     });
     if let Err(e) = started {
         running().lock().unwrap_or_else(|e| e.into_inner()).remove(chat);
@@ -453,9 +451,49 @@ fn start_switch(chat: &str, s: &Switch) {
     }
 }
 
+/// `chat`'s switch `s` run through `term` to its end or back to the beat.
+/// Nothing is reset or prompted on a copy that is not the one Luna made
+/// (`copy_holds`): the chat and the person are told why instead, and the
+/// prompt that would point at the copy is not given.
+fn switch_on(term: &dyn Term, chat: &str, s: &Switch) {
+    if let Err(why) = copy_holds(chat, s) {
+        let reset = s.phase != Phase::Scheduled;
+        finish(chat, s.n, Ended::Failed { why: format!("its copy cannot be trusted: {why}"), reset }, &String::new);
+        return;
+    }
+    // The facts as they are when the prompt goes in, past the reset.
+    let prompt = || continuation(chat, s);
+    let ended = phase::run(term, chat, s.n, &prompt, &Stored);
+    finish(chat, s.n, ended, &prompt);
+}
+
+/// Whether `s`'s copy is still the one Luna made, before anything is typed on
+/// it or a prompt names it: right in the chat's folder of copies, checked
+/// from the folder of handoffs down (`copies_of`), read as a private file of
+/// this user's opened as itself (`secret::read_private`), its SHA-256 the one
+/// on record. A switch a core takes up again may otherwise meet a link put at
+/// the copy's name while the folder was still others' to write, and the next
+/// conversation, which reads the copy by its path, would read what it leads to.
+fn copy_holds(chat: &str, s: &Switch) -> Result<(), String> {
+    let dir = copies_of(chat)?;
+    let path = Path::new(&s.snapshot);
+    if path.parent() != Some(dir.as_path()) {
+        return Err(format!("{} is not in this chat's folder of copies", path.display()));
+    }
+    let bytes = crate::secret::read_private(path, file::MAX_BYTES)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("{} is gone", path.display()))?;
+    let sha256: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if sha256 != s.sha256 {
+        return Err(format!("{} is not the file Luna copied (its SHA-256 differs)", path.display()));
+    }
+    Ok(())
+}
+
 /// The prompt that opens `s`'s conversation, the facts as of now. Past what a
 /// prompt is typed as whole (delivery.rs `spill`), the facts go in a file of
-/// their own beside the snapshot, and the prompt names it.
+/// their own beside the snapshot, in the chat's folder of copies as checked
+/// (`copies_of`), and the prompt names it.
 fn continuation(chat: &str, s: &Switch) -> String {
     let facts = facts::fact_block(&gather(chat));
     let name = chat_name(chat);
@@ -464,9 +502,14 @@ fn continuation(chat: &str, s: &Switch) -> String {
     if whole.chars().count() <= 6000 {
         return whole;
     }
-    let path = Path::new(&s.snapshot).with_file_name(format!("{}-facts.md", s.n));
-    let pointer = match crate::secret::write_private(&path, facts.as_bytes()) {
-        Ok(()) => format!("What Luna knows now is in {}: read it after the handoff.", path.display()),
+    // A new private file renamed into place, which takes the place of a link
+    // at the name rather than writing through it.
+    let written = copies_of(chat).and_then(|dir| {
+        let path = dir.join(format!("{}-facts.md", s.n));
+        crate::secret::write_private(&path, facts.as_bytes()).map(|()| path).map_err(|e| e.to_string())
+    });
+    let pointer = match written {
+        Ok(path) => format!("What Luna knows now is in {}: read it after the handoff.", path.display()),
         Err(_) => facts.chars().take(4000).collect(),
     };
     facts::prompt(s.n, chat, name.as_deref(), &s.snapshot, &s.sha256, &s.source, previous, &pointer)
@@ -605,9 +648,13 @@ fn finish(chat: &str, n: u32, ended: Ended, prompt: &dyn Fn() -> String) {
 /// What follows a handoff's end: the copies dropped from the record go, and one
 /// given up is told to the chat and the person.
 fn ended_with(chat: &str, s: &Switch, gone: Vec<store::Past>, why: Option<String>, reset: bool, prompt: &dyn Fn() -> String) {
-    for p in gone {
-        let _ = std::fs::remove_file(&p.snapshot);
-        let _ = std::fs::remove_file(Path::new(&p.snapshot).with_file_name(format!("{}-facts.md", p.n)));
+    // Only out of the chat's folder of copies as checked: a removal through a
+    // link on the way would land wherever it leads.
+    if let Ok(dir) = copies_of(chat) {
+        for p in gone.iter().filter(|p| Path::new(&p.snapshot).parent() == Some(dir.as_path())) {
+            let _ = std::fs::remove_file(&p.snapshot);
+            let _ = std::fs::remove_file(dir.join(format!("{}-facts.md", p.n)));
+        }
     }
     match why {
         None => {
@@ -788,7 +835,10 @@ fn switches(b: &mut Beat) {
             Step::Done => finish(&chat, s.n, Ended::Done, &String::new),
             Step::Fail(why) => {
                 let reset = look.conversation.is_some() && look.conversation != s.before.conversation;
-                finish(&chat, s.n, Ended::Failed { why, reset }, &|| continuation(&chat, &s));
+                // The prompt again for the new conversation, only on a copy
+                // that is still Luna's.
+                let prompt = || if copy_holds(&chat, &s).is_ok() { continuation(&chat, &s) } else { String::new() };
+                finish(&chat, s.n, Ended::Failed { why, reset }, &prompt);
             }
             Step::Wait => {}
         }
@@ -927,11 +977,15 @@ fn past_of(chat: &str, n: u32) -> Result<(String, Option<String>, Provider), Str
 }
 
 /// The window's "open handoff": Luna's copy of handoff `n`, as text. The path
-/// is the record's, never the window's, and the copy is read only as the
-/// private file Luna made (`secret::read_private`), never through a link put
-/// at its name since.
+/// is the record's, never the window's, and the copy is read only right in
+/// the chat's folder of copies as checked (`copies_of`), as the private file
+/// Luna made (`secret::read_private`), never through a link put on the way.
 pub fn handoff_file(chat_id: String, n: u32) -> Result<String, String> {
     let (snapshot, ..) = past_of(&chat_id, n)?;
+    let dir = copies_of(&chat_id)?;
+    if Path::new(&snapshot).parent() != Some(dir.as_path()) {
+        return Err(format!("handoff {n}'s copy is not in this chat's folder of copies"));
+    }
     let bytes = crate::secret::read_private(Path::new(&snapshot), file::MAX_BYTES)
         .map_err(|e| format!("handoff {n}'s copy: {e}"))?
         .ok_or_else(|| format!("handoff {n}'s copy is gone"))?;
