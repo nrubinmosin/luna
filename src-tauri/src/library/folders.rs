@@ -621,6 +621,28 @@ mod tests {
         assert!(f.dirs.folders().join("repo/work/.claude/skills/review/SKILL.md").is_file());
     }
 
+    /// A copy an earlier Luna laid into a folder still listed, but given no
+    /// skill any more, goes too: the folder is listed, so its top. One in a
+    /// folder no longer listed stays, Luna's note with it.
+    #[test]
+    fn an_old_copy_in_a_listed_folder_giving_nothing_goes_and_an_unlisted_ones_stays() {
+        let f = Fixture::new("folder-old-idle");
+        f.skill("review", "v1");
+        let (repo, folder) = repo_folder(&f, "repo", &[]);
+        let (gone_repo, _) = repo_folder(&f, "unlisted", &[]);
+        let files = read_dir_files(&f.dirs.skills().join("review")).unwrap();
+        let mut ledger = Ledger::default();
+        let (old, stray) = (repo.join("review"), gone_repo.join("review"));
+        for at in [&old, &stray] {
+            write_at(at, false, &files).unwrap();
+            ledger.written.insert(at.to_string_lossy().into_owned(), hashes(&files));
+        }
+        f.run(&LibrarySettings { folders: vec![folder], ..Default::default() }, &mut ledger, true);
+        assert!(!old.exists(), "a listed folder is its top");
+        assert!(stray.join(SKILL_FILE).is_file(), "an unlisted one has none: not taken out");
+        assert!(ledger.written.contains_key(&*stray.to_string_lossy()), "its note stays");
+    }
+
     #[test]
     fn a_claude_copy_whose_name_is_taken_there_goes_by_another() {
         let f = Fixture::new("folder-rename");
