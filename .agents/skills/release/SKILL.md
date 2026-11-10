@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a Luna release end to end — version bump, CHANGELOG entry, the annotated tag from scripts/release.ps1, the tag push, watching .github/workflows/release.yml to the sign job's approval, verifying the draft (installer and its .sig, latest.json, SHA256SUMS, SBOMs, gh attestation verify) and publishing it. Use it whenever someone asks to release, ship, tag or publish a Luna version, bump the version, check or publish a release draft, verify release assets or attestations, asks what to do about a release run waiting for approval, or why a release run failed, even if they only say "let's do 1.2.3" or "is the draft good?".
+description: Cut a Luna release end to end — version bump, CHANGELOG entry, the annotated tag from scripts/release.ps1, the tag push, watching .github/workflows/release.yml to the sign job's approval, verifying the draft (installer and its .sig, latest.json, SHA256SUMS, SBOMs, third-party notices, gh attestation verify) and publishing it. Use it whenever someone asks to release, ship, tag or publish a Luna version, bump the version, check or publish a release draft, verify release assets or attestations, asks what to do about a release run waiting for approval, or why a release run failed, even if they only say "let's do 1.2.3" or "is the draft good?".
 ---
 
 # Release
@@ -126,8 +126,9 @@ gh release view v1.2.3 --json isDraft,assets,tagName,body
 gh release download v1.2.3 -D test-build/release-v1.2.3
 ```
 
-- **Assets**: the installer `Luna_1.2.3_x64-setup.exe`, its `.sig`,
+- **Assets**: seven — the installer `Luna_1.2.3_x64-setup.exe`, its `.sig`,
   `latest.json`, `luna-1.2.3-cargo.cdx.json`, `luna-1.2.3-npm.cdx.json`,
+  `luna-1.2.3-third-party-notices.txt` (from the `sbom` job) and
   `SHA256SUMS`. Nothing missing, nothing extra; it is still a draft.
 - **SHA256SUMS**: every other asset listed and matching (`sha256sum -c
   SHA256SUMS`, or `Get-FileHash` per line).
@@ -161,8 +162,10 @@ gh release download v1.2.3 -D test-build/release-v1.2.3
   version since the last published release, the compare link and the Verify
   block whose `SHA256SUMS` match the asset.
 - **Plausibility**: the installer is megabytes, not kilobytes; each SBOM lists
-  the project's real dependencies. A file that hashes right can still be the
-  wrong file.
+  the project's real dependencies; the third-party notices open with
+  `Third-party notices for Luna 1.2.3`, this version, and list the components
+  the installer carries, since they are the same file it installs beside
+  `luna.exe`. A file that hashes right can still be the wrong file.
 
 Report each check as passed or failed with the evidence (hashes compared,
 `gh attestation verify` result lines). Any failure means no publish: find the
