@@ -415,14 +415,12 @@ fn settle_kept(
 
 /// A kept copy out of its place, what is there backed up first; refused
 /// where a folder on the way to it is a link (`no_link_between`), from the
-/// account folder it lies in or, for a Claude Code folder copy,
-/// `library-folders/`.
+/// account folder it lies in or, for a Claude Code folder copy, Luna's data
+/// folder (`top_of`).
 fn take_out_kept(dirs: &Dirs, accounts: &[AccountInfo], ledger: &mut Ledger, key: &str) -> Result<(), String> {
     let file = ledger.kept.get(key).is_some_and(is_file);
     let at = Path::new(key);
-    let tops = accounts.iter().map(|a| PathBuf::from(&a.path)).chain([dirs.folders()]);
-    // The deepest that holds it: an account folder may lie in Luna's data.
-    let top = tops.filter(|t| within(at, t)).max_by_key(|t| t.components().count()).ok_or("it lies in no account's folder")?;
+    let top = top_of(dirs, accounts, at).ok_or("it lies in no account's folder")?;
     no_link_between(&top, at)?;
     if let Some(there) = read_at(at, file)? {
         back_up(dirs, at, &there)?;
