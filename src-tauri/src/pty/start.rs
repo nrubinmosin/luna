@@ -1068,6 +1068,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A model that takes no effort (Haiku 4.5 by its id) is asked for with
+    /// no effort, and starts with no `--effort`.
+    #[test]
+    fn golden_claude_chat_on_a_model_without_effort_has_no_effort_flag() {
+        const ID: &str = "golden-claude-no-effort";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk { model: "claude-haiku-4-5-20251001", effort: "", ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&["--model", "claude-haiku-4-5-20251001", "--permission-mode", "default", "--settings", "<settings-file>"])
+        );
+    }
+
     /// The variables every start goes without, as applied.
     fn removed() -> String {
         format!("unset {}", super::super::spawn::removed_env().join(", "))

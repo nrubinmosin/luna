@@ -29,6 +29,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   shows each helper's last activity and the first line of its task.
 - A narrow pane folds the recolor, rename, What Luna applied and delete
   buttons into a "…" menu.
+- The new-chat dialog lists the Claude models each account may pick, as
+  Claude Code's own `/model` does, instead of four fixed names: a new model
+  family shows up without a Luna update, older versions are under **More…**,
+  and the effort buttons are the chosen model's own (none for a model that
+  takes no effort). Luna reads the list from the account's Claude Code cache,
+  or asks Claude Code for it in the background without starting a turn, and
+  never takes another account's. Helpers spawned through Luna's tools and
+  `luna_session_list` use the same list. Codex already worked this way.
 
 ### Fixed
 

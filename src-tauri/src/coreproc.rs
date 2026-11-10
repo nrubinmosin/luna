@@ -178,7 +178,7 @@ fn run() {
     if refused.is_none() {
         // Here and not in the window: session_meta, which turns a Claude
         // transcript's tokens into a share of the window, runs in this process.
-        crate::claude::models::refresh_soon();
+        crate::claude::context::refresh_soon();
         // The helpers the last core left and what it kept of the chats, before a
         // window or an MCP call can ask after them.
         crate::agents::restore_chats();

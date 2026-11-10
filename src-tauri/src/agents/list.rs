@@ -5,7 +5,6 @@ use crate::agents::ask::{state_of, Ask};
 use crate::agents::read::transcript_path;
 use crate::agents::registry::{descendants, is_descendant, reg, scope_all, Known, DEV_CALLER};
 use crate::agents::spawn::account::allowed_account_dirs;
-use crate::agents::spawn::background::CLAUDE_MODELS;
 use crate::agents::spawn::worktree::{checkout_of, Worktree};
 use crate::agents::teardown::AUTO_DELETE_IDLE_MS;
 use crate::provider::Provider;
@@ -60,8 +59,9 @@ pub struct AccountRow {
     /// The settings a helper gets here unless the spawn says otherwise, for
     /// the caller's folder: the flags as `spawn` echoes them.
     pub defaults: serde_json::Value,
-    /// The models a helper may ask for here: Claude Code's aliases (a full
-    /// id works too), Codex's catalog with each model's name and levels. Only
+    /// The models a helper may ask for here, each with its name and levels:
+    /// the account's own list for Claude Code (a full id works too; the four
+    /// aliases where Luna knows none yet), Codex's catalog. Only
     /// when asked (`models: true`): Codex's catalog is most of what a listing
     /// weighs, and a caller lists far more often than it picks a model.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -75,7 +75,12 @@ pub struct AccountRow {
 /// The models a helper may ask for on the account at `path`.
 fn models_of(provider: Provider, path: &str) -> Vec<serde_json::Value> {
     match provider {
-        Provider::Claude => CLAUDE_MODELS.iter().map(|m| serde_json::json!({ "id": m })).collect(),
+        Provider::Claude => crate::claude::models::models_known(path)
+            .into_iter()
+            .map(|m| {
+                serde_json::json!({ "id": m.slug, "name": m.display_name, "efforts": m.efforts, "defaultEffort": m.default_effort, "more": m.more })
+            })
+            .collect(),
         Provider::Codex => crate::codex::models::models_known(path)
             .into_iter()
             .map(|m| serde_json::json!({ "id": m.slug, "name": m.display_name, "efforts": m.efforts, "defaultEffort": m.default_effort }))
