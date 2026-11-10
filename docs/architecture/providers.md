@@ -208,7 +208,9 @@ supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
   → what the CLI answered to the SDK's `initialize` control request, asked on
   the account in the background (`claude -p --input-format stream-json
   --output-format stream-json --verbose --strict-mcp-config`, one
-  `control_request` line, stopped once it has answered: no prompt, no turn)
+  `control_request` line, stopped once it has answered: no prompt, no turn;
+  under the account-settings lock, since the CLI rewrites `.claude.json` as
+  it starts and Luna writes trust marks and settings there only under it)
   and kept per account in `claude-models.json` in the data folder for six
   hours → the four aliases. A stale catalog or answer is returned at once and
   asked again behind; an answer newer than the catalog wins over it; a

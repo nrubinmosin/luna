@@ -254,6 +254,21 @@ fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     crate::elevation::guard().ok()?;
     // Held while it runs, so the sweep does not take its directory meanwhile.
     let (exe, _on_version) = crate::cli::launch(Provider::Claude, None).ok()?;
+    // The CLI rewrites the account's `.claude.json` as it starts, from what
+    // it read: a trust mark or a setting Luna writes meanwhile would be lost.
+    // Luna writes those only under this lock, a file lock the window and the
+    // core share (account_settings `editing`), so the ask holds it until the
+    // CLI has exited; a write waits out the few seconds of the ask, and the
+    // ask a write. The core's account-in-use table (account_use.rs) is not
+    // the gate here: this runs in the window, which does not see it, and the
+    // trust write the new-chat dialog makes takes the lock, not that table.
+    let _editing = match crate::account_settings::editing() {
+        Ok(held) => held,
+        Err(e) => {
+            crate::log::warn("claude-models", &format!("not asking Claude Code for its models: {e}"));
+            return None;
+        }
+    };
     let mut cmd = Command::new(exe);
     cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config"])
         .current_dir(account_path)
