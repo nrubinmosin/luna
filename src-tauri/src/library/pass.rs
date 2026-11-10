@@ -93,22 +93,21 @@ pub(super) struct Pass {
 /// and takes out the copies no longer wanted that are still as Luna wrote
 /// them, remembering those changed there (`Ledger::kept`). Changed, deleted
 /// and foreign destinations, and the kept copies, are only reported.
-pub(super) fn pass(dirs: &Dirs, accounts: &[AccountInfo], units: &[Unit], skipped: &[String], ledger: &mut Ledger, act: bool) -> Pass {
+/// `accounts` and `folders` (every folder the library lists) are where a
+/// copy no longer wanted may lie (files.rs `top_of`).
+pub(super) fn pass(
+    dirs: &Dirs,
+    accounts: &[AccountInfo],
+    folders: &[LibraryFolder],
+    units: &[Unit],
+    skipped: &[String],
+    ledger: &mut Ledger,
+    act: bool,
+) -> Pass {
     // Equal bytes say the content is Luna's, not that the place is: a copy
     // goes only where no link on the way leads its removal elsewhere.
-    // A copy an earlier Luna laid into a listed folder itself
-    // (`<folder>/<name>`) lies in no account's: the folder is its top.
-    let listed: Vec<PathBuf> = units
-        .iter()
-        .filter_map(|u| match &u.target {
-            Target::Folder { path, .. } => Some(PathBuf::from(path)),
-            Target::Account { .. } => None,
-        })
-        .collect();
     let removable = |dest: &Path| -> Result<(), String> {
-        let top = top_of(dirs, accounts, dest)
-            .or_else(|| listed.iter().filter(|t| within(dest, t)).max_by_key(|t| t.components().count()).cloned())
-            .ok_or("it lies in no account's folder")?;
+        let top = top_of(dirs, accounts, folders, dest).ok_or("it lies in no account's folder nor a listed one")?;
         no_link_between(&top, dest)
     };
     let mut out = Pass::default();

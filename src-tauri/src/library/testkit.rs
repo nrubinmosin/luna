@@ -59,7 +59,7 @@ impl Fixture {
         let skills = read_skills(&self.dirs);
         let instructions = read_instructions(&self.dirs);
         let units = units(&self.dirs, lib, &self.accounts, &skills, &instructions, ledger);
-        pass(&self.dirs, &self.accounts, &units, &lib.skipped, ledger, act)
+        pass(&self.dirs, &self.accounts, &lib.folders, &units, &lib.skipped, ledger, act)
     }
     pub(super) fn status(p: &Pass, dest: &Path) -> Status {
         // By components: a test's `join("a/b")` keeps its slash on Windows.
