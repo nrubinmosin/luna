@@ -932,6 +932,34 @@ mod tests {
         assert!(backed.contains(&"added there".to_string()), "{backed:?}");
     }
 
+    /// A kept copy under an account's `skills` folder made a link, that folder
+    /// listed by the library as well: still not taken out through it.
+    #[test]
+    fn a_kept_copy_under_a_listed_linked_folder_is_not_taken_out() {
+        let f = Fixture::new("kept-listed-link");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let kept = f.account(0).join("skills").join("review");
+        std::fs::write(kept.join("extra.md"), "added there").unwrap();
+        let skills_dir = f.account(0).join("skills");
+        let listed = LibraryFolder { path: skills_dir.to_string_lossy().into_owned(), slug: "x".into(), ..Default::default() };
+        let lib = LibrarySettings { folders: vec![listed], ..Default::default() };
+        assert_eq!(f.run(&lib, &mut ledger, true).kept.len(), 1);
+        let elsewhere = f.base.join("elsewhere");
+        std::fs::rename(&skills_dir, &elsewhere).unwrap();
+        link_dir(&skills_dir, &elsewhere);
+
+        let units = units(&f.dirs, &lib, &f.accounts, &read_skills(&f.dirs), &read_instructions(&f.dirs), &ledger);
+        let dests = [kept.to_string_lossy().into_owned()];
+        let unsettled = settle_kept(&f.dirs, &f.accounts, &lib.folders, &units, &[], &mut ledger, &dests, true);
+        assert!(unsettled.len() == 1 && unsettled[0].contains("is a link or junction"), "{unsettled:?}");
+        assert!(elsewhere.join("review").join("extra.md").is_file());
+        assert!(walk(&f.dirs.backups()).is_empty());
+        unlink_dir(&skills_dir);
+    }
+
     /// A link standing for an account's `skills` folder (a junction on
     /// Windows) leads neither a take out nor a put-back over what is there
     /// into the folder it points at.

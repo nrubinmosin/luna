@@ -654,6 +654,57 @@ mod tests {
         }
     }
 
+    /// A listed folder inside an account's or Luna's data folder (its
+    /// `skills`, `library-folders/`) is no top of its own: made a link to a
+    /// folder holding byte for byte what Luna wrote, nothing is taken out
+    /// through it.
+    #[test]
+    fn a_listed_folder_inside_a_managed_one_takes_nothing_out_through_its_link() {
+        let f = Fixture::new("listed-overlap");
+        f.skill("review", "v1");
+        let repo = f.base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let in_repo = LibraryFolder {
+            path: repo.to_string_lossy().into_owned(),
+            skills: BTreeMap::from([("review".into(), reach(&["claude/work"]))]),
+            slug: "repo".into(),
+            ..Default::default()
+        };
+        let lib = LibrarySettings {
+            skills: BTreeMap::from([("review".into(), reach(&["codex/home"]))]),
+            folders: vec![in_repo],
+            ..Default::default()
+        };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let account_copy = f.account(1).join("skills").join("review");
+        let folder_copy = claude_folder_dir(&f.dirs, "repo", &f.accounts[0]).join(".claude").join("skills").join("review");
+        assert!(account_copy.join(SKILL_FILE).is_file() && folder_copy.join(SKILL_FILE).is_file());
+
+        // Both the account's `skills` and `library-folders/` become links to
+        // what was there, and are listed as folders themselves.
+        let other_skills = f.base.join("other-skills");
+        std::fs::rename(f.account(1).join("skills"), &other_skills).unwrap();
+        link_dir(&f.account(1).join("skills"), &other_skills);
+        let other_folders = f.base.join("other-folders");
+        std::fs::rename(f.dirs.folders(), &other_folders).unwrap();
+        link_dir(&f.dirs.folders(), &other_folders);
+        let listed =
+            |p: PathBuf, slug: &str| LibraryFolder { path: p.to_string_lossy().into_owned(), slug: slug.into(), ..Default::default() };
+        let none = LibrarySettings {
+            folders: vec![listed(f.account(1).join("skills"), "a"), listed(f.dirs.folders(), "b")],
+            ..Default::default()
+        };
+
+        f.run(&none, &mut ledger, true);
+        assert!(other_skills.join("review").join(SKILL_FILE).is_file(), "nothing taken out through the account's link");
+        assert!(other_folders.join("repo").join("work").join(".claude").join("skills").join("review").join(SKILL_FILE).is_file());
+        assert!(ledger.written.contains_key(&*account_copy.to_string_lossy()));
+        assert!(ledger.written.contains_key(&*folder_copy.to_string_lossy()));
+        unlink_dir(&f.account(1).join("skills"));
+        unlink_dir(&f.dirs.folders());
+    }
+
     /// `library-folders/` is Luna's own: made a link, nothing of a folder's
     /// Claude Code copies is written through it.
     #[test]
