@@ -89,6 +89,8 @@ export interface LibraryOverviewDto {
   /** Folders set aside in the library's `system/`, read by nothing: a former override that a copy into the
    *  backups on another volume did not take whole, or one an adoption replaced and could not move. */
   systemAside: string[];
+  /** From a put-back only: the places it could not settle, each with why. */
+  unsettled?: string[];
 }
 export interface LibraryFileDto {
   path: string;
@@ -127,6 +129,10 @@ export const librarySkip = (dest: string, on: boolean) => call<LibraryOverviewDt
 /** `take`: the copy there becomes the library's; otherwise the library's goes back there. */
 export const libraryResolve = (dest: string, take: boolean) =>
   call<LibraryOverviewDto>('library_resolve', { dest, take });
+/** The library's copy back at each of `dests`, then a pass; places left out stay out. `replace`: over what is
+ *  there, else only where nothing is. */
+export const libraryPutBack = (dests: string[], replace: boolean) =>
+  call<LibraryOverviewDto>('library_put_back', { dests, replace });
 export const libraryDiff = (dest: string) => call<FileDiffDto[]>('library_diff', { dest }, []);
 /** A skill's SKILL.md or instructions, by name. */
 export type LibraryEntry = { skill: string } | { instructions: string };

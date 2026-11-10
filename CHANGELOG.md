@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Skills & instructions: **Sync all** takes the place of Sync now and makes
+  every account hold what the library says, putting back deleted copies and
+  replacing changed ones (after a confirmation, backed up for 30 days); places
+  left out stay out. With several copies deleted, **Put all back** above Needs
+  a look restores them in one click instead of one row at a time.
+
 ## [0.12.0] - 2026-11-10
 
 Auto-handoff's instructions are now a skill Luna serves only to the chat that

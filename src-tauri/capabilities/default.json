@@ -68,6 +68,7 @@
     "allow-library-set-folder-instructions",
     "allow-library-skip",
     "allow-library-resolve",
+    "allow-library-put-back",
     "allow-library-diff",
     "allow-library-read",
     "allow-library-write",

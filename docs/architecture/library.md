@@ -149,12 +149,20 @@ hashes of what Luna wrote last (`<data>/library-state.json`, bytes in
 | no ledger entry and different | `taken`: reported, never written |
 
 The window resolves each: take it into the library, put the library's back, or
-skip that destination (`library.skipped`). The losing side goes to
-`<data>/library-backups/` (swept after 30 days). A copy no longer wanted is
+skip that destination (`library.skipped`). `library_put_back` puts the
+library's back at a list of destinations under one lock and one pass after:
+the window's "Put all back" (every `gone`) and "Sync all" (every `gone`,
+`changed` and `taken`). Without `replace` it writes only where nothing is
+there under the lock, so a copy made again since the window looked is not
+overwritten unasked; "Sync all" replaces only after its confirmation counted
+the changed ones. It writes under the destination as the pass spells it now
+(the ledger's key), refuses a skipped destination and goes on past one that
+will not settle, returning those in the overview's `unsettled`. The
+losing side goes to `<data>/library-backups/` (swept after 30 days). A copy no longer wanted is
 deleted only while it still hashes to the ledger.
 
 Passes run when the window starts, before every session start, after every
-change in the window and on Sync now, one at a time under a lock file beside the
+change in the window and on Sync all, one at a time under a lock file beside the
 ledger shared by window and core. Where `lay_out` runs in a start:
 
 - **A chat** (`pty/start.rs`): inside the launch closure, so under that chat's

@@ -626,7 +626,9 @@ export const LIBRARY: LibraryOverviewDto = {
       place({
         dest: `${accountsDir('anthropic', n)}\\skills\\luna-review`,
         target: { kind: 'account', provider: 'claude', name: n },
-        skill: 'luna-review'
+        skill: 'luna-review',
+        // Deleted by hand in both: what "Put all back" is for.
+        status: 'gone'
       })
     ),
     ...['personal', 'work'].map(n =>
