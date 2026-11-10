@@ -25,11 +25,17 @@ export const PROVIDER_VENDOR: Record<Provider, string> = { claude: 'Anthropic', 
 
 // ---------------------------------------------------------- Claude Code --
 
-export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
+/** An effort level as Claude Code names it. The set is per model and comes
+ *  off the account's model list (`low … max` today), plus Luna's
+ *  `ultracode`, so it is not closed here. */
+export type Effort = string;
 
 export type PermMode = 'Ask' | 'Edits' | 'Plan only' | 'Bypass';
 
-export type ModelLabel = 'Opus' | 'Fable' | 'Haiku' | 'Sonnet';
+/** A Claude model as a chat keeps it: a family by its label (`Opus`), which
+ *  goes to `--model` as its alias and so follows the family to its next
+ *  version, or one model by its full id (`claude-opus-4-7`). */
+export type ModelLabel = string;
 
 /** The three things a Claude Code settings file can have an opinion about. */
 export interface ClaudeSettings {
@@ -222,15 +228,23 @@ export const accountKey = (provider: Provider, name: string) => `${provider}/${n
 
 // ------------------------------------------------ Claude Code's own settings
 
+/** Claude Code's four aliases, for an account whose own list Luna has not
+ *  had yet (claude/models.rs). */
 export const MODELS: ModelLabel[] = ['Fable', 'Opus', 'Sonnet', 'Haiku'];
-export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+/** Claude Code's standing orchestration, which it runs at any level: Luna
+ *  offers it beside the levels of every model that takes effort. */
+export const ULTRACODE: Effort = 'ultracode';
+/** The levels of a model the list does not know. */
+export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max', ULTRACODE];
 
-export const MODEL_CLI: Record<ModelLabel, string> = {
-  Opus: 'opus',
-  Fable: 'fable',
-  Haiku: 'haiku',
-  Sonnet: 'sonnet'
-};
+/** The label a chat keeps for what `--model` is given: an alias as its
+ *  family's name, a full id as it is. */
+export const modelLabelOf = (slug: string): ModelLabel =>
+  /^[a-z]+$/.test(slug) ? slug.charAt(0).toUpperCase() + slug.slice(1) : slug;
+
+/** And back: a family's label is its alias, a full id stays itself. Also
+ *  covers chats persisted with older labels (`Opus 4`). */
+export const modelCli = (model: ModelLabel): string => model.toLowerCase().split(' ')[0] ?? '';
 
 export const PERM_CLI: Record<PermMode, string> = {
   Ask: 'default',
@@ -255,16 +269,26 @@ const PERM_OF_CLI: Record<string, PermMode> = {
 };
 
 /**
- * `model` from a settings file. It can be an alias (`opus`), a compound one
- * (`opusplan`) or a full id (`claude-sonnet-5`); all three name their model
- * plainly enough to match on, and anything else means Luna keeps its own.
+ * `model` as the core settled it or a spawn named it. An alias (`opus`, or a
+ * family Luna has never heard of) is its family; a full id
+ * (`claude-opus-4-7`) is that model. A compound alias (`opusplan`) or a
+ * variant (`claude-sonnet-5[1m]`) names its family plainly enough to match
+ * on, and anything else means Luna keeps its own.
  */
 export const modelFromSetting = (raw: string): ModelLabel | null => {
-  const v = raw.toLowerCase();
-  return MODELS.find(m => v.includes(m.toLowerCase())) ?? null;
+  const v = raw.trim().toLowerCase();
+  const family = MODELS.find(m => v.includes(m.toLowerCase())) ?? null;
+  if (/^claude-[a-z0-9-]+$/.test(v)) return v;
+  if (/^[a-z]+$/.test(v)) return family && v !== family.toLowerCase() ? family : modelLabelOf(v);
+  return family;
 };
 
-export const effortFromSetting = (raw: string): Effort | null => EFFORTS.find(e => e === raw.toLowerCase()) ?? null;
+/** A level as the CLI spells it: one lower-case word. Whether the model takes
+ *  it is the model list's to say. */
+export const effortFromSetting = (raw: string): Effort | null => {
+  const v = raw.trim().toLowerCase();
+  return /^[a-z]+$/.test(v) ? v : null;
+};
 
 export const permFromSetting = (raw: string): PermMode | null => PERM_OF_CLI[raw] ?? null;
 

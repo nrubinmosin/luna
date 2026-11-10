@@ -3,6 +3,7 @@
 //! refresh, and the registry + transcript a session leaves behind.
 
 pub mod cli;
+pub mod context;
 pub mod defaults;
 pub mod launch;
 pub mod limits;

@@ -99,7 +99,7 @@ fn seen_in_memory(bytes: &[u8]) -> Seen {
             (Some(title), _) => Some((title, true)),
             (None, ai) => ai.map(|title| (title, false)),
         },
-        context: r.usage.map(|(tokens, model)| (tokens, crate::claude::models::context_window(&model))),
+        context: r.usage.map(|(tokens, model)| (tokens, crate::claude::context::context_window(&model))),
         model: r.model,
         last_said,
         last_said_at,

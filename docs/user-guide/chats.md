@@ -50,8 +50,19 @@ These boxes add something to the CLI only when you ask for it:
 **Ctrl+Shift+N** opens the dialog instead when the folder is not trusted in the
 account, since whether to trust it is yours to say.
 
-**Claude Code:** model (a drop-down), effort
-(`low/medium/high/xhigh/max/ultracode`) and permission mode. Isolation runs
+**Claude Code:** model, effort and permission mode.
+
+- Model: a drop-down of the models Claude Code offers this account, as its own
+  `/model` does: each family's current model first (it runs by its alias,
+  such as `opus`, so the chat follows the family to its next version), older
+  versions under **More…** (each runs by its full id). Luna reads the list
+  from the account's own Claude Code cache, or asks Claude Code for it in the
+  background; until either has answered, and for an account that never
+  signed in, it lists Fable, Opus, Sonnet and Haiku.
+- Effort: the levels the chosen model takes (`low/medium/high/xhigh/max`
+  today), plus `ultracode`. A model that takes no effort, such as Haiku 4.5,
+  shows none. Picking a model that does not take the level shown moves it to
+  that model's own default. Isolation runs
 `claude --worktree` in `<folder>/.claude/worktrees/<name>`, on a
 `worktree-<name>` branch. Before Claude Code makes one, Luna fetches origin's
 default branch (10 s at most, never asking for a password; off in Settings);

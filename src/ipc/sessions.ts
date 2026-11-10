@@ -10,7 +10,7 @@ import type {
   PermMode,
   Provider
 } from '../shared/types';
-import { MODEL_CLI, PERM_CLI } from '../shared/types';
+import { modelCli, PERM_CLI } from '../shared/types';
 
 /** What a chat of `provider` on this account would meet in `folder`,
  *  `worktree` saying whether it is to make one (pty/folder.rs). `refusal`:
@@ -55,8 +55,8 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
       id: spec.chatId,
       folder: spec.folder,
       accountPath: spec.accountPath,
-      // Fallback covers chats persisted before the model labels changed.
-      model: MODEL_CLI[spec.model] ?? spec.model.toLowerCase().split(' ')[0],
+      // A family's alias, or a full id as it is (shared/types.ts).
+      model: modelCli(spec.model),
       effort: spec.effort,
       permissionMode: PERM_CLI[spec.perm],
       worktree: spec.worktree,

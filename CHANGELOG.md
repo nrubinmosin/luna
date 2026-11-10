@@ -8,6 +8,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- The new-chat dialog lists the Claude models each account may pick, as
+  Claude Code's own `/model` does, instead of four fixed names: a new model
+  family shows up without a Luna update, older versions are under **More…**,
+  and the effort buttons are the chosen model's own (none for a model that
+  takes no effort). Luna reads the list from the account's Claude Code cache,
+  or asks Claude Code for it in the background without starting a turn, and
+  never takes another account's. Helpers spawned through Luna's tools and
+  `luna_session_list` use the same list. Codex already worked this way.
+
 ## [0.12.0] - 2026-11-10
 
 Auto-handoff's instructions are now a skill Luna serves only to the chat that

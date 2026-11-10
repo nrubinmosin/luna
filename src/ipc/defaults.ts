@@ -59,3 +59,24 @@ export interface CodexModelDto {
  *  order (the first is its default) — with the reasoning levels each one
  *  takes. Empty until the CLI has run once. */
 export const codexModels = (accountPath: string) => call<CodexModelDto[]>('codex_models', { accountPath }, []);
+
+export interface ClaudeModelDto {
+  /** What `--model` is given: a family's alias for its main model, a full id
+   *  for any other. */
+  slug: string;
+  /** The full id the slug stands for, where Claude Code said. */
+  modelId: string | null;
+  displayName: string;
+  defaultEffort: string | null;
+  /** Empty for a model that takes no effort. */
+  efforts: string[];
+  /** What the catalog says of a level, by level. */
+  effortHints: Record<string, string>;
+  /** Listed under "More…": not a family's main model. */
+  more: boolean;
+}
+
+/** The models Claude Code lists for this account (claude/models.rs): its own
+ *  catalog, what the CLI said when asked, or the four aliases — never another
+ *  account's. Empty only when no account is given. */
+export const claudeModels = (accountPath: string) => call<ClaudeModelDto[]>('claude_models', { accountPath }, []);
