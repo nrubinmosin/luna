@@ -76,12 +76,36 @@ export function HoverPopover({
   const open = mode !== null;
 
   const clearTimer = () => window.clearTimeout(timer.current);
-  // A timer still pending finds it closed and leaves it so.
   const close = useCallback(() => {
     setMode(null);
     setPos(null);
   }, []);
   useEffect(() => clearTimer, []);
+  // Closed by any means, no timer still pending opens it again: a hover's
+  // open that was waiting when Escape or a press elsewhere closed it.
+  useEffect(() => {
+    if (!open) clearTimer();
+  }, [open]);
+
+  /** Focus is on the face or in the panel: keys there are the panel's. */
+  const holdsFocus = () => {
+    const at = document.activeElement;
+    return !!at && (!!anchor.current?.contains(at) || !!panel.current?.contains(at));
+  };
+  /** Keyboard focus there, which a hover's end must not take away: in the
+   *  panel, or on the face by keyboard. A face still focused from a click
+   *  that closed it earlier is no reason to keep a later hover's panel. */
+  const keyboardHere = () => {
+    const at = document.activeElement;
+    if (at && panel.current?.contains(at)) return true;
+    const face = anchor.current;
+    if (!face || at !== face) return false;
+    try {
+      return face.matches(':focus-visible');
+    } catch {
+      return true;
+    }
+  };
 
   const hoverIn = (e: PointerEvent) => {
     // Touch has no hover: a tap is a click.
@@ -92,8 +116,12 @@ export function HoverPopover({
   const hoverOut = (e: PointerEvent) => {
     if (e.pointerType === 'touch') return;
     clearTimer();
+    // Focus on the face or in the panel holds it: what focus opened ends
+    // with focus leaving, not with the pointer.
     if (mode === 'hover')
-      timer.current = window.setTimeout(() => setMode(m => (m === 'hover' ? null : m)), CLOSE_GRACE_MS);
+      timer.current = window.setTimeout(() => {
+        if (!keyboardHere()) setMode(m => (m === 'hover' ? null : m));
+      }, CLOSE_GRACE_MS);
   };
 
   // Placed by the face's rect and the panel's measured size, again whenever
@@ -125,8 +153,10 @@ export function HoverPopover({
 
   useCloseWhenMoved(open, anchor, close);
 
-  // A press anywhere but the face or the panel closes it; so does Escape,
-  // ahead of whatever else would take it (a window's own Escape).
+  // A press anywhere but the face or the panel closes it; so does Escape
+  // pressed on the face or in the panel, ahead of whatever else would take it
+  // (a window's own Escape). An Escape aimed elsewhere, a terminal's above
+  // all, is left alone: a hover opened the panel, not a wish for that key.
   useEffect(() => {
     if (!open) return;
     const away = (e: MouseEvent) => {
@@ -134,7 +164,7 @@ export function HoverPopover({
       if (!anchor.current?.contains(t) && !panel.current?.contains(t)) close();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || !holdsFocus()) return;
       e.preventDefault();
       e.stopPropagation();
       const inside = panel.current?.contains(document.activeElement);
@@ -175,7 +205,7 @@ export function HoverPopover({
         onPointerEnter={hoverIn}
         onPointerLeave={hoverOut}
         onFocus={() => {
-          if (!returning.current) setMode(m => m ?? 'focus');
+          if (!returning.current) setMode(m => (m === null || m === 'hover' ? 'focus' : m));
         }}
         onBlur={focusOut}
         onClick={e => {
@@ -212,6 +242,8 @@ export function HoverPopover({
             onMouseDown={e => e.stopPropagation()}
             onPointerEnter={hoverIn}
             onPointerLeave={hoverOut}
+            // Tabbed into from a hover: from here on focus decides.
+            onFocus={() => setMode(m => (m === 'hover' ? 'focus' : m))}
             onBlur={focusOut}
             onKeyDown={e => {
               if (e.key !== 'Tab') return;
