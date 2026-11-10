@@ -199,16 +199,18 @@ fn read_catalog(account_path: &str) -> Option<Catalog> {
 /// The `initialize` control response as Claude Code 2.1.322 writes it on
 /// stream-json stdout: `response.response.models[]` of the SDK's `ModelInfo`
 /// (`value`, `displayName`, `resolvedModel`, `supportsEffort`,
-/// `supportedEffortLevels`), with `account.tokenSource` saying whether it
-/// was the account's list at all (`none`: signed out). None on any surprise;
-/// `Some((models, signed_in))` otherwise.
+/// `supportedEffortLevels`), with `account` saying whether it was the
+/// account's list at all: signed out it is `{tokenSource: "none", …}`,
+/// signed in `{email, subscriptionType, apiProvider}` with no `tokenSource`.
+/// None on any surprise; `Some((models, signed_in))` otherwise.
 fn parse_initialize(line: &str, request_id: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     if v["type"] != "control_response" || v["response"]["request_id"] != request_id || v["response"]["subtype"] != "success" {
         return None;
     }
     let r = &v["response"]["response"];
-    let signed_in = r["account"]["tokenSource"].as_str().is_some_and(|s| s != "none");
+    let account = r["account"].as_object()?;
+    let signed_in = account.get("tokenSource").and_then(|t| t.as_str()) != Some("none") && account.contains_key("subscriptionType");
     let models = r["models"]
         .as_array()?
         .iter()
@@ -483,6 +485,7 @@ mod tests {
 
     const CATALOG: &str = include_str!("testdata/model-catalog-2.1.322.json");
     const INITIALIZE: &str = include_str!("testdata/initialize-2.1.322.json");
+    const INITIALIZE_SIGNED_IN: &str = include_str!("testdata/initialize-signed-in-2.1.322.json");
 
     fn catalog() -> Catalog {
         parse_catalog(CATALOG).expect("the 2.1.322 catalog reads")
@@ -569,10 +572,21 @@ mod tests {
     }
 
     #[test]
+    fn a_signed_in_answer_is_the_accounts_and_lists_the_same_aliases() {
+        // Recorded on a signed-in clone (its email taken out): the same four
+        // aliases, no older models, and an account with no `tokenSource`.
+        let line = serde_json::from_str::<serde_json::Value>(INITIALIZE_SIGNED_IN).unwrap().to_string();
+        let (m, signed_in) = parse_initialize(&line, "r1").unwrap();
+        assert!(signed_in);
+        assert_eq!(slugs(&m), ["opus", "fable", "sonnet", "haiku"]);
+        assert_eq!(m[3].model_id.as_deref(), Some("claude-haiku-5-5"));
+    }
+
+    #[test]
     fn an_initialize_answer_out_of_shape_is_not_taken() {
         let line = |models: serde_json::Value| {
             serde_json::json!({ "type": "control_response", "response": { "subtype": "success", "request_id": "r1",
-                "response": { "models": models, "account": { "tokenSource": "claude.ai" } } } })
+                "response": { "models": models, "account": { "subscriptionType": "Claude Max", "apiProvider": "firstParty" } } } })
             .to_string()
         };
         let ok = line(serde_json::json!([
