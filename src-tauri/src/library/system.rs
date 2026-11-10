@@ -388,8 +388,7 @@ fn move_to_backups(dirs: &Dirs, dir: &Path, was: &Path) -> Result<Moved, String>
     // Luna's own, in its data folder: no link, this user's, private, made so
     // before anything is put in it.
     crate::boundary::private_chain(&dirs.backups(), &[])?;
-    let slot = backup_slot(dirs, was);
-    std::fs::create_dir(&slot).map_err(|e| format!("{}: {e}", slot.display()))?;
+    let slot = backup_slot(dirs, was)?;
     let undo = || {
         let _ = std::fs::remove_file(slot.join("from.txt"));
         let _ = std::fs::remove_dir(&slot);

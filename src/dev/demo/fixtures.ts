@@ -529,7 +529,8 @@ export const STALE: Record<string, WorktreeInfoDto[]> = {
 // there, under another name as the repository has its own — and a draft that
 // does not do yet, turned off in the repository; instructions for everyone, others for the work account
 // alone (edited by hand there since Luna wrote them), a blank draft, and a
-// Codex account kept on its own file. The instructions for everyone and the
+// Codex account kept on its own file. A copy of the release-notes skill, no
+// longer meant for a Codex account but changed there, waits to be taken out. The instructions for everyone and the
 // review skill are for the person's own chats, kept from helpers.
 const REPO = 'C:\\src\\asuri-app';
 const WAITING = 'C:\\Users\\me\\AppData\\Local\\luna\\library-folders\\asuri-app';
@@ -626,7 +627,9 @@ export const LIBRARY: LibraryOverviewDto = {
       place({
         dest: `${accountsDir('anthropic', n)}\\skills\\luna-review`,
         target: { kind: 'account', provider: 'claude', name: n },
-        skill: 'luna-review'
+        skill: 'luna-review',
+        // Deleted by hand in both: what "Put all back" is for.
+        status: 'gone'
       })
     ),
     ...['personal', 'work'].map(n =>
@@ -659,7 +662,14 @@ export const LIBRARY: LibraryOverviewDto = {
     }
   ],
   overridden: [],
-  kept: [],
+  kept: [
+    {
+      // Un-ticked for the Codex account after a model added notes to its copy.
+      dest: `${accountsDir('openai', 'personal')}\\skills\\release-notes`,
+      target: { kind: 'account', provider: 'codex', name: 'personal' },
+      skill: 'release-notes'
+    }
+  ],
   systemAside: [],
   system: [
     {
