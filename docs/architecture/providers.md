@@ -12,7 +12,7 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Launch args | `launch.rs` | `launch.rs` |
 | Binary source | `cli.rs`: downloads.claude.ai, `latest` + `manifest.json`, bare exe | `cli.rs`: GitHub Releases `openai/codex`, tag `rust-v<ver>`, package tarball + `SHA256SUMS` |
 | Defaults | `defaults.rs`: `model`, `effortLevel`, `permissions.defaultMode` | `defaults.rs`: `model`, `model_reasoning_effort`, `approval_policy`, `sandbox_mode` |
-| Models | `models.rs`: context windows from the Models API | `models.rs`: catalog with per-level descriptions |
+| Models | `models.rs`: the account's own list with per-model levels; `context.rs`: context windows from the Models API | `models.rs`: catalog with per-level descriptions |
 | Limits | `limits.rs`: OAuth usage + CLI cache | `limits.rs`: `wham/usage` + rollout fallback |
 | Auth | `oauth.rs`: refresh like the CLI | none: Codex refreshes itself |
 | Trust | `trust.rs`: `hasTrustDialogAccepted` in `.claude.json`, written only when the new-chat dialog's box is ticked | `trust.rs`: `[projects.'<path>'] trust_level` when ticked, or a one-run `-c` (a helper, a trusted root) |
@@ -192,15 +192,61 @@ files themselves and the dialog opens on what they say:
   model of the catalog (sorted by `priority`; source `codex`); no effort: that
   model's `default_reasoning_level`. Codex always gets `--model`.
 
-Picking another model moves the effort to that model's default unless the effort
-came from a file or was picked by hand (`draft.follow`). What Codex actually ran
+Picking another Codex model moves the effort to that model's default unless the
+effort came from a file or was picked by hand (`draft.follow`). Picking another
+Claude model moves it to that model's default only where the model does not
+take the level shown, and then whoever chose it (`draft.force`); a model that
+takes no effort shows no effort buttons and runs without `--effort`. What Codex actually ran
 is read from the rollout's `turn_context` (`modelSeen`). The core normalizes and
 supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
 `luna_session_list` say the same thing.
 
 ## Models
 
-- **Claude Code:** context windows from the Models API (`claude/models.rs`); a
+- **Claude Code:** the models the account may pick (`claude/models.rs`),
+  never another account's (plan and organization decide the list): the
+  account's `cache/model-catalog/*-cc.json` while its `staleAt` has not passed,
+  unless the account's `settings.json` or the machine's managed settings say
+  `availableModels`, `deniedModels` or `modelPicker` (Claude Code applies
+  those to its own answer, not to the file, by rules of its own)
+  → what the CLI answered to the SDK's `initialize` control request, asked on
+  the account in the background (`claude -p --input-format stream-json
+  --output-format stream-json --verbose --safe-mode --strict-mcp-config
+  --no-session-persistence` in an empty folder of Luna's, `claude-models-cwd`:
+  no hook, plugin, skill, CLAUDE.md, MCP server or project setting of the
+  account's loads; one `control_request` line; its process tree taken down
+  once it has answered or after 20 s: no prompt, no turn). It holds the
+  account's own lock in `claude-config-locks/` while it runs, since the CLI
+  rewrites `.claude.json` as it starts; Luna's writes of that file (a trust
+  mark, a recommended key) take the same lock and wait up to 25 s, and
+  nothing else, settings.json or another account, waits on it
+  and kept per account in `claude-models.json` in the data folder for six
+  hours → the four aliases. A stale catalog or answer is returned at once and
+  asked again behind; an answer newer than the catalog wins over it; a
+  signed-out answer (`account.tokenSource: none`; signed in, `account` has a
+  `subscriptionType` and no `tokenSource`) is used but not kept. An answer is
+  kept with a hash of what those settings said of the restricting keys when
+  it was given, and one given under other restrictions is dropped, current
+  or stale, so a list narrowed or widened since is asked for again. Each
+  format is read strictly: a surprise skips that source, logged once per
+  account. `models_known` never runs the CLI (spawn checks,
+  `luna_session_list`, `claude_defaults`, and `claude_models` with
+  `ask: false`, which every start's defaults read, a quick chat's included);
+  `models_for` (`claude_models`) may.
+  What `--model` gets (`slug`): a family's main model by its alias, so the
+  chat follows the family to its next version as the CLI does; any other
+  model by its full id. A catalog model is its family's main model when it is
+  in the `main` section and the alias its `short_name` spells is one
+  `provider_alias_targets.<alias>.default` points at it; in an `initialize`
+  answer, when its `value` is an alias. The dialog keeps a family by its label
+  (`Opus`) and a model by its id (`claude-opus-4-7`), `More…` holding the
+  latter. Each model's levels are its own, plus `ultracode`, which Claude Code
+  runs at any level; the aliases offer every level. Picking a model that does
+  not take the level shown moves it to that model's default, a hand-picked
+  level too; a model that takes none (Haiku 4.5) runs with no `--effort`, in
+  a pane and as a helper. A helper's effort is checked against the model it
+  will run on, the account's or project's default model included.
+- **Claude Code context windows** from the Models API (`claude/context.rs`); a
   background thread reads the accounts root from Rust settings.
 - **Codex:** the catalog (`codex/models.rs`), sorted by priority, with
   per-level descriptions (`effort_hints`): the account's `models_cache.json` →

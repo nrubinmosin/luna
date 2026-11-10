@@ -217,6 +217,7 @@ macro_rules! app_handler {
             cli::cli_mark_bad,
             cli::cli_canary_dismiss,
             claude::defaults::claude_defaults,
+            claude::models::claude_models,
             claude::limits::account_limits,
             claude::trust::claude_folder_trusted,
             pty::folder::chat_folder_check,
@@ -508,12 +509,15 @@ mod acl {
     }
 
     #[test]
-    fn codex_commands_that_may_run_the_cli_take_only_an_account_or_none() {
-        // A catalog miss runs Codex with CODEX_HOME at the path given.
+    fn commands_that_may_run_a_cli_take_only_an_account_or_none() {
+        // A catalog miss runs Codex with CODEX_HOME, or Claude Code with
+        // CLAUDE_CONFIG_DIR, at the path given.
         let app = app();
         for (cmd, body) in [
             ("codex_models", json!({ "accountPath": "/etc" })),
             ("codex_models", json!({ "accountPath": "relative" })),
+            ("claude_models", json!({ "accountPath": "/etc" })),
+            ("claude_models", json!({ "accountPath": "relative" })),
             ("codex_defaults", json!({ "accountPath": "/etc", "folder": "" })),
             ("codex_defaults", json!({ "accountPath": "", "folder": "/p/../etc" })),
         ] {
@@ -522,6 +526,7 @@ mod acl {
         }
         // None given: nothing to read or run, and an answer all the same.
         assert_eq!(ask(&app, "main", LOCAL, "codex_models", json!({ "accountPath": "" })), Ok(json!([])));
+        assert_eq!(ask(&app, "main", LOCAL, "claude_models", json!({ "accountPath": "" })), Ok(json!([])));
         assert!(ask(&app, "main", LOCAL, "codex_defaults", json!({ "accountPath": "", "folder": "" })).is_ok());
     }
 

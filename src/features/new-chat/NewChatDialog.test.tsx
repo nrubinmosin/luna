@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as defaults from '../../ipc/defaults';
 import * as sessions from '../../ipc/sessions';
 import * as trust from '../../ipc/trust';
-import type { ClaudeDefaultsDto, CodexDefaultsDto } from '../../ipc/defaults';
+import type { ClaudeDefaultsDto, ClaudeModelDto, CodexDefaultsDto } from '../../ipc/defaults';
 import type { Account } from '../../shared/types';
 import { expectInDialogFoot } from '../../test/dialog';
 import { useAccounts } from '../accounts/accounts.store';
@@ -14,10 +14,12 @@ import { NewChatDialog } from './NewChatDialog';
 import { useNewChat } from './newchat.store';
 
 // What the dialog asks the core as it opens: no settings files say anything,
-// every folder is trusted, and Codex has no models listed yet.
+// every folder is trusted, and neither CLI has a model list for the account
+// yet (Claude's dialog then lists the four aliases).
 vi.mock('../../ipc/defaults', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/defaults')>()),
   claudeDefaults: vi.fn(() => Promise.resolve({ model: null, effort: null, permissionMode: null })),
+  claudeModels: vi.fn(() => Promise.resolve([])),
   codexDefaults: vi.fn(() => Promise.resolve({ model: null, effort: null, approval: null, sandbox: null })),
   codexModels: vi.fn(() => Promise.resolve([]))
 }));
@@ -75,6 +77,7 @@ beforeEach(() => {
   vi.mocked(trust.claudeFolderTrusted).mockResolvedValue(true);
   vi.mocked(trust.claudeTrustFolder).mockClear();
   mocked.claudeDefaults.mockImplementation(() => Promise.resolve(STOCK_CLAUDE));
+  mocked.claudeModels.mockImplementation(() => Promise.resolve([]));
   mocked.codexDefaults.mockImplementation(() => Promise.resolve(STOCK_CODEX));
   useAccounts.setState({ accounts: [account('claude', 'work'), account('codex', 'gpt')], loaded: true });
   useChats.getState().rememberFolder('/repo');
@@ -122,7 +125,7 @@ describe('NewChatDialog: creating', () => {
 
   it('takes Claude Code’s model, effort and permission mode from the account’s settings', async () => {
     mocked.claudeDefaults.mockResolvedValue({
-      model: fromAccount('claude-sonnet-5'),
+      model: fromAccount('sonnet'),
       effort: fromAccount('low'),
       permissionMode: fromAccount('plan')
     });
@@ -236,6 +239,99 @@ describe('NewChatDialog: creating', () => {
     await user.click(screen.getByRole('button', { name: 'Create' }));
     const [chat] = allChats(useChats.getState().folders);
     expect(chat).toMatchObject({ worktree: true });
+  });
+});
+
+describe('NewChatDialog: Claude models from the account’s own list', () => {
+  const model = (
+    slug: string,
+    displayName: string,
+    efforts: string[],
+    defaultEffort: string | null,
+    more = false
+  ): ClaudeModelDto => ({ slug, modelId: null, displayName, defaultEffort, efforts, effortHints: {}, more });
+  const LIST: ClaudeModelDto[] = [
+    model('opus', 'Opus 5.5', ['low', 'medium', 'high', 'xhigh', 'max'], 'medium'),
+    model('mythos', 'Mythos 1', ['low', 'high'], 'low'),
+    model('claude-opus-4-7', 'Opus 4.7', ['medium', 'xhigh'], 'xhigh', true),
+    model('claude-haiku-4-5-20251001', 'Haiku 4.5', [], null, true)
+  ];
+  // The effort row's buttons; the permission modes are radio inputs.
+  const effortButtons = () =>
+    screen
+      .queryAllByRole('radio')
+      .filter(r => r.tagName !== 'INPUT')
+      .map(r => r.textContent);
+
+  beforeEach(() => mocked.claudeModels.mockResolvedValue(LIST));
+
+  it('lists main models first and the rest under More…', async () => {
+    render(<NewChatDialog />);
+    await settle();
+    expect(mocked.claudeModels).toHaveBeenCalledWith('/accounts/claude/work');
+    const select = screen.getByRole('combobox');
+    const top = [...select.children].filter(c => c.tagName === 'OPTION').map(o => o.textContent);
+    expect(top).toEqual(['Opus 5.5 · default', 'Mythos 1']);
+    const more = screen.getByRole('group', { name: 'More…' });
+    expect([...more.children].map(o => o.textContent)).toEqual(['Opus 4.7', 'Haiku 4.5']);
+  });
+
+  it('offers the chosen model’s own effort levels, and none for a model that takes none', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(effortButtons()).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
+    await user.selectOptions(screen.getByRole('combobox'), 'Mythos');
+    // Stock `high` is a level Mythos takes, so it stays.
+    expect(effortButtons()).toEqual(['low', 'high', 'ultracode']);
+    await user.selectOptions(screen.getByRole('combobox'), 'claude-haiku-4-5-20251001');
+    expect(effortButtons()).toEqual([]);
+    expect(screen.getByText('Haiku 4.5 takes no effort level.')).toBeInTheDocument();
+  });
+
+  it('moves the effort to a model’s own default where the model does not take it, and runs it by full id', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    await user.selectOptions(screen.getByRole('combobox'), 'claude-opus-4-7');
+    expect(effortButtons()).toEqual(['medium', 'xhigh', 'ultracode']);
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ provider: 'claude', model: 'claude-opus-4-7', effort: 'xhigh' });
+  });
+
+  it('moves a hand-picked effort the next model lacks to its default, and runs a model without effort with none', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    await user.click(screen.getByRole('radio', { name: 'max' }));
+    await user.selectOptions(screen.getByRole('combobox'), 'claude-opus-4-7');
+    expect(screen.getByRole('radio', { name: 'xhigh' })).toHaveAttribute('aria-checked', 'true');
+    await user.selectOptions(screen.getByRole('combobox'), 'claude-haiku-4-5-20251001');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ model: 'claude-haiku-4-5-20251001', effort: '' });
+  });
+
+  it('keeps a hand-picked effort the next model takes', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    await user.click(screen.getByRole('radio', { name: 'low' }));
+    await user.selectOptions(screen.getByRole('combobox'), 'Mythos');
+    expect(screen.getByRole('radio', { name: 'low' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('opens on a full id the settings file names, as that model', async () => {
+    mocked.claudeDefaults.mockResolvedValue({
+      model: fromAccount('claude-opus-4-7'),
+      effort: fromAccount('medium'),
+      permissionMode: null
+    });
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('combobox')).toHaveValue('claude-opus-4-7');
+    expect(effortButtons()).toEqual(['medium', 'xhigh', 'ultracode']);
   });
 });
 
@@ -471,5 +567,50 @@ describe('quick chat: the wait guard', () => {
     const [without, unasked] = allChats(useChats.getState().folders);
     expect(without).toMatchObject({ hooksUnasked: false, guard: false });
     expect(unasked).toMatchObject({ hooksUnasked: true, guard: true });
+  });
+});
+
+describe('quick chat: the model’s effort', () => {
+  const noEffort: ClaudeModelDto = {
+    slug: 'claude-haiku-4-5-20251001',
+    modelId: null,
+    displayName: 'Haiku 4.5',
+    defaultEffort: null,
+    efforts: [],
+    effortHints: {},
+    more: true
+  };
+  const opus47: ClaudeModelDto = {
+    ...noEffort,
+    slug: 'claude-opus-4-7',
+    displayName: 'Opus 4.7',
+    efforts: ['medium', 'xhigh'],
+    defaultEffort: 'xhigh'
+  };
+
+  it('runs an account default model that takes no effort with none, though the settings name a level', async () => {
+    mocked.claudeModels.mockResolvedValue([noEffort, opus47]);
+    mocked.claudeDefaults.mockResolvedValue({
+      model: fromAccount('claude-haiku-4-5-20251001'),
+      effort: fromAccount('high'),
+      permissionMode: null
+    });
+    useNewChat.getState().remember('/repo', { provider: 'claude', name: 'work' });
+    await quickChat();
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ model: 'claude-haiku-4-5-20251001', effort: '' });
+    // The list as known, without running the CLI.
+    expect(mocked.claudeModels).toHaveBeenCalledWith('/accounts/claude/work', false);
+  });
+
+  it('moves a default level the model does not take to the model’s own', async () => {
+    mocked.claudeModels.mockResolvedValue([noEffort, opus47]);
+    mocked.claudeDefaults.mockResolvedValue({
+      model: fromAccount('claude-opus-4-7'),
+      effort: fromAccount('high'),
+      permissionMode: null
+    });
+    useNewChat.getState().remember('/repo', { provider: 'claude', name: 'work' });
+    await quickChat();
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ model: 'claude-opus-4-7', effort: 'xhigh' });
   });
 });

@@ -6,6 +6,7 @@ import {
   ROOT,
   POWER,
   DEFAULTS,
+  CLAUDE_MODELS,
   CODEX_MODELS,
   CODEX_DEFAULTS,
   CHECKS,
@@ -36,6 +37,8 @@ export const demoState = {
   showsOrphans: false,
   /** The library's scene with an override of a system skill shows that library. */
   library: LIBRARY,
+  /** What the Claude settings files say: `newchat-more` names an older model. */
+  claudeDefaults: DEFAULTS,
   power: POWER
 };
 
@@ -59,7 +62,8 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
     return (demoState.showsCanary ? v : { ...v, canary: null }) as unknown as T;
   }
   if (cmd === 'get_accounts_root') return ROOT as unknown as T;
-  if (cmd === 'claude_defaults') return DEFAULTS as unknown as T;
+  if (cmd === 'claude_defaults') return demoState.claudeDefaults as unknown as T;
+  if (cmd === 'claude_models') return CLAUDE_MODELS as unknown as T;
   if (cmd === 'codex_defaults') return CODEX_DEFAULTS as unknown as T;
   if (cmd === 'codex_models') return CODEX_MODELS as unknown as T;
   if (cmd === 'power_state') return demoState.power as unknown as T;
