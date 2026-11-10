@@ -15,6 +15,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   replacing changed ones (after a confirmation, backed up for 30 days); places
   left out stay out. With several copies deleted, **Put all back** above Needs
   a look restores them in one click instead of one row at a time.
+- Skills & instructions: a copy no longer meant for its place but changed
+  there is no longer forgotten after one note. It waits under Needs a look,
+  with its differences, until you **Take out** (backed up for 30 days) or
+  **Keep** it as your own; **Sync all** takes every such copy out too.
 
 ## [0.12.0] - 2026-11-10
 

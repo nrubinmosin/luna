@@ -334,6 +334,68 @@ fn put_back_all(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Le
     unsettled
 }
 
+/// Settles each of `dests`, copies Luna left in place as no longer wanted but
+/// changed there (`Ledger::kept`), then lays the library out: `take_out`
+/// backs what is there up and removes it, otherwise Luna forgets it and the
+/// file stays as the user's own. A place left out, or wanted again, is not
+/// touched; one that will not settle is said in the overview's `unsettled`
+/// and the rest go on.
+#[tauri::command(async)]
+pub fn library_kept(dests: Vec<String>, take_out: bool) -> Result<Overview, String> {
+    let _guard = lock();
+    let dirs = Dirs::current();
+    let lib = crate::settings::get_checked()?.library;
+    let accounts = crate::accounts::list_accounts()?;
+    let mut ledger = Ledger::load(&dirs);
+    let units = units(&dirs, &lib, &accounts, &read_skills(&dirs), &read_instructions(&dirs), &ledger);
+    let unsettled = settle_kept(&dirs, &units, &lib.skipped, &mut ledger, &dests, take_out);
+    ledger.save(&dirs)?;
+    for line in &unsettled {
+        crate::log::warn("library", &format!("settling a copy left in place: {line}"));
+    }
+    Ok(Overview { unsettled, ..overview_locked(true)? })
+}
+
+/// Each of `dests` taken out (backed up first) or kept as the user's own, as
+/// far as it goes; what would not, a line each.
+fn settle_kept(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, dests: &[String], take_out: bool) -> Vec<String> {
+    let mut unsettled = Vec::new();
+    for dest in dests {
+        let id = ident(Path::new(dest));
+        // Under the path as Luna noted it, which may be spelled otherwise.
+        let key = ledger.kept.keys().find(|k| ident(Path::new(k)) == id).cloned();
+        let done = match key {
+            _ if skipped.iter().any(|s| ident(Path::new(s)) == id) => Err("it is left out".to_string()),
+            _ if units.iter().any(|u| ident(&u.dest) == id) => Err("the library lays it out there again".to_string()),
+            _ if in_library(dirs, Path::new(dest)) => Err("it is in the library itself".to_string()),
+            None => Err("Luna keeps no note of it".to_string()),
+            Some(key) if take_out => take_out_kept(dirs, ledger, &key),
+            Some(key) => {
+                ledger.kept.remove(&key);
+                crate::log::info("library", &format!("kept {key} as the user's own"));
+                Ok(())
+            }
+        };
+        if let Err(e) = done {
+            unsettled.push(format!("{dest}: {e}"));
+        }
+    }
+    unsettled
+}
+
+/// A kept copy out of its place, what is there backed up first.
+fn take_out_kept(dirs: &Dirs, ledger: &mut Ledger, key: &str) -> Result<(), String> {
+    let file = ledger.kept.get(key).is_some_and(is_file);
+    let at = Path::new(key);
+    if let Some(there) = read_at(at, file)? {
+        back_up(dirs, at, &there)?;
+        remove_at(at, file)?;
+    }
+    ledger.kept.remove(key);
+    crate::log::info("library", &format!("took out {key}, no longer wanted there"));
+    Ok(())
+}
+
 /// One file of a copy as it is in each of three places: what Luna wrote
 /// there last, the library now, and there now. None where it is not.
 #[derive(Serialize)]
@@ -351,17 +413,25 @@ pub struct FileDiff {
 pub fn library_diff(dest: String) -> Result<Vec<FileDiff>, String> {
     let _guard = lock();
     let dirs = Dirs::current();
-    let Located::Copy { from, file, source, .. } = locate(&dirs, &dest)? else {
-        return Err("No instructions of the library go there".into());
-    };
     let ledger = Ledger::load(&dirs);
-    let base: Files =
-        ledger.written.get(&dest).map(|h| h.iter().filter_map(|(k, v)| Some((k.clone(), blob(&dirs, v)?))).collect()).unwrap_or_default();
-    // As the copy is to be, under the name it goes by there; a skill not fit
-    // to be laid out, as the library has it.
-    let library = match source {
-        Ok(files) => files,
-        Err(_) => read_at(&from, file)?.unwrap_or_default(),
+    let base_of = |h: &Hashes| -> Files { h.iter().filter_map(|(k, v)| Some((k.clone(), blob(&dirs, v)?))).collect() };
+    let (base, library, file) = match ledger.kept.get(&dest) {
+        // A copy left in place as no longer wanted: what changed there since
+        // Luna wrote it, the library having nothing for that place now.
+        Some(h) => (base_of(h), base_of(h), is_file(h)),
+        None => {
+            let Located::Copy { from, file, source, .. } = locate(&dirs, &dest)? else {
+                return Err("No instructions of the library go there".into());
+            };
+            let base = ledger.written.get(&dest).map(base_of).unwrap_or_default();
+            // As the copy is to be, under the name it goes by there; a skill
+            // not fit to be laid out, as the library has it.
+            let library = match source {
+                Ok(files) => files,
+                Err(_) => read_at(&from, file)?.unwrap_or_default(),
+            };
+            (base, library, file)
+        }
     };
     let there = read_at(Path::new(&dest), file)?.unwrap_or_default();
     let paths: BTreeSet<&String> = base.keys().chain(library.keys()).chain(there.keys()).collect();
@@ -734,6 +804,47 @@ mod tests {
 
         let p = f.run(&lib, &mut ledger, false);
         assert!(p.places.iter().all(|x| matches!(x.status, Status::Current | Status::Skipped)), "{:?}", p.places);
+    }
+
+    /// A kept copy taken out goes to the backups first, as it is there; one
+    /// kept as the user's own is forgotten and stays. A place left out, wanted
+    /// again or never kept is said, and the rest still go.
+    #[test]
+    fn a_kept_copy_is_taken_out_or_kept() {
+        let f = Fixture::new("kept-settle");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let copies: Vec<PathBuf> = (0..3).map(|i| f.account(i).join("skills").join("review")).collect();
+        for c in &copies {
+            std::fs::write(c.join("extra.md"), "added there").unwrap();
+        }
+        // Wanted on the third account alone, which takes one copy off the kept.
+        let lib = LibrarySettings { skills: BTreeMap::from([("review".into(), reach(&["claude/home"]))]), ..Default::default() };
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(p.kept.len(), 2, "{:?}", p.kept);
+        let units = units(&f.dirs, &lib, &f.accounts, &read_skills(&f.dirs), &read_instructions(&f.dirs), &ledger);
+        let spell = |p: &Path| p.to_string_lossy().into_owned();
+
+        let nowhere = f.base.join("elsewhere/skills/review");
+        let dests = [spell(&copies[0]), spell(&copies[2]), spell(&nowhere)];
+        let unsettled = settle_kept(&f.dirs, &units, &lib.skipped, &mut ledger, &dests, true);
+        assert_eq!(unsettled.len(), 2, "{unsettled:?}");
+        assert!(unsettled[0].ends_with("the library lays it out there again"), "{unsettled:?}");
+        assert!(unsettled[1].ends_with("Luna keeps no note of it"), "{unsettled:?}");
+        assert!(!copies[0].exists(), "taken out");
+        assert!(copies[2].join("extra.md").is_file(), "a copy wanted again is not taken out");
+        let backed: Vec<String> = walk(&f.dirs.backups()).iter().filter_map(|p| std::fs::read_to_string(p).ok()).collect();
+        assert!(backed.contains(&"added there".to_string()), "what was there is backed up: {backed:?}");
+        assert!(backed.iter().any(|t| t.contains("v1")), "its SKILL.md too: {backed:?}");
+
+        let unsettled = settle_kept(&f.dirs, &units, &lib.skipped, &mut ledger, &[spell(&copies[1])], false);
+        assert!(unsettled.is_empty(), "{unsettled:?}");
+        assert!(copies[1].join("extra.md").is_file(), "kept as the user's own");
+        assert!(ledger.kept.is_empty());
+        assert!(f.run(&lib, &mut ledger, true).kept.is_empty(), "and no longer said");
+        assert!(copies[1].join("extra.md").is_file());
     }
 
     /// Every file under `dir`.

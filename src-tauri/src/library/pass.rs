@@ -78,7 +78,8 @@ pub struct Place {
 #[derive(Default)]
 pub(super) struct Pass {
     pub(super) places: Vec<Place>,
-    /// Copies no longer wanted, left where they are because they had changed.
+    /// Copies no longer wanted, left where they are because they had changed
+    /// (`Ledger::kept`): every one still there and still changed.
     pub(super) kept: Vec<String>,
 }
 
@@ -86,7 +87,8 @@ pub(super) struct Pass {
 /// asking: puts in what is missing, brings Luna's own copies up to the
 /// library, adopts a destination that already holds exactly the library's,
 /// and takes out the copies no longer wanted that are still as Luna wrote
-/// them. Changed, deleted and foreign destinations are only reported.
+/// them, remembering those changed there (`Ledger::kept`). Changed, deleted
+/// and foreign destinations, and the kept copies, are only reported.
 pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, act: bool) -> Pass {
     let mut out = Pass::default();
     // Each copy wanted by `ident`, with its path as spelled now: two
@@ -124,6 +126,13 @@ pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut
                 if let Some(w) = ledger.worded.remove(&a) {
                     ledger.worded.insert(key.clone(), w);
                 }
+            }
+        }
+        // A copy left in place as no longer wanted (`kept`), wanted here
+        // again: Luna's copy once more, compared with what Luna wrote there.
+        if let Some(k) = ledger.kept.keys().find(|k| ident(Path::new(k)) == id).cloned() {
+            if let Some(h) = ledger.kept.remove(&k) {
+                ledger.written.entry(key.clone()).or_insert(h);
             }
         }
         let source = match &u.source {
@@ -200,8 +209,42 @@ pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut
                         ledger.wrote(&key, h, banner);
                     }
                 }
-                _ => out.kept.push(key),
+                // Changed there: left, and remembered as Luna's until the
+                // window settles it.
+                _ => {
+                    ledger.kept.insert(key, h);
+                }
             }
+        }
+    }
+    // Each copy left in place, as it is now: gone, or its place left out,
+    // it is forgotten; back to exactly what Luna wrote, it goes as any copy
+    // no longer wanted; still changed, it is reported on every pass.
+    let kept: Vec<String> = ledger.kept.keys().cloned().collect();
+    for key in kept {
+        let dest = PathBuf::from(&key);
+        let id = ident(&dest);
+        if skipped.iter().any(|s| ident(Path::new(s)) == id) || wanted.contains_key(&id) || in_library(dirs, &dest) {
+            ledger.kept.remove(&key);
+            continue;
+        }
+        let h = ledger.kept[&key].clone();
+        match read_at(&dest, is_file(&h)) {
+            Ok(None) => {
+                ledger.kept.remove(&key);
+            }
+            Ok(Some(have)) if hashes(&have) == h => {
+                if !act {
+                    continue;
+                }
+                match remove_at(&dest, is_file(&h)) {
+                    Ok(()) => {
+                        ledger.kept.remove(&key);
+                    }
+                    Err(e) => crate::log::warn("library", &format!("could not take out {key}: {e}")),
+                }
+            }
+            _ => out.kept.push(key),
         }
     }
     out
@@ -479,10 +522,63 @@ mod tests {
         assert!(copy.join("SKILL.md").is_file());
         std::fs::write(copy.join("extra.md"), "added there").unwrap();
 
-        let p = f.run(&LibrarySettings::default(), &mut ledger, true);
-        assert_eq!(p.kept, vec![copy.to_string_lossy().into_owned()]);
+        let none = LibrarySettings::default();
+        let p = f.run(&none, &mut ledger, true);
+        let key = copy.to_string_lossy().into_owned();
+        assert_eq!(p.kept, vec![key.clone()]);
         assert!(copy.join("extra.md").is_file());
-        assert!(ledger.written.is_empty(), "no longer Luna's");
+        assert!(ledger.written.is_empty(), "no longer laid out");
+        // Remembered, and said on every pass, looking or acting.
+        assert!(ledger.kept.contains_key(&key));
+        assert_eq!(f.run(&none, &mut ledger, false).kept, vec![key.clone()]);
+        assert_eq!(f.run(&none, &mut ledger, true).kept, vec![key.clone()]);
+        assert!(copy.join("extra.md").is_file());
+
+        // Back to exactly what Luna wrote: it goes as any copy no longer wanted.
+        std::fs::remove_file(copy.join("extra.md")).unwrap();
+        assert!(f.run(&none, &mut ledger, false).kept.is_empty(), "no longer changed");
+        assert!(copy.is_dir(), "looking takes nothing out");
+        f.run(&none, &mut ledger, true);
+        assert!(!copy.exists());
+        assert!(ledger.kept.is_empty());
+    }
+
+    /// Kept copies a pass no longer remembers: one deleted there, one whose
+    /// place is wanted again (then Luna's copy, changed there, once more), one
+    /// whose place is left out.
+    #[test]
+    fn a_kept_copy_is_forgotten_once_it_is_no_longer_kept() {
+        let f = Fixture::new("kept-ends");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let copies: Vec<PathBuf> = (0..3).map(|i| f.account(i).join("skills").join("review")).collect();
+        for c in &copies {
+            std::fs::write(c.join("extra.md"), "added there").unwrap();
+        }
+        let none = LibrarySettings::default();
+        let p = f.run(&none, &mut ledger, true);
+        assert_eq!(p.kept.len(), 3, "{:?}", p.kept);
+
+        std::fs::remove_dir_all(&copies[0]).unwrap();
+        let mut lib = LibrarySettings {
+            skills: BTreeMap::from([("review".into(), reach(&["claude/home"]))]),
+            skipped: vec![copies[1].to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let p = f.run(&lib, &mut ledger, true);
+        assert!(p.kept.is_empty(), "{:?}", p.kept);
+        assert!(ledger.kept.is_empty());
+        assert_eq!(Fixture::status(&p, &copies[2]), Status::Changed, "Luna's copy again, changed there");
+        assert!(copies[1].join("extra.md").is_file(), "a place left out is not touched");
+        assert!(copies[2].join("extra.md").is_file());
+
+        // Left out and taken back in: no longer Luna's, so someone else's.
+        lib.skipped.clear();
+        lib.skills.insert("review".into(), all());
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(Fixture::status(&p, &copies[1]), Status::Taken);
     }
 
     #[test]

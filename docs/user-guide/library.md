@@ -103,11 +103,20 @@ chip on the status bar, with its differences. Take it into the library and it
 becomes every copy's; put the library's back; or leave that place out. The side
 replaced is kept in Luna's backups for 30 days.
 
+A copy no longer meant for its place (a skill un-ticked for an account, say)
+goes, but only while it is still exactly what Luna wrote. One changed there
+since stays, and waits under Needs a look, "no longer meant for it, changed
+there", with its differences from what Luna wrote: **Take out** removes it,
+kept in Luna's backups for 30 days; **Keep** leaves it as your own file, and
+Luna forgets it was ever its copy. Picked for that place again, it is Luna's
+changed copy there once more; deleted, or changed back to just what Luna
+wrote, it no longer waits.
+
 With several copies deleted, **Put all back** above the list puts the library's
 back in each of them; the changed ones still wait there. **Sync all**, at the
 top of the window, makes every account hold what the library says: deleted
-copies put back and changed ones replaced, after a confirmation that counts
-them. It goes by what the grids pick and leaves the places left out as they
+copies put back, changed ones replaced and those no longer meant for their
+place taken out, after a confirmation that counts them. It goes by what the grids pick and leaves the places left out as they
 are; a copy that cannot be laid out (a skill whose `SKILL.md` does not do) stays
 under Needs a look.
 
