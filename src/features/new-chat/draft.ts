@@ -17,6 +17,10 @@ export interface Draft<S extends object> {
   /** Sets a value that follows from another pick — unless the user has set
    *  this one by hand. Leaves it untouched, so it keeps following. */
   follow: <K extends keyof S>(key: K, value: S[K]) => void;
+  /** Sets a value that must change whether or not it was set by hand (a
+   *  level the newly picked model does not take). Whether it was touched
+   *  stays as it was. */
+  force: <K extends keyof S>(key: K, value: S[K]) => void;
   revert: (key: keyof S) => void;
 }
 
@@ -65,6 +69,7 @@ export function useSettingsDraft<S extends object>(
     follow: (key, value) => {
       if (!touched.current[key]) setSettings(s => ({ ...s, [key]: value }));
     },
+    force: (key, value) => setSettings(s => ({ ...s, [key]: value })),
     revert: key => {
       delete touched.current[key];
       setSettings(s => ({ ...s, [key]: resolved[key] }));

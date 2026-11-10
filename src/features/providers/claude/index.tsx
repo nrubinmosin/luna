@@ -142,6 +142,18 @@ export function effortsFor(listed: ClaudeModelDto | undefined): Effort[] {
   return listed.efforts.length ? [...listed.efforts, ULTRACODE] : [];
 }
 
+/** The effort a chat on this model must move to from `current`, or null
+ *  where `current` will do: none (`''`, no `--effort`) for a model that
+ *  takes none, the model's own default (else `high`, else its first level)
+ *  for one that does not take `current`. */
+export function effortMovedTo(listed: ClaudeModelDto | undefined, current: Effort): Effort | null {
+  const takes = effortsFor(listed);
+  if (!takes.length) return current === '' ? null : '';
+  if (takes.includes(current)) return null;
+  const own = listed?.efforts ?? EFFORTS;
+  return listed?.defaultEffort ?? (own.includes('high') ? 'high' : (own[0] ?? 'high'));
+}
+
 export function Fields({
   draft,
   origin,
@@ -172,18 +184,20 @@ export function Fields({
 
   const listed = list.find(m => modelLabelOf(m.slug) === settings.model);
   const efforts = effortsFor(listed);
-  const effortItems = efforts.length && !efforts.includes(settings.effort) ? [...efforts, settings.effort] : efforts;
+  const effortItems =
+    efforts.length && settings.effort && !efforts.includes(settings.effort) ? [...efforts, settings.effort] : efforts;
 
   // A model that does not take the level shown moves it to its own default
-  // level; one that takes it keeps it, whether a settings file named it,
-  // Luna's stock chose it or it was picked by hand.
-  const takesShown =
-    !listed?.efforts.length || listed.efforts.includes(settings.effort) || settings.effort === ULTRACODE;
+  // level, a hand-picked one included: a chat cannot run at a level its
+  // model lacks. One that takes it keeps it, whether a settings file named
+  // it, Luna's stock chose it or it was picked by hand. A model that takes
+  // no effort runs with none.
+  const moveTo = effortMovedTo(listed, settings.effort);
   useEffect(() => {
-    if (!takesShown && listed?.defaultEffort) draft.follow('effort', listed.defaultEffort);
-    // `draft.follow` is a new function every render; the model is what matters.
+    if (moveTo !== null) draft.force('effort', moveTo);
+    // `draft.force` is a new function every render; the model is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listed?.slug, takesShown]);
+  }, [listed?.slug, moveTo]);
 
   // Main models first, the rest under "More…"; a model a settings file names
   // that the list does not know still gets an entry of its own, chosen.
@@ -261,7 +275,12 @@ export function Fields({
 export function Meta({ chat }: { chat: ClaudeChat }) {
   return (
     <>
-      <span className="pchip" title={`Model and effort: ${chat.model}, ${chat.effort}`}>
+      <span
+        className="pchip"
+        title={
+          chat.effort ? `Model and effort: ${chat.model}, ${chat.effort}` : `Model: ${chat.model} (no effort level)`
+        }
+      >
         <b>{chat.model}</b> {chat.effort}
       </span>
       <span className="pchip opt-2" title={`Permission mode: ${chat.perm} — ${PERM_HINTS[chat.perm]}`}>

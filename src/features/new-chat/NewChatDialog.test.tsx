@@ -300,6 +300,28 @@ describe('NewChatDialog: Claude models from the account’s own list', () => {
     expect(chat).toMatchObject({ provider: 'claude', model: 'claude-opus-4-7', effort: 'xhigh' });
   });
 
+  it('moves a hand-picked effort the next model lacks to its default, and runs a model without effort with none', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    await user.click(screen.getByRole('radio', { name: 'max' }));
+    await user.selectOptions(screen.getByRole('combobox'), 'claude-opus-4-7');
+    expect(screen.getByRole('radio', { name: 'xhigh' })).toHaveAttribute('aria-checked', 'true');
+    await user.selectOptions(screen.getByRole('combobox'), 'claude-haiku-4-5-20251001');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ model: 'claude-haiku-4-5-20251001', effort: '' });
+  });
+
+  it('keeps a hand-picked effort the next model takes', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    await user.click(screen.getByRole('radio', { name: 'low' }));
+    await user.selectOptions(screen.getByRole('combobox'), 'Mythos');
+    expect(screen.getByRole('radio', { name: 'low' })).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('opens on a full id the settings file names, as that model', async () => {
     mocked.claudeDefaults.mockResolvedValue({
       model: fromAccount('claude-opus-4-7'),

@@ -26,8 +26,9 @@ pub(crate) struct Command {
     pub(crate) flags: &'static [&'static str],
 }
 
-/// Claude Code: chats and helpers alike are the bare command
-/// (claude/launch.rs, pty/start.rs, background/command.rs). 2.1.318 lists
+/// Claude Code: chats, helpers and the model list's ask alike are the bare
+/// command (claude/launch.rs, pty/start.rs, background/command.rs,
+/// claude/models.rs). 2.1.318 lists
 /// `--permission-prompt-tool` only in another flag's text, which the probe
 /// takes as listed (`listed`).
 const CLAUDE: &[Command] = &[Command {
@@ -53,6 +54,8 @@ const CLAUDE: &[Command] = &[Command {
         "--output-format",
         "--verbose",
         "--replay-user-messages",
+        "--safe-mode",
+        "--no-session-persistence",
     ],
 }];
 

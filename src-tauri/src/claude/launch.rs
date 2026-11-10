@@ -44,17 +44,15 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         Item::NoAutoUpdate.with("DISABLE_AUTOUPDATER=1"),
         session_applied(s.id, None),
         Item::Model.with(format!("--model {}", s.model)),
-        Item::Effort.with(format!("--effort {}", s.effort)),
-        Item::PermissionMode.with(format!("--permission-mode {}", s.permission_mode)),
     ];
-    let mut args = vec![
-        "--model".to_string(),
-        s.model.to_string(),
-        "--effort".to_string(),
-        s.effort.to_string(),
-        "--permission-mode".to_string(),
-        s.permission_mode.to_string(),
-    ];
+    let mut args = vec!["--model".to_string(), s.model.to_string()];
+    // No effort for a model that takes none (claude/models.rs): no flag.
+    if !s.effort.is_empty() {
+        args.extend(["--effort".to_string(), s.effort.to_string()]);
+        applied.push(Item::Effort.with(format!("--effort {}", s.effort)));
+    }
+    args.extend(["--permission-mode".to_string(), s.permission_mode.to_string()]);
+    applied.push(Item::PermissionMode.with(format!("--permission-mode {}", s.permission_mode)));
     if let Some(session_id) = s.resume {
         args.push("--resume".into());
         args.push(session_id.to_string());
