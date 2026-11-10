@@ -73,6 +73,25 @@ impl Drop for Fixture {
     }
 }
 
+/// A folder link at `link` to `target`: a symlink on Unix, a junction on
+/// Windows (no privilege needed), as a person or a program would plant one.
+pub(super) fn link_dir(link: &Path, target: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    assert!(std::process::Command::new("cmd")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .is_ok_and(|o| o.status.success()));
+}
+
+/// The link itself, never what it leads to.
+pub(super) fn unlink_dir(link: &Path) {
+    let _ = std::fs::remove_dir(link).or_else(|_| std::fs::remove_file(link));
+}
+
 pub(super) fn all() -> Reach {
     vec![ALL.into()]
 }
