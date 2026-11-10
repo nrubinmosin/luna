@@ -19,7 +19,7 @@ list and the board; the core owns sessions
 | `features/library/` | Skills & instructions window: grids, `ReachPicker`, `FolderCell`, `AddFolder`, "Needs a look" with `diff.ts` (line LCS), `LibraryEditor`, System skills (`SystemSkills`) |
 | `features/settings/` | Settings dialog: its page list and pages (`SettingsDialog`), the shared row, list and disclosure pieces (`SettingsRows`), one file per group in `sections/` (Links in `browsers/BrowserSection`); Recommendations window and chip |
 | `features/status-bar/`, `power/`, `shortcuts/`, `updates/`, `browsers/`, `core/` | the status bar, power chip and menu (`power.store` only listens to `power://state`), the F1 list, app and CLI updates, link browsers, the core banner |
-| `features/agents/` | `bridge.ts` (agent events ↔ chats), `background.store.ts`, `BackgroundChip`, `agentAccounts.store.ts` |
+| `features/agents/` | `bridge.ts` (agent events ↔ chats), `background.store.ts`, `BackgroundChip` (the row's chip, the pane's `HelperSummary` pill and the `HelperPanel` list both open), `HelperPill` (the pill's counts and the names that fit), `helperSummary.ts` (counts, tabs, lines), `agentAccounts.store.ts` |
 | `ipc/` | the only boundary with Rust |
 | `styles/` | app-wide sheets |
 | `dev/demo/` | the fixture behind screenshots: scenes, fixtures, the panes' paint, the IPC stand-in |
@@ -133,6 +133,14 @@ buttons, fields, checkboxes, radios and scrollbars are redrawn in
   the app's window less a margin, its title bar on top and its action row, a
   `.dialog-foot` after the `.window-body`, at the bottom, and the body scrolls
   what does not fit. A long `.popover` scrolls the same way.
+- A panel that opens on hover goes through `shared/ui/HoverPopover`: it opens
+  on hover (after `OPEN_DELAY_MS`), on keyboard focus and on a click or tap,
+  which pins it; it stays `CLOSE_GRACE_MS` after the pointer leaves, and
+  closes on Escape, a press elsewhere, or a scroll or resize that moves its
+  face (`useCloseWhenMoved`). It is placed on whichever side of the face has
+  more room and never taller than that room. Its face carries `data-nodrag`,
+  which a draggable holder (the pane's title bar) checks before starting a
+  drag.
 
 ## Testing
 
