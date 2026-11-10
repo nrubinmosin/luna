@@ -8,6 +8,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- A chat's pane title bar sums up its background helpers without a click: a
+  pill by the name with how many work, are idle and ask (a "!" sign, not only
+  a color), and the names of those at work as far as the pane has room, asking
+  ones first. The bar's settings moved to its right, past the free space,
+  and the name has a maximum width.
+- The helper list opens on hover, on keyboard focus or on a click or tap, from
+  the pane's pill and the row's count alike, in Working and Idle tabs, and
+  shows each helper's last activity and the first line of its task.
+- A narrow pane folds the recolor, rename, What Luna applied and delete
+  buttons into a "…" menu.
+
 ## [0.12.0] - 2026-11-10
 
 Auto-handoff's instructions are now a skill Luna serves only to the chat that

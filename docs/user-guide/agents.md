@@ -56,10 +56,21 @@ hooks run unasked.
 
 - Every helper runs in the **background**: no row, no pane, no terminal. Each
   turn is one run of the CLI's headless mode (`claude -p`, `codex exec`); the
-  next resumes the conversation. It needs no open window. Its parent's row and
-  pane title bar show how many there are (the count glows a few seconds on a
-  spawn); a click lists them with what each is doing and for how long, its
-  model, effort, account and worktree, and offers:
+  next resumes the conversation. It needs no open window. Its parent's row
+  shows how many there are, and its pane's title bar a pill with how many work,
+  how many are idle and how many ask (a "!" in the waiting color), followed, as
+  far as there is room, by the names of those at work, asking ones first:
+  `2 working · 1 idle · !1 asks │ !check-changelog · review-plan 4m`. A
+  narrower pane shows `▸2 ◦1 !1`, the narrowest `3 !1`. A helper that asks
+  counts as working: its turn waits on the answer. One that has exited is not
+  counted. Both glow a few seconds on a spawn.
+- Hovering the pill or the row's count, focusing it with Tab, or clicking or
+  tapping it (which keeps it open until Escape or a click elsewhere) opens
+  the list, in two tabs, **Working** and **Idle**: Working first when any
+  works, asking helpers at its head and marked. Each helper shows what it is
+  doing and for how long, its model, effort, account and worktree, when it was
+  last active, the first line of its task (the whole line on hover) and what
+  it asks, and offers:
   - **Watch:** its conversation, read-only, as it goes: what its agent asked and
     what it said, tool calls marked, updating every second while a turn runs.
     A long conversation shows its latest part, and very long entries (a tool's

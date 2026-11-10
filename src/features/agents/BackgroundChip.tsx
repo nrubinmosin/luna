@@ -1,47 +1,45 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { backgroundDelete, backgroundKill, type BackgroundHelperDto } from '../../ipc/agents';
 import { Icon } from '../../shared/ui/icons';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
-import { useDialogHost } from '../../shared/ui/dialogHost';
-import { useCloseWhenMoved } from '../../shared/ui/popover';
-import { sinceLabel } from '../../shared/lib/format';
+import { HoverPopover } from '../../shared/ui/HoverPopover';
 import { logWarn } from '../../shared/lib/log';
 import { allChats, useChats } from '../chats/chats.store';
 import { rootOf, useBackground } from './background.store';
 import { openAsChat } from './bridge';
 import { HelperView } from './HelperView';
-
-/** A state as a person reads it. */
-const STATE_LABEL: Record<string, string> = {
-  working: 'working',
-  waiting: 'asks for permission',
-  question: 'asks a question',
-  idle: 'done',
-  background: 'a job still runs',
-  exited: 'gone'
-};
+import {
+  activityLine,
+  askLine,
+  asks,
+  countHelpers,
+  defaultTab,
+  helperName,
+  helpersIn,
+  setupLine,
+  stateLine,
+  summaryLabel,
+  type HelperTab
+} from './helperSummary';
+import { HelperPill } from './HelperPill';
+import './helpers.css';
 
 /** How long a chip glows after a helper of its chat was spawned. */
 const NEW_MS = 5000;
 
 /** A helper's four buttons (slim, each as wide as its label on one line) share
- *  out its row: at XP's 75px minimum the four would stand past the popover's
+ *  out its row: at XP's 75px minimum the four would stand past the panel's
  *  edge, and "Open as chat" break onto two lines. */
 const ACTION: CSSProperties = { flex: '1 1 auto', whiteSpace: 'nowrap' };
 
-/** What it runs on: "sonnet · medium · team · worktree". */
-function setupLine(h: BackgroundHelperDto): string {
-  return [h.model ?? 'default model', h.effort, h.account, h.worktree ? 'worktree' : null].filter(Boolean).join(' · ');
-}
-
-/** "working 4m" on its turn, "done · 12m" after it: since the turn or the spawn. */
-function stateLine(h: BackgroundHelperDto, now: number): string {
-  const label = STATE_LABEL[h.state] ?? h.state;
-  if (h.turnStartedMs) return `${label} ${sinceLabel(h.turnStartedMs, now)}`;
-  return `${label} · up ${sinceLabel(h.startedMs, now)}`;
-}
+const ONE_LINE: CSSProperties = {
+  fontSize: 'var(--fs-1)',
+  color: 'var(--dim)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap'
+};
 
 /** The time now, again every `ms` while mounted. */
 function useNow(ms: number): number {
@@ -53,24 +51,21 @@ function useNow(ms: number): number {
   return now;
 }
 
-/** What a helper asks, on one line. */
-function askLine(h: BackgroundHelperDto): string | null {
-  const a = h.ask;
-  if (!a) return null;
-  if (a.kind === 'permission') return [a.tool, a.detail].filter(Boolean).join(': ') || null;
-  return a.questions?.map(q => q.text).join(' · ') ?? null;
+/** The helpers hanging from a chat, its helpers' helpers with them. */
+export function useHelpersOf(parentId: string): BackgroundHelperDto[] {
+  return useBackground(useShallow(s => s.helpers.filter(h => rootOf(h, s.helpers) === parentId)));
 }
 
 /**
  * The background helpers of one chat (background/), its helpers' helpers
- * with them: a count on its row, and on a click a list of them with what each
- * is doing, to watch one read-only as it works, open one as a chat of the
- * person's own (which takes it from its agent for good), stop it or delete it.
- * Its agent is the one told what they say; this is for a person who wants to look.
+ * with them: a count on its row, and on hover, focus or a click a list of them
+ * with what each is doing, to watch one read-only as it works, open one as a
+ * chat of the person's own (which takes it from its agent for good), stop it
+ * or delete it. Its agent is the one told what they say; this is for a person
+ * who wants to look. Its pane's title bar has the same list (`HelperSummary`).
  */
 export function BackgroundChip({ parentId }: { parentId: string }) {
-  const helpers = useBackground(useShallow(s => s.helpers.filter(h => rootOf(h, s.helpers) === parentId)));
-  return <HelperChip helpers={helpers} what="of this chat" />;
+  return <HelperChip helpers={useHelpersOf(parentId)} what="of this chat" />;
 }
 
 /**
@@ -106,17 +101,34 @@ export function LooseHelpers() {
   );
 }
 
-function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: string }) {
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  // Kept here, not in the list: a click anywhere closes the list, and the
-  // view or the question it opened goes on.
-  const [watching, setWatching] = useState<string | null>(null);
-  const [handing, setHanding] = useState<BackgroundHelperDto | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const watched = helpers.find(h => h.id === watching);
+/** A chat's helpers summed up on its pane's title bar: the counts, and the
+ *  names that fit after them; the same list as its row's chip. */
+export function HelperSummary({ parentId }: { parentId: string }) {
+  const helpers = useHelpersOf(parentId);
+  const now = useNow(15_000);
+  const fresh = useFresh(helpers);
+  if (helpers.length === 0) return null;
+  const c = countHelpers(helpers);
+  return (
+    <Helpers
+      helpers={helpers}
+      what="of this chat"
+      faceProps={{
+        className: 'hpill',
+        title: summaryLabel(helpers, now),
+        'data-asking': c.asks > 0 ? 'yes' : 'no',
+        'data-new': fresh ? 'yes' : 'no'
+      }}
+      face={<HelperPill helpers={helpers} now={now} />}
+    />
+  );
+}
+
+/** Whether a helper of these was spawned within NEW_MS: the one moment nothing
+ *  else on screen marks, so the face glows for a while. */
+function useFresh(helpers: BackgroundHelperDto[]): boolean {
   const newest = Math.max(0, ...helpers.map(h => h.startedMs));
   const [fresh, setFresh] = useState(false);
-  // A spawn is the one moment nothing else on screen marks: glow for a while.
   useEffect(() => {
     const left = newest + NEW_MS - Date.now();
     // Also when the newest helper went inside its glow: the cleanup took the
@@ -130,49 +142,81 @@ function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: s
     const t = window.setTimeout(() => setFresh(false), left);
     return () => window.clearTimeout(t);
   }, [newest]);
+  return fresh;
+}
+
+function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: string }) {
+  const fresh = useFresh(helpers);
   if (helpers.length === 0) return null;
-  const asking = helpers.some(h => h.state === 'question' || h.state === 'waiting');
-  const working = helpers.filter(h => h.state === 'working').length;
-  const title = [
-    `${helpers.length} background helper${helpers.length > 1 ? 's' : ''} ${what} — click to see`,
-    // eslint-disable-next-line react-hooks/purity -- the tooltip gives ages as of this render, which comes with every poll
-    ...helpers.map(h => `• ${h.name || h.id}: ${stateLine(h, Date.now())} (${setupLine(h)})`)
-  ].join('\n');
+  const c = countHelpers(helpers);
   return (
-    <span
-      className="kids"
-      data-asking={asking ? 'yes' : 'no'}
-      data-working={working > 0 ? 'yes' : 'no'}
-      data-new={fresh ? 'yes' : 'no'}
-      title={title}
-      onClick={e => {
-        e.stopPropagation();
-        setAnchor(anchor ? null : e.currentTarget);
+    <Helpers
+      helpers={helpers}
+      what={what}
+      faceProps={{
+        className: 'kids',
+        // eslint-disable-next-line react-hooks/purity -- the tooltip gives ages as of this render, which comes with every poll
+        title: summaryLabel(helpers, Date.now()),
+        'data-asking': c.asks > 0 ? 'yes' : 'no',
+        'data-working': c.working > 0 ? 'yes' : 'no',
+        'data-new': fresh ? 'yes' : 'no'
       }}
-    >
-      <Icon name="agents" size={12} />
-      {helpers.length}
-      {anchor && (
-        <HelperList
-          helpers={helpers}
-          anchor={anchor}
-          onClose={() => setAnchor(null)}
-          onWatch={id => {
-            setWatching(id);
-            setAnchor(null);
-          }}
-          onOpen={h => {
-            setHanding(h);
-            setAnchor(null);
-          }}
-          error={error}
-          setError={setError}
-        />
-      )}
+      face={
+        <>
+          <Icon name="agents" size={12} />
+          {helpers.length}
+        </>
+      }
+    />
+  );
+}
+
+/** A face that opens the helpers' list, with what the list opens: a helper
+ *  watched, or the question before opening one as a chat. Kept here, not in
+ *  the list: the list closes as they open, and they go on. */
+function Helpers({
+  helpers,
+  what,
+  face,
+  faceProps
+}: {
+  helpers: BackgroundHelperDto[];
+  what: string;
+  face: ReactNode;
+  faceProps: Parameters<typeof HoverPopover>[0]['faceProps'];
+}) {
+  const [watching, setWatching] = useState<string | null>(null);
+  const [handing, setHanding] = useState<BackgroundHelperDto | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const watched = helpers.find(h => h.id === watching);
+  return (
+    <>
+      <HoverPopover
+        face={face}
+        faceProps={faceProps}
+        label={`Background helpers ${what}`}
+        panelClassName="helper-panel"
+      >
+        {close => (
+          <HelperPanel
+            helpers={helpers}
+            onWatch={id => {
+              setWatching(id);
+              close();
+            }}
+            onOpen={h => {
+              setHanding(h);
+              close();
+            }}
+            error={error}
+            setError={setError}
+          />
+        )}
+      </HoverPopover>
       {watched && <HelperView helper={watched} onClose={() => setWatching(null)} />}
       {handing && (
         <ConfirmDialog
-          title={`Open "${handing.name || handing.id}" as your chat?`}
+          title={`Open "${helperName(handing)}" as your chat?`}
           body={
             <>
               It becomes a chat of your own, for good: its agent can no longer send to it, wait on it, stop or delete
@@ -193,56 +237,31 @@ function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: s
           }}
         />
       )}
-    </span>
+    </>
   );
 }
 
-function HelperList({
+/** The list itself: Working and Idle tabs over the rows, which scroll under them. */
+export function HelperPanel({
   helpers,
-  anchor,
-  onClose,
   onWatch,
   onOpen,
   error,
   setError
 }: {
   helpers: BackgroundHelperDto[];
-  anchor: HTMLElement;
-  onClose: () => void;
   onWatch: (id: string) => void;
   onOpen: (h: BackgroundHelperDto) => void;
   error: string | null;
   setError: (e: string | null) => void;
 }) {
-  const host = useDialogHost();
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const now = useNow(15_000);
-
-  useLayoutEffect(() => {
-    const r = anchor.getBoundingClientRect();
-    const w = ref.current?.offsetWidth ?? 300;
-    const h = ref.current?.offsetHeight ?? 80;
-    const left = Math.min(Math.max(8, r.left - 4), window.innerWidth - w - 8);
-    const below = r.bottom + 6;
-    setPos({ left, top: below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : below });
-  }, [anchor, host, helpers.length]);
-
-  useCloseWhenMoved(true, anchor, onClose);
-
-  // Any click the list didn't swallow dismisses it, and so does Escape.
-  useEffect(() => {
-    const close = () => onClose();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('click', close);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('click', close);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [onClose]);
+  // The tab picked, if any; else whichever has work in it, as helpers come and go.
+  const [picked, setPicked] = useState<HelperTab | null>(null);
+  const tab = picked ?? defaultTab(helpers);
+  const working = helpersIn(helpers, 'working');
+  const idle = helpersIn(helpers, 'idle');
+  const shown = tab === 'working' ? working : idle;
 
   const act = (what: string, f: () => Promise<void>) => () => {
     setError(null);
@@ -252,114 +271,119 @@ function HelperList({
     });
   };
 
-  if (!host) return null;
-  return createPortal(
-    <div
-      ref={ref}
-      className="popover"
-      onClick={e => e.stopPropagation()}
-      style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, width: 320, display: 'grid', gap: 8 }}
+  const tabButton = (key: HelperTab, label: string, n: number) => (
+    <button
+      role="tab"
+      className="slim"
+      aria-selected={tab === key}
+      data-on={tab === key ? 'yes' : 'no'}
+      onClick={() => setPicked(key)}
     >
-      {helpers.map(h => {
-        const line = askLine(h);
-        const busy = h.state === 'working' || h.state === 'waiting' || h.state === 'question';
-        // Between turns, what its turns left running is what there is to stop.
-        const left = h.state === 'background' ? (h.leftRunning ?? []) : [];
-        return (
-          <div key={h.id} style={{ display: 'grid', gap: 4 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-              <Icon name={h.provider} size={13} />
-              <span
-                style={{
-                  flex: '1 1 auto',
-                  fontWeight: 600,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap'
-                }}
-              >
-                {h.name || h.id}
-              </span>
-              <span style={{ flex: 'none', color: 'var(--dim)', fontSize: 'var(--fs-1)' }}>{stateLine(h, now)}</span>
-            </div>
-            <div
-              style={{
-                fontSize: 'var(--fs-1)',
-                color: 'var(--dim)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              {setupLine(h)}
-            </div>
-            {line && (
-              <div
-                style={{
-                  fontSize: 'var(--fs-1)',
-                  color: 'var(--dim)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap'
-                }}
-                title={line}
-              >
-                {line}
+      {label} {n}
+    </button>
+  );
+
+  return (
+    <>
+      <div className="helper-tabs" role="tablist" aria-label="Helpers by state">
+        {tabButton('working', 'Working', working.length)}
+        {tabButton('idle', 'Idle', idle.length)}
+      </div>
+      <div className="helper-rows" role="tabpanel">
+        {shown.length === 0 && (
+          <div style={{ ...ONE_LINE, padding: '4px 2px' }}>{tab === 'working' ? 'None at work.' : 'None idle.'}</div>
+        )}
+        {shown.map(h => {
+          const line = askLine(h);
+          const asking = asks(h);
+          const busy = h.state === 'working' || h.state === 'starting' || asking;
+          // Between turns, what its turns left running is what there is to stop.
+          const left = h.state === 'background' ? (h.leftRunning ?? []) : [];
+          const activity = activityLine(h, now);
+          return (
+            <div key={h.id} className="helper-row" data-helper={h.id} data-asking={asking ? 'yes' : 'no'}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                {asking ? <b className="ask-mark" aria-label="asks" /> : <Icon name={h.provider} size={13} />}
+                <span
+                  title={helperName(h)}
+                  style={{
+                    flex: '1 1 auto',
+                    fontWeight: 600,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {helperName(h)}
+                </span>
+                <span style={{ flex: 'none', color: 'var(--dim)', fontSize: 'var(--fs-1)' }}>{stateLine(h, now)}</span>
               </div>
-            )}
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button
-                className="slim"
-                style={ACTION}
-                title="Its conversation as it goes, read-only"
-                onClick={() => onWatch(h.id)}
-              >
-                Watch
-              </button>
-              <button
-                className="slim"
-                style={ACTION}
-                disabled={busy || left.length > 0}
-                title={
-                  busy
-                    ? 'Open it once its turn is over'
-                    : left.length > 0
-                      ? 'Stop what its turn left running first'
-                      : 'Make it a chat of your own; its agent loses it for good'
-                }
-                onClick={() => onOpen(h)}
-              >
-                Open as chat
-              </button>
-              <button
-                className="slim"
-                style={ACTION}
-                disabled={!busy && left.length === 0}
-                title={left.length > 0 ? `End what its turn left running: ${left.join(', ')}` : undefined}
-                onClick={act('stopping a helper', () => backgroundKill(h.id))}
-              >
-                Stop
-              </button>
-              <button
-                className="slim"
-                style={ACTION}
-                disabled={busy || left.length > 0}
-                title={busy || left.length > 0 ? 'Stop it first: it is at work' : 'Delete it, and the worktree it made'}
-                onClick={act('deleting a helper', async () => {
-                  const r = await backgroundDelete(h.id);
-                  // Its worktree held work saved nowhere else: kept, and said.
-                  if (r.worktreeKept)
-                    setError(`Deleted; its worktree was kept for its uncommitted work: ${r.worktreeKept}`);
-                })}
-              >
-                Delete
-              </button>
+              <div style={ONE_LINE}>{[setupLine(h), activity].filter(Boolean).join(' · ')}</div>
+              {h.task && (
+                <div style={{ ...ONE_LINE, color: 'var(--fg)' }} title={h.task}>
+                  {h.task}
+                </div>
+              )}
+              {line && (
+                <div className="helper-ask" title={line}>
+                  {line}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  className="slim"
+                  style={ACTION}
+                  title="Its conversation as it goes, read-only"
+                  onClick={() => onWatch(h.id)}
+                >
+                  Watch
+                </button>
+                <button
+                  className="slim"
+                  style={ACTION}
+                  disabled={busy || left.length > 0}
+                  title={
+                    busy
+                      ? 'Open it once its turn is over'
+                      : left.length > 0
+                        ? 'Stop what its turn left running first'
+                        : 'Make it a chat of your own; its agent loses it for good'
+                  }
+                  onClick={() => onOpen(h)}
+                >
+                  Open as chat
+                </button>
+                <button
+                  className="slim"
+                  style={ACTION}
+                  disabled={!busy && left.length === 0}
+                  title={left.length > 0 ? `End what its turn left running: ${left.join(', ')}` : undefined}
+                  onClick={act('stopping a helper', () => backgroundKill(h.id))}
+                >
+                  Stop
+                </button>
+                <button
+                  className="slim"
+                  style={ACTION}
+                  disabled={busy || left.length > 0}
+                  title={
+                    busy || left.length > 0 ? 'Stop it first: it is at work' : 'Delete it, and the worktree it made'
+                  }
+                  onClick={act('deleting a helper', async () => {
+                    const r = await backgroundDelete(h.id);
+                    // Its worktree held work saved nowhere else: kept, and said.
+                    if (r.worktreeKept)
+                      setError(`Deleted; its worktree was kept for its uncommitted work: ${r.worktreeKept}`);
+                  })}
+                >
+                  Delete
+                </button>
+              </div>
             </div>
-          </div>
-        );
-      })}
-      {error && <div style={{ color: 'var(--wait)', fontSize: 'var(--fs-1)' }}>{error}</div>}
-    </div>,
-    host
+          );
+        })}
+      </div>
+      {error && <div style={{ color: 'var(--wait)', fontSize: 'var(--fs-1)', flex: 'none' }}>{error}</div>}
+    </>
   );
 }
