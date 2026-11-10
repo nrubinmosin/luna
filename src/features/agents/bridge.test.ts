@@ -101,6 +101,8 @@ const row = (over: Partial<BackgroundHelperDto> = {}): BackgroundHelperDto => ({
   worktree: false,
   startedMs: 0,
   turnStartedMs: null,
+  lastActivityMs: null,
+  task: null,
   ...over
 });
 

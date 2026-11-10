@@ -51,6 +51,16 @@ const clickText = (selector, text) =>
  *  whether it moved: a body that fits has nothing to scroll. */
 const scrollBody = `const b = document.querySelector('.scrim > .window > .window-body'); const was = b.scrollTop; b.scrollTop = was > 60 ? was - 60 : was + 60; return b.scrollTop !== was;`;
 const has = selector => `document.querySelector(${JSON.stringify(selector)})`;
+/** The first chat with fourteen helpers at work, more than any window is tall. */
+const manyHelpers =
+  `{ const s = ${store('features/agents/background.store.ts')}.useBackground;` +
+  `const h = s.getState().helpers.find(x => x.parent === 'demo-1');` +
+  `s.setState({ helpers: Array.from({ length: 14 }, (_, i) => ({ ...h, id: h.id + '-' + i, name: 'helper ' + i })) }); } ${wait(300)}`;
+/** Rests the pointer on the first pane's helper pill, which opens its list.
+ *  A hover, not focus: a headless page that is not focused fires no focus events. */
+const hoverPill = `{ const p = document.querySelector('.pane .hpill'); if (!p) throw new Error('no pill'); p.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' })); } ${wait(500)}`;
+/** Holds the first pane to `px` wide, whatever the board gives it. */
+const narrowPane = px => `document.querySelector('.pane').style.maxWidth = '${px}px'; ${wait(200)}`;
 const linkChooser = `[...document.querySelectorAll('.window')].find(w => w.textContent.includes('Copy link'))`;
 
 /** What only a click (or a store a click would set) opens: a scene to start
@@ -153,6 +163,27 @@ const EXTRAS = [
       `s.setState({ helpers: Array.from({ length: 14 }, (_, i) => ({ ...h, id: h.id + '-' + i, name: 'helper ' + i })) }); ${wait(300)}` +
       click('.chat-row[data-active="yes"] .kids'),
     opens: `${has('.popover')}?.textContent.includes('helper 13')`
+  },
+  {
+    // The same fourteen from the pane's pill, opened by a hover.
+    name: 'helpers-pane',
+    scene: 'main',
+    setup: manyHelpers + hoverPill,
+    opens: `${has('.helper-panel')}?.textContent.includes('helper 13')`
+  },
+  {
+    // A pane narrow enough to fold its window buttons, and its "…" menu.
+    name: 'pane-narrow-menu',
+    scene: 'main',
+    setup: narrowPane(380) + click('.pane .pane-more'),
+    opens: has('.pane-menu')
+  },
+  {
+    // The narrowest pill, on a pane at its least, and its list.
+    name: 'pane-narrow-helpers',
+    scene: 'main',
+    setup: narrowPane(260) + manyHelpers + hoverPill,
+    opens: `${has('.helper-panel')}?.textContent.includes('helper 13')`
   }
 ];
 

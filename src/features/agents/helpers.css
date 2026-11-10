@@ -1,0 +1,85 @@
+/* ------------------------------------------------------------------------
+   A chat's helpers (BackgroundChip.tsx): the list a row's chip and a pane's
+   pill open, and the mark of a helper that asks.
+   ------------------------------------------------------------------------ */
+
+/* Asks: an exclamation in a disc of the waiting color, a sign and not only a
+   color, wherever a helper waits on an answer. */
+[data-app] .ask-mark {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--wait);
+  color: #fff;
+  font: 800 9px/1 var(--sans-serif);
+  text-shadow: none;
+}
+[data-app] .ask-mark::before {
+  content: "!";
+}
+
+/* A column under the face: the tabs stay, the rows scroll under them, and
+   the whole is never taller than the room HoverPopover gives it. */
+[data-app] .popover.helper-panel {
+  width: 340px;
+  max-width: calc(100vw - 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+[data-app] .helper-tabs {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+[data-app] .helper-tabs [role="tab"] {
+  flex: 1 1 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+[data-app] .helper-tabs [role="tab"][data-on="yes"] {
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+/* xp.css draws a tab panel as a light box of its own; the list is the popover's. */
+[data-app] .helper-rows[role="tabpanel"] {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+}
+[data-app] .helper-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+[data-app] .helper-row {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+/* One that asks heads the Working tab, marked. */
+[data-app] .helper-row[data-asking="yes"] {
+  padding: 5px 6px;
+  border-left: 3px solid var(--wait);
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--wait) 12%, transparent);
+}
+[data-app] .helper-ask {
+  font-size: var(--fs-1);
+  font-weight: 600;
+  color: var(--wait);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
