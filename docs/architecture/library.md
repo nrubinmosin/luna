@@ -11,7 +11,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 - Lay copies out into accounts (`CLAUDE.md` / `AGENTS.md`, `skills/<name>`).
 - Give folders' sessions extra skills, hidden skills or other instructions at
   every start, writing nothing into the folder.
-- Never overwrite a copy that changed where it lies: report it.
+- Never overwrite or take out a copy that changed where it lies: report it.
 
 ## Key modules
 
@@ -147,14 +147,44 @@ hashes of what Luna wrote last (`<data>/library-state.json`, bytes in
 | equal to the library, no ledger entry | adopted |
 | different from the ledger | `changed` (or `gone`): reported, never written |
 | no ledger entry and different | `taken`: reported, never written |
+| no longer wanted, equal to the ledger | taken out |
+| no longer wanted, different from the ledger | `kept`: reported on every pass, never taken out unasked |
 
 The window resolves each: take it into the library, put the library's back, or
-skip that destination (`library.skipped`). The losing side goes to
-`<data>/library-backups/` (swept after 30 days). A copy no longer wanted is
+skip that destination (`library.skipped`). `library_put_back` puts the
+library's back at a list of destinations under one lock and one pass after:
+the window's "Put all back" (every `gone`) and "Sync all" (every `gone`,
+`changed` and `taken`). It writes over what is there only at the
+destinations in `replace`, the `changed` and `taken` ones "Sync all"'s
+confirmation counted; everywhere else only where nothing is there under the
+lock, so a deleted copy made again since the window looked is not overwritten
+unasked, even in a batch that replaces others. It writes under the destination as the pass spells it now
+(the ledger's key), refuses a skipped destination and goes on past one that
+will not settle, returning those in the overview's `unsettled`. The
+losing side goes to `<data>/library-backups/` (swept after 30 days), each
+backup in a folder of its own: `backup_slot` makes it exclusively, with a
+count after a name taken, so two accounts' `skills/review` backed up in one
+millisecond do not share one. A copy no longer wanted is
 deleted only while it still hashes to the ledger.
 
+A copy no longer wanted that changed there leaves `written` for the ledger's
+`kept` (destination → what Luna last wrote there; its blobs stay for the
+differences, which `library_diff` shows against them). Every pass, acting or
+only looking, reports each one still there and still changed in the
+overview's `kept`, with the account or folder its path says it was for. Its
+record goes when the file is gone, when its place is left out, when the place
+is wanted again (its hashes go back to `written`, so it is Luna's copy, changed
+there, under the ordinary statuses), and when it is settled; one that is again
+exactly what Luna wrote is taken out by the next acting pass, as any copy no
+longer wanted. `library_kept(dests, take_out)` settles a list under one lock
+and one pass after: `take_out` backs what is there up and removes it,
+otherwise Luna forgets it and the file is the user's own. It finds a record by
+`ident`, refuses a place left out or wanted again and goes on past one that
+will not settle, as `library_put_back` does. "Sync all" calls it for every kept
+copy before its put-back, counting them in its confirmation.
+
 Passes run when the window starts, before every session start, after every
-change in the window and on Sync now, one at a time under a lock file beside the
+change in the window and on Sync all, one at a time under a lock file beside the
 ledger shared by window and core. Where `lay_out` runs in a start:
 
 - **A chat** (`pty/start.rs`): inside the launch closure, so under that chat's
@@ -181,6 +211,23 @@ The window re-reads the overview (no writes) on every focus.
   `failed`: never written, adopted or removed.
 - Writes go through `<file>.<pid>-<n>.luna-tmp`; links are never followed or
   written over.
+- No link or junction stands between a copy and the folder it lies in
+  (`Unit::top`, `top_of`: the deepest account folder holding it, else Luna's
+  data folder, so a Claude Code folder copy's `library-folders/` is looked at
+  too, being Luna's own; a Codex folder copy lies in its account's plugin
+  cache, every folder of which is below the account's; a copy an earlier Luna
+laid into a folder the library lists outside every account's and Luna's
+data folder, that folder, whether or not it is given anything now: a listed
+folder inside one of those is never the top, or its own link would go
+unlooked at; one in a folder no longer listed has none and stays). The pass's writes and
+  its removals (a copy no longer wanted, a kept one changed back, both still
+  exactly what Luna wrote: equal bytes say the content is Luna's, not the
+  place), `put_back` (a resolve, Put all back, Sync all) and `library_kept`'s
+  take-out look at every folder below that one on the way down
+  (`no_link_between`, on `boundary::walk_down`) and refuse, naming the link;
+  the account folder itself may be the person's link. A removal refused keeps
+  its ledger note, `written` or `kept`, for a later pass, and is logged once a
+  run.
 - `system/` is read only for what Luna serves (`library/system.rs`): no pass
   lays anything of it out, and a skill named `session-handoff` under
   `skills/` is not the handoff's override.
@@ -233,5 +280,6 @@ The window re-reads the overview (no writes) on every focus.
 | --- | --- |
 | A file held open mid-save | that unit is `failed` for the pass; copies stay |
 | A copy edited in place (by hand or a model) | `changed`, shown under "Needs a look", never overwritten |
+| A copy edited in place, then no longer wanted there | `kept`, shown under "Needs a look" until taken out or kept |
 | Settings unreadable | no pass (`get_checked`) |
 | Sessions started outside Luna | see the account's copies only, not folder skills |

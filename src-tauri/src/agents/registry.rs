@@ -327,6 +327,17 @@ pub fn chat_name(id: &str) -> Option<String> {
     reg().lock().unwrap_or_else(|e| e.into_inner()).names.get(id).cloned().filter(|n| !n.trim().is_empty())
 }
 
+/// The first line of what a helper was spawned on (spawn/ `TASK_CHARS`), for
+/// the window's list of a chat's helpers.
+pub fn task_of(id: &str) -> Option<String> {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).tasks.get(id).cloned()
+}
+
+#[cfg(test)]
+pub fn set_task_for_test(id: &str, task: &str) {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).tasks.insert(id.to_string(), task.to_string());
+}
+
 /// A session as the log names it: the id with the chat's name, which is what
 /// is left to go by once the session is deleted.
 pub fn label(id: &str) -> String {

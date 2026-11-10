@@ -6,7 +6,7 @@ import { useCloseWhenMoved } from '../../shared/ui/popover';
 import { StatusDot } from '../../shared/ui/StatusDot';
 import { CHAT_COLORS, chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, limitColor, shortSessionId, tail2, tint } from '../../shared/lib/format';
-import { BackgroundChip } from '../agents/BackgroundChip';
+import { HelperSummary } from '../agents/BackgroundChip';
 import { useChats } from '../chats/chats.store';
 import { AppliedPanel } from '../chats/AppliedPanel';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
@@ -96,6 +96,99 @@ function ColorPicker({ chat, anchor, onClose }: { chat: Chat; anchor: HTMLElemen
   );
 }
 
+/** What the "…" button of a narrow pane's title bar holds: the window buttons
+ *  a narrow bar has no room for, as a menu. */
+interface MenuItem {
+  label: string;
+  title: string;
+  run: (at: HTMLElement) => void;
+}
+
+/**
+ * The narrow bar's menu of its rarer window buttons. Portaled and placed by
+ * its button, like the color picker; closes on a pick, Escape in it, focus
+ * leaving it, a press elsewhere, or a scroll or resize that moves the button.
+ */
+export function PaneMenu({ anchor, items, onClose }: { anchor: HTMLElement; items: MenuItem[]; onClose: () => void }) {
+  const host = useDialogHost();
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const r = anchor.getBoundingClientRect();
+    const w = ref.current?.offsetWidth ?? 200;
+    const h = ref.current?.offsetHeight ?? 120;
+    const left = Math.min(Math.max(8, r.left - 4), window.innerWidth - w - 8);
+    const below = r.bottom + 6;
+    setPos({ left, top: below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : below });
+    ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [anchor, host]);
+
+  useCloseWhenMoved(true, anchor, onClose);
+
+  useEffect(() => {
+    const away = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!ref.current?.contains(t) && !anchor.contains(t)) onClose();
+    };
+    // Only an Escape pressed in the menu or on its button is the menu's.
+    const onKey = (e: KeyboardEvent) => {
+      const at = document.activeElement;
+      const inMenu = !!at && !!ref.current?.contains(at);
+      if (e.key !== 'Escape' || !(inMenu || at === anchor)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+      if (inMenu) anchor.focus();
+    };
+    document.addEventListener('mousedown', away);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('mousedown', away);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [anchor, onClose]);
+
+  if (!host) return null;
+  return createPortal(
+    <div
+      ref={ref}
+      role="menu"
+      className="popover pane-menu"
+      onClick={e => e.stopPropagation()}
+      onMouseDown={e => e.stopPropagation()}
+      // Tabbed or clicked out of: closed, as nothing is left to aim keys at it.
+      onBlur={e => {
+        const to = e.relatedTarget as Node | null;
+        if (!to || (!ref.current?.contains(to) && !anchor.contains(to))) onClose();
+      }}
+      onKeyDown={e => {
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+        e.preventDefault();
+        const all = [...(ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+        const at = all.indexOf(document.activeElement as HTMLElement);
+        all[(at + (e.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length]?.focus();
+      }}
+      style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0 }}
+    >
+      {items.map(i => (
+        <button
+          key={i.label}
+          role="menuitem"
+          title={i.title}
+          onClick={() => {
+            onClose();
+            i.run(anchor);
+          }}
+        >
+          {i.label}
+        </button>
+      ))}
+    </div>,
+    host
+  );
+}
+
 /**
  * `soloChat` renders the pane on the peek sheet for a chat with no seat on the
  * board: the chat comes from the prop instead of a slot, so every control that
@@ -124,6 +217,10 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const [showApplied, setShowApplied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [picking, setPicking] = useState<HTMLElement | null>(null);
+  const [menu, setMenu] = useState<HTMLElement | null>(null);
+  // Where the last press on the title bar landed: one on the helper pill or
+  // the menu button is a click on them, not the start of a pane drag.
+  const pressedOn = useRef<Element | null>(null);
   const [copied, setCopied] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -152,6 +249,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
     setEditing(false);
     setConfirming(false);
     setPicking(null);
+    setMenu(null);
   }, [chatId]);
 
   const t = folder ? tail2(folder.path) : null;
@@ -232,8 +330,15 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             // Chromium hands every mouse press inside a draggable subtree to
             // the drag machinery, and selecting text in the rename input would
             // start a pane drag instead.
-            draggable={!soloChat && !editing && !picking}
+            draggable={!soloChat && !editing && !picking && !menu}
+            onMouseDown={e => {
+              pressedOn.current = e.target as Element;
+            }}
             onDragStart={e => {
+              if (pressedOn.current?.closest('[data-nodrag]')) {
+                e.preventDefault();
+                return;
+              }
               e.dataTransfer.effectAllowed = 'move';
               // Something must be set or Firefox/WebView2 cancels the drag; the
               // pane index travels in the store, where the drop handler reads it.
@@ -248,9 +353,25 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             style={{ ['--c' as string]: colorTheme?.swatch ?? 'var(--luna-blue)' }}
           >
             {/* Controls first: the hand reaches the left of a bar before its
-                right, and the name reads as well from either end. */}
+                right, and the name reads as well from either end. A narrow
+                bar folds the rarer four into the "…" menu (panes.css). */}
             <span className="title-bar-controls">
               <button
+                className="pane-more"
+                data-glyph="more"
+                data-nodrag=""
+                aria-label="More"
+                aria-haspopup="menu"
+                aria-expanded={!!menu}
+                title="Chat color, rename, What Luna applied, delete"
+                onClick={e => {
+                  e.stopPropagation();
+                  const at = e.currentTarget;
+                  setMenu(m => (m ? null : at));
+                }}
+              />
+              <button
+                className="pane-rare"
                 data-glyph="swatch"
                 aria-label="Chat color"
                 title="Chat color — tints this title bar and the chat's row in the list"
@@ -262,6 +383,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 style={{ ['--swatch' as string]: colorTheme?.swatch }}
               />
               <button
+                className="pane-rare"
                 data-glyph="pencil"
                 aria-label="Rename"
                 title="Rename chat"
@@ -272,6 +394,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 }}
               />
               <button
+                className="pane-rare"
                 data-glyph="info"
                 aria-label="What Luna applied"
                 title="What Luna applied — everything Luna added to this chat's CLI, and why"
@@ -281,6 +404,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 }}
               />
               <button
+                className="pane-rare"
                 data-glyph="trash"
                 aria-label="Delete chat"
                 title="Delete chat — asks first"
@@ -320,6 +444,33 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
               )}
             </span>
             {picking && <ColorPicker chat={chat} anchor={picking} onClose={() => setPicking(null)} />}
+            {menu && (
+              <PaneMenu
+                anchor={menu}
+                onClose={() => setMenu(null)}
+                items={[
+                  {
+                    label: 'Chat color…',
+                    title: "Tints this title bar and the chat's row in the list",
+                    run: at => setPicking(at)
+                  },
+                  {
+                    label: 'Rename',
+                    title: 'Rename chat',
+                    run: () => {
+                      setDraft(chat.name);
+                      setEditing(true);
+                    }
+                  },
+                  {
+                    label: 'What Luna applied',
+                    title: "Everything Luna added to this chat's CLI, and why",
+                    run: () => setShowApplied(true)
+                  },
+                  { label: 'Delete chat…', title: 'Asks first', run: () => setConfirming(true) }
+                ]}
+              />
+            )}
 
             <span className="pane-head">
               <StatusDot status={chat.status} />
@@ -361,9 +512,15 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 </span>
               )}
 
-              {/* Its background helpers, live state rather than a setting: by
-                  the name, so a narrow pane does not drop it with the chips. */}
-              {!editing && <BackgroundChip parentId={chat.id} />}
+              {/* Its background helpers, live state rather than a setting:
+                  by the name, so a narrow pane drops the chips first. The slot
+                  is the bar's flexible space, which the pill's helper names
+                  fill as far as they fit; the settings stay on the right. */}
+              {!editing && (
+                <span className="pane-helpers">
+                  <HelperSummary parentId={chat.id} />
+                </span>
+              )}
 
               {!editing && (
                 <span className="pane-chips">

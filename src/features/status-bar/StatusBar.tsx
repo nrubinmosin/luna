@@ -145,11 +145,13 @@ function UpdateChips() {
 /**
  * The library's word on the bar, only while a copy of a skill or of
  * instructions waits on the user: changed or deleted where it lies, something
- * else in its place, or one that cannot be laid out.
+ * else in its place, one that cannot be laid out, or one no longer meant for
+ * its place but changed there.
  */
 function LibraryChip() {
   const places = useLibrary(s => s.overview?.places);
-  const lines = waiting(places ?? []).length;
+  const kept = useLibrary(s => s.overview?.kept.length ?? 0);
+  const lines = waiting(places ?? []).length + kept;
   if (!lines) return null;
   return (
     <div
