@@ -130,8 +130,9 @@ pub struct Overview {
     pub unsettled: Vec<String>,
 }
 
-/// Whether a link `codex_manifests` keeps clear of is yet to be said: once a
-/// run, as a pass comes with every session's start.
+/// Whether a link `codex_manifests` keeps clear of, or a copy a pass would not
+/// take out (a link on the way to it), is yet to be said: once a run, as a
+/// pass comes with every session's start.
 pub(super) fn link_is_news(link: &Path) -> bool {
     static SAID: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
     SAID.lock().unwrap_or_else(|e| e.into_inner()).insert(link.to_path_buf())
@@ -175,7 +176,7 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
     // A library that is not there (a drive not plugged in, a folder moved)
     // wants nothing, and a pass on that would take every copy out.
     let units = if found { units(&dirs, &lib, &accounts, &skills, &instructions, &ledger) } else { Vec::new() };
-    let p = pass(&dirs, &units, &lib.skipped, &mut ledger, act && found);
+    let p = pass(&dirs, &accounts, &units, &lib.skipped, &mut ledger, act && found);
     if act && found {
         codex_manifests(&lib, &accounts);
         prune_folder_dirs(&dirs, &lib);

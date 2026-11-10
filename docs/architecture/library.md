@@ -212,13 +212,19 @@ The window re-reads the overview (no writes) on every focus.
 - Writes go through `<file>.<pid>-<n>.luna-tmp`; links are never followed or
   written over.
 - No link or junction stands between a copy and the folder it lies in
-  (`Unit::top`: the account's folder, or `library-folders/` for a Claude Code
-  folder copy): the pass's writes, `put_back` (a resolve, Put all back, Sync
-  all) and `library_kept`'s take-out look at every folder below that one on
-  the way down (`no_link_between`, on `boundary::walk_down`) and refuse,
-  naming the link; the top folder itself may be the person's link. The pass's
-  removal of a copy no longer wanted, still exactly what Luna wrote, is not
-  checked this way.
+  (`Unit::top`, `top_of`: the deepest account folder holding it, else Luna's
+  data folder, so a Claude Code folder copy's `library-folders/` is looked at
+  too, being Luna's own; a Codex folder copy lies in its account's plugin
+  cache, every folder of which is below the account's; a copy an earlier Luna
+laid into a listed folder itself, that folder). The pass's writes and
+  its removals (a copy no longer wanted, a kept one changed back, both still
+  exactly what Luna wrote: equal bytes say the content is Luna's, not the
+  place), `put_back` (a resolve, Put all back, Sync all) and `library_kept`'s
+  take-out look at every folder below that one on the way down
+  (`no_link_between`, on `boundary::walk_down`) and refuse, naming the link;
+  the account folder itself may be the person's link. A removal refused keeps
+  its ledger note, `written` or `kept`, for a later pass, and is logged once a
+  run.
 - `system/` is read only for what Luna serves (`library/system.rs`): no pass
   lays anything of it out, and a skill named `session-handoff` under
   `skills/` is not the handoff's override.

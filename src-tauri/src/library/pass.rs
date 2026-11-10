@@ -8,9 +8,9 @@ use super::*;
 pub(super) struct Unit {
     /// The instructions file itself, or the skill's folder.
     pub(super) dest: PathBuf,
-    /// The folder `dest` lies in that is not Luna's to look through: the
-    /// account's, or for a Claude Code folder copy `library-folders/`. No
-    /// folder between the two may be a link (files.rs `no_link_between`).
+    /// The folder `dest` lies in that no folder below may be a link (files.rs
+    /// `no_link_between`, `top_of`): the account's, or for a Claude Code
+    /// folder copy Luna's data folder, so `library-folders/` is looked at.
     pub(super) top: PathBuf,
     pub(super) file: bool,
     /// None for instructions.
@@ -93,7 +93,24 @@ pub(super) struct Pass {
 /// and takes out the copies no longer wanted that are still as Luna wrote
 /// them, remembering those changed there (`Ledger::kept`). Changed, deleted
 /// and foreign destinations, and the kept copies, are only reported.
-pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, act: bool) -> Pass {
+pub(super) fn pass(dirs: &Dirs, accounts: &[AccountInfo], units: &[Unit], skipped: &[String], ledger: &mut Ledger, act: bool) -> Pass {
+    // Equal bytes say the content is Luna's, not that the place is: a copy
+    // goes only where no link on the way leads its removal elsewhere.
+    // A copy an earlier Luna laid into a listed folder itself
+    // (`<folder>/<name>`) lies in no account's: the folder is its top.
+    let listed: Vec<PathBuf> = units
+        .iter()
+        .filter_map(|u| match &u.target {
+            Target::Folder { path, .. } => Some(PathBuf::from(path)),
+            Target::Account { .. } => None,
+        })
+        .collect();
+    let removable = |dest: &Path| -> Result<(), String> {
+        let top = top_of(dirs, accounts, dest)
+            .or_else(|| listed.iter().filter(|t| within(dest, t)).max_by_key(|t| t.components().count()).cloned())
+            .ok_or("it lies in no account's folder")?;
+        no_link_between(&top, dest)
+    };
     let mut out = Pass::default();
     // Each copy wanted by `ident`, with its path as spelled now: two
     // spellings of one file are one copy.
@@ -209,8 +226,11 @@ pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut
             match read_at(&dest, is_file(&h)) {
                 Ok(None) => {}
                 Ok(Some(have)) if hashes(&have) == h => {
-                    if let Err(e) = remove_at(&dest, is_file(&h)) {
-                        crate::log::warn("library", &format!("could not take out {key}: {e}"));
+                    // Not taken out: still Luna's, for a later pass to try.
+                    if let Err(e) = removable(&dest).and_then(|()| remove_at(&dest, is_file(&h))) {
+                        if link_is_news(&dest) {
+                            crate::log::warn("library", &format!("could not take out {key}: {e}"));
+                        }
                         ledger.wrote(&key, h, banner);
                     }
                 }
@@ -242,11 +262,13 @@ pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut
                 if !act {
                     continue;
                 }
-                match remove_at(&dest, is_file(&h)) {
+                // Not taken out, the record stays for a later pass.
+                match removable(&dest).and_then(|()| remove_at(&dest, is_file(&h))) {
                     Ok(()) => {
                         ledger.kept.remove(&key);
                     }
-                    Err(e) => crate::log::warn("library", &format!("could not take out {key}: {e}")),
+                    Err(e) if link_is_news(&dest) => crate::log::warn("library", &format!("could not take out {key}: {e}")),
+                    Err(_) => {}
                 }
             }
             _ => out.kept.push(key),
@@ -335,7 +357,7 @@ pub(super) fn units(
                 let (dest, top) = match a.provider {
                     Provider::Claude => (
                         claude_folder_dir(dirs, &slug, a).join(".claude").join("skills").join(shown.as_deref().unwrap_or(name)),
-                        dirs.folders(),
+                        dirs.data.clone(),
                     ),
                     Provider::Codex => (codex_plugin_dir(a, &slug).join("skills").join(name), PathBuf::from(&a.path)),
                 };
@@ -588,6 +610,84 @@ mod tests {
         lib.skills.insert("review".into(), all());
         let p = f.run(&lib, &mut ledger, true);
         assert_eq!(Fixture::status(&p, &copies[1]), Status::Taken);
+    }
+
+    /// A link standing for an account's `skills` folder, to a folder holding
+    /// byte for byte what Luna wrote: neither a copy no longer wanted nor a
+    /// kept one changed back is taken out through it; Luna's note stays for a
+    /// later pass.
+    #[test]
+    fn nothing_is_taken_out_through_a_link_on_the_way() {
+        let f = Fixture::new("remove-link");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        // Account 1's copy changed there, then no longer wanted: kept.
+        let kept = f.account(1).join("skills").join("review");
+        std::fs::write(kept.join("extra.md"), "added there").unwrap();
+        let none = LibrarySettings::default();
+        let only_0 = LibrarySettings { skills: BTreeMap::from([("review".into(), reach(&["claude/work"]))]), ..Default::default() };
+        f.run(&only_0, &mut ledger, true);
+        assert!(ledger.kept.contains_key(&*kept.to_string_lossy()));
+        // Both accounts' `skills` become links to other folders, each holding
+        // exactly what Luna wrote.
+        let mut others = Vec::new();
+        for i in [0, 1] {
+            let other = f.base.join(format!("other-{i}"));
+            std::fs::create_dir_all(other.join("review")).unwrap();
+            std::fs::copy(f.dirs.skills().join("review").join(SKILL_FILE), other.join("review").join(SKILL_FILE)).unwrap();
+            std::fs::rename(f.account(i).join("skills"), f.base.join(format!("moved-{i}"))).unwrap();
+            link_dir(&f.account(i).join("skills"), &other);
+            others.push(other);
+        }
+
+        f.run(&none, &mut ledger, true);
+        f.run(&none, &mut ledger, true);
+        for other in &others {
+            assert!(other.join("review").join(SKILL_FILE).is_file(), "{} taken out through the link", other.display());
+        }
+        let copy = f.account(0).join("skills").join("review");
+        assert!(ledger.written.contains_key(&*copy.to_string_lossy()), "still Luna's, for a later pass");
+        assert!(ledger.kept.contains_key(&*kept.to_string_lossy()), "still kept, for a later pass");
+        for i in [0, 1] {
+            unlink_dir(&f.account(i).join("skills"));
+        }
+    }
+
+    /// `library-folders/` is Luna's own: made a link, nothing of a folder's
+    /// Claude Code copies is written through it.
+    #[test]
+    fn a_linked_library_folders_is_not_written_through() {
+        let f = Fixture::new("folders-link");
+        f.skill("review", "v1");
+        let repo = f.base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let folder = LibraryFolder {
+            path: repo.to_string_lossy().into_owned(),
+            skills: BTreeMap::from([("review".into(), reach(&["claude/work"]))]),
+            slug: "repo".into(),
+            ..Default::default()
+        };
+        let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let copy = claude_folder_dir(&f.dirs, "repo", &f.accounts[0]).join(".claude").join("skills").join("review");
+        assert!(copy.join(SKILL_FILE).is_file());
+        let elsewhere = f.base.join("elsewhere");
+        std::fs::rename(f.dirs.folders(), &elsewhere).unwrap();
+        link_dir(&f.dirs.folders(), &elsewhere);
+        let theirs = elsewhere.join("repo").join("work").join(".claude").join("skills").join("review").join(SKILL_FILE);
+        let before = std::fs::read(&theirs).unwrap();
+
+        // The library moves on: Luna's copy would be brought up to it.
+        f.skill("review", "v2");
+        let p = f.run(&lib, &mut ledger, true);
+        let place = p.places.iter().find(|x| Path::new(&x.dest) == copy).unwrap();
+        assert_eq!(place.status, Status::Failed);
+        assert!(place.problem.as_deref().is_some_and(|e| e.contains("link")), "{place:?}");
+        assert_eq!(std::fs::read(&theirs).unwrap(), before, "nothing written through the link");
+        unlink_dir(&f.dirs.folders());
     }
 
     #[test]

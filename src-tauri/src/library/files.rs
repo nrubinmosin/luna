@@ -217,9 +217,23 @@ pub(super) fn backup_slot(dirs: &Dirs, from: &Path) -> Result<PathBuf, String> {
     unreachable!("a count runs out of numbers before names")
 }
 
+/// The folder a copy at `dest` lies in that no link may stand below
+/// (`no_link_between`): the deepest account folder holding it — an account
+/// may lie in Luna's data folder — else Luna's data folder, whose
+/// `library-folders/` is Luna's own and so looked at too. None for a path
+/// in neither.
+pub(super) fn top_of(dirs: &Dirs, accounts: &[AccountInfo], dest: &Path) -> Option<PathBuf> {
+    accounts
+        .iter()
+        .map(|a| PathBuf::from(&a.path))
+        .chain([dirs.data.clone()])
+        .filter(|t| within(dest, t))
+        .max_by_key(|t| t.components().count())
+}
+
 /// Refuses `dest` when a folder on the way down to it from `top` — the account
-/// folder it lies in, or the folder of Luna's its copies for a listed folder's
-/// sessions wait in — is a link or junction, or no folder: a write or a
+/// folder it lies in, or Luna's data folder for a copy waiting for a listed
+/// folder's sessions — is a link or junction, or no folder: a write or a
 /// removal there would land wherever the link leads. `top` itself is the
 /// person's, a link of their choosing if they chose one, so only what lies
 /// below it is looked at; `dest` itself is `read_at`'s to refuse. A folder not
