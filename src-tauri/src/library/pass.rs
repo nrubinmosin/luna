@@ -8,6 +8,10 @@ use super::*;
 pub(super) struct Unit {
     /// The instructions file itself, or the skill's folder.
     pub(super) dest: PathBuf,
+    /// The folder `dest` lies in that is not Luna's to look through: the
+    /// account's, or for a Claude Code folder copy `library-folders/`. No
+    /// folder between the two may be a link (files.rs `no_link_between`).
+    pub(super) top: PathBuf,
     pub(super) file: bool,
     /// None for instructions.
     pub(super) skill: Option<String>,
@@ -144,6 +148,7 @@ pub(super) fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut
         };
         let want = hashes(source);
         let write = |ledger: &mut Ledger| -> Result<(), String> {
+            no_link_between(&u.top, &u.dest)?;
             keep_blobs(dirs, source);
             if let Err(e) = write_at(&u.dest, u.file, source) {
                 // Stopped partway (a file there held open, say): what is there
@@ -287,6 +292,7 @@ pub(super) fn units(
         };
         out.push(Unit {
             dest: Path::new(&a.path).join(instructions_name(a.provider)),
+            top: PathBuf::from(&a.path),
             file: true,
             skill: None,
             instructions: Some(name.to_string()),
@@ -301,6 +307,7 @@ pub(super) fn units(
         for a in accounts.iter().filter(|a| account_copy_for(lib, name, a)) {
             out.push(Unit {
                 dest: Path::new(&a.path).join("skills").join(name),
+                top: PathBuf::from(&a.path),
                 file: false,
                 skill: Some(name.clone()),
                 instructions: None,
@@ -325,11 +332,12 @@ pub(super) fn units(
             };
             for (name, files) in going {
                 let shown = shown.get(name.as_str()).cloned();
-                let dest = match a.provider {
-                    Provider::Claude => {
-                        claude_folder_dir(dirs, &slug, a).join(".claude").join("skills").join(shown.as_deref().unwrap_or(name))
-                    }
-                    Provider::Codex => codex_plugin_dir(a, &slug).join("skills").join(name),
+                let (dest, top) = match a.provider {
+                    Provider::Claude => (
+                        claude_folder_dir(dirs, &slug, a).join(".claude").join("skills").join(shown.as_deref().unwrap_or(name)),
+                        dirs.folders(),
+                    ),
+                    Provider::Codex => (codex_plugin_dir(a, &slug).join("skills").join(name), PathBuf::from(&a.path)),
                 };
                 let source = match (there, &shown) {
                     (false, _) => Err(format!("{} is not there", f.path)),
@@ -338,6 +346,7 @@ pub(super) fn units(
                 };
                 out.push(Unit {
                     dest,
+                    top,
                     file: false,
                     skill: Some(name.clone()),
                     instructions: None,

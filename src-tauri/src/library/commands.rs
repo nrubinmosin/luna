@@ -163,7 +163,16 @@ enum Located {
     /// library's, under the name it goes by there (`shown`) where that is
     /// another — or why the library has nothing fit for it.
     /// `banner`: the line saying whose the library's copy is (pass.rs `Unit`).
-    Copy { from: PathBuf, file: bool, skill: Option<String>, shown: Option<String>, source: Result<Files, String>, banner: Audience },
+    /// `top`: the folder it lies in that no link may stand below (pass.rs `Unit`).
+    Copy {
+        from: PathBuf,
+        top: PathBuf,
+        file: bool,
+        skill: Option<String>,
+        shown: Option<String>,
+        source: Result<Files, String>,
+        banner: Audience,
+    },
     /// An account's instructions file where no instructions of the library go.
     Unclaimed(AccountInfo),
 }
@@ -178,7 +187,7 @@ fn locate(dirs: &Dirs, dest: &str) -> Result<Located, String> {
             (None, Some(i)) => dirs.instructions_file(i),
             (None, None) => return Err(format!("{dest} is laid out from nothing")),
         };
-        return Ok(Located::Copy { from, file: u.file, skill: u.skill, shown: u.shown, source: u.source, banner: u.banner });
+        return Ok(Located::Copy { from, top: u.top, file: u.file, skill: u.skill, shown: u.shown, source: u.source, banner: u.banner });
     }
     match accounts.into_iter().find(|a| Path::new(&a.path).join(instructions_name(a.provider)).to_string_lossy() == dest) {
         Some(a) => Ok(Located::Unclaimed(a)),
@@ -220,8 +229,8 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
         return Err(format!("{dest} is in the library itself"));
     }
     let mut ledger = Ledger::load(&dirs);
-    let (from, file, skill, shown, source, banner) = match located {
-        Located::Copy { from, file, skill, shown, source, banner } => (from, file, skill, shown, source, banner),
+    let (from, top, file, skill, shown, source, banner) = match located {
+        Located::Copy { from, top, file, skill, shown, source, banner } => (from, top, file, skill, shown, source, banner),
         Located::Unclaimed(a) if take => {
             take_unclaimed(&dirs, &mut ledger, &dest, &a)?;
             return overview_locked(true);
@@ -253,17 +262,20 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
         ledger.wrote(&dest, hashes(&there), still);
         crate::log::info("library", &format!("took {dest} into the library"));
     } else {
-        put_back(&dirs, &mut ledger, &dest, file, shown.as_ref().or(skill.as_ref()), source, banner)?;
+        put_back(&dirs, &mut ledger, &top, &dest, file, shown.as_ref().or(skill.as_ref()), source, banner)?;
     }
     ledger.save(&dirs)?;
     overview_locked(true)
 }
 
 /// Writes the library's copy at `dest` over what is there, which is backed
-/// up first. `name`: the skill's name there, None for instructions.
+/// up first. `name`: the skill's name there, None for instructions. Refused
+/// where a folder between `top` and `dest` is a link (`no_link_between`).
+#[allow(clippy::too_many_arguments)]
 fn put_back(
     dirs: &Dirs,
     ledger: &mut Ledger,
+    top: &Path,
     dest: &str,
     file: bool,
     name: Option<&String>,
@@ -271,6 +283,7 @@ fn put_back(
     banner: Audience,
 ) -> Result<(), String> {
     let to = Path::new(dest);
+    no_link_between(top, to)?;
     let library = source.map_err(|e| format!("The library has nothing fit for it: {e}"))?;
     if let Some(name) = name {
         let text = library.get(SKILL_FILE).ok_or("The library's copy has no SKILL.md")?;
@@ -287,20 +300,21 @@ fn put_back(
 }
 
 /// Puts the library's copy back at each of `dests`, then lays the library out:
-/// the window's way to make every account hold what the library says. Without
-/// `replace` only where nothing is there now: the window asked for deleted
-/// copies, and one made again since it looked is not overwritten unasked. A
-/// place left out stays out; one that will not settle is said in the
-/// overview's `unsettled` and the rest go on.
+/// the window's way to make every account hold what the library says. Over
+/// what is there only at the places in `replace`, the changed and foreign
+/// copies the window's confirmation counted; elsewhere only where nothing is
+/// there now: the window asked for deleted copies, and one made again since
+/// it looked is not overwritten unasked. A place left out stays out; one that
+/// will not settle is said in the overview's `unsettled` and the rest go on.
 #[tauri::command(async)]
-pub fn library_put_back(dests: Vec<String>, replace: bool) -> Result<Overview, String> {
+pub fn library_put_back(dests: Vec<String>, replace: Vec<String>) -> Result<Overview, String> {
     let _guard = lock();
     let dirs = Dirs::current();
     let lib = crate::settings::get_checked()?.library;
     let accounts = crate::accounts::list_accounts()?;
     let mut ledger = Ledger::load(&dirs);
     let units = units(&dirs, &lib, &accounts, &read_skills(&dirs), &read_instructions(&dirs), &ledger);
-    let unsettled = put_back_all(&dirs, &units, &lib.skipped, &mut ledger, &dests, replace);
+    let unsettled = put_back_all(&dirs, &units, &lib.skipped, &mut ledger, &dests, &replace);
     ledger.save(&dirs)?;
     for line in &unsettled {
         crate::log::warn("library", &format!("putting the library's copy back: {line}"));
@@ -308,12 +322,13 @@ pub fn library_put_back(dests: Vec<String>, replace: bool) -> Result<Overview, S
     Ok(Overview { unsettled, ..overview_locked(true)? })
 }
 
-/// Each of `dests` the library's copy again, as far as it goes; what would not,
-/// a line each.
-fn put_back_all(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, dests: &[String], replace: bool) -> Vec<String> {
+/// Each of `dests` the library's copy again, as far as it goes, over what is
+/// there only at a place in `replace`; what would not, a line each.
+fn put_back_all(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, dests: &[String], replace: &[String]) -> Vec<String> {
     let mut unsettled = Vec::new();
     for dest in dests {
         let id = ident(Path::new(dest));
+        let replace = replace.iter().any(|r| ident(Path::new(r)) == id);
         let done = match units.iter().find(|u| ident(&u.dest) == id) {
             _ if skipped.iter().any(|s| ident(Path::new(s)) == id) => Err("it is left out".to_string()),
             _ if in_library(dirs, Path::new(dest)) => Err("it is in the library itself".to_string()),
@@ -323,9 +338,16 @@ fn put_back_all(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Le
             }
             // Under the path as the pass spells it now, which the ledger
             // goes by, not as the window last saw it.
-            Some(u) => {
-                put_back(dirs, ledger, &u.dest.to_string_lossy(), u.file, u.shown.as_ref().or(u.skill.as_ref()), u.source.clone(), u.banner)
-            }
+            Some(u) => put_back(
+                dirs,
+                ledger,
+                &u.top,
+                &u.dest.to_string_lossy(),
+                u.file,
+                u.shown.as_ref().or(u.skill.as_ref()),
+                u.source.clone(),
+                u.banner,
+            ),
         };
         if let Err(e) = done {
             unsettled.push(format!("{dest}: {e}"));
@@ -348,7 +370,7 @@ pub fn library_kept(dests: Vec<String>, take_out: bool) -> Result<Overview, Stri
     let accounts = crate::accounts::list_accounts()?;
     let mut ledger = Ledger::load(&dirs);
     let units = units(&dirs, &lib, &accounts, &read_skills(&dirs), &read_instructions(&dirs), &ledger);
-    let unsettled = settle_kept(&dirs, &units, &lib.skipped, &mut ledger, &dests, take_out);
+    let unsettled = settle_kept(&dirs, &accounts, &units, &lib.skipped, &mut ledger, &dests, take_out);
     ledger.save(&dirs)?;
     for line in &unsettled {
         crate::log::warn("library", &format!("settling a copy left in place: {line}"));
@@ -358,7 +380,15 @@ pub fn library_kept(dests: Vec<String>, take_out: bool) -> Result<Overview, Stri
 
 /// Each of `dests` taken out (backed up first) or kept as the user's own, as
 /// far as it goes; what would not, a line each.
-fn settle_kept(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, dests: &[String], take_out: bool) -> Vec<String> {
+fn settle_kept(
+    dirs: &Dirs,
+    accounts: &[AccountInfo],
+    units: &[Unit],
+    skipped: &[String],
+    ledger: &mut Ledger,
+    dests: &[String],
+    take_out: bool,
+) -> Vec<String> {
     let mut unsettled = Vec::new();
     for dest in dests {
         let id = ident(Path::new(dest));
@@ -369,7 +399,7 @@ fn settle_kept(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Led
             _ if units.iter().any(|u| ident(&u.dest) == id) => Err("the library lays it out there again".to_string()),
             _ if in_library(dirs, Path::new(dest)) => Err("it is in the library itself".to_string()),
             None => Err("Luna keeps no note of it".to_string()),
-            Some(key) if take_out => take_out_kept(dirs, ledger, &key),
+            Some(key) if take_out => take_out_kept(dirs, accounts, ledger, &key),
             Some(key) => {
                 ledger.kept.remove(&key);
                 crate::log::info("library", &format!("kept {key} as the user's own"));
@@ -383,10 +413,17 @@ fn settle_kept(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Led
     unsettled
 }
 
-/// A kept copy out of its place, what is there backed up first.
-fn take_out_kept(dirs: &Dirs, ledger: &mut Ledger, key: &str) -> Result<(), String> {
+/// A kept copy out of its place, what is there backed up first; refused
+/// where a folder on the way to it is a link (`no_link_between`), from the
+/// account folder it lies in or, for a Claude Code folder copy,
+/// `library-folders/`.
+fn take_out_kept(dirs: &Dirs, accounts: &[AccountInfo], ledger: &mut Ledger, key: &str) -> Result<(), String> {
     let file = ledger.kept.get(key).is_some_and(is_file);
     let at = Path::new(key);
+    let tops = accounts.iter().map(|a| PathBuf::from(&a.path)).chain([dirs.folders()]);
+    // The deepest that holds it: an account folder may lie in Luna's data.
+    let top = tops.filter(|t| within(at, t)).max_by_key(|t| t.components().count()).ok_or("it lies in no account's folder")?;
+    no_link_between(&top, at)?;
     if let Some(there) = read_at(at, file)? {
         back_up(dirs, at, &there)?;
         remove_at(at, file)?;
@@ -783,18 +820,33 @@ mod tests {
         let units = units(&f.dirs, &lib, &f.accounts, &skills, &instructions, &ledger);
 
         // Deleted ones only: what is there is not touched.
-        let unsettled = put_back_all(&f.dirs, &units, &lib.skipped, &mut ledger, &[spell(&gone), spell(&changed)], false);
+        let unsettled = put_back_all(&f.dirs, &units, &lib.skipped, &mut ledger, &[spell(&gone), spell(&changed)], &[]);
         assert_eq!(unsettled.len(), 1, "{unsettled:?}");
         assert!(unsettled[0].contains("something is there again"), "{unsettled:?}");
         assert!(f.read(0, "skills/review/SKILL.md").contains("v2"));
         assert_eq!(f.read(1, "AGENTS.md"), "Be long.\n");
 
+        // Replaced only where asked: a deleted place remade meanwhile, not
+        // among them, is not overwritten for being in the same batch.
+        std::fs::write(
+            gone.join("SKILL.md"),
+            "Remade.
+",
+        )
+        .unwrap();
         let nowhere = f.base.join("elsewhere/CLAUDE.md");
-        let dests: Vec<String> = [&changed, &taken, &skipped, &nowhere].iter().map(|p| spell(p)).collect();
-        let unsettled = put_back_all(&f.dirs, &units, &lib.skipped, &mut ledger, &dests, true);
-        assert_eq!(unsettled.len(), 2, "{unsettled:?}");
-        assert!(unsettled[0].ends_with("it is left out"), "{unsettled:?}");
-        assert!(unsettled[1].ends_with("the library lays nothing out there"), "{unsettled:?}");
+        let replace: Vec<String> = [&changed, &taken, &skipped, &nowhere].iter().map(|p| spell(p)).collect();
+        let dests: Vec<String> = [spell(&gone)].into_iter().chain(replace.iter().cloned()).collect();
+        let unsettled = put_back_all(&f.dirs, &units, &lib.skipped, &mut ledger, &dests, &replace);
+        assert_eq!(unsettled.len(), 3, "{unsettled:?}");
+        assert!(unsettled[0].contains("something is there again"), "{unsettled:?}");
+        assert!(unsettled[1].ends_with("it is left out"), "{unsettled:?}");
+        assert!(unsettled[2].ends_with("the library lays nothing out there"), "{unsettled:?}");
+        assert_eq!(
+            f.read(0, "skills/review/SKILL.md"),
+            "Remade.
+"
+        );
         assert_eq!(f.read(2, "CLAUDE.md"), "Mine.\n", "a place left out is not touched");
         assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n");
         assert_eq!(f.read(0, "CLAUDE.md"), "Be brief.\n");
@@ -803,7 +855,12 @@ mod tests {
         assert!(backed.contains(&"Theirs.\n".to_string()), "the foreign file is backed up: {backed:?}");
 
         let p = f.run(&lib, &mut ledger, false);
-        assert!(p.places.iter().all(|x| matches!(x.status, Status::Current | Status::Skipped)), "{:?}", p.places);
+        assert_eq!(Fixture::status(&p, &gone), Status::Changed);
+        assert!(
+            p.places.iter().filter(|x| Path::new(&x.dest) != gone).all(|x| matches!(x.status, Status::Current | Status::Skipped)),
+            "{:?}",
+            p.places
+        );
     }
 
     /// A kept copy taken out goes to the backups first, as it is there; one
@@ -829,7 +886,7 @@ mod tests {
 
         let nowhere = f.base.join("elsewhere/skills/review");
         let dests = [spell(&copies[0]), spell(&copies[2]), spell(&nowhere)];
-        let unsettled = settle_kept(&f.dirs, &units, &lib.skipped, &mut ledger, &dests, true);
+        let unsettled = settle_kept(&f.dirs, &f.accounts, &units, &lib.skipped, &mut ledger, &dests, true);
         assert_eq!(unsettled.len(), 2, "{unsettled:?}");
         assert!(unsettled[0].ends_with("the library lays it out there again"), "{unsettled:?}");
         assert!(unsettled[1].ends_with("Luna keeps no note of it"), "{unsettled:?}");
@@ -839,12 +896,53 @@ mod tests {
         assert!(backed.contains(&"added there".to_string()), "what was there is backed up: {backed:?}");
         assert!(backed.iter().any(|t| t.contains("v1")), "its SKILL.md too: {backed:?}");
 
-        let unsettled = settle_kept(&f.dirs, &units, &lib.skipped, &mut ledger, &[spell(&copies[1])], false);
+        let unsettled = settle_kept(&f.dirs, &f.accounts, &units, &lib.skipped, &mut ledger, &[spell(&copies[1])], false);
         assert!(unsettled.is_empty(), "{unsettled:?}");
         assert!(copies[1].join("extra.md").is_file(), "kept as the user's own");
         assert!(ledger.kept.is_empty());
         assert!(f.run(&lib, &mut ledger, true).kept.is_empty(), "and no longer said");
         assert!(copies[1].join("extra.md").is_file());
+    }
+
+    /// A link standing for an account's `skills` folder leads neither a take
+    /// out nor a put-back over what is there into the folder it points at.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_folder_above_a_copy_is_neither_written_nor_emptied() {
+        let f = Fixture::new("linked");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        // Account 0's copy is kept (no longer wanted, changed there); then its
+        // `skills` becomes a link to a folder of someone else's `review`.
+        let only_others =
+            LibrarySettings { skills: BTreeMap::from([("review".into(), reach(&["codex/home", "claude/home"]))]), ..Default::default() };
+        let kept = f.account(0).join("skills").join("review");
+        std::fs::write(kept.join("extra.md"), "added there").unwrap();
+        assert_eq!(f.run(&only_others, &mut ledger, true).kept.len(), 1);
+        let elsewhere = f.base.join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("review")).unwrap();
+        std::fs::write(elsewhere.join("review").join("SKILL.md"), "not Luna's").unwrap();
+        std::fs::rename(f.account(0).join("skills"), f.base.join("moved-skills")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, f.account(0).join("skills")).unwrap();
+        let spell = |p: &Path| p.to_string_lossy().into_owned();
+
+        let away = units(&f.dirs, &only_others, &f.accounts, &read_skills(&f.dirs), &read_instructions(&f.dirs), &ledger);
+        let unsettled = settle_kept(&f.dirs, &f.accounts, &away, &[], &mut ledger, &[spell(&kept)], true);
+        assert_eq!(unsettled.len(), 1, "{unsettled:?}");
+        assert!(unsettled[0].contains("is a link or junction"), "{unsettled:?}");
+
+        let wanted = units(&f.dirs, &lib, &f.accounts, &read_skills(&f.dirs), &read_instructions(&f.dirs), &ledger);
+        let unsettled = put_back_all(&f.dirs, &wanted, &[], &mut ledger, &[spell(&kept)], &[spell(&kept)]);
+        assert_eq!(unsettled.len(), 1, "{unsettled:?}");
+        assert!(unsettled[0].contains("is a link or junction"), "{unsettled:?}");
+        // Nor does a pass write through it.
+        f.run(&lib, &mut ledger, true);
+
+        assert_eq!(std::fs::read_to_string(elsewhere.join("review").join("SKILL.md")).unwrap(), "not Luna's");
+        assert_eq!(walk(&elsewhere).len(), 1, "nothing written into the linked folder");
+        assert!(walk(&f.dirs.backups()).is_empty(), "nothing backed up from it");
     }
 
     /// Every file under `dir`.
