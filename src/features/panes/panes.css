@@ -1,7 +1,8 @@
 /* ------------------------------------------------------------------------
    Pane title bar. The chat's color arrives as --c, set inline, and the Luna
    gloss is mixed from it here. Controls sit on the left, where the hand
-   reaches first; the name and the chat's details on the right.
+   reaches first; then the name, its folder and its helpers; the chat's
+   settings on the right, across the bar's flexible space.
    ------------------------------------------------------------------------ */
 [data-app] .pane {
   container-type: inline-size;
@@ -45,14 +46,16 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 6px;
   padding-left: 8px;
   overflow: hidden;
 }
+/* Capped, so on a wide pane what follows it stays by it rather than moving
+   with every rename. */
 [data-app] .pane-bar .title-bar-text {
   flex: 0 1 auto;
   min-width: 40px;
+  max-width: 260px;
   margin-right: 0;
   font-weight: 700;
   text-shadow: 1px 1px color-mix(in oklab, var(--c) 45%, black);
@@ -62,13 +65,16 @@
    row nobody sees, rather than showing cut in half. The least needed come
    last, so they are the first to go. */
 [data-app] .pane-chips {
-  flex: 0 1 auto;
+  /* Gives way well before the name does. */
+  flex: 0 100 auto;
   min-width: 0;
   height: 18px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   align-content: flex-start;
+  /* By the meter: the room a dropped chip leaves joins the free space. */
+  justify-content: flex-end;
   gap: 0 4px;
   overflow: hidden;
 }
@@ -203,8 +209,14 @@
   box-shadow: inset 0 0 0 1px var(--wait);
 }
 
-/* A narrow pane gives up its details chip by chip before the name and the
-   controls. */
+/* A narrow pane gives up its settings chip by chip, then the words of its
+   helper pill, then the folder; the name, the pill's counts and the controls
+   stay. Past 420px the four rarer window buttons fold into the "…" menu. */
+[data-app] .pane-more,
+[data-app] .hpill .hp-short,
+[data-app] .hpill .hp-tiny {
+  display: none;
+}
 @container (max-width: 600px) {
   [data-app] .pchip.opt-2,
   [data-app] .pane-sid {
@@ -217,14 +229,39 @@
     display: none;
   }
 }
-@container (max-width: 380px) {
+@container (max-width: 440px) {
   [data-app] .pane-chips {
     display: none;
   }
 }
-@container (max-width: 300px) {
+@container (max-width: 420px) {
+  [data-app] .title-bar-controls .pane-rare {
+    display: none;
+  }
+  [data-app] .title-bar-controls .pane-more {
+    display: block;
+  }
+}
+@container (max-width: 400px) {
+  [data-app] .hpill .hp-words,
+  [data-app] .hpill .hp-names {
+    display: none !important;
+  }
+  [data-app] .hpill .hp-short {
+    display: inline-flex;
+  }
+}
+@container (max-width: 340px) {
   [data-app] .pane-folder {
     display: none;
+  }
+}
+@container (max-width: 300px) {
+  [data-app] .hpill .hp-short {
+    display: none;
+  }
+  [data-app] .hpill .hp-tiny {
+    display: inline-flex;
   }
 }
 
@@ -333,45 +370,135 @@
   text-transform: uppercase;
   white-space: nowrap;
 }
-/* The count of a chat's helpers (the row's .kids, chats.css) on its pane's
-   title bar, in the bar's own chip glass rather than the list's card. */
-[data-app] .pane-bar .kids {
+/* The slot for a chat's helper pill (agents/HelperPill.tsx): the bar's
+   flexible space, so the settings sit on the right and the pill's names fill
+   only what they leave. Never narrower than the pill's counts, which the
+   pill sets as it measures; the padding keeps its focus ring unclipped. */
+[data-app] .pane-helpers {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 2px;
+  overflow: hidden;
+}
+/* The pill: counts and names in the chips' dark glass, which reads on any
+   chat color, focused or not. */
+[data-app] .hpill {
   flex: none;
+  max-width: 100%;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 5px;
   height: 18px;
-  padding: 0 7px 0 5px;
+  padding: 0 8px 0 6px;
   border-radius: 9px;
-  background: rgba(0, 0, 0, 0.24);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
   color: #fff;
-  font: 700 var(--fs-2) var(--sans-serif);
+  font: 600 var(--fs-2) var(--sans-serif);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   text-shadow: none;
   cursor: default;
+  outline: none;
 }
-[data-app] .pane-bar .kids:hover {
-  background: rgba(0, 0, 0, 0.34);
+[data-app] .hpill:hover,
+[data-app] .hpill[aria-expanded="true"] {
+  background: rgba(0, 0, 0, 0.4);
 }
-[data-app] .pane-bar .kids[data-asking="yes"] {
+[data-app] .hpill:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 0 0 2px #fff;
+}
+[data-app] .hpill[data-asking="yes"] {
   box-shadow: inset 0 0 0 1.5px var(--wait);
 }
-[data-app][data-theme="dark"] .pane-bar .kids {
-  background: rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+/* Which of the three is shown is the narrow-pane rules' (above). */
+[data-app] .hpill .hp-words,
+[data-app] .hpill .hp-short,
+[data-app] .hpill .hp-tiny {
+  align-items: center;
+  gap: 4px;
+}
+[data-app] .hpill .hp-words {
+  display: inline-flex;
+  gap: 0;
+  white-space: pre;
+}
+[data-app] .hpill .hp-short {
+  gap: 6px;
+}
+/* The names of those at work, after a rule: whole names only. */
+[data-app] .hpill .hp-names {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 7px;
+  border-left: 1px solid rgba(255, 255, 255, 0.45);
+  font-weight: 400;
+}
+[data-app] .hpill .hp-names > span {
+  display: inline-flex;
+  align-items: center;
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-app] .hpill .hp-names > [data-asking="yes"] {
+  font-weight: 700;
+}
+[data-app] .pane[data-focus="no"] .hpill {
+  background: rgba(0, 0, 0, 0.24);
+}
+[data-app][data-theme="dark"] .hpill {
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
   color: var(--fg);
 }
-[data-app][data-theme="dark"] .pane-bar .kids:hover {
-  background: rgba(255, 255, 255, 0.14);
+[data-app][data-theme="dark"] .hpill:hover,
+[data-app][data-theme="dark"] .hpill[aria-expanded="true"] {
+  background: rgba(255, 255, 255, 0.15);
 }
-[data-app][data-theme="dark"] .pane-bar .kids[data-asking="yes"] {
+[data-app][data-theme="dark"] .hpill[data-asking="yes"] {
   box-shadow: inset 0 0 0 1.5px var(--wait);
-  color: var(--wait);
+}
+[data-app][data-theme="dark"] .hpill .hp-names {
+  border-left-color: rgba(255, 255, 255, 0.25);
+}
+[data-app][data-theme="dark"] .pane[data-focus="no"] .hpill {
+  color: #a3a3a3;
 }
 /* A helper just spawned: glows as the row's chip does (kids-new, chats.css). */
-[data-app] .pane-bar .kids[data-new="yes"] {
+[data-app] .hpill[data-new="yes"] {
   animation: kids-new 1.2s ease-in-out 4;
+}
+
+/* The narrow bar's "…" menu (Pane.tsx `PaneMenu`). */
+[data-app] .pane-menu {
+  min-width: 180px;
+  padding: 4px;
+}
+[data-app] .pane-menu [role="menuitem"] {
+  display: block;
+  width: 100%;
+  min-height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  white-space: nowrap;
+}
+[data-app] .pane-menu [role="menuitem"]:hover,
+[data-app] .pane-menu [role="menuitem"]:focus-visible {
+  background: var(--row-sel);
+  color: var(--row-sel-ink);
+  box-shadow: none;
+  outline: none;
 }
 
 /* ------------------------------------------------------------------------

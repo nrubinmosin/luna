@@ -125,8 +125,9 @@ headless Chromium over its DevTools protocol (`scripts/fit-check.mjs`). It
 opens every scene of `src/dev/demo/scenes.ts` (the `-dark` twins left out:
 the theme changes no size) and the popups that only a click opens (its
 `EXTRAS`: the account list, the library's pickers, the link chooser, a chat's
-long helper list, ...), each at 1280×720 and 1024×600, 1280×720 at 125% and
-150%, and 1024×600 at 150% (683×400 CSS pixels). It fails on:
+long helper list from its row and its pane, a narrow pane's "…" menu, ...),
+each at 1280×720 and 1024×600, 1280×720 at 125% and 150%, and 1024×600 at
+150% (683×400 CSS pixels). It fails on:
 
 - a control of a dialog, popover, menu or the board that is neither on screen
   nor inside a scroller that is (scrolling to it is fine);

@@ -14,6 +14,8 @@ const row = (id: string, state: string, over: Partial<BackgroundHelperDto> = {})
   worktree: true,
   startedMs: 0,
   turnStartedMs: null,
+  lastActivityMs: null,
+  task: null,
   ...over
 });
 
