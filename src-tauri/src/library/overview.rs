@@ -45,6 +45,49 @@ pub struct FoundFile {
     pub target: Target,
 }
 
+/// A copy of Luna's no longer wanted where it lies, left there because it was
+/// changed since Luna wrote it (`Ledger::kept`): the window takes it out or
+/// keeps it as the user's own (commands.rs `library_kept`).
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptCopy {
+    pub dest: String,
+    /// The account it lies in, or the folder's sessions on one account it was
+    /// for; None where the path no longer says (a folder taken off the list).
+    pub target: Option<Target>,
+    /// The skill's name there; None for an instructions file.
+    pub skill: Option<String>,
+}
+
+/// What a kept copy's path says of it: a skill or instructions, and whose.
+fn kept_copy(dirs: &Dirs, lib: &LibrarySettings, accounts: &[AccountInfo], dest: &str, file: bool) -> KeptCopy {
+    let path = Path::new(dest);
+    let parent = path.parent().map(ident);
+    let id = ident(path);
+    let slugs = folder_slugs(&lib.folders);
+    let target = accounts.iter().find_map(|a| {
+        let account = Path::new(&a.path);
+        let laid =
+            if file { id == ident(&account.join(instructions_name(a.provider))) } else { parent == Some(ident(&account.join("skills"))) };
+        if laid {
+            return Some(Target::Account { provider: a.provider, name: a.name.clone() });
+        }
+        slugs.iter().find_map(|(f, slug)| {
+            let skills = match a.provider {
+                Provider::Claude => claude_folder_dir(dirs, slug, a).join(".claude").join("skills"),
+                Provider::Codex => codex_plugin_dir(a, slug).join("skills"),
+            };
+            (!file && parent == Some(ident(&skills))).then(|| Target::Folder {
+                path: f.path.clone(),
+                provider: a.provider,
+                name: a.name.clone(),
+            })
+        })
+    });
+    let skill = (!file).then(|| path.file_name().unwrap_or_default().to_string_lossy().into_owned());
+    KeptCopy { dest: dest.to_string(), target, skill }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Overview {
@@ -71,24 +114,32 @@ pub struct Overview {
     /// Codex accounts with an `AGENTS.override.md`, which Codex reads instead
     /// of the `AGENTS.md` Luna writes.
     pub overridden: Vec<String>,
-    pub kept: Vec<String>,
+    /// Copies no longer wanted but changed where they lie, left there: each
+    /// on every overview until it is settled.
+    pub kept: Vec<KeptCopy>,
     /// The system skills, each as it is served now (system.rs): Luna's own
     /// text, the library's override of it, or one that will not do.
     pub system: Vec<SystemSkillState>,
     /// Folders set aside in `system/`, read by nothing (system.rs
     /// `set_aside`): for the person to move or delete.
     pub system_aside: Vec<String>,
+    /// The places a put-back or a kept copy's settling could not settle, with
+    /// why (commands.rs `library_put_back`, `library_kept`); empty from every
+    /// other command.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unsettled: Vec<String>,
 }
 
-/// Whether these kept copies are not what the log said last: a pass comes
-/// before every session's start, and each list once is enough.
-/// Whether a link `codex_manifests` keeps clear of is yet to be said: once a
-/// run, as a pass comes with every session's start.
+/// Whether a link `codex_manifests` keeps clear of, or a copy a pass would not
+/// take out (a link on the way to it), is yet to be said: once a run, as a
+/// pass comes with every session's start.
 pub(super) fn link_is_news(link: &Path) -> bool {
     static SAID: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
     SAID.lock().unwrap_or_else(|e| e.into_inner()).insert(link.to_path_buf())
 }
 
+/// Whether these kept copies are not what the log said last: a pass comes
+/// before every session's start, and each list once is enough.
 fn kept_is_news(kept: &[String]) -> bool {
     static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
@@ -125,7 +176,7 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
     // A library that is not there (a drive not plugged in, a folder moved)
     // wants nothing, and a pass on that would take every copy out.
     let units = if found { units(&dirs, &lib, &accounts, &skills, &instructions, &ledger) } else { Vec::new() };
-    let p = pass(&dirs, &units, &lib.skipped, &mut ledger, act && found);
+    let p = pass(&dirs, &accounts, &lib.folders, &units, &lib.skipped, &mut ledger, act && found);
     if act && found {
         codex_manifests(&lib, &accounts);
         prune_folder_dirs(&dirs, &lib);
@@ -181,6 +232,7 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         .filter(|a| a.provider == Provider::Codex && Path::new(&a.path).join("AGENTS.override.md").is_file())
         .map(|a| a.name.clone())
         .collect();
+    let kept = p.kept.iter().map(|k| kept_copy(&dirs, &lib, &accounts, k, ledger.kept.get(k).is_some_and(is_file))).collect();
     Ok(Overview {
         root: dirs.root.to_string_lossy().into_owned(),
         is_default: lib.source.is_none(),
@@ -198,9 +250,10 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         places: p.places,
         found_instructions,
         overridden,
-        kept: p.kept,
+        kept,
         system: vec![resolve_in(&dirs).state()],
         system_aside: set_aside(&dirs),
+        unsettled: Vec::new(),
     })
 }
 

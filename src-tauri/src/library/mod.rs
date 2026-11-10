@@ -211,6 +211,12 @@ struct Ledger {
     /// taken into the library.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     worded: BTreeMap<String, Audience>,
+    /// Luna's copies no longer wanted that were changed where they lie, left
+    /// there (pass.rs), by destination, with what Luna last wrote there: shown
+    /// under Needs a look until the window takes one out or keeps it as the
+    /// user's own, the file goes, the place is wanted again or left out.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    kept: BTreeMap<String, Hashes>,
 }
 
 impl Ledger {

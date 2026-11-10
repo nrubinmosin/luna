@@ -10,6 +10,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- Skills & instructions: **Sync all** takes the place of Sync now and makes
+  every account hold what the library says, putting back deleted copies and
+  replacing changed ones (after a confirmation, backed up for 30 days); places
+  left out stay out. With several copies deleted, **Put all back** above Needs
+  a look restores them in one click instead of one row at a time.
+- Skills & instructions: a copy no longer meant for its place but changed
+  there is no longer forgotten after one note. It waits under Needs a look,
+  with its differences, until you **Take out** (backed up for 30 days) or
+  **Keep** it as your own; **Sync all** takes every such copy out too.
 - A chat's pane title bar sums up its background helpers without a click: a
   pill by the name with how many work, are idle and ask (a "!" sign, not only
   a color), and the names of those at work as far as the pane has room, asking
@@ -20,6 +29,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   shows each helper's last activity and the first line of its task.
 - A narrow pane folds the recolor, rename, What Luna applied and delete
   buttons into a "…" menu.
+
+### Fixed
+
+- Skills & instructions: two copies of one name backed up in the same
+  millisecond (Sync all over several accounts) no longer share a backup
+  folder, the second overwriting the first. A link or junction in an
+  account's folder on the way to a copy (its `skills` folder, say) is refused
+  rather than followed when Luna writes, replaces or takes out a copy there.
 
 ## [0.12.0] - 2026-11-10
 

@@ -32,3 +32,13 @@ export function sayStatus(p: PlaceDto): string {
       return p.status;
   }
 }
+
+/** What Sync all's confirmation says it does to copies changed where they lie: those it replaces, and those
+ *  no longer meant for their place that it takes out. */
+export function syncAllCounts(replaced: number, takenOut: number): string {
+  const copies = (n: number) => `${n} ${n === 1 ? 'copy' : 'copies'}`;
+  const parts: string[] = [];
+  if (replaced > 0) parts.push(`${copies(replaced)} changed where ${replaced === 1 ? 'it lies' : 'they lie'} replaced`);
+  if (takenOut > 0) parts.push(`${copies(takenOut)} no longer meant for an account taken out`);
+  return parts.join(', ');
+}
