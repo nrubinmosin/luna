@@ -904,9 +904,9 @@ mod tests {
         assert!(copies[1].join("extra.md").is_file());
     }
 
-    /// A link standing for an account's `skills` folder leads neither a take
-    /// out nor a put-back over what is there into the folder it points at.
-    #[cfg(unix)]
+    /// A link standing for an account's `skills` folder (a junction on
+    /// Windows) leads neither a take out nor a put-back over what is there
+    /// into the folder it points at.
     #[test]
     fn a_linked_folder_above_a_copy_is_neither_written_nor_emptied() {
         let f = Fixture::new("linked");
@@ -925,7 +925,7 @@ mod tests {
         std::fs::create_dir_all(elsewhere.join("review")).unwrap();
         std::fs::write(elsewhere.join("review").join("SKILL.md"), "not Luna's").unwrap();
         std::fs::rename(f.account(0).join("skills"), f.base.join("moved-skills")).unwrap();
-        std::os::unix::fs::symlink(&elsewhere, f.account(0).join("skills")).unwrap();
+        link_dir(&f.account(0).join("skills"), &elsewhere);
         let spell = |p: &Path| p.to_string_lossy().into_owned();
 
         let away = units(&f.dirs, &only_others, &f.accounts, &read_skills(&f.dirs), &read_instructions(&f.dirs), &ledger);
@@ -943,6 +943,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(elsewhere.join("review").join("SKILL.md")).unwrap(), "not Luna's");
         assert_eq!(walk(&elsewhere).len(), 1, "nothing written into the linked folder");
         assert!(walk(&f.dirs.backups()).is_empty(), "nothing backed up from it");
+        unlink_dir(&f.account(0).join("skills"));
     }
 
     /// Every file under `dir`.
