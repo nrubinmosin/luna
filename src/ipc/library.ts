@@ -60,6 +60,14 @@ export interface LibraryFolderDto {
    *  nothing of it; absent: none. */
   inherited: Record<string, string[]>;
 }
+/** A copy of Luna's no longer wanted where it lies, left there because it was changed since Luna wrote it. */
+export interface KeptCopyDto {
+  dest: string;
+  /** Whose it was; null where its path no longer says. */
+  target: LibraryTarget | null;
+  /** The skill's name there; null for an instructions file. */
+  skill: string | null;
+}
 export interface LibraryOverviewDto {
   root: string;
   isDefault: boolean;
@@ -81,15 +89,16 @@ export interface LibraryOverviewDto {
   foundInstructions: { dest: string; target: LibraryTarget }[];
   /** Codex accounts whose AGENTS.override.md hides the AGENTS.md Luna writes. */
   overridden: string[];
-  /** Copies no longer wanted, left in place because they had changed. */
-  kept: string[];
+  /** Copies no longer wanted, left in place because they had changed since Luna wrote them: each until it is
+   *  taken out or kept. */
+  kept: KeptCopyDto[];
   /** The system skills as each is served now: Luna's own text, your override of it, or an override that will
    *  not do (library/system.rs). */
   system: SystemSkillState[];
   /** Folders set aside in the library's `system/`, read by nothing: a former override that a copy into the
    *  backups on another volume did not take whole, or one an adoption replaced and could not move. */
   systemAside: string[];
-  /** From a put-back only: the places it could not settle, each with why. */
+  /** From a put-back or a kept copy's settling only: the places it could not settle, each with why. */
   unsettled?: string[];
 }
 export interface LibraryFileDto {
@@ -133,6 +142,10 @@ export const libraryResolve = (dest: string, take: boolean) =>
  *  there, else only where nothing is. */
 export const libraryPutBack = (dests: string[], replace: boolean) =>
   call<LibraryOverviewDto>('library_put_back', { dests, replace });
+/** Settles copies left in place as no longer wanted: `takeOut` backs each up and removes it, otherwise Luna
+ *  forgets it and it stays as yours. */
+export const libraryKept = (dests: string[], takeOut: boolean) =>
+  call<LibraryOverviewDto>('library_kept', { dests, takeOut });
 export const libraryDiff = (dest: string) => call<FileDiffDto[]>('library_diff', { dest }, []);
 /** A skill's SKILL.md or instructions, by name. */
 export type LibraryEntry = { skill: string } | { instructions: string };

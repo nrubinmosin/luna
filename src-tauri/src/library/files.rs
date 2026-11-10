@@ -166,9 +166,10 @@ pub(super) fn blob(dirs: &Dirs, h: &str) -> Option<Vec<u8>> {
     std::fs::read(dirs.blobs().join(h)).ok()
 }
 
-/// Blobs no ledger entry names any more.
+/// Blobs no ledger entry names any more, a kept copy's included: its
+/// differences are shown too.
 pub(super) fn sweep_blobs(dirs: &Dirs, ledger: &Ledger) {
-    let wanted: BTreeSet<&String> = ledger.written.values().flat_map(|h| h.values()).collect();
+    let wanted: BTreeSet<&String> = ledger.written.values().chain(ledger.kept.values()).flat_map(|h| h.values()).collect();
     if let Ok(entries) = std::fs::read_dir(dirs.blobs()) {
         for entry in entries.flatten() {
             if !wanted.contains(&entry.file_name().to_string_lossy().into_owned()) {

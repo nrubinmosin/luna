@@ -4,6 +4,7 @@ import { pickFolder } from '../../ipc/cli';
 import {
   libraryDeleteInstructions,
   libraryDeleteSkill,
+  libraryKept,
   libraryNewInstructions,
   libraryNewSkill,
   libraryOpen,
@@ -22,12 +23,12 @@ import { Icon, ToolButton } from '../../shared/ui/icons';
 import { Section } from '../../shared/ui/Section';
 import { AddFolder } from './AddFolder';
 import { DotLegend, Note, TargetLabel } from './cells';
-import { what } from './places';
+import { syncAllCounts, what } from './places';
 import { FOLDER_WIDTH, RED, WINDOW_WIDTH } from './presentation';
 import { InstructionsGrid } from './InstructionsGrid';
 import { LibraryEditor } from './LibraryEditor';
 import { useLibrary, waiting } from './library.store';
-import { LookRow } from './LookRow';
+import { KeptRow, LookRow } from './LookRow';
 import { SkillsGrid } from './SkillsGrid';
 import { SystemSkills } from './SystemSkills';
 
@@ -43,7 +44,7 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
   const [deleting, setDeleting] = useState<LibraryEntry | null>(null);
   const [newName, setNewName] = useState('');
   const [newInstructions, setNewInstructions] = useState('');
-  const [syncing, setSyncing] = useState<{ dests: string[]; replaced: number } | null>(null);
+  const [syncing, setSyncing] = useState<{ dests: string[]; replaced: number; kept: string[] } | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -72,11 +73,26 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
   // Every place that differs from the library and can be made like it; a
   // failed one has nothing fit to put there, one left out stays out.
   const differ = o ? o.places.filter(p => p.status === 'gone' || p.status === 'changed' || p.status === 'taken') : [];
+  const kept = o ? o.kept : [];
+  // The copies no longer meant for a place but changed there are taken out
+  // first, which no pass does unasked, then the library's put back; what
+  // either could not settle is shown together.
+  const sync = (dests: string[], replace: boolean, out: string[]) => {
+    const run = async () => {
+      const taken = out.length > 0 ? await libraryKept(out, true) : null;
+      if (taken && dests.length === 0) return taken;
+      const put = await libraryPutBack(dests, replace);
+      const unsettled = [...(taken?.unsettled ?? []), ...(put.unsettled ?? [])];
+      return unsettled.length > 0 ? { ...put, unsettled } : put;
+    };
+    void act(run());
+  };
   const syncAll = () => {
     const replaced = differ.filter(p => p.status !== 'gone').length;
     const dests = differ.map(p => p.dest);
-    if (replaced > 0) setSyncing({ dests, replaced });
-    else void act(libraryPutBack(dests, false));
+    const out = kept.map(k => k.dest);
+    if (replaced > 0 || out.length > 0) setSyncing({ dests, replaced, kept: out });
+    else sync(dests, false, []);
   };
   const createSkill = () => {
     const name = newName.trim();
@@ -145,8 +161,9 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
                     spin={busy}
                     disabled={busy}
                     title={
-                      'Make every account hold what the library says: deleted copies put back, changed ones replaced ' +
-                      '(kept in Luna’s backups for 30 days). Places left out stay out.'
+                      'Make every account hold what the library says: deleted copies put back, changed ones replaced, ' +
+                      'copies no longer meant for a place taken out (what is replaced or taken out is kept in Luna’s ' +
+                      'backups for 30 days). Places left out stay out.'
                     }
                     onClick={syncAll}
                   />
@@ -205,17 +222,14 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
                 {error && <div style={{ fontSize: 'var(--fs-2)', color: RED, marginTop: 4 }}>{error}</div>}
                 {o.unsettled?.map(line => (
                   <div key={line} style={{ fontSize: 'var(--fs-2)', color: RED, marginTop: 4 }}>
-                    Not put back: {line}
+                    Not settled: {line}
                   </div>
                 ))}
-                {o.kept.length > 0 && (
-                  <Note>Left in place, no longer wanted but changed since Luna wrote them: {o.kept.join(', ')}</Note>
-                )}
               </Section>
 
-              {look.length > 0 && (
+              {look.length + kept.length > 0 && (
                 <Section
-                  label={`Needs a look — ${look.length}`}
+                  label={`Needs a look — ${look.length + kept.length}`}
                   aside={
                     gone.length > 1 && (
                       <button
@@ -232,9 +246,12 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
                   {look.map(({ place, count }) => (
                     <LookRow key={place.dest} place={place} count={count} act={p => void act(p)} />
                   ))}
+                  {kept.map(k => (
+                    <KeptRow key={k.dest} copy={k} act={p => void act(p)} />
+                  ))}
                   <Note>
-                    A copy changed where it lies is never replaced unasked. Whichever side is replaced is kept in Luna’s
-                    backups for 30 days.
+                    A copy changed where it lies is never replaced or taken out unasked. Whichever side is replaced, and
+                    a copy taken out, is kept in Luna’s backups for 30 days.
                   </Note>
                 </Section>
               )}
@@ -431,18 +448,14 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
           body={
             <>
               Puts the library’s copy everywhere it is meant to go.{' '}
-              <b>
-                {syncing.replaced} {syncing.replaced === 1 ? 'copy' : 'copies'} changed where{' '}
-                {syncing.replaced === 1 ? 'it lies' : 'they lie'}
-              </b>{' '}
-              will be replaced; what is there now is kept in Luna’s backups for 30 days. Places left out stay as they
-              are.
+              <b>{syncAllCounts(syncing.replaced, syncing.kept.length)}</b>; what is there now is kept in Luna’s backups
+              for 30 days. Places left out stay as they are.
             </>
           }
           confirmLabel="Sync all"
           onCancel={() => setSyncing(null)}
           onConfirm={() => {
-            void act(libraryPutBack(syncing.dests, true));
+            sync(syncing.dests, true, syncing.kept);
             setSyncing(null);
           }}
         />

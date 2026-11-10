@@ -11,7 +11,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 - Lay copies out into accounts (`CLAUDE.md` / `AGENTS.md`, `skills/<name>`).
 - Give folders' sessions extra skills, hidden skills or other instructions at
   every start, writing nothing into the folder.
-- Never overwrite a copy that changed where it lies: report it.
+- Never overwrite or take out a copy that changed where it lies: report it.
 
 ## Key modules
 
@@ -147,6 +147,8 @@ hashes of what Luna wrote last (`<data>/library-state.json`, bytes in
 | equal to the library, no ledger entry | adopted |
 | different from the ledger | `changed` (or `gone`): reported, never written |
 | no ledger entry and different | `taken`: reported, never written |
+| no longer wanted, equal to the ledger | taken out |
+| no longer wanted, different from the ledger | `kept`: reported on every pass, never taken out unasked |
 
 The window resolves each: take it into the library, put the library's back, or
 skip that destination (`library.skipped`). `library_put_back` puts the
@@ -160,6 +162,22 @@ the changed ones. It writes under the destination as the pass spells it now
 will not settle, returning those in the overview's `unsettled`. The
 losing side goes to `<data>/library-backups/` (swept after 30 days). A copy no longer wanted is
 deleted only while it still hashes to the ledger.
+
+A copy no longer wanted that changed there leaves `written` for the ledger's
+`kept` (destination → what Luna last wrote there; its blobs stay for the
+differences, which `library_diff` shows against them). Every pass, acting or
+only looking, reports each one still there and still changed in the
+overview's `kept`, with the account or folder its path says it was for. Its
+record goes when the file is gone, when its place is left out, when the place
+is wanted again (its hashes go back to `written`, so it is Luna's copy, changed
+there, under the ordinary statuses), and when it is settled; one that is again
+exactly what Luna wrote is taken out by the next acting pass, as any copy no
+longer wanted. `library_kept(dests, take_out)` settles a list under one lock
+and one pass after: `take_out` backs what is there up and removes it,
+otherwise Luna forgets it and the file is the user's own. It finds a record by
+`ident`, refuses a place left out or wanted again and goes on past one that
+will not settle, as `library_put_back` does. "Sync all" calls it for every kept
+copy before its put-back, counting them in its confirmation.
 
 Passes run when the window starts, before every session start, after every
 change in the window and on Sync all, one at a time under a lock file beside the
@@ -241,5 +259,6 @@ The window re-reads the overview (no writes) on every focus.
 | --- | --- |
 | A file held open mid-save | that unit is `failed` for the pass; copies stay |
 | A copy edited in place (by hand or a model) | `changed`, shown under "Needs a look", never overwritten |
+| A copy edited in place, then no longer wanted there | `kept`, shown under "Needs a look" until taken out or kept |
 | Settings unreadable | no pass (`get_checked`) |
 | Sessions started outside Luna | see the account's copies only, not folder skills |
