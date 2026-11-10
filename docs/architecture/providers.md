@@ -195,7 +195,8 @@ files themselves and the dialog opens on what they say:
 Picking another Codex model moves the effort to that model's default unless the
 effort came from a file or was picked by hand (`draft.follow`). Picking another
 Claude model moves it to that model's default only where the model does not
-take the level shown; a model that takes no effort shows no effort buttons. What Codex actually ran
+take the level shown, and then whoever chose it (`draft.force`); a model that
+takes no effort shows no effort buttons and runs without `--effort`. What Codex actually ran
 is read from the rollout's `turn_context` (`modelSeen`). The core normalizes and
 supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
 `luna_session_list` say the same thing.
@@ -204,13 +205,21 @@ supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
 
 - **Claude Code:** the models the account may pick (`claude/models.rs`),
   never another account's (plan and organization decide the list): the
-  account's `cache/model-catalog/*-cc.json` while its `staleAt` has not passed
+  account's `cache/model-catalog/*-cc.json` while its `staleAt` has not passed,
+  unless the account's `settings.json` or the machine's managed settings say
+  `availableModels`, `deniedModels` or `modelPicker` (Claude Code applies
+  those to its own answer, not to the file, by rules of its own)
   → what the CLI answered to the SDK's `initialize` control request, asked on
   the account in the background (`claude -p --input-format stream-json
-  --output-format stream-json --verbose --strict-mcp-config`, one
-  `control_request` line, stopped once it has answered: no prompt, no turn;
-  under the account-settings lock, since the CLI rewrites `.claude.json` as
-  it starts and Luna writes trust marks and settings there only under it)
+  --output-format stream-json --verbose --safe-mode --strict-mcp-config
+  --no-session-persistence` in an empty folder of Luna's, `claude-models-cwd`:
+  no hook, plugin, skill, CLAUDE.md, MCP server or project setting of the
+  account's loads; one `control_request` line; its process tree taken down
+  once it has answered or after 20 s: no prompt, no turn). It holds the
+  account's own lock in `claude-config-locks/` while it runs, since the CLI
+  rewrites `.claude.json` as it starts; Luna's writes of that file (a trust
+  mark, a recommended key) take the same lock and wait up to 25 s, and
+  nothing else, settings.json or another account, waits on it
   and kept per account in `claude-models.json` in the data folder for six
   hours → the four aliases. A stale catalog or answer is returned at once and
   asked again behind; an answer newer than the catalog wins over it; a
@@ -227,7 +236,11 @@ supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
   answer, when its `value` is an alias. The dialog keeps a family by its label
   (`Opus`) and a model by its id (`claude-opus-4-7`), `More…` holding the
   latter. Each model's levels are its own, plus `ultracode`, which Claude Code
-  runs at any level; the aliases offer every level.
+  runs at any level; the aliases offer every level. Picking a model that does
+  not take the level shown moves it to that model's default, a hand-picked
+  level too; a model that takes none (Haiku 4.5) runs with no `--effort`, in
+  a pane and as a helper. A helper's effort is checked against the model it
+  will run on, the account's or project's default model included.
 - **Claude Code context windows** from the Models API (`claude/context.rs`); a
   background thread reads the accounts root from Rust settings.
 - **Codex:** the catalog (`codex/models.rs`), sorted by priority, with

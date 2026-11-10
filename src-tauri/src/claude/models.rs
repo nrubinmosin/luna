@@ -247,24 +247,58 @@ fn initialize_request(request_id: &str) -> String {
 /// its token, and answers before any turn.
 const ASK_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Claude Code started headless on the account, asked `initialize` and
-/// stopped once it has answered: no prompt is sent, so no turn runs and no
-/// conversation is written. MCP servers are not started (`--strict-mcp-config`
-/// with none given): the answer does not need them.
+/// How long a write of the account's `.claude.json` waits out an ask
+/// (account_settings `rewriting_claude_config`): longer than one can take.
+pub(crate) const ASK_WAIT: Duration = Duration::from_secs(25);
+
+/// The arguments of the ask. `--safe-mode` (Claude Code 2.1.322) starts with
+/// the account's hooks, plugins, skills, CLAUDE.md, MCP servers, custom
+/// commands and agents off, while sign-in, model selection and the model
+/// restrictions of its settings work as ever: seen live, a SessionStart hook
+/// that ran on a plain ask did not run under it, and `availableModels` still
+/// narrowed the list. `--strict-mcp-config` with no config given keeps MCP
+/// servers off whatever safe mode leaves; `--no-session-persistence` writes
+/// no session. Machine-wide managed hooks are an administrator's and still
+/// run, as they do for every session.
+pub(crate) const ASK_ARGS: [&str; 9] = [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--safe-mode",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+];
+
+/// The folder the ask runs in: an empty one of Luna's own, so no project's
+/// settings, CLAUDE.md or `.mcp.json` is in reach (paths.rs `OWN_NAMES`).
+const ASK_CWD: &str = "claude-models-cwd";
+
+/// Claude Code started headless on the account (`ASK_ARGS`), asked
+/// `initialize` and stopped once it has answered: no prompt is sent, so no
+/// turn runs and no conversation is written. It is taken down with whatever
+/// it started, answered or not.
 fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     // The window runs this too, and a window run as administrator runs no CLI.
     crate::elevation::guard().ok()?;
     // Held while it runs, so the sweep does not take its directory meanwhile.
     let (exe, _on_version) = crate::cli::launch(Provider::Claude, None).ok()?;
+    let cwd = crate::paths::data_dir().join(ASK_CWD);
+    if let Err(e) = crate::secret::private_dir(&cwd) {
+        crate::log::warn("claude-models", &format!("not asking Claude Code for its models: {}: {e}", cwd.display()));
+        return None;
+    }
     // The CLI rewrites the account's `.claude.json` as it starts, from what
-    // it read: a trust mark or a setting Luna writes meanwhile would be lost.
-    // Luna writes those only under this lock, a file lock the window and the
-    // core share (account_settings `editing`), so the ask holds it until the
-    // CLI has exited; a write waits out the few seconds of the ask, and the
-    // ask a write. The core's account-in-use table (account_use.rs) is not
-    // the gate here: this runs in the window, which does not see it, and the
-    // trust write the new-chat dialog makes takes the lock, not that table.
-    let _editing = match crate::account_settings::editing() {
+    // it read: a trust mark or a recommended key Luna wrote meanwhile would
+    // be lost. Luna's own writes of that file take this account's lock, so
+    // the ask holds it until the CLI is gone, and a write waits out its few
+    // seconds. Per account, and not `editing`: settings.json and other
+    // accounts' files are not the CLI's to touch here and never wait. The
+    // core's account-in-use table is not the gate: this runs in the window,
+    // which does not see it.
+    let _rewriting = match crate::account_settings::rewriting_claude_config(account_path, ASK_WAIT) {
         Ok(held) => held,
         Err(e) => {
             crate::log::warn("claude-models", &format!("not asking Claude Code for its models: {e}"));
@@ -272,8 +306,8 @@ fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
         }
     };
     let mut cmd = Command::new(exe);
-    cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config"])
-        .current_dir(account_path)
+    cmd.args(ASK_ARGS)
+        .current_dir(&cwd)
         .env("CLAUDE_CONFIG_DIR", account_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -283,6 +317,12 @@ fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    // A group of its own, so the tree it leaves can be taken down with it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
     }
     let mut child = cmd.spawn().ok()?;
     let request_id = format!("luna-models-{}", crate::throttle::now_ms());
@@ -306,6 +346,8 @@ fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     });
     let answer = asked.ok().and_then(|_| rx.recv_timeout(ASK_TIMEOUT).ok());
     drop(stdin);
+    // The tree, not only the CLI: what it started outlives a plain kill.
+    crate::pty::kill_tree(Some(child.id()));
     let _ = child.kill();
     let _ = child.wait();
     match answer {
@@ -339,8 +381,20 @@ fn store_file() -> PathBuf {
     crate::paths::data_dir().join("claude-models.json")
 }
 
+/// Larger than any list of a handful of accounts: a file past it is not Luna's.
+const STORE_MAX: u64 = 1 << 20;
+
+/// What the store holds, read only if it is this user's alone, a plain file
+/// and of a sane size (`secret::read_private`); anything else is not taken.
 fn read_store(file: &Path) -> HashMap<String, Remembered> {
-    std::fs::read_to_string(file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    match crate::secret::read_private(file, STORE_MAX) {
+        Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Ok(None) => HashMap::new(),
+        Err(e) => {
+            crate::log::warn("claude-models", &e.to_string());
+            HashMap::new()
+        }
+    }
 }
 
 fn remember_in(file: &Path, account_path: &str, models: &[ClaudeModel], at: u64) {
@@ -395,8 +449,33 @@ fn choose(catalog: Option<Catalog>, remembered: Option<Remembered>, now: u64) ->
     }
 }
 
+/// The settings keys with which an account or the machine narrows or
+/// reshapes the model list. Claude Code applies them to its picker and to
+/// its `initialize` answer (seen live on 2.1.322: `availableModels` in the
+/// account's settings.json narrowed the answer), but not to the catalog file,
+/// whose matching rules (families, ids, `availableModelsMatch`, managed over
+/// user) are its own and not Luna's to copy.
+const RESTRICTING_KEYS: [&str; 3] = ["availableModels", "deniedModels", "modelPicker"];
+
+/// Whether the account's settings.json or the machine's managed settings say
+/// any of `RESTRICTING_KEYS`: then the catalog is not offered as it is, and
+/// the list is the CLI's own answer, which applies them.
+fn restricted_in(files: &[PathBuf]) -> bool {
+    files.iter().any(|f| {
+        std::fs::read_to_string(f)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .is_some_and(|v| RESTRICTING_KEYS.iter().any(|k| !v[*k].is_null()))
+    })
+}
+
+fn restricted(account_path: &str) -> bool {
+    restricted_in(&[Path::new(account_path).join("settings.json"), crate::claude::defaults::managed_dir().join("managed-settings.json")])
+}
+
 fn known(account_path: &str) -> Known {
-    choose(read_catalog(account_path), remembered(account_path), crate::throttle::now_ms())
+    let catalog = if restricted(account_path) { None } else { read_catalog(account_path) };
+    choose(catalog, remembered(account_path), crate::throttle::now_ms())
 }
 
 /// The list as far as it can be had without running the CLI, the aliases
@@ -656,6 +735,42 @@ mod tests {
         let all = read_store(&file);
         assert_eq!(all[&crate::paths::path_key("/a/one")].models.len(), 1);
         assert_eq!(all[&crate::paths::path_key("/a/two")].at, 6);
+        // A file past any real store's size is not taken, private or not.
+        let mut big = serde_json::to_vec(&all).unwrap();
+        big.resize(STORE_MAX as usize + 10, b' ');
+        crate::secret::write_private(&file, &big).unwrap();
+        assert!(read_store(&file).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_ask_loads_nothing_of_the_account_and_its_flags_are_probed() {
+        let args: Vec<String> = ASK_ARGS.iter().map(|a| (*a).to_owned()).collect();
+        for off in ["--safe-mode", "--strict-mcp-config", "--no-session-persistence"] {
+            assert!(args.iter().any(|a| a == off), "{off}");
+        }
+        assert!(!args.iter().any(|a| a == "--mcp-config" || a == "--plugin-dir" || a == "--settings"), "{args:?}");
+        // A new CLI version's help is asked for each (cli/probe.rs).
+        crate::cli::probe_covers(Provider::Claude, &args).unwrap();
+    }
+
+    #[test]
+    fn a_restricted_account_is_not_offered_the_raw_catalog() {
+        let root = std::env::temp_dir().join(format!("luna-claude-models-restricted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let (user, managed) = (root.join("settings.json"), root.join("managed-settings.json"));
+        let files = [user.clone(), managed.clone()];
+        assert!(!restricted_in(&files), "no files: nothing restricted");
+        std::fs::write(&user, r#"{"model":"opus","effortLevel":"high"}"#).unwrap();
+        assert!(!restricted_in(&files));
+        for key in RESTRICTING_KEYS {
+            std::fs::write(&user, format!(r#"{{"{key}":["sonnet"]}}"#)).unwrap();
+            assert!(restricted_in(&files), "{key}");
+        }
+        std::fs::write(&user, "{}").unwrap();
+        std::fs::write(&managed, r#"{"availableModels":["haiku"],"availableModelsMatch":"exact"}"#).unwrap();
+        assert!(restricted_in(&files), "the machine's managed settings count too");
         let _ = std::fs::remove_dir_all(&root);
     }
 

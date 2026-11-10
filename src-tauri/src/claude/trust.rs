@@ -81,6 +81,9 @@ pub fn claude_trust_folder(account_path: AccountPath, folder: AbsPath) -> Result
 
 pub(crate) fn trust_folder(account_path: &str, folder: &str) -> Result<(), String> {
     let path = config_file(account_path)?;
+    // A model ask's CLI rewriting the file meanwhile would undo the mark:
+    // the few seconds of one are waited out (claude/models.rs).
+    let _rewriting = crate::account_settings::rewriting_claude_config(account_path, crate::claude::models::ASK_WAIT)?;
     let editing = crate::account_settings::editing()?;
     let mut cfg = read_config_for_write(&path)?;
 

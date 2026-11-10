@@ -26,6 +26,54 @@ pub(in crate::agents) fn asked(v: &Option<String>) -> Option<&str> {
     v.as_deref().map(str::trim).filter(|v| !v.is_empty())
 }
 
+/// A Claude helper's model and effort: what the spawn asks for over the
+/// account's and project's defaults (`default_model`, `default_effort`),
+/// held to the account's model list. The effort is checked against the model
+/// the helper will run on, asked for or not; a model that takes no effort
+/// gets none (an empty effort: no `--effort`), and a default level it does
+/// not take moves to its own default.
+fn claude_model_and_effort(
+    models: &[crate::claude::models::ClaudeModel],
+    asked_model: Option<&str>,
+    asked_effort: Option<&str>,
+    default_model: Option<&str>,
+    default_effort: &str,
+) -> Result<(Option<String>, String), String> {
+    let find = |m: &str| {
+        models.iter().find(|x| x.slug.eq_ignore_ascii_case(m) || x.model_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(m)))
+    };
+    let model = match asked_model {
+        Some(m) if find(m).is_some() => Some(m.to_string()),
+        // A spelling the list does not carry that names a family plainly
+        // (`opusplan`, `claude-opus-5[1m]`): the CLI's to read.
+        Some(m) if crate::claude::models::ALIASES.iter().any(|a| m.to_lowercase().contains(a)) => Some(m.to_string()),
+        Some(m) => {
+            let all: Vec<&str> = models.iter().map(|x| x.slug.as_str()).collect();
+            return Err(format!("unknown Claude model \"{m}\"; this account lists {}, or a full id such as claude-opus-5", all.join(", ")));
+        }
+        None => default_model.map(str::to_owned),
+    };
+    let listed = model.as_deref().and_then(find);
+    // As in the dialog: the model brings its own levels, and its own default
+    // level where it does not take the default one.
+    let efforts: Vec<&str> = match listed {
+        Some(l) if !l.efforts.is_empty() => l.efforts.iter().map(String::as_str).chain([ULTRACODE]).collect(),
+        _ => CLAUDE_EFFORTS.to_vec(),
+    };
+    let effort = match (asked_effort, listed) {
+        (Some(_), Some(l)) if l.efforts.is_empty() => return Err(format!("{} takes no effort level; leave effort out", l.slug)),
+        (None, Some(l)) if l.efforts.is_empty() => String::new(),
+        (Some(e), _) if efforts.contains(&e) => e.to_string(),
+        (Some(e), Some(l)) => return Err(format!("{} takes effort {}, not \"{e}\"", l.slug, efforts.join(", "))),
+        (Some(e), None) => return Err(format!("unknown Claude effort \"{e}\"; use {}", efforts.join(", "))),
+        (None, Some(l)) if !efforts.contains(&default_effort) => {
+            l.default_effort.clone().or_else(|| l.efforts.first().cloned()).unwrap_or_default()
+        }
+        (None, _) => default_effort.to_string(),
+    };
+    Ok((model, effort))
+}
+
 /// The settings a helper runs with: what the request asks for over the
 /// account's defaults, refused in the words the new-chat dialog would use.
 fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str, folder: &str) -> Result<crate::background::Spec, String> {
@@ -40,38 +88,13 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
             // The account's own list (claude/models.rs), or the four aliases
             // where Luna knows none yet.
             let models = crate::claude::models::models_known(account_path);
-            let listed = asked(&params.model).and_then(|m| {
-                models.iter().find(|x| x.slug.eq_ignore_ascii_case(m) || x.model_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(m)))
-            });
-            let model = match asked(&params.model) {
-                Some(m) if listed.is_some() => Some(m.to_string()),
-                // A spelling the list does not carry that names a family
-                // plainly (`opusplan`, `claude-opus-5[1m]`): the CLI's to read.
-                Some(m) if crate::claude::models::ALIASES.iter().any(|a| m.to_lowercase().contains(a)) => Some(m.to_string()),
-                Some(m) => {
-                    let all: Vec<&str> = models.iter().map(|x| x.slug.as_str()).collect();
-                    return Err(format!(
-                        "unknown Claude model \"{m}\"; this account lists {}, or a full id such as claude-opus-5",
-                        all.join(", ")
-                    ));
-                }
-                None => d["model"].as_str().map(str::to_owned),
-            };
-            // As in the dialog: a model asked for brings its own levels, and
-            // its own default level where it does not take the account's.
-            let efforts: Vec<&str> = match listed {
-                Some(l) if !l.efforts.is_empty() => l.efforts.iter().map(String::as_str).chain([ULTRACODE]).collect(),
-                _ => CLAUDE_EFFORTS.to_vec(),
-            };
-            let stock = d["effort"].as_str().unwrap_or("high");
-            let effort = match (asked(&params.effort), listed) {
-                (Some(_), Some(l)) if l.efforts.is_empty() => return Err(format!("{} takes no effort level; leave effort out", l.slug)),
-                (Some(e), _) if efforts.contains(&e) => e.to_string(),
-                (Some(e), Some(l)) => return Err(format!("{} takes effort {}, not \"{e}\"", l.slug, efforts.join(", "))),
-                (Some(e), None) => return Err(format!("unknown Claude effort \"{e}\"; use {}", efforts.join(", "))),
-                (None, Some(l)) if !efforts.contains(&stock) && l.default_effort.is_some() => l.default_effort.clone().unwrap_or_default(),
-                (None, _) => stock.to_string(),
-            };
+            let (model, effort) = claude_model_and_effort(
+                &models,
+                asked(&params.model),
+                asked(&params.effort),
+                d["model"].as_str(),
+                d["effort"].as_str().unwrap_or("high"),
+            )?;
             let mode = match asked(&params.permission_mode) {
                 Some(p) if CLAUDE_MODES.contains(&p) => p.to_string(),
                 Some(p) => return Err(format!("unknown permission mode \"{p}\"; use {}", CLAUDE_MODES.join(", "))),
@@ -300,5 +323,44 @@ mod tests {
         };
         assert_eq!(spec("never").ok().unwrap().mode, "read-only-net");
         assert!(spec("auto-review").err().unwrap().contains("workspace-write only"), "the reviewer's sandbox is fixed");
+    }
+
+    fn model(slug: &str, efforts: &[&str], default: Option<&str>) -> crate::claude::models::ClaudeModel {
+        crate::claude::models::ClaudeModel {
+            slug: slug.into(),
+            model_id: None,
+            display_name: slug.into(),
+            default_effort: default.map(str::to_owned),
+            efforts: efforts.iter().map(|e| (*e).to_owned()).collect(),
+            effort_hints: Default::default(),
+            more: false,
+        }
+    }
+
+    #[test]
+    fn a_claude_helpers_effort_is_held_to_the_model_it_will_run_on() {
+        let list = [
+            model("opus", &["low", "medium", "high", "xhigh", "max"], Some("medium")),
+            model("claude-opus-4-7", &["medium", "xhigh"], Some("xhigh")),
+            model("claude-haiku-4-5-20251001", &[], None),
+        ];
+        let pick = |m, e, dm, de| claude_model_and_effort(&list, m, e, dm, de);
+        // The model from the account's settings, not asked for: its levels count.
+        assert!(pick(None, Some("low"), Some("claude-opus-4-7"), "high").unwrap_err().contains("takes effort medium, xhigh"));
+        assert_eq!(pick(None, Some("xhigh"), Some("claude-opus-4-7"), "high").unwrap().1, "xhigh");
+        // A default level the model does not take moves to its own default.
+        assert_eq!(pick(None, None, Some("claude-opus-4-7"), "high").unwrap().1, "xhigh");
+        assert_eq!(pick(Some("opus"), None, None, "high").unwrap().1, "high");
+        // A model that takes no effort runs with none, asked for or by default.
+        assert_eq!(
+            pick(Some("claude-haiku-4-5-20251001"), None, None, "high").unwrap(),
+            (Some("claude-haiku-4-5-20251001".into()), String::new())
+        );
+        assert_eq!(pick(None, None, Some("claude-haiku-4-5-20251001"), "high").unwrap().1, "");
+        assert!(pick(None, Some("high"), Some("claude-haiku-4-5-20251001"), "high").unwrap_err().contains("takes no effort"));
+        // Unknown models and levels are refused; a family spelling passes.
+        assert!(pick(Some("gpt-6"), None, None, "high").is_err());
+        assert!(pick(Some("opusplan"), Some("turbo"), None, "high").unwrap_err().contains("unknown Claude effort"));
+        assert_eq!(pick(Some("opus"), Some("ultracode"), None, "high").unwrap().1, "ultracode");
     }
 }

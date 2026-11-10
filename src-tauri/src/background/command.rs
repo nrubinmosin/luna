@@ -41,8 +41,12 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
                 args.extend(["--model".into(), m.clone()]);
                 applied.push(Item::Model.with(format!("--model {m}")));
             }
-            args.extend(["--effort".into(), s.effort.clone(), "--permission-mode".into(), s.mode.clone()]);
-            applied.push(Item::Effort.with(format!("--effort {}", s.effort)));
+            // No effort for a model that takes none (claude/models.rs): no flag.
+            if !s.effort.is_empty() {
+                args.extend(["--effort".into(), s.effort.clone()]);
+                applied.push(Item::Effort.with(format!("--effort {}", s.effort)));
+            }
+            args.extend(["--permission-mode".into(), s.mode.clone()]);
             applied.push(Item::PermissionMode.with(format!("--permission-mode {}", s.mode)));
             match (&e.session, &made) {
                 (Some(sid), Some(wt)) if std::path::Path::new(wt).is_dir() => {
@@ -411,6 +415,20 @@ mod tests {
         let at = args.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(args[at + 1], "s-1");
         assert!(envs.iter().any(|(k, v)| *k == "CLAUDE_CONFIG_DIR" && v == "C:\\acc"));
+    }
+
+    #[test]
+    fn a_claude_helper_on_a_model_without_effort_gets_no_effort_flag() {
+        let mut e = entry(Provider::Claude);
+        e.spec.effort = "high".into();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
+        assert!(args.windows(2).any(|w| w == ["--effort", "high"]), "{args:?}");
+        e.spec.model = Some("claude-haiku-4-5-20251001".into());
+        e.spec.effort = String::new();
+        let (args, _, _, applied) = command_for(&e, "x").unwrap();
+        assert!(!args.iter().any(|a| a == "--effort"), "{args:?}");
+        assert!(args.windows(2).any(|w| w == ["--model", "claude-haiku-4-5-20251001"]), "{args:?}");
+        assert!(!applied.iter().any(|a| format!("{a:?}").contains("--effort")));
     }
 
     #[test]

@@ -44,6 +44,41 @@ pub(crate) use sync::*;
 #[cfg(test)]
 use testkit::*;
 
+/// Where the per-account locks of `rewriting_claude_config` are, in the data
+/// dir (paths.rs `OWN_NAMES`).
+pub(crate) const CLAUDE_CONFIG_LOCKS: &str = "claude-config-locks";
+
+/// One rewrite of an account's `.claude.json` at a time, between Luna's own
+/// writes (a trust mark, a recommended key) and a Claude Code that Luna
+/// starts on the account only to ask it something (claude/models.rs): the
+/// CLI rewrites the file from what it read as it starts, so a write made
+/// meanwhile would be lost. Per account, so another account's write never
+/// waits, and a file lock, since the window and the core both take it.
+/// Waits up to `wait` for it, then says why not.
+pub(crate) fn rewriting_claude_config(account_path: &str, wait: std::time::Duration) -> Result<std::fs::File, String> {
+    use sha2::Digest;
+    let dir = crate::paths::data_dir().join(CLAUDE_CONFIG_LOCKS);
+    let hash = sha2::Sha256::digest(crate::paths::path_key(account_path).as_bytes());
+    let name: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let path = dir.join(format!("{name}.lock"));
+    let file = crate::secret::private_dir(&dir)
+        .and_then(|()| crate::secret::open_private(&path))
+        .map_err(|e| format!("no lock on {}: {e}", path.display()))?;
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(format!("{account_path}: Claude Code is reading this account's settings; try again in a moment"))
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(format!("no lock on {}: {e}", path.display())),
+        }
+    }
+}
+
 /// `editing`'s hold, for as long as it lives.
 pub(crate) struct Editing {
     _here: std::sync::MutexGuard<'static, ()>,
@@ -88,6 +123,22 @@ pub(crate) fn editing() -> Result<Editing, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_claude_config_rewrite_waits_only_for_the_same_account() {
+        let short = std::time::Duration::from_millis(200);
+        let one = format!("/luna-test/{}/one", std::process::id());
+        let two = format!("/luna-test/{}/two", std::process::id());
+        let held = rewriting_claude_config(&one, short).unwrap();
+        let started = std::time::Instant::now();
+        let why = rewriting_claude_config(&one, short).unwrap_err();
+        assert!(why.contains("try again"), "{why}");
+        assert!(started.elapsed() >= short, "it waited before giving up");
+        // Another account's write does not wait on it.
+        let other = rewriting_claude_config(&two, std::time::Duration::ZERO).unwrap();
+        drop((held, other));
+        assert!(rewriting_claude_config(&one, std::time::Duration::ZERO).is_ok(), "free once let go");
+    }
 
     #[test]
     fn no_shared_lock_means_nothing_is_written() {

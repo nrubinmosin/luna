@@ -188,6 +188,9 @@ pub(super) fn apply(provider: Provider, account_path: &str, add: &[String], remo
     // read: first the account's hold, as for a recommendation.
     let rewritten = provider == Provider::Codex || add.iter().chain(&remove).any(|s| s.global);
     let _held = if rewritten { Some(crate::account_use::hold(std::slice::from_ref(&account_path.to_string()))?) } else { None };
+    // And a model ask's CLI, which the core's table does not see (claude/models.rs).
+    let claude_global = provider == Provider::Claude && rewritten;
+    let _rewriting = if claude_global { Some(rewriting_claude_config(account_path, crate::claude::models::ASK_WAIT)?) } else { None };
     let _editing = editing()?;
     match provider {
         Provider::Claude => {
