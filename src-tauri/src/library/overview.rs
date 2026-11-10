@@ -78,6 +78,10 @@ pub struct Overview {
     /// Folders set aside in `system/`, read by nothing (system.rs
     /// `set_aside`): for the person to move or delete.
     pub system_aside: Vec<String>,
+    /// The places a put-back could not settle, with why (commands.rs
+    /// `library_put_back`); empty from every other command.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unsettled: Vec<String>,
 }
 
 /// Whether these kept copies are not what the log said last: a pass comes
@@ -201,6 +205,7 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         kept: p.kept,
         system: vec![resolve_in(&dirs).state()],
         system_aside: set_aside(&dirs),
+        unsettled: Vec::new(),
     })
 }
 

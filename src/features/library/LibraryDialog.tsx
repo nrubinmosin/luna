@@ -7,11 +7,11 @@ import {
   libraryNewInstructions,
   libraryNewSkill,
   libraryOpen,
+  libraryPutBack,
   libraryResolve,
   librarySetFolder,
   librarySetSource,
   librarySkip,
-  librarySync,
   type EditorEntry,
   type LibraryEntry,
   type LibraryOverviewDto
@@ -43,6 +43,7 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
   const [deleting, setDeleting] = useState<LibraryEntry | null>(null);
   const [newName, setNewName] = useState('');
   const [newInstructions, setNewInstructions] = useState('');
+  const [syncing, setSyncing] = useState<{ dests: string[]; replaced: number } | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -67,6 +68,16 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
   const o = overview;
   const look = o ? waiting(o.places) : [];
   const left = o ? o.places.filter(p => p.status === 'skipped') : [];
+  const gone = o ? o.places.filter(p => p.status === 'gone').map(p => p.dest) : [];
+  // Every place that differs from the library and can be made like it; a
+  // failed one has nothing fit to put there, one left out stays out.
+  const differ = o ? o.places.filter(p => p.status === 'gone' || p.status === 'changed' || p.status === 'taken') : [];
+  const syncAll = () => {
+    const replaced = differ.filter(p => p.status !== 'gone').length;
+    const dests = differ.map(p => p.dest);
+    if (replaced > 0) setSyncing({ dests, replaced });
+    else void act(libraryPutBack(dests, false));
+  };
   const createSkill = () => {
     const name = newName.trim();
     if (!name) return;
@@ -130,11 +141,14 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
                 aside={
                   <ToolButton
                     icon="sync"
-                    label="Sync now"
+                    label="Sync all"
                     spin={busy}
                     disabled={busy}
-                    title="Lay the library out now — everything that needs no asking"
-                    onClick={() => void act(librarySync())}
+                    title={
+                      'Make every account hold what the library says: deleted copies put back, changed ones replaced ' +
+                      '(kept in Luna’s backups for 30 days). Places left out stay out.'
+                    }
+                    onClick={syncAll}
                   />
                 }
               >
@@ -189,13 +203,32 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
                   </Note>
                 )}
                 {error && <div style={{ fontSize: 'var(--fs-2)', color: RED, marginTop: 4 }}>{error}</div>}
+                {o.unsettled?.map(line => (
+                  <div key={line} style={{ fontSize: 'var(--fs-2)', color: RED, marginTop: 4 }}>
+                    Not put back: {line}
+                  </div>
+                ))}
                 {o.kept.length > 0 && (
                   <Note>Left in place, no longer wanted but changed since Luna wrote them: {o.kept.join(', ')}</Note>
                 )}
               </Section>
 
               {look.length > 0 && (
-                <Section label={`Needs a look — ${look.length}`}>
+                <Section
+                  label={`Needs a look — ${look.length}`}
+                  aside={
+                    gone.length > 1 && (
+                      <button
+                        className="slim"
+                        disabled={busy}
+                        title="The library’s copy goes back wherever one was deleted; changed copies wait here"
+                        onClick={() => void act(libraryPutBack(gone, false))}
+                      >
+                        Put all back ({gone.length})
+                      </button>
+                    )
+                  }
+                >
                   {look.map(({ place, count }) => (
                     <LookRow key={place.dest} place={place} count={count} act={p => void act(p)} />
                   ))}
@@ -392,6 +425,28 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
     <>
       {createPortal(dialog, host)}
       {editing && <LibraryEditor entry={editing} onClose={() => setEditing(null)} />}
+      {syncing && (
+        <ConfirmDialog
+          title="Sync all accounts with the library"
+          body={
+            <>
+              Puts the library’s copy everywhere it is meant to go.{' '}
+              <b>
+                {syncing.replaced} {syncing.replaced === 1 ? 'copy' : 'copies'} changed where{' '}
+                {syncing.replaced === 1 ? 'it lies' : 'they lie'}
+              </b>{' '}
+              will be replaced; what is there now is kept in Luna’s backups for 30 days. Places left out stay as they
+              are.
+            </>
+          }
+          confirmLabel="Sync all"
+          onCancel={() => setSyncing(null)}
+          onConfirm={() => {
+            void act(libraryPutBack(syncing.dests, true));
+            setSyncing(null);
+          }}
+        />
+      )}
       {deleting && 'skill' in deleting && (
         <ConfirmDialog
           title="Take the skill out"

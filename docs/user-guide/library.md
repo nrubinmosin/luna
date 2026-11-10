@@ -103,10 +103,18 @@ chip on the status bar, with its differences. Take it into the library and it
 becomes every copy's; put the library's back; or leave that place out. The side
 replaced is kept in Luna's backups for 30 days.
 
+With several copies deleted, **Put all back** above the list puts the library's
+back in each of them; the changed ones still wait there. **Sync all**, at the
+top of the window, makes every account hold what the library says: deleted
+copies put back and changed ones replaced, after a confirmation that counts
+them. It goes by what the grids pick and leaves the places left out as they
+are; a copy that cannot be laid out (a skill whose `SKILL.md` does not do) stays
+under Needs a look.
+
 ## When it is laid out
 
 When Luna starts, before every session Luna starts (a chat, a resume, each turn
-of a helper), on every change made in the window and on Sync now, so a file
+of a helper), on every change made in the window and on Sync all, so a file
 changed in the library by another program reaches the accounts by the next
 session. It is looked at again whenever the window comes to the front.
 
