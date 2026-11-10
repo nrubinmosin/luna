@@ -41,31 +41,37 @@ const STOCK_MODEL: &str = "opus";
 const STOCK_EFFORT: &str = "high";
 const STOCK_PERMISSION_MODE: &str = "bypassPermissions";
 
-/// The models Luna lists, as the CLI's aliases.
-const MODELS: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
 const EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultracode"];
 const PERMISSION_MODES: [&str; 4] = ["default", "acceptEdits", "plan", "bypassPermissions"];
 
-/// `model` can be an alias (`opus`), a compound one (`opusplan`) or a full id
-/// (`claude-sonnet-5`); all three name their model plainly enough to match on.
-fn model_alias(raw: &str) -> Option<&'static str> {
+/// `model` as one of the account's models (claude/models.rs): a slug or full
+/// id it lists is that model, by the slug Luna passes on. Otherwise an alias
+/// (`opus`), a compound one (`opusplan`) or an id the list does not carry
+/// (`claude-sonnet-5[1m]`) names its family plainly enough to match on.
+fn model_in(models: &[crate::claude::models::ClaudeModel], raw: &str) -> Option<String> {
+    let listed =
+        models.iter().find(|m| m.slug.eq_ignore_ascii_case(raw) || m.model_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(raw)));
+    if let Some(m) = listed {
+        return Some(m.slug.clone());
+    }
     let v = raw.to_lowercase();
-    MODELS.iter().find(|m| v.contains(**m)).copied()
+    let families = models.iter().map(|m| m.slug.as_str()).filter(|s| !s.contains('-'));
+    families.chain(crate::claude::models::ALIASES).find(|a| v.contains(*a)).map(str::to_owned)
 }
 
-fn effort_level(raw: &str) -> Option<&'static str> {
+fn effort_level(raw: &str) -> Option<String> {
     let v = raw.to_lowercase();
-    EFFORTS.iter().find(|e| **e == v).copied()
+    EFFORTS.iter().find(|e| **e == v).map(|e| (*e).to_owned())
 }
 
-fn permission_mode(raw: &str) -> Option<&'static str> {
-    PERMISSION_MODES.iter().find(|m| **m == raw).copied()
+fn permission_mode(raw: &str) -> Option<String> {
+    PERMISSION_MODES.iter().find(|m| **m == raw).map(|m| (*m).to_owned())
 }
 
 /// The value the files settled on, in the spelling Luna passes on, or the
 /// stock one when they said nothing usable.
-fn settle(said: Option<Setting>, usable: fn(&str) -> Option<&'static str>, stock: &str) -> Setting {
-    said.and_then(|s| usable(&s.value).map(|v| Setting { value: v.to_owned(), source: s.source }))
+fn settle(said: Option<Setting>, usable: impl Fn(&str) -> Option<String>, stock: &str) -> Setting {
+    said.and_then(|s| usable(&s.value).map(|value| Setting { value, source: s.source }))
         .unwrap_or_else(|| Setting { value: stock.to_owned(), source: "stock".to_owned() })
 }
 
@@ -116,6 +122,9 @@ pub fn claude_defaults(account_path: String, folder: String) -> Defaults {
     }
     files.push(("managed", managed_dir().join("managed-settings.json")));
 
+    // What the files name is held to the account's list; read off disk only,
+    // the CLI is not asked for it here.
+    let account_models = if account_path.is_empty() { Vec::new() } else { crate::claude::models::models_known(&account_path) };
     let (mut model, mut effort, mut mode) = (None, None, None);
     for (source, path) in files {
         let Some(cfg) = read_object(&path) else { continue };
@@ -130,7 +139,7 @@ pub fn claude_defaults(account_path: String, folder: String) -> Defaults {
         }
     }
     Defaults {
-        model: settle(model, model_alias, STOCK_MODEL),
+        model: settle(model, |raw| model_in(&account_models, raw), STOCK_MODEL),
         effort: settle(effort, effort_level, STOCK_EFFORT),
         permission_mode: settle(mode, permission_mode, STOCK_PERMISSION_MODE),
     }

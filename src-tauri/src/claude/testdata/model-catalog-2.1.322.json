@@ -1,0 +1,366 @@
+{
+  "version": 2,
+  "fetchedAt": 1794308892844,
+  "staleAt": 1794312396999,
+  "catalog": {
+    "surface": "cc",
+    "config": {
+      "id": "cc",
+      "models": [
+        {
+          "id": "claude-opus-5-5",
+          "name": "Opus 5.5",
+          "short_name": "Opus",
+          "description": "For complex work and everyday tasks",
+          "section": "main",
+          "thinking": {
+            "type": "effort",
+            "effort_options": [
+              {
+                "id": "low",
+                "name": "Low"
+              },
+              {
+                "id": "medium",
+                "name": "Medium",
+                "badge": {
+                  "message": "Recommended",
+                  "variant": "neutral"
+                }
+              },
+              {
+                "id": "high",
+                "name": "High"
+              },
+              {
+                "id": "xhigh",
+                "name": "Extra"
+              },
+              {
+                "id": "max",
+                "name": "Max",
+                "badge": {
+                  "message": "3.5× or more usage",
+                  "variant": "warning"
+                },
+                "tooltip": {
+                  "content": "Claude thinks longer with Max effort and can consume 3.5× or more usage than Medium."
+                }
+              }
+            ]
+          },
+          "runtime": {
+            "max_input_tokens": 1000000,
+            "effort_levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default_effort": "medium",
+            "family": "opus"
+          },
+          "min_claude_code_version": "2.1.280"
+        },
+        {
+          "id": "claude-fable-5-2",
+          "name": "Fable 5.2",
+          "short_name": "Fable",
+          "description": "For your toughest challenges",
+          "section": "main",
+          "thinking": {
+            "type": "effort",
+            "effort_options": [
+              {
+                "id": "low",
+                "name": "Low"
+              },
+              {
+                "id": "medium",
+                "name": "Medium",
+                "badge": {
+                  "message": "Recommended",
+                  "variant": "neutral"
+                }
+              },
+              {
+                "id": "high",
+                "name": "High"
+              },
+              {
+                "id": "xhigh",
+                "name": "Extra"
+              },
+              {
+                "id": "max",
+                "name": "Max",
+                "tooltip": {
+                  "content": "May use excessive tokens resulting in long response times and may hit token limits. Use sparingly for the hardest tasks."
+                }
+              }
+            ]
+          },
+          "runtime": {
+            "max_input_tokens": 1000000,
+            "effort_levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default_effort": "medium",
+            "family": "fable"
+          },
+          "min_claude_code_version": "2.1.290"
+        },
+        {
+          "id": "claude-sonnet-5-5",
+          "name": "Sonnet 5.5",
+          "short_name": "Sonnet",
+          "description": "Most efficient for simpler tasks",
+          "section": "main",
+          "thinking": {
+            "type": "effort",
+            "effort_options": [
+              {
+                "id": "low",
+                "name": "Low"
+              },
+              {
+                "id": "medium",
+                "name": "Medium",
+                "badge": {
+                  "message": "Recommended",
+                  "variant": "neutral"
+                }
+              },
+              {
+                "id": "high",
+                "name": "High"
+              },
+              {
+                "id": "xhigh",
+                "name": "Extra"
+              },
+              {
+                "id": "max",
+                "name": "Max",
+                "tooltip": {
+                  "content": "May use excessive tokens resulting in long response times and may hit token limits. Use sparingly for the hardest tasks."
+                }
+              }
+            ]
+          },
+          "runtime": {
+            "max_input_tokens": 1000000,
+            "effort_levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default_effort": "medium",
+            "family": "sonnet"
+          }
+        },
+        {
+          "id": "claude-haiku-5-5",
+          "name": "Haiku 5.5",
+          "short_name": "Haiku",
+          "description": "Fastest for quick answers",
+          "section": "main",
+          "thinking": {
+            "type": "effort",
+            "effort_options": [
+              {
+                "id": "low",
+                "name": "Low"
+              },
+              {
+                "id": "medium",
+                "name": "Medium",
+                "badge": {
+                  "message": "Recommended",
+                  "variant": "neutral"
+                }
+              },
+              {
+                "id": "high",
+                "name": "High"
+              },
+              {
+                "id": "xhigh",
+                "name": "Extra"
+              },
+              {
+                "id": "max",
+                "name": "Max",
+                "tooltip": {
+                  "content": "May use excessive tokens resulting in long response times and may hit token limits. Use sparingly for the hardest tasks."
+                }
+              }
+            ]
+          },
+          "runtime": {
+            "max_input_tokens": 1000000,
+            "effort_levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default_effort": "medium",
+            "family": "haiku"
+          }
+        },
+        {
+          "id": "claude-fable-5-1",
+          "name": "Fable 5.1",
+          "short_name": "Fable",
+          "section": "overflow",
+          "thinking": {
+            "type": "effort",
+            "effort_options": [
+              {
+                "id": "low",
+                "name": "Low"
+              },
+              {
+                "id": "medium",
+                "name": "Medium"
+              },
+              {
+                "id": "high",
+                "name": "High",
+                "badge": {
+                  "message": "Recommended",
+                  "variant": "neutral"
+                }
+              },
+              {
+                "id": "xhigh",
+                "name": "Extra"
+              },
+              {
+                "id": "max",
+                "name": "Max",
+                "tooltip": {
+                  "content": "May use excessive tokens resulting in long response times and may hit token limits. Use sparingly for the hardest tasks."
+                }
+              }
+            ]
+          },
+          "runtime": {
+            "max_input_tokens": 1000000,
+            "effort_levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default_effort": "high",
+            "family": "fable"
+          },
+          "min_claude_code_version": "2.1.251"
+        },
+        {
+          "id": "claude-haiku-4-5-20251001",
+          "name": "Haiku 4.5",
+          "short_name": "Haiku",
+          "section": "overflow",
+          "thinking": {
+            "type": "none"
+          },
+          "runtime": {
+            "max_input_tokens": 200000,
+            "family": "haiku"
+          }
+        },
+        {
+          "id": "claude-opus-4-7",
+          "name": "Opus 4.7",
+          "short_name": "Opus",
+          "section": "overflow",
+          "thinking": {
+            "type": "effort",
+            "effort_options": [
+              {
+                "id": "low",
+                "name": "Low"
+              },
+              {
+                "id": "medium",
+                "name": "Medium"
+              },
+              {
+                "id": "high",
+                "name": "High"
+              },
+              {
+                "id": "xhigh",
+                "name": "Extra",
+                "badge": {
+                  "message": "Recommended",
+                  "variant": "neutral"
+                }
+              },
+              {
+                "id": "max",
+                "name": "Max",
+                "tooltip": {
+                  "content": "May use excessive tokens resulting in long response times and may hit token limits. Use sparingly for the hardest tasks."
+                }
+              }
+            ]
+          },
+          "runtime": {
+            "max_input_tokens": 1000000,
+            "effort_levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default_effort": "xhigh",
+            "family": "opus"
+          }
+        }
+      ],
+      "provider_alias_targets": {
+        "fable": {
+          "default": "claude-fable-5-2",
+          "per_provider": {
+            "gateway": "claude-fable-5"
+          }
+        },
+        "haiku": {
+          "default": "claude-haiku-5-5"
+        },
+        "opus": {
+          "default": "claude-opus-5-5",
+          "per_provider": {
+            "anthropic_aws": "claude-opus-5-5",
+            "bedrock": "claude-opus-5-5",
+            "foundry": "claude-opus-4-6",
+            "gateway": "claude-opus-4-7",
+            "mantle": "claude-opus-5-5",
+            "vertex": "claude-opus-5-5"
+          }
+        },
+        "sonnet": {
+          "default": "claude-sonnet-5-5",
+          "per_provider": {
+            "anthropic_aws": "claude-sonnet-4-6",
+            "gateway": "claude-sonnet-4-6"
+          }
+        }
+      }
+    }
+  }
+}

@@ -4,17 +4,19 @@
  * chat's flags are drawn. The Codex twin lives next door and shares nothing
  * but the shape.
  */
-import type { CSSProperties, ReactNode } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import type { Account, ClaudeChat, ClaudeSettings, Effort, ModelLabel, PermMode } from '../../../shared/types';
 import {
   EFFORTS,
   MODELS,
   PERM_HINTS,
+  ULTRACODE,
   effortFromSetting,
   modelFromSetting,
+  modelLabelOf,
   permFromSetting
 } from '../../../shared/types';
-import { claudeDefaults, type ClaudeDefaultSource } from '../../../ipc/defaults';
+import { claudeDefaults, claudeModels, type ClaudeDefaultSource, type ClaudeModelDto } from '../../../ipc/defaults';
 import { ensureClaudeSession } from '../../../ipc/sessions';
 import { claudeFolderTrusted, claudeTrustFolder } from '../../../ipc/trust';
 import { ModelSelect } from '../../../shared/ui/ModelSelect';
@@ -120,21 +122,84 @@ export function worktreeName(folder: string, path: string | null | undefined): s
 
 // ---------------------------------------------------------------- dialog --
 
+/** The models listed before the account's own list has come: the four
+ *  aliases, each at every level. */
+const STOCK_MODELS: ClaudeModelDto[] = MODELS.map(m => ({
+  slug: m.toLowerCase(),
+  modelId: null,
+  displayName: m,
+  defaultEffort: null,
+  efforts: EFFORTS.filter(e => e !== ULTRACODE),
+  effortHints: {},
+  more: false
+}));
+
+/** The effort buttons for a model: its own levels and `ultracode`, none for
+ *  a model that takes no effort, every level for one the list does not
+ *  know. */
+export function effortsFor(listed: ClaudeModelDto | undefined): Effort[] {
+  if (!listed) return EFFORTS;
+  return listed.efforts.length ? [...listed.efforts, ULTRACODE] : [];
+}
+
 export function Fields({
   draft,
-  origin
+  origin,
+  accountPath
 }: {
   draft: Draft<ClaudeSettings>;
   origin: (field: keyof ClaudeSettings) => ReactNode;
+  accountPath: string;
 }) {
   const { settings, pick } = draft;
   const labelStyle: CSSProperties = { fontSize: 'var(--fs-3)', color: 'var(--dim)', marginBottom: 4, fontWeight: 600 };
+  const hintStyle: CSSProperties = { fontSize: 'var(--fs-2)', color: 'var(--faint)' };
+  // The account's own model list (claude/models.rs); the four aliases until
+  // it comes, so the dialog is usable at once.
+  const [models, setModels] = useState<ClaudeModelDto[] | null>(null);
+  useEffect(() => {
+    let stale = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- another account's list goes while this one's loads
+    setModels(null);
+    void claudeModels(accountPath)
+      .then(m => !stale && setModels(m))
+      .catch(() => !stale && setModels([]));
+    return () => {
+      stale = true;
+    };
+  }, [accountPath]);
+  const list = models?.length ? models : STOCK_MODELS;
+
+  const listed = list.find(m => modelLabelOf(m.slug) === settings.model);
+  const efforts = effortsFor(listed);
+  const effortItems = efforts.length && !efforts.includes(settings.effort) ? [...efforts, settings.effort] : efforts;
+
+  // A model that does not take the level shown moves it to its own default
+  // level; one that takes it keeps it, whether a settings file named it,
+  // Luna's stock chose it or it was picked by hand.
+  const takesShown =
+    !listed?.efforts.length || listed.efforts.includes(settings.effort) || settings.effort === ULTRACODE;
+  useEffect(() => {
+    if (!takesShown && listed?.defaultEffort) draft.follow('effort', listed.defaultEffort);
+    // `draft.follow` is a new function every render; the model is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listed?.slug, takesShown]);
+
+  // Main models first, the rest under "More…"; a model a settings file names
+  // that the list does not know still gets an entry of its own, chosen.
+  const modelItems = list.map(m => ({
+    value: modelLabelOf(m.slug),
+    label: m.displayName,
+    group: m.more ? 'More…' : undefined
+  }));
+  if (!listed) modelItems.push({ value: settings.model, label: settings.model, group: undefined });
+
   return (
     <>
       <div>
         <div style={labelStyle}>Model</div>
         <ModelSelect
-          items={MODELS.map(m => ({ value: m, label: m }))}
+          items={modelItems}
           value={settings.model}
           defaultValue={draft.resolved.model}
           onPick={(v: ModelLabel) => pick('model', v)}
@@ -144,8 +209,17 @@ export function Fields({
 
       <div>
         <div style={labelStyle}>Effort</div>
-        <Segmented items={EFFORTS} value={settings.effort} onPick={(v: Effort) => pick('effort', v)} />
-        {origin('effort')}
+        {effortItems.length ? (
+          <Segmented
+            items={effortItems}
+            value={settings.effort}
+            onPick={(v: Effort) => pick('effort', v)}
+            hints={listed?.effortHints}
+          />
+        ) : (
+          <div style={hintStyle}>{listed?.displayName ?? settings.model} takes no effort level.</div>
+        )}
+        {effortItems.length > 0 && origin('effort')}
       </div>
 
       <div>

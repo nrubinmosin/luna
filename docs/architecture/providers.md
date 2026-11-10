@@ -12,7 +12,7 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Launch args | `launch.rs` | `launch.rs` |
 | Binary source | `cli.rs`: downloads.claude.ai, `latest` + `manifest.json`, bare exe | `cli.rs`: GitHub Releases `openai/codex`, tag `rust-v<ver>`, package tarball + `SHA256SUMS` |
 | Defaults | `defaults.rs`: `model`, `effortLevel`, `permissions.defaultMode` | `defaults.rs`: `model`, `model_reasoning_effort`, `approval_policy`, `sandbox_mode` |
-| Models | `models.rs`: context windows from the Models API | `models.rs`: catalog with per-level descriptions |
+| Models | `models.rs`: the account's own list with per-model levels; `context.rs`: context windows from the Models API | `models.rs`: catalog with per-level descriptions |
 | Limits | `limits.rs`: OAuth usage + CLI cache | `limits.rs`: `wham/usage` + rollout fallback |
 | Auth | `oauth.rs`: refresh like the CLI | none: Codex refreshes itself |
 | Trust | `trust.rs`: `hasTrustDialogAccepted` in `.claude.json`, written only when the new-chat dialog's box is ticked | `trust.rs`: `[projects.'<path>'] trust_level` when ticked, or a one-run `-c` (a helper, a trusted root) |
@@ -192,15 +192,40 @@ files themselves and the dialog opens on what they say:
   model of the catalog (sorted by `priority`; source `codex`); no effort: that
   model's `default_reasoning_level`. Codex always gets `--model`.
 
-Picking another model moves the effort to that model's default unless the effort
-came from a file or was picked by hand (`draft.follow`). What Codex actually ran
+Picking another Codex model moves the effort to that model's default unless the
+effort came from a file or was picked by hand (`draft.follow`). Picking another
+Claude model moves it to that model's default only where the model does not
+take the level shown; a model that takes no effort shows no effort buttons. What Codex actually ran
 is read from the rollout's `turn_context` (`modelSeen`). The core normalizes and
 supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
 `luna_session_list` say the same thing.
 
 ## Models
 
-- **Claude Code:** context windows from the Models API (`claude/models.rs`); a
+- **Claude Code:** the models the account may pick (`claude/models.rs`),
+  never another account's (plan and organization decide the list): the
+  account's `cache/model-catalog/*-cc.json` while its `staleAt` has not passed
+  → what the CLI answered to the SDK's `initialize` control request, asked on
+  the account in the background (`claude -p --input-format stream-json
+  --output-format stream-json --verbose --strict-mcp-config`, one
+  `control_request` line, stopped once it has answered: no prompt, no turn)
+  and kept per account in `claude-models.json` in the data folder for six
+  hours → the four aliases. A stale catalog or answer is returned at once and
+  asked again behind; an answer newer than the catalog wins over it; a
+  signed-out answer (`tokenSource: none`) is used but not kept. Each format is
+  read strictly: a surprise skips that source, logged once per account.
+  `models_known` never runs the CLI (spawn checks, `luna_session_list`,
+  `claude_defaults`); `models_for` (the `claude_models` command) may.
+  What `--model` gets (`slug`): a family's main model by its alias, so the
+  chat follows the family to its next version as the CLI does; any other
+  model by its full id. A catalog model is its family's main model when it is
+  in the `main` section and the alias its `short_name` spells is one
+  `provider_alias_targets.<alias>.default` points at it; in an `initialize`
+  answer, when its `value` is an alias. The dialog keeps a family by its label
+  (`Opus`) and a model by its id (`claude-opus-4-7`), `More…` holding the
+  latter. Each model's levels are its own, plus `ultracode`, which Claude Code
+  runs at any level; the aliases offer every level.
+- **Claude Code context windows** from the Models API (`claude/context.rs`); a
   background thread reads the accounts root from Rust settings.
 - **Codex:** the catalog (`codex/models.rs`), sorted by priority, with
   per-level descriptions (`effort_hints`): the account's `models_cache.json` →

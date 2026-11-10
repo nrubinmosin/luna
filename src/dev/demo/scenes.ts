@@ -28,6 +28,8 @@ import { useShortcuts } from '../../features/shortcuts/ShortcutsDialog';
 import {
   FOLDERS,
   ACCOUNTS,
+  DEFAULTS,
+  DEFAULTS_MORE,
   filled,
   parked,
   BACKGROUND,
@@ -44,8 +46,8 @@ import { demoState } from './ipc';
 type SettingsScene = 'settings' | `settings-${Exclude<SettingsPage, 'general'>}`;
 const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general' ? 'settings' : `settings-${p}`));
 
-/** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
- *  account), `?demo=settings` / `settings-dark` and one per page (`settings-chats`, …), `?demo=accounts`,
+/** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=newchat-more` (the same on an
+ *  older Claude model with no effort levels), `?demo=codex` (the same on a Codex account), `?demo=settings` / `settings-dark` and one per page (`settings-chats`, …), `?demo=accounts`,
  *  `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
  *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
  *  `?demo=library`, `?demo=library-system` / `library-system-dark` (its System skills, an override compared
@@ -61,6 +63,7 @@ export type Scene =
   | 'dark'
   | 'peek'
   | 'newchat'
+  | 'newchat-more'
   | 'codex'
   | SettingsScene
   | `${SettingsScene}-dark`
@@ -93,6 +96,7 @@ export const SCENES: Scene[] = [
   'dark',
   'peek',
   'newchat',
+  'newchat-more',
   'codex',
   ...SETTINGS_SCENES.flatMap(s => [s, `${s}-dark` as const]),
   'accounts',
@@ -165,7 +169,9 @@ export function seedDemo(scene: Scene) {
   const settings = SETTINGS_SCENES.findIndex(s => s === scene || `${s}-dark` === scene);
   if (settings >= 0) useSettings.getState().setOpen(true, SETTINGS_PAGES[settings]);
   if (scene === 'codex') useNewChat.setState({ lastAccount: { provider: 'codex', name: 'personal' } });
-  if (scene === 'newchat' || scene === 'codex') useNewChat.getState().openDialog('C:\\src\\luna');
+  demoState.claudeDefaults = scene === 'newchat-more' ? DEFAULTS_MORE : DEFAULTS;
+  if (scene === 'newchat' || scene === 'newchat-more' || scene === 'codex')
+    useNewChat.getState().openDialog('C:\\src\\luna');
   if (scene === 'accounts' || scene === 'recommended' || scene === 'editor') useAccountsWindow.getState().setOpen(true);
   if (scene === 'worktrees') useWorktrees.getState().setOpen(true);
   if (scene === 'checks' || scene === 'checks-dark') {

@@ -4,7 +4,7 @@ import type { AccountsRootInfo } from '../../ipc/accounts';
 import type { AtStakeDto, BackgroundHelperDto, HelperTranscriptDto } from '../../ipc/agents';
 import type { CliStatusDto, CliVersionsDto } from '../../ipc/cli';
 import type { CoreStateDto } from '../../ipc/coreProcess';
-import type { ClaudeDefaultsDto, CodexDefaultsDto, CodexModelDto } from '../../ipc/defaults';
+import type { ClaudeDefaultsDto, ClaudeModelDto, CodexDefaultsDto, CodexModelDto } from '../../ipc/defaults';
 import type { FileDiffDto, LibraryOverviewDto, PlaceDto, SystemCompareDto } from '../../ipc/library';
 import type { PowerStateDto } from '../../ipc/power';
 import type { OrphanSessionDto } from '../../ipc/sessions';
@@ -349,6 +349,37 @@ export const DEFAULTS: ClaudeDefaultsDto = {
   model: { value: 'opus', source: 'account' },
   effort: { value: 'xhigh', source: 'account' },
   permissionMode: { value: 'bypassPermissions', source: 'project' }
+};
+
+// The account's own Claude model list (claude/models.rs): its four families'
+// main models by alias, older versions by id under "More…", one of them with
+// no effort levels at all.
+const claudeModel = (
+  slug: string,
+  displayName: string,
+  defaultEffort: string | null,
+  more = false
+): ClaudeModelDto => ({
+  slug,
+  modelId: null,
+  displayName,
+  defaultEffort,
+  efforts: defaultEffort ? ['low', 'medium', 'high', 'xhigh', 'max'] : [],
+  effortHints: defaultEffort ? { [defaultEffort]: 'Recommended' } : {},
+  more
+});
+export const CLAUDE_MODELS: ClaudeModelDto[] = [
+  claudeModel('opus', 'Opus 5.5', 'medium'),
+  claudeModel('fable', 'Fable 5.2', 'medium'),
+  claudeModel('sonnet', 'Sonnet 5.5', 'medium'),
+  claudeModel('haiku', 'Haiku 5.5', 'medium'),
+  claudeModel('claude-opus-4-7', 'Opus 4.7', 'xhigh', true),
+  claudeModel('claude-haiku-4-5-20251001', 'Haiku 4.5', null, true)
+];
+/** The `newchat-more` scene's: a model from under "More…" with no effort. */
+export const DEFAULTS_MORE: ClaudeDefaultsDto = {
+  ...DEFAULTS,
+  model: { value: 'claude-haiku-4-5-20251001', source: 'account' }
 };
 
 const LEVELS: Record<string, string> = {

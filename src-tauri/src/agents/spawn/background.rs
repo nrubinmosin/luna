@@ -13,10 +13,11 @@ use crate::provider::Provider;
 /// to say where it made it.
 const WORKTREE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// Claude Code's model aliases, as the new-chat dialog lists them.
-pub const CLAUDE_MODELS: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
-
+/// The levels a Claude model the account's list does not know may be asked
+/// at. `ultracode` is Claude Code's standing orchestration, which it runs at
+/// any level, so every model that takes effort takes it too.
 const CLAUDE_EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultracode"];
+const ULTRACODE: &str = "ultracode";
 
 pub(in crate::agents) const CLAUDE_MODES: [&str; 4] = ["default", "acceptEdits", "plan", "bypassPermissions"];
 
@@ -36,20 +37,40 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 return Err("approval and sandbox are Codex settings; Claude takes permissionMode".into());
             }
             let d = crate::claude::defaults::flags(account_path, folder);
+            // The account's own list (claude/models.rs), or the four aliases
+            // where Luna knows none yet.
+            let models = crate::claude::models::models_known(account_path);
+            let listed = asked(&params.model).and_then(|m| {
+                models.iter().find(|x| x.slug.eq_ignore_ascii_case(m) || x.model_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(m)))
+            });
             let model = match asked(&params.model) {
-                Some(m) if CLAUDE_MODELS.iter().any(|a| m.to_lowercase().contains(a)) => Some(m.to_string()),
+                Some(m) if listed.is_some() => Some(m.to_string()),
+                // A spelling the list does not carry that names a family
+                // plainly (`opusplan`, `claude-opus-5[1m]`): the CLI's to read.
+                Some(m) if crate::claude::models::ALIASES.iter().any(|a| m.to_lowercase().contains(a)) => Some(m.to_string()),
                 Some(m) => {
+                    let all: Vec<&str> = models.iter().map(|x| x.slug.as_str()).collect();
                     return Err(format!(
-                        "unknown Claude model \"{m}\"; use {} or a full id such as claude-opus-5",
-                        CLAUDE_MODELS.join(", ")
-                    ))
+                        "unknown Claude model \"{m}\"; this account lists {}, or a full id such as claude-opus-5",
+                        all.join(", ")
+                    ));
                 }
                 None => d["model"].as_str().map(str::to_owned),
             };
-            let effort = match asked(&params.effort) {
-                Some(e) if CLAUDE_EFFORTS.contains(&e) => e.to_string(),
-                Some(e) => return Err(format!("unknown Claude effort \"{e}\"; use {}", CLAUDE_EFFORTS.join(", "))),
-                None => d["effort"].as_str().unwrap_or("high").to_string(),
+            // As in the dialog: a model asked for brings its own levels, and
+            // its own default level where it does not take the account's.
+            let efforts: Vec<&str> = match listed {
+                Some(l) if !l.efforts.is_empty() => l.efforts.iter().map(String::as_str).chain([ULTRACODE]).collect(),
+                _ => CLAUDE_EFFORTS.to_vec(),
+            };
+            let stock = d["effort"].as_str().unwrap_or("high");
+            let effort = match (asked(&params.effort), listed) {
+                (Some(_), Some(l)) if l.efforts.is_empty() => return Err(format!("{} takes no effort level; leave effort out", l.slug)),
+                (Some(e), _) if efforts.contains(&e) => e.to_string(),
+                (Some(e), Some(l)) => return Err(format!("{} takes effort {}, not \"{e}\"", l.slug, efforts.join(", "))),
+                (Some(e), None) => return Err(format!("unknown Claude effort \"{e}\"; use {}", efforts.join(", "))),
+                (None, Some(l)) if !efforts.contains(&stock) && l.default_effort.is_some() => l.default_effort.clone().unwrap_or_default(),
+                (None, _) => stock.to_string(),
             };
             let mode = match asked(&params.permission_mode) {
                 Some(p) if CLAUDE_MODES.contains(&p) => p.to_string(),

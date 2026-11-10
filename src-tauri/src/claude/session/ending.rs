@@ -14,7 +14,7 @@ pub(super) struct ContextRead {
 // carries cumulative input-side token usage. Returns raw tokens; the fraction
 // is derived from it.
 fn context_in(text: &str) -> Option<ContextRead> {
-    usage_in(text).map(|(tokens, model)| ContextRead { tokens, window: crate::claude::models::context_window(&model) })
+    usage_in(text).map(|(tokens, model)| ContextRead { tokens, window: crate::claude::context::context_window(&model) })
 }
 
 /// See `context_in`: the tokens, and the model whose window they fill.

@@ -46,6 +46,7 @@
     "allow-cli-mark-bad",
     "allow-cli-canary-dismiss",
     "allow-claude-defaults",
+    "allow-claude-models",
     "allow-account-limits",
     "allow-claude-folder-trusted",
     "allow-chat-folder-check",

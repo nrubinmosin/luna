@@ -591,7 +591,11 @@ export function NewChatDialog() {
           {provider === 'codex' ? (
             <codex.Fields draft={codexDraft} origin={originOf(codexDraft, codex.describe)} accountPath={accountPath} />
           ) : (
-            <claude.Fields draft={claudeDraft} origin={originOf(claudeDraft, claude.describe)} />
+            <claude.Fields
+              draft={claudeDraft}
+              origin={originOf(claudeDraft, claude.describe)}
+              accountPath={accountPath}
+            />
           )}
         </div>
         {/* Out of the body, which scrolls on a short screen: Create stays in reach. */}

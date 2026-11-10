@@ -52,7 +52,7 @@ unless changed by hand ([providers](providers.md#defaults)).
 **Claude Code:**
 
 ```
-claude --model <alias> --effort <low|medium|high|xhigh|max|ultracode>
+claude --model <alias|id> --effort <a level of the model's, or ultracode>
        --permission-mode <mode> [--resume <uuid>] [--worktree[=<name>]]
        --settings <data>/hooks/<chat>.json [--mcp-config …] [--add-dir …]
 ```
