@@ -214,7 +214,8 @@ supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
   and kept per account in `claude-models.json` in the data folder for six
   hours → the four aliases. A stale catalog or answer is returned at once and
   asked again behind; an answer newer than the catalog wins over it; a
-  signed-out answer (`tokenSource: none`) is used but not kept. Each format is
+  signed-out answer (`account.tokenSource: none`; signed in, `account` has a
+  `subscriptionType` and no `tokenSource`) is used but not kept. Each format is
   read strictly: a surprise skips that source, logged once per account.
   `models_known` never runs the CLI (spawn checks, `luna_session_list`,
   `claude_defaults`); `models_for` (the `claude_models` command) may.
