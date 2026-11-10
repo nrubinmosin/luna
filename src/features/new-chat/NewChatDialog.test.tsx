@@ -569,3 +569,48 @@ describe('quick chat: the wait guard', () => {
     expect(unasked).toMatchObject({ hooksUnasked: true, guard: true });
   });
 });
+
+describe('quick chat: the model’s effort', () => {
+  const noEffort: ClaudeModelDto = {
+    slug: 'claude-haiku-4-5-20251001',
+    modelId: null,
+    displayName: 'Haiku 4.5',
+    defaultEffort: null,
+    efforts: [],
+    effortHints: {},
+    more: true
+  };
+  const opus47: ClaudeModelDto = {
+    ...noEffort,
+    slug: 'claude-opus-4-7',
+    displayName: 'Opus 4.7',
+    efforts: ['medium', 'xhigh'],
+    defaultEffort: 'xhigh'
+  };
+
+  it('runs an account default model that takes no effort with none, though the settings name a level', async () => {
+    mocked.claudeModels.mockResolvedValue([noEffort, opus47]);
+    mocked.claudeDefaults.mockResolvedValue({
+      model: fromAccount('claude-haiku-4-5-20251001'),
+      effort: fromAccount('high'),
+      permissionMode: null
+    });
+    useNewChat.getState().remember('/repo', { provider: 'claude', name: 'work' });
+    await quickChat();
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ model: 'claude-haiku-4-5-20251001', effort: '' });
+    // The list as known, without running the CLI.
+    expect(mocked.claudeModels).toHaveBeenCalledWith('/accounts/claude/work', false);
+  });
+
+  it('moves a default level the model does not take to the model’s own', async () => {
+    mocked.claudeModels.mockResolvedValue([noEffort, opus47]);
+    mocked.claudeDefaults.mockResolvedValue({
+      model: fromAccount('claude-opus-4-7'),
+      effort: fromAccount('high'),
+      permissionMode: null
+    });
+    useNewChat.getState().remember('/repo', { provider: 'claude', name: 'work' });
+    await quickChat();
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ model: 'claude-opus-4-7', effort: 'xhigh' });
+  });
+});

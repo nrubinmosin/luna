@@ -78,5 +78,7 @@ export interface ClaudeModelDto {
 
 /** The models Claude Code lists for this account (claude/models.rs): its own
  *  catalog, what the CLI said when asked, or the four aliases — never another
- *  account's. Empty only when no account is given. */
-export const claudeModels = (accountPath: string) => call<ClaudeModelDto[]>('claude_models', { accountPath }, []);
+ *  account's. Empty only when no account is given. `ask: false` takes only
+ *  what is known without running the CLI, for a start that cannot wait. */
+export const claudeModels = (accountPath: string, ask = true) =>
+  call<ClaudeModelDto[]>('claude_models', { accountPath, ask }, []);
