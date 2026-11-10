@@ -154,13 +154,17 @@ The window resolves each: take it into the library, put the library's back, or
 skip that destination (`library.skipped`). `library_put_back` puts the
 library's back at a list of destinations under one lock and one pass after:
 the window's "Put all back" (every `gone`) and "Sync all" (every `gone`,
-`changed` and `taken`). Without `replace` it writes only where nothing is
-there under the lock, so a copy made again since the window looked is not
-overwritten unasked; "Sync all" replaces only after its confirmation counted
-the changed ones. It writes under the destination as the pass spells it now
+`changed` and `taken`). It writes over what is there only at the
+destinations in `replace`, the `changed` and `taken` ones "Sync all"'s
+confirmation counted; everywhere else only where nothing is there under the
+lock, so a deleted copy made again since the window looked is not overwritten
+unasked, even in a batch that replaces others. It writes under the destination as the pass spells it now
 (the ledger's key), refuses a skipped destination and goes on past one that
 will not settle, returning those in the overview's `unsettled`. The
-losing side goes to `<data>/library-backups/` (swept after 30 days). A copy no longer wanted is
+losing side goes to `<data>/library-backups/` (swept after 30 days), each
+backup in a folder of its own: `backup_slot` makes it exclusively, with a
+count after a name taken, so two accounts' `skills/review` backed up in one
+millisecond do not share one. A copy no longer wanted is
 deleted only while it still hashes to the ledger.
 
 A copy no longer wanted that changed there leaves `written` for the ledger's
@@ -207,6 +211,14 @@ The window re-reads the overview (no writes) on every focus.
   `failed`: never written, adopted or removed.
 - Writes go through `<file>.<pid>-<n>.luna-tmp`; links are never followed or
   written over.
+- No link or junction stands between a copy and the folder it lies in
+  (`Unit::top`: the account's folder, or `library-folders/` for a Claude Code
+  folder copy): the pass's writes, `put_back` (a resolve, Put all back, Sync
+  all) and `library_kept`'s take-out look at every folder below that one on
+  the way down (`no_link_between`, on `boundary::walk_down`) and refuse,
+  naming the link; the top folder itself may be the person's link. The pass's
+  removal of a copy no longer wanted, still exactly what Luna wrote, is not
+  checked this way.
 - `system/` is read only for what Luna serves (`library/system.rs`): no pass
   lays anything of it out, and a skill named `session-handoff` under
   `skills/` is not the handoff's override.

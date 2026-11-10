@@ -20,6 +20,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   with its differences, until you **Take out** (backed up for 30 days) or
   **Keep** it as your own; **Sync all** takes every such copy out too.
 
+### Fixed
+
+- Skills & instructions: two copies of one name backed up in the same
+  millisecond (Sync all over several accounts) no longer share a backup
+  folder, the second overwriting the first. A link or junction in an
+  account's folder on the way to a copy (its `skills` folder, say) is refused
+  rather than followed when Luna writes, replaces or takes out a copy there.
+
 ## [0.12.0] - 2026-11-10
 
 Auto-handoff's instructions are now a skill Luna serves only to the chat that

@@ -44,7 +44,8 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
   const [deleting, setDeleting] = useState<LibraryEntry | null>(null);
   const [newName, setNewName] = useState('');
   const [newInstructions, setNewInstructions] = useState('');
-  const [syncing, setSyncing] = useState<{ dests: string[]; replaced: number; kept: string[] } | null>(null);
+  // What Sync all's confirmation counted: only these are replaced or taken out.
+  const [syncing, setSyncing] = useState<{ gone: string[]; replace: string[]; kept: string[] } | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -77,22 +78,23 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
   // The copies no longer meant for a place but changed there are taken out
   // first, which no pass does unasked, then the library's put back; what
   // either could not settle is shown together.
-  const sync = (dests: string[], replace: boolean, out: string[]) => {
+  const sync = (back: string[], replace: string[], out: string[]) => {
     const run = async () => {
       const taken = out.length > 0 ? await libraryKept(out, true) : null;
-      if (taken && dests.length === 0) return taken;
-      const put = await libraryPutBack(dests, replace);
+      if (taken && back.length + replace.length === 0) return taken;
+      // A deleted place goes back only where nothing is there still, even in
+      // a batch that replaces: one remade meanwhile was not counted.
+      const put = await libraryPutBack([...back, ...replace], replace);
       const unsettled = [...(taken?.unsettled ?? []), ...(put.unsettled ?? [])];
       return unsettled.length > 0 ? { ...put, unsettled } : put;
     };
     void act(run());
   };
   const syncAll = () => {
-    const replaced = differ.filter(p => p.status !== 'gone').length;
-    const dests = differ.map(p => p.dest);
+    const replace = differ.filter(p => p.status !== 'gone').map(p => p.dest);
     const out = kept.map(k => k.dest);
-    if (replaced > 0 || out.length > 0) setSyncing({ dests, replaced, kept: out });
-    else sync(dests, false, []);
+    if (replace.length > 0 || out.length > 0) setSyncing({ gone, replace, kept: out });
+    else sync(gone, [], []);
   };
   const createSkill = () => {
     const name = newName.trim();
@@ -236,7 +238,7 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
                         className="slim"
                         disabled={busy}
                         title="The library’s copy goes back wherever one was deleted; changed copies wait here"
-                        onClick={() => void act(libraryPutBack(gone, false))}
+                        onClick={() => void act(libraryPutBack(gone, []))}
                       >
                         Put all back ({gone.length})
                       </button>
@@ -448,14 +450,14 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
           body={
             <>
               Puts the library’s copy everywhere it is meant to go.{' '}
-              <b>{syncAllCounts(syncing.replaced, syncing.kept.length)}</b>; what is there now is kept in Luna’s backups
-              for 30 days. Places left out stay as they are.
+              <b>{syncAllCounts(syncing.replace.length, syncing.kept.length)}</b>; what is there now is kept in Luna’s
+              backups for 30 days. Places left out stay as they are.
             </>
           }
           confirmLabel="Sync all"
           onCancel={() => setSyncing(null)}
           onConfirm={() => {
-            sync(syncing.dests, true, syncing.kept);
+            sync(syncing.gone, syncing.replace, syncing.kept);
             setSyncing(null);
           }}
         />

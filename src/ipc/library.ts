@@ -138,9 +138,9 @@ export const librarySkip = (dest: string, on: boolean) => call<LibraryOverviewDt
 /** `take`: the copy there becomes the library's; otherwise the library's goes back there. */
 export const libraryResolve = (dest: string, take: boolean) =>
   call<LibraryOverviewDto>('library_resolve', { dest, take });
-/** The library's copy back at each of `dests`, then a pass; places left out stay out. `replace`: over what is
- *  there, else only where nothing is. */
-export const libraryPutBack = (dests: string[], replace: boolean) =>
+/** The library's copy back at each of `dests`, then a pass; places left out stay out. Over what is there only at
+ *  the places in `replace`, elsewhere only where nothing is. */
+export const libraryPutBack = (dests: string[], replace: string[]) =>
   call<LibraryOverviewDto>('library_put_back', { dests, replace });
 /** Settles copies left in place as no longer wanted: `takeOut` backs each up and removes it, otherwise Luna
  *  forgets it and it stays as yours. */
