@@ -1,5 +1,12 @@
 import { useState } from 'react';
-import { libraryResolve, librarySkip, type LibraryOverviewDto, type PlaceDto } from '../../ipc/library';
+import {
+  libraryKept,
+  libraryResolve,
+  librarySkip,
+  type KeptCopyDto,
+  type LibraryOverviewDto,
+  type PlaceDto
+} from '../../ipc/library';
 import { TargetLabel } from './cells';
 import { sayStatus, what } from './places';
 import { RED } from './presentation';
@@ -72,6 +79,45 @@ export function LookRow({
         )}
       </div>
       {showDiff && <DiffView dest={place.dest} />}
+    </div>
+  );
+}
+
+/** A copy of Luna's no longer meant for its place but changed there, so left in it: taken out, or kept as the
+ *  user's own. */
+export function KeptRow({ copy, act }: { copy: KeptCopyDto; act: (p: Promise<LibraryOverviewDto>) => void }) {
+  const [showDiff, setShowDiff] = useState(false);
+  return (
+    <div style={{ borderTop: '1px solid var(--line)', padding: '6px 0' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        {copy.target ? (
+          <TargetLabel target={copy.target} />
+        ) : (
+          <span style={{ fontSize: 'var(--fs-2)', overflowWrap: 'anywhere' }}>{copy.dest}</span>
+        )}
+        <b>{copy.skill ?? 'Instructions'}</b>
+        <span style={{ flex: 1, minWidth: 160, fontSize: 'var(--fs-2)', color: 'var(--dim)' }} title={copy.dest}>
+          no longer meant for it, changed there
+        </span>
+        <button className="slim" onClick={() => setShowDiff(!showDiff)}>
+          {showDiff ? 'Hide differences' : 'Differences'}
+        </button>
+        <button
+          className="slim"
+          title="Removed from there; what is there now is backed up first"
+          onClick={() => act(libraryKept([copy.dest], true))}
+        >
+          Take out
+        </button>
+        <button
+          className="slim"
+          title="Luna forgets it was its copy; the file stays as yours"
+          onClick={() => act(libraryKept([copy.dest], false))}
+        >
+          Keep
+        </button>
+      </div>
+      {showDiff && <DiffView dest={copy.dest} />}
     </div>
   );
 }

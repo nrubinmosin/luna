@@ -166,9 +166,10 @@ pub(super) fn blob(dirs: &Dirs, h: &str) -> Option<Vec<u8>> {
     std::fs::read(dirs.blobs().join(h)).ok()
 }
 
-/// Blobs no ledger entry names any more.
+/// Blobs no ledger entry names any more, a kept copy's included: its
+/// differences are shown too.
 pub(super) fn sweep_blobs(dirs: &Dirs, ledger: &Ledger) {
-    let wanted: BTreeSet<&String> = ledger.written.values().flat_map(|h| h.values()).collect();
+    let wanted: BTreeSet<&String> = ledger.written.values().chain(ledger.kept.values()).flat_map(|h| h.values()).collect();
     if let Ok(entries) = std::fs::read_dir(dirs.blobs()) {
         for entry in entries.flatten() {
             if !wanted.contains(&entry.file_name().to_string_lossy().into_owned()) {
@@ -184,7 +185,7 @@ pub(super) fn sweep_blobs(dirs: &Dirs, ledger: &Ledger) {
 /// with all in it, by its own name, and the whole path beside it in `from.txt`,
 /// where no file of a skill's own can be.
 pub(super) fn back_up(dirs: &Dirs, from: &Path, files: &Files) -> Result<PathBuf, String> {
-    let dir = backup_slot(dirs, from);
+    let dir = backup_slot(dirs, from)?;
     let saved = dir.join(from.file_name().unwrap_or_default());
     for (rel, bytes) in files {
         let path = if rel.is_empty() { saved.clone() } else { join_rel(&saved, rel) };
@@ -194,13 +195,77 @@ pub(super) fn back_up(dirs: &Dirs, from: &Path, files: &Files) -> Result<PathBuf
     Ok(dir)
 }
 
-/// The folder in the backups for what is replaced at `from`, named for the
-/// moment and the last two parts of its path (`back_up`).
-pub(super) fn backup_slot(dirs: &Dirs, from: &Path) -> PathBuf {
+/// A new folder in the backups for what is replaced at `from`, named for the
+/// moment and the last two parts of its path (`back_up`), made here and now:
+/// two accounts' `skills/review` backed up in one millisecond would otherwise
+/// share one, the second written over the first. A name taken gets a count.
+pub(super) fn backup_slot(dirs: &Dirs, from: &Path) -> Result<PathBuf, String> {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
     let tail: Vec<String> = from.components().rev().take(2).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
     let tail: String = tail.into_iter().rev().collect::<Vec<_>>().join("-").chars().filter(|c| !matches!(c, ':' | '\\' | '/')).collect();
-    dirs.backups().join(format!("{stamp}-{tail}"))
+    let backups = dirs.backups();
+    std::fs::create_dir_all(&backups).map_err(|e| format!("{}: {e}", backups.display()))?;
+    for n in 1.. {
+        let name = if n == 1 { format!("{stamp}-{tail}") } else { format!("{stamp}-{tail}-{n}") };
+        let slot = backups.join(name);
+        match std::fs::create_dir(&slot) {
+            Ok(()) => return Ok(slot),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("{}: {e}", slot.display())),
+        }
+    }
+    unreachable!("a count runs out of numbers before names")
+}
+
+/// The folder a copy at `dest` lies in that no link may stand below
+/// (`no_link_between`). First the folders Luna manages copies in, the
+/// deepest holding it: an account folder (one may lie in Luna's data folder),
+/// or Luna's data folder, whose `library-folders/` is Luna's own and so looked
+/// at too. Only where neither holds it, a folder the library lists, for a copy
+/// an earlier Luna laid into it itself (`<folder>/<name>`), listed whether or
+/// not anything goes there now: a listed folder inside an account's or
+/// Luna's data folder would otherwise be a top whose own link goes
+/// unlooked at. None for a path in none of them: such a copy is never taken
+/// out.
+pub(super) fn top_of(dirs: &Dirs, accounts: &[AccountInfo], folders: &[LibraryFolder], dest: &Path) -> Option<PathBuf> {
+    let deepest = |tops: Vec<PathBuf>| tops.into_iter().filter(|t| within(dest, t)).max_by_key(|t| t.components().count());
+    let managed = accounts.iter().map(|a| PathBuf::from(&a.path)).chain([dirs.data.clone()]).collect();
+    deepest(managed).or_else(|| deepest(folders.iter().map(|f| PathBuf::from(&f.path)).collect()))
+}
+
+/// Refuses `dest` when a folder on the way down to it from `top` — the account
+/// folder it lies in, or Luna's data folder for a copy waiting for a listed
+/// folder's sessions — is a link or junction, or no folder: a write or a
+/// removal there would land wherever the link leads. `top` itself is the
+/// person's, a link of their choosing if they chose one, so only what lies
+/// below it is looked at; `dest` itself is `read_at`'s to refuse. A folder not
+/// there yet ends the look: nothing below it is either.
+pub(super) fn no_link_between(top: &Path, dest: &Path) -> Result<(), String> {
+    if !within(dest, top) {
+        return Err(format!("{} lies outside {}", dest.display(), top.display()));
+    }
+    let below: Vec<String> = dest
+        .parent()
+        .map(|p| p.components().skip(top.components().count()).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    let below: Vec<&str> = below.iter().map(String::as_str).collect();
+    let mut gone = false;
+    crate::boundary::walk_down(top, &below, |p, depth| {
+        if depth == 0 || gone {
+            return Ok(());
+        }
+        match std::fs::symlink_metadata(p) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => gone = true,
+            Err(e) => return Err(format!("{}: {e}", p.display())),
+            Ok(m) if crate::boundary::is_link(&m) => {
+                return Err(format!("{} is a link or junction — Luna writes nothing through it", p.display()))
+            }
+            Ok(m) if !m.is_dir() => return Err(format!("{} is not a folder", p.display())),
+            Ok(_) => {}
+        }
+        Ok(())
+    })
+    .map(|_| ())
 }
 
 pub(super) fn sweep_backups(dirs: &Dirs) {
@@ -272,6 +337,16 @@ mod tests {
         let saved = back_up(&f.dirs, &skill, &files).unwrap();
         assert_eq!(std::fs::read(saved.join("notes").join("from.txt")).unwrap(), b"its own");
         assert_eq!(std::fs::read(saved.join("from.txt")).unwrap(), skill.to_string_lossy().as_bytes());
+
+        // Two accounts' copies of one name, backed up in a row (one
+        // millisecond, as a batch makes them): each keeps its own bytes.
+        let (a, b) = (f.account(0).join("skills").join("review"), f.account(1).join("skills").join("review"));
+        let one = back_up(&f.dirs, &a, &Files::from([("SKILL.md".to_string(), b"first".to_vec())])).unwrap();
+        let two = back_up(&f.dirs, &b, &Files::from([("SKILL.md".to_string(), b"second".to_vec())])).unwrap();
+        assert_ne!(one, two);
+        assert_eq!(std::fs::read(one.join("review").join("SKILL.md")).unwrap(), b"first");
+        assert_eq!(std::fs::read(two.join("review").join("SKILL.md")).unwrap(), b"second");
+        assert_eq!(std::fs::read(one.join("from.txt")).unwrap(), a.to_string_lossy().as_bytes());
 
         // A blob no entry names goes at the sweep.
         ledger.written.clear();
