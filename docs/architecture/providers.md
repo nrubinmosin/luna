@@ -224,10 +224,15 @@ supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
   hours → the four aliases. A stale catalog or answer is returned at once and
   asked again behind; an answer newer than the catalog wins over it; a
   signed-out answer (`account.tokenSource: none`; signed in, `account` has a
-  `subscriptionType` and no `tokenSource`) is used but not kept. Each format is
-  read strictly: a surprise skips that source, logged once per account.
-  `models_known` never runs the CLI (spawn checks, `luna_session_list`,
-  `claude_defaults`); `models_for` (the `claude_models` command) may.
+  `subscriptionType` and no `tokenSource`) is used but not kept. An answer is
+  kept with a hash of what those settings said of the restricting keys when
+  it was given, and one given under other restrictions is dropped, current
+  or stale, so a list narrowed or widened since is asked for again. Each
+  format is read strictly: a surprise skips that source, logged once per
+  account. `models_known` never runs the CLI (spawn checks,
+  `luna_session_list`, `claude_defaults`, and `claude_models` with
+  `ask: false`, which every start's defaults read, a quick chat's included);
+  `models_for` (`claude_models`) may.
   What `--model` gets (`slug`): a family's main model by its alias, so the
   chat follows the family to its next version as the CLI does; any other
   model by its full id. A catalog model is its family's main model when it is

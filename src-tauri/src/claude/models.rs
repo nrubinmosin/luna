@@ -370,6 +370,10 @@ struct Remembered {
     /// When the CLI answered, in ms.
     at: u64,
     models: Vec<ClaudeModel>,
+    /// The model restrictions the settings said when it answered
+    /// (`restrictions_in`): an answer given under others is not this one.
+    #[serde(default)]
+    restrictions: String,
 }
 
 /// How long an answer stands before it is asked again, behind.
@@ -397,9 +401,10 @@ fn read_store(file: &Path) -> HashMap<String, Remembered> {
     }
 }
 
-fn remember_in(file: &Path, account_path: &str, models: &[ClaudeModel], at: u64) {
+fn remember_in(file: &Path, account_path: &str, models: &[ClaudeModel], at: u64, restrictions: &str) {
     let mut all = read_store(file);
-    all.insert(crate::paths::path_key(account_path), Remembered { at, models: models.to_vec() });
+    let answer = Remembered { at, models: models.to_vec(), restrictions: restrictions.to_owned() };
+    all.insert(crate::paths::path_key(account_path), answer);
     match serde_json::to_vec_pretty(&all) {
         Ok(bytes) => {
             if let Err(e) = crate::secret::write_private(file, &bytes) {
@@ -420,9 +425,9 @@ fn remembered(account_path: &str) -> Option<Remembered> {
     read_store(&store_file()).remove(&crate::paths::path_key(account_path))
 }
 
-fn remember(account_path: &str, models: &[ClaudeModel]) {
+fn remember(account_path: &str, models: &[ClaudeModel], restrictions: &str) {
     let _held = store_lock().lock().unwrap_or_else(|e| e.into_inner());
-    remember_in(&store_file(), account_path, models, crate::throttle::now_ms());
+    remember_in(&store_file(), account_path, models, crate::throttle::now_ms(), restrictions);
 }
 
 // ------------------------------------------------------------- choosing --
@@ -457,25 +462,41 @@ fn choose(catalog: Option<Catalog>, remembered: Option<Remembered>, now: u64) ->
 /// user) are its own and not Luna's to copy.
 const RESTRICTING_KEYS: [&str; 3] = ["availableModels", "deniedModels", "modelPicker"];
 
-/// Whether the account's settings.json or the machine's managed settings say
-/// any of `RESTRICTING_KEYS`: then the catalog is not offered as it is, and
-/// the list is the CLI's own answer, which applies them.
-fn restricted_in(files: &[PathBuf]) -> bool {
-    files.iter().any(|f| {
-        std::fs::read_to_string(f)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .is_some_and(|v| RESTRICTING_KEYS.iter().any(|k| !v[*k].is_null()))
-    })
+/// What the account's settings.json and the machine's managed settings, the
+/// layers the ask reads (it runs in an empty folder: no project's), say of
+/// `RESTRICTING_KEYS`, as a hash; empty where none says any. Not empty: the
+/// catalog is not offered as it is, and the list is the CLI's own answer,
+/// which applies them, and only one given under the same restrictions.
+fn restrictions_in(files: &[PathBuf]) -> String {
+    use sha2::Digest;
+    let said: Vec<serde_json::Value> = files
+        .iter()
+        .map(|f| std::fs::read_to_string(f).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).unwrap_or_default())
+        .flat_map(|v| RESTRICTING_KEYS.map(|k| v[k].clone()))
+        .collect();
+    if said.iter().all(serde_json::Value::is_null) {
+        return String::new();
+    }
+    let hash = sha2::Sha256::digest(serde_json::Value::Array(said).to_string().as_bytes());
+    hash.iter().take(16).map(|b| format!("{b:02x}")).collect()
 }
 
-fn restricted(account_path: &str) -> bool {
-    restricted_in(&[Path::new(account_path).join("settings.json"), crate::claude::defaults::managed_dir().join("managed-settings.json")])
+fn restrictions(account_path: &str) -> String {
+    restrictions_in(&[Path::new(account_path).join("settings.json"), crate::claude::defaults::managed_dir().join("managed-settings.json")])
+}
+
+/// `choose`, with the catalog left out under restrictions and an answer given
+/// under other restrictions than today's dropped, current or not: it would
+/// list what the account may no longer pick, or leave out what it now may.
+fn choose_under(catalog: Option<Catalog>, remembered: Option<Remembered>, restrictions: &str, now: u64) -> Known {
+    let catalog = catalog.filter(|_| restrictions.is_empty());
+    choose(catalog, remembered.filter(|r| r.restrictions == restrictions), now)
 }
 
 fn known(account_path: &str) -> Known {
-    let catalog = if restricted(account_path) { None } else { read_catalog(account_path) };
-    choose(catalog, remembered(account_path), crate::throttle::now_ms())
+    let restrictions = restrictions(account_path);
+    let catalog = if restrictions.is_empty() { read_catalog(account_path) } else { None };
+    choose_under(catalog, remembered(account_path), &restrictions, crate::throttle::now_ms())
 }
 
 /// The list as far as it can be had without running the CLI, the aliases
@@ -510,13 +531,15 @@ fn ask(account_path: &str) -> Option<Vec<ClaudeModel>> {
         a.0.insert(key.clone());
         a.1.insert(key.clone(), Instant::now());
     }
+    // As the settings are when it starts: an answer is kept under them.
+    let restrictions = restrictions(account_path);
     let found = from_cli(account_path);
     asking().lock().unwrap_or_else(|e| e.into_inner()).0.remove(&key);
     let (models, signed_in) = found?;
     // Signed out, the CLI lists what it would offer anyone, not this
     // account: good for this once, not to keep.
     if signed_in {
-        remember(account_path, &models);
+        remember(account_path, &models, &restrictions);
     }
     Some(models)
 }
@@ -543,19 +566,24 @@ fn surprise(account_path: &str, source: &str, what: &str) {
 }
 
 /// Async and off to a blocking thread: asking the CLI takes seconds, and a
-/// sync command would run it on the window's own thread.
+/// sync command would run it on the window's own thread. `ask: false` lists
+/// only what is known without running the CLI (`models_known`), for a start
+/// that cannot wait on it, a quick chat's.
 ///
 /// A miss runs Claude Code with `CLAUDE_CONFIG_DIR` set to the account, which
 /// reads its settings and credentials and may renew its token there: the
 /// page's path is held to an account folder of Luna's (boundary.rs). An empty
 /// one, no account chosen yet, lists nothing and runs nothing.
 #[tauri::command]
-pub async fn claude_models(account_path: OrEmpty<AccountPath>) -> Vec<ClaudeModel> {
+pub async fn claude_models(account_path: OrEmpty<AccountPath>, ask: Option<bool>) -> Vec<ClaudeModel> {
     let account_path = account_path.into_string();
     if account_path.is_empty() {
         return vec![];
     }
-    tauri::async_runtime::spawn_blocking(move || models_for(&account_path)).await.unwrap_or_default()
+    let ask = ask.unwrap_or(true);
+    tauri::async_runtime::spawn_blocking(move || if ask { models_for(&account_path) } else { models_known(&account_path) })
+        .await
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -696,7 +724,7 @@ mod tests {
     fn a_stale_catalog_still_answers_and_a_newer_answer_wins_over_it() {
         let stale_at = catalog().stale_at;
         let fetched = catalog().fetched_at;
-        let answer = |at| Remembered { at, models: aliases() };
+        let answer = |at| Remembered { at, models: aliases(), restrictions: String::new() };
         assert!(matches!(choose(Some(catalog()), None, stale_at - 1), Known::Current(m) if m[0].model_id.is_some()));
         assert!(matches!(choose(Some(catalog()), None, stale_at), Known::Stale(m) if m[0].model_id.is_some()));
         // Asked after the catalog was written, and lately: the answer.
@@ -730,11 +758,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let file = root.join("claude-models.json");
-        remember_in(&file, "/a/one", &aliases()[..1], 5);
-        remember_in(&file, "/a/two", &aliases(), 6);
+        remember_in(&file, "/a/one", &aliases()[..1], 5, "");
+        remember_in(&file, "/a/two", &aliases(), 6, "abc");
         let all = read_store(&file);
         assert_eq!(all[&crate::paths::path_key("/a/one")].models.len(), 1);
         assert_eq!(all[&crate::paths::path_key("/a/two")].at, 6);
+        assert_eq!(all[&crate::paths::path_key("/a/two")].restrictions, "abc");
         // A file past any real store's size is not taken, private or not.
         let mut big = serde_json::to_vec(&all).unwrap();
         big.resize(STORE_MAX as usize + 10, b' ');
@@ -761,17 +790,40 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let (user, managed) = (root.join("settings.json"), root.join("managed-settings.json"));
         let files = [user.clone(), managed.clone()];
-        assert!(!restricted_in(&files), "no files: nothing restricted");
+        assert_eq!(restrictions_in(&files), "", "no files: nothing restricted");
         std::fs::write(&user, r#"{"model":"opus","effortLevel":"high"}"#).unwrap();
-        assert!(!restricted_in(&files));
+        assert_eq!(restrictions_in(&files), "");
+        let mut seen = HashSet::new();
         for key in RESTRICTING_KEYS {
             std::fs::write(&user, format!(r#"{{"{key}":["sonnet"]}}"#)).unwrap();
-            assert!(restricted_in(&files), "{key}");
+            let r = restrictions_in(&files);
+            assert!(!r.is_empty(), "{key}");
+            assert!(seen.insert(r), "{key} says something of its own");
         }
+        std::fs::write(&user, r#"{"availableModels":["sonnet","haiku"]}"#).unwrap();
+        assert!(seen.insert(restrictions_in(&files)), "another list is another restriction");
         std::fs::write(&user, "{}").unwrap();
         std::fs::write(&managed, r#"{"availableModels":["haiku"],"availableModelsMatch":"exact"}"#).unwrap();
-        assert!(restricted_in(&files), "the machine's managed settings count too");
+        assert!(seen.insert(restrictions_in(&files)), "the machine's managed settings count too");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_answer_given_under_other_restrictions_is_dropped_current_or_not() {
+        let now = 10 * REMEMBERED_FOR_MS;
+        let answer = |at, restrictions: &str| Remembered { at, models: aliases(), restrictions: restrictions.to_owned() };
+        // Kept under none, then `availableModels` is added: not shown, so asked for.
+        assert_eq!(choose_under(None, Some(answer(now - 10, "")), "r1", now), Known::Nothing);
+        // Nor as a stale fallback, when a refresh brings nothing.
+        assert_eq!(choose_under(None, Some(answer(now - 2 * REMEMBERED_FOR_MS, "")), "r1", now), Known::Nothing);
+        // Under the same ones it stands, current or stale.
+        assert_eq!(choose_under(None, Some(answer(now - 10, "r1")), "r1", now), Known::Current(aliases()));
+        assert_eq!(choose_under(None, Some(answer(now - 2 * REMEMBERED_FOR_MS, "r1")), "r1", now), Known::Stale(aliases()));
+        // Restrictions taken away: the catalog again, never the narrowed answer.
+        let fresh = catalog().stale_at - 1;
+        assert!(matches!(choose_under(Some(catalog()), Some(answer(fresh - 10, "r1")), "", fresh), Known::Current(m) if m.len() == 7));
+        // Under restrictions the raw catalog is not offered.
+        assert_eq!(choose_under(Some(catalog()), None, "r1", fresh), Known::Nothing);
     }
 
     #[test]

@@ -69,6 +69,19 @@ export async function settingsDefaults(
     values.perm = perm;
     if (dto.permissionMode.source !== 'stock') from.perm = SOURCE_LABELS[dto.permissionMode.source];
   }
+  // The effort the model takes, by the same rule as the dialog's
+  // (`effortMovedTo`): every start reads its defaults here, a quick chat's
+  // too. From the list as far as it is known, without asking the CLI: a
+  // start does not wait on that.
+  const models = await claudeModels(accountPath, false).catch(() => []);
+  const moved = effortMovedTo(
+    models.find(m => modelLabelOf(m.slug) === values.model),
+    values.effort
+  );
+  if (moved !== null) {
+    values.effort = moved;
+    delete from.effort;
+  }
   return { values, from };
 }
 
