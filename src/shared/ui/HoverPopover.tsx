@@ -73,6 +73,8 @@ export function HoverPopover({
   const timer = useRef<number | undefined>(undefined);
   // Focus given back to the face as the panel closes, which is no ask to open it.
   const returning = useRef(false);
+  // The pointer is over the face or the panel, whatever opened it.
+  const pointerIn = useRef(false);
   const open = mode !== null;
 
   const clearTimer = () => window.clearTimeout(timer.current);
@@ -110,11 +112,13 @@ export function HoverPopover({
   const hoverIn = (e: PointerEvent) => {
     // Touch has no hover: a tap is a click.
     if (e.pointerType === 'touch') return;
+    pointerIn.current = true;
     clearTimer();
     if (!open) timer.current = window.setTimeout(() => setMode(m => m ?? 'hover'), OPEN_DELAY_MS);
   };
   const hoverOut = (e: PointerEvent) => {
     if (e.pointerType === 'touch') return;
+    pointerIn.current = false;
     clearTimer();
     // Focus on the face or in the panel holds it: what focus opened ends
     // with focus leaving, not with the pointer.
@@ -183,11 +187,14 @@ export function HoverPopover({
     };
   }, [open, close]);
 
-  // Focus gone from both face and panel ends what focus opened.
+  // Focus gone from both face and panel ends what focus opened, unless the
+  // pointer is still over one of them: then it goes on as a hover, closing
+  // once the pointer leaves.
   const focusOut = (e: FocusEvent) => {
     const to = e.relatedTarget as Node | null;
     if (to && (anchor.current?.contains(to) || panel.current?.contains(to))) return;
-    setMode(m => (m === 'focus' ? null : m));
+    const hovered = pointerIn.current;
+    setMode(m => (m === 'focus' ? (hovered ? 'hover' : null) : m));
   };
 
   return (

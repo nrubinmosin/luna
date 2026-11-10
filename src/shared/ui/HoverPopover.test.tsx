@@ -137,6 +137,19 @@ describe('HoverPopover, keys and timers', () => {
     expect(screen.getByRole('button', { name: 'Watch' })).toHaveFocus();
   });
 
+  it('goes on as a hover when focus leaves it with the pointer still over it', () => {
+    vi.useFakeTimers();
+    const { face } = mount();
+    hoverOpen(face);
+    fireEvent.pointerOut(face, { relatedTarget: panel() });
+    fireEvent.pointerOver(panel()!, { relatedTarget: face });
+    act(() => screen.getByRole('button', { name: 'Done' }).focus());
+    act(() => screen.getByRole('button', { name: 'elsewhere' }).focus());
+    expect(panel()).not.toBeNull();
+    fireEvent.pointerOut(panel()!, { relatedTarget: document.body });
+    wait(CLOSE_GRACE_MS);
+    expect(panel()).toBeNull();
+  });
   it('is not opened again by a hover that was pending when Escape closed it', () => {
     vi.useFakeTimers();
     const { face } = mount();
