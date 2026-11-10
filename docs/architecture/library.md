@@ -216,7 +216,8 @@ The window re-reads the overview (no writes) on every focus.
   data folder, so a Claude Code folder copy's `library-folders/` is looked at
   too, being Luna's own; a Codex folder copy lies in its account's plugin
   cache, every folder of which is below the account's; a copy an earlier Luna
-laid into a listed folder itself, that folder). The pass's writes and
+laid into a folder the library lists, that folder, whether or not it is
+given anything now; one in a folder no longer listed has none and stays). The pass's writes and
   its removals (a copy no longer wanted, a kept one changed back, both still
   exactly what Luna wrote: equal bytes say the content is Luna's, not the
   place), `put_back` (a resolve, Put all back, Sync all) and `library_kept`'s

@@ -370,7 +370,7 @@ pub fn library_kept(dests: Vec<String>, take_out: bool) -> Result<Overview, Stri
     let accounts = crate::accounts::list_accounts()?;
     let mut ledger = Ledger::load(&dirs);
     let units = units(&dirs, &lib, &accounts, &read_skills(&dirs), &read_instructions(&dirs), &ledger);
-    let unsettled = settle_kept(&dirs, &accounts, &units, &lib.skipped, &mut ledger, &dests, take_out);
+    let unsettled = settle_kept(&dirs, &accounts, &lib.folders, &units, &lib.skipped, &mut ledger, &dests, take_out);
     ledger.save(&dirs)?;
     for line in &unsettled {
         crate::log::warn("library", &format!("settling a copy left in place: {line}"));
@@ -380,9 +380,11 @@ pub fn library_kept(dests: Vec<String>, take_out: bool) -> Result<Overview, Stri
 
 /// Each of `dests` taken out (backed up first) or kept as the user's own, as
 /// far as it goes; what would not, a line each.
+#[allow(clippy::too_many_arguments)]
 fn settle_kept(
     dirs: &Dirs,
     accounts: &[AccountInfo],
+    folders: &[LibraryFolder],
     units: &[Unit],
     skipped: &[String],
     ledger: &mut Ledger,
@@ -399,7 +401,7 @@ fn settle_kept(
             _ if units.iter().any(|u| ident(&u.dest) == id) => Err("the library lays it out there again".to_string()),
             _ if in_library(dirs, Path::new(dest)) => Err("it is in the library itself".to_string()),
             None => Err("Luna keeps no note of it".to_string()),
-            Some(key) if take_out => take_out_kept(dirs, accounts, ledger, &key),
+            Some(key) if take_out => take_out_kept(dirs, accounts, folders, ledger, &key),
             Some(key) => {
                 ledger.kept.remove(&key);
                 crate::log::info("library", &format!("kept {key} as the user's own"));
@@ -416,11 +418,12 @@ fn settle_kept(
 /// A kept copy out of its place, what is there backed up first; refused
 /// where a folder on the way to it is a link (`no_link_between`), from the
 /// account folder it lies in or, for a Claude Code folder copy, Luna's data
-/// folder (`top_of`).
-fn take_out_kept(dirs: &Dirs, accounts: &[AccountInfo], ledger: &mut Ledger, key: &str) -> Result<(), String> {
+/// folder, or the listed folder a copy an earlier Luna laid into it lies in
+/// (`top_of`).
+fn take_out_kept(dirs: &Dirs, accounts: &[AccountInfo], folders: &[LibraryFolder], ledger: &mut Ledger, key: &str) -> Result<(), String> {
     let file = ledger.kept.get(key).is_some_and(is_file);
     let at = Path::new(key);
-    let top = top_of(dirs, accounts, at).ok_or("it lies in no account's folder")?;
+    let top = top_of(dirs, accounts, folders, at).ok_or("it lies in no account's folder nor a listed one")?;
     no_link_between(&top, at)?;
     if let Some(there) = read_at(at, file)? {
         back_up(dirs, at, &there)?;
@@ -884,7 +887,7 @@ mod tests {
 
         let nowhere = f.base.join("elsewhere/skills/review");
         let dests = [spell(&copies[0]), spell(&copies[2]), spell(&nowhere)];
-        let unsettled = settle_kept(&f.dirs, &f.accounts, &units, &lib.skipped, &mut ledger, &dests, true);
+        let unsettled = settle_kept(&f.dirs, &f.accounts, &lib.folders, &units, &lib.skipped, &mut ledger, &dests, true);
         assert_eq!(unsettled.len(), 2, "{unsettled:?}");
         assert!(unsettled[0].ends_with("the library lays it out there again"), "{unsettled:?}");
         assert!(unsettled[1].ends_with("Luna keeps no note of it"), "{unsettled:?}");
@@ -894,12 +897,39 @@ mod tests {
         assert!(backed.contains(&"added there".to_string()), "what was there is backed up: {backed:?}");
         assert!(backed.iter().any(|t| t.contains("v1")), "its SKILL.md too: {backed:?}");
 
-        let unsettled = settle_kept(&f.dirs, &f.accounts, &units, &lib.skipped, &mut ledger, &[spell(&copies[1])], false);
+        let unsettled = settle_kept(&f.dirs, &f.accounts, &lib.folders, &units, &lib.skipped, &mut ledger, &[spell(&copies[1])], false);
         assert!(unsettled.is_empty(), "{unsettled:?}");
         assert!(copies[1].join("extra.md").is_file(), "kept as the user's own");
         assert!(ledger.kept.is_empty());
         assert!(f.run(&lib, &mut ledger, true).kept.is_empty(), "and no longer said");
         assert!(copies[1].join("extra.md").is_file());
+    }
+
+    /// A changed copy an earlier Luna laid into a listed folder itself, kept
+    /// as no longer wanted, can be taken out: the listed folder is its top.
+    #[test]
+    fn a_kept_old_copy_in_a_listed_folder_can_be_taken_out() {
+        let f = Fixture::new("kept-old");
+        f.skill("review", "v1");
+        let repo = f.base.join("repo");
+        let old = repo.join("review");
+        let files = read_dir_files(&f.dirs.skills().join("review")).unwrap();
+        write_at(&old, false, &files).unwrap();
+        std::fs::write(old.join("extra.md"), "added there").unwrap();
+        let mut ledger = Ledger::default();
+        ledger.written.insert(old.to_string_lossy().into_owned(), hashes(&files));
+        let folder = LibraryFolder { path: repo.to_string_lossy().into_owned(), ..Default::default() };
+        let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(p.kept, vec![old.to_string_lossy().into_owned()]);
+
+        let units = units(&f.dirs, &lib, &f.accounts, &read_skills(&f.dirs), &read_instructions(&f.dirs), &ledger);
+        let dests = [old.to_string_lossy().into_owned()];
+        let unsettled = settle_kept(&f.dirs, &f.accounts, &lib.folders, &units, &[], &mut ledger, &dests, true);
+        assert!(unsettled.is_empty(), "{unsettled:?}");
+        assert!(!old.exists());
+        let backed: Vec<String> = walk(&f.dirs.backups()).iter().filter_map(|p| std::fs::read_to_string(p).ok()).collect();
+        assert!(backed.contains(&"added there".to_string()), "{backed:?}");
     }
 
     /// A link standing for an account's `skills` folder (a junction on
@@ -927,7 +957,7 @@ mod tests {
         let spell = |p: &Path| p.to_string_lossy().into_owned();
 
         let away = units(&f.dirs, &only_others, &f.accounts, &read_skills(&f.dirs), &read_instructions(&f.dirs), &ledger);
-        let unsettled = settle_kept(&f.dirs, &f.accounts, &away, &[], &mut ledger, &[spell(&kept)], true);
+        let unsettled = settle_kept(&f.dirs, &f.accounts, &[], &away, &[], &mut ledger, &[spell(&kept)], true);
         assert_eq!(unsettled.len(), 1, "{unsettled:?}");
         assert!(unsettled[0].contains("is a link or junction"), "{unsettled:?}");
 

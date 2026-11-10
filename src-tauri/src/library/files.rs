@@ -218,15 +218,18 @@ pub(super) fn backup_slot(dirs: &Dirs, from: &Path) -> Result<PathBuf, String> {
 }
 
 /// The folder a copy at `dest` lies in that no link may stand below
-/// (`no_link_between`): the deepest account folder holding it — an account
-/// may lie in Luna's data folder — else Luna's data folder, whose
-/// `library-folders/` is Luna's own and so looked at too. None for a path
-/// in neither.
-pub(super) fn top_of(dirs: &Dirs, accounts: &[AccountInfo], dest: &Path) -> Option<PathBuf> {
+/// (`no_link_between`), the deepest of those holding it: an account folder
+/// (one may lie in Luna's data folder); Luna's data folder, whose
+/// `library-folders/` is Luna's own and so looked at too; or a folder the
+/// library lists, for a copy an earlier Luna laid into it itself
+/// (`<folder>/<name>`), listed whether or not anything goes there now. None
+/// for a path in none of them: such a copy is never taken out.
+pub(super) fn top_of(dirs: &Dirs, accounts: &[AccountInfo], folders: &[LibraryFolder], dest: &Path) -> Option<PathBuf> {
     accounts
         .iter()
         .map(|a| PathBuf::from(&a.path))
         .chain([dirs.data.clone()])
+        .chain(folders.iter().map(|f| PathBuf::from(&f.path)))
         .filter(|t| within(dest, t))
         .max_by_key(|t| t.components().count())
 }
