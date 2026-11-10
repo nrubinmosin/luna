@@ -30,21 +30,27 @@ pub struct Row {
     /// Being opened as a chat (`background_promote`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub promoting: bool,
+    /// When it last did anything (`last_activity_ms`).
+    pub last_activity_ms: Option<u64>,
+    /// The first line of what it was spawned on (agents/ `task_of`).
+    pub task: Option<String>,
 }
 
 /// Every helper, for the window.
 #[tauri::command]
 pub fn background_helpers() -> Vec<Row> {
-    let ids: Vec<(String, Spec, u64, Option<u64>, Vec<String>, bool)> = lock()
+    type Seen = (String, Spec, u64, Option<u64>, Vec<String>, bool, Option<u64>);
+    let ids: Vec<Seen> = lock()
         .entries
         .iter()
         .map(|(id, e)| {
             let left = if e.run.is_none() && e.left_running { e.left.iter().map(Leftover::label).collect() } else { Vec::new() };
-            (id.clone(), e.spec.clone(), e.started_ms, e.run.as_ref().map(|r| r.started_ms), left, e.promoting)
+            let turn = e.run.as_ref().map(|r| r.started_ms);
+            (id.clone(), e.spec.clone(), e.started_ms, turn, left, e.promoting, activity_of(e))
         })
         .collect();
     ids.into_iter()
-        .map(|(id, spec, started_ms, turn_started_ms, left_running, promoting)| Row {
+        .map(|(id, spec, started_ms, turn_started_ms, left_running, promoting, last_activity_ms)| Row {
             parent: crate::agents::parent_of(&id),
             name: crate::agents::chat_name(&id).unwrap_or_default(),
             state: crate::agents::state_of(&id).0,
@@ -58,6 +64,8 @@ pub fn background_helpers() -> Vec<Row> {
             turn_started_ms,
             left_running,
             promoting,
+            last_activity_ms,
+            task: crate::agents::task_of(&id),
             id,
         })
         .collect()
@@ -72,8 +80,10 @@ pub fn changed() {
 /// off what Luna has seen of it alone: a listing's cheap look, with no
 /// transcript read (`signs` reads one).
 pub fn last_activity_ms(id: &str) -> Option<u64> {
-    let r = lock();
-    let e = r.entries.get(id)?;
+    activity_of(lock().entries.get(id)?)
+}
+
+fn activity_of(e: &Entry) -> Option<u64> {
     let o = &e.observed;
     let started = e.run.as_ref().map_or(0, |run| run.started_ms);
     [o.event_ms, o.turn_ended_ms, started].into_iter().max().filter(|ms| *ms > 0)
@@ -672,6 +682,22 @@ mod tests {
             crate::agents::forget(&id);
             crate::agents::forget(&parent);
         }
+    }
+
+    #[test]
+    fn a_row_carries_its_task_and_last_activity() {
+        let mut e = entry(Provider::Claude);
+        e.observed.event_ms = 42;
+        lock().entries.insert("row-task".into(), e);
+        crate::agents::set_task_for_test("row-task", "Check the changelog");
+        let row = background_helpers().into_iter().find(|r| r.id == "row-task").unwrap();
+        assert_eq!(row.task.as_deref(), Some("Check the changelog"));
+        assert_eq!(row.last_activity_ms, Some(42));
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["lastActivityMs"], 42);
+        assert_eq!(json["task"], "Check the changelog");
+        lock().entries.remove("row-task");
+        crate::agents::forget("row-task");
     }
 
     #[test]

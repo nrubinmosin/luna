@@ -59,7 +59,7 @@ impl Fixture {
         let skills = read_skills(&self.dirs);
         let instructions = read_instructions(&self.dirs);
         let units = units(&self.dirs, lib, &self.accounts, &skills, &instructions, ledger);
-        pass(&self.dirs, &units, &lib.skipped, ledger, act)
+        pass(&self.dirs, &self.accounts, &lib.folders, &units, &lib.skipped, ledger, act)
     }
     pub(super) fn status(p: &Pass, dest: &Path) -> Status {
         // By components: a test's `join("a/b")` keeps its slash on Windows.
@@ -71,6 +71,25 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.base);
     }
+}
+
+/// A folder link at `link` to `target`: a symlink on Unix, a junction on
+/// Windows (no privilege needed), as a person or a program would plant one.
+pub(super) fn link_dir(link: &Path, target: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    assert!(std::process::Command::new("cmd")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .is_ok_and(|o| o.status.success()));
+}
+
+/// The link itself, never what it leads to.
+pub(super) fn unlink_dir(link: &Path) {
+    let _ = std::fs::remove_dir(link).or_else(|_| std::fs::remove_file(link));
 }
 
 pub(super) fn all() -> Reach {

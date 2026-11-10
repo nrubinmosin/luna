@@ -560,7 +560,8 @@ export const STALE: Record<string, WorktreeInfoDto[]> = {
 // there, under another name as the repository has its own — and a draft that
 // does not do yet, turned off in the repository; instructions for everyone, others for the work account
 // alone (edited by hand there since Luna wrote them), a blank draft, and a
-// Codex account kept on its own file. The instructions for everyone and the
+// Codex account kept on its own file. A copy of the release-notes skill, no
+// longer meant for a Codex account but changed there, waits to be taken out. The instructions for everyone and the
 // review skill are for the person's own chats, kept from helpers.
 const REPO = 'C:\\src\\asuri-app';
 const WAITING = 'C:\\Users\\me\\AppData\\Local\\luna\\library-folders\\asuri-app';
@@ -657,7 +658,9 @@ export const LIBRARY: LibraryOverviewDto = {
       place({
         dest: `${accountsDir('anthropic', n)}\\skills\\luna-review`,
         target: { kind: 'account', provider: 'claude', name: n },
-        skill: 'luna-review'
+        skill: 'luna-review',
+        // Deleted by hand in both: what "Put all back" is for.
+        status: 'gone'
       })
     ),
     ...['personal', 'work'].map(n =>
@@ -690,7 +693,14 @@ export const LIBRARY: LibraryOverviewDto = {
     }
   ],
   overridden: [],
-  kept: [],
+  kept: [
+    {
+      // Un-ticked for the Codex account after a model added notes to its copy.
+      dest: `${accountsDir('openai', 'personal')}\\skills\\release-notes`,
+      target: { kind: 'account', provider: 'codex', name: 'personal' },
+      skill: 'release-notes'
+    }
+  ],
   systemAside: [],
   system: [
     {
@@ -756,8 +766,9 @@ export const CORE: CoreStateDto = {
   error: null
 };
 
-// Two helpers the first chat's agent runs in the background, one of them
-// waiting on an answer: the chip on its row.
+// Five helpers the first chat's agent runs in the background, in mixed
+// states, one of them waiting on an answer: the chip on its row and the pill
+// on its pane. The last has no chat: "Helpers with no chat".
 export const BACKGROUND: BackgroundHelperDto[] = [
   {
     id: 'demo-bg-1',
@@ -770,7 +781,9 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     effort: 'high',
     worktree: true,
     startedMs: Date.now() - 14 * 60_000,
-    turnStartedMs: Date.now() - 4 * 60_000
+    turnStartedMs: Date.now() - 4 * 60_000,
+    lastActivityMs: Date.now() - 20_000,
+    task: 'Review docs/release-plan.md against what CHANGELOG.md says is in 0.11.0.'
   },
   {
     id: 'demo-bg-2',
@@ -784,11 +797,58 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     worktree: false,
     startedMs: Date.now() - 6 * 60_000,
     turnStartedMs: Date.now() - 60_000,
+    lastActivityMs: Date.now() - 50_000,
+    task: 'Check that every change since 0.11.0 has its line in CHANGELOG.md, and ask before adding any.',
     ask: {
       kind: 'question',
       blocking: true,
       questions: [{ text: 'Ship tonight or tomorrow?', options: ['Tonight', 'Tomorrow'] }]
     }
+  },
+  {
+    id: 'demo-bg-4',
+    parent: 'demo-1',
+    name: 'Run the Windows tests',
+    provider: 'claude',
+    state: 'working',
+    account: 'work',
+    model: 'haiku',
+    effort: 'low',
+    worktree: true,
+    startedMs: Date.now() - 9 * 60_000,
+    turnStartedMs: Date.now() - 9 * 60_000,
+    lastActivityMs: Date.now() - 3 * 60_000,
+    task: 'Build the unit tests for Windows and run them; report the failures with their output.'
+  },
+  {
+    id: 'demo-bg-5',
+    parent: 'demo-1',
+    name: 'Draft the release notes',
+    provider: 'codex',
+    state: 'idle',
+    account: 'personal',
+    model: 'gpt-5.5',
+    effort: 'medium',
+    worktree: false,
+    startedMs: Date.now() - 32 * 60_000,
+    turnStartedMs: null,
+    lastActivityMs: Date.now() - 12 * 60_000,
+    task: 'Draft the 0.12.0 release notes from the changelog, in the voice of the last three.'
+  },
+  {
+    id: 'demo-bg-6',
+    parent: 'demo-1',
+    name: 'Lint the docs',
+    provider: 'claude',
+    state: 'idle',
+    account: 'team',
+    model: 'haiku',
+    effort: 'low',
+    worktree: false,
+    startedMs: Date.now() - 50 * 60_000,
+    turnStartedMs: null,
+    lastActivityMs: Date.now() - 41 * 60_000,
+    task: 'Run pnpm check:text over docs/ and fix what it finds.'
   },
   {
     id: 'demo-bg-3',
@@ -801,7 +861,9 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     effort: 'low',
     worktree: false,
     startedMs: Date.now() - 40 * 60_000,
-    turnStartedMs: null
+    turnStartedMs: null,
+    lastActivityMs: Date.now() - 38 * 60_000,
+    task: 'Delete the merged branches older than a month, locally and on origin.'
   }
 ];
 
@@ -827,7 +889,8 @@ export const HELPER_TRANSCRIPT: HelperTranscriptDto = {
 };
 
 // What the first chat's helpers have at stake in its delete: one at work in a
-// worktree holding uncommitted work, one waiting on a question.
+// worktree holding uncommitted work, one waiting on a question, one at work
+// in a clean worktree.
 export const AT_STAKE: Record<string, AtStakeDto> = {
   'demo-bg-1': {
     id: 'demo-bg-1',
@@ -835,7 +898,12 @@ export const AT_STAKE: Record<string, AtStakeDto> = {
     worktree: 'C:\\src\\luna\\.codex\\worktrees\\review',
     unsaved: '2 uncommitted files'
   },
-  'demo-bg-2': { id: 'demo-bg-2', working: 'waits on a question or permission' }
+  'demo-bg-2': { id: 'demo-bg-2', working: 'waits on a question or permission' },
+  'demo-bg-4': {
+    id: 'demo-bg-4',
+    working: 'in the middle of a turn',
+    worktree: 'C:\\src\\luna\\.claude\\worktrees\\tests'
+  }
 };
 
 /** What the first chat's panel says Luna applied (applied.rs), as a Claude

@@ -109,13 +109,20 @@ can see: a free one, or the pane you last worked in when the board is full.
 ## The pane title bar
 
 Buttons first (recolor, rename, what Luna applied, delete, peek, take off the
-board), then the
-name and chips: folder, account, model and effort, permission mode (Claude
-Code) or approval and sandbox (Codex; `bypass` and `auto-review` get chips of
-their own), the worktree flag, and context used as a meter and a number. A
-narrow pane drops chips one by one before the name and buttons. The session
-id's first 8 characters sit there too (a click copies them); the full id is in
-the row's tooltip.
+board), then the name, its folder and, if the chat has background helpers, a
+pill that sums them up (see [Helpers](agents.md#helpers)). The chat's settings
+sit on the right: account, model and effort, permission mode (Claude Code) or
+approval and sandbox (Codex; `bypass` and `auto-review` get chips of their
+own), the worktree flag, context used as a meter and a number, and the session
+id's first 8 characters (a click copies them; the full id is in the row's
+tooltip).
+
+A narrow pane gives up, in this order: the secondary chips and the session id,
+the other chips and the meter's bar, the words of the helper pill (it keeps
+its numbers), then the folder. The name and the pill's counts stay. Below
+about 420px the recolor, rename, what Luna applied and delete buttons fold
+into a **…** menu; peek, take off the board and "Not waiting" stay on the
+bar.
 
 Every new chat is dealt one of ten colors, worn by its title bar and as a stripe
 on its sidebar row.

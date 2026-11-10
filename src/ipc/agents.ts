@@ -31,6 +31,10 @@ export interface BackgroundHelperDto {
   leftRunning?: string[];
   /** Being opened as a chat: no turn starts until the window says how that went (`backgroundPromoted`). */
   promoting?: boolean;
+  /** When it last did anything: its last event, or a turn's start or end. */
+  lastActivityMs: number | null;
+  /** The first line of what it was spawned on. */
+  task: string | null;
 }
 
 /** A background helper to be handed over to the person as a chat of their own (`backgroundPromote`):

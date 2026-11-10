@@ -240,6 +240,8 @@ macro_rules! app_handler {
             library::library_set_folder_instructions,
             library::library_skip,
             library::library_resolve,
+            library::library_put_back,
+            library::library_kept,
             library::library_diff,
             library::library_read,
             library::library_write,

@@ -59,9 +59,11 @@ pub use persist::{freeze_chats, restore_chats, save_chats, take_up_spawns, tie_b
 pub(crate) use privilege::{command_prefix, command_reach_now};
 pub use read::{read, report_get, Message};
 pub(crate) use registry::mint;
+#[cfg(test)]
+pub use registry::set_task_for_test;
 pub use registry::{
     applied_of, caller_of, chat_name, chat_names, has_tools, in_scope, is_known, label, own_or_self, parent_of, register,
-    register_dev_caller, resumes_on_restart, scope_all, session_exited, set_applied, settings_of, DEV_CALLER,
+    register_dev_caller, resumes_on_restart, scope_all, session_exited, set_applied, settings_of, task_of, DEV_CALLER,
 };
 pub use spawn::account::account_usage;
 pub use spawn::worktree::{name_to_go_on, report_codex_worktrees};

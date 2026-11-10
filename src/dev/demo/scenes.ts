@@ -53,7 +53,8 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
  *  `?demo=library`, `?demo=library-system` / `library-system-dark` (its System skills, an override compared
  *  with Luna's own and a skill of the system skill's name), `?demo=power`, `?demo=applied` / `applied-dark` (a
  *  chat's What Luna applied),
- *  `?demo=helper` / `helper-dark` (a helper watched read-only),
+ *  `?demo=helper` / `helper-dark` (a helper watched read-only), `?demo=helpers` / `helpers-dark` (a chat's
+ *  helper list, opened from its pane's title bar),
  *  `?demo=delete-helpers` (deleting a chat whose helpers are at work),
  *  `?demo=handoff` / `handoff-dark` (a chat gone on past a handoff, its divider and copy),
  *  `?demo=login` (an account's sign-in), `?demo=shortcuts`, `?demo=update` (the update's
@@ -83,6 +84,8 @@ export type Scene =
   | 'applied-dark'
   | 'helper'
   | 'helper-dark'
+  | 'helpers'
+  | 'helpers-dark'
   | 'delete-helpers'
   | 'handoff'
   | 'handoff-dark'
@@ -115,6 +118,8 @@ export const SCENES: Scene[] = [
   'applied-dark',
   'helper',
   'helper-dark',
+  'helpers',
+  'helpers-dark',
   'delete-helpers',
   'handoff',
   'handoff-dark',
@@ -157,10 +162,16 @@ export function seedDemo(scene: Scene) {
     stopPolling: () => {}
   });
   // The dark shot is a two-pane board, so the two arrangements the app is
-  // actually used in both end up in the README.
+  // actually used in both end up in the README. The helpers scene is one
+  // pane, wide enough for the helper pill's names.
   usePanes.setState({
     group: 0,
-    groups: [filled(scene === 'dark' ? 2 : scene === 'peek' ? 3 : 4), parked(), parked(), parked()],
+    groups: [
+      filled(scene === 'dark' ? 2 : scene === 'peek' ? 3 : scene.startsWith('helpers') ? 1 : 4),
+      parked(),
+      parked(),
+      parked()
+    ],
     // The peek scene is that sheet and nothing else: the second pane of three,
     // held up over a board that is still there behind it.
     peek: scene === 'peek' ? 1 : null
@@ -211,18 +222,28 @@ export function seedDemo(scene: Scene) {
   if (scene.startsWith('applied')) {
     setTimeout(() => document.querySelector<HTMLElement>('button[aria-label="What Luna applied"]')?.click(), 300);
   }
-  // A helper of the first chat, watched: its chip, then Watch, as clicks would.
+  // A helper of the first chat, watched: its chip, then its Watch, as clicks would.
   if (scene === 'helper' || scene === 'helper-dark') {
     setTimeout(() => {
       document.querySelector<HTMLElement>('.chat-row[data-active="yes"] .kids')?.click();
       setTimeout(
         () =>
-          [...document.querySelectorAll<HTMLButtonElement>('.popover button')]
+          [...document.querySelectorAll<HTMLButtonElement>('.popover [data-helper="demo-bg-1"] button')]
             .find(b => b.textContent === 'Watch')
             ?.click(),
         300
       );
     }, 300);
+  }
+  // The first chat's helpers, listed from its pane's pill as a hover opens it.
+  if (scene.startsWith('helpers')) {
+    setTimeout(
+      () =>
+        document
+          .querySelector<HTMLElement>('.pane .hpill')
+          ?.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' })),
+      300
+    );
   }
   // The handoff the first chat went through: its divider, and its copy opened
   // the way a click would.
