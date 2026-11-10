@@ -15,6 +15,7 @@ function mount(onOuterClick = vi.fn()) {
         )}
       </HoverPopover>
       <button>elsewhere</button>
+      <textarea aria-label="terminal" />
     </div>
   );
   return { face: screen.getByRole('button', { name: 'Background helpers' }), onOuterClick };
@@ -95,6 +96,56 @@ describe('HoverPopover', () => {
     expect(onOuterClick).not.toHaveBeenCalled();
     expect(panel()).not.toBeNull();
     await user.click(screen.getByRole('button', { name: 'Done' }));
+    expect(panel()).toBeNull();
+  });
+});
+
+describe('HoverPopover, keys and timers', () => {
+  const wait = (ms: number) =>
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+  const hoverOpen = (face: HTMLElement) => {
+    fireEvent.pointerOver(face);
+    wait(OPEN_DELAY_MS);
+  };
+
+  it('leaves an Escape aimed at a terminal to the terminal', () => {
+    vi.useFakeTimers();
+    const { face } = mount();
+    const terminal = screen.getByRole('textbox', { name: 'terminal' });
+    act(() => terminal.focus());
+    hoverOpen(face);
+    expect(panel()).not.toBeNull();
+    const reached = vi.fn((e: KeyboardEvent) => e.defaultPrevented);
+    terminal.addEventListener('keydown', reached);
+    fireEvent.keyDown(terminal, { key: 'Escape' });
+    expect(reached).toHaveBeenCalledOnce();
+    expect(reached.mock.results[0]!.value).toBe(false);
+    expect(panel()).not.toBeNull();
+  });
+
+  it('stays while focus is in the panel, though the pointer has left', () => {
+    vi.useFakeTimers();
+    const { face } = mount();
+    hoverOpen(face);
+    act(() => screen.getByRole('button', { name: 'Watch' }).focus());
+    fireEvent.pointerOut(face, { relatedTarget: document.body });
+    fireEvent.pointerOut(panel()!, { relatedTarget: document.body });
+    wait(CLOSE_GRACE_MS * 2);
+    expect(panel()).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Watch' })).toHaveFocus();
+  });
+
+  it('is not opened again by a hover that was pending when Escape closed it', () => {
+    vi.useFakeTimers();
+    const { face } = mount();
+    fireEvent.pointerOver(face);
+    act(() => face.focus());
+    expect(panel()).not.toBeNull();
+    fireEvent.keyDown(face, { key: 'Escape' });
+    expect(panel()).toBeNull();
+    wait(OPEN_DELAY_MS * 2);
     expect(panel()).toBeNull();
   });
 });

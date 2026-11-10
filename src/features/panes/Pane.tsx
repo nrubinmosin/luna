@@ -106,10 +106,10 @@ interface MenuItem {
 
 /**
  * The narrow bar's menu of its rarer window buttons. Portaled and placed by
- * its button, like the color picker; closes on a pick, Escape, a press
- * elsewhere, or a scroll or resize that moves the button.
+ * its button, like the color picker; closes on a pick, Escape in it, focus
+ * leaving it, a press elsewhere, or a scroll or resize that moves the button.
  */
-function PaneMenu({ anchor, items, onClose }: { anchor: HTMLElement; items: MenuItem[]; onClose: () => void }) {
+export function PaneMenu({ anchor, items, onClose }: { anchor: HTMLElement; items: MenuItem[]; onClose: () => void }) {
   const host = useDialogHost();
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -131,12 +131,15 @@ function PaneMenu({ anchor, items, onClose }: { anchor: HTMLElement; items: Menu
       const t = e.target as Node;
       if (!ref.current?.contains(t) && !anchor.contains(t)) onClose();
     };
+    // Only an Escape pressed in the menu or on its button is the menu's.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      const at = document.activeElement;
+      const inMenu = !!at && !!ref.current?.contains(at);
+      if (e.key !== 'Escape' || !(inMenu || at === anchor)) return;
       e.preventDefault();
       e.stopPropagation();
       onClose();
-      anchor.focus();
+      if (inMenu) anchor.focus();
     };
     document.addEventListener('mousedown', away);
     window.addEventListener('keydown', onKey, true);
@@ -154,6 +157,11 @@ function PaneMenu({ anchor, items, onClose }: { anchor: HTMLElement; items: Menu
       className="popover pane-menu"
       onClick={e => e.stopPropagation()}
       onMouseDown={e => e.stopPropagation()}
+      // Tabbed or clicked out of: closed, as nothing is left to aim keys at it.
+      onBlur={e => {
+        const to = e.relatedTarget as Node | null;
+        if (!to || (!ref.current?.contains(to) && !anchor.contains(to))) onClose();
+      }}
       onKeyDown={e => {
         if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
         e.preventDefault();
