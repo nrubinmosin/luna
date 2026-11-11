@@ -77,8 +77,9 @@ the same moment the PC does, or an answer its helpers or theirs still owe it
 (`agents::owes_answer`). The order is no live session (resting), waiting,
 working, background, resting. A Claude Code registry says busy while a subagent
 works, so busy with subagents and a turn the hooks ended reads `background` too
-(`activity::busy_for_subagents_only`), and the marker is looked for on such a
-turn as on an idle one, so a question still reads `waiting`. Both go by the
+(`activity::turn_over_under_subagents`), and the marker is looked for on such a
+turn as on an idle one, so a question still reads `waiting`, a subagent asking
+or not; one asking with no marker reads `waiting` too. Both go by the
 hook, not the last sample: a new prompt's hook reads working at once, and an
 idle registry under a busy hook is left as the CLI says. A session without
 hooks has no subagents known and stays working; a Codex rollout says working as
