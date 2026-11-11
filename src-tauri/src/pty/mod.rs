@@ -110,6 +110,8 @@ struct Session {
     /// The same count of a person's keys, never cleared by a look at the
     /// screen: the veto a move's line goes by (`keys_left_text`).
     keys_draft: Arc<AtomicU64>,
+    /// The last keys went to a dialog, not the composer (`composer_keys`).
+    keys_dialog: Arc<AtomicBool>,
     /// The screen's word on the draft, for the keys and output it was read
     /// at (see `has_draft`): reading it replays the scrollback.
     draft_seen: Arc<Mutex<(u64, bool)>>,

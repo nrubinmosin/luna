@@ -418,6 +418,31 @@ pub(super) fn keys_after(state: u64, data: &str) -> u64 {
     draft_after(state, data)
 }
 
+/// Whether the screen drawn from `bytes` shows the CLI's composer at all,
+/// empty or not: where it does not, a dialog, a picker or a first-run screen
+/// has the keys.
+pub(super) fn composer_seen(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> bool {
+    read_composer(bytes, rows, cols, provider).is_some() || composer_empty_loose(bytes, rows, cols, provider)
+}
+
+/// `keys_after` where the keys may go to a dialog rather than the composer:
+/// `in_dialog` says the last keys did, and `dialog` looks at the screen now.
+/// A key that would start a draft, or any key while a dialog had them, is
+/// looked at: typed at a dialog (a digit that picks an option, a letter that
+/// answers) it is no composer text and counts nothing; the dialog closed,
+/// the count starts again from nothing. The screen is looked at only then,
+/// not at every key of a draft.
+pub(super) fn composer_keys(state: u64, in_dialog: bool, data: &str, dialog: impl FnOnce() -> bool) -> (u64, bool) {
+    let types_text = draft_after(0, data) & !DRAFT_BACKSLASH > 0;
+    if in_dialog || (state & !DRAFT_BACKSLASH == 0 && types_text) {
+        if dialog() {
+            return (0, true);
+        }
+        return (keys_after(if in_dialog { 0 } else { state }, data), false);
+    }
+    (keys_after(state, data), false)
+}
+
 /// Where the cursor stands once `bytes` have been drawn at this size, zero-based
 /// (row, col).
 pub(super) fn cursor_at(bytes: &[u8], rows: u16, cols: u16) -> (u16, u16) {
@@ -933,6 +958,38 @@ mod tests {
         assert_eq!(keys_after(5, "\x15"), 0);
         // An Esc that starts a key's sequence clears nothing.
         assert_eq!(keys_after(3, "\x1b[A"), 3);
+    }
+
+    #[test]
+    fn a_key_that_picks_a_dialogs_option_is_no_composer_text() {
+        let looked = std::cell::Cell::new(0);
+        let at = |dialog: bool| {
+            let looked = &looked;
+            move || {
+                looked.set(looked.get() + 1);
+                dialog
+            }
+        };
+        // A digit at the auto-mode offer: nothing counted, the dialog noted.
+        let (n, d) = composer_keys(0, false, "2", at(true));
+        assert_eq!((n, d), (0, true));
+        // The dialog closes; the next key starts from nothing.
+        let (n, d) = composer_keys(n, d, "\r", at(false));
+        assert_eq!((n, d), (0, false));
+        let (n, _) = composer_keys(n, d, "h", at(false));
+        assert_eq!(n, 1, "text in the composer counts");
+        // Typing on in the composer: the screen is not looked at again.
+        let before = looked.get();
+        let (n, _) = composer_keys(n, false, "i", at(true));
+        assert_eq!((n, looked.get()), (2, before));
+        // A key that types nothing (an arrow on a picker) looks at nothing either.
+        let (n, d) = composer_keys(0, false, "\x1b[B", at(true));
+        assert_eq!((n, d), (0, false));
+        // And the screen of a dialog itself: no composer on it.
+        let rule = "─".repeat(30);
+        let offer = drawn(&[(3, 1, "Make auto mode your default permission mode?"), (5, 1, "❯ 1. Yes"), (6, 1, "  2. No")], (5, 1));
+        assert!(!composer_seen(&offer, 10, 50, Provider::Claude));
+        assert!(composer_seen(&drawn(&[(6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3)), 10, 30, Provider::Claude));
     }
 
     #[test]
