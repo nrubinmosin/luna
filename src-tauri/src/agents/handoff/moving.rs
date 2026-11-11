@@ -687,9 +687,13 @@ fn confirm_with(
     crate::secret::write_private_synced(&payload, text.as_bytes()).map_err(|e| format!("the document could not be kept: {e}"))?;
     let moved_from = MovedFrom { chat: chat.to_string(), move_id: move_id.clone(), at: now_ms(), worktree: m.worktree };
     let new = m.new_id.clone();
+    // Both chats are in that worktree from here on, and so is whatever chat
+    // either is moved to after: one key for all of them.
+    let key = m.worktree.then(|| worktree_key(&m.folder, launch["worktreeName"].as_str().unwrap_or("")));
     if let Err(e) = store::change(&new, |r| {
         r.last = r.last.max(PAYLOAD_N);
         r.moved_from = Some(moved_from);
+        r.worktree_key = key.clone();
     }) {
         let _ = std::fs::remove_file(&payload);
         return Err(format!("the move could not be saved: {e}"));
@@ -705,7 +709,11 @@ fn confirm_with(
             x.launch = Some(launch.clone());
             x.payload = Some(payload_s.clone());
             x.payload_sha256 = Some(text_sha.clone());
-            Ok(x.clone())
+            let m = x.clone();
+            if key.is_some() {
+                r.worktree_key = key.clone();
+            }
+            Ok(m)
         }
         None => Err("the move changed meanwhile"),
     });
@@ -776,6 +784,28 @@ pub fn move_step(chat_id: String, move_id: String, step: String) -> Result<MoveS
     let chat = chat_id.as_str();
     let alive = |c: &str| crate::pty::manager().alive(c);
     let m = match step.as_str() {
+        // The core stops the old chat itself, right after the look at what
+        // its worktree still holds: nothing can start in between that the
+        // window's own stop would not have seen.
+        "stopOld" => {
+            let m = current(chat, &move_id)?;
+            if m.phase.rank() < 1 {
+                return Err("the move is not confirmed".into());
+            }
+            if m.phase.rank() == 1 {
+                if let Some(why) = m.worktree.then(|| worktree_held(chat)).flatten() {
+                    return Err(why);
+                }
+                tauri::async_runtime::block_on(crate::pty::kill_session(chat.to_string()))?;
+            }
+            advance(chat, &move_id, MovePhase::OldStopped { at: now_ms() }, |_| {
+                if alive(chat) {
+                    Err("the old chat is still running".into())
+                } else {
+                    Ok(())
+                }
+            })?
+        }
         "oldStopped" => advance(chat, &move_id, MovePhase::OldStopped { at: now_ms() }, |m| {
             if m.phase.rank() < 1 {
                 return Err("the move is not confirmed".into());
@@ -867,14 +897,18 @@ pub fn opening_refusal(id: &str) -> Option<String> {
     ))
 }
 
-/// The chats that share a Claude Code worktree with `id` by a move, either
-/// way, as the new chat's record keeps it (`MovedFrom::worktree`): from its
-/// Send on, whatever the move came to and whatever either chat's next move.
+/// The chats that share a Claude Code worktree with `id`: every chat whose
+/// record names the same worktree (`Record::worktree_key`), however many
+/// moves apart and whichever of them is gone, from the first Send on.
 pub(super) fn worktree_ties(r: &store::Records, id: &str) -> Vec<String> {
-    let mut tied: Vec<String> =
-        r.get(id).and_then(|rec| rec.moved_from.as_ref()).filter(|f| f.worktree).map(|f| f.chat.clone()).into_iter().collect();
-    tied.extend(r.iter().filter(|(_, rec)| rec.moved_from.as_ref().is_some_and(|f| f.worktree && f.chat == id)).map(|(c, _)| c.clone()));
-    tied
+    let Some(key) = r.get(id).and_then(|rec| rec.worktree_key.clone()) else { return Vec::new() };
+    r.iter().filter(|(c, rec)| *c != id && rec.worktree_key.as_deref() == Some(key.as_str())).map(|(c, _)| c.clone()).collect()
+}
+
+/// A Claude Code worktree as the records name it: its project, as a path
+/// key, and its name.
+pub(super) fn worktree_key(folder: &str, name: &str) -> String {
+    format!("{}|{name}", crate::paths::path_key(folder))
 }
 /// The folder a moved chat reads its document from, for its Claude Code
 /// start's `--add-dir`: its folder of copies, where its record says it was
@@ -1380,8 +1414,14 @@ pub(super) mod tests {
         assert!(s.stop_old && s.worktree);
         let e = move_step(chat.into(), "m1".into(), "rowCreated".into()).unwrap_err();
         assert!(e.contains("stopped first"), "{e}");
-        // Not running here: stopped, then the row.
-        assert_eq!(move_step(chat.into(), "m1".into(), "oldStopped".into()).unwrap().phase, "oldStopped");
+        assert_eq!(worktree_ties(&store::records(), new), [chat], "both in the worktree from Send on");
+        // Something owed to it meanwhile: the core does not stop it.
+        reg().lock().unwrap().owed.insert((chat.into(), "mvw-peer".into()), crate::agents::owed::Owed::pending(1, 0));
+        assert!(move_step(chat.into(), "m1".into(), "stopOld".into()).unwrap_err().contains("owed"));
+        reg().lock().unwrap().owed.remove(&(chat.to_string(), "mvw-peer".to_string()));
+        // Not running here: stopped by the core, then the row.
+        assert_eq!(move_step(chat.into(), "m1".into(), "stopOld".into()).unwrap().phase, "oldStopped");
+        assert_eq!(move_step(chat.into(), "m1".into(), "stopOld".into()).unwrap().phase, "oldStopped", "taken again");
         assert_eq!(opening_refusal(new), None, "the old chat runs no more");
         // Canceled before the row: its copy and its record go.
         let copy = super::super::dir_of(new).unwrap().join("1.md");
@@ -1392,21 +1432,24 @@ pub(super) mod tests {
         let _ = store::remove(chat);
     }
     #[test]
-    fn a_worktree_tie_outlasts_the_move_and_the_old_chats_next_one() {
+    fn a_worktree_tie_holds_across_every_chat_in_it_whatever_goes() {
+        let key = worktree_key("C:/p", "mv-test");
+        let in_it = |k: &str| store::Record { worktree_key: Some(k.to_string()), ..Default::default() };
         let mut r = store::Records::new();
-        let tie = |worktree| MovedFrom { chat: "wt-a".into(), move_id: "m1".into(), at: 1, worktree };
-        r.insert("wt-b".into(), store::Record { moved_from: Some(tie(true)), ..Default::default() });
-        // The old chat's record moves on: done, then another move of its own.
-        r.insert("wt-a".into(), store::Record { moving: Some(a_move(MovePhase::Done { at: 2 })), ..Default::default() });
-        assert_eq!(worktree_ties(&r, "wt-a"), ["wt-b"]);
-        assert_eq!(worktree_ties(&r, "wt-b"), ["wt-a"]);
-        r.get_mut("wt-a").unwrap().moving = Some(a_move(MovePhase::Shown { at: 3 }));
-        assert_eq!(worktree_ties(&r, "wt-a"), ["wt-b"], "a later move of the old chat keeps the tie");
-        // No worktree between them: no tie.
-        r.get_mut("wt-b").unwrap().moved_from = Some(tie(false));
-        assert!(worktree_ties(&r, "wt-a").is_empty() && worktree_ties(&r, "wt-b").is_empty());
+        // A moved to B, B to C: all three in one worktree.
+        for c in ["wt-a", "wt-b", "wt-c"] {
+            r.insert(c.into(), in_it(&key));
+        }
+        r.insert("wt-other".into(), in_it(&worktree_key("C:/p", "another")));
+        let mut tied = worktree_ties(&r, "wt-a");
+        tied.sort();
+        assert_eq!(tied, ["wt-b", "wt-c"]);
+        // B deleted: A and C still never run together.
+        r.remove("wt-b");
+        assert_eq!(worktree_ties(&r, "wt-a"), ["wt-c"]);
+        assert_eq!(worktree_ties(&r, "wt-c"), ["wt-a"]);
+        assert!(worktree_ties(&r, "wt-other").is_empty() && worktree_ties(&r, "nobody").is_empty());
     }
-
     #[test]
     fn a_worktree_move_waits_for_what_its_old_chat_is_owed() {
         assert_eq!(worktree_held("mvh-old"), None);

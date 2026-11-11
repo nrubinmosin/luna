@@ -209,9 +209,76 @@ fn next_root(text: &str, from: usize, roots: &Roots) -> Option<(usize, usize, us
     })
 }
 
+/// `text` percent-decoded, a `%` not followed by two hex digits kept.
+fn percent_decoded(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        match (b[i], b.get(i + 1).and_then(|c| hex(*c)), b.get(i + 2).and_then(|c| hex(*c))) {
+            (b'%', Some(h), Some(l)) => {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (c, ..) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The words of `text` holding a `%` (a URL, a query, a path half encoded)
+/// whose decoded form names a root: where each is, and the root's stand-in.
+fn encoded_hits(text: &str, roots: &Roots) -> Vec<(usize, usize, &'static str)> {
+    let stop =
+        |c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '|');
+    let mut hits = Vec::new();
+    let mut start = None;
+    for (i, c) in text.char_indices().chain(std::iter::once((text.len(), ' '))) {
+        match (stop(c), start) {
+            (false, None) => start = Some(i),
+            (true, Some(s)) => {
+                let word = &text[s..i];
+                if word.contains('%') {
+                    let decoded = percent_decoded(word);
+                    if let Some((_, _, k)) = next_root(&decoded, 0, roots) {
+                        hits.push((s, i, roots.0[k].1));
+                    }
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    hits
+}
+
 /// `text` with every root of `roots` cut out, the rest of its path with it,
-/// and how many were.
+/// and how many were: an encoded word naming one goes whole.
 pub(super) fn strip_roots(text: &str, roots: &Roots) -> (String, usize) {
+    let mut out = text.to_string();
+    let mut cut = 0;
+    for (s, e, with) in encoded_hits(text, roots).into_iter().rev() {
+        out.replace_range(s..e, with);
+        cut += 1;
+    }
+    let (mut out, n) = strip_literal(&out, roots);
+    cut += n;
+    // Encoded across a space or half and half: what decoding the whole text
+    // still finds, cut from the decoded text, the rest of its encoding lost.
+    if !named_literal(&percent_decoded(&out), roots).is_empty() {
+        let (decoded, n) = strip_literal(&percent_decoded(&out), roots);
+        out = decoded;
+        cut += n;
+    }
+    (out, cut)
+}
+
+/// The roots as they stand in `text`, cut with the rest of their path.
+fn strip_literal(text: &str, roots: &Roots) -> (String, usize) {
     let mut out = text.to_string();
     let mut cut = 0;
     let mut from = 0;
@@ -225,8 +292,19 @@ pub(super) fn strip_roots(text: &str, roots: &Roots) -> (String, usize) {
     (out, cut)
 }
 
-/// The roots `text` still names: what refuses a document after an edit.
+/// The roots `text` still names: what refuses a document after an edit,
+/// as it stands and percent-decoded.
 pub(super) fn named_roots(text: &str, roots: &Roots) -> Vec<String> {
+    let mut named = named_literal(text, roots);
+    for root in named_literal(&percent_decoded(text), roots) {
+        if !named.contains(&root) {
+            named.push(root);
+        }
+    }
+    named
+}
+
+fn named_literal(text: &str, roots: &Roots) -> Vec<String> {
     let mut named: Vec<String> = Vec::new();
     let mut from = 0;
     while let Some((_, end, k)) = next_root(text, from, roots) {
@@ -238,7 +316,6 @@ pub(super) fn named_roots(text: &str, roots: &Roots) -> Vec<String> {
     }
     named
 }
-
 /// Characters a person does not see in the preview: zero-width and joining
 /// marks, bidirectional controls, the byte order mark, and Unicode's tag
 /// characters, which can spell words no screen shows.
@@ -518,9 +595,16 @@ mod tests {
             "q=e%3a%5cLLM%20Accounts%5c%c3%9cn%c3%af",
             "see E:\\LLM Accounts\\Ünï\\creds",
         ] {
-            assert_eq!(named_roots(text, &roots).len(), 1, "{text}");
+            assert!(!named_roots(text, &roots).is_empty(), "{text}");
             assert!(named_roots(&strip_roots(text, &roots).0, &roots).is_empty(), "{text}");
         }
+        // Half encoded: the decoded word names it.
+        for text in ["file:///E:/LLM%20Accounts/%C3%9Cn%C3%AF/auth.json", "E:%5CLLM Accounts\\Ünï"] {
+            assert!(!named_roots(text, &roots).is_empty(), "{text}");
+            let (out, n) = strip_roots(text, &roots);
+            assert!(n >= 1 && named_roots(&out, &roots).is_empty(), "{text}: {out}");
+        }
+        assert!(named_roots("100% sure, 50%20 off", &roots).is_empty());
         // Another case beyond ASCII: the same folder on Windows alone.
         assert_eq!(named_roots("E:\\llm accounts\\üNÏ\\x", &roots).is_empty(), !cfg!(windows));
     }
