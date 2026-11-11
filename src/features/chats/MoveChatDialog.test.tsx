@@ -400,9 +400,16 @@ describe('moving a chat to another account', () => {
       toAccount: 'backend',
       source: 'luna',
       waiting: 'its screen shows no empty prompt',
-      waitingSince: 1_000
+      waitingSince: 1_000,
+      composerSeen: false
     };
+    // A dialog or first-run screen: no button, however long it waits.
     useMoveHints.setState({ opening: { 'c-open': m } });
+    const shown = render(<OpeningHint chat={c} now={1_000 + STALL_MS * 10} />);
+    expect(screen.queryByTestId('opening-hint')).toBeNull();
+    shown.unmount();
+    m.composerSeen = true;
+    useMoveHints.setState({ opening: { 'c-open': { ...m } } });
     const { rerender } = render(<OpeningHint chat={c} now={1_000 + STALL_MS - 1} />);
     expect(screen.queryByTestId('opening-hint')).toBeNull();
     rerender(<OpeningHint chat={c} now={1_000 + STALL_MS + 1} />);

@@ -312,6 +312,30 @@ pub fn at_empty_prompt(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -
     nothing(top, 1) && over && (top + 1..below).all(|r| nothing(r, 0))
 }
 
+/// Whether the screen shows the CLI's composer, empty, by its mark alone: the
+/// last `❯` (Claude Code) or undimmed `›` (Codex) on screen with nothing after
+/// it but a dim placeholder, whatever is drawn around it. Looser than
+/// `at_empty_prompt` about rules and footers, which a cramped pane may not
+/// draw as expected; as strict about a dialog, a picker or a first-run screen,
+/// whose marked row names a choice. What a person's "Type it now" goes by.
+pub fn composer_empty_loose(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> bool {
+    if let Some(c) = read_composer(bytes, rows, cols, provider) {
+        return c.text.is_empty() && !c.stashed;
+    }
+    let parser = replay(bytes, rows, cols);
+    let screen = parser.screen();
+    let mark = match provider {
+        Provider::Claude => "❯",
+        Provider::Codex => "›",
+    };
+    let first = |r: u16| screen.cell(r, 0).map_or("", |c| c.contents());
+    let Some(top) = (0..rows).rev().find(|&r| first(r) == mark) else { return false };
+    if provider == Provider::Codex && screen.cell(top, 0).is_some_and(|c| c.dim()) {
+        return false;
+    }
+    (1..cols).filter_map(|c| screen.cell(top, c)).all(|c| c.dim() || c.contents().trim().is_empty())
+}
+
 /// The composer's length after a person's keys, roughly: characters add,
 /// Backspace takes one off, Enter, Ctrl+C and Ctrl+U empty it — but not an
 /// Enter right after a backslash, which is how a Claude Code prompt gets its
@@ -579,6 +603,19 @@ impl PtyManager {
         thread_in_title(m.title.as_deref()?).map(str::to_owned)
     }
 
+    /// Whether its screen shows an empty composer by its mark alone (see
+    /// `composer_empty_loose`).
+    pub fn composer_visible(&self, id: &str) -> bool {
+        let found = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            sessions.get(id).map(|s| (s.provider, Arc::clone(&s.scrollback), Arc::clone(&s.size)))
+        };
+        let Some((provider, scrollback, size)) = found else { return false };
+        let bytes: Vec<u8> = scrollback.lock().unwrap_or_else(|e| e.into_inner()).make_contiguous().to_vec();
+        let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
+        composer_empty_loose(&bytes, rows, cols, provider)
+    }
+
     /// Whether its CLI stands at an empty prompt (see `at_empty_prompt`).
     pub fn at_prompt(&self, id: &str) -> bool {
         let found = {
@@ -743,6 +780,15 @@ mod tests {
             (8, 1, &rule30),
             (9, 1, footer)
         ])));
+        // The loose look, for "Type it now": the composer by its mark, the
+        // rules and footer as they may be; never a dialog's marked choice.
+        let loose = |bytes: &[u8]| composer_empty_loose(bytes, 10, 30, Provider::Claude);
+        assert!(loose(&hidden(&[(8, 1, placeholder), (9, 1, "manual mode on")])), "no rule round it");
+        for dialog in ["❯ 1. Dark mode", "❯ 1. Yes, I trust this folder", "❯ 1. Yes, and use auto mode", "❯ 1. Yes"] {
+            assert!(!loose(&hidden(&[(3, 1, "Choose the text style"), (5, 1, dialog), (6, 1, "  2. No")])), "{dialog}");
+        }
+        assert!(!loose(&hidden(&[(6, 1, &rule30), (7, 1, "❯ a draft"), (8, 1, &rule30)])), "text in it");
+        assert!(!loose(b""), "nothing drawn: unreadable, so no");
         // Shrunk to three rows: the composer first, its placeholder, its rule.
         let tiny = |bytes: &[u8]| at_empty_prompt(bytes, 3, 16, Provider::Claude);
         assert!(tiny(&hidden(&[(1, 1, wrapped), (2, 1, "\x1b[2merrors\"\x1b[22m"), (3, 1, &rule16)])));

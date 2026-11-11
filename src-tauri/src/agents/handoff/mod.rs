@@ -435,19 +435,21 @@ impl Term for Pty {
 /// Types `text` into `chat`'s terminal as a prompt, as `Term::type_line`
 /// says: the switch's and a move's opening line alike.
 fn type_line(chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>) -> Result<Typed, String> {
-    type_line_with(chat, text, commit, true)
+    type_line_with(chat, text, commit, false)
 }
 
-/// `type_line`; `drafts`: whether the keys' word on a draft holds it back too,
-/// besides what the composer shows. A person who saw the prompt and said to
-/// type now overrules the keys' count, never text the screen shows.
-fn type_line_with(chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>, drafts: bool) -> Result<Typed, String> {
+/// `type_line`; `readable`: a composer the screen does not show at all is not
+/// taken for an empty one (a move's line goes only where it can be read).
+fn type_line_with(chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>, readable: bool) -> Result<Typed, String> {
     let pty = crate::pty::manager();
     // From here to the Enter a person's keys wait (`hold_keys`): what the
     // composer shows now is what the text lands in.
     let hold = pty.hold_keys(chat).ok_or("the chat's terminal is gone")?;
-    let written = pty.composer(chat).is_some_and(|c| !c.text.trim().is_empty() || c.stashed);
-    if written || (drafts && pty.has_draft(chat)) || pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS) {
+    let written = match pty.composer(chat) {
+        Some(c) => !c.text.trim().is_empty() || c.stashed,
+        None => readable && !pty.composer_visible(chat),
+    };
+    if written || pty.has_draft(chat) || pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS) {
         return Ok(Typed::NotClear);
     }
     if let Err(r) = commit() {
