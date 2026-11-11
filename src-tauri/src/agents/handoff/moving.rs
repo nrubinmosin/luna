@@ -1221,8 +1221,11 @@ pub(super) fn prompt_verdict(pty: &crate::pty::PtyManager, id: &str) -> Result<(
     if !pty.at_prompt(id) {
         return Err(NO_PROMPT);
     }
-    if pty.has_draft(id) || pty.keys_left_text(id) {
+    if pty.has_draft(id) {
         return Err("a draft of a person's is in its composer");
+    }
+    if pty.keys_left_text(id) {
+        return Err("keys typed into it since its last Enter may be a draft (Esc, Enter or Ctrl+U in its empty composer clears them)");
     }
     Ok(())
 }

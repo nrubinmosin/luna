@@ -3,7 +3,7 @@
 //! deleting a chat, and the sessions no chat claims any more.
 
 use super::probe::{meta_from_disk, probe_of, Probe};
-use super::screen::draft_after;
+use super::screen::{draft_after, keys_after};
 use super::start::claude_instructions_dir;
 use super::{manager, now_ms, Input, PtyManager, Session};
 use crate::provider::Provider;
@@ -35,7 +35,7 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
     }
     let draft = draft_after(s.draft.load(Ordering::Relaxed), &data);
     s.draft.store(draft, Ordering::Relaxed);
-    let keys = draft_after(s.keys_draft.load(Ordering::Relaxed), &data);
+    let keys = keys_after(s.keys_draft.load(Ordering::Relaxed), &data);
     s.keys_draft.store(keys, Ordering::Relaxed);
     if s.provider == Provider::Claude && data.contains('\x13') {
         s.stashing.store(true, Ordering::Relaxed);
