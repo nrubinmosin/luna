@@ -110,6 +110,11 @@ pub(super) struct Record {
     /// same one run at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_key: Option<String>,
+    /// When the last ask for a move's document ended unanswered (given up,
+    /// canceled), and which: a file the chat sends after it is that ask's
+    /// late answer, never a handoff (moving.rs `asked_file`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_closed: Option<(String, u64)>,
 }
 
 pub(super) type Records = BTreeMap<String, Record>;

@@ -487,7 +487,14 @@ pub fn move_prepare(
     let mut m = new_move(&id, &new_id, &old, to_account, to_account_path, prompt, Source::Luna, worktree);
     m.phase = MovePhase::Shown { at: now_ms() };
     m.shown_sha256 = sha256.clone();
-    store::change(chat, |r| r.moving = Some(m.clone())).map_err(|e| format!("the move could not be saved: {e}"))?;
+    store::change(chat, |r| {
+        // An ask this move takes the place of: its answer is late from now.
+        if let Some(old) = r.moving.as_ref().filter(|o| o.asking()) {
+            r.ask_closed = Some((old.id.clone(), now_ms()));
+        }
+        r.moving = Some(m.clone());
+    })
+    .map_err(|e| format!("the move could not be saved: {e}"))?;
     crate::log::info("move", &format!("{} has a move to another account built ({id}, {} bytes)", label(chat), built.text.len()));
     Ok(preview_of(&m, built.text, [built.redacted, built.paths_cut, built.invisible], warnings))
 }
@@ -967,10 +974,17 @@ pub fn move_list() -> Vec<MoveStatus> {
 fn end(chat: &str, id: &str, to: MovePhase) -> Result<Move, String> {
     let set = |r: &mut store::Record| {
         let m = r.moving.as_mut().filter(|m| m.id == id)?;
+        // A move whose document the chat was to write, ended otherwise than
+        // sent: what the chat sends from here on is late.
+        let unanswered = m.source == Source::Chat && !matches!(to, MovePhase::Done { .. });
         if !m.phase.ended() {
             m.phase = to.clone();
         }
-        Some(m.clone())
+        let m = m.clone();
+        if unanswered {
+            r.ask_closed = Some((m.id.clone(), now_ms()));
+        }
+        Some(m)
     };
     let ended = match store::change(chat, set) {
         Ok(m) => m.ok_or_else(|| "no such move of this chat".to_string()),
@@ -1026,6 +1040,9 @@ pub fn moved_dir(id: &str) -> Option<PathBuf> {
 /// and then to write it.
 pub(super) const ASK_REST_MS: u64 = 10 * 60_000;
 pub(super) const ASK_WAIT_MS: u64 = 10 * 60_000;
+/// How long after an ask ends unanswered a file the chat sends is taken for
+/// its late answer, refused rather than handed off.
+pub(super) const ASK_LATE_MS: u64 = 60 * 60_000;
 
 /// What Luna types into a chat asked for its move's document: fixed words.
 pub(super) fn ask_line(id: &str) -> String {
@@ -1089,7 +1106,14 @@ pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: 
     let line = prompt_line(&id, Source::Chat, chat, chat_name(chat).as_deref(), &payload.to_string_lossy());
     let mut m = new_move(&id, &new_id, &old, to_account, to_account_path, line, Source::Chat, worktree);
     m.note = note;
-    store::change(chat, |r| r.moving = Some(m.clone())).map_err(|e| format!("the move could not be saved: {e}"))?;
+    store::change(chat, |r| {
+        // An ask this move takes the place of: its answer is late from now.
+        if let Some(old) = r.moving.as_ref().filter(|o| o.asking()) {
+            r.ask_closed = Some((old.id.clone(), now_ms()));
+        }
+        r.moving = Some(m.clone());
+    })
+    .map_err(|e| format!("the move could not be saved: {e}"))?;
     crate::log::info("move", &format!("{} is to be asked for its move's document ({id})", label(chat)));
     Ok(status_of(chat, &m))
 }
@@ -1122,11 +1146,18 @@ pub fn move_preview(chat_id: String, move_id: String) -> Result<MovePreview, Str
 /// named for a move (`move-…`) when none is asking is refused, so a late
 /// answer never becomes a handoff. None: an ordinary handoff.
 pub(super) fn asked_file(caller: &str, file: &str) -> Option<Result<Value, String>> {
-    let m = store::records().get(caller).and_then(|r| r.moving.clone()).filter(Move::asking);
-    let for_a_move = Path::new(file.trim()).file_name().is_some_and(|n| n.to_string_lossy().starts_with("move-"));
+    let (m, closed) = {
+        let r = store::records();
+        let rec = r.get(caller);
+        (rec.and_then(|r| r.moving.clone()).filter(Move::asking), rec.and_then(|r| r.ask_closed.clone()))
+    };
+    let for_a_move = Path::new(file.trim()).file_name().is_some_and(|n| n.to_string_lossy().to_ascii_lowercase().starts_with("move-"));
+    // Within ASK_LATE_MS of an ask that ended unanswered, any file is its late
+    // answer, whatever its name.
+    let late = closed.is_some_and(|(_, at)| now_ms().saturating_sub(at) < ASK_LATE_MS);
     match m {
         Some(m) => Some(collect(caller, &m, file)),
-        None if for_a_move => Some(Err("the move this document was for is over (sent, given up or canceled): nothing is \
+        None if for_a_move || late => Some(Err("the move this document was for is over (sent, given up or canceled): nothing is \
                                         done with it and nothing switches. Go on as you were."
             .into())),
         None => None,
@@ -1239,6 +1270,11 @@ fn type_ask(chat: &str, m: &Move) {
         let _running = super::Running(chat.clone());
         let Some(_typing) = TypingInto::wait_for(&chat, TYPING_WAIT) else { return };
         let commit = || {
+            // Looked at again with the keys held: Codex steers a line typed
+            // into a turn begun meanwhile.
+            if !still_ready(crate::pty::manager(), &chat) {
+                return Err(Refused::Gone);
+            }
             let taken = store::change(&chat, |r| match r.moving.as_mut().filter(|x| x.id == m.id) {
                 Some(x) if matches!(x.phase, MovePhase::Asking { .. }) => {
                     x.phase = MovePhase::Asked { at: now_ms() };
@@ -1925,6 +1961,14 @@ pub(super) mod tests {
         let late = asked_file(chat, &dir.join("move-late.md").to_string_lossy()).unwrap().unwrap_err();
         assert!(late.contains("is over") && late.contains("nothing switches"), "{late}");
         assert!(store::records()[chat].switch.is_none());
+        // Whatever its name, and in any case: the canceled ask's late answer.
+        for name in ["handoff.md", "MOVE-late.md"] {
+            let e = asked_file(chat, &dir.join(name).to_string_lossy()).unwrap().unwrap_err();
+            assert!(e.contains("is over"), "{name}: {e}");
+        }
+        assert!(store::records()[chat].switch.is_none(), "nothing scheduled");
+        // Past the window, an ordinary handoff is the handoff's again.
+        store::change(chat, |r| r.ask_closed = Some(("m1".into(), now_ms() - ASK_LATE_MS - 1))).unwrap();
         assert!(asked_file(chat, &dir.join("handoff.md").to_string_lossy()).is_none(), "an ordinary handoff is the handoff's");
         crate::agents::teardown::forget(chat);
         let _ = std::fs::remove_dir_all(&dir);
