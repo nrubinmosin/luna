@@ -35,10 +35,52 @@ pub(super) struct Git {
     pub at: String,
 }
 
-/// `git -C folder args`, its output as text if it ended well within `wait`.
+/// `git -C folder args`, its output as text if it ended well within `wait`,
+/// with every filter driver the configuration names turned off
+/// (`filter_overrides`): `git status` and `git diff` run a file's clean or
+/// process filter on what they compare, as Luna's user, outside any CLI's
+/// sandbox.
 pub(super) fn run(folder: &str, args: &[&str], wait: Duration) -> Result<String, String> {
+    let overrides = filter_overrides(folder);
+    run_with(folder, &overrides, args, wait)
+}
+
+/// `-c` pairs that leave each filter driver configured for `folder` with
+/// no command and not required, so none runs: a driver's empty command is no
+/// filter to git. Read with `git config`, which runs nothing.
+fn filter_overrides(folder: &str) -> Vec<String> {
+    let listed = run_with(folder, &[], &["config", "--name-only", "--get-regexp", r"^filter\."], GIT_WAIT).unwrap_or_default();
+    let mut drivers: Vec<String> = Vec::new();
+    for name in listed.lines() {
+        // filter.<driver>.<key>, the driver's name possibly holding dots.
+        let Some(rest) = name.trim().strip_prefix("filter.") else { continue };
+        let Some((driver, _)) = rest.rsplit_once('.') else { continue };
+        if !driver.is_empty() && !drivers.iter().any(|d| d == driver) {
+            drivers.push(driver.to_string());
+        }
+    }
+    let mut out = Vec::new();
+    for d in drivers {
+        for (key, value) in [("clean", ""), ("smudge", ""), ("process", ""), ("required", "false")] {
+            out.push("-c".to_string());
+            out.push(format!("filter.{d}.{key}={value}"));
+        }
+    }
+    out
+}
+
+/// `run` with `overrides` given before the command.
+fn run_with(folder: &str, overrides: &[String], args: &[&str], wait: Duration) -> Result<String, String> {
     let mut c = Command::new("git");
-    c.arg("-C").arg(folder).args(["-c", "core.fsmonitor=false", "--no-optional-locks"]).args(args);
+    c.arg("-C").arg(folder).args(["-c", "core.fsmonitor=false", "--no-optional-locks"]);
+    c.args(overrides).args(args);
+    // No system configuration, no prompt, nothing an environment variable of
+    // git's would run or redirect.
+    c.env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_TERMINAL_PROMPT", "0");
+    for var in ["GIT_EXTERNAL_DIFF", "GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_ASKPASS", "SSH_ASKPASS"]
+    {
+        c.env_remove(var);
+    }
     c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     {
@@ -64,6 +106,8 @@ pub(super) fn run(folder: &str, args: &[&str], wait: Duration) -> Result<String,
         match child.try_wait() {
             Ok(Some(s)) => break Some(s),
             Ok(None) if Instant::now() >= deadline => {
+                // The tree: what git started (a hook, a helper) goes with it.
+                crate::pty::kill_tree(Some(child.id()));
                 let _ = child.kill();
                 let _ = child.wait();
                 break None;
@@ -144,5 +188,35 @@ mod tests {
         let e = run(".", &["--version"], Duration::ZERO);
         assert!(e.is_err() || e.as_deref().is_ok_and(|v| v.starts_with("git version")), "{e:?}");
         assert_eq!(kept("a\n\nb\nc\n", 2), (vec!["a".to_string(), "b".to_string()], 1));
+    }
+
+    #[test]
+    fn no_filter_a_repository_configures_runs_for_lunas_look() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("luna-gitfacts-filter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().into_owned();
+        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&d).args(args).output().unwrap();
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "one"]);
+        // A filter that leaves a mark wherever it runs.
+        let mark = dir.join("ran");
+        let cmd = format!("sh -c 'touch \"{}\"; cat'", mark.to_string_lossy().replace('\\', "/"));
+        git(&["config", "filter.spy.clean", &cmd]);
+        git(&["config", "filter.spy.process", &cmd]);
+        std::fs::write(dir.join(".gitattributes"), "*.txt filter=spy\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+        let g = of(&d, Some(0));
+        assert!(g.status.iter().any(|l| l.contains("a.txt")), "{g:?}");
+        assert!(!mark.exists(), "the repository's filter ran");
+        assert!(filter_overrides(&d).contains(&"filter.spy.clean=".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

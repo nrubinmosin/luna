@@ -69,15 +69,32 @@ impl Roots {
         if key.len() < 4 {
             return;
         }
-        let mut forms = vec![key.clone()];
-        let b = key.as_bytes();
-        if b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/' {
-            let drive = (b[0] as char).to_ascii_lowercase();
-            forms.push(format!("/{drive}{}", &key[2..]));
-            forms.push(format!("/mnt/{drive}{}", &key[2..]));
+        let mut keys = vec![key];
+        // Its 8.3 alias, where its volume keeps one: what an old tool or a
+        // shortened path in a log spells it as.
+        if let Some(short) = short_name(path).map(|s| s.replace('\\', "/").trim_end_matches('/').to_string()) {
+            if !keys.iter().any(|k| k.eq_ignore_ascii_case(&short)) {
+                keys.push(short);
+            }
+        }
+        let mut forms = Vec::new();
+        for key in keys {
+            let b = key.as_bytes();
+            if b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/' {
+                let drive = (b[0] as char).to_ascii_lowercase();
+                forms.push(format!("/{drive}{}", &key[2..]));
+                forms.push(format!("/mnt/{drive}{}", &key[2..]));
+            }
+            // Percent-encoded, as in a file:// URL or a query string, with
+            // either slash and either case of the hex.
+            for sep in ["%2F", "%5C", "%2f", "%5c"] {
+                let enc = percent(&key, sep);
+                forms.push(enc);
+            }
+            forms.push(key);
         }
         for form in forms {
-            if !self.0.iter().any(|(f, _)| f.eq_ignore_ascii_case(&form)) {
+            if !self.0.iter().any(|(f, _)| *f == form) {
                 self.0.push((form, with));
             }
         }
@@ -94,32 +111,72 @@ impl Roots {
     }
 }
 
+/// `key` percent-encoded: `/` as `sep`, and what a URL encodes besides.
+fn percent(key: &str, sep: &str) -> String {
+    let lower = sep.chars().any(|c| c.is_ascii_lowercase());
+    let mut out = String::new();
+    for c in key.chars() {
+        match c {
+            '/' => out.push_str(sep),
+            ':' => out.push_str(if lower { "%3a" } else { "%3A" }),
+            ' ' => out.push_str("%20"),
+            c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => out.push(c),
+            c => {
+                let mut buf = [0u8; 4];
+                for b in c.encode_utf8(&mut buf).bytes() {
+                    out.push_str(&if lower { format!("%{b:02x}") } else { format!("%{b:02X}") });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The 8.3 short spelling of an existing folder where its volume keeps one.
+#[cfg(windows)]
+fn short_name(path: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: `wide` is NUL-terminated and lives across the call; `buf` is the
+    // buffer the call fills, its length given.
+    let n = unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), Some(&mut buf)) } as usize;
+    (n > 0 && n < buf.len()).then(|| String::from_utf16_lossy(&buf[..n])).filter(|s| *s != path.to_string_lossy())
+}
+
+#[cfg(not(windows))]
+fn short_name(_: &Path) -> Option<String> {
+    None
+}
+
 /// Where `root` (a key: `/` for every separator) ends if `hay` spells it from
 /// `at`: a separator as `/`, `\` or JSON's `\\`, letters case aside on
 /// Windows, where a drive letter is either case anywhere.
 fn match_at(hay: &str, at: usize, root: &str) -> Option<usize> {
-    let h = hay.as_bytes();
+    let r: Vec<char> = root.chars().collect();
     let mut i = at;
-    for (k, rc) in root.bytes().enumerate() {
-        let c = *h.get(i)?;
-        if rc == b'/' {
+    for (k, rc) in r.iter().enumerate() {
+        let c = hay[i..].chars().next()?;
+        if *rc == '/' {
             match c {
-                b'/' => i += 1,
-                b'\\' => i += if h.get(i + 1) == Some(&b'\\') { 2 } else { 1 },
+                '/' => i += 1,
+                '\\' => i += if hay[i + 1..].starts_with('\\') { 2 } else { 1 },
                 _ => return None,
             }
             continue;
         }
-        let drive = k <= 5 && rc.is_ascii_alphabetic() && root.as_bytes().get(k + 1).is_some_and(|n| *n == b':' || *n == b'/');
-        let same = if cfg!(windows) || drive { c.eq_ignore_ascii_case(&rc) } else { c == rc };
+        let drive = k <= 5 && rc.is_ascii_alphabetic() && r.get(k + 1).is_some_and(|n| *n == ':' || *n == '/' || *n == '%');
+        // Case aside on Windows, beyond ASCII too (NTFS folds case).
+        let same = c == *rc || ((cfg!(windows) || drive) && c.to_lowercase().eq(rc.to_lowercase()));
         if !same {
             return None;
         }
-        i += 1;
+        i += c.len_utf8();
     }
-    hay.is_char_boundary(i).then_some(i)
+    Some(i)
 }
-
 /// Whether a root that ends at `end` ends a name there, not the middle of a
 /// longer one (`C:\data2` is not `C:\data`); a `.` ends it unless a name goes
 /// on after it.
@@ -451,6 +508,21 @@ mod tests {
         let home = Roots::of(&[("~/.claude", ACCOUNT_FOLDER)]);
         assert_eq!(strip_roots("read ~/.claude/.credentials.json", &home).0, "read <account folder>");
         assert!(named_roots("a ~/.claudette file", &home).is_empty());
+    }
+
+    #[test]
+    fn a_root_url_encoded_or_in_another_case_is_found_too() {
+        let roots = Roots::of(&[("E:\\LLM Accounts\\Ünï", ACCOUNT_FOLDER)]);
+        for text in [
+            "file:///E%3A%2FLLM%20Accounts%2F%C3%9Cn%C3%AF%2Fx",
+            "q=e%3a%5cLLM%20Accounts%5c%c3%9cn%c3%af",
+            "see E:\\LLM Accounts\\Ünï\\creds",
+        ] {
+            assert_eq!(named_roots(text, &roots).len(), 1, "{text}");
+            assert!(named_roots(&strip_roots(text, &roots).0, &roots).is_empty(), "{text}");
+        }
+        // Another case beyond ASCII: the same folder on Windows alone.
+        assert_eq!(named_roots("E:\\llm accounts\\üNÏ\\x", &roots).is_empty(), !cfg!(windows));
     }
 
     #[test]
