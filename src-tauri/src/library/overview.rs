@@ -151,7 +151,8 @@ fn kept_is_news(kept: &[String]) -> bool {
 }
 
 pub(super) fn overview(act: bool) -> Result<Overview, String> {
-    let _guard = lock();
+    // Only a pass that lays out needs the lock file (`lock_to_read`).
+    let _guard = if act { lock()? } else { lock_to_read() };
     overview_locked(act)
 }
 
@@ -257,10 +258,12 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
     })
 }
 
-/// A settings change, then a pass to lay it out.
+/// A settings change, then a pass to lay it out: under the lock from the
+/// start, so that a change made is one laid out, or with no lock not made.
 pub(super) fn change(f: impl FnOnce(&mut LibrarySettings)) -> Result<Overview, String> {
+    let _guard = lock()?;
     crate::settings::update(|s| f(&mut s.library))?;
-    overview(true)
+    overview_locked(true)
 }
 
 #[cfg(test)]
