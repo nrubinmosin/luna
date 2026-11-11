@@ -78,7 +78,7 @@ const CHATS: Chat[] = [
   codexChat({
     id: 'demo-4',
     name: 'Draft the 0.3 release notes',
-    status: 'working',
+    status: 'background',
     effort: 'medium',
     approval: 'on-request',
     sandbox: 'workspace-write',

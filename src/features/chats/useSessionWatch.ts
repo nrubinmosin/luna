@@ -15,9 +15,10 @@ const EVERY_MS = 4000;
 const titleLooked = new Set<string>();
 
 // The CLI registry reports its own status vocabulary; fold it into the
-// three-state design palette.
-const mapStatus = (s: string | null): Chat['status'] => {
+// design palette. `background` is the core's own word, not a CLI's.
+export const mapStatus = (s: string | null): Chat['status'] => {
   if (!s) return 'resting';
+  if (s === 'background') return 'background';
   if (s === 'busy' || s === 'working') return 'working';
   if (/wait|input|block|attention|permission/.test(s)) return 'waiting';
   return 'resting';

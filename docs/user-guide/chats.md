@@ -236,6 +236,13 @@ See [ADR-0020](../adr/0020-session-self-handoff.md) and
 
 - **Working / waiting for you / resting**, read from the CLI's own session
   registry, so it is right whether or not the chat has a pane.
+- **Background:** the chat's turn is over, but work of its own goes on: a
+  subagent, a job its turns started (a dev server, a watcher), or a helper, or
+  a helper's helper, that still owes it an answer. Its dot is blue with a slow
+  pulse, and the status bar counts these chats and names them on hover. A chat
+  that is waiting or working reads that instead. A job that has done nothing
+  for 2 hours on end stops counting, at the moment it stops keeping the PC
+  awake. When the work ends the dot goes back to resting, with no notification.
 - A chat turning to waiting raises a desktop notification (the window may be in
   the tray), with the system’s sound unless Settings → General → Notifications says not
   to. A click brings the window up with that chat on the peek sheet.
