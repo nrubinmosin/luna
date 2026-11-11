@@ -32,8 +32,9 @@ gets `check_for_update_on_startup = false`. A rename carries every chat, the
 agents' list, the settings parent and all the library keeps of the account
 along (docs/architecture/library.md, "Reaches"), refused while a chat or
 helper runs on it, an idle or restored helper included
-(`background::uses_account`). A rename and a delete hold the library's lock
-throughout, and are refused without it.
+(`background::uses_account`) and a start waiting for its library pass
+(`library::lay_out_for`), asked again under the library's lock. A rename and a
+delete hold that lock throughout, and are refused without it.
 
 ## Limits
 

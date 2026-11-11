@@ -102,9 +102,11 @@ pub fn rename_account(provider: Provider, name: String, to: String) -> Result<Ac
     let to = to.trim().to_string();
     let root = provider_root(provider)?;
     let from = root.join(&name);
-    if crate::pty::manager().account_in_use(&from.to_string_lossy()) {
-        return Err("Chats are running on this account — stop them first".into());
-    }
+    let in_use = || match crate::pty::manager().account_in_use(&from.to_string_lossy()) {
+        true => Err("Chats are running on this account — stop them first".to_string()),
+        false => Ok(()),
+    };
+    in_use()?;
     let (old_key, new_key) = (format!("{}/{name}", provider.as_str()), format!("{}/{to}", provider.as_str()));
     // Settings that cannot be written leave the chats on the old name: the
     // folder goes back under it rather than leave them pointing at nothing.
@@ -113,7 +115,9 @@ pub fn rename_account(provider: Provider, name: String, to: String) -> Result<Ac
         &from,
         &name,
         &to,
-        || rename_in(&root, &name, &to),
+        // Asked again under the library's lock: a start that waited for it
+        // counts its account from before (`library::lay_out_for`).
+        || in_use().and_then(|()| rename_in(&root, &name, &to)),
         |library| {
             crate::settings::update(|s| {
                 for k in s.agent_blocked_accounts.iter_mut().filter(|k| **k == old_key) {
@@ -196,14 +200,16 @@ mod tests {
 pub fn delete_account(provider: Provider, name: String) -> Result<(), String> {
     validate_name(&name)?;
     let dir = provider_root(provider)?.join(&name);
-    if !dir.exists() {
-        return Ok(());
-    }
+    // A folder gone already still has what Luna keeps of it cleaned up: a
+    // deletion that failed after the folder went is finished by another.
     crate::library::delete_account_held(
         provider,
         &dir,
         &name,
-        || fs::remove_dir_all(&dir).map_err(|e| e.to_string()),
+        || match dir.exists() {
+            true => fs::remove_dir_all(&dir).map_err(|e| e.to_string()),
+            false => Ok(()),
+        },
         |library| crate::settings::update(|s| library(&mut s.library)),
     )
 }

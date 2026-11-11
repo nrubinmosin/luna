@@ -601,11 +601,13 @@ pub async fn ensure_claude_session(
         // The skills the library gives sessions in this folder and keeps from
         // them, at every start (library/folders.rs `session_args`); not to a login
         // session.
-        let mut skills = if login {
-            crate::library::SessionSkills::default()
+        // The account counted as in use from before the pass until the process
+        // is (`lay_out_for`): no rename moves it from under the start.
+        let (mut skills, reserved) = if login {
+            (crate::library::SessionSkills::default(), None)
         } else {
-            crate::library::lay_out("before a session starts");
-            crate::library::session_args(Provider::Claude, &account_path, &folder, crate::library::SessionKind::Chat)
+            let reserved = crate::library::lay_out_for("before a session starts", &account_path)?;
+            (crate::library::session_args(Provider::Claude, &account_path, &folder, crate::library::SessionKind::Chat), Some(reserved))
         };
         // A login session is no chat: no tools, so no notes or handoff either.
         let tools = tools.unwrap_or(false) && !login;
@@ -687,6 +689,7 @@ pub async fn ensure_claude_session(
             resume,
             describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
             applied,
+            reserved,
         })
     })
     .await
@@ -726,7 +729,17 @@ pub async fn ensure_codex_session(
             let args = vec!["login".to_string()];
             let applied = vec![crate::applied::Item::Account.with(format!("CODEX_HOME={account_path}"))];
             let describe = "login".into();
-            return Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume: None, describe, applied });
+            return Ok(Launch {
+                provider: Provider::Codex,
+                cwd: folder,
+                account_path,
+                args,
+                envs,
+                resume: None,
+                describe,
+                applied,
+                reserved: None,
+            });
         }
         // A folder Codex could not start in, refused before anything of the
         // start is made (folder.rs): `--worktree` goes only to a new session.
@@ -772,7 +785,7 @@ pub async fn ensure_codex_session(
         let mcp = token.and_then(|t| Some((crate::hub::mcp_url()?, t)));
         // The skills the library gives sessions in this folder and keeps
         // from them, at every start (library/folders.rs `session_args`).
-        crate::library::lay_out("before a session starts");
+        let reserved = crate::library::lay_out_for("before a session starts", &account_path)?;
         let skills = crate::library::session_args(Provider::Codex, &account_path, &folder, crate::library::SessionKind::Chat);
         let (args, envs, mut applied) = codex_launch::chat_args(&codex_launch::ChatStart {
             id: &id,
@@ -800,7 +813,7 @@ pub async fn ensure_codex_session(
         });
         applied.extend(crate::library::audience_applied(&skills));
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
-        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied })
+        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied, reserved: Some(reserved) })
     })
     .await
 }

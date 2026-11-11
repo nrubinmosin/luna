@@ -26,6 +26,23 @@ pub fn lay_out(when: &str) {
     }
 }
 
+/// `lay_out` before a session starts on `account_path`, the account counted
+/// as in use from before the pass waits for the lock until its process is
+/// counted itself: a rename of the account that would go first waits for
+/// the same lock and, finding it in use, refuses (accounts.rs). One that
+/// went first, before it was counted, has moved the folder by the time the
+/// pass is done: the start is refused then, not made on a folder that is
+/// gone, which the CLI would make anew as an account signed in to nothing.
+pub fn lay_out_for(when: &str, account_path: &str) -> Result<crate::account_use::Running, String> {
+    let reserved = crate::account_use::running_on(account_path);
+    let there = Path::new(account_path).is_dir();
+    lay_out(when);
+    if there && !Path::new(account_path).is_dir() {
+        return Err(format!("{account_path} is not there any more: the account was renamed or deleted as this session started"));
+    }
+    Ok(reserved)
+}
+
 /// Points the library at another folder; empty = back to `<data>/library`.
 /// Nothing is moved.
 #[tauri::command(async)]
@@ -813,6 +830,36 @@ mod tests {
 
         LOCK_AT.with(|l| *l.borrow_mut() = None);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A start on either kind of account, waiting for the lock a rename holds:
+    /// its account counts as in use while it waits, which a rename asking
+    /// under the lock refuses for; and a rename that asked before it came
+    /// and moved the folder has the start refused, not made on the old path.
+    #[test]
+    fn a_start_waiting_for_the_lock_holds_its_account_and_sees_it_moved() {
+        for vendor in ["anthropic", "openai"] {
+            let base = std::env::temp_dir().join(format!("luna-start-race-{vendor}-{}", std::process::id()));
+            let account = base.join(vendor).join("work");
+            std::fs::create_dir_all(&account).unwrap();
+            let path = account.to_string_lossy().into_owned();
+            let held = lock().unwrap();
+            let start = {
+                let path = path.clone();
+                std::thread::spawn(move || lay_out_for("in the start race test", &path).map(drop))
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !crate::account_use::running(&path) {
+                assert!(std::time::Instant::now() < deadline, "{vendor}: the start counts its account while it waits");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            std::fs::rename(&account, account.with_file_name("office")).unwrap();
+            drop(held);
+            let why = start.join().unwrap().unwrap_err();
+            assert!(why.contains("renamed or deleted"), "{vendor}: {why}");
+            assert!(!crate::account_use::running(&path), "{vendor}: and lets it go");
+            let _ = std::fs::remove_dir_all(&base);
+        }
     }
 
     /// Deleted, changed and foreign copies all become the library's again,
