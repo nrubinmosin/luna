@@ -403,12 +403,21 @@ describe('moving a chat to another account', () => {
       waitingSince: 1_000,
       composerSeen: false
     };
-    // A dialog or first-run screen: no button, however long it waits.
+    // A dialog or first-run screen: said, but no button, however long it waits.
     useMoveHints.setState({ opening: { 'c-open': m } });
     const shown = render(<OpeningHint chat={c} now={1_000 + STALL_MS * 10} />);
-    expect(screen.queryByTestId('opening-hint')).toBeNull();
+    expect(screen.getByTestId('opening-hint')).toHaveTextContent('its screen shows no empty prompt');
+    expect(screen.queryByRole('button', { name: 'Type it now' })).toBeNull();
     shown.unmount();
+    // Text in the composer: said plainly, and never typed over.
+    const holds = 'the composer holds text typed or pasted there: send or clear it (Esc), then Luna types its line';
+    useMoveHints.setState({ opening: { 'c-open': { ...m, waiting: holds, composerSeen: true } } });
+    const held = render(<OpeningHint chat={c} now={1_000 + STALL_MS + 1} />);
+    expect(screen.getByTestId('opening-hint')).toHaveTextContent('send or clear it (Esc)');
+    expect(screen.queryByRole('button', { name: 'Type it now' })).toBeNull();
+    held.unmount();
     m.composerSeen = true;
+    useMoveHints.setState({ opening: { 'c-open': { ...m } } });
     useMoveHints.setState({ opening: { 'c-open': { ...m } } });
     const { rerender } = render(<OpeningHint chat={c} now={1_000 + STALL_MS - 1} />);
     expect(screen.queryByTestId('opening-hint')).toBeNull();

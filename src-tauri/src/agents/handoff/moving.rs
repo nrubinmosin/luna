@@ -1201,6 +1201,9 @@ fn strict_prompt(pty: &crate::pty::PtyManager, id: &str) -> bool {
 }
 
 /// What `prompt_verdict` says of a screen whose layout shows no prompt.
+/// What `prompt_verdict` says of a composer holding a person's text.
+pub(super) const HOLDS_TEXT: &str = "the composer holds text typed or pasted there: send or clear it (Esc), then Luna types its line";
+
 const NO_PROMPT: &str = "its screen shows no empty prompt (a dialog, a first-run screen, text in the composer)";
 
 /// `strict_prompt` with why not, for the log and the window: a stall shows
@@ -1221,11 +1224,9 @@ pub(super) fn prompt_verdict(pty: &crate::pty::PtyManager, id: &str) -> Result<(
     if !pty.at_prompt(id) {
         return Err(NO_PROMPT);
     }
-    if pty.has_draft(id) {
-        return Err("a draft of a person's is in its composer");
-    }
-    if pty.keys_left_text(id) {
-        return Err("keys typed into it since its last Enter may be a draft (Esc, Enter or Ctrl+U in its empty composer clears them)");
+    // Never typed over: the person sends or clears it, then the line goes in.
+    if pty.has_draft(id) || pty.keys_left_text(id) {
+        return Err(HOLDS_TEXT);
     }
     Ok(())
 }

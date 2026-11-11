@@ -420,6 +420,22 @@ pub(super) fn draft_after(state: u64, data: &str) -> u64 {
     n | if backslash { DRAFT_BACKSLASH } else { 0 } | if paste { DRAFT_PASTE } else { 0 }
 }
 
+/// How long a paste may go without its end marker before it is taken as
+/// over: Luna's own terminal writes both markers in one write, so a pause
+/// this long means the end was lost.
+pub(super) const PASTE_LAPSE_MS: u64 = 2_000;
+
+/// `state` with a paste that has had no input for PASTE_LAPSE_MS taken as
+/// over: what it pasted stays counted, as text in the composer; only its
+/// Enters stop being text.
+pub(super) fn paste_lapsed(state: u64, last_key_ms: u64, now: u64) -> u64 {
+    if state & DRAFT_PASTE != 0 && now.saturating_sub(last_key_ms) >= PASTE_LAPSE_MS {
+        state & !DRAFT_PASTE
+    } else {
+        state
+    }
+}
+
 /// Whether a write of `data` from the terminal is a person at the keys: a
 /// key that types (anything not led by Esc), a paste, and an Esc-led key
 /// that is none of what the terminal sends of itself or moves nothing (a
@@ -1010,6 +1026,17 @@ mod tests {
         assert_eq!((s & !DRAFT_FLAGS, s & DRAFT_PASTE), (8, 0), "closed by its end marker");
         // After it, an Enter sends again.
         assert_eq!(draft_after(s, "\r") & !DRAFT_FLAGS, 0);
+    }
+
+    #[test]
+    fn a_paste_whose_end_never_came_is_over_after_a_pause_its_text_kept() {
+        let open = draft_after(0, "\x1b[200~half a paste");
+        assert!(open & DRAFT_PASTE != 0);
+        assert_eq!(paste_lapsed(open, 1_000, 1_500), open, "still coming");
+        let over = paste_lapsed(open, 1_000, 1_000 + PASTE_LAPSE_MS);
+        assert_eq!((over & DRAFT_PASTE, over & !DRAFT_FLAGS), (0, 12), "over, what it pasted still a draft");
+        // An Enter after it sends again, as one does.
+        assert_eq!(draft_after(over, "\r") & !DRAFT_FLAGS, 0);
     }
 
     #[test]
