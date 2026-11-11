@@ -39,6 +39,22 @@ fn disk_api_error(p: &crate::pty::ActivityProbe) -> Option<&'static str> {
     }
 }
 
+/// The usage limit a chat's last turn ended on, in Luna's words, where its
+/// CLI says: Claude Code's `StopFailure` hook or its transcript's API error;
+/// Codex's rollout (`limit_in`), which ends such a turn like any other, so
+/// it never sits waiting on one. None for a chat not running.
+pub fn limit_of(chat_id: &str, provider: Provider) -> Option<&'static str> {
+    let p = crate::pty::manager().probe(chat_id)?;
+    match provider {
+        Provider::Claude => failed_of(chat_id)
+            .or_else(|| crate::claude::session::last_api_error(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path))
+            .filter(|e| *e == "rate_limit"),
+        Provider::Codex => {
+            let path = crate::codex::session::rollout_for(&codex_live(&p))?;
+            crate::codex::session::limit_in(&crate::pty::tail(&path, 256 * 1024)?)
+        }
+    }
+}
 /// Turns the CLI's own record says this process has finished, where it
 /// keeps one.
 fn disk_turns_ended(p: &crate::pty::ActivityProbe) -> Option<u32> {
