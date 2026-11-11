@@ -33,14 +33,30 @@ pub fn lay_out(when: &str) {
 /// went first, before it was counted, has moved the folder by the time the
 /// pass is done: the start is refused then, not made on a folder that is
 /// gone, which the CLI would make anew as an account signed in to nothing.
+/// So is one whose folder went before the pass began: a start is never made
+/// on an account folder that is not there.
 pub fn lay_out_for(when: &str, account_path: &str) -> Result<crate::account_use::Running, String> {
     let reserved = crate::account_use::running_on(account_path);
-    let there = Path::new(account_path).is_dir();
+    #[cfg(test)]
+    let made_up = !Path::new(account_path).is_dir() && !STRICT.with(|s| s.get());
     lay_out(when);
-    if there && !Path::new(account_path).is_dir() {
+    #[cfg(test)]
+    if made_up {
+        return Ok(reserved);
+    }
+    if !Path::new(account_path).is_dir() {
         return Err(format!("{account_path} is not there any more: the account was renamed or deleted as this session started"));
     }
     Ok(reserved)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The launch tests start sessions on account paths made up for them
+    /// (`/golden/acc-claude`), never made on disk: in a test build, and only
+    /// there, a start on a folder missing from the first goes on unless the
+    /// test asks for the check as it is made outside tests.
+    static STRICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Points the library at another folder; empty = back to `<data>/library`.
@@ -860,6 +876,27 @@ mod tests {
             assert!(!crate::account_use::running(&path), "{vendor}: and lets it go");
             let _ = std::fs::remove_dir_all(&base);
         }
+    }
+
+    /// A rename done before the start's pass began (the start paused in its
+    /// worktree fetch, say): the folder is gone before `lay_out_for` looks,
+    /// and the start is refused all the same, on either kind of account.
+    #[test]
+    fn a_start_whose_account_went_before_its_pass_is_refused() {
+        STRICT.with(|s| s.set(true));
+        for vendor in ["anthropic", "openai"] {
+            let base = std::env::temp_dir().join(format!("luna-start-gone-{vendor}-{}", std::process::id()));
+            let account = base.join(vendor).join("work");
+            std::fs::create_dir_all(&account).unwrap();
+            std::fs::rename(&account, account.with_file_name("office")).unwrap();
+            let path = account.to_string_lossy().into_owned();
+            let why = lay_out_for("in the gone-before test", &path).map(drop).unwrap_err();
+            assert!(why.contains("renamed or deleted"), "{vendor}: {why}");
+            assert!(!crate::account_use::running(&path), "{vendor}: nothing held");
+            assert!(!account.exists(), "{vendor}: nothing made at the old path");
+            let _ = std::fs::remove_dir_all(&base);
+        }
+        STRICT.with(|s| s.set(false));
     }
 
     /// Deleted, changed and foreign copies all become the library's again,
