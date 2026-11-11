@@ -22,6 +22,7 @@ import {
   AT_STAKE,
   APPLIED,
   BROWSERS,
+  MOVE_PREVIEW,
   ORPHANS
 } from './fixtures';
 
@@ -79,6 +80,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   }
   if (cmd === 'applied_by_luna') return APPLIED as unknown as T;
   if (cmd === 'handoff_file') return HANDOFF_FILE as unknown as T;
+  if (cmd === 'move_prepare') return MOVE_PREVIEW as unknown as T;
   if (cmd === 'handoff_transcript') {
     const first = args.since == null;
     return { ...HELPER_TRANSCRIPT, running: false, messages: first ? HELPER_TRANSCRIPT.messages : [] } as unknown as T;

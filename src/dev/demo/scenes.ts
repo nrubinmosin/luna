@@ -40,6 +40,7 @@ import {
   UPDATE_POWER
 } from './fixtures';
 import { demoState } from './ipc';
+import { useMoveHints } from '../../features/chats/moveHints.store';
 
 /** A Settings page's scene: `settings` is its first page, `settings-links` and
  *  the like the others, each with a `-dark` twin. */
@@ -57,6 +58,8 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
  *  helper list, opened from its pane's title bar),
  *  `?demo=delete-helpers` (deleting a chat whose helpers are at work),
  *  `?demo=handoff` / `handoff-dark` (a chat gone on past a handoff, its divider and copy),
+ *  `?demo=move` / `move-dark` (a chat a usage limit stopped, its offer of a move and the move's dialog), `move-preview` /
+ *  `move-preview-dark` (the whole of what a move sends, before Send),
  *  `?demo=login` (an account's sign-in), `?demo=shortcuts`, `?demo=update` (the update's
  *  confirmation with eight sessions at work and a long note), `?demo=orphans` (sessions with no chat). */
 export type Scene =
@@ -89,6 +92,10 @@ export type Scene =
   | 'delete-helpers'
   | 'handoff'
   | 'handoff-dark'
+  | 'move'
+  | 'move-dark'
+  | 'move-preview'
+  | 'move-preview-dark'
   | 'login'
   | 'shortcuts'
   | 'update'
@@ -123,6 +130,10 @@ export const SCENES: Scene[] = [
   'delete-helpers',
   'handoff',
   'handoff-dark',
+  'move',
+  'move-dark',
+  'move-preview',
+  'move-preview-dark',
   'login',
   'shortcuts',
   'update',
@@ -255,6 +266,26 @@ export function seedDemo(scene: Scene) {
           ?.click(),
       400
     );
+  }
+  // The first chat stopped on a usage limit: its offer of a move, and the
+  // move's dialog opened from its "…" menu the way a click would; the
+  // preview one step on, as Preview would show it.
+  if (scene.startsWith('move')) {
+    useMoveHints.setState({ limits: { 'demo-1': 'usage_limit' }, dismissed: {} });
+    setTimeout(() => {
+      document.querySelector<HTMLElement>('.pane .pane-more')?.click();
+      setTimeout(() => {
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+          .find(m => m.textContent?.startsWith('Move to another account'))
+          ?.click();
+        if (scene.startsWith('move-preview'))
+          setTimeout(() => {
+            [...document.querySelectorAll<HTMLElement>('.move-dialog .dialog-foot button')]
+              .find(b => b.textContent === 'Preview')
+              ?.click();
+          }, 600);
+      }, 200);
+    }, 300);
   }
   // The first chat's Delete, with its helpers listed and their boxes ticked.
   if (scene === 'delete-helpers') {

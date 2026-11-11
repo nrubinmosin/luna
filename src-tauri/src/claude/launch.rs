@@ -32,6 +32,9 @@ pub(crate) struct ChatStart<'a> {
     /// why it is not given: its drafts folder could not be made private
     /// (agents/handoff `drafts_at_start`).
     pub(crate) handoff: Option<(u8, Result<&'a Path, &'a str>)>,
+    /// A chat opened by a move to another account: its folder of copies,
+    /// where the document it opens from is (agents/handoff `moved_dir`).
+    pub(crate) moved: Option<&'a Path>,
     pub(crate) skill_args: &'a [String],
 }
 
@@ -114,6 +117,16 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             Err(why) => value.push_str(&crate::agents::handoff::no_drafts_applied(why)),
         }
         applied.push(Item::AutoHandoff.with(value));
+    }
+    // A moved chat reads the document it opened from without asking: the
+    // same folder auto-handoff gives, given once.
+    if let Some(dir) = s.moved {
+        let given = matches!(s.handoff, Some((_, Ok(h))) if h == dir);
+        if !given {
+            args.push("--add-dir".into());
+            args.push(path(dir));
+        }
+        applied.push(Item::MovedChat.with(format!("--add-dir {}", path(dir))));
     }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(skills_applied(s.skill_args));

@@ -112,6 +112,11 @@ interface ChatBase {
   handoff?: HandoffMark | null;
   /** A handoff it was asked for and has not made, as the core last said. */
   handoffAsked?: HandoffAsked | null;
+  /** Moved to another account (agents/handoff/moving.rs): the chat that goes
+   *  on there. */
+  movedTo?: string | null;
+  /** Opened by a move from another account: the chat it goes on from. */
+  movedFrom?: string | null;
 }
 
 /** A chat asked for a handoff that has not come (agents/handoff `HandoffAsked`):
@@ -128,6 +133,8 @@ export interface HandoffMark {
   /** When it was scheduled, or when it ended. */
   at: number;
   state: 'underWay' | 'done' | 'failed';
+  /** The document a move to another account opened the chat with. */
+  moved?: boolean;
   why?: string | null;
   /** The conversation it left can be read. */
   previous: boolean;

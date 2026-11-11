@@ -154,6 +154,54 @@ fn message_of(v: &Value) -> Option<crate::agents::Message> {
     Some(crate::agents::Message { role: role.to_string(), text, after_cli: false, final_answer })
 }
 
+/// One rollout line as something said in the conversation, if it is one
+/// (`message_of`): what a moved chat's document quotes
+/// (agents/handoff/excerpts.rs).
+pub(crate) fn said_line(line: &str) -> Option<crate::agents::Message> {
+    message_of(&serde_json::from_str::<Value>(line).ok()?)
+}
+/// The limit a rollout's last turn was stopped by, in Luna's words
+/// (`usage_limit`, `rate_limit`, `credits_depleted`), from the tail of its
+/// text: an `error` event's `codex_error_info`, or the last `token_count`'s
+/// `rate_limits.rate_limit_reached_type` (seen in 0.167.1's binary, docs/
+/// cli-compatibility.md). Only what follows the last turn's start counts: a
+/// limit an earlier turn met is over once a turn has run since.
+pub(crate) fn limit_in(text: &str) -> Option<&'static str> {
+    let mut reached: Option<Option<&'static str>> = None;
+    for line in text.lines().rev() {
+        if !line.contains("\"event_msg\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let p = &v["payload"];
+        match p["type"].as_str() {
+            Some("task_started" | "turn_started") => break,
+            Some("error" | "stream_error") => {
+                let info = &p["codex_error_info"];
+                let kind = info.as_str().or_else(|| info.as_object().and_then(|o| o.keys().next()).map(String::as_str));
+                if let Some(k) = kind.and_then(limit_word) {
+                    return Some(k);
+                }
+            }
+            Some("token_count") if reached.is_none() && p["rate_limits"].is_object() => {
+                reached = Some(p["rate_limits"]["rate_limit_reached_type"].as_str().and_then(limit_word));
+            }
+            _ => {}
+        }
+    }
+    reached.flatten()
+}
+
+/// A Codex limit's name as Luna words it, if it is one that stops a turn.
+fn limit_word(kind: &str) -> Option<&'static str> {
+    match kind {
+        "usage_limit_exceeded" => Some("usage_limit"),
+        "rate_limit_exceeded" | "rate_limit_reached" => Some("rate_limit"),
+        k if k.ends_with("_credits_depleted") => Some("credits_depleted"),
+        k if k.ends_with("usage_limit_reached") => Some("usage_limit"),
+        _ => None,
+    }
+}
 /// The thread's name, if it has one. Codex appends `{id, thread_name,
 /// updated_at}` to `<CODEX_HOME>/session_index.jsonl` whenever a thread is
 /// named, so the last line for an id is the current name. It names a thread
@@ -746,5 +794,36 @@ mod tests {
         let counted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":18446744073709551615,"output_tokens":1}}}}"#;
         assert_eq!(answered_model_in(&[asked, counted].join("\n"), Some(0)).as_deref(), Some("gpt-6.1-sol"));
         assert!(read_rollout([call, asked, counted].join("\n").as_bytes(), 0).due_ms.is_some());
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn a_limit_is_read_from_the_last_turn_only() {
+        let ev = |p: Value| serde_json::json!({ "timestamp": "t", "type": "event_msg", "payload": p }).to_string();
+        let started = ev(serde_json::json!({ "type": "task_started" }));
+        let count = |reached: Value| {
+            ev(
+                serde_json::json!({ "type": "token_count", "rate_limits": { "primary": { "used_percent": 100.0 }, "rate_limit_reached_type": reached } }),
+            )
+        };
+        let error =
+            |info: Value| ev(serde_json::json!({ "type": "error", "message": "You've hit your usage limit.", "codex_error_info": info }));
+        let rollout = |lines: &[String]| lines.join("\n");
+        assert_eq!(limit_in(&rollout(&[started.clone(), error(serde_json::json!("usage_limit_exceeded"))])), Some("usage_limit"));
+        assert_eq!(limit_in(&rollout(&[started.clone(), error(serde_json::json!({ "usage_limit_exceeded": {} }))])), Some("usage_limit"));
+        assert_eq!(
+            limit_in(&rollout(&[started.clone(), count(serde_json::json!("workspace_member_usage_limit_reached"))])),
+            Some("usage_limit")
+        );
+        assert_eq!(limit_in(&rollout(&[started.clone(), count(serde_json::json!("member_credits_depleted"))])), Some("credits_depleted"));
+        assert_eq!(limit_in(&rollout(&[started.clone(), count(Value::Null)])), None, "as a live rollout has it");
+        // Met before, and a turn has run since: over.
+        assert_eq!(limit_in(&rollout(&[error(serde_json::json!("usage_limit_exceeded")), started.clone(), count(Value::Null)])), None);
+        // Another error is no limit.
+        assert_eq!(limit_in(&rollout(&[started, error(serde_json::json!("context_window_exceeded"))])), None);
     }
 }

@@ -124,6 +124,15 @@ const EXTRAS = [
       `document.querySelector('.scrim')?.click(); ${wait(300)}` + clickText('.handoff-link', 'previous conversation'),
     opens: has('.helper-view')
   },
+  // The move's account list, open in its dialog; its document scrolled to
+  // the end in the preview, Send in reach.
+  { name: 'move-picker', scene: 'move', setup: click('.move-dialog .picker-face'), opens: has('.picker-list') },
+  {
+    name: 'move-scroll',
+    scene: 'move-preview',
+    setup: `document.querySelector('.move-doc').scrollTop = 1e6; ${wait(200)}`,
+    opens: has('.move-dialog .move-doc')
+  },
   { name: 'color', scene: 'main', setup: click('[data-glyph="swatch"]'), opens: has('.popover .swatch') },
   {
     name: 'link',

@@ -576,6 +576,12 @@ pub async fn ensure_claude_session(
     not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
+        // A moved chat whose old one still runs in the Claude Code worktree it
+        // goes into: that one would remove the worktree under it as it quits
+        // (agents/handoff `opening_refusal`).
+        if let Some(why) = crate::agents::handoff::opening_refusal(&id) {
+            return Err(why);
+        }
         // A login session runs in the account folder itself (the providers'
         // `loginSession`).
         let login = same_dir(&folder, &account_path);
@@ -624,6 +630,10 @@ pub async fn ensure_claude_session(
         let mut luna_dirs = added_dirs(&skills.args);
         luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
         luna_dirs.extend(handoff_dir.as_ref().and_then(|d| d.as_ref().ok()).map(|d| d.to_string_lossy().into_owned()));
+        // A chat a move opened: the folder its document is in (agents/handoff
+        // `moved_dir`), not for a login session.
+        let moved = if login { None } else { crate::agents::handoff::moved_dir(&id) };
+        luna_dirs.extend(moved.as_ref().map(|d| d.to_string_lossy().into_owned()));
         let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
         if dir.is_some() {
             (skills.memory_off, skills.memory_kept) = claude_memory_off(&luna_dirs, &account_path, &folder, dir.as_deref());
@@ -678,6 +688,7 @@ pub async fn ensure_claude_session(
             notes_dir: notes.as_deref(),
             instructions_dir: instructions.as_deref(),
             handoff: handoff.zip(handoff_dir.as_ref()).map(|(t, dir)| (t, dir.as_deref().map_err(String::as_str))),
+            moved: moved.as_deref(),
             skill_args: &skills.args,
         });
         Ok(Launch {
@@ -777,6 +788,11 @@ pub async fn ensure_codex_session(
             "model": chosen_model,
             "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
         });
+        // Started into a worktree Codex makes in the account's folder: Luna's
+        // own word for it, before any rollout says where the chat runs.
+        if new_worktree {
+            settings["worktree"] = serde_json::json!(true);
+        }
         if let Some(t) = handoff {
             settings["handoff"] = serde_json::json!(t);
         }

@@ -24,7 +24,9 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   kill_session: 5000,
   delete_session: 20_000,
   orphan_worktrees: 10_000,
-  remove_orphan_worktrees: 30_000
+  remove_orphan_worktrees: 30_000,
+  // Reads a transcript's ends and asks git, each bounded; 30 s in all.
+  move_prepare: 35_000
 };
 
 // What the core answers (corecmd.rs): everything that touches the running
@@ -68,7 +70,14 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'applied_by_luna',
   'set_auto_handoff',
   'handoff_file',
-  'handoff_transcript'
+  'handoff_transcript',
+  'move_prepare',
+  'move_confirm',
+  'move_step',
+  'move_cancel',
+  'move_list',
+  'move_ask',
+  'move_preview'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
 

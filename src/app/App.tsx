@@ -10,6 +10,7 @@ import { AppFrame } from './AppFrame';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { useSessionWatch } from '../features/chats/useSessionWatch';
+import { useMoves } from '../features/chats/moving';
 import { useWorktreeScan } from '../features/chats/worktrees.store';
 import { WorktreesDialog } from '../features/chats/WorktreesDialog';
 import { LoginModal } from '../features/accounts/LoginModal';
@@ -218,6 +219,7 @@ export function App() {
   useKeymap({ openNewChat, closeModal });
   useAltPeek();
   useSessionWatch();
+  useMoves();
   useWorktreeScan();
   useAgentBridge();
   useEffect(() => {
