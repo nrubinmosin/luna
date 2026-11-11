@@ -830,7 +830,12 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         let mut asked = now.asked.clone();
         asked.push(context.pct);
         let told = store::Told { level, asked, tokens: context.tokens, ..now };
-        if let Err(e) = store::change(&chat, |r| told_of(r, told, inline)) {
+        // A fresh handoff request: from it on, what the chat sends is its own,
+        // not an earlier ask's late answer (moving.rs `late_answer`).
+        if let Err(e) = store::change(&chat, |r| {
+            told_of(r, told, inline);
+            r.ask_closed = None;
+        }) {
             crate::log::warn("handoff", &format!("{}: the notice it was told could not be saved: {e}", label(&chat)));
         }
         let line = facts::notice(context.pct, threshold, firm, inline);

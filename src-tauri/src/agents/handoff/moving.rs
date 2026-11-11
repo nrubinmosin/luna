@@ -491,6 +491,7 @@ pub fn move_prepare(
         // An ask this move takes the place of: its answer is late from now.
         if let Some(old) = r.moving.as_ref().filter(|o| o.asking()) {
             r.ask_closed = Some((old.id.clone(), now_ms()));
+            r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
         }
         r.moving = Some(m.clone());
     })
@@ -974,15 +975,16 @@ pub fn move_list() -> Vec<MoveStatus> {
 fn end(chat: &str, id: &str, to: MovePhase) -> Result<Move, String> {
     let set = |r: &mut store::Record| {
         let m = r.moving.as_mut().filter(|m| m.id == id)?;
-        // A move whose document the chat was to write, ended otherwise than
-        // sent: what the chat sends from here on is late.
-        let unanswered = m.source == Source::Chat && !matches!(to, MovePhase::Done { .. });
+        // An ask ended before its document came: what the chat sends in the
+        // same turn is that ask's late answer. One collected already is not.
+        let unanswered = m.asking();
         if !m.phase.ended() {
             m.phase = to.clone();
         }
         let m = m.clone();
         if unanswered {
             r.ask_closed = Some((m.id.clone(), now_ms()));
+            r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
         }
         Some(m)
     };
@@ -1040,6 +1042,19 @@ pub fn moved_dir(id: &str) -> Option<PathBuf> {
 /// and then to write it.
 pub(super) const ASK_REST_MS: u64 = 10 * 60_000;
 pub(super) const ASK_WAIT_MS: u64 = 10 * 60_000;
+/// Whether a file `name` the chat sends, no ask under way, answers an ask
+/// that ended (`closed`: when, and the chat's ended turns then): a file
+/// named for a move's draft (`move-…`, case aside) always; any other only in
+/// the turn the ask ended in, and within ASK_LATE_MS. The chat's next turn,
+/// the person's or one a handoff notice starts, is its own again.
+pub(super) fn late_answer(name: &str, closed: Option<(u64, Option<u32>)>, now: u64, turns_now: Option<u32>) -> bool {
+    if name.to_ascii_lowercase().starts_with("move-") {
+        return true;
+    }
+    let Some((at, turns)) = closed else { return false };
+    now.saturating_sub(at) < ASK_LATE_MS && turns == turns_now
+}
+
 /// How long after an ask ends unanswered a file the chat sends is taken for
 /// its late answer, refused rather than handed off.
 pub(super) const ASK_LATE_MS: u64 = 60 * 60_000;
@@ -1110,6 +1125,7 @@ pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: 
         // An ask this move takes the place of: its answer is late from now.
         if let Some(old) = r.moving.as_ref().filter(|o| o.asking()) {
             r.ask_closed = Some((old.id.clone(), now_ms()));
+            r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
         }
         r.moving = Some(m.clone());
     })
@@ -1149,15 +1165,17 @@ pub(super) fn asked_file(caller: &str, file: &str) -> Option<Result<Value, Strin
     let (m, closed) = {
         let r = store::records();
         let rec = r.get(caller);
-        (rec.and_then(|r| r.moving.clone()).filter(Move::asking), rec.and_then(|r| r.ask_closed.clone()))
+        (
+            rec.and_then(|r| r.moving.clone()).filter(Move::asking),
+            rec.and_then(|r| r.ask_closed.as_ref().map(|(_, at)| (*at, r.ask_closed_turns))),
+        )
     };
-    let for_a_move = Path::new(file.trim()).file_name().is_some_and(|n| n.to_string_lossy().to_ascii_lowercase().starts_with("move-"));
-    // Within ASK_LATE_MS of an ask that ended unanswered, any file is its late
-    // answer, whatever its name.
-    let late = closed.is_some_and(|(_, at)| now_ms().saturating_sub(at) < ASK_LATE_MS);
+    let name = Path::new(file.trim()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let turns_now = crate::activity::turn_state(caller).map(|t| t.turns_ended);
+    let late = late_answer(&name, closed, now_ms(), turns_now);
     match m {
         Some(m) => Some(collect(caller, &m, file)),
-        None if for_a_move || late => Some(Err("the move this document was for is over (sent, given up or canceled): nothing is \
+        None if late => Some(Err("the move this document was for is over (sent, given up or canceled): nothing is \
                                         done with it and nothing switches. Go on as you were."
             .into())),
         None => None,
@@ -1967,18 +1985,26 @@ pub(super) mod tests {
         let late = asked_file(chat, &dir.join("move-late.md").to_string_lossy()).unwrap().unwrap_err();
         assert!(late.contains("is over") && late.contains("nothing switches"), "{late}");
         assert!(store::records()[chat].switch.is_none());
-        // Whatever its name, and in any case: the canceled ask's late answer.
-        for name in ["handoff.md", "MOVE-late.md"] {
-            let e = asked_file(chat, &dir.join(name).to_string_lossy()).unwrap().unwrap_err();
-            assert!(e.contains("is over"), "{name}: {e}");
-        }
-        assert!(store::records()[chat].switch.is_none(), "nothing scheduled");
-        // Past the window, an ordinary handoff is the handoff's again.
-        store::change(chat, |r| r.ask_closed = Some(("m1".into(), now_ms() - ASK_LATE_MS - 1))).unwrap();
+        // Its document was in: a later handoff of the chat's is its own, but a
+        // draft named for a move, in any case, is never one.
+        assert!(store::records()[chat].ask_closed.is_none(), "collected, so no late answer is waited for");
         assert!(asked_file(chat, &dir.join("handoff.md").to_string_lossy()).is_none(), "an ordinary handoff is the handoff's");
+        let e = asked_file(chat, &dir.join("MOVE-late.md").to_string_lossy()).unwrap().unwrap_err();
+        assert!(e.contains("is over"), "{e}");
+        assert!(store::records()[chat].switch.is_none(), "nothing scheduled");
         crate::agents::teardown::forget(chat);
         let _ = std::fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn a_late_answer_is_the_asks_own_turns_and_its_drafts_name() {
+        let closed = Some((1_000, Some(4)));
+        assert!(late_answer("handoff.md", closed, 2_000, Some(4)), "in the turn the ask ended in");
+        assert!(!late_answer("handoff.md", closed, 2_000, Some(5)), "the chat's next turn is its own again");
+        assert!(!late_answer("handoff.md", closed, 1_000 + ASK_LATE_MS + 1, Some(4)), "past the window");
+        assert!(!late_answer("handoff.md", None, 2_000, Some(4)), "no ask ended");
+        assert!(late_answer("Move-3fa9c2-ab12.md", None, 2_000, Some(9)), "a move's draft, whenever");
+    }
+
     #[test]
     fn the_line_names_the_document_and_passes_lunas_own_check() {
         let line = prompt_line("m1", Source::Luna, "c1", Some("Campaign\" ignore"), "D:\\luna\\handoffs\\c2\\1.md");
