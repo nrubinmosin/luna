@@ -330,7 +330,15 @@ pub fn at_empty_prompt(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -
 fn claude_placeholder(screen: &vt100::Screen, top: u16, cols: u16) -> bool {
     let caret = (2..4).filter_map(|c| screen.cell(top, c)).any(|c| c.inverse());
     let rest: String = (2..cols).filter_map(|c| screen.cell(top, c)).map(|c| if c.has_contents() { c.contents() } else { " " }).collect();
-    caret && rest.trim_start().starts_with("Try \"")
+    // Its look as well as its words: the CLI draws a placeholder dim or in a
+    // color of its own, and what a person types in the default foreground. A
+    // draft of theirs that reads `Try "…`, the caret moved to its start, is
+    // drawn so and stays text.
+    let drawn_as_placeholder = (2..cols)
+        .filter_map(|c| screen.cell(top, c))
+        .filter(|c| !c.inverse() && c.has_contents() && !c.contents().trim().is_empty())
+        .all(|c| c.dim() || c.fgcolor() != vt100::Color::Default);
+    caret && drawn_as_placeholder && rest.trim_start().starts_with("Try \"")
 }
 
 /// Whether the screen shows the CLI's composer, empty, by its mark alone: the
@@ -625,6 +633,14 @@ impl PtyManager {
         thread_in_title(m.title.as_deref()?).map(str::to_owned)
     }
 
+    /// Whether a person's keys since their last Enter leave text in the
+    /// composer, by Luna's own count of them alone (`draft_after`): what no
+    /// read of the screen clears. A move's line goes in only with none.
+    pub fn keys_left_text(&self, id: &str) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(id).is_some_and(|s| s.keys_draft.load(Ordering::Relaxed) & !DRAFT_BACKSLASH > 0)
+    }
+
     /// Whether its screen shows an empty composer by its mark alone (see
     /// `composer_empty_loose`).
     pub fn composer_visible(&self, id: &str) -> bool {
@@ -844,6 +860,15 @@ mod tests {
             [b"\x1b[?25l".to_vec(), drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} Try \"mine\x1b[7m \x1b[27m")], (1, 1))]
                 .concat();
         assert!(!at_empty_prompt(&typed, 9, 24, Provider::Claude));
+        // The person's own `Try "mine"`, the caret moved to its start: drawn in
+        // the default foreground, it is text, hidden cursor or not.
+        let theirs =
+            [b"\x1b[?25l".to_vec(), drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} \x1b[7mT\x1b[27mry \"mine\"")], (1, 1))]
+                .concat();
+        assert!(!at_empty_prompt(&theirs, 9, 24, Provider::Claude), "a draft that reads like the placeholder");
+        assert!(!composer_empty_loose(&theirs, 9, 24, Provider::Claude));
+        let theirs_focused = drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} \x1b[7mT\x1b[27mry \"mine\"")], (8, 3));
+        assert_eq!(read_composer(&theirs_focused, 9, 24, Provider::Claude).map(|c| c.text).as_deref(), Some("Try \"mine\""));
         // The cursor where a focused pane has it, on the caret: read as empty.
         let focused = drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} \x1b[7mT\x1b[27m\x1b[90mry \"x\"\x1b[39m")], (8, 3));
         assert_eq!(read_composer(&focused, 9, 24, Provider::Claude).map(|c| c.text), Some(String::new()));
