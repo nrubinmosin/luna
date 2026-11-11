@@ -3,7 +3,11 @@
 //! deleting a chat, and the sessions no chat claims any more.
 
 use super::probe::{meta_from_disk, probe_of, Probe};
-use super::screen::{draft_after, keys_after};
+use super::screen::{composer_keys, composer_seen, draft_after};
+
+/// How much of the screen's output is replayed to tell a dialog from the
+/// composer as a key comes in: the last frames a TUI drew, not its history.
+const KEYS_LOOK_BYTES: usize = 256 * 1024;
 use super::start::claude_instructions_dir;
 use super::{manager, now_ms, Input, PtyManager, Session};
 use crate::provider::Provider;
@@ -35,8 +39,19 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
     }
     let draft = draft_after(s.draft.load(Ordering::Relaxed), &data);
     s.draft.store(draft, Ordering::Relaxed);
-    let keys = keys_after(s.keys_draft.load(Ordering::Relaxed), &data);
+    // The move's veto counts composer text alone: a key that goes to a
+    // dialog (a digit that picks an option) does not, looked at on the
+    // screen's last stretch where a key would start a draft.
+    let (keys, dialog) = composer_keys(s.keys_draft.load(Ordering::Relaxed), s.keys_dialog.load(Ordering::Relaxed), &data, || {
+        let bytes: Vec<u8> = {
+            let sb = s.scrollback.lock().unwrap_or_else(|e| e.into_inner());
+            sb.range(sb.len().saturating_sub(KEYS_LOOK_BYTES)..).copied().collect()
+        };
+        let (rows, cols) = *s.size.lock().unwrap_or_else(|e| e.into_inner());
+        !composer_seen(&bytes, rows, cols, s.provider)
+    });
     s.keys_draft.store(keys, Ordering::Relaxed);
+    s.keys_dialog.store(dialog, Ordering::Relaxed);
     if s.provider == Provider::Claude && data.contains('\x13') {
         s.stashing.store(true, Ordering::Relaxed);
     }
