@@ -149,12 +149,17 @@ fn lock_file(path: &Path) -> std::io::Result<std::fs::File> {
 /// going ahead under their own mutex would each save the ledger as they read
 /// it, losing or bringing back the other's records.
 fn lock() -> Result<Locked, String> {
+    lock_or("Nothing laid out")
+}
+
+/// `lock`, its refusal opening with what was not done.
+fn lock_or(refused: &str) -> Result<Locked, String> {
     let threads = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = lock_path();
     match lock_file(&path) {
         Ok(file) => Ok(Locked { _file: Some(file), _threads: threads }),
         Err(e) => Err(format!(
-            "Nothing laid out: no lock on {}: {e}. Without it Luna's window and its core could undo each other's \
+            "{refused}: no lock on {}: {e}. Without it Luna's window and its core could undo each other's \
              changes; Luna's data folder needs a disk that can lock files",
             path.display()
         )),
@@ -292,6 +297,41 @@ impl Ledger {
         self.worded.remove(key);
         self.written.remove(key)
     }
+    /// Every note of a place under the folder `from` now under `to`, which it
+    /// was renamed to: kept under the spelling a pass will go by, a change of
+    /// case alone included, since some lookups take a key as it is.
+    fn moved(&mut self, from: &Path, to: &Path) {
+        fn rekey<V>(map: &mut BTreeMap<String, V>, from: &Path, to: &Path) {
+            let moving: Vec<(String, String)> = map.keys().filter_map(|k| Some((k.clone(), moved_under(k, from, to)?))).collect();
+            let values: Vec<(String, V)> = moving.into_iter().filter_map(|(old, new)| Some((new, map.remove(&old)?))).collect();
+            map.extend(values);
+        }
+        rekey(&mut self.written, from, to);
+        rekey(&mut self.worded, from, to);
+        rekey(&mut self.kept, from, to);
+    }
+    /// Every note of a place under `dir` gone, as the folder is; whether there
+    /// was any.
+    fn dropped(&mut self, dir: &Path) -> bool {
+        let before = self.written.len() + self.worded.len() + self.kept.len();
+        self.written.retain(|k, _| !within(Path::new(k), dir));
+        self.worded.retain(|k, _| !within(Path::new(k), dir));
+        self.kept.retain(|k, _| !within(Path::new(k), dir));
+        before != self.written.len() + self.worded.len() + self.kept.len()
+    }
+}
+
+/// `place` as it is spelled once the folder `from` it lies under is renamed
+/// `to`; None where it lies elsewhere, or is that folder itself.
+fn moved_under(place: &str, from: &Path, to: &Path) -> Option<String> {
+    let at = Path::new(place);
+    let depth = from.components().count();
+    let head: PathBuf = at.components().take(depth).collect();
+    if at.components().count() <= depth || ident(&head) != ident(from) {
+        return None;
+    }
+    let rest: PathBuf = at.components().skip(depth).collect();
+    Some(to.join(rest).to_string_lossy().into_owned())
 }
 
 impl Ledger {

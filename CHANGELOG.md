@@ -16,6 +16,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   unlocked, when the window and a starting session could undo each other's
   records. Sessions still start, without their pass, and the window still
   shows the library.
+- Renaming an account no longer loses what Skills & instructions knew of its
+  copies: changed copies stay changed rather than turning into someone else's,
+  kept copies and places left out stay as they were, instructions meant for
+  chats or helpers alone keep that line Luna's to take off, and Claude Code's
+  copies for listed folders move to the new name. Deleting an account forgets
+  its copies and places left out.
 
 ## [0.13.0] - 2026-11-11
 

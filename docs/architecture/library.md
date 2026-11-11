@@ -36,6 +36,20 @@ Each skill and instructions file has a **reach** in `settings.json`: `all`,
 `agents/` uses too). Renames and deletions carry along; an account a reach stops
 taking in loses Luna's copy.
 
+An account's rename carries along, under the pass lock from before its folder
+moves to after the settings are written (`rename_account_held`): its reaches,
+the ledger's notes of every copy under its folder (`written`, `worded`,
+`kept`, re-keyed by path prefix, a change of case included, as some lookups
+take a key as it is), the places left out there, and for Claude Code its folder
+copies, outside the account but named after it: each
+`library-folders/<slug>/<name>` is renamed `<slug>/<new>` and its notes follow,
+unless a link or junction lies on the way or the new name is taken, when it
+stays for a pass to lay out anew and take out. Codex's folder plugins lie in the
+account and move with it. Settings that will not write put the ledger, the
+folder copies and the account's folder back. A deletion drops the ledger's
+notes under the folder and the places left out in it under the same lock;
+its folder copies go at the next pass, as copies no longer wanted.
+
 An account has one instructions file, so the closest reach decides (`chosen`):
 named beats a provider beats `all`; `library.noInstructions` names accounts
 that get none. Setting a reach takes each entry from every other instructions
@@ -209,6 +223,8 @@ The window re-reads the overview (no writes) on every focus.
   `description` is `failed`; its copies stay. So is everything fed by a
   `skills/` that will not list or an instructions file that will not read.
 - A library folder that is not there wants nothing and touches nothing.
+- An account's rename or deletion holds the pass lock throughout: no pass sees
+  the folder moved with the ledger still on the old path.
 - Paths compare as the file system does (`ident`: on Windows either slash, any
   case).
 - A destination inside the library's `skills/`, or one holding the library, is
