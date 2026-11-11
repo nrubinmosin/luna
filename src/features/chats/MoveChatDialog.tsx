@@ -6,7 +6,7 @@
  * a note), then the whole of what goes, the line Luna types and the
  * document, with Send bound to exactly that text.
  */
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   moveAsk,
@@ -26,6 +26,35 @@ import { ui } from '../providers';
 import { useChats, newId } from './chats.store';
 import { carryOut, launchFor, modelFor } from './moving';
 import { useMoveHints } from './moveHints.store';
+
+/** One XP.css choice: the control, then its label by `for`, which is what
+ *  XP.css draws the box or the dot on. */
+function Opt({
+  id,
+  type,
+  name,
+  checked,
+  disabled,
+  onChange,
+  title,
+  children
+}: {
+  id: string;
+  type: 'radio' | 'checkbox';
+  name?: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: () => void;
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="move-opt" title={title}>
+      <input type={type} id={id} name={name} checked={checked} disabled={disabled} onChange={onChange} />
+      <label htmlFor={id}>{children}</label>
+    </div>
+  );
+}
 
 /** How often the dialog looks whether the chat has written its document. */
 const ASKED_EVERY_MS = 2000;
@@ -73,7 +102,8 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
     return t ? accountKey(t.provider, t.name) : '';
   });
   const to = targets.find(a => accountKey(a.provider, a.name) === target) ?? null;
-  const codexWorktree = chat.provider === 'codex' && !!chat.worktreePath;
+  // In a Codex worktree, or started into one before its first turn says where.
+  const codexWorktree = chat.provider === 'codex' && (chat.worktree || !!chat.worktreePath);
   const claudeWorktree = chat.provider === 'claude' && chat.worktree;
   const refusal = askRefusal(chat, limit);
   const [source, setSource] = useState<'luna' | 'chat'>('luna');
@@ -192,8 +222,12 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
     }
   };
 
+  // Taken before anything awaits: two clicks in one task see the same
+  // rendered step, and only one Send may go.
+  const sendingRef = useRef(false);
   const send = async () => {
-    if (step.at !== 'preview' || !to || !folder || !model) return;
+    if (sendingRef.current || step.at !== 'preview' || !to || !folder || !model) return;
+    sendingRef.current = true;
     const { preview, text } = step;
     setStep({ at: 'sending' });
     setError(null);
@@ -207,6 +241,8 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
     } catch (e) {
       setError(String(e));
       setStep({ at: 'preview', preview, text });
+    } finally {
+      sendingRef.current = false;
     }
   };
 
@@ -221,10 +257,27 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
 
   const host = document.querySelector('[data-app]') ?? document.body;
   const box = useRef<HTMLDivElement>(null);
-  const trap = useModal(box, host);
+  // While the chat is asked the person may have to answer it in its pane:
+  // the dialog is then a banner, nothing else made inert.
+  const trap = useModal(box, step.at === 'asking' ? null : host);
   const titleId = useId();
+  const uid = useId();
   const label = PROVIDER_LABEL[chat.provider];
   const bytes = step.at === 'preview' ? new TextEncoder().encode(step.text).length : 0;
+
+  if (step.at === 'asking')
+    return createPortal(
+      <div className="window move-banner" role="status" data-testid="move-banner">
+        <div className="window-body">
+          <span>
+            "{chat.name}" is asked to write its document for the move, once it is at its prompt. Nothing is cleared
+            there; if its CLI asks to create the file, answer in its pane.
+          </span>
+          <button onClick={cancel}>Cancel the move</button>
+        </div>
+      </div>,
+      host
+    );
 
   return createPortal(
     <div
@@ -316,71 +369,75 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
                 </div>
               )}
               {to && trusted === false && (
-                <label className="move-check">
-                  <input type="checkbox" checked={trustIt} onChange={e => setTrustIt(e.target.checked)} />
+                <Opt id={`${uid}-trust`} type="checkbox" checked={trustIt} onChange={() => setTrustIt(!trustIt)}>
                   Trust {folder?.path} on {to.name}
                   {claudeWorktree ? ' (needed: in a worktree Claude Code cannot ask)' : ''}
-                </label>
+                </Opt>
               )}
-              <fieldset className="move-group">
-                <legend>The document</legend>
-                <label className="move-check">
-                  <input
-                    type="radio"
-                    name="move-source"
-                    checked={source === 'luna'}
-                    onChange={() => setSource('luna')}
-                  />
+              <div className="move-group" role="group" aria-labelledby={`${uid}-doc`}>
+                <div className="move-label" id={`${uid}-doc`}>
+                  The document
+                </div>
+                <Opt
+                  id={`${uid}-luna`}
+                  type="radio"
+                  name="move-source"
+                  checked={source === 'luna'}
+                  onChange={() => setSource('luna')}
+                >
                   Luna writes it from the chat's records
-                </label>
-                <label className="move-check" title={refusal ?? undefined}>
-                  <input
-                    type="radio"
-                    name="move-source"
-                    disabled={!!refusal}
-                    checked={source === 'chat'}
-                    onChange={() => setSource('chat')}
-                  />
+                </Opt>
+                <Opt
+                  id={`${uid}-chat`}
+                  type="radio"
+                  name="move-source"
+                  disabled={!!refusal}
+                  checked={source === 'chat'}
+                  onChange={() => setSource('chat')}
+                  title={refusal ?? undefined}
+                >
                   Ask the chat to write it{refusal ? ` — ${refusal}` : ''}
-                </label>
-              </fieldset>
-              <fieldset className="move-group">
-                <legend>This chat</legend>
-                <label className="move-check">
-                  <input
-                    type="radio"
-                    name="move-old"
-                    disabled={claudeWorktree}
-                    checked={!stopOld}
-                    onChange={() => setStopOld(false)}
-                  />
+                </Opt>
+              </div>
+              <div className="move-group" role="group" aria-labelledby={`${uid}-old`}>
+                <div className="move-label" id={`${uid}-old`}>
+                  This chat
+                </div>
+                <Opt
+                  id={`${uid}-keep`}
+                  type="radio"
+                  name="move-old"
+                  disabled={claudeWorktree}
+                  checked={!stopOld}
+                  onChange={() => setStopOld(false)}
+                >
                   Keep it
-                </label>
-                <label className="move-check">
-                  <input type="radio" name="move-old" checked={stopOld} onChange={() => setStopOld(true)} />
+                </Opt>
+                <Opt
+                  id={`${uid}-stop`}
+                  type="radio"
+                  name="move-old"
+                  checked={stopOld}
+                  onChange={() => setStopOld(true)}
+                >
                   Stop it
                   {claudeWorktree ? ' (always, in a Claude Code worktree: the new chat goes into it)' : ''}
-                </label>
+                </Opt>
                 {!stopOld && <div className="move-warn">Kept, both chats work in one folder.</div>}
                 {stopOld && chat.status === 'background' && (
                   <div className="move-warn">Its subagents and jobs still at work stop with it.</div>
                 )}
-              </fieldset>
+              </div>{' '}
               <label className="move-row move-note">
-                <span>Your note</span>
+                <span>Your instruction to the new chat (optional): typed into it as yours, outside the document</span>
                 <textarea
                   rows={2}
                   value={note}
-                  placeholder="What the new chat should do first (optional)"
+                  placeholder="What the new chat should do first"
                   onChange={e => setNote(e.target.value)}
                 />
               </label>
             </>
-          ) : step.at === 'asking' ? (
-            <p>
-              The chat is asked to write its document, once it is at its prompt. Nothing is cleared there; if Claude
-              Code asks to create the file, answer in its pane.
-            </p>
           ) : step.at === 'preview' ? (
             <>
               <p className="move-lead">

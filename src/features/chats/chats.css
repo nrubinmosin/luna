@@ -352,16 +352,40 @@
   flex-direction: column;
   gap: 4px;
 }
-[data-app] .move-dialog .move-check {
+[data-app] .move-dialog .move-opt {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 6px;
+}
+/* xp.css makes a label inline-flex, which cuts a wrapping one into columns. */
+[data-app] .move-dialog .move-opt label {
+  display: block;
+  line-height: 1.5;
 }
 [data-app] .move-dialog .move-group {
   display: flex;
   flex-direction: column;
   gap: 4px;
   margin: 0;
+  padding: 6px 8px;
+  border-radius: 2px;
+  background: var(--chip);
+}
+/* While the chat writes its document: a banner, the panes in reach. */
+[data-app] .move-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  z-index: 80;
+  max-width: min(640px, 92vw);
+  box-shadow: var(--shadow), var(--border-window-outer), var(--border-window-inner);
+}
+[data-app] .move-banner .window-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--fs-4);
 }
 [data-app] .move-dialog .move-facts,
 [data-app] .move-dialog .move-counts {

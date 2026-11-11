@@ -189,7 +189,10 @@ const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-dig
 
 /** What the divider says of a handoff, its links aside. */
 export function markWords(mark: HandoffMark): string {
-  if (mark.moved) return `Moved here from another account · ${clock(mark.at)}`;
+  if (mark.moved)
+    return mark.state === 'failed'
+      ? `The move here did not go through: ${mark.why ?? 'Luna typed nothing'} · ${clock(mark.at)}`
+      : `Moved here from another account · ${clock(mark.at)}`;
   switch (mark.state) {
     case 'underWay':
       return `Handoff ${mark.n} · under way since ${clock(mark.at)}`;

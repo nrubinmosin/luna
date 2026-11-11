@@ -58,7 +58,7 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
  *  helper list, opened from its pane's title bar),
  *  `?demo=delete-helpers` (deleting a chat whose helpers are at work),
  *  `?demo=handoff` / `handoff-dark` (a chat gone on past a handoff, its divider and copy),
- *  `?demo=move` (a chat a usage limit stopped, its offer of a move and the move's dialog), `move-preview` /
+ *  `?demo=move` / `move-dark` (a chat a usage limit stopped, its offer of a move and the move's dialog), `move-preview` /
  *  `move-preview-dark` (the whole of what a move sends, before Send),
  *  `?demo=login` (an account's sign-in), `?demo=shortcuts`, `?demo=update` (the update's
  *  confirmation with eight sessions at work and a long note), `?demo=orphans` (sessions with no chat). */
@@ -93,6 +93,7 @@ export type Scene =
   | 'handoff'
   | 'handoff-dark'
   | 'move'
+  | 'move-dark'
   | 'move-preview'
   | 'move-preview-dark'
   | 'login'
@@ -130,6 +131,7 @@ export const SCENES: Scene[] = [
   'handoff',
   'handoff-dark',
   'move',
+  'move-dark',
   'move-preview',
   'move-preview-dark',
   'login',
