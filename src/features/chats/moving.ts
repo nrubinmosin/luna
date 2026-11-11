@@ -9,7 +9,6 @@
  * preview: only Send does, and a preview Luna restarted on is given up.
  */
 import { useEffect } from 'react';
-import { killSession } from '../../ipc/sessions';
 import { moveList, moveStep, type MoveLaunch, type MoveStatusDto } from '../../ipc/moving';
 import { PERM_CLI, type Account, type Chat } from '../../shared/types';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
@@ -174,10 +173,10 @@ async function steps(m: MoveStatusDto): Promise<MoveStatusDto> {
   const chats = useChats.getState();
   let s = m;
   if (s.phase === 'confirmed' && s.stopOld) {
-    await killSession(s.chatId);
+    // The core looks at its helpers and debts, then stops it, in one step.
+    s = await moveStep(s.chatId, s.moveId, 'stopOld');
     forget(s.chatId);
     chats.setStatus(s.chatId, 'resting');
-    s = await moveStep(s.chatId, s.moveId, 'oldStopped');
   }
   if ((s.phase === 'confirmed' && !s.stopOld) || s.phase === 'oldStopped') {
     if (!chats.findChat(s.newId)) {

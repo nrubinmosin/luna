@@ -59,11 +59,12 @@ function Opt({
 /** How often the dialog looks whether the chat has written its document. */
 const ASKED_EVERY_MS = 2000;
 
-/** The first account that is not this chat's, of its CLI, with every window
- *  under 95%; else the first of them. */
+/** The first account that is not this chat's, of its CLI, signed in, with
+ *  every window under 95%; else the first signed in; else the first. */
 export function defaultTarget(accounts: Account[], chat: Chat): Account | null {
   const others = accounts.filter(a => a.provider === chat.provider && a.name !== chat.account);
-  return others.find(a => a.haveUsage && a.limits.every(l => l.used < 0.95)) ?? others[0] ?? null;
+  const signedIn = others.filter(a => a.signedIn);
+  return signedIn.find(a => a.haveUsage && a.limits.every(l => l.used < 0.95)) ?? signedIn[0] ?? others[0] ?? null;
 }
 
 /** Why "Ask the chat" is not offered, or null where it is. */
@@ -200,7 +201,11 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
   };
 
   const trustNeeded = trusted === false && claudeWorktree && !trustIt;
-  const canGo = !!to && !!folder && !!model && trusted !== null && !trustNeeded && !codexWorktree && !busy;
+  // A signed-out account would meet the new chat with a sign-in, not a
+  // prompt: refused until it is signed in.
+  const signedOut = !!to && !to.signedIn;
+  const canGo =
+    !!to && !signedOut && !!folder && !!model && trusted !== null && !trustNeeded && !codexWorktree && !busy;
 
   const build = async () => {
     if (!to || !folder) return;
@@ -341,6 +346,11 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
                   <span>Account</span>
                   <AccountPicker accounts={targets} value={target} onChange={setTarget} />
                 </label>
+              )}
+              {signedOut && (
+                <div className="move-warn" role="alert">
+                  {to?.name} is signed out: sign in to it in Accounts first, then move the chat there.
+                </div>
               )}
               {to && (
                 <div className="move-facts">
