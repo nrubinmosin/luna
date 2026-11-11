@@ -36,6 +36,30 @@ Each skill and instructions file has a **reach** in `settings.json`: `all`,
 `agents/` uses too). Renames and deletions carry along; an account a reach stops
 taking in loses Luna's copy.
 
+An account's rename carries along, under the pass lock from before its folder
+moves to after the settings are written (`rename_account_held`): its reaches,
+the ledger's notes of every copy under its folder (`written`, `worded`,
+`kept`, re-keyed by path prefix, a change of case included, as some lookups
+take a key as it is), the places left out there, and for Claude Code its folder
+copies, outside the account but named after it: each
+`library-folders/<slug>/<name>` is renamed `<slug>/<new>` and its notes follow,
+unless a link or junction lies on the way or the new name is taken, when it
+stays for a pass to lay out anew and take out. Where no such folder is on disk,
+its notes and places left out follow the name all the same. Codex's folder
+plugins lie in the account and move with it. Settings that will not write put
+the folder copies and the account's folder back, then the ledger as it was, or,
+where a folder would not move back, with that folder's notes where it now is;
+the error names what stayed where. A deletion, under the same lock, cleans the
+settings (reaches, places left out) and then the ledger's notes under the
+folder, each step one that a second deletion of a folder already gone
+finishes; its folder copies go at the next pass, as copies no longer wanted.
+
+A session's start (a chat's, a helper's turn) counts its account as in use
+from before its pass waits for the lock until its process is counted itself
+(`lay_out_for`), and a rename asks again under the lock: a rename waiting
+behind a start refuses, and a start waiting behind a rename that moved its
+account is refused rather than made on the old path.
+
 An account has one instructions file, so the closest reach decides (`chosen`):
 named beats a provider beats `all`; `library.noInstructions` names accounts
 that get none. Setting a reach takes each entry from every other instructions
@@ -185,7 +209,11 @@ copy before its put-back, counting them in its confirmation.
 
 Passes run when the window starts, before every session start, after every
 change in the window and on Sync all, one at a time under a lock file beside the
-ledger shared by window and core. Where `lay_out` runs in a start:
+ledger shared by window and core. Whatever writes takes it or is refused
+(`lock`, `Nothing laid out: no lock on ...`), a settings change before it writes
+the settings; only the overview and a copy's differences read without it
+(`lock_to_read`, said once a run), the ledger being written whole. Where
+`lay_out` runs in a start:
 
 - **A chat** (`pty/start.rs`): inside the launch closure, so under that chat's
   own spawn gate (one chat's starts wait on its pass; other chats and their
@@ -205,6 +233,8 @@ The window re-reads the overview (no writes) on every focus.
   `description` is `failed`; its copies stay. So is everything fed by a
   `skills/` that will not list or an instructions file that will not read.
 - A library folder that is not there wants nothing and touches nothing.
+- An account's rename or deletion holds the pass lock throughout: no pass sees
+  the folder moved with the ledger still on the old path.
 - Paths compare as the file system does (`ident`: on Windows either slash, any
   case).
 - A destination inside the library's `skills/`, or one holding the library, is
@@ -266,13 +296,15 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
     folder stays aside (`Moved::Aside`). The overview names every such folder
     (`set_aside`, `systemAside`), an adoption's replaced one that would not
     move too, for the person to move or delete.
-  - **Adoption** renames the skill into `system/` under a name nothing reads
-    (the step that fails where the folder is held open), then, holding the
-    system lock exclusive, renames an override there aside and the staged one
-    into place, each undone if the next fails; the one set aside goes to the
-    backups after. `resolve_in` holds the same lock (`<data>/library-system.lock`,
+  - **Adoption** holds the system lock exclusive, none to be had refusing it
+    before anything moves. It renames the skill into `system/` under a name
+    nothing reads (the step that fails where the folder is held open), then an
+    override there aside and the staged one into place, each undone if the
+    next fails; the one set aside goes to the backups after. `resolve_in` holds the same lock (`<data>/library-system.lock`,
     a file lock: the window adopts, the core serves) shared while it reads, so
-    no handoff is served Luna's text in the moment between the renames.
+    no handoff is served Luna's text in the moment between the renames; without
+    it, it reads all the same, said in the log, as a handoff is not to go
+    without instructions.
 
 ## Failure modes
 
@@ -282,4 +314,5 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
 | A copy edited in place (by hand or a model) | `changed`, shown under "Needs a look", never overwritten |
 | A copy edited in place, then no longer wanted there | `kept`, shown under "Needs a look" until taken out or kept |
 | Settings unreadable | no pass (`get_checked`) |
+| The lock file cannot be opened or locked (tried three times, 50 ms apart; a disk that cannot lock files) | every change, Sync all, a put-back, a settling and an adoption refused with `Nothing laid out: no lock on ...`, nothing written; a session or a helper's turn starts without its pass, said in the log; the overview and differences still read |
 | Sessions started outside Luna | see the account's copies only, not folder skills |

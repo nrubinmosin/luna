@@ -26,6 +26,39 @@ pub fn lay_out(when: &str) {
     }
 }
 
+/// `lay_out` before a session starts on `account_path`, the account counted
+/// as in use from before the pass waits for the lock until its process is
+/// counted itself: a rename of the account that would go first waits for
+/// the same lock and, finding it in use, refuses (accounts.rs). One that
+/// went first, before it was counted, has moved the folder by the time the
+/// pass is done: the start is refused then, not made on a folder that is
+/// gone, which the CLI would make anew as an account signed in to nothing.
+/// So is one whose folder went before the pass began: a start is never made
+/// on an account folder that is not there.
+pub fn lay_out_for(when: &str, account_path: &str) -> Result<crate::account_use::Running, String> {
+    let reserved = crate::account_use::running_on(account_path);
+    #[cfg(test)]
+    let made_up = !Path::new(account_path).is_dir() && !STRICT.with(|s| s.get());
+    lay_out(when);
+    #[cfg(test)]
+    if made_up {
+        return Ok(reserved);
+    }
+    if !Path::new(account_path).is_dir() {
+        return Err(format!("{account_path} is not there any more: the account was renamed or deleted as this session started"));
+    }
+    Ok(reserved)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The launch tests start sessions on account paths made up for them
+    /// (`/golden/acc-claude`), never made on disk: in a test build, and only
+    /// there, a start on a folder missing from the first goes on unless the
+    /// test asks for the check as it is made outside tests.
+    static STRICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Points the library at another folder; empty = back to `<data>/library`.
 /// Nothing is moved.
 #[tauri::command(async)]
@@ -135,7 +168,7 @@ pub fn library_set_folder_instructions(path: String, account: String, inherit: b
 /// is no longer Luna's copy: whatever is there stays, as anyone's file.
 #[tauri::command(async)]
 pub fn library_skip(dest: String, on: bool) -> Result<Overview, String> {
-    let _guard = lock();
+    let _guard = lock()?;
     let dirs = Dirs::current();
     let mut ledger = Ledger::load(&dirs);
     // Under any spelling of the path, as a pass goes by.
@@ -221,7 +254,7 @@ fn take_unclaimed(dirs: &Dirs, ledger: &mut Ledger, dest: &str, a: &AccountInfo)
 /// file where no instructions go is taken as new instructions of its own.
 #[tauri::command(async)]
 pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
-    let _guard = lock();
+    let _guard = lock()?;
     let dirs = Dirs::current();
     let located = locate(&dirs, &dest)?;
     let to = PathBuf::from(&dest);
@@ -308,7 +341,7 @@ fn put_back(
 /// will not settle is said in the overview's `unsettled` and the rest go on.
 #[tauri::command(async)]
 pub fn library_put_back(dests: Vec<String>, replace: Vec<String>) -> Result<Overview, String> {
-    let _guard = lock();
+    let _guard = lock()?;
     let dirs = Dirs::current();
     let lib = crate::settings::get_checked()?.library;
     let accounts = crate::accounts::list_accounts()?;
@@ -364,7 +397,7 @@ fn put_back_all(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Le
 /// and the rest go on.
 #[tauri::command(async)]
 pub fn library_kept(dests: Vec<String>, take_out: bool) -> Result<Overview, String> {
-    let _guard = lock();
+    let _guard = lock()?;
     let dirs = Dirs::current();
     let lib = crate::settings::get_checked()?.library;
     let accounts = crate::accounts::list_accounts()?;
@@ -449,7 +482,7 @@ pub struct FileDiff {
 
 #[tauri::command(async)]
 pub fn library_diff(dest: String) -> Result<Vec<FileDiff>, String> {
-    let _guard = lock();
+    let _guard = lock_to_read();
     let dirs = Dirs::current();
     let ledger = Ledger::load(&dirs);
     let base_of = |h: &Hashes| -> Files { h.iter().filter_map(|(k, v)| Some((k.clone(), blob(&dirs, v)?))).collect() };
@@ -550,12 +583,12 @@ pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
 pub fn library_write(entry: Entry, text: String) -> Result<Overview, String> {
     if let Entry::System(name) = &entry {
         luna_text(name)?;
-        let _guard = lock();
+        let _guard = lock()?;
         let path = write_system(&Dirs::current(), name, &text)?;
         crate::log::info("library", &format!("system skill {name}: the override at {} saved", path.display()));
         return overview_locked(false);
     }
-    let _guard = lock();
+    let _guard = lock()?;
     let dirs = Dirs::current();
     let path = library_path(&dirs, &entry)?;
     dirs.write(&path, text.as_bytes())?;
@@ -592,7 +625,7 @@ pub fn library_system_compare(name: String) -> Result<SystemCompare, String> {
 #[tauri::command(async)]
 pub fn library_system_reset(name: String) -> Result<Overview, String> {
     luna_text(&name)?;
-    let _guard = lock();
+    let _guard = lock()?;
     match reset_system(&Dirs::current(), &name)? {
         Some(Moved::Backup(saved)) => {
             crate::log::info("library", &format!("system skill {name}: back to Luna's own, the override kept in {}", saved.display()))
@@ -612,7 +645,7 @@ pub fn library_system_reset(name: String) -> Result<Overview, String> {
 #[tauri::command(async)]
 pub fn library_system_adopt(skill: String) -> Result<Overview, String> {
     luna_text(&skill)?;
-    let _guard = lock();
+    let _guard = lock()?;
     adopt_system(&Dirs::current(), &skill)?;
     crate::settings::update(|s| {
         s.library.skills.remove(&skill);
@@ -632,7 +665,7 @@ pub fn library_new_skill(name: String) -> Result<Overview, String> {
     if reserved(&name) {
         return Err(reserved_why(&name));
     }
-    let _guard = lock();
+    let _guard = lock()?;
     let dirs = Dirs::current();
     let dir = dirs.skills().join(&name);
     if dir.exists() {
@@ -650,7 +683,7 @@ pub fn library_new_skill(name: String) -> Result<Overview, String> {
 #[tauri::command(async)]
 pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     check_name(&name)?;
-    let _guard = lock();
+    let _guard = lock()?;
     let dirs = Dirs::current();
     let dir = dirs.skills().join(&name);
     if let Some(files) = read_at(&dir, false)? {
@@ -675,7 +708,7 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
 pub fn library_new_instructions(name: String) -> Result<Overview, String> {
     let name = name.trim().to_string();
     check_name(&name)?;
-    let _guard = lock();
+    let _guard = lock()?;
     let dirs = Dirs::current();
     let path = dirs.instructions_file(&name);
     if std::fs::symlink_metadata(&path).is_ok() {
@@ -696,7 +729,7 @@ pub fn library_rename_instructions(from: String, to: String) -> Result<Overview,
     let to = to.trim().to_string();
     check_name(&from)?;
     check_name(&to)?;
-    let _guard = lock();
+    let _guard = lock()?;
     let dirs = Dirs::current();
     let (old, new) = (dirs.instructions_file(&from), dirs.instructions_file(&to));
     if from == to {
@@ -735,7 +768,7 @@ pub fn library_rename_instructions(from: String, to: String) -> Result<Overview,
 #[tauri::command(async)]
 pub fn library_delete_instructions(name: String) -> Result<Overview, String> {
     check_name(&name)?;
-    let _guard = lock();
+    let _guard = lock()?;
     let dirs = Dirs::current();
     let path = dirs.instructions_file(&name);
     if let Some(files) = read_at(&path, true)? {
@@ -780,6 +813,91 @@ pub fn library_open(skill: Option<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With no lock to be had — a folder where the lock file goes, which opens
+    /// on neither Windows nor Unix — every change is refused with nothing
+    /// written, the overview still reads, and a session's start goes on
+    /// without its pass, said in the log.
+    #[test]
+    fn without_the_lock_nothing_is_laid_out_but_the_overview_reads() {
+        let d = std::env::temp_dir().join(format!("luna-library-no-lock-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("inside")).unwrap();
+        LOCK_AT.with(|l| *l.borrow_mut() = Some(d.clone()));
+        let dirs = Dirs::current();
+        let ledger = std::fs::read(dirs.ledger()).ok();
+        let settings = std::fs::read(crate::paths::data_dir().join("settings.json")).ok();
+
+        let why = library_sync().err().expect("a sync is refused");
+        assert!(why.starts_with("Nothing laid out: no lock on"), "{why}");
+        assert!(why.contains("lock files"), "says why it matters: {why}");
+        let dest = dirs.data.join("no-lock-account").join("CLAUDE.md").to_string_lossy().into_owned();
+        assert!(library_skip(dest, true).is_err());
+        assert!(library_set_accounts("review".into(), vec![ALL.into()]).is_err());
+        assert!(library_new_skill("no-lock-skill".into()).is_err());
+        assert!(!dirs.skills().join("no-lock-skill").exists());
+        assert_eq!(std::fs::read(dirs.ledger()).ok(), ledger, "the ledger is as it was");
+        assert_eq!(std::fs::read(crate::paths::data_dir().join("settings.json")).ok(), settings, "and the settings");
+
+        assert!(library_overview().is_ok(), "the overview still reads");
+        let when = format!("in the no-lock test {}", std::process::id());
+        lay_out(&when);
+        let log = std::fs::read_to_string(crate::log::path()).unwrap_or_default();
+        assert!(log.contains(&format!("laying the library out {when}: Nothing laid out")), "said in the log");
+
+        LOCK_AT.with(|l| *l.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A start on either kind of account, waiting for the lock a rename holds:
+    /// its account counts as in use while it waits, which a rename asking
+    /// under the lock refuses for; and a rename that asked before it came
+    /// and moved the folder has the start refused, not made on the old path.
+    #[test]
+    fn a_start_waiting_for_the_lock_holds_its_account_and_sees_it_moved() {
+        for vendor in ["anthropic", "openai"] {
+            let base = std::env::temp_dir().join(format!("luna-start-race-{vendor}-{}", std::process::id()));
+            let account = base.join(vendor).join("work");
+            std::fs::create_dir_all(&account).unwrap();
+            let path = account.to_string_lossy().into_owned();
+            let held = lock().unwrap();
+            let start = {
+                let path = path.clone();
+                std::thread::spawn(move || lay_out_for("in the start race test", &path).map(drop))
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !crate::account_use::running(&path) {
+                assert!(std::time::Instant::now() < deadline, "{vendor}: the start counts its account while it waits");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            std::fs::rename(&account, account.with_file_name("office")).unwrap();
+            drop(held);
+            let why = start.join().unwrap().unwrap_err();
+            assert!(why.contains("renamed or deleted"), "{vendor}: {why}");
+            assert!(!crate::account_use::running(&path), "{vendor}: and lets it go");
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
+
+    /// A rename done before the start's pass began (the start paused in its
+    /// worktree fetch, say): the folder is gone before `lay_out_for` looks,
+    /// and the start is refused all the same, on either kind of account.
+    #[test]
+    fn a_start_whose_account_went_before_its_pass_is_refused() {
+        STRICT.with(|s| s.set(true));
+        for vendor in ["anthropic", "openai"] {
+            let base = std::env::temp_dir().join(format!("luna-start-gone-{vendor}-{}", std::process::id()));
+            let account = base.join(vendor).join("work");
+            std::fs::create_dir_all(&account).unwrap();
+            std::fs::rename(&account, account.with_file_name("office")).unwrap();
+            let path = account.to_string_lossy().into_owned();
+            let why = lay_out_for("in the gone-before test", &path).map(drop).unwrap_err();
+            assert!(why.contains("renamed or deleted"), "{vendor}: {why}");
+            assert!(!crate::account_use::running(&path), "{vendor}: nothing held");
+            assert!(!account.exists(), "{vendor}: nothing made at the old path");
+            let _ = std::fs::remove_dir_all(&base);
+        }
+        STRICT.with(|s| s.set(false));
+    }
 
     /// Deleted, changed and foreign copies all become the library's again,
     /// the replaced ones backed up; a place left out or laid out to by

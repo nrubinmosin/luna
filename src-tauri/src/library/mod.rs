@@ -108,14 +108,77 @@ struct Locked {
     _threads: std::sync::MutexGuard<'static, ()>,
 }
 
-fn lock() -> Locked {
+#[cfg(test)]
+thread_local! {
+    /// Where this test's lock file is, in place of the one beside the ledger.
+    static LOCK_AT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+fn lock_path() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = LOCK_AT.with(|p| p.borrow().clone()) {
+        return path;
+    }
+    Dirs::current().ledger().with_extension("json.lock")
+}
+
+/// The lock file, open and locked. Opening it is tried three times, 50 ms
+/// apart: on Windows a scanner or an indexer holding the file for a moment
+/// fails the open, not the lock.
+fn lock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut tries = 1;
+    let file = loop {
+        match crate::secret::open_private(path) {
+            Ok(file) => break file,
+            Err(_) if tries < 3 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    file.lock()?;
+    Ok(file)
+}
+
+/// The lock everything that writes a copy, the ledger or the library goes
+/// under. One that cannot be had is an error: the window and the core each
+/// going ahead under their own mutex would each save the ledger as they read
+/// it, losing or bringing back the other's records.
+fn lock() -> Result<Locked, String> {
+    lock_or("Nothing laid out")
+}
+
+/// `lock`, its refusal opening with what was not done.
+fn lock_or(refused: &str) -> Result<Locked, String> {
     let threads = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let path = Dirs::current().ledger().with_extension("json.lock");
-    let file = crate::secret::open_private(&path).and_then(|f| f.lock().map(|()| f));
-    // Without it a pass still runs, as one did before passes came from two
-    // processes.
+    let path = lock_path();
+    match lock_file(&path) {
+        Ok(file) => Ok(Locked { _file: Some(file), _threads: threads }),
+        Err(e) => Err(format!(
+            "{refused}: no lock on {}: {e}. Without it Luna's window and its core could undo each other's \
+             changes; Luna's data folder needs a disk that can lock files",
+            path.display()
+        )),
+    }
+}
+
+/// `lock` for what only reads — the overview the window takes at every focus,
+/// a copy's differences: without the lock file it goes on under the mutex,
+/// said once a run. The ledger is written whole (`Ledger::save`), so at
+/// worst what it shows is a pass behind for a moment.
+fn lock_to_read() -> Locked {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let threads = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = lock_path();
+    let file = lock_file(&path);
     if let Err(e) = &file {
-        crate::log::warn("library", &format!("library lock {}: {e}", path.display()));
+        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            crate::log::warn("library", &format!("library lock {}: {e}; reading without it", path.display()));
+        }
     }
     Locked { _file: file.ok(), _threads: threads }
 }
@@ -234,6 +297,51 @@ impl Ledger {
         self.worded.remove(key);
         self.written.remove(key)
     }
+    /// Every note of a place under the folder `from` now under `to`, which it
+    /// was renamed to: kept under the spelling a pass will go by, a change of
+    /// case alone included, since some lookups take a key as it is.
+    fn moved(&mut self, from: &Path, to: &Path) {
+        self.rekeyed(|k| moved_under(k, from, to));
+    }
+    /// Every note whose place `new` spells anew under that spelling.
+    fn rekeyed(&mut self, new: impl Fn(&str) -> Option<String>) {
+        fn rekey<V>(map: &mut BTreeMap<String, V>, new: &dyn Fn(&str) -> Option<String>) {
+            let moving: Vec<(String, String)> = map.keys().filter_map(|k| Some((k.clone(), new(k)?))).collect();
+            let values: Vec<(String, V)> = moving.into_iter().filter_map(|(old, new)| Some((new, map.remove(&old)?))).collect();
+            map.extend(values);
+        }
+        rekey(&mut self.written, &new);
+        rekey(&mut self.worded, &new);
+        rekey(&mut self.kept, &new);
+    }
+    /// Every note of a place under `dir` gone, as the folder is; whether there
+    /// was any.
+    fn dropped(&mut self, dir: &Path) -> bool {
+        let before = self.written.len() + self.worded.len() + self.kept.len();
+        self.written.retain(|k, _| !within(Path::new(k), dir));
+        self.worded.retain(|k, _| !within(Path::new(k), dir));
+        self.kept.retain(|k, _| !within(Path::new(k), dir));
+        before != self.written.len() + self.worded.len() + self.kept.len()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The ledger refusing to be saved, as a full disk would.
+    static SAVE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `place` as it is spelled once the folder `from` it lies under is renamed
+/// `to`; None where it lies elsewhere, or is that folder itself.
+fn moved_under(place: &str, from: &Path, to: &Path) -> Option<String> {
+    let at = Path::new(place);
+    let depth = from.components().count();
+    let head: PathBuf = at.components().take(depth).collect();
+    if at.components().count() <= depth || ident(&head) != ident(from) {
+        return None;
+    }
+    let rest: PathBuf = at.components().skip(depth).collect();
+    Some(to.join(rest).to_string_lossy().into_owned())
 }
 
 impl Ledger {
@@ -241,6 +349,10 @@ impl Ledger {
         std::fs::read_to_string(dirs.ledger()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }
     fn save(&self, dirs: &Dirs) -> Result<(), String> {
+        #[cfg(test)]
+        if SAVE_FAILS.with(|f| f.get()) {
+            return Err(format!("{}: will not write for the test", dirs.ledger().display()));
+        }
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         // Luna's own, in the data dir: private like the rest of it, where
         // `write_file` is for the copies in account folders.
