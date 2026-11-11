@@ -128,7 +128,10 @@ export function AccountPicker({
         {current ? (
           <>
             <Icon name={current.provider} />
-            <span className="picker-name">{current.name}</span>
+            <span className="picker-name">
+              {current.name}
+              {!current.signedIn && <span className="picker-out"> · signed out</span>}
+            </span>
           </>
         ) : (
           <span className="picker-name" style={{ color: 'var(--faint)' }}>
@@ -160,6 +163,7 @@ export function AccountPicker({
               >
                 <Icon name={a.provider} />
                 {a.name}
+                {!a.signedIn && <span className="picker-out"> · signed out</span>}
               </div>
             ))}
           </div>,

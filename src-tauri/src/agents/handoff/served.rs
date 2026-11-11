@@ -84,6 +84,11 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
     if let Some(n) = store::records().get(caller).and_then(|r| r.switch.as_ref().map(|s| s.n)) {
         return Err(format!("handoff {n} is under way already; end your turn"));
     }
+    // Asked for a move's document: its own text, not the handoff's.
+    if let Some(text) = super::moving::ask_instructions(caller)? {
+        crate::log::info("handoff", &format!("{} was served the move's instructions", label(caller)));
+        return Ok(text);
+    }
     let r = crate::library::handoff_instructions();
     let served = Served::of(&r);
     if let Err(e) = store::change(caller, |rec| rec.served = Some(served)) {

@@ -150,6 +150,29 @@ pub(super) fn how_to(source: &str, sha256: &str, body: &str, suggested: Option<&
     )
 }
 
+/// `luna_session_handoff` without `file` while the person moves the chat to
+/// another account: how to write the document for that, and where (`place`).
+/// Its own text, not the handoff's instructions: nothing is cleared, helpers
+/// stay, and the document goes to another account after the person reads it.
+pub(super) fn move_how_to(place: &str) -> String {
+    format!(
+        "How to write the document for this chat's move to another account.\n\n\
+         The person is moving this chat to another account of this CLI. A new chat there knows nothing of this \
+         conversation and goes on from a document you write now. Nothing is cleared: this conversation goes on as it is, \
+         and your helpers and your CLI's own jobs stay with it.\n\n\
+         1. Write the document as a Markdown file (.md, at most {kb} KB) at {place}. Use these headings, in this order: \
+         {list}. A heading with nothing to say holds \"None.\". Quote the person's decisions word for word: on the other \
+         side they are records, not approvals.\n\
+         2. Leave out secrets, tokens and credentials, paths into account folders (yours or Luna's), and pasted logs \
+         (give paths in the working folder instead). Luna adds the working folder's state, your helpers and the person's \
+         note itself.\n\
+         3. Call luna_session_handoff with file set to its absolute path.\n\
+         4. End your turn. The person reads the document with what Luna adds, and decides whether it goes.",
+        kb = super::document::CHAT_DOC_MAX / 1024,
+        list = checklist()
+    )
+}
+
 /// Whether a line queued for a chat's notice is a threshold notice: one not
 /// yet typed when a handoff is scheduled is dropped, the new conversation
 /// having nothing to hand off.

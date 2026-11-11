@@ -11,6 +11,8 @@ import { useChats } from '../chats/chats.store';
 import { AppliedPanel } from '../chats/AppliedPanel';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { askedWords, HandoffBar } from '../chats/Handoff';
+import { MoveChatDialog } from '../chats/MoveChatDialog';
+import { MoveHint, OpeningHint } from '../chats/MoveHint';
 import { draftTag, useDrafts } from '../chats/drafts.store';
 import { CLEAR_WAITING_TITLE, clearWaiting, useMarked } from '../chats/marked.store';
 import { claude, codex } from '../providers';
@@ -215,6 +217,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const marked = useMarked(s => (chatId ? !!s.by[chatId] : false));
   const [confirming, setConfirming] = useState(false);
   const [showApplied, setShowApplied] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [editing, setEditing] = useState(false);
   const [picking, setPicking] = useState<HTMLElement | null>(null);
   const [menu, setMenu] = useState<HTMLElement | null>(null);
@@ -363,7 +366,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 aria-label="More"
                 aria-haspopup="menu"
                 aria-expanded={!!menu}
-                title="Chat color, rename, What Luna applied, delete"
+                title="Chat color, rename, What Luna applied, move to another account, delete"
                 onClick={e => {
                   e.stopPropagation();
                   const at = e.currentTarget;
@@ -466,6 +469,11 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                     label: 'What Luna applied',
                     title: "Everything Luna added to this chat's CLI, and why",
                     run: () => setShowApplied(true)
+                  },
+                  {
+                    label: 'Move to another account…',
+                    title: 'Goes on as a new chat on another account of its CLI, from a document you read first',
+                    run: () => setMoving(true)
                   },
                   { label: 'Delete chat…', title: 'Asks first', run: () => setConfirming(true) }
                 ]}
@@ -605,7 +613,10 @@ ${chat.worktreePath}`
           </div>
           {confirming && <DeleteChatDialog chat={chat} onClose={() => setConfirming(false)} />}
           {showApplied && <AppliedPanel chat={chat} onClose={() => setShowApplied(false)} />}
+          {moving && <MoveChatDialog chat={chat} onClose={() => setMoving(false)} />}
           <HandoffBar chat={chat} />
+          <MoveHint chat={chat} onMove={() => setMoving(true)} />
+          <OpeningHint chat={chat} />
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
             <Terminal chat={chat} folderPath={folder.path} />
             {/* Keyed on the chat: a pane handed a new chat fades it in. */}

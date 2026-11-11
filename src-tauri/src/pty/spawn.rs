@@ -529,6 +529,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             size,
             typed_ms: Arc::new(AtomicU64::new(0)),
             draft: Arc::new(AtomicU64::new(0)),
+            keys_draft: Arc::new(AtomicU64::new(0)),
+            keys_dialog: Arc::new(AtomicBool::new(false)),
             draft_seen: Arc::new(Mutex::new((0, false))),
             held_keys: Arc::new(Mutex::new(None)),
             stashing: Arc::new(AtomicBool::new(false)),

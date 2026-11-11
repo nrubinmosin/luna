@@ -28,6 +28,9 @@ interface ChatsState {
   setHandoffMark: (chatId: string, mark: HandoffMark | null) => void;
   /** A handoff it was asked for and has not made, as the core said. */
   setHandoffAsked: (chatId: string, asked: HandoffAsked | null) => void;
+  /** Where a move to another account left the chat: gone on as `movedTo`,
+   *  or opened from `movedFrom`. */
+  setMoved: (chatId: string, moved: { movedTo?: string; movedFrom?: string }) => void;
   /** `byPerson`: launched by the user from the new-chat dialog, which makes
    *  the folder one the dialog offers; a helper opened as a chat is not. */
   addChat: (folderPath: string, chat: Chat, byPerson: boolean) => void;
@@ -163,6 +166,9 @@ export const useChats = create<ChatsState>()(
 
       addChat: (folderPath, chat, byPerson) =>
         set(s => {
+          // A chat already listed is not listed twice: a moved chat's row
+          // may be asked for from two places at once (chats/moving.ts).
+          if (s.folders.some(f => f.chats.some(c => c.id === chat.id))) return { active: chat.id };
           const existing = s.folders.find(f => f.path === folderPath);
           const folders = existing
             ? s.folders.map(f =>
@@ -294,6 +300,17 @@ export const useChats = create<ChatsState>()(
           folders: s.folders.map(f => ({
             ...f,
             chats: f.chats.map(x => (x.id === chatId ? { ...x, handoffAsked: asked } : x))
+          }))
+        }));
+      },
+
+      setMoved: (chatId, moved) => {
+        const c = get().findChat(chatId);
+        if (!c || Object.entries(moved).every(([k, v]) => c[k as keyof typeof moved] === v)) return;
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(x => (x.id === chatId ? { ...x, ...moved } : x))
           }))
         }));
       },

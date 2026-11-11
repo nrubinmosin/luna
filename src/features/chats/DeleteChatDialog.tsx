@@ -59,6 +59,16 @@ function Box({
 
 const list = (names: string[]) => names.join(', ');
 
+/** Two spellings of one folder: either slash, a trailing one, case aside. */
+const samePath = (a: string, b: string) => {
+  const key = (p: string) =>
+    p
+      .replace(/[\\/]+/g, '/')
+      .replace(/\/$/, '')
+      .toLowerCase();
+  return key(a) === key(b);
+};
+
 export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () => void }) {
   // Starts where Settings says; flipping it here is for this delete only.
   const [dropWorktree, setDropWorktree] = useState(() => useDeletePrefs.getState().dropWorktree);
@@ -89,6 +99,15 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
       live = false;
     };
   }, [ids]);
+  // Another chat in the same worktree (one moved to another account goes on
+  // in its old chat's): never dropped under it, whatever the box says.
+  const sharedWith = useChats(s =>
+    chat.worktreePath
+      ? s.folders
+          .flatMap(f => f.chats)
+          .find(c => c.id !== chat.id && c.worktreePath && samePath(c.worktreePath, chat.worktreePath ?? ''))
+      : undefined
+  );
   const lines = helperLines(helpers, stake);
   const working = lines.filter(l => l.working);
   const unsaved = lines.filter(l => l.unsaved);
@@ -103,7 +122,7 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
         })
         .catch(err => console.warn('[luna] delete failed', err));
     }
-    deleteOne(chat, dropWorktree);
+    deleteOne(chat, dropWorktree && !sharedWith);
   };
 
   return (
@@ -115,12 +134,16 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
         <>
           The session is stopped and its scrollback is lost. Pasted attachments are removed. The transcript is kept, so
           the session can still be resumed from the CLI.
-          {chat.worktree &&
+          {chat.worktree && sharedWith ? (
+            <> Its git worktree stays: "{sharedWith.name}" works in it too.</>
+          ) : (
+            chat.worktree &&
             (dropWorktree ? (
               <> Its git worktree goes too, unless you untick the box below.</>
             ) : (
               <> Its git worktree stays on disk unless you say otherwise.</>
-            ))}
+            ))
+          )}
           {chat.worktree && chat.worktreePath && (
             // On its own line: a Windows worktree path is long enough to
             // break the sentence it sits in across three ragged lines.
@@ -157,7 +180,7 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
       extra={
         (chat.worktree || lines.length > 0) && (
           <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(chat.worktree || (withHelpers && helpers.some(h => h.worktree))) && (
+            {((chat.worktree && !sharedWith) || (withHelpers && helpers.some(h => h.worktree))) && (
               <Box id={`drop-worktree-${chat.id}`} checked={dropWorktree} onChange={setDropWorktree}>
                 {ui(chat.provider).branchPrefix ? (
                   <>

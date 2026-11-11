@@ -21,14 +21,27 @@
 //! - `facts`: what the notices, the tool's answer and the prompt say.
 //! - `served`: the instructions served, what is kept of them, and what the
 //!   chat's panel shows of them.
+//! - `moving`: a chat moved to another account of its CLI, opened from a
+//!   document the person confirmed (docs/adr/0023-moving-a-chat-to-another-account.md);
+//!   `document` writes that document from the chat's records, `excerpts`
+//!   reads them bounded, `gitfacts` asks git, `scrub` cleans it.
 
+mod document;
+mod excerpts;
 mod facts;
 mod file;
+mod gitfacts;
+mod moving;
 mod phase;
+mod scrub;
 mod served;
 mod store;
 mod watch;
 
+pub use moving::{
+    move_ask, move_cancel, move_confirm, move_list, move_prepare, move_preview, move_step, moved_dir, opening_refusal, stopping_for_move,
+    MOVE_TAG,
+};
 pub use served::{applied_of, HandoffApplied};
 
 use crate::agents::delivery::{type_in, TypingInto, POLL, SEND_TYPING_MS, TYPING_WAIT};
@@ -229,6 +242,11 @@ pub fn handoff(caller: &str, file: &str) -> Result<Value, String> {
     if !offers_tool(caller) {
         return Err(NOT_OFFERED.into());
     }
+    // Asked for a move's document: collected, nothing reset, so the CLI's
+    // own jobs may go on (moving.rs).
+    if let Some(answer) = moving::asked_file(caller, file) {
+        return answer;
+    }
     let jobs = crate::activity::own_jobs(caller);
     if !jobs.is_empty() {
         return Err(format!(
@@ -406,24 +424,42 @@ impl Term for Pty {
     }
 
     fn type_line(&self, chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>) -> Result<Typed, String> {
-        let pty = crate::pty::manager();
-        // From here to the Enter a person's keys wait (`hold_keys`): what the
-        // composer shows now is what the text lands in.
-        let hold = pty.hold_keys(chat).ok_or("the chat's terminal is gone")?;
-        let written = pty.composer(chat).is_some_and(|c| !c.text.trim().is_empty() || c.stashed);
-        if written || pty.has_draft(chat) || pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS) {
-            return Ok(Typed::NotClear);
-        }
-        if let Err(r) = commit() {
-            return Ok(Typed::NotCommitted(r));
-        }
-        let before = crate::activity::turn_state(chat);
-        type_in(pty, chat, text, before.map(|t| t.turn), before.map_or(0, |t| t.turns_ended), hold).map(|_| Typed::In)
+        type_line(chat, text, commit)
     }
 
     fn pause(&self) {
         std::thread::sleep(POLL);
     }
+}
+
+/// Types `text` into `chat`'s terminal as a prompt, as `Term::type_line`
+/// says: the switch's and a move's opening line alike.
+fn type_line(chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>) -> Result<Typed, String> {
+    type_line_with(chat, text, commit, false)
+}
+
+/// `type_line`; `readable`: a composer the screen does not show at all is not
+/// taken for an empty one (a move's line goes only where it can be read).
+fn type_line_with(chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>, readable: bool) -> Result<Typed, String> {
+    let pty = crate::pty::manager();
+    // From here to the Enter a person's keys wait (`hold_keys`): what the
+    // composer shows now is what the text lands in.
+    let hold = pty.hold_keys(chat).ok_or("the chat's terminal is gone")?;
+    let written = match pty.composer(chat) {
+        Some(c) => !c.text.trim().is_empty() || c.stashed,
+        None => readable && !pty.composer_visible(chat),
+    };
+    // A move's line also takes Luna's own count of a person's keys as a veto
+    // no read of the screen clears (`keys_left_text`).
+    let keys = readable && pty.keys_left_text(chat);
+    if written || keys || pty.has_draft(chat) || pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS) {
+        return Ok(Typed::NotClear);
+    }
+    if let Err(r) = commit() {
+        return Ok(Typed::NotCommitted(r));
+    }
+    let before = crate::activity::turn_state(chat);
+    type_in(pty, chat, text, before.map(|t| t.turn), before.map_or(0, |t| t.turns_ended), hold).map(|_| Typed::In)
 }
 
 /// The switches as the store keeps them.
@@ -649,6 +685,7 @@ fn close(
         done,
         why,
         instructions: s.instructions.clone(),
+        moved: false,
     });
     r.fresh = done;
     if done {
@@ -734,6 +771,7 @@ pub(super) fn beat() {
         let pty = crate::pty::manager();
         thresholds(pty, &mut b);
         switches(&mut b);
+        moving::beat();
     }
 }
 
@@ -753,7 +791,7 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
     let chats = opted_in();
     b.turns.retain(|id, _| chats.iter().any(|(c, ..)| c == id));
     for (chat, threshold, provider) in chats {
-        if holds_text(&chat) || !is_listed(&chat) {
+        if holds_text(&chat) || moving::asking(&chat) || !is_listed(&chat) {
             continue;
         }
         let Some(ts) = crate::activity::turn_state(&chat).filter(|t| t.turn == crate::activity::Turn::Idle) else { continue };
@@ -805,7 +843,12 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         let mut asked = now.asked.clone();
         asked.push(context.pct);
         let told = store::Told { level, asked, tokens: context.tokens, ..now };
-        if let Err(e) = store::change(&chat, |r| told_of(r, told, inline)) {
+        // A fresh handoff request: from it on, what the chat sends is its own,
+        // not an earlier ask's late answer (moving.rs `late_answer`).
+        if let Err(e) = store::change(&chat, |r| {
+            told_of(r, told, inline);
+            r.ask_closed = None;
+        }) {
             crate::log::warn("handoff", &format!("{}: the notice it was told could not be saved: {e}", label(&chat)));
         }
         let line = facts::notice(context.pct, threshold, firm, inline);
@@ -964,6 +1007,9 @@ pub struct HandoffMark {
     pub why: Option<String>,
     /// The conversation it left can be read.
     pub previous: bool,
+    /// The document a move to another account opened the chat with.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub moved: bool,
 }
 
 /// `id`'s latest handoff, under way or past.
@@ -971,7 +1017,14 @@ pub fn mark_of(id: &str) -> Option<HandoffMark> {
     let r = store::records();
     let rec = r.get(id)?;
     if let Some(s) = &rec.switch {
-        return Some(HandoffMark { n: s.n, at: s.scheduled_at, state: "underWay", why: None, previous: s.before.transcript.is_some() });
+        return Some(HandoffMark {
+            n: s.n,
+            at: s.scheduled_at,
+            state: "underWay",
+            why: None,
+            previous: s.before.transcript.is_some(),
+            moved: false,
+        });
     }
     let p = rec.past.last()?;
     Some(HandoffMark {
@@ -980,6 +1033,7 @@ pub fn mark_of(id: &str) -> Option<HandoffMark> {
         state: if p.done { "done" } else { "failed" },
         why: p.why.clone(),
         previous: p.previous.is_some(),
+        moved: p.moved,
     })
 }
 

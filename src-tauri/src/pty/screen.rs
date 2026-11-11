@@ -64,6 +64,9 @@ pub struct SessionMeta {
     pub handoff: Option<crate::agents::HandoffMark>,
     /// A handoff it was asked for and has not made, for its pane's chip.
     pub handoff_asked: Option<crate::agents::HandoffAsked>,
+    /// The usage limit its last turn stopped on, in Luna's words
+    /// (activity `limit_of`): what the pane offers a move for.
+    pub limit: Option<&'static str>,
 }
 
 /// A session's title as its CLI has it, and whether the user typed it.
@@ -203,6 +206,11 @@ fn ctrl_letter(c: char) -> Option<char> {
 
 /// Set in the draft state when the last character typed was a backslash.
 const DRAFT_BACKSLASH: u64 = 1 << 63;
+/// Set in the draft state inside a bracketed paste, which may span writes:
+/// its Enters are text it pastes, not sends.
+const DRAFT_PASTE: u64 = 1 << 62;
+/// The state's flags, apart from the count.
+pub(super) const DRAFT_FLAGS: u64 = DRAFT_BACKSLASH | DRAFT_PASTE;
 /// How long after a key the screen may still not show it: until then the
 /// keys' word on a draft stands (see `has_draft`).
 const DRAFT_SETTLE_MS: u64 = 1_500;
@@ -269,6 +277,13 @@ pub fn read_composer(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> 
             row.trim_end().to_string()
         })
         .collect();
+    // The caret at the composer's start with Claude Code's placeholder after
+    // it, drawn gray rather than dim by some themes: nothing typed.
+    let lines = if provider == Provider::Claude && claude_placeholder(screen, top, cols) && cursor == top {
+        lines.iter().map(|_| String::new()).collect()
+    } else {
+        lines
+    };
     let stashed = provider == Provider::Claude
         && (top.saturating_sub(3)..top.saturating_sub(1)).any(|r| {
             let row: String =
@@ -298,8 +313,62 @@ pub fn at_empty_prompt(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -
     let first = |r: u16| screen.cell(r, 0).map_or("", |c| c.contents());
     let rule = |r: u16| first(r) == "─";
     let Some(top) = (0..rows).rev().find(|&r| first(r) == "❯") else { return false };
-    let empty = (1..cols).filter_map(|c| screen.cell(top, c)).all(|c| c.dim() || c.contents().trim().is_empty());
-    empty && top > 0 && rule(top - 1) && (top + 1 == rows || rule(top + 1))
+    let nothing = |r: u16, from: u16| (from..cols).filter_map(|c| screen.cell(r, c)).all(|c| c.dim() || c.contents().trim().is_empty());
+    // In a narrow pane its dim placeholder wraps onto the rows under it: up to
+    // the rule under the composer, or the screen's end where a short pane has
+    // no room for one, nothing but that placeholder.
+    let below = (top + 1..rows).find(|&r| rule(r)).unwrap_or(rows);
+    let placeholder = claude_placeholder(screen, top, cols);
+    // Its placeholder, wrapped or not, is no text, gray or dim.
+    let nothing = |r: u16, from: u16| nothing(r, from) || placeholder;
+    // A pane so short its first row is the composer has no room for the rule
+    // over it either: an empty mark there, nothing under it, is the prompt.
+    let over = top == 0 || rule(top - 1);
+    nothing(top, 1) && over && (top + 1..below).all(|r| nothing(r, 0))
+}
+
+/// Whether row `top` of `screen` is Claude Code's composer showing its
+/// placeholder: the caret, drawn in reverse, right after the mark, and the
+/// placeholder's `Try "…"` from there on. A theme picked at a first start may
+/// draw the placeholder in a plain gray rather than dim, which the dim look
+/// alone would take for text typed in.
+fn claude_placeholder(screen: &vt100::Screen, top: u16, cols: u16) -> bool {
+    let caret = (2..4).filter_map(|c| screen.cell(top, c)).any(|c| c.inverse());
+    let rest: String = (2..cols).filter_map(|c| screen.cell(top, c)).map(|c| if c.has_contents() { c.contents() } else { " " }).collect();
+    // Its look as well as its words: the CLI draws a placeholder dim or in a
+    // color of its own, and what a person types in the default foreground. A
+    // draft of theirs that reads `Try "…`, the caret moved to its start, is
+    // drawn so and stays text.
+    let drawn_as_placeholder = (2..cols)
+        .filter_map(|c| screen.cell(top, c))
+        .filter(|c| !c.inverse() && c.has_contents() && !c.contents().trim().is_empty())
+        .all(|c| c.dim() || c.fgcolor() != vt100::Color::Default);
+    caret && drawn_as_placeholder && rest.trim_start().starts_with("Try \"")
+}
+
+/// Whether the screen shows the CLI's composer, empty, by its mark alone: the
+/// last `❯` (Claude Code) or undimmed `›` (Codex) on screen with nothing after
+/// it but a dim placeholder, whatever is drawn around it. Looser than
+/// `at_empty_prompt` about rules and footers, which a cramped pane may not
+/// draw as expected; as strict about a dialog, a picker or a first-run screen,
+/// whose marked row names a choice. What a person's "Type it now" goes by.
+pub fn composer_empty_loose(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> bool {
+    if let Some(c) = read_composer(bytes, rows, cols, provider) {
+        return c.text.is_empty() && !c.stashed;
+    }
+    let parser = replay(bytes, rows, cols);
+    let screen = parser.screen();
+    let mark = match provider {
+        Provider::Claude => "❯",
+        Provider::Codex => "›",
+    };
+    let first = |r: u16| screen.cell(r, 0).map_or("", |c| c.contents());
+    let Some(top) = (0..rows).rev().find(|&r| first(r) == mark) else { return false };
+    if provider == Provider::Codex && screen.cell(top, 0).is_some_and(|c| c.dim()) {
+        return false;
+    }
+    (1..cols).filter_map(|c| screen.cell(top, c)).all(|c| c.dim() || c.contents().trim().is_empty())
+        || (provider == Provider::Claude && claude_placeholder(screen, top, cols))
 }
 
 /// The composer's length after a person's keys, roughly: characters add,
@@ -311,35 +380,121 @@ pub fn at_empty_prompt(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -
 /// it high, which only holds a notice until the next Enter. The top bit
 /// carries the backslash across writes, one key arriving per write.
 pub(super) fn draft_after(state: u64, data: &str) -> u64 {
-    let mut n = state & !DRAFT_BACKSLASH;
+    let mut n = state & !DRAFT_FLAGS;
     let mut backslash = state & DRAFT_BACKSLASH != 0;
+    let mut paste = state & DRAFT_PASTE != 0;
     let mut chars = data.chars().peekable();
     while let Some(c) = chars.next() {
         let was_backslash = std::mem::replace(&mut backslash, c == '\\');
         match c {
-            '\r' if was_backslash => n += 1,
-            '\r' | '\x03' | '\x15' => n = 0,
-            '\x7f' | '\x08' => n = n.saturating_sub(1),
-            // A sequence types nothing — the paste markers included; the
-            // text between them is counted as it comes.
+            // A sequence types nothing; the paste markers open and close a
+            // paste, whose text, its line breaks included, is counted.
             '\x1b' => {
                 if chars.peek() == Some(&'[') {
                     chars.next();
+                    let mut params = String::new();
                     for p in chars.by_ref() {
                         if ('\x40'..='\x7e').contains(&p) {
+                            if p == '~' && params == "200" {
+                                paste = true;
+                            } else if p == '~' && params == "201" {
+                                paste = false;
+                            }
                             break;
                         }
+                        params.push(p);
                     }
                 } else if chars.next() == Some('O') {
                     // SS3: arrows in application mode, F1-F4.
                     chars.next();
                 }
             }
+            _ if paste => n += 1,
+            '\r' if was_backslash => n += 1,
+            '\r' | '\x03' | '\x15' => n = 0,
+            '\x7f' | '\x08' => n = n.saturating_sub(1),
             c if c < ' ' => {}
             _ => n += 1,
         }
     }
-    n | if backslash { DRAFT_BACKSLASH } else { 0 }
+    n | if backslash { DRAFT_BACKSLASH } else { 0 } | if paste { DRAFT_PASTE } else { 0 }
+}
+
+/// How long a paste may go without its end marker before it is taken as
+/// over: Luna's own terminal writes both markers in one write, so a pause
+/// this long means the end was lost.
+pub(super) const PASTE_LAPSE_MS: u64 = 2_000;
+
+/// `state` with a paste that has had no input for PASTE_LAPSE_MS taken as
+/// over: what it pasted stays counted, as text in the composer; only its
+/// Enters stop being text.
+pub(super) fn paste_lapsed(state: u64, last_key_ms: u64, now: u64) -> u64 {
+    if state & DRAFT_PASTE != 0 && now.saturating_sub(last_key_ms) >= PASTE_LAPSE_MS {
+        state & !DRAFT_PASTE
+    } else {
+        state
+    }
+}
+
+/// Whether a write of `data` from the terminal is a person at the keys: a
+/// key that types (anything not led by Esc), a paste, and an Esc-led key
+/// that is none of what the terminal sends of itself or moves nothing (a
+/// lone Esc, an arrow, a focus or mouse report, a cursor position or device
+/// answer, an OSC or DCS reply). Alt with a key, a function key: a person.
+pub(super) fn typed_by_person(data: &str) -> bool {
+    let Some(rest) = data.strip_prefix('\x1b') else { return !data.is_empty() };
+    if data.contains("\x1b[200~") {
+        return true;
+    }
+    if rest.is_empty() || rest.starts_with(']') || rest.starts_with('P') {
+        return false;
+    }
+    if let Some(csi) = rest.strip_prefix('[') {
+        let last = csi.chars().last().unwrap_or(' ');
+        let arrow = matches!(last, 'A' | 'B' | 'C' | 'D' | 'H' | 'F') && csi.len() <= 6;
+        let report = matches!(last, 'I' | 'O' | 'R' | 'c' | 'M' | 'm' | 'n') || csi.starts_with('<') || csi.starts_with('M');
+        return !(arrow || report);
+    }
+    if let Some(ss3) = rest.strip_prefix('O') {
+        return !matches!(ss3, "A" | "B" | "C" | "D" | "H" | "F");
+    }
+    true
+}
+/// `draft_after` for the veto a move's line goes by (`keys_left_text`): the
+/// same count of keys that put text in the composer (characters, a paste),
+/// emptied by Enter, Ctrl+C and Ctrl+U, and by a lone Esc too, which closes a
+/// dialog or clears a choice: a key a person pressed on a first-run screen or
+/// an offer (a digit, a letter) then holds nothing back for good.
+pub(super) fn keys_after(state: u64, data: &str) -> u64 {
+    if data == "\x1b" {
+        return 0;
+    }
+    draft_after(state, data)
+}
+
+/// Whether the screen drawn from `bytes` shows the CLI's composer at all,
+/// empty or not: where it does not, a dialog, a picker or a first-run screen
+/// has the keys.
+pub(super) fn composer_seen(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> bool {
+    read_composer(bytes, rows, cols, provider).is_some() || composer_empty_loose(bytes, rows, cols, provider)
+}
+
+/// `keys_after` where the keys may go to a dialog rather than the composer:
+/// `in_dialog` says the last keys did, and `dialog` looks at the screen now.
+/// A key that would start a draft, or any key while a dialog had them, is
+/// looked at: typed at a dialog (a digit that picks an option, a letter that
+/// answers) it is no composer text and counts nothing; the dialog closed,
+/// the count starts again from nothing. The screen is looked at only then,
+/// not at every key of a draft.
+pub(super) fn composer_keys(state: u64, in_dialog: bool, data: &str, dialog: impl FnOnce() -> bool) -> (u64, bool) {
+    let types_text = draft_after(0, data) & !DRAFT_FLAGS > 0;
+    if in_dialog || (state & !DRAFT_FLAGS == 0 && types_text) {
+        if dialog() {
+            return (0, true);
+        }
+        return (keys_after(if in_dialog { 0 } else { state }, data), false);
+    }
+    (keys_after(state, data), false)
 }
 
 /// Where the cursor stands once `bytes` have been drawn at this size, zero-based
@@ -495,7 +650,7 @@ impl PtyManager {
             let Some(s) = sessions.get(id) else { return false };
             let n = s.draft.load(Ordering::Relaxed);
             let stashing = s.stashing.load(Ordering::Relaxed);
-            let typed = n & !DRAFT_BACKSLASH > 0;
+            let typed = n & !DRAFT_FLAGS > 0;
             if !typed && !stashing {
                 return false;
             }
@@ -523,7 +678,7 @@ impl PtyManager {
                 let _ = draft.compare_exchange(n, n.max(c.text.chars().count() as u64), Ordering::Relaxed, Ordering::Relaxed);
                 true
             }
-            None => n & !DRAFT_BACKSLASH > 0,
+            None => n & !DRAFT_FLAGS > 0,
         };
         *seen.lock().unwrap_or_else(|e| e.into_inner()) = (key, there);
         there
@@ -567,6 +722,27 @@ impl PtyManager {
         };
         let m = modes.lock().unwrap_or_else(|e| e.into_inner());
         thread_in_title(m.title.as_deref()?).map(str::to_owned)
+    }
+
+    /// Whether a person's keys since their last Enter leave text in the
+    /// composer, by Luna's own count of them alone (`draft_after`): what no
+    /// read of the screen clears. A move's line goes in only with none.
+    pub fn keys_left_text(&self, id: &str) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(id).is_some_and(|s| s.keys_draft.load(Ordering::Relaxed) & !DRAFT_FLAGS > 0)
+    }
+
+    /// Whether its screen shows an empty composer by its mark alone (see
+    /// `composer_empty_loose`).
+    pub fn composer_visible(&self, id: &str) -> bool {
+        let found = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            sessions.get(id).map(|s| (s.provider, Arc::clone(&s.scrollback), Arc::clone(&s.size)))
+        };
+        let Some((provider, scrollback, size)) = found else { return false };
+        let bytes: Vec<u8> = scrollback.lock().unwrap_or_else(|e| e.into_inner()).make_contiguous().to_vec();
+        let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
+        composer_empty_loose(&bytes, rows, cols, provider)
     }
 
     /// Whether its CLI stands at an empty prompt (see `at_empty_prompt`).
@@ -712,6 +888,85 @@ mod tests {
             "a dim placeholder is nothing typed"
         );
         assert!(at(&hidden(&[(9, 1, &rule), (10, 1, caret)])), "no room left for the rule under it");
+        // A quarter pane: the placeholder wraps under the caret, the footer is
+        // gone, and the screen ends with the composer or its rule.
+        let narrow = |bytes: &[u8]| at_empty_prompt(bytes, 8, 16, Provider::Claude);
+        let rule16 = "─".repeat(16);
+        let wrapped = "❯\u{a0}\x1b[7m \x1b[27m\x1b[2mTry \"fix lint \x1b[22m";
+        assert!(narrow(&hidden(&[(5, 1, &rule16), (6, 1, wrapped), (7, 1, "\x1b[2merrors\"\x1b[22m"), (8, 1, &rule16)])));
+        assert!(narrow(&hidden(&[(6, 1, &rule16), (7, 1, wrapped), (8, 1, "\x1b[2merrors\"\x1b[22m")])), "no rule under it");
+        assert!(!narrow(&hidden(&[(5, 1, &rule16), (6, 1, caret), (7, 1, "typed text"), (8, 1, &rule16)])), "a draft's next line");
+        // After the first-run screens and the auto-mode offer, in a quarter
+        // pane: the composer, its placeholder wrapped, the rule, the footer.
+        let quarter = |bytes: &[u8]| at_empty_prompt(bytes, 10, 30, Provider::Claude);
+        let rule30 = "─".repeat(30);
+        let footer = "\x1b[2mmanual mode on · ? for shortcuts\x1b[22m";
+        let placeholder = "❯\u{a0}\x1b[7m \x1b[27m\x1b[2mTry \"refactor the move\x1b[22m";
+        assert!(quarter(&hidden(&[
+            (5, 1, &rule30),
+            (6, 1, placeholder),
+            (7, 1, "\x1b[2mdialog\"\x1b[22m"),
+            (8, 1, &rule30),
+            (9, 1, footer)
+        ])));
+        // The loose look, for "Type it now": the composer by its mark, the
+        // rules and footer as they may be; never a dialog's marked choice.
+        let loose = |bytes: &[u8]| composer_empty_loose(bytes, 10, 30, Provider::Claude);
+        assert!(loose(&hidden(&[(8, 1, placeholder), (9, 1, "manual mode on")])), "no rule round it");
+        for dialog in ["❯ 1. Dark mode", "❯ 1. Yes, I trust this folder", "❯ 1. Yes, and use auto mode", "❯ 1. Yes"] {
+            assert!(!loose(&hidden(&[(3, 1, "Choose the text style"), (5, 1, dialog), (6, 1, "  2. No")])), "{dialog}");
+        }
+        assert!(!loose(&hidden(&[(6, 1, &rule30), (7, 1, "❯ a draft"), (8, 1, &rule30)])), "text in it");
+        assert!(!loose(b""), "nothing drawn: unreadable, so no");
+        // The live run's screen (Claude Code 2.1.319, a theme picked at its
+        // first start, a quarter pane): the rule fills its row, the composer
+        // right under it, its placeholder in a gray that is no dim, the caret
+        // in reverse on its first letter.
+        let live = [
+            b"\x1b[?25l".to_vec(),
+            drawn(
+                &[
+                    (1, 1, " \u{259d}\u{259d} \u{259d}\u{259d}   Claude Ultra"),
+                    (2, 1, "E:\\Projects\\P"),
+                    (3, 1, "ersona\u{2026}"),
+                    (7, 1, &"\u{2500}".repeat(24)),
+                    (8, 1, "\u{276f} \x1b[7mT\x1b[27m\x1b[38;5;246mry \"write a test for\u{2026}\x1b[39m"),
+                ],
+                (1, 1),
+            ),
+        ]
+        .concat();
+        assert!(at_empty_prompt(&live, 9, 24, Provider::Claude), "the live run's composer, placeholder gray");
+        assert!(composer_empty_loose(&live, 9, 24, Provider::Claude));
+        // The same with the caret a space before the placeholder.
+        let spaced = [
+            b"\x1b[?25l".to_vec(),
+            drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f}\u{a0}\x1b[7m \x1b[27m\x1b[90mTry \"fix it\"\x1b[39m")], (1, 1)),
+        ]
+        .concat();
+        assert!(at_empty_prompt(&spaced, 9, 24, Provider::Claude));
+        // Gray text with no caret before it is typed text, and a caret after
+        // typed words is a draft.
+        let typed =
+            [b"\x1b[?25l".to_vec(), drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} Try \"mine\x1b[7m \x1b[27m")], (1, 1))]
+                .concat();
+        assert!(!at_empty_prompt(&typed, 9, 24, Provider::Claude));
+        // The person's own `Try "mine"`, the caret moved to its start: drawn in
+        // the default foreground, it is text, hidden cursor or not.
+        let theirs =
+            [b"\x1b[?25l".to_vec(), drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} \x1b[7mT\x1b[27mry \"mine\"")], (1, 1))]
+                .concat();
+        assert!(!at_empty_prompt(&theirs, 9, 24, Provider::Claude), "a draft that reads like the placeholder");
+        assert!(!composer_empty_loose(&theirs, 9, 24, Provider::Claude));
+        let theirs_focused = drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} \x1b[7mT\x1b[27mry \"mine\"")], (8, 3));
+        assert_eq!(read_composer(&theirs_focused, 9, 24, Provider::Claude).map(|c| c.text).as_deref(), Some("Try \"mine\""));
+        // The cursor where a focused pane has it, on the caret: read as empty.
+        let focused = drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} \x1b[7mT\x1b[27m\x1b[90mry \"x\"\x1b[39m")], (8, 3));
+        assert_eq!(read_composer(&focused, 9, 24, Provider::Claude).map(|c| c.text), Some(String::new()));
+        // Shrunk to three rows: the composer first, its placeholder, its rule.
+        let tiny = |bytes: &[u8]| at_empty_prompt(bytes, 3, 16, Provider::Claude);
+        assert!(tiny(&hidden(&[(1, 1, wrapped), (2, 1, "\x1b[2merrors\"\x1b[22m"), (3, 1, &rule16)])));
+        assert!(!tiny(&hidden(&[(1, 1, "❯ say hello"), (3, 1, "working")])), "a prompt in the conversation is no composer");
         assert!(!at(&hidden(&[(6, 1, &rule), (7, 1, "❯ a draft"), (8, 1, &rule)])), "text in it");
         assert!(!at(&hidden(&[(3, 1, "Use this API key?"), (5, 1, "❯ No (recommended)"), (6, 1, "  Yes")])), "a dialog's choice");
         assert!(!at(&hidden(&[(1, 1, "❯ say hello"), (3, 1, "working")])), "a prompt in the conversation, with no composer under it");
@@ -741,6 +996,94 @@ mod tests {
     }
 
     #[test]
+    fn the_keys_that_hold_a_moves_line_back_are_text_put_in_the_composer() {
+        // Moving through first-run screens and offers: nothing.
+        for keys in ["\x1b[A", "\x1b[B", "\x1bOA", "\t", "\x1b[Z", "\r", "\x1b", "\x1b[I", "\x1b[O"] {
+            assert_eq!(keys_after(0, keys) & !DRAFT_FLAGS, 0, "{keys:?}");
+        }
+        // Text, a paste: held.
+        assert_eq!(keys_after(0, "a"), 1);
+        assert_eq!(keys_after(0, "\x1b[200~fix it\x1b[201~"), 6);
+        // A choice typed into a dialog, then Esc or Enter: nothing left.
+        assert_eq!(keys_after(keys_after(0, "2"), "\x1b"), 0);
+        assert_eq!(keys_after(keys_after(0, "1"), "\r"), 0);
+        // Emptied by Ctrl+C and Ctrl+U as the composer is.
+        assert_eq!(keys_after(5, "\x03"), 0);
+        assert_eq!(keys_after(5, "\x15"), 0);
+        // An Esc that starts a key's sequence clears nothing.
+        assert_eq!(keys_after(3, "\x1b[A"), 3);
+    }
+
+    #[test]
+    fn a_paste_is_text_line_breaks_and_all_across_writes() {
+        // Its Enter is text it pastes, not a send.
+        assert_eq!(draft_after(0, "\x1b[200~Try \"mine\"\r\x1b[201~") & !DRAFT_FLAGS, 11);
+        assert_eq!(keys_after(0, "\x1b[200~a\r\nb\x1b[201~") & !DRAFT_FLAGS, 4);
+        // Split across writes: the paste goes on in the next.
+        let s = draft_after(0, "\x1b[200~one\r");
+        assert!(s & DRAFT_PASTE != 0);
+        let s = draft_after(s, "two\r\x1b[201~");
+        assert_eq!((s & !DRAFT_FLAGS, s & DRAFT_PASTE), (8, 0), "closed by its end marker");
+        // After it, an Enter sends again.
+        assert_eq!(draft_after(s, "\r") & !DRAFT_FLAGS, 0);
+    }
+
+    #[test]
+    fn a_paste_whose_end_never_came_is_over_after_a_pause_its_text_kept() {
+        let open = draft_after(0, "\x1b[200~half a paste");
+        assert!(open & DRAFT_PASTE != 0);
+        assert_eq!(paste_lapsed(open, 1_000, 1_500), open, "still coming");
+        let over = paste_lapsed(open, 1_000, 1_000 + PASTE_LAPSE_MS);
+        assert_eq!((over & DRAFT_PASTE, over & !DRAFT_FLAGS), (0, 12), "over, what it pasted still a draft");
+        // An Enter after it sends again, as one does.
+        assert_eq!(draft_after(over, "\r") & !DRAFT_FLAGS, 0);
+    }
+
+    #[test]
+    fn a_person_at_the_keys_is_told_from_what_the_terminal_sends_itself() {
+        for person in ["a", "\r", "\x1b[200~text\x1b[201~", "\x1bx", "\x1b[15~", "\x1b[3~"] {
+            assert!(typed_by_person(person), "{person:?}");
+        }
+        for terminal in
+            ["\x1b", "\x1b[A", "\x1bOB", "\x1b[I", "\x1b[O", "\x1b[<35;1;14M", "\x1b[12;3R", "\x1b[?62;22c", "\x1b]11;rgb:0/0/0\x07", ""]
+        {
+            assert!(!typed_by_person(terminal), "{terminal:?}");
+        }
+    }
+
+    #[test]
+    fn a_key_that_picks_a_dialogs_option_is_no_composer_text() {
+        let looked = std::cell::Cell::new(0);
+        let at = |dialog: bool| {
+            let looked = &looked;
+            move || {
+                looked.set(looked.get() + 1);
+                dialog
+            }
+        };
+        // A digit at the auto-mode offer: nothing counted, the dialog noted.
+        let (n, d) = composer_keys(0, false, "2", at(true));
+        assert_eq!((n, d), (0, true));
+        // The dialog closes; the next key starts from nothing.
+        let (n, d) = composer_keys(n, d, "\r", at(false));
+        assert_eq!((n, d), (0, false));
+        let (n, _) = composer_keys(n, d, "h", at(false));
+        assert_eq!(n, 1, "text in the composer counts");
+        // Typing on in the composer: the screen is not looked at again.
+        let before = looked.get();
+        let (n, _) = composer_keys(n, false, "i", at(true));
+        assert_eq!((n, looked.get()), (2, before));
+        // A key that types nothing (an arrow on a picker) looks at nothing either.
+        let (n, d) = composer_keys(0, false, "\x1b[B", at(true));
+        assert_eq!((n, d), (0, false));
+        // And the screen of a dialog itself: no composer on it.
+        let rule = "─".repeat(30);
+        let offer = drawn(&[(3, 1, "Make auto mode your default permission mode?"), (5, 1, "❯ 1. Yes"), (6, 1, "  2. No")], (5, 1));
+        assert!(!composer_seen(&offer, 10, 50, Provider::Claude));
+        assert!(composer_seen(&drawn(&[(6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3)), 10, 30, Provider::Claude));
+    }
+
+    #[test]
     fn a_draft_is_what_was_typed_since_enter() {
         assert_eq!(draft_after(0, "abc"), 3);
         assert_eq!(draft_after(3, "\x7f"), 2);
@@ -754,7 +1097,7 @@ mod tests {
         assert_eq!(draft_after(1, "\x7f\x7f\x7f"), 0);
         // A backslash and Enter, one key per write: a second line, not a send.
         let s = draft_after(draft_after(0, "ab\\"), "\r");
-        assert_eq!(s & !DRAFT_BACKSLASH, 4);
+        assert_eq!(s & !DRAFT_FLAGS, 4);
         assert_eq!(draft_after(draft_after(s, "c"), "\r"), 0);
     }
 
