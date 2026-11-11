@@ -183,15 +183,44 @@ pub(super) fn line_opening(id: &str) -> String {
 
 /// The line Luna types into the new chat: fixed words, the document's path
 /// and hash, and the old chat named as data.
+#[cfg(test)]
 pub(super) fn prompt_line(id: &str, source: Source, old: &str, old_name: Option<&str>, payload: &str) -> String {
+    prompt_line_with(id, source, old, old_name, payload, "")
+}
+
+/// `prompt_line`, and the person's instruction from the move's dialog after
+/// it, as theirs: outside the document, whose excerpts are data, and cleaned
+/// as the document is.
+pub(super) fn prompt_line_with(id: &str, source: Source, old: &str, old_name: Option<&str>, payload: &str, note: &str) -> String {
+    let line = prompt_line_bare(id, source, old, old_name, payload);
+    let note = cleaned(note, NOTE_MAX);
+    if note.is_empty() {
+        return line;
+    }
+    format!(
+        "{line} The person's own instruction for this chat, which they typed in Luna's move dialog (theirs, not a record \
+         of the earlier chat): {}",
+        serde_json::to_string(&note).unwrap_or_default()
+    )
+}
+
+/// What a person or a session wrote, made fit for a line Luna types: one
+/// line, nothing a screen does not show, roots and secrets out, cut short.
+fn cleaned(text: &str, max: usize) -> String {
+    let roots = scrub::Roots::of_this_machine();
+    let flat: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).filter(|c| !scrub::invisible(*c)).collect();
+    let (flat, _) = scrub::strip_roots(&flat, &roots);
+    let flat = scrub::scrub(&flat).0;
+    flat.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(max).collect()
+}
+
+/// The most of the person's instruction the line carries.
+const NOTE_MAX: usize = 2000;
+
+fn prompt_line_bare(id: &str, source: Source, old: &str, old_name: Option<&str>, payload: &str) -> String {
     // The name as data: one line, cut short, quoted.
     // Cleaned as the document is: the line is not the person's to edit.
-    let roots = scrub::Roots::of_this_machine();
-    let name = old_name.map(|n| {
-        let n: String = n.chars().filter(|c| !c.is_control() && !scrub::invisible(*c)).collect();
-        let (n, _) = scrub::strip_roots(&n, &roots);
-        scrub::scrub(&n).0.chars().take(NAME_MAX).collect::<String>()
-    });
+    let name = old_name.map(|n| cleaned(n, NAME_MAX));
     let named = name.map(|n| format!("{} ({old})", serde_json::to_string(n.trim()).unwrap_or_default())).unwrap_or_else(|| old.to_string());
     let who = match source {
         Source::Luna => "Luna wrote it from that chat's records",
@@ -310,10 +339,10 @@ fn old_of(chat: &str) -> Result<Old, String> {
 
 /// Why a chat of `provider` in `folder` on the account at `account_path` does
 /// not move: a Codex worktree is in its account's own folder.
-pub(super) fn codex_worktree_refusal(provider: Provider, folder: &str, account_path: &str) -> Option<String> {
+pub(super) fn codex_worktree_refusal(provider: Provider, folder: &str, account_path: &str, started_in_one: bool) -> Option<String> {
     let inside =
         crate::paths::path_key(folder).starts_with(&format!("{}{}", crate::paths::path_key(account_path), std::path::MAIN_SEPARATOR));
-    (provider == Provider::Codex && inside).then(|| {
+    (provider == Provider::Codex && (inside || started_in_one)).then(|| {
         "a Codex chat in a worktree does not move: Codex keeps the worktree in the old account's folder, beside its credentials, \
          where another account's chat is not to work"
             .to_string()
@@ -411,7 +440,10 @@ pub fn move_prepare(
     if crate::paths::path_key(&to_account_path) == crate::paths::path_key(&old.account_path) {
         return Err("the chat is on that account already".into());
     }
-    if let Some(why) = codex_worktree_refusal(old.provider, &old.folder, &old.account_path) {
+    // Started with `--worktree` by Luna (pty/start.rs) or running in one:
+    // before its first turn its folder is still the project's, its checkout
+    // already the account's.
+    if let Some(why) = codex_worktree_refusal(old.provider, &old.folder, &old.account_path, old.settings["worktree"] == true) {
         return Err(why);
     }
     if let Some(r) = store::records().get(chat) {
@@ -441,6 +473,7 @@ pub fn move_prepare(
     }
     let name = chat_name(chat);
     let session_id = session_id.filter(|s| !s.trim().is_empty());
+    let note_for_line = note.clone();
     let inputs = Inputs {
         provider: old.provider,
         chat: chat.to_string(),
@@ -463,7 +496,7 @@ pub fn move_prepare(
     let id = crate::secret::random_hex(6);
     let sha256 = sha256_hex(built.text.as_bytes());
     let payload = super::dir_of(&new_id).map(|d| d.join(format!("{PAYLOAD_N}.md"))).unwrap_or_default();
-    let prompt = prompt_line(&id, Source::Luna, chat, name.as_deref(), &payload.to_string_lossy());
+    let prompt = prompt_line_with(&id, Source::Luna, chat, name.as_deref(), &payload.to_string_lossy(), &note_for_line);
     let m = Move {
         id: id.clone(),
         new_id: new_id.clone(),
@@ -599,6 +632,11 @@ fn confirm_with(
     roots: &scrub::Roots,
     account_ok: &dyn Fn(&str) -> Result<(), String>,
 ) -> Result<MoveStatus, String> {
+    // One Send at a time: a second that comes while the first writes the
+    // document finds it confirmed and answers as it did, never writing the
+    // copy over or undoing it.
+    static SENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = SENDING.lock().unwrap_or_else(|e| e.into_inner());
     let (move_id, launch) = (move_id.to_string(), launch.clone());
     let m = current(chat, &move_id)?;
     let text_sha = sha256_hex(text.as_bytes());
@@ -1087,6 +1125,27 @@ fn failed(chat: &str, m: &Move, why: String) {
         return;
     }
     crate::log::warn("move", &format!("{} gave up move {} to {}: {why}", label(chat), m.id, m.new_id));
+    // A new chat already made says on its divider that its move did not go
+    // through, and why: a row without its line is no mystery.
+    if m.phase.rank() >= 3 {
+        let past = store::Past {
+            n: PAYLOAD_N,
+            at: now_ms(),
+            provider: m.provider,
+            snapshot: m.payload.clone().unwrap_or_default(),
+            sha256: m.payload_sha256.clone().unwrap_or_default(),
+            previous: None,
+            done: false,
+            why: Some(why.clone()),
+            instructions: None,
+            moved: true,
+        };
+        let _ = store::change(&m.new_id, |r| {
+            if !r.past.iter().any(|p| p.n == PAYLOAD_N) {
+                r.past.push(past);
+            }
+        });
+    }
     let name = chat_name(chat).unwrap_or_else(|| chat.to_string());
     let kept = m.payload.as_deref().map(|p| format!(" Its document is kept at {p}.")).unwrap_or_default();
     crate::power::notify_chat(chat, "A move did not go through", &format!("\"{name}\": {why}.{kept}"));
@@ -1223,9 +1282,12 @@ pub(super) mod tests {
         let sep = std::path::MAIN_SEPARATOR;
         let acc = format!("{sep}acc{sep}openai{sep}one");
         let wt = format!("{acc}{sep}worktrees{sep}abb1{sep}repo");
-        assert!(codex_worktree_refusal(Provider::Codex, &wt, &acc).is_some_and(|w| w.contains("does not move")));
-        assert_eq!(codex_worktree_refusal(Provider::Codex, &format!("{sep}work{sep}repo"), &acc), None);
-        assert_eq!(codex_worktree_refusal(Provider::Claude, &wt, &acc), None, "a Claude Code worktree is in the repository");
+        assert!(codex_worktree_refusal(Provider::Codex, &wt, &acc, false).is_some_and(|w| w.contains("does not move")));
+        assert_eq!(codex_worktree_refusal(Provider::Codex, &format!("{sep}work{sep}repo"), &acc, false), None);
+        // Started with --worktree, before its first turn: still in the project
+        // folder as far as any rollout says, its checkout the account's.
+        assert!(codex_worktree_refusal(Provider::Codex, &format!("{sep}work{sep}repo"), &acc, true).is_some());
+        assert_eq!(codex_worktree_refusal(Provider::Claude, &wt, &acc, true), None, "a Claude Code worktree is in the repository");
     }
 
     #[test]
@@ -1369,6 +1431,52 @@ pub(super) mod tests {
         assert!(ready_now(true, Some(Turn::Idle)) && ready_now(true, None));
         assert!(!ready_now(false, Some(Turn::Idle)), "a dialog or a screen of its own");
         assert!(!ready_now(true, Some(Turn::Busy)) && !ready_now(true, Some(Turn::Waiting)), "a turn begun meanwhile");
+    }
+
+    #[test]
+    fn the_persons_instruction_goes_in_the_line_as_theirs() {
+        let line = prompt_line_with("m1", Source::Luna, "c1", None, "p", "Run the\ntests first. sk-ant-api03-0123456789abcdefghijklmnop");
+        assert!(line.contains("The person's own instruction for this chat"), "{line}");
+        assert!(line.contains("\"Run the tests first. <redacted>\""), "one line, cleaned: {line}");
+        crate::agents::privilege::plain_text(&line).expect("a line Luna types passes its own check");
+        assert_eq!(prompt_line_with("m1", Source::Luna, "c1", None, "p", "  \n"), prompt_line("m1", Source::Luna, "c1", None, "p"));
+    }
+
+    #[test]
+    fn concurrent_sends_of_one_move_confirm_it_once_and_keep_its_copy() {
+        let (chat, new) = ("mvc-old", "mvc-new");
+        let m = shown(chat, new, false);
+        let text = "# Moved\nGo on.\n";
+        let sha = sha256_hex(text.as_bytes());
+        let launch = m.launch.clone().unwrap();
+        let send = || {
+            let (sha, launch) = (sha.clone(), launch.clone());
+            std::thread::spawn(move || {
+                confirm_with("mvc-old", "m1", "# Moved\nGo on.\n", &sha, &launch, &scrub::Roots::default(), &|_| Ok(()))
+            })
+        };
+        let (a, b) = (send(), send());
+        assert!(a.join().unwrap().is_ok() && b.join().unwrap().is_ok(), "the second answers as the first did");
+        let copy = super::super::dir_of(new).unwrap().join("1.md");
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), text);
+        for c in [chat, new] {
+            let _ = store::remove(c);
+        }
+        let _ = std::fs::remove_dir_all(super::super::dir_of(new).unwrap());
+    }
+
+    #[test]
+    fn a_move_given_up_after_its_row_says_why_on_the_new_chat() {
+        let (chat, new) = ("mvf-old", "mvf-new");
+        let mut m = shown(chat, new, false);
+        m.phase = MovePhase::RowCreated { at: 1 };
+        store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        failed(chat, &m, "the new chat did not take Luna's line within 60 s".into());
+        let mark = super::super::mark_of(new).unwrap();
+        assert!(mark.moved && mark.state == "failed" && mark.why.as_deref().is_some_and(|w| w.contains("60 s")));
+        for c in [chat, new] {
+            let _ = store::remove(c);
+        }
     }
 
     #[test]

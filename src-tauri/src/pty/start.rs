@@ -788,6 +788,11 @@ pub async fn ensure_codex_session(
             "model": chosen_model,
             "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
         });
+        // Started into a worktree Codex makes in the account's folder: Luna's
+        // own word for it, before any rollout says where the chat runs.
+        if new_worktree {
+            settings["worktree"] = serde_json::json!(true);
+        }
         if let Some(t) = handoff {
             settings["handoff"] = serde_json::json!(t);
         }

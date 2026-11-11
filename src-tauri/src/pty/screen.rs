@@ -298,8 +298,12 @@ pub fn at_empty_prompt(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -
     let first = |r: u16| screen.cell(r, 0).map_or("", |c| c.contents());
     let rule = |r: u16| first(r) == "─";
     let Some(top) = (0..rows).rev().find(|&r| first(r) == "❯") else { return false };
-    let empty = (1..cols).filter_map(|c| screen.cell(top, c)).all(|c| c.dim() || c.contents().trim().is_empty());
-    empty && top > 0 && rule(top - 1) && (top + 1 == rows || rule(top + 1))
+    let nothing = |r: u16, from: u16| (from..cols).filter_map(|c| screen.cell(r, c)).all(|c| c.dim() || c.contents().trim().is_empty());
+    // In a narrow pane its dim placeholder wraps onto the rows under it: up to
+    // the rule under the composer, or the screen's end where a short pane has
+    // no room for one, nothing but that placeholder.
+    let below = (top + 1..rows).find(|&r| rule(r)).unwrap_or(rows);
+    nothing(top, 1) && top > 0 && rule(top - 1) && (top + 1..below).all(|r| nothing(r, 0))
 }
 
 /// The composer's length after a person's keys, roughly: characters add,
@@ -712,6 +716,14 @@ mod tests {
             "a dim placeholder is nothing typed"
         );
         assert!(at(&hidden(&[(9, 1, &rule), (10, 1, caret)])), "no room left for the rule under it");
+        // A quarter pane: the placeholder wraps under the caret, the footer is
+        // gone, and the screen ends with the composer or its rule.
+        let narrow = |bytes: &[u8]| at_empty_prompt(bytes, 8, 16, Provider::Claude);
+        let rule16 = "─".repeat(16);
+        let wrapped = "❯\u{a0}\x1b[7m \x1b[27m\x1b[2mTry \"fix lint \x1b[22m";
+        assert!(narrow(&hidden(&[(5, 1, &rule16), (6, 1, wrapped), (7, 1, "\x1b[2merrors\"\x1b[22m"), (8, 1, &rule16)])));
+        assert!(narrow(&hidden(&[(6, 1, &rule16), (7, 1, wrapped), (8, 1, "\x1b[2merrors\"\x1b[22m")])), "no rule under it");
+        assert!(!narrow(&hidden(&[(5, 1, &rule16), (6, 1, caret), (7, 1, "typed text"), (8, 1, &rule16)])), "a draft's next line");
         assert!(!at(&hidden(&[(6, 1, &rule), (7, 1, "❯ a draft"), (8, 1, &rule)])), "text in it");
         assert!(!at(&hidden(&[(3, 1, "Use this API key?"), (5, 1, "❯ No (recommended)"), (6, 1, "  Yes")])), "a dialog's choice");
         assert!(!at(&hidden(&[(1, 1, "❯ say hello"), (3, 1, "working")])), "a prompt in the conversation, with no composer under it");
