@@ -95,39 +95,41 @@ pub fn create_account(provider: Provider, name: String) -> Result<AccountInfo, S
 /// Renames the account's folder, which is all an account's name is. Not while
 /// a session runs on it: the CLI holds files in the folder (Windows refuses the
 /// rename), and a running session would lose its config under it. The names
-/// Luna keeps elsewhere — agents' blocked list, the settings parent — follow.
+/// Luna keeps elsewhere — agents' blocked list, the settings parent, and all
+/// the library knows of the account (`library::rename_account_held`) — follow.
 #[tauri::command]
 pub fn rename_account(provider: Provider, name: String, to: String) -> Result<AccountInfo, String> {
     let to = to.trim().to_string();
     let root = provider_root(provider)?;
-    let path = root.join(&name).to_string_lossy().into_owned();
-    if crate::pty::manager().account_in_use(&path) {
+    let from = root.join(&name);
+    if crate::pty::manager().account_in_use(&from.to_string_lossy()) {
         return Err("Chats are running on this account — stop them first".into());
     }
-    let dest = rename_in(&root, &name, &to)?;
-
     let (old_key, new_key) = (format!("{}/{name}", provider.as_str()), format!("{}/{to}", provider.as_str()));
-    let moved = crate::settings::update(|s| {
-        for k in s.agent_blocked_accounts.iter_mut().filter(|k| **k == old_key) {
-            *k = new_key.clone();
-        }
-        let parent = match provider {
-            Provider::Claude => &mut s.settings_parents.claude,
-            Provider::Codex => &mut s.settings_parents.codex,
-        };
-        if parent.as_deref() == Some(name.as_str()) {
-            *parent = Some(to.clone());
-        }
-        crate::library::rename_account(&mut s.library, &old_key, Some(&new_key));
-    });
     // Settings that cannot be written leave the chats on the old name: the
     // folder goes back under it rather than leave them pointing at nothing.
-    if let Err(e) = moved {
-        if let Err(back) = fs::rename(&dest, root.join(&name)) {
-            crate::log::warn("accounts", &format!("could not move {} back to {name}: {back}", dest.display()));
-        }
-        return Err(e);
-    }
+    let dest = crate::library::rename_account_held(
+        provider,
+        &from,
+        &name,
+        &to,
+        || rename_in(&root, &name, &to),
+        |library| {
+            crate::settings::update(|s| {
+                for k in s.agent_blocked_accounts.iter_mut().filter(|k| **k == old_key) {
+                    *k = new_key.clone();
+                }
+                let parent = match provider {
+                    Provider::Claude => &mut s.settings_parents.claude,
+                    Provider::Codex => &mut s.settings_parents.codex,
+                };
+                if parent.as_deref() == Some(name.as_str()) {
+                    *parent = Some(to.clone());
+                }
+                library(&mut s.library);
+            })
+        },
+    )?;
     crate::log::info("accounts", &format!("renamed {old_key} to {new_key}"));
     Ok(AccountInfo { provider, name: to, path: dest.to_string_lossy().into_owned() })
 }
@@ -188,13 +190,20 @@ mod tests {
     }
 }
 
-#[tauri::command]
+/// Off the main thread (`async`): it waits for the library's lock, which a
+/// pass of the core's may hold.
+#[tauri::command(async)]
 pub fn delete_account(provider: Provider, name: String) -> Result<(), String> {
     validate_name(&name)?;
     let dir = provider_root(provider)?.join(&name);
     if !dir.exists() {
         return Ok(());
     }
-    fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-    crate::settings::update(|s| crate::library::rename_account(&mut s.library, &format!("{}/{name}", provider.as_str()), None))
+    crate::library::delete_account_held(
+        provider,
+        &dir,
+        &name,
+        || fs::remove_dir_all(&dir).map_err(|e| e.to_string()),
+        |library| crate::settings::update(|s| library(&mut s.library)),
+    )
 }
