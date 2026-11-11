@@ -4,7 +4,7 @@
  */
 import { chatFolderCheck } from '../../ipc/sessions';
 import { codexHooksStart } from '../../ipc/trust';
-import type { Account, Chat, ClaudeSettings, CodexSettings } from '../../shared/types';
+import type { Account, Chat, ClaudeSettings, CodexSettings, GroupId } from '../../shared/types';
 import { pickChatColor } from '../../shared/ui/chatColors';
 import { newId, useChats, wornColors } from '../chats/chats.store';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
@@ -42,6 +42,11 @@ export type ChatSpec = {
   /** Claude Code: what the helper was spawned with, kept for every start. */
   readOnly?: boolean;
   agent?: string | null;
+  /** A chat moved from another account keeps its color and group, and says
+   *  which chat it goes on from (features/chats/moving.ts). */
+  color?: string | null;
+  group?: GroupId;
+  movedFrom?: string;
 } & ({ provider: 'claude'; settings: ClaudeSettings } | { provider: 'codex'; settings: CodexSettings });
 
 /**
@@ -78,7 +83,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   const worktreePath: string | null = spec.inWorktree ?? null;
 
   const { folders } = useChats.getState();
-  const group = usePanes.getState().group;
+  const group = spec.group ?? usePanes.getState().group;
   const n = folders.reduce((a, f) => a + f.chats.filter(c => c.group === group).length, 0) + 1;
   const id = spec.id ?? newId('c');
 
@@ -92,11 +97,12 @@ export async function createChat(spec: ChatSpec): Promise<string> {
     group,
     worktree: spec.worktree,
     worktreePath,
-    color: pickChatColor(wornColors(folders, group)),
+    color: spec.color !== undefined ? spec.color : pickChatColor(wornColors(folders, group)),
     tools: spec.tools ?? false,
     guard: spec.guard ?? false,
     autoHandoff: (spec.tools ?? false) && (spec.autoHandoff ?? false),
-    handoffAt: spec.handoffAt
+    handoffAt: spec.handoffAt,
+    movedFrom: spec.movedFrom
   };
   const chat: Chat =
     spec.provider === 'claude'

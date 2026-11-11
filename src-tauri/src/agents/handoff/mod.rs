@@ -21,14 +21,24 @@
 //! - `facts`: what the notices, the tool's answer and the prompt say.
 //! - `served`: the instructions served, what is kept of them, and what the
 //!   chat's panel shows of them.
+//! - `moving`: a chat moved to another account of its CLI, opened from a
+//!   document the person confirmed (docs/adr/0023-moving-a-chat-to-another-account.md);
+//!   `document` writes that document from the chat's records, `excerpts`
+//!   reads them bounded, `gitfacts` asks git, `scrub` cleans it.
 
+mod document;
+mod excerpts;
 mod facts;
 mod file;
+mod gitfacts;
+mod moving;
 mod phase;
+mod scrub;
 mod served;
 mod store;
 mod watch;
 
+pub use moving::{move_cancel, move_confirm, move_list, move_prepare, move_step, moved_dir, opening_refusal, MOVE_TAG};
 pub use served::{applied_of, HandoffApplied};
 
 use crate::agents::delivery::{type_in, TypingInto, POLL, SEND_TYPING_MS, TYPING_WAIT};
@@ -406,24 +416,30 @@ impl Term for Pty {
     }
 
     fn type_line(&self, chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>) -> Result<Typed, String> {
-        let pty = crate::pty::manager();
-        // From here to the Enter a person's keys wait (`hold_keys`): what the
-        // composer shows now is what the text lands in.
-        let hold = pty.hold_keys(chat).ok_or("the chat's terminal is gone")?;
-        let written = pty.composer(chat).is_some_and(|c| !c.text.trim().is_empty() || c.stashed);
-        if written || pty.has_draft(chat) || pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS) {
-            return Ok(Typed::NotClear);
-        }
-        if let Err(r) = commit() {
-            return Ok(Typed::NotCommitted(r));
-        }
-        let before = crate::activity::turn_state(chat);
-        type_in(pty, chat, text, before.map(|t| t.turn), before.map_or(0, |t| t.turns_ended), hold).map(|_| Typed::In)
+        type_line(chat, text, commit)
     }
 
     fn pause(&self) {
         std::thread::sleep(POLL);
     }
+}
+
+/// Types `text` into `chat`'s terminal as a prompt, as `Term::type_line`
+/// says: the switch's and a move's opening line alike.
+fn type_line(chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>) -> Result<Typed, String> {
+    let pty = crate::pty::manager();
+    // From here to the Enter a person's keys wait (`hold_keys`): what the
+    // composer shows now is what the text lands in.
+    let hold = pty.hold_keys(chat).ok_or("the chat's terminal is gone")?;
+    let written = pty.composer(chat).is_some_and(|c| !c.text.trim().is_empty() || c.stashed);
+    if written || pty.has_draft(chat) || pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS) {
+        return Ok(Typed::NotClear);
+    }
+    if let Err(r) = commit() {
+        return Ok(Typed::NotCommitted(r));
+    }
+    let before = crate::activity::turn_state(chat);
+    type_in(pty, chat, text, before.map(|t| t.turn), before.map_or(0, |t| t.turns_ended), hold).map(|_| Typed::In)
 }
 
 /// The switches as the store keeps them.
@@ -649,6 +665,7 @@ fn close(
         done,
         why,
         instructions: s.instructions.clone(),
+        moved: false,
     });
     r.fresh = done;
     if done {
@@ -734,6 +751,7 @@ pub(super) fn beat() {
         let pty = crate::pty::manager();
         thresholds(pty, &mut b);
         switches(&mut b);
+        moving::beat();
     }
 }
 
@@ -964,6 +982,9 @@ pub struct HandoffMark {
     pub why: Option<String>,
     /// The conversation it left can be read.
     pub previous: bool,
+    /// The document a move to another account opened the chat with.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub moved: bool,
 }
 
 /// `id`'s latest handoff, under way or past.
@@ -971,7 +992,14 @@ pub fn mark_of(id: &str) -> Option<HandoffMark> {
     let r = store::records();
     let rec = r.get(id)?;
     if let Some(s) = &rec.switch {
-        return Some(HandoffMark { n: s.n, at: s.scheduled_at, state: "underWay", why: None, previous: s.before.transcript.is_some() });
+        return Some(HandoffMark {
+            n: s.n,
+            at: s.scheduled_at,
+            state: "underWay",
+            why: None,
+            previous: s.before.transcript.is_some(),
+            moved: false,
+        });
     }
     let p = rec.past.last()?;
     Some(HandoffMark {
@@ -980,6 +1008,7 @@ pub fn mark_of(id: &str) -> Option<HandoffMark> {
         state: if p.done { "done" } else { "failed" },
         why: p.why.clone(),
         previous: p.previous.is_some(),
+        moved: p.moved,
     })
 }
 

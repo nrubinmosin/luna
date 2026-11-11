@@ -331,7 +331,9 @@ fn overlay_background(id: &str, m: &mut SessionMeta) {
 /// for the chat: it keeps the one it had (Codex names a chat after its
 /// conversation's first prompt).
 fn pin_name(m: &mut SessionMeta) {
-    if m.first_prompt.as_deref().is_some_and(|p| p.trim_start().starts_with(crate::agents::handoff::PROMPT_TAG)) {
+    let luna_s =
+        |p: &str| [crate::agents::handoff::PROMPT_TAG, crate::agents::handoff::MOVE_TAG].iter().any(|tag| p.trim_start().starts_with(tag));
+    if m.first_prompt.as_deref().is_some_and(luna_s) {
         m.first_prompt = None;
     }
 }
@@ -465,6 +467,7 @@ mod pin_tests {
             m.first_prompt
         };
         assert_eq!(named("[Luna handoff 2, not typed by the user] This is a new conversation…"), None);
+        assert_eq!(named("[Luna move 3fa9c2, not typed by the user] This chat goes on from…"), None, "nor a move's line");
         assert_eq!(named("Fix the updater"), Some("Fix the updater".into()), "a person's first prompt names it");
     }
 }
