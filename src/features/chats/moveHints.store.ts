@@ -5,11 +5,16 @@
  * for this run of the window.
  */
 import { create } from 'zustand';
+import type { MoveStatusDto } from '../../ipc/moving';
 
 interface MoveHints {
   /** The limit each chat's last turn stopped on, as its CLI words it. */
   limits: Record<string, string | null>;
   dismissed: Record<string, true>;
+  /** Each move under way or ended lately, by its new chat's id, as the poll
+   *  (chats/moving.ts `useMoves`) last read them. */
+  opening: Record<string, MoveStatusDto>;
+  setMoves: (moves: MoveStatusDto[]) => void;
   setLimit: (chatId: string, limit: string | null) => void;
   dismiss: (chatId: string) => void;
 }
@@ -17,6 +22,8 @@ interface MoveHints {
 export const useMoveHints = create<MoveHints>(set => ({
   limits: {},
   dismissed: {},
+  opening: {},
+  setMoves: moves => set({ opening: Object.fromEntries(moves.map(m => [m.newId, m])) }),
   setLimit: (chatId, limit) =>
     set(s => ((s.limits[chatId] ?? null) === limit ? s : { limits: { ...s.limits, [chatId]: limit } })),
   dismiss: chatId => set(s => ({ dismissed: { ...s.dismissed, [chatId]: true } }))

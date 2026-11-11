@@ -730,6 +730,19 @@ mod tests {
         assert!(narrow(&hidden(&[(5, 1, &rule16), (6, 1, wrapped), (7, 1, "\x1b[2merrors\"\x1b[22m"), (8, 1, &rule16)])));
         assert!(narrow(&hidden(&[(6, 1, &rule16), (7, 1, wrapped), (8, 1, "\x1b[2merrors\"\x1b[22m")])), "no rule under it");
         assert!(!narrow(&hidden(&[(5, 1, &rule16), (6, 1, caret), (7, 1, "typed text"), (8, 1, &rule16)])), "a draft's next line");
+        // After the first-run screens and the auto-mode offer, in a quarter
+        // pane: the composer, its placeholder wrapped, the rule, the footer.
+        let quarter = |bytes: &[u8]| at_empty_prompt(bytes, 10, 30, Provider::Claude);
+        let rule30 = "─".repeat(30);
+        let footer = "\x1b[2mmanual mode on · ? for shortcuts\x1b[22m";
+        let placeholder = "❯\u{a0}\x1b[7m \x1b[27m\x1b[2mTry \"refactor the move\x1b[22m";
+        assert!(quarter(&hidden(&[
+            (5, 1, &rule30),
+            (6, 1, placeholder),
+            (7, 1, "\x1b[2mdialog\"\x1b[22m"),
+            (8, 1, &rule30),
+            (9, 1, footer)
+        ])));
         // Shrunk to three rows: the composer first, its placeholder, its rule.
         let tiny = |bytes: &[u8]| at_empty_prompt(bytes, 3, 16, Provider::Claude);
         assert!(tiny(&hidden(&[(1, 1, wrapped), (2, 1, "\x1b[2merrors\"\x1b[22m"), (3, 1, &rule16)])));

@@ -34,7 +34,9 @@ use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// How the line Luna types into the moved chat opens.
@@ -198,6 +200,10 @@ pub(in crate::agents) struct Move {
     /// no screen shows.
     #[serde(default)]
     pub cleaned: [usize; 3],
+    /// The person said, on the new chat, to type the line now: no prompt the
+    /// screen check could read, but one they see.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forced: bool,
 }
 
 impl Move {
@@ -313,6 +319,11 @@ pub struct MoveStatus {
     pub source: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch: Option<Value>,
+    /// An opening that waits: on what, and since when (`prompt_verdict`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_since: Option<u64>,
 }
 
 fn status_of(chat: &str, m: &Move) -> MoveStatus {
@@ -334,6 +345,8 @@ fn status_of(chat: &str, m: &Move) -> MoveStatus {
             Source::Chat => "chat",
         },
         launch: m.launch.clone(),
+        waiting: waiting_of(m).map(|(why, _)| why),
+        waiting_since: waiting_of(m).map(|(_, since)| since),
     }
 }
 
@@ -396,7 +409,14 @@ pub(super) fn codex_worktree_refusal(provider: Provider, folder: &str, account_p
     })
 }
 
-/// The account of Luna's at `path`, by name, and its CLI.
+/// Why the account at `path` takes no move: nobody is signed in to it, and
+/// the new chat would meet a sign-in, not a prompt.
+pub(super) fn signed_out_refusal(provider: Provider, path: &str, name: &str) -> Option<String> {
+    (!crate::agents::spawn::account::signed_in(provider, path))
+        .then(|| format!("{name} is signed out: sign in to it in Accounts first, then move the chat there"))
+}
+
+/// The account of Luna''s at `path`, by name, and its CLI.
 fn account_at(path: &str) -> Result<(Provider, String), String> {
     let key = crate::paths::path_key(path);
     crate::accounts::list_accounts()?
@@ -533,6 +553,7 @@ fn new_move(
         note: String::new(),
         preview: None,
         cleaned: [0; 3],
+        forced: false,
     }
 }
 
@@ -590,6 +611,9 @@ fn checked(chat: &str, new_id: &str, to_account_path: &str) -> Result<(Old, Stri
     }
     let old = old_of(chat)?;
     let (to_provider, to_account) = account_at(to_account_path)?;
+    if let Some(why) = signed_out_refusal(to_provider, to_account_path, &to_account) {
+        return Err(why);
+    }
     if to_provider != old.provider {
         return Err("a chat moves only to another account of its own CLI".into());
     }
@@ -665,8 +689,8 @@ fn build_within(mut inputs: Inputs, transcript: Option<PathBuf>, wait: Duration)
 
 /// The chats being stopped for a move, between the look at their helpers and
 /// the stop: no spawn under them is taken meanwhile.
-fn stopping() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+fn stopping() -> &'static Mutex<std::collections::HashSet<String>> {
+    static S: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
     S.get_or_init(Default::default)
 }
 
@@ -758,7 +782,10 @@ fn launch_refusal(m: &Move, launch: &Value) -> Option<String> {
 /// the new chat's document. Twice with the same is one: the second answers
 /// as the first did.
 pub fn move_confirm(chat_id: String, move_id: String, text: String, sha256: String, launch: Value) -> Result<MoveStatus, String> {
-    confirm_with(&chat_id, &move_id, &text, &sha256, &launch, &scrub::Roots::of_this_machine(), &|p| account_at(p).map(|_| ()))
+    confirm_with(&chat_id, &move_id, &text, &sha256, &launch, &scrub::Roots::of_this_machine(), &|p| {
+        let (provider, name) = account_at(p)?;
+        signed_out_refusal(provider, p, &name).map_or(Ok(()), Err)
+    })
 }
 
 /// `move_confirm` against `roots`, the account looked for by `account_ok`.
@@ -774,7 +801,7 @@ fn confirm_with(
     // One Send at a time: a second that comes while the first writes the
     // document finds it confirmed and answers as it did, never writing the
     // copy over or undoing it.
-    static SENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static SENDING: Mutex<()> = Mutex::new(());
     let _one = SENDING.lock().unwrap_or_else(|e| e.into_inner());
     let (move_id, launch) = (move_id.to_string(), launch.clone());
     let m = current(chat, &move_id)?;
@@ -951,6 +978,22 @@ pub fn move_step(chat_id: String, move_id: String, step: String) -> Result<MoveS
                     Ok(())
                 }
             })?
+        }
+        // The person's "Type it now" on the new chat: the line goes in at the
+        // next look whatever the screen check says, but never into a turn at
+        // work or a composer with text in it.
+        "typeNow" => {
+            let set = store::change(chat, |r| match r.moving.as_mut().filter(|x| x.id == move_id) {
+                Some(x) if matches!(x.phase, MovePhase::RowCreated { .. }) => {
+                    x.forced = true;
+                    Ok(x.clone())
+                }
+                Some(x) => Err(format!("there is no line waiting to be typed ({})", x.phase.word())),
+                None => Err("no such move of this chat".to_string()),
+            });
+            let m = set.map_err(|e| format!("the move could not be saved: {e}"))??;
+            crate::log::info("move", &format!("move {}: the person said to type its line into {} now", m.id, m.new_id));
+            m
         }
         "oldStopped" => advance(chat, &move_id, MovePhase::OldStopped { at: now_ms() }, |m| {
             if m.phase.rank() < 1 {
@@ -1146,9 +1189,31 @@ fn ask_refusal(chat: &str, provider: Provider) -> Option<String> {
 /// empty, no turn under way, nobody typing. A dialog or a first-run screen is
 /// not one, and a Codex line typed mid-turn would steer the turn.
 fn strict_prompt(pty: &crate::pty::PtyManager, id: &str) -> bool {
-    let quiet = pty.typed_ago_ms(id).is_none_or(|ms| ms >= SEND_TYPING_MS);
-    let idle = crate::activity::turn_state(id).is_none_or(|t| t.turn == crate::activity::Turn::Idle);
-    pty.alive(id) && quiet && idle && !pty.has_draft(id) && pty.at_prompt(id)
+    prompt_verdict(pty, id).is_ok()
+}
+
+/// `strict_prompt` with why not, for the log and the window: a stall shows
+/// what it waits on. Only a turn at work keeps the line out: a CLI that says
+/// it waits while its screen shows an empty composer (a notice after its
+/// first-run screens, an idle reminder) asks nothing of anyone, and a real
+/// question draws a dialog, which is no prompt.
+pub(super) fn prompt_verdict(pty: &crate::pty::PtyManager, id: &str) -> Result<(), &'static str> {
+    if !pty.alive(id) {
+        return Err("its CLI is not running");
+    }
+    if pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS) {
+        return Err("a person typed into it a moment ago");
+    }
+    if crate::activity::turn_state(id).is_some_and(|t| t.turn == crate::activity::Turn::Busy) {
+        return Err("a turn is under way");
+    }
+    if !pty.at_prompt(id) {
+        return Err("its screen shows no empty prompt (a dialog, a first-run screen, text in the composer)");
+    }
+    if pty.has_draft(id) {
+        return Err("a draft of a person's is in its composer");
+    }
+    Ok(())
 }
 
 /// Whether `chat` is being asked for a move's document: no threshold notice
@@ -1396,6 +1461,10 @@ pub(super) struct OpenLook {
     pub prompted: bool,
     /// Why its start is not the one confirmed, if it is not.
     pub mismatch: Option<String>,
+    /// Why it is not ready, as `prompt_verdict` says.
+    pub waiting: Option<&'static str>,
+    /// The person said to type it now.
+    pub forced: bool,
 }
 
 /// What a look calls for.
@@ -1494,9 +1563,51 @@ fn look(m: &Move) -> OpenLook {
     l.prompted = crate::agents::read::transcript_path(pty, new)
         .and_then(|p| crate::pty::tail(&p, 1024 * 1024))
         .is_some_and(|t| t.contains(&line_opening(&m.id)));
-    l.draft = pty.has_draft(new);
-    l.ready = strict_prompt(pty, new);
+    let verdict = prompt_verdict(pty, new);
+    // The person's "Type it now": past every look but a composer with text in
+    // it, which type_line still looks at with the keys held.
+    l.forced = m.forced && verdict != Err("a turn is under way");
+    l.draft = !m.forced && pty.has_draft(new);
+    l.ready = verdict.is_ok() || l.forced;
+    l.waiting = verdict.err();
     l
+}
+
+/// Each opening's last verdict, by move: the log says it once per change, and
+/// the window shows it on the new chat with "Type it now".
+fn verdicts() -> &'static Mutex<HashMap<String, (&'static str, u64, bool)>> {
+    static V: std::sync::OnceLock<Mutex<HashMap<String, (&'static str, u64, bool)>>> = std::sync::OnceLock::new();
+    V.get_or_init(Default::default)
+}
+
+/// How long an opening may wait at a screen before the log has a copy of it,
+/// and the window offers "Type it now".
+pub(super) const STALL_MS: u64 = 2 * 60_000;
+
+/// `l`'s verdict on move `m`, logged as it changes; past STALL_MS on one, the
+/// new chat's screen once, so a stall can be read off luna.log.
+fn note_verdict(m: &Move, l: &OpenLook) {
+    let why = if l.ready { "ready" } else { l.waiting.unwrap_or(if l.alive { "waiting" } else { "its CLI is not running" }) };
+    let mut v = verdicts().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = v.entry(m.id.clone()).or_insert((why, l.now, false));
+    if entry.0 != why {
+        *entry = (why, l.now, false);
+        crate::log::info("move", &format!("move {}: opening {}: {why}", m.id, m.new_id));
+    }
+    if why != "ready" && !entry.2 && l.now.saturating_sub(entry.1) > STALL_MS {
+        entry.2 = true;
+        let screen = crate::pty::manager().screen(&m.new_id).unwrap_or_default();
+        crate::log::warn(
+            "move",
+            &format!("move {}: opening {} waits {} min on \"{why}\"; its screen:\n{screen}", m.id, m.new_id, STALL_MS / 60_000),
+        );
+    }
+}
+
+/// What the window is told of an opening that waits: why, and since when.
+fn waiting_of(m: &Move) -> Option<(String, u64)> {
+    let v = verdicts().lock().unwrap_or_else(|e| e.into_inner());
+    v.get(&m.id).filter(|(why, ..)| *why != "ready").map(|(why, since, _)| (why.to_string(), *since))
 }
 
 /// Whether `id` still stands at its prompt between turns, looked at the moment
@@ -1506,7 +1617,7 @@ pub(super) fn still_ready(pty: &crate::pty::PtyManager, id: &str) -> bool {
 }
 
 fn ready_now(at_prompt: bool, turn: Option<crate::activity::Turn>) -> bool {
-    at_prompt && turn.is_none_or(|t| t == crate::activity::Turn::Idle)
+    at_prompt && turn != Some(crate::activity::Turn::Busy)
 }
 
 /// Each move whose new chat is opening, a step on: the line typed once the
@@ -1522,7 +1633,9 @@ pub(super) fn beat() {
         if super::running().lock().unwrap_or_else(|e| e.into_inner()).contains(&m.new_id) {
             continue;
         }
-        match next_open(&m, &look(&m)) {
+        let l = look(&m);
+        note_verdict(&m, &l);
+        match next_open(&m, &l) {
             OpenStep::Wait => {}
             OpenStep::Type => open_with_line(&chat, &m),
             OpenStep::Done => done(&chat, &m),
@@ -1567,13 +1680,13 @@ fn open_with_line(chat: &str, m: &Move) {
         let commit = || match current(&chat, &m.id) {
             // Looked at again with the keys held: a turn started meanwhile (a
             // send, a notice) would take the line mid-turn.
-            _ if !still_ready(crate::pty::manager(), &new) => Err(Refused::Gone),
+            _ if !m.forced && !still_ready(crate::pty::manager(), &new) => Err(Refused::Gone),
             Ok(x) if x.phase.rank() == 3 => {
                 advance(&chat, &m.id, MovePhase::Prompting { at: now_ms() }, |_| Ok(())).map(|_| ()).map_err(Refused::Unsaved)
             }
             _ => Err(Refused::Gone),
         };
-        match super::type_line(&new, &text, &commit) {
+        match super::type_line_with(&new, &text, &commit, !m.forced) {
             Ok(Typed::In) => crate::log::info("move", &format!("{}: move {} typed its line into {new}", label(&chat), m.id)),
             Ok(Typed::NotClear | Typed::NotCommitted(Refused::Gone)) => {}
             Ok(Typed::NotCommitted(Refused::Unsaved(e))) => failed(&chat, &m, format!("its state could not be saved: {e}")),
@@ -1694,6 +1807,7 @@ pub(super) mod tests {
             note: String::new(),
             preview: None,
             cleaned: [0; 3],
+            forced: false,
         }
     }
 
@@ -1724,6 +1838,27 @@ pub(super) mod tests {
         // Started otherwise than confirmed: never typed into.
         let other = OpenLook { mismatch: Some("other permissions".into()), ..ready(2_000) };
         assert!(matches!(next_open(&m, &other), OpenStep::Fail(w) if w.contains("other permissions")));
+    }
+
+    #[test]
+    fn the_person_can_have_the_line_typed_where_the_screen_check_sees_no_prompt() {
+        let m = a_move(MovePhase::RowCreated { at: 1_000 });
+        let stuck = OpenLook { ready: false, waiting: Some("its screen shows no empty prompt"), ..ready(1_000 + STALL_MS * 5) };
+        assert_eq!(next_open(&m, &stuck), OpenStep::Wait, "it waits, however long, unless told");
+        let told = OpenLook { ready: true, forced: true, ..stuck };
+        assert_eq!(next_open(&m, &told), OpenStep::Type);
+    }
+
+    #[test]
+    fn a_signed_out_account_takes_no_move() {
+        let dir = std::env::temp_dir().join(format!("luna-move-signed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.to_string_lossy().into_owned();
+        assert!(signed_out_refusal(Provider::Claude, &p, "rOut").is_some_and(|w| w.contains("rOut is signed out")));
+        std::fs::write(dir.join(".credentials.json"), r#"{"claudeAiOauth":{"refreshToken":"x"}}"#).unwrap();
+        assert_eq!(signed_out_refusal(Provider::Claude, &p, "rA"), None);
+        assert!(signed_out_refusal(Provider::Codex, &p, "c").is_some(), "Codex keeps its own");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1943,7 +2078,10 @@ pub(super) mod tests {
         use crate::activity::Turn;
         assert!(ready_now(true, Some(Turn::Idle)) && ready_now(true, None));
         assert!(!ready_now(false, Some(Turn::Idle)), "a dialog or a screen of its own");
-        assert!(!ready_now(true, Some(Turn::Busy)) && !ready_now(true, Some(Turn::Waiting)), "a turn begun meanwhile");
+        assert!(!ready_now(true, Some(Turn::Busy)), "a turn begun meanwhile");
+        // A CLI that says it waits at an empty composer asks nothing: after
+        // its first-run screens, an idle reminder. A real question is a dialog.
+        assert!(ready_now(true, Some(Turn::Waiting)));
     }
 
     #[test]

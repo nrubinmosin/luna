@@ -376,7 +376,7 @@
 [data-app] .move-banner {
   position: fixed;
   left: 50%;
-  top: 40px;
+  top: 2px;
   transform: translateX(-50%);
   z-index: 80;
   max-width: min(640px, 92vw);
@@ -385,8 +385,18 @@
 [data-app] .move-banner .window-body {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: var(--fs-4);
+  gap: 8px;
+  margin: 0;
+  padding: 2px 8px;
+  font-size: var(--fs-3);
+  white-space: nowrap;
+}
+[data-app] .move-banner .window-body > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-app] .picker-out {
+  color: var(--wait);
 }
 [data-app] .move-dialog .move-facts,
 [data-app] .move-dialog .move-counts {
