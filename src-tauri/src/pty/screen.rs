@@ -206,6 +206,11 @@ fn ctrl_letter(c: char) -> Option<char> {
 
 /// Set in the draft state when the last character typed was a backslash.
 const DRAFT_BACKSLASH: u64 = 1 << 63;
+/// Set in the draft state inside a bracketed paste, which may span writes:
+/// its Enters are text it pastes, not sends.
+const DRAFT_PASTE: u64 = 1 << 62;
+/// The state's flags, apart from the count.
+pub(super) const DRAFT_FLAGS: u64 = DRAFT_BACKSLASH | DRAFT_PASTE;
 /// How long after a key the screen may still not show it: until then the
 /// keys' word on a draft stands (see `has_draft`).
 const DRAFT_SETTLE_MS: u64 = 1_500;
@@ -375,37 +380,70 @@ pub fn composer_empty_loose(bytes: &[u8], rows: u16, cols: u16, provider: Provid
 /// it high, which only holds a notice until the next Enter. The top bit
 /// carries the backslash across writes, one key arriving per write.
 pub(super) fn draft_after(state: u64, data: &str) -> u64 {
-    let mut n = state & !DRAFT_BACKSLASH;
+    let mut n = state & !DRAFT_FLAGS;
     let mut backslash = state & DRAFT_BACKSLASH != 0;
+    let mut paste = state & DRAFT_PASTE != 0;
     let mut chars = data.chars().peekable();
     while let Some(c) = chars.next() {
         let was_backslash = std::mem::replace(&mut backslash, c == '\\');
         match c {
-            '\r' if was_backslash => n += 1,
-            '\r' | '\x03' | '\x15' => n = 0,
-            '\x7f' | '\x08' => n = n.saturating_sub(1),
-            // A sequence types nothing — the paste markers included; the
-            // text between them is counted as it comes.
+            // A sequence types nothing; the paste markers open and close a
+            // paste, whose text, its line breaks included, is counted.
             '\x1b' => {
                 if chars.peek() == Some(&'[') {
                     chars.next();
+                    let mut params = String::new();
                     for p in chars.by_ref() {
                         if ('\x40'..='\x7e').contains(&p) {
+                            if p == '~' && params == "200" {
+                                paste = true;
+                            } else if p == '~' && params == "201" {
+                                paste = false;
+                            }
                             break;
                         }
+                        params.push(p);
                     }
                 } else if chars.next() == Some('O') {
                     // SS3: arrows in application mode, F1-F4.
                     chars.next();
                 }
             }
+            _ if paste => n += 1,
+            '\r' if was_backslash => n += 1,
+            '\r' | '\x03' | '\x15' => n = 0,
+            '\x7f' | '\x08' => n = n.saturating_sub(1),
             c if c < ' ' => {}
             _ => n += 1,
         }
     }
-    n | if backslash { DRAFT_BACKSLASH } else { 0 }
+    n | if backslash { DRAFT_BACKSLASH } else { 0 } | if paste { DRAFT_PASTE } else { 0 }
 }
 
+/// Whether a write of `data` from the terminal is a person at the keys: a
+/// key that types (anything not led by Esc), a paste, and an Esc-led key
+/// that is none of what the terminal sends of itself or moves nothing (a
+/// lone Esc, an arrow, a focus or mouse report, a cursor position or device
+/// answer, an OSC or DCS reply). Alt with a key, a function key: a person.
+pub(super) fn typed_by_person(data: &str) -> bool {
+    let Some(rest) = data.strip_prefix('\x1b') else { return !data.is_empty() };
+    if data.contains("\x1b[200~") {
+        return true;
+    }
+    if rest.is_empty() || rest.starts_with(']') || rest.starts_with('P') {
+        return false;
+    }
+    if let Some(csi) = rest.strip_prefix('[') {
+        let last = csi.chars().last().unwrap_or(' ');
+        let arrow = matches!(last, 'A' | 'B' | 'C' | 'D' | 'H' | 'F') && csi.len() <= 6;
+        let report = matches!(last, 'I' | 'O' | 'R' | 'c' | 'M' | 'm' | 'n') || csi.starts_with('<') || csi.starts_with('M');
+        return !(arrow || report);
+    }
+    if let Some(ss3) = rest.strip_prefix('O') {
+        return !matches!(ss3, "A" | "B" | "C" | "D" | "H" | "F");
+    }
+    true
+}
 /// `draft_after` for the veto a move's line goes by (`keys_left_text`): the
 /// same count of keys that put text in the composer (characters, a paste),
 /// emptied by Enter, Ctrl+C and Ctrl+U, and by a lone Esc too, which closes a
@@ -433,8 +471,8 @@ pub(super) fn composer_seen(bytes: &[u8], rows: u16, cols: u16, provider: Provid
 /// the count starts again from nothing. The screen is looked at only then,
 /// not at every key of a draft.
 pub(super) fn composer_keys(state: u64, in_dialog: bool, data: &str, dialog: impl FnOnce() -> bool) -> (u64, bool) {
-    let types_text = draft_after(0, data) & !DRAFT_BACKSLASH > 0;
-    if in_dialog || (state & !DRAFT_BACKSLASH == 0 && types_text) {
+    let types_text = draft_after(0, data) & !DRAFT_FLAGS > 0;
+    if in_dialog || (state & !DRAFT_FLAGS == 0 && types_text) {
         if dialog() {
             return (0, true);
         }
@@ -596,7 +634,7 @@ impl PtyManager {
             let Some(s) = sessions.get(id) else { return false };
             let n = s.draft.load(Ordering::Relaxed);
             let stashing = s.stashing.load(Ordering::Relaxed);
-            let typed = n & !DRAFT_BACKSLASH > 0;
+            let typed = n & !DRAFT_FLAGS > 0;
             if !typed && !stashing {
                 return false;
             }
@@ -624,7 +662,7 @@ impl PtyManager {
                 let _ = draft.compare_exchange(n, n.max(c.text.chars().count() as u64), Ordering::Relaxed, Ordering::Relaxed);
                 true
             }
-            None => n & !DRAFT_BACKSLASH > 0,
+            None => n & !DRAFT_FLAGS > 0,
         };
         *seen.lock().unwrap_or_else(|e| e.into_inner()) = (key, there);
         there
@@ -675,7 +713,7 @@ impl PtyManager {
     /// read of the screen clears. A move's line goes in only with none.
     pub fn keys_left_text(&self, id: &str) -> bool {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.get(id).is_some_and(|s| s.keys_draft.load(Ordering::Relaxed) & !DRAFT_BACKSLASH > 0)
+        sessions.get(id).is_some_and(|s| s.keys_draft.load(Ordering::Relaxed) & !DRAFT_FLAGS > 0)
     }
 
     /// Whether its screen shows an empty composer by its mark alone (see
@@ -945,7 +983,7 @@ mod tests {
     fn the_keys_that_hold_a_moves_line_back_are_text_put_in_the_composer() {
         // Moving through first-run screens and offers: nothing.
         for keys in ["\x1b[A", "\x1b[B", "\x1bOA", "\t", "\x1b[Z", "\r", "\x1b", "\x1b[I", "\x1b[O"] {
-            assert_eq!(keys_after(0, keys) & !DRAFT_BACKSLASH, 0, "{keys:?}");
+            assert_eq!(keys_after(0, keys) & !DRAFT_FLAGS, 0, "{keys:?}");
         }
         // Text, a paste: held.
         assert_eq!(keys_after(0, "a"), 1);
@@ -958,6 +996,32 @@ mod tests {
         assert_eq!(keys_after(5, "\x15"), 0);
         // An Esc that starts a key's sequence clears nothing.
         assert_eq!(keys_after(3, "\x1b[A"), 3);
+    }
+
+    #[test]
+    fn a_paste_is_text_line_breaks_and_all_across_writes() {
+        // Its Enter is text it pastes, not a send.
+        assert_eq!(draft_after(0, "\x1b[200~Try \"mine\"\r\x1b[201~") & !DRAFT_FLAGS, 11);
+        assert_eq!(keys_after(0, "\x1b[200~a\r\nb\x1b[201~") & !DRAFT_FLAGS, 4);
+        // Split across writes: the paste goes on in the next.
+        let s = draft_after(0, "\x1b[200~one\r");
+        assert!(s & DRAFT_PASTE != 0);
+        let s = draft_after(s, "two\r\x1b[201~");
+        assert_eq!((s & !DRAFT_FLAGS, s & DRAFT_PASTE), (8, 0), "closed by its end marker");
+        // After it, an Enter sends again.
+        assert_eq!(draft_after(s, "\r") & !DRAFT_FLAGS, 0);
+    }
+
+    #[test]
+    fn a_person_at_the_keys_is_told_from_what_the_terminal_sends_itself() {
+        for person in ["a", "\r", "\x1b[200~text\x1b[201~", "\x1bx", "\x1b[15~", "\x1b[3~"] {
+            assert!(typed_by_person(person), "{person:?}");
+        }
+        for terminal in
+            ["\x1b", "\x1b[A", "\x1bOB", "\x1b[I", "\x1b[O", "\x1b[<35;1;14M", "\x1b[12;3R", "\x1b[?62;22c", "\x1b]11;rgb:0/0/0\x07", ""]
+        {
+            assert!(!typed_by_person(terminal), "{terminal:?}");
+        }
     }
 
     #[test]
@@ -1006,7 +1070,7 @@ mod tests {
         assert_eq!(draft_after(1, "\x7f\x7f\x7f"), 0);
         // A backslash and Enter, one key per write: a second line, not a send.
         let s = draft_after(draft_after(0, "ab\\"), "\r");
-        assert_eq!(s & !DRAFT_BACKSLASH, 4);
+        assert_eq!(s & !DRAFT_FLAGS, 4);
         assert_eq!(draft_after(draft_after(s, "c"), "\r"), 0);
     }
 
