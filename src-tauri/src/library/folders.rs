@@ -76,6 +76,58 @@ pub(super) fn claude_folder_dir(dirs: &Dirs, slug: &str, a: &AccountInfo) -> Pat
     dirs.folders().join(slug).join(&a.name)
 }
 
+/// A Claude Code account renamed from `name` to `to`: each folder's copies
+/// for it (`claude_folder_dir`) renamed after it, the folders moved, from and
+/// to. One that would go through a link or junction under Luna's data folder
+/// (`no_link_between`), or onto another folder already there, stays where it
+/// is, as anything that will not move: a pass lays the copies out again
+/// under the new name, and takes the old ones out as it takes out any it no
+/// longer wants.
+pub(super) fn move_folder_copies(dirs: &Dirs, name: &str, to: &str) -> Vec<(PathBuf, PathBuf)> {
+    let mut moved = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dirs.folders()) else { return moved };
+    for slug in entries.flatten() {
+        let (from, dest) = (slug.path().join(name), slug.path().join(to));
+        if std::fs::symlink_metadata(&from).is_err() {
+            continue;
+        }
+        let done = no_link_between(&dirs.data, &from.join(".claude")).and_then(|()| {
+            match dest.exists() && !crate::paths::same_dir(&from, &dest) {
+                true => Err(format!("{} is there already", dest.display())),
+                false => std::fs::rename(&from, &dest).map_err(|e| format!("{} to {}: {e}", from.display(), dest.display())),
+            }
+        });
+        match done {
+            Ok(()) => moved.push((from, dest)),
+            Err(e) => crate::log::warn("library", &format!("the folder copies at {} stay under the old name: {e}", from.display())),
+        }
+    }
+    moved
+}
+
+/// `place`, under the folder copies of the Claude Code account `name`
+/// (`<data>/library-folders/<slug>/<name>/...`), spelled for the account
+/// renamed `to`; None for any other place.
+pub(super) fn folder_copy_renamed(dirs: &Dirs, place: &str, name: &str, to: &str) -> Option<String> {
+    let (top, at) = (dirs.folders(), Path::new(place));
+    let depth = top.components().count();
+    let head: PathBuf = at.components().take(depth).collect();
+    let rest: Vec<_> = at.components().skip(depth).collect();
+    if ident(&head) != ident(&top) || rest.len() < 3 || ident(Path::new(rest[1].as_os_str())) != ident(Path::new(name)) {
+        return None;
+    }
+    let below: PathBuf = rest[2..].iter().collect();
+    Some(top.join(rest[0]).join(to).join(below).to_string_lossy().into_owned())
+}
+
+/// Whether the folder of copies `place` lies in (`<slug>/<name>`) is there,
+/// a link included.
+pub(super) fn old_folder_copies_there(dirs: &Dirs, place: &str) -> bool {
+    let top = dirs.folders();
+    let container: PathBuf = Path::new(place).components().take(top.components().count() + 2).collect();
+    std::fs::symlink_metadata(container).is_ok()
+}
+
 /// Luna's marketplace folder in a Codex account's plugin cache.
 fn codex_market_dir(a: &AccountInfo) -> PathBuf {
     Path::new(&a.path).join("plugins").join("cache").join(CODEX_MARKET)

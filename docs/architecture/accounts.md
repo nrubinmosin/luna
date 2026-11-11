@@ -29,8 +29,12 @@
 `Documents/luna-accounts`, kept in Rust settings. Create is mkdir, delete is a
 recursive remove, list is a readdir of the two subfolders. A fresh Codex account
 gets `check_for_update_on_startup = false`. A rename carries every chat, the
-agents' list, library reaches and the settings parent along, refused while a
-chat or helper runs on it.
+agents' list, the settings parent and all the library keeps of the account
+along (docs/architecture/library.md, "Reaches"), refused while a chat or
+helper runs on it, an idle or restored helper included
+(`background::uses_account`) and a start waiting for its library pass
+(`library::lay_out_for`), asked again under the library's lock. A rename and a
+delete hold that lock throughout, and are refused without it.
 
 ## Limits
 

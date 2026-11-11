@@ -16,7 +16,8 @@ per account. A fresh Codex account gets a `config.toml` with
 - **Sign in** with the button on a fresh account's row: it runs `claude`, or
   `codex login`, in a modal.
 - **Rename** with the pencil beside the name: the folder is renamed and every
-  chat on it, the agents' list and the settings parent follow. Not while a chat
+  chat on it, the agents' list, the settings parent and what Skills &
+  instructions knows of its copies follow. Not while a chat
   or background helper on it is running.
 - **Agents' use:** every account is available to agents unless switched off with
   the robot button on its row.

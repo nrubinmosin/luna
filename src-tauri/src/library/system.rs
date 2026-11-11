@@ -255,23 +255,38 @@ fn plain_tree(dir: &Path) -> Result<(), String> {
 /// file lock: the window adopts, the core serves.
 const SYSTEM_LOCK: &str = "library-system.lock";
 
-/// The lock on `system/`, held for as long as it lives; none where the lock
-/// file will not open, as with the library's own lock (`lock`).
+/// The lock on `system/`, held for as long as it lives.
 struct SystemLock {
     _file: Option<std::fs::File>,
 }
 
-fn system_lock(dirs: &Dirs, exclusive: bool) -> SystemLock {
+#[cfg(test)]
+thread_local! {
+    /// Where this test's system lock is, in place of the one in `dirs.data`.
+    static SYSTEM_LOCK_AT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Exclusive for a swap, which one that cannot be had refuses: a handoff
+/// would read the moment between its renames. Shared for serving, which goes
+/// on without it, said in the log: refused, a handoff would be left with no
+/// instructions at all.
+fn system_lock(dirs: &Dirs, exclusive: bool) -> Result<SystemLock, String> {
     let path = dirs.data.join(SYSTEM_LOCK);
+    #[cfg(test)]
+    let path = SYSTEM_LOCK_AT.with(|p| p.borrow().clone()).unwrap_or(path);
     let _ = std::fs::create_dir_all(&dirs.data);
     let file = crate::secret::open_private(&path).and_then(|f| {
         let locked = if exclusive { f.lock() } else { f.lock_shared() };
         locked.map(|()| f)
     });
-    if let Err(e) = &file {
-        crate::log::warn("library", &format!("system lock {}: {e}", path.display()));
+    match file {
+        Ok(file) => Ok(SystemLock { _file: Some(file) }),
+        Err(e) if exclusive => Err(format!("Nothing changed: no lock on {}: {e}", path.display())),
+        Err(e) => {
+            crate::log::warn("library", &format!("system lock {}: {e}; serving without it", path.display()));
+            Ok(SystemLock { _file: None })
+        }
     }
-    SystemLock { _file: file.ok() }
 }
 
 // The steps of a move a test makes fail as the disk would, by name.
@@ -522,9 +537,10 @@ pub(super) fn reset_system(dirs: &Dirs, name: &str) -> Result<Option<Moved>, Str
 ///
 /// Staged first: the skill is renamed into `system/` under a name nothing
 /// reads, the step that fails where its folder is held open, before anything
-/// served changes. Then, under the system lock, an override there is renamed
-/// aside and the staged one into its place, each undone if the next fails; the
-/// one set aside goes to the backups after.
+/// served changes. Then an override there is renamed aside and the staged one
+/// into its place, each undone if the next fails; the one set aside goes to
+/// the backups after. The staging and the swap go under the system lock,
+/// which an adoption that cannot have it is refused for.
 pub(super) fn adopt_system(dirs: &Dirs, name: &str) -> Result<(), String> {
     luna_text(name)?;
     let from = inside(&dirs.root, &["skills", name])?;
@@ -544,6 +560,8 @@ pub(super) fn adopt_system(dirs: &Dirs, name: &str) -> Result<(), String> {
         // Where the one replaced goes, sound before anything moves.
         crate::boundary::private_chain(&dirs.backups(), &[])?;
     }
+    // Before anything moves: with none to be had, nothing does.
+    let held = system_lock(dirs, true)?;
     let system = inside(&dirs.root, &[SYSTEM_DIR])?;
     std::fs::create_dir_all(&system).map_err(|e| format!("{}: {e}", system.display()))?;
     let to = system.join(name);
@@ -552,7 +570,6 @@ pub(super) fn adopt_system(dirs: &Dirs, name: &str) -> Result<(), String> {
         let _ = std::fs::remove_dir(&system);
         return Err(format!("{} to {}: {e}", from.display(), staged.display()));
     }
-    let held = system_lock(dirs, true);
     let aside = match current {
         Some(dir) => {
             let aside = system.join(format!(".{name}.replaced-{}", crate::secret::random_hex(4)));
@@ -1120,13 +1137,31 @@ mod tests {
         assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file());
     }
 
+    /// With no system lock to be had (a folder where it goes), an adoption is
+    /// refused before anything moves, and what is served is still served.
+    #[test]
+    fn an_adoption_without_the_system_lock_changes_nothing() {
+        let f = Fixture::new("system-no-lock");
+        write_override(&f, OURS);
+        f.skill(HANDOFF, "Mine.");
+        let at = f.base.join("no-lock");
+        std::fs::create_dir_all(at.join("inside")).unwrap();
+        SYSTEM_LOCK_AT.with(|l| *l.borrow_mut() = Some(at));
+        let why = adopt_system(&f.dirs, HANDOFF).unwrap_err();
+        assert!(why.contains("no lock"), "{why}");
+        assert_eq!(resolve_in(&f.dirs).text, OURS, "served without it");
+        SYSTEM_LOCK_AT.with(|l| *l.borrow_mut() = None);
+        assert_eq!(names(&f.dirs.root.join("system")), [HANDOFF]);
+        assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file());
+    }
+
     /// While an adoption holds the system lock, what is served waits for it:
     /// no handoff reads the moment between its renames.
     #[test]
     fn what_is_served_waits_for_an_adoption_s_swap() {
         let f = Fixture::new("system-lock");
         write_override(&f, OURS);
-        let held = system_lock(&f.dirs, true);
+        let held = system_lock(&f.dirs, true).unwrap();
         let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || tx.send(resolve_in(&dirs).source));

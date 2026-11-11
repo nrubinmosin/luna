@@ -255,7 +255,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // Before the registry is locked for the command line: a pass reads and
     // writes every account's copies, and every helper's events wait on that
     // lock (library/folders.rs `session_args`).
-    crate::library::lay_out("before a helper's turn");
+    // The helper's account counted as in use from here, as a chat's start
+    // counts its own (`library::lay_out_for`).
+    let account_path = lock().entries.get(id).map(|e| e.spec.account_path.clone()).ok_or("no such helper")?;
+    let reserved = crate::library::lay_out_for("before a helper's turn", &account_path)?;
     let (args, dir, envs, applied, provider, on_stdin, line, account) = {
         let r = lock();
         if r.closed {
@@ -365,6 +368,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // Held by the thread above until it has reaped the process; dropped here
     // on the ways out where the turn does not start.
     let on_account = crate::account_use::running_on(&account);
+    drop(reserved);
     // Ahead of the process: what it starts is born after this (`turn_over`).
     let started_ms = crate::throttle::now_ms();
     let mut child = cmd.spawn().map_err(|e| {
