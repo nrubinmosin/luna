@@ -3,7 +3,7 @@
 //! deleting a chat, and the sessions no chat claims any more.
 
 use super::probe::{meta_from_disk, probe_of, Probe};
-use super::screen::{composer_keys, composer_seen, draft_after};
+use super::screen::{composer_keys, composer_seen, draft_after, typed_by_person};
 
 /// How much of the screen's output is replayed to tell a dialog from the
 /// composer as a key comes in: the last frames a TUI drew, not its history.
@@ -34,7 +34,9 @@ pub fn write_session(id: String, data: String) -> Result<(), String> {
 fn take_keys(s: &Session, data: String) -> Result<(), String> {
     // Keys, not what the terminal reports by itself (focus, mouse), which
     // arrives as escape sequences on the same path.
-    if !data.starts_with('\x1b') {
+    // A paste and Esc-led keys of a person's count too: before the CLI
+    // repaints, its screen may still show the old empty placeholder.
+    if typed_by_person(&data) {
         s.typed_ms.store(now_ms(), Ordering::Relaxed);
     }
     let draft = draft_after(s.draft.load(Ordering::Relaxed), &data);
