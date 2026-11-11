@@ -308,13 +308,18 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
 /// subagent works, its turn over or not: only with the turn over, by its
 /// hooks, is that busy the subagent's. A hook that says a turn has begun is
 /// newer than any sample, and an idle registry may not have caught up with it
-/// yet. A Codex rollout says idle whatever its subagents do, and working as
+/// yet. With the turn over, a subagent on a prompt is a wait, as the sampler
+/// has it. A Codex rollout says idle whatever its subagents do, and working as
 /// soon as a turn starts.
 fn overlay_background(id: &str, m: &mut SessionMeta) {
     use crate::activity::{self, Turn};
     let over = match m.status.as_deref().map_or(Turn::Idle, activity::turn_of) {
         Turn::Idle => activity::hook_turn(id) != Some(Turn::Busy),
-        Turn::Busy => activity::busy_for_subagents_only(id),
+        Turn::Busy if activity::turn_over_under_subagents(id) && activity::subagent_asks(id) => {
+            m.status = Some("waiting".into());
+            return;
+        }
+        Turn::Busy => activity::turn_over_under_subagents(id),
         Turn::Waiting => false,
     };
     if over && activity::in_background(id) {
@@ -381,7 +386,7 @@ mod background_tests {
         on_hook(id, HookEvent::Idle);
         on_hook(id, HookEvent::AgentWaiting("a1".into()));
         sampled_for_test(id, Some(Turn::Busy));
-        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"), "a subagent's prompt inside a busy registry is not background");
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("waiting"), "a subagent's prompt after the turn is a wait, not background");
         forget(id);
     }
 
@@ -397,7 +402,13 @@ mod background_tests {
         assert_eq!(said_and_reads(id, Some("busy"), asks).as_deref(), Some("waiting"), "and after one");
         assert_eq!(said_and_reads(id, Some("busy"), "All done.").as_deref(), Some("background"), "no marker");
         on_hook(id, HookEvent::AgentWaiting("a1".into()));
-        assert_eq!(said_and_reads(id, Some("busy"), asks).as_deref(), Some("busy"), "its prompt is the wait, not the marker");
+        sampled_for_test(id, Some(Turn::Busy));
+        let mut m = SessionMeta { status: Some("busy".into()), last_said: Some(asks.into()), ..Default::default() };
+        crate::asking::overlay_marked(id, &mut m, MARKER);
+        overlay_background(id, &mut m);
+        assert_eq!(m.status.as_deref(), Some("waiting"), "its subagent asks too: the turn's own question stands");
+        assert!(m.marked.is_some(), "on the marker, which the user may clear");
+        assert_eq!(said_and_reads(id, Some("busy"), "All done.").as_deref(), Some("waiting"), "no marker: the subagent's prompt");
         crate::asking::forget(id);
         forget(id);
     }

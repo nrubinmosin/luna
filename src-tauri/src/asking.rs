@@ -69,8 +69,8 @@ pub(crate) fn overlay_marked(chat_id: &str, meta: &mut crate::pty::SessionMeta, 
     let idle = meta.status.as_deref().is_none_or(|s| crate::activity::turn_of(s) == crate::activity::Turn::Idle);
     let busy = crate::activity::turn_state(chat_id).is_some_and(|t| t.turn != crate::activity::Turn::Idle);
     // Claude Code's registry goes on saying busy while a subagent works: the
-    // hooks say whether the turn is over all the same.
-    let over = (idle && !busy) || crate::activity::busy_for_subagents_only(chat_id);
+    // hooks say whether the turn is over all the same, a subagent asking or not.
+    let over = (idle && !busy) || crate::activity::turn_over_under_subagents(chat_id);
     if !over || !for_user(chat_id) {
         return;
     }

@@ -181,15 +181,22 @@ pub fn in_background(chat_id: &str) -> bool {
     children_hold(chat_id) || crate::agents::owes_answer(chat_id)
 }
 
-/// Whether a CLI that says busy is busy only for its subagents: Claude Code's
-/// registry does so while one works, the turn that started it over or not, and
-/// the hook said it is over. By the hook rather than the last sample, which a
-/// `Stop` or a new prompt is ahead of by up to SAMPLE_EVERY. Not with one of
-/// them on a prompt, which is a wait. Codex says no such busy: a rollout that
-/// says working is a turn.
-pub fn busy_for_subagents_only(chat_id: &str) -> bool {
+/// Whether a CLI that says busy says so only for its subagents, its own turn
+/// over: Claude Code's registry is busy while one works, the turn that started
+/// it over or not, and the hook said it is over. By the hook rather than the
+/// last sample, which a `Stop` or a new prompt is ahead of by up to
+/// SAMPLE_EVERY. Whether one of them asks is `subagent_asks`'s to say: the
+/// turn's own question stands either way. Codex says no such busy: a rollout
+/// that says working is a turn.
+pub fn turn_over_under_subagents(chat_id: &str) -> bool {
     let st = state().lock().unwrap_or_else(|e| e.into_inner());
-    st.tracks.get(chat_id).is_some_and(|t| t.hook == Some(Turn::Idle) && !t.agents.is_empty() && !t.agents.values().any(|asks| *asks))
+    st.tracks.get(chat_id).is_some_and(|t| t.hook == Some(Turn::Idle) && !t.agents.is_empty())
+}
+
+/// Whether a subagent of a session is on a prompt of its own.
+pub fn subagent_asks(chat_id: &str) -> bool {
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
+    st.tracks.get(chat_id).is_some_and(|t| t.agents.values().any(|asks| *asks))
 }
 
 /// `background::left_quiet` for a session the activity track follows. None
