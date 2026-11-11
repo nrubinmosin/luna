@@ -185,7 +185,11 @@ copy before its put-back, counting them in its confirmation.
 
 Passes run when the window starts, before every session start, after every
 change in the window and on Sync all, one at a time under a lock file beside the
-ledger shared by window and core. Where `lay_out` runs in a start:
+ledger shared by window and core. Whatever writes takes it or is refused
+(`lock`, `Nothing laid out: no lock on ...`), a settings change before it writes
+the settings; only the overview and a copy's differences read without it
+(`lock_to_read`, said once a run), the ledger being written whole. Where
+`lay_out` runs in a start:
 
 - **A chat** (`pty/start.rs`): inside the launch closure, so under that chat's
   own spawn gate (one chat's starts wait on its pass; other chats and their
@@ -266,13 +270,15 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
     folder stays aside (`Moved::Aside`). The overview names every such folder
     (`set_aside`, `systemAside`), an adoption's replaced one that would not
     move too, for the person to move or delete.
-  - **Adoption** renames the skill into `system/` under a name nothing reads
-    (the step that fails where the folder is held open), then, holding the
-    system lock exclusive, renames an override there aside and the staged one
-    into place, each undone if the next fails; the one set aside goes to the
-    backups after. `resolve_in` holds the same lock (`<data>/library-system.lock`,
+  - **Adoption** holds the system lock exclusive, none to be had refusing it
+    before anything moves. It renames the skill into `system/` under a name
+    nothing reads (the step that fails where the folder is held open), then an
+    override there aside and the staged one into place, each undone if the
+    next fails; the one set aside goes to the backups after. `resolve_in` holds the same lock (`<data>/library-system.lock`,
     a file lock: the window adopts, the core serves) shared while it reads, so
-    no handoff is served Luna's text in the moment between the renames.
+    no handoff is served Luna's text in the moment between the renames; without
+    it, it reads all the same, said in the log, as a handoff is not to go
+    without instructions.
 
 ## Failure modes
 
@@ -282,4 +288,5 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
 | A copy edited in place (by hand or a model) | `changed`, shown under "Needs a look", never overwritten |
 | A copy edited in place, then no longer wanted there | `kept`, shown under "Needs a look" until taken out or kept |
 | Settings unreadable | no pass (`get_checked`) |
+| The lock file cannot be opened or locked (tried three times, 50 ms apart; a disk that cannot lock files) | every change, Sync all, a put-back, a settling and an adoption refused with `Nothing laid out: no lock on ...`, nothing written; a session or a helper's turn starts without its pass, said in the log; the overview and differences still read |
 | Sessions started outside Luna | see the account's copies only, not folder skills |

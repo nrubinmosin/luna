@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- Skills & instructions: where Luna cannot lock its library (a disk that
+  cannot lock files, a lock file in the way), changes, Sync all and a system
+  skill's adoption are refused with the reason instead of going ahead
+  unlocked, when the window and a starting session could undo each other's
+  records. Sessions still start, without their pass, and the window still
+  shows the library.
+
 ## [0.13.0] - 2026-11-11
 
 Sync all in Skills & instructions makes every account hold what the library

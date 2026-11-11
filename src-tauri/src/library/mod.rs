@@ -108,14 +108,72 @@ struct Locked {
     _threads: std::sync::MutexGuard<'static, ()>,
 }
 
-fn lock() -> Locked {
+#[cfg(test)]
+thread_local! {
+    /// Where this test's lock file is, in place of the one beside the ledger.
+    static LOCK_AT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+fn lock_path() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = LOCK_AT.with(|p| p.borrow().clone()) {
+        return path;
+    }
+    Dirs::current().ledger().with_extension("json.lock")
+}
+
+/// The lock file, open and locked. Opening it is tried three times, 50 ms
+/// apart: on Windows a scanner or an indexer holding the file for a moment
+/// fails the open, not the lock.
+fn lock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut tries = 1;
+    let file = loop {
+        match crate::secret::open_private(path) {
+            Ok(file) => break file,
+            Err(_) if tries < 3 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    file.lock()?;
+    Ok(file)
+}
+
+/// The lock everything that writes a copy, the ledger or the library goes
+/// under. One that cannot be had is an error: the window and the core each
+/// going ahead under their own mutex would each save the ledger as they read
+/// it, losing or bringing back the other's records.
+fn lock() -> Result<Locked, String> {
     let threads = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let path = Dirs::current().ledger().with_extension("json.lock");
-    let file = crate::secret::open_private(&path).and_then(|f| f.lock().map(|()| f));
-    // Without it a pass still runs, as one did before passes came from two
-    // processes.
+    let path = lock_path();
+    match lock_file(&path) {
+        Ok(file) => Ok(Locked { _file: Some(file), _threads: threads }),
+        Err(e) => Err(format!(
+            "Nothing laid out: no lock on {}: {e}. Without it Luna's window and its core could undo each other's \
+             changes; Luna's data folder needs a disk that can lock files",
+            path.display()
+        )),
+    }
+}
+
+/// `lock` for what only reads — the overview the window takes at every focus,
+/// a copy's differences: without the lock file it goes on under the mutex,
+/// said once a run. The ledger is written whole (`Ledger::save`), so at
+/// worst what it shows is a pass behind for a moment.
+fn lock_to_read() -> Locked {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let threads = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = lock_path();
+    let file = lock_file(&path);
     if let Err(e) = &file {
-        crate::log::warn("library", &format!("library lock {}: {e}", path.display()));
+        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            crate::log::warn("library", &format!("library lock {}: {e}; reading without it", path.display()));
+        }
     }
     Locked { _file: file.ok(), _threads: threads }
 }
