@@ -84,9 +84,11 @@ export function OpeningHint({ chat, now: given }: { chat: Chat; now?: number }) 
   }, [given]);
   const now = given ?? ticked;
   if (!m || m.phase !== 'rowCreated' || !m.waiting || now - (m.waitingSince ?? now) < STALL_MS) return null;
-  // Offered only where the screen shows an empty composer: never over a
-  // dialog or a first-run screen, which are the person's to answer.
-  if (!m.composerSeen) return null;
+  // What it waits on is said past the mark, whatever it is: text in the
+  // composer is the person's to send or clear. "Type it now" only where the
+  // screen shows an empty composer: never over a dialog, a first-run screen
+  // or their text.
+  const offer = !!m.composerSeen && !m.waiting.startsWith('the composer holds text');
   return (
     <div style={{ position: 'relative', height: 0, zIndex: 3 }}>
       <div
@@ -96,15 +98,17 @@ export function OpeningHint({ chat, now: given }: { chat: Chat; now?: number }) 
         style={{ position: 'absolute', left: 0, right: 0, top: 0 }}
       >
         <span title={m.waiting}>Luna has not typed its line yet: {m.waiting}.</span>
-        <button
-          disabled={asked}
-          onClick={() => {
-            setAsked(true);
-            void moveStep(m.chatId, m.moveId, 'typeNow').catch(() => setAsked(false));
-          }}
-        >
-          Type it now
-        </button>
+        {offer && (
+          <button
+            disabled={asked}
+            onClick={() => {
+              setAsked(true);
+              void moveStep(m.chatId, m.moveId, 'typeNow').catch(() => setAsked(false));
+            }}
+          >
+            Type it now
+          </button>
+        )}
       </div>
     </div>
   );

@@ -3,7 +3,7 @@
 //! deleting a chat, and the sessions no chat claims any more.
 
 use super::probe::{meta_from_disk, probe_of, Probe};
-use super::screen::{composer_keys, composer_seen, draft_after, typed_by_person};
+use super::screen::{composer_keys, composer_seen, draft_after, paste_lapsed, typed_by_person};
 
 /// How much of the screen's output is replayed to tell a dialog from the
 /// composer as a key comes in: the last frames a TUI drew, not its history.
@@ -36,8 +36,15 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
     // arrives as escape sequences on the same path.
     // A paste and Esc-led keys of a person's count too: before the CLI
     // repaints, its screen may still show the old empty placeholder.
+    // A paste with no end marker by now is over (`paste_lapsed`): looked at
+    // against the key before this one, then this one is stamped.
+    let last = s.typed_ms.load(Ordering::Relaxed);
+    let now = now_ms();
+    for count in [&s.draft, &s.keys_draft] {
+        count.store(paste_lapsed(count.load(Ordering::Relaxed), last, now), Ordering::Relaxed);
+    }
     if typed_by_person(&data) {
-        s.typed_ms.store(now_ms(), Ordering::Relaxed);
+        s.typed_ms.store(now, Ordering::Relaxed);
     }
     let draft = draft_after(s.draft.load(Ordering::Relaxed), &data);
     s.draft.store(draft, Ordering::Relaxed);
