@@ -43,7 +43,8 @@ export function askRefusal(chat: Chat, limit: string | null): string | null {
   if (chat.provider === 'claude' && chat.perm === 'Plan only') return 'In plan mode the chat writes no file.';
   if (chat.provider === 'codex' && (chat.sandbox === 'read-only' || chat.sandbox === 'read-only-net'))
     return "Codex's read-only sandbox writes no file.";
-  if (chat.status === 'resting') return 'The chat is not running.';
+  // A chat at rest may well be running: whether its CLI runs is the core's to
+  // say, which refuses the ask of one that does not.
   if (limit) return 'The chat stopped on a usage limit and cannot write now.';
   return null;
 }
@@ -85,6 +86,18 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
   const [trusted, setTrusted] = useState<boolean | null>(null);
   const [trustIt, setTrustIt] = useState(false);
   const moveRef = useRef<{ moveId: string } | null>(null);
+  // Closed while the core was still answering: the move it then names is
+  // given up as soon as its id is known, never left asking unseen.
+  const closedRef = useRef(false);
+  useEffect(() => {
+    // Mounted again (React's strict mode does so at once): open again.
+    closedRef.current = false;
+    return () => {
+      closedRef.current = true;
+      const m = moveRef.current;
+      if (m) void moveCancel(chat.id, m.moveId).catch(() => {});
+    };
+  }, [chat.id]);
 
   // What the new chat starts with on the account picked: its model, and
   // whether the folder is trusted there.
@@ -140,7 +153,20 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
   const cancel = () => {
     const m = moveRef.current;
     if (m && step.at !== 'sending') void moveCancel(chat.id, m.moveId).catch(() => {});
+    moveRef.current = null;
+    closedRef.current = true;
     onClose();
+  };
+
+  /** A move the core began for this dialog: kept, or given up at once where
+   *  the dialog has closed meanwhile. Whether it is to go on. */
+  const began = (moveId: string) => {
+    if (closedRef.current) {
+      void moveCancel(chat.id, moveId).catch(() => {});
+      return false;
+    }
+    moveRef.current = { moveId };
+    return true;
   };
 
   const trustNeeded = trusted === false && claudeWorktree && !trustIt;
@@ -154,12 +180,10 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
     try {
       if (source === 'chat') {
         const s = await moveAsk(chat.id, id, to.path, note);
-        moveRef.current = { moveId: s.moveId };
-        setStep({ at: 'asking', moveId: s.moveId, newId: id });
+        if (began(s.moveId)) setStep({ at: 'asking', moveId: s.moveId, newId: id });
       } else {
         const preview = await movePrepare(chat.id, id, to.path, chat.sessionId ?? null, note);
-        moveRef.current = { moveId: preview.moveId };
-        setStep({ at: 'preview', preview, text: preview.text });
+        if (began(preview.moveId)) setStep({ at: 'preview', preview, text: preview.text });
       }
     } catch (e) {
       setError(String(e));

@@ -166,6 +166,9 @@ export const useChats = create<ChatsState>()(
 
       addChat: (folderPath, chat, byPerson) =>
         set(s => {
+          // A chat already listed is not listed twice: a moved chat's row
+          // may be asked for from two places at once (chats/moving.ts).
+          if (s.folders.some(f => f.chats.some(c => c.id === chat.id))) return { active: chat.id };
           const existing = s.folders.find(f => f.path === folderPath);
           const folders = existing
             ? s.folders.map(f =>
