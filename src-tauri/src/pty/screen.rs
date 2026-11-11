@@ -406,6 +406,18 @@ pub(super) fn draft_after(state: u64, data: &str) -> u64 {
     n | if backslash { DRAFT_BACKSLASH } else { 0 }
 }
 
+/// `draft_after` for the veto a move's line goes by (`keys_left_text`): the
+/// same count of keys that put text in the composer (characters, a paste),
+/// emptied by Enter, Ctrl+C and Ctrl+U, and by a lone Esc too, which closes a
+/// dialog or clears a choice: a key a person pressed on a first-run screen or
+/// an offer (a digit, a letter) then holds nothing back for good.
+pub(super) fn keys_after(state: u64, data: &str) -> u64 {
+    if data == "\x1b" {
+        return 0;
+    }
+    draft_after(state, data)
+}
+
 /// Where the cursor stands once `bytes` have been drawn at this size, zero-based
 /// (row, col).
 pub(super) fn cursor_at(bytes: &[u8], rows: u16, cols: u16) -> (u16, u16) {
@@ -902,6 +914,25 @@ mod tests {
         assert_eq!(typed.map(|c| c.text).as_deref(), Some("hello world\nsecond"));
         // The cursor on a prompt in the conversation, drawn dim: not a composer.
         assert_eq!(read(&[history, footer], (2, 3)), None);
+    }
+
+    #[test]
+    fn the_keys_that_hold_a_moves_line_back_are_text_put_in_the_composer() {
+        // Moving through first-run screens and offers: nothing.
+        for keys in ["\x1b[A", "\x1b[B", "\x1bOA", "\t", "\x1b[Z", "\r", "\x1b", "\x1b[I", "\x1b[O"] {
+            assert_eq!(keys_after(0, keys) & !DRAFT_BACKSLASH, 0, "{keys:?}");
+        }
+        // Text, a paste: held.
+        assert_eq!(keys_after(0, "a"), 1);
+        assert_eq!(keys_after(0, "\x1b[200~fix it\x1b[201~"), 6);
+        // A choice typed into a dialog, then Esc or Enter: nothing left.
+        assert_eq!(keys_after(keys_after(0, "2"), "\x1b"), 0);
+        assert_eq!(keys_after(keys_after(0, "1"), "\r"), 0);
+        // Emptied by Ctrl+C and Ctrl+U as the composer is.
+        assert_eq!(keys_after(5, "\x03"), 0);
+        assert_eq!(keys_after(5, "\x15"), 0);
+        // An Esc that starts a key's sequence clears nothing.
+        assert_eq!(keys_after(3, "\x1b[A"), 3);
     }
 
     #[test]
