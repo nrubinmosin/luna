@@ -25,7 +25,16 @@ export interface MovePreviewDto {
 }
 
 export type MovePhase =
-  'shown' | 'confirmed' | 'oldStopped' | 'rowCreated' | 'prompting' | 'done' | 'failed' | 'canceled';
+  | 'asking'
+  | 'asked'
+  | 'shown'
+  | 'confirmed'
+  | 'oldStopped'
+  | 'rowCreated'
+  | 'prompting'
+  | 'done'
+  | 'failed'
+  | 'canceled';
 
 /** The settings the new chat starts with, as the window sends them with Send:
  *  the core binds them to the text and the account, and holds the new chat's

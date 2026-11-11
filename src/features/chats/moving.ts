@@ -156,8 +156,21 @@ async function makeRow(m: MoveStatusDto, l: MoveLaunch) {
   }
 }
 
-/** Takes the window's steps of move `m` as far as they go now. */
-export async function carryOut(m: MoveStatusDto): Promise<MoveStatusDto> {
+/** The moves whose steps are being taken, by id: the dialog's Send and the
+ *  poll (`useMoves`) both come here, and one move's row is made once. */
+const carrying = new Map<string, Promise<MoveStatusDto>>();
+
+/** Takes the window's steps of move `m` as far as they go now; a second call
+ *  while the first is under way waits for it rather than repeating it. */
+export function carryOut(m: MoveStatusDto): Promise<MoveStatusDto> {
+  const going = carrying.get(m.moveId);
+  if (going) return going;
+  const run = steps(m).finally(() => carrying.delete(m.moveId));
+  carrying.set(m.moveId, run);
+  return run;
+}
+
+async function steps(m: MoveStatusDto): Promise<MoveStatusDto> {
   const chats = useChats.getState();
   let s = m;
   if (s.phase === 'confirmed' && s.stopOld) {

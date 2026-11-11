@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { Account, Chat, Folder, LimitWindow } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
@@ -6,7 +7,10 @@ import { useChats } from './chats.store';
 import { askRefusal, defaultTarget, MoveChatDialog } from './MoveChatDialog';
 import { MoveHint } from './MoveHint';
 import { useMoveHints } from './moveHints.store';
-import { launchFor, movedName } from './moving';
+import { carryOut, launchFor, movedName } from './moving';
+import * as moving from '../../ipc/moving';
+import { createChat } from '../new-chat/create';
+import type { MoveStatusDto } from '../../ipc/moving';
 
 // xterm cannot run in jsdom.
 vi.mock('../panes/terminals', () => ({
@@ -14,6 +18,20 @@ vi.mock('../panes/terminals', () => ({
   focusTerminal: vi.fn(),
   forget: vi.fn(),
   forgetAll: vi.fn()
+}));
+vi.mock('../../ipc/moving', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/moving')>()),
+  moveAsk: vi.fn(),
+  moveCancel: vi.fn(() => Promise.resolve({})),
+  moveStep: vi.fn((chatId: string, moveId: string, step: string) =>
+    Promise.resolve({ chatId, moveId, newId: 'c-new', phase: step, stopOld: false })
+  ),
+  moveList: vi.fn(() => Promise.resolve([]))
+}));
+vi.mock('../new-chat/create', () => ({ createChat: vi.fn(() => new Promise(r => setTimeout(() => r('c-new'), 20))) }));
+vi.mock('../../ipc/trust', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/trust')>()),
+  claudeFolderTrusted: vi.fn(() => Promise.resolve(true))
 }));
 vi.mock('../../ipc/defaults', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/defaults')>()),
@@ -44,7 +62,7 @@ const chat = (extra: Partial<Chat>): Chat =>
     account: 'team',
     group: 0,
     worktree: false,
-    status: 'idle',
+    status: 'resting',
     context: 0,
     model: 'Opus',
     effort: 'high',
@@ -72,7 +90,9 @@ describe('moving a chat to another account', () => {
     expect(askRefusal(chat({}), null)).toMatch(/auto-handoff/);
     expect(askRefusal(chat({ ...on, perm: 'Plan only' }), null)).toMatch(/plan mode/);
     expect(askRefusal(chat({ ...on, provider: 'codex', sandbox: 'read-only' }), null)).toMatch(/read-only/);
-    expect(askRefusal(chat({ ...on, status: 'resting' }), null)).toMatch(/not running/);
+    // At rest is no stopped CLI: an idle chat reads so. The core refuses one
+    // whose CLI does not run.
+    expect(askRefusal(chat({ ...on, status: 'resting' }), null)).toBeNull();
     // Its turn over, subagents at work: at its prompt, so it may be asked.
     expect(askRefusal(chat({ ...on, status: 'background' }), null)).toBeNull();
     expect(askRefusal(chat(on), 'usage_limit')).toMatch(/usage limit/);
@@ -160,5 +180,68 @@ describe('moving a chat to another account', () => {
     useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
     rerender(<MoveHint chat={c} onMove={() => {}} />);
     expect(screen.getByTestId('move-hint')).toHaveTextContent('This chat stopped on a usage limit.');
+  });
+
+  it("makes a moved chat's row once, however many ask for it at once", async () => {
+    useChats.setState({ folders: [folder([chat({})])] });
+    useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
+    const launch = launchFor(chat({}), '/repo', account('backend', 'claude'), 'Opus', 'high', false);
+    const m: MoveStatusDto = {
+      moveId: 'm1',
+      chatId: 'c1',
+      newId: 'c-new',
+      phase: 'confirmed',
+      at: 1,
+      stopOld: false,
+      worktree: false,
+      toAccount: 'backend',
+      source: 'luna',
+      launch
+    };
+    vi.mocked(createChat).mockClear();
+    await Promise.all([carryOut(m), carryOut(m)]);
+    expect(createChat).toHaveBeenCalledTimes(1);
+    // And a row asked for twice is listed once.
+    const row = { ...chat({}), id: 'c-twice' };
+    useChats.getState().addChat('/repo', row, true);
+    useChats.getState().addChat('/repo', row, true);
+    expect(
+      useChats
+        .getState()
+        .folders.flatMap(f => f.chats)
+        .filter(c => c.id === 'c-twice')
+    ).toHaveLength(1);
+  });
+
+  it('gives up an ask whose dialog closed while the core was still answering', async () => {
+    const c = chat({ tools: true, autoHandoff: true });
+    useChats.setState({ folders: [folder([c])] });
+    useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
+    useMoveHints.setState({ limits: {}, dismissed: {} });
+    let answer: (s: MoveStatusDto) => void = () => {};
+    vi.mocked(moving.moveAsk).mockReturnValue(new Promise(r => (answer = r)));
+    vi.mocked(moving.moveCancel).mockClear();
+    const user = userEvent.setup();
+    const { unmount } = render(<MoveChatDialog chat={c} onClose={() => {}} />);
+    await user.click(screen.getByRole('radio', { name: /Ask the chat/ }));
+    const ask = await screen.findByRole('button', { name: 'Ask the chat' });
+    await vi.waitFor(() => expect(ask).toBeEnabled());
+    await user.click(ask);
+    unmount();
+    await act(async () => {
+      answer({
+        moveId: 'm-late',
+        chatId: 'c1',
+        newId: 'c-new',
+        phase: 'asking',
+        at: 1,
+        stopOld: false,
+        worktree: false,
+        toAccount: 'backend',
+        source: 'chat'
+      });
+      await Promise.resolve();
+    });
+    expect(moving.moveCancel).toHaveBeenCalledWith('c1', 'm-late');
   });
 });
