@@ -8,6 +8,7 @@ import { askRefusal, defaultTarget, MoveChatDialog } from './MoveChatDialog';
 import { MoveHint } from './MoveHint';
 import { useMoveHints } from './moveHints.store';
 import { carryOut, launchFor, movedName } from './moving';
+import { markWords } from './Handoff';
 import * as moving from '../../ipc/moving';
 import { createChat } from '../new-chat/create';
 import type { MoveStatusDto } from '../../ipc/moving';
@@ -22,6 +23,8 @@ vi.mock('../panes/terminals', () => ({
 vi.mock('../../ipc/moving', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/moving')>()),
   moveAsk: vi.fn(),
+  movePrepare: vi.fn(),
+  moveConfirm: vi.fn(() => new Promise(() => {})),
   moveCancel: vi.fn(() => Promise.resolve({})),
   moveStep: vi.fn((chatId: string, moveId: string, step: string) =>
     Promise.resolve({ chatId, moveId, newId: 'c-new', phase: step, stopOld: false })
@@ -243,5 +246,104 @@ describe('moving a chat to another account', () => {
       await Promise.resolve();
     });
     expect(moving.moveCancel).toHaveBeenCalledWith('c1', 'm-late');
+  });
+
+  it('does not move a Codex chat started into a worktree before its first turn', () => {
+    const c = chat({ provider: 'codex', worktree: true, worktreePath: null });
+    useChats.setState({ folders: [folder([c])] });
+    useAccounts.setState({ accounts: [account('one', 'codex'), account('two', 'codex')] });
+    render(<MoveChatDialog chat={c} onClose={() => {}} />);
+    expect(screen.getByTestId('move-dialog')).toHaveTextContent('does not move');
+  });
+
+  it('draws its choices the way XP.css draws them: each control before its label', () => {
+    const c = chat({ tools: true, autoHandoff: true });
+    useChats.setState({ folders: [folder([c])] });
+    useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
+    render(<MoveChatDialog chat={c} onClose={() => {}} />);
+    for (const name of [/Luna writes it/, /Ask the chat/, /Keep it/, /Stop it/]) {
+      const radio = screen.getByRole('radio', { name });
+      expect(radio.nextElementSibling?.tagName).toBe('LABEL');
+      expect(radio.nextElementSibling?.getAttribute('for')).toBe(radio.id);
+    }
+    expect(document.querySelector('.move-dialog fieldset')).toBeNull();
+  });
+
+  it('leaves the panes in reach while the chat is asked, and its move is canceled from there', async () => {
+    const c = chat({ tools: true, autoHandoff: true });
+    useChats.setState({ folders: [folder([c])] });
+    useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
+    vi.mocked(moving.moveAsk).mockResolvedValue({
+      moveId: 'm-ask',
+      chatId: 'c1',
+      newId: 'c-new',
+      phase: 'asking',
+      at: 1,
+      stopOld: false,
+      worktree: false,
+      toAccount: 'backend',
+      source: 'chat'
+    });
+    vi.mocked(moving.moveCancel).mockClear();
+    const user = userEvent.setup();
+    const app = document.createElement('div');
+    app.setAttribute('data-app', '');
+    const panes = document.createElement('div');
+    panes.setAttribute('data-testid', 'panes');
+    app.appendChild(panes);
+    document.body.appendChild(app);
+    render(<MoveChatDialog chat={c} onClose={() => {}} />);
+    await user.click(screen.getByRole('radio', { name: /Ask the chat/ }));
+    const ask = screen.getByRole('button', { name: 'Ask the chat' });
+    await vi.waitFor(() => expect(ask).toBeEnabled());
+    await user.click(ask);
+    const banner = await screen.findByTestId('move-banner');
+    expect(document.querySelector('.scrim')).toBeNull();
+    expect(screen.getByTestId('panes').closest('[inert]')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Cancel the move' }));
+    expect(moving.moveCancel).toHaveBeenCalledWith('c1', 'm-ask');
+    expect(banner).toBeTruthy();
+    app.remove();
+  });
+
+  it('sends once for two clicks in one task', async () => {
+    const c = chat({});
+    useChats.setState({ folders: [folder([c])] });
+    useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
+    vi.mocked(moving.movePrepare).mockResolvedValue({
+      moveId: 'm-p',
+      newId: 'c-new',
+      prompt: '[Luna move m-p, not typed by the user] Read it.',
+      text: '# Moved\n',
+      sha256: '',
+      redacted: 0,
+      pathsCut: 0,
+      invisible: 0,
+      highlights: [],
+      stopOld: false,
+      worktree: false,
+      warnings: [],
+      maxBytes: 96 * 1024
+    });
+    vi.mocked(moving.moveConfirm).mockClear();
+    const user = userEvent.setup();
+    render(<MoveChatDialog chat={c} onClose={() => {}} />);
+    const preview = screen.getByRole('button', { name: 'Preview' });
+    await vi.waitFor(() => expect(preview).toBeEnabled());
+    await user.click(preview);
+    const send = await screen.findByRole('button', { name: /Send to backend/ });
+    act(() => {
+      send.click();
+      send.click();
+    });
+    await vi.waitFor(() => expect(moving.moveConfirm).toHaveBeenCalledTimes(1));
+    await new Promise(r => setTimeout(r, 50));
+    expect(moving.moveConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('says on a moved chat whose move failed why', () => {
+    expect(
+      markWords({ n: 1, at: 0, state: 'failed', moved: true, previous: false, why: 'no line within 60 s' })
+    ).toMatch(/did not go through: no line within 60 s/);
   });
 });
