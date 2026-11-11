@@ -94,6 +94,14 @@ export const moveStep = (chatId: string, moveId: string, step: 'oldStopped' | 'r
 
 export const moveCancel = (chatId: string, moveId: string) => call<MoveStatusDto>('move_cancel', { chatId, moveId });
 
+/** Asks a chat with auto-handoff on to write its own document; it is
+ *  collected through its handoff tool, nothing reset. */
+export const moveAsk = (chatId: string, newId: string, toAccountPath: string, note: string) =>
+  call<MoveStatusDto>('move_ask', { chatId, newId, toAccountPath, note });
+
+/** The preview of a document the chat wrote, once collected. */
+export const movePreview = (chatId: string, moveId: string) => call<MovePreviewDto>('move_preview', { chatId, moveId });
+
 /** Every move under way, and those ended lately. */
 export const moveList = () => call<MoveStatusDto[]>('move_list', {}, []);
 

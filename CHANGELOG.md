@@ -8,6 +8,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- **Move to another account…** in a chat's "…" menu: the chat goes on as a
+  new chat on another account of the same CLI, from a document you read,
+  may edit, and send. Luna writes it from the chat's records, or a chat with
+  auto-handoff on writes it itself. Folders of accounts and Luna's own are
+  cut out of it, secret-shaped strings taken out, and Send goes with exactly
+  the text shown. A Claude Code chat in a worktree goes on in that worktree,
+  its old chat stopped first; a Codex chat in a worktree does not move.
+- A pane offers the move when its account is at 90% of a usage window, or a
+  usage limit stopped its chat's last turn, Codex's included (read from its
+  rollout).
+
 ## [0.14.0] - 2026-11-11
 
 A chat whose turn is over but whose subagents, jobs or helpers are still at

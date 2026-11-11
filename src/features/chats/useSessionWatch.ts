@@ -7,6 +7,7 @@ import { ui } from '../providers';
 import { useChats } from './chats.store';
 import { useDrafts } from './drafts.store';
 import { useMarked } from './marked.store';
+import { useMoveHints } from './moveHints.store';
 
 const EVERY_MS = 4000;
 
@@ -82,6 +83,7 @@ export function useSessionWatch() {
         useDrafts.getState().set(chat.id, { draft: meta.draft, held: meta.held });
         if (meta.handoff) store.setHandoffMark(chat.id, meta.handoff);
         store.setHandoffAsked(chat.id, meta.handoffAsked ?? null);
+        useMoveHints.getState().setLimit(chat.id, meta.limit ?? null);
         useMarked.getState().set(chat.id, meta.marked);
 
         const next = mapStatus(meta.status);
