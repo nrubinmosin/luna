@@ -8,6 +8,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-11
+
+A chat can move to another account of its CLI when this one runs out:
+"Move to another account…" in its "…" menu hands the work over in a document
+you read and may edit before it goes, written by the chat itself or put
+together by Luna from its records.
+
 ### Added
 
 - **Move to another account…** in a chat's "…" menu: the chat goes on as a
@@ -856,7 +863,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/nrubinmosin/luna/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/nrubinmosin/luna/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/nrubinmosin/luna/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/nrubinmosin/luna/compare/v0.11.0...v0.12.0
