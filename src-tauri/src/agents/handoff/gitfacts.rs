@@ -95,6 +95,15 @@ fn run_with(folder: &str, overrides: &[String], args: &[&str], wait: Duration) -
     }
 }
 
+/// What the reader handed back, or why there is nothing to go by.
+fn output_of(got: Result<Result<Vec<u8>, String>, std::sync::mpsc::RecvTimeoutError>) -> Result<Vec<u8>, String> {
+    match got {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(e)) => Err(format!("git's output could not be read: {e}")),
+        Err(_) => Err("git's output did not come back in time".into()),
+    }
+}
+
 /// git run as `run_with` says: its exit code and its output, up to the cap.
 fn run_out(folder: &str, overrides: &[String], args: &[&str], wait: Duration) -> Result<(i32, Vec<u8>), String> {
     let mut c = Command::new("git");
@@ -120,8 +129,8 @@ fn run_out(folder: &str, overrides: &[String], args: &[&str], wait: Duration) ->
         .name("luna-move-git".into())
         .spawn(move || {
             let mut buf = Vec::new();
-            let _ = out.by_ref().take(OUTPUT_MAX).read_to_end(&mut buf);
-            let _ = tx.send(buf);
+            let read = out.by_ref().take(OUTPUT_MAX).read_to_end(&mut buf).map(|_| buf).map_err(|e| e.to_string());
+            let _ = tx.send(read);
             // What is past the cap is read and dropped, so git is not left
             // blocked on a full pipe until it is killed.
             let _ = std::io::copy(&mut out, &mut std::io::sink());
@@ -144,7 +153,9 @@ fn run_out(folder: &str, overrides: &[String], args: &[&str], wait: Duration) ->
     };
     // Its output, waited for no longer than its time: a child of git's that
     // kept the pipe open would hold the reader, never this.
-    let bytes = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(200)).unwrap_or_default();
+    // A read that failed or did not come back is no output: never taken for
+    // an empty one, which a filter listing would read as no filters.
+    let bytes = output_of(rx.recv_timeout(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(200)))?;
     match status {
         None => Err(format!("git {} took longer than {} s", args.first().unwrap_or(&""), wait.as_secs())),
         Some(s) => Ok((s.code().unwrap_or(-1), bytes)),
@@ -213,6 +224,15 @@ mod tests {
         assert!(g.branch.is_none() && g.status.is_empty());
         assert_eq!(g.missing.len(), 1, "{:?}", g.missing);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_read_of_gits_output_that_failed_is_no_output() {
+        use std::sync::mpsc::RecvTimeoutError;
+        assert_eq!(output_of(Ok(Ok(b"x".to_vec()))), Ok(b"x".to_vec()));
+        assert!(output_of(Ok(Err("broken pipe".into()))).is_err());
+        assert!(output_of(Err(RecvTimeoutError::Timeout)).is_err());
+        assert!(output_of(Err(RecvTimeoutError::Disconnected)).is_err());
     }
 
     #[test]

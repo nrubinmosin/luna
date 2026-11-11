@@ -39,7 +39,8 @@ mod store;
 mod watch;
 
 pub use moving::{
-    move_ask, move_cancel, move_confirm, move_list, move_prepare, move_preview, move_step, moved_dir, opening_refusal, MOVE_TAG,
+    move_ask, move_cancel, move_confirm, move_list, move_prepare, move_preview, move_step, moved_dir, opening_refusal, stopping_for_move,
+    MOVE_TAG,
 };
 pub use served::{applied_of, HandoffApplied};
 
