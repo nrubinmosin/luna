@@ -84,6 +84,9 @@ export function OpeningHint({ chat, now: given }: { chat: Chat; now?: number }) 
   }, [given]);
   const now = given ?? ticked;
   if (!m || m.phase !== 'rowCreated' || !m.waiting || now - (m.waitingSince ?? now) < STALL_MS) return null;
+  // Offered only where the screen shows an empty composer: never over a
+  // dialog or a first-run screen, which are the person's to answer.
+  if (!m.composerSeen) return null;
   return (
     <div style={{ position: 'relative', height: 0, zIndex: 3 }}>
       <div

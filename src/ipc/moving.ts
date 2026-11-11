@@ -85,6 +85,8 @@ export interface MoveStatusDto {
   /** An opening that waits: on what, and since when. */
   waiting?: string | null;
   waitingSince?: number | null;
+  /** Its screen shows an empty composer: `Type it now` may be offered. */
+  composerSeen?: boolean;
 }
 
 /** Builds the document and keeps the move as shown; nothing goes anywhere. */

@@ -324,6 +324,10 @@ pub struct MoveStatus {
     pub waiting: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_since: Option<u64>,
+    /// The waiting chat's screen shows an empty composer by its mark: "Type it
+    /// now" may be offered.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub composer_seen: bool,
 }
 
 fn status_of(chat: &str, m: &Move) -> MoveStatus {
@@ -347,6 +351,7 @@ fn status_of(chat: &str, m: &Move) -> MoveStatus {
         launch: m.launch.clone(),
         waiting: waiting_of(m).map(|(why, _)| why),
         waiting_since: waiting_of(m).map(|(_, since)| since),
+        composer_seen: waiting_of(m).is_some() && seen_of(m),
     }
 }
 
@@ -984,6 +989,9 @@ pub fn move_step(chat_id: String, move_id: String, step: String) -> Result<MoveS
         // work or a composer with text in it.
         "typeNow" => {
             let set = store::change(chat, |r| match r.moving.as_mut().filter(|x| x.id == move_id) {
+                Some(x) if matches!(x.phase, MovePhase::RowCreated { .. }) && !seen_of(x) => {
+                    Err("its screen shows no empty composer: answer what it shows in its pane first".to_string())
+                }
                 Some(x) if matches!(x.phase, MovePhase::RowCreated { .. }) => {
                     x.forced = true;
                     Ok(x.clone())
@@ -1192,6 +1200,9 @@ fn strict_prompt(pty: &crate::pty::PtyManager, id: &str) -> bool {
     prompt_verdict(pty, id).is_ok()
 }
 
+/// What `prompt_verdict` says of a screen whose layout shows no prompt.
+const NO_PROMPT: &str = "its screen shows no empty prompt (a dialog, a first-run screen, text in the composer)";
+
 /// `strict_prompt` with why not, for the log and the window: a stall shows
 /// what it waits on. Only a turn at work keeps the line out: a CLI that says
 /// it waits while its screen shows an empty composer (a notice after its
@@ -1208,7 +1219,7 @@ pub(super) fn prompt_verdict(pty: &crate::pty::PtyManager, id: &str) -> Result<(
         return Err("a turn is under way");
     }
     if !pty.at_prompt(id) {
-        return Err("its screen shows no empty prompt (a dialog, a first-run screen, text in the composer)");
+        return Err(NO_PROMPT);
     }
     if pty.has_draft(id) {
         return Err("a draft of a person's is in its composer");
@@ -1463,8 +1474,12 @@ pub(super) struct OpenLook {
     pub mismatch: Option<String>,
     /// Why it is not ready, as `prompt_verdict` says.
     pub waiting: Option<&'static str>,
-    /// The person said to type it now.
+    /// The person said to type it now, and the screen shows an empty
+    /// composer by its mark.
     pub forced: bool,
+    /// The screen shows an empty composer by its mark (`composer_visible`):
+    /// what "Type it now" is offered by.
+    pub composer_seen: bool,
 }
 
 /// What a look calls for.
@@ -1564,10 +1579,12 @@ fn look(m: &Move) -> OpenLook {
         .and_then(|p| crate::pty::tail(&p, 1024 * 1024))
         .is_some_and(|t| t.contains(&line_opening(&m.id)));
     let verdict = prompt_verdict(pty, new);
-    // The person's "Type it now": past every look but a composer with text in
-    // it, which type_line still looks at with the keys held.
-    l.forced = m.forced && verdict != Err("a turn is under way");
-    l.draft = !m.forced && pty.has_draft(new);
+    // The person's "Type it now" overrules the layout look alone (rules, a
+    // footer a cramped pane draws otherwise): never a dialog or first-run
+    // screen, an unreadable or written composer, a draft, a turn at work.
+    l.composer_seen = pty.composer_visible(new);
+    l.forced = m.forced && verdict == Err(NO_PROMPT) && l.composer_seen;
+    l.draft = pty.has_draft(new);
     l.ready = verdict.is_ok() || l.forced;
     l.waiting = verdict.err();
     l
@@ -1587,6 +1604,13 @@ pub(super) const STALL_MS: u64 = 2 * 60_000;
 /// `l`'s verdict on move `m`, logged as it changes; past STALL_MS on one, the
 /// new chat's screen once, so a stall can be read off luna.log.
 fn note_verdict(m: &Move, l: &OpenLook) {
+    let mut s = seen().lock().unwrap_or_else(|e| e.into_inner());
+    if l.composer_seen {
+        s.insert(m.id.clone());
+    } else {
+        s.remove(&m.id);
+    }
+    drop(s);
     let why = if l.ready { "ready" } else { l.waiting.unwrap_or(if l.alive { "waiting" } else { "its CLI is not running" }) };
     let mut v = verdicts().lock().unwrap_or_else(|e| e.into_inner());
     let entry = v.entry(m.id.clone()).or_insert((why, l.now, false));
@@ -1604,6 +1628,16 @@ fn note_verdict(m: &Move, l: &OpenLook) {
     }
 }
 
+/// The opening's last look found an empty composer by its mark.
+fn seen_of(m: &Move) -> bool {
+    seen().lock().unwrap_or_else(|e| e.into_inner()).contains(&m.id)
+}
+
+fn seen() -> &'static Mutex<std::collections::HashSet<String>> {
+    static S: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
 /// What the window is told of an opening that waits: why, and since when.
 fn waiting_of(m: &Move) -> Option<(String, u64)> {
     let v = verdicts().lock().unwrap_or_else(|e| e.into_inner());
@@ -1614,6 +1648,14 @@ fn waiting_of(m: &Move) -> Option<(String, u64)> {
 /// before text goes in: the beat's look may be a while old by then.
 pub(super) fn still_ready(pty: &crate::pty::PtyManager, id: &str) -> bool {
     ready_now(pty.at_prompt(id), crate::activity::turn_state(id).map(|t| t.turn))
+}
+
+/// The look at delivery, with the keys held, forced or not: no turn at
+/// work, no draft, and the prompt as the layout shows it or, where the
+/// person said to type now, the empty composer by its mark.
+fn ready_at_keys(pty: &crate::pty::PtyManager, id: &str, forced: bool) -> bool {
+    let shown = pty.at_prompt(id) || (forced && pty.composer_visible(id));
+    ready_now(shown, crate::activity::turn_state(id).map(|t| t.turn)) && !pty.has_draft(id)
 }
 
 fn ready_now(at_prompt: bool, turn: Option<crate::activity::Turn>) -> bool {
@@ -1680,13 +1722,13 @@ fn open_with_line(chat: &str, m: &Move) {
         let commit = || match current(&chat, &m.id) {
             // Looked at again with the keys held: a turn started meanwhile (a
             // send, a notice) would take the line mid-turn.
-            _ if !m.forced && !still_ready(crate::pty::manager(), &new) => Err(Refused::Gone),
+            _ if !ready_at_keys(crate::pty::manager(), &new, m.forced) => Err(Refused::Gone),
             Ok(x) if x.phase.rank() == 3 => {
                 advance(&chat, &m.id, MovePhase::Prompting { at: now_ms() }, |_| Ok(())).map(|_| ()).map_err(Refused::Unsaved)
             }
             _ => Err(Refused::Gone),
         };
-        match super::type_line_with(&new, &text, &commit, !m.forced) {
+        match super::type_line_with(&new, &text, &commit, true) {
             Ok(Typed::In) => crate::log::info("move", &format!("{}: move {} typed its line into {new}", label(&chat), m.id)),
             Ok(Typed::NotClear | Typed::NotCommitted(Refused::Gone)) => {}
             Ok(Typed::NotCommitted(Refused::Unsaved(e))) => failed(&chat, &m, format!("its state could not be saved: {e}")),
@@ -1845,8 +1887,10 @@ pub(super) mod tests {
         let m = a_move(MovePhase::RowCreated { at: 1_000 });
         let stuck = OpenLook { ready: false, waiting: Some("its screen shows no empty prompt"), ..ready(1_000 + STALL_MS * 5) };
         assert_eq!(next_open(&m, &stuck), OpenStep::Wait, "it waits, however long, unless told");
-        let told = OpenLook { ready: true, forced: true, ..stuck };
+        let told = OpenLook { ready: true, forced: true, composer_seen: true, ..stuck };
         assert_eq!(next_open(&m, &told), OpenStep::Type);
+        // A draft holds even a forced line.
+        assert_eq!(next_open(&m, &OpenLook { draft: true, ..told }), OpenStep::Wait);
     }
 
     #[test]
