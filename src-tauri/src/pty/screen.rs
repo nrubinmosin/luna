@@ -272,6 +272,13 @@ pub fn read_composer(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> 
             row.trim_end().to_string()
         })
         .collect();
+    // The caret at the composer's start with Claude Code's placeholder after
+    // it, drawn gray rather than dim by some themes: nothing typed.
+    let lines = if provider == Provider::Claude && claude_placeholder(screen, top, cols) && cursor == top {
+        lines.iter().map(|_| String::new()).collect()
+    } else {
+        lines
+    };
     let stashed = provider == Provider::Claude
         && (top.saturating_sub(3)..top.saturating_sub(1)).any(|r| {
             let row: String =
@@ -306,10 +313,24 @@ pub fn at_empty_prompt(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -
     // the rule under the composer, or the screen's end where a short pane has
     // no room for one, nothing but that placeholder.
     let below = (top + 1..rows).find(|&r| rule(r)).unwrap_or(rows);
+    let placeholder = claude_placeholder(screen, top, cols);
+    // Its placeholder, wrapped or not, is no text, gray or dim.
+    let nothing = |r: u16, from: u16| nothing(r, from) || placeholder;
     // A pane so short its first row is the composer has no room for the rule
     // over it either: an empty mark there, nothing under it, is the prompt.
     let over = top == 0 || rule(top - 1);
     nothing(top, 1) && over && (top + 1..below).all(|r| nothing(r, 0))
+}
+
+/// Whether row `top` of `screen` is Claude Code's composer showing its
+/// placeholder: the caret, drawn in reverse, right after the mark, and the
+/// placeholder's `Try "…"` from there on. A theme picked at a first start may
+/// draw the placeholder in a plain gray rather than dim, which the dim look
+/// alone would take for text typed in.
+fn claude_placeholder(screen: &vt100::Screen, top: u16, cols: u16) -> bool {
+    let caret = (2..4).filter_map(|c| screen.cell(top, c)).any(|c| c.inverse());
+    let rest: String = (2..cols).filter_map(|c| screen.cell(top, c)).map(|c| if c.has_contents() { c.contents() } else { " " }).collect();
+    caret && rest.trim_start().starts_with("Try \"")
 }
 
 /// Whether the screen shows the CLI's composer, empty, by its mark alone: the
@@ -334,6 +355,7 @@ pub fn composer_empty_loose(bytes: &[u8], rows: u16, cols: u16, provider: Provid
         return false;
     }
     (1..cols).filter_map(|c| screen.cell(top, c)).all(|c| c.dim() || c.contents().trim().is_empty())
+        || (provider == Provider::Claude && claude_placeholder(screen, top, cols))
 }
 
 /// The composer's length after a person's keys, roughly: characters add,
@@ -789,6 +811,42 @@ mod tests {
         }
         assert!(!loose(&hidden(&[(6, 1, &rule30), (7, 1, "❯ a draft"), (8, 1, &rule30)])), "text in it");
         assert!(!loose(b""), "nothing drawn: unreadable, so no");
+        // The live run's screen (Claude Code 2.1.319, a theme picked at its
+        // first start, a quarter pane): the rule fills its row, the composer
+        // right under it, its placeholder in a gray that is no dim, the caret
+        // in reverse on its first letter.
+        let live = [
+            b"\x1b[?25l".to_vec(),
+            drawn(
+                &[
+                    (1, 1, " \u{259d}\u{259d} \u{259d}\u{259d}   Claude Ultra"),
+                    (2, 1, "E:\\Projects\\P"),
+                    (3, 1, "ersona\u{2026}"),
+                    (7, 1, &"\u{2500}".repeat(24)),
+                    (8, 1, "\u{276f} \x1b[7mT\x1b[27m\x1b[38;5;246mry \"write a test for\u{2026}\x1b[39m"),
+                ],
+                (1, 1),
+            ),
+        ]
+        .concat();
+        assert!(at_empty_prompt(&live, 9, 24, Provider::Claude), "the live run's composer, placeholder gray");
+        assert!(composer_empty_loose(&live, 9, 24, Provider::Claude));
+        // The same with the caret a space before the placeholder.
+        let spaced = [
+            b"\x1b[?25l".to_vec(),
+            drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f}\u{a0}\x1b[7m \x1b[27m\x1b[90mTry \"fix it\"\x1b[39m")], (1, 1)),
+        ]
+        .concat();
+        assert!(at_empty_prompt(&spaced, 9, 24, Provider::Claude));
+        // Gray text with no caret before it is typed text, and a caret after
+        // typed words is a draft.
+        let typed =
+            [b"\x1b[?25l".to_vec(), drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} Try \"mine\x1b[7m \x1b[27m")], (1, 1))]
+                .concat();
+        assert!(!at_empty_prompt(&typed, 9, 24, Provider::Claude));
+        // The cursor where a focused pane has it, on the caret: read as empty.
+        let focused = drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} \x1b[7mT\x1b[27m\x1b[90mry \"x\"\x1b[39m")], (8, 3));
+        assert_eq!(read_composer(&focused, 9, 24, Provider::Claude).map(|c| c.text), Some(String::new()));
         // Shrunk to three rows: the composer first, its placeholder, its rule.
         let tiny = |bytes: &[u8]| at_empty_prompt(bytes, 3, 16, Provider::Claude);
         assert!(tiny(&hidden(&[(1, 1, wrapped), (2, 1, "\x1b[2merrors\"\x1b[22m"), (3, 1, &rule16)])));

@@ -45,10 +45,10 @@ pub const MOVE_TAG: &str = "[Luna move";
 /// How long the document gets to be built: its reads and git are bounded on
 /// their own; this bounds the call.
 const BUILD_WAIT: Duration = Duration::from_secs(30);
-/// How long a new chat's CLI gets to be running at all. It may stand at its
-/// first-run screens far longer: nothing is typed until its prompt shows,
-/// with no shorter wait than this.
-pub(super) const OPEN_MAX_MS: u64 = 24 * 60 * 60_000;
+/// How long a new chat's CLI may be not running before its opening is given
+/// up, said on its row: a pane starts it within seconds of its row, and a core
+/// restart gives it this long again (`taken_up`).
+pub(super) const NOT_RUNNING_MAX_MS: u64 = 10 * 60_000;
 /// How long the new conversation gets to hold the line once typed.
 pub(super) const PROMPT_WAIT_MS: u64 = 60_000;
 /// How long an ended move stays on record for the window to read.
@@ -1500,8 +1500,11 @@ pub(super) fn next_open(m: &Move, l: &OpenLook) -> OpenStep {
             if l.prompted {
                 OpenStep::Done
             } else if !l.alive {
-                if l.now.saturating_sub(at) > OPEN_MAX_MS {
-                    OpenStep::Fail("the new chat's CLI did not run within a day".into())
+                if l.now.saturating_sub(at) > NOT_RUNNING_MAX_MS {
+                    OpenStep::Fail(format!(
+                        "its CLI was not running for {} minutes; open the chat to start it, and move again if it does not go on",
+                        NOT_RUNNING_MAX_MS / 60_000
+                    ))
                 } else {
                     OpenStep::Wait
                 }
@@ -1863,13 +1866,15 @@ pub(super) mod tests {
         assert_eq!(next_open(&m, &ready(2_000)), OpenStep::Type);
         // A first-run screen (theme, security notes, trust), or a draft: it
         // waits, however long, while the CLI runs.
-        let screen = OpenLook { ready: false, ..ready(1_000 + OPEN_MAX_MS * 3) };
+        let screen = OpenLook { ready: false, ..ready(1_000 + 3 * 24 * 60 * 60_000) };
         assert_eq!(next_open(&m, &screen), OpenStep::Wait);
         assert_eq!(next_open(&m, &OpenLook { draft: true, ..ready(2_000) }), OpenStep::Wait);
-        // Not running: up to a day.
+        // Not running: up to ten minutes, then given up with why on its row.
         let gone = OpenLook { alive: false, ..ready(2_000) };
         assert_eq!(next_open(&m, &gone), OpenStep::Wait);
-        assert!(matches!(next_open(&m, &OpenLook { now: 1_001 + OPEN_MAX_MS, ..gone }), OpenStep::Fail(w) if w.contains("a day")));
+        assert!(
+            matches!(next_open(&m, &OpenLook { now: 1_001 + NOT_RUNNING_MAX_MS, ..gone }), OpenStep::Fail(w) if w.contains("not running for 10 minutes"))
+        );
         // Its transcript holds it already (a core that stopped after typing).
         assert_eq!(next_open(&m, &OpenLook { prompted: true, ready: false, ..ready(2_000) }), OpenStep::Done);
         // Typed: done once the transcript shows it, failed past the wait.
