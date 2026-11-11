@@ -167,6 +167,10 @@ pub(in crate::agents) struct MovedFrom {
     pub chat: String,
     pub move_id: String,
     pub at: u64,
+    /// Both chats work in one Claude Code worktree: neither starts while the
+    /// other runs, for good (`opening_refusal`).
+    #[serde(default)]
+    pub worktree: bool,
 }
 
 /// The handoff number the document takes in the new chat's folder of copies.
@@ -181,7 +185,13 @@ pub(super) fn line_opening(id: &str) -> String {
 /// and hash, and the old chat named as data.
 pub(super) fn prompt_line(id: &str, source: Source, old: &str, old_name: Option<&str>, payload: &str) -> String {
     // The name as data: one line, cut short, quoted.
-    let name = old_name.map(|n| n.chars().filter(|c| !c.is_control() && !scrub::invisible(*c)).take(NAME_MAX).collect::<String>());
+    // Cleaned as the document is: the line is not the person's to edit.
+    let roots = scrub::Roots::of_this_machine();
+    let name = old_name.map(|n| {
+        let n: String = n.chars().filter(|c| !c.is_control() && !scrub::invisible(*c)).collect();
+        let (n, _) = scrub::strip_roots(&n, &roots);
+        scrub::scrub(&n).0.chars().take(NAME_MAX).collect::<String>()
+    });
     let named = name.map(|n| format!("{} ({old})", serde_json::to_string(n.trim()).unwrap_or_default())).unwrap_or_else(|| old.to_string());
     let who = match source {
         Source::Luna => "Luna wrote it from that chat's records",
@@ -519,6 +529,30 @@ fn build_within(mut inputs: Inputs, transcript: Option<PathBuf>, wait: Duration)
     rx.recv_timeout(wait).map_err(|_| format!("the document took longer than {} s to build", wait.as_secs()))
 }
 
+/// Why a Claude Code worktree move of `chat` waits: its helpers still at work,
+/// or answers owed to it. A helper may work in that worktree, and the old
+/// chat, stopped, would remove a clean worktree under it as it quits; what is
+/// owed would arrive at a chat that is stopped.
+pub(super) fn worktree_held(chat: &str) -> Option<String> {
+    let (helpers, owed) = helpers_of(chat);
+    let live: Vec<String> = helpers.iter().filter(|h| h.state != "exited" && h.state != "done").map(|h| h.id.clone()).collect();
+    if live.is_empty() && owed == 0 {
+        return None;
+    }
+    let mut what = Vec::new();
+    if !live.is_empty() {
+        what.push(format!("its helpers at work ({})", live.join(", ")));
+    }
+    if owed > 0 {
+        what.push(format!("{owed} answer(s) owed to it"));
+    }
+    Some(format!(
+        "this chat works in a Claude Code worktree and is stopped for the move, but {} would be left: let them finish or \
+         stop them, then send again",
+        what.join(" and ")
+    ))
+}
+
 /// The settings the new chat is to start with, as the window sends them,
 /// held to the move: same CLI, the account it goes to, the new chat's id, no
 /// Codex worktree, a Claude Code worktree by name where the old chat had one.
@@ -606,11 +640,14 @@ fn confirm_with(
     if let Some(why) = launch_refusal(&m, &launch) {
         return Err(why);
     }
+    if let Some(why) = m.worktree.then(|| worktree_held(chat)).flatten() {
+        return Err(why);
+    }
     account_ok(&m.to_account_path)?;
     let dir = copies_of(&m.new_id)?;
     let payload = dir.join(format!("{PAYLOAD_N}.md"));
     crate::secret::write_private_synced(&payload, text.as_bytes()).map_err(|e| format!("the document could not be kept: {e}"))?;
-    let moved_from = MovedFrom { chat: chat.to_string(), move_id: move_id.clone(), at: now_ms() };
+    let moved_from = MovedFrom { chat: chat.to_string(), move_id: move_id.clone(), at: now_ms(), worktree: m.worktree };
     let new = m.new_id.clone();
     if let Err(e) = store::change(&new, |r| {
         r.last = r.last.max(PAYLOAD_N);
@@ -708,6 +745,9 @@ pub fn move_step(chat_id: String, move_id: String, step: String) -> Result<MoveS
             if alive(chat) {
                 return Err("the old chat is still running".into());
             }
+            if let Some(why) = m.worktree.then(|| worktree_held(chat)).flatten() {
+                return Err(why);
+            }
             Ok(())
         })?,
         "rowCreated" => advance(chat, &move_id, MovePhase::RowCreated { at: now_ms() }, |m| {
@@ -780,34 +820,24 @@ fn end(chat: &str, id: &str, to: MovePhase) -> Result<Move, String> {
 /// Why `id`'s CLI may not start now: it is a moved chat whose old chat ran
 /// in a Claude Code worktree and is still running. Called at every start.
 pub fn opening_refusal(id: &str) -> Option<String> {
-    let alive = |c: &str| crate::pty::manager().alive(c);
-    let (as_new, as_old) = {
-        let r = store::records();
-        let as_new = r.iter().find_map(|(c, rec)| Some((c.clone(), rec.moving.as_ref().filter(|m| m.new_id == id && m.worktree)?.clone())));
-        // The chat moved from: its worktree is the new chat's once that runs
-        // there, whatever its move came to.
-        let as_old = r.get(id).and_then(|rec| rec.moving.clone()).filter(|m| m.worktree && m.phase.rank() >= 3);
-        (as_new, as_old)
-    };
-    if let Some((old, m)) = as_new {
-        if !m.phase.ended() && alive(&old) {
-            return Some(
-                "this chat opens in the worktree of the chat it moved from, which is still running: stop that chat first, as \
-                 two chats in one Claude Code worktree could lose it"
-                    .into(),
-            );
-        }
-    }
-    let m = as_old?;
-    alive(&m.new_id).then(|| {
-        format!(
-            "this chat moved to another account, and the chat it goes on as ({}) works in its worktree now: the worktree \
-             could be removed under it as this chat quits, so this chat does not start while that one runs",
-            m.new_id
-        )
-    })
+    let tied = worktree_ties(&store::records(), id);
+    let other = tied.into_iter().find(|c| crate::pty::manager().alive(c))?;
+    Some(format!(
+        "this chat shares a Claude Code worktree with {other}, the chat it moved from or to, which is running: the session \
+         that made a worktree removes it as it quits when it is clean, whoever is inside, so the two do not run at once. \
+         Stop {other} first"
+    ))
 }
 
+/// The chats that share a Claude Code worktree with `id` by a move, either
+/// way, as the new chat's record keeps it (`MovedFrom::worktree`): from its
+/// Send on, whatever the move came to and whatever either chat's next move.
+pub(super) fn worktree_ties(r: &store::Records, id: &str) -> Vec<String> {
+    let mut tied: Vec<String> =
+        r.get(id).and_then(|rec| rec.moved_from.as_ref()).filter(|f| f.worktree).map(|f| f.chat.clone()).into_iter().collect();
+    tied.extend(r.iter().filter(|(_, rec)| rec.moved_from.as_ref().is_some_and(|f| f.worktree && f.chat == id)).map(|(c, _)| c.clone()));
+    tied
+}
 /// The folder a moved chat reads its document from, for its Claude Code
 /// start's `--add-dir`: its folder of copies, where its record says it was
 /// opened by a move.
@@ -934,6 +964,16 @@ fn look(m: &Move) -> OpenLook {
     l
 }
 
+/// Whether `id` still stands at its prompt between turns, looked at the moment
+/// before text goes in: the beat's look may be a while old by then.
+pub(super) fn still_ready(pty: &crate::pty::PtyManager, id: &str) -> bool {
+    ready_now(pty.at_prompt(id), crate::activity::turn_state(id).map(|t| t.turn))
+}
+
+fn ready_now(at_prompt: bool, turn: Option<crate::activity::Turn>) -> bool {
+    at_prompt && turn.is_none_or(|t| t == crate::activity::Turn::Idle)
+}
+
 /// Each move whose new chat is opening, a step on: the line typed once the
 /// chat stands at its prompt, done once its transcript holds it, given up
 /// where its start is not the one confirmed or its wait is out.
@@ -989,6 +1029,9 @@ fn open_with_line(chat: &str, m: &Move) {
         // Taken only from RowCreated: a move given up, or typed already,
         // types nothing.
         let commit = || match current(&chat, &m.id) {
+            // Looked at again with the keys held: a turn started meanwhile (a
+            // send, a notice) would take the line mid-turn.
+            _ if !still_ready(crate::pty::manager(), &new) => Err(Refused::Gone),
             Ok(x) if x.phase.rank() == 3 => {
                 advance(&chat, &m.id, MovePhase::Prompting { at: now_ms() }, |_| Ok(())).map(|_| ()).map_err(Refused::Unsaved)
             }
@@ -1285,6 +1328,54 @@ pub(super) mod tests {
         assert!(!copy.exists() && !store::records().contains_key(new));
         assert!(move_cancel(chat.into(), "m1".into()).is_ok(), "twice: as it stands");
         let _ = store::remove(chat);
+    }
+    #[test]
+    fn a_worktree_tie_outlasts_the_move_and_the_old_chats_next_one() {
+        let mut r = store::Records::new();
+        let tie = |worktree| MovedFrom { chat: "wt-a".into(), move_id: "m1".into(), at: 1, worktree };
+        r.insert("wt-b".into(), store::Record { moved_from: Some(tie(true)), ..Default::default() });
+        // The old chat's record moves on: done, then another move of its own.
+        r.insert("wt-a".into(), store::Record { moving: Some(a_move(MovePhase::Done { at: 2 })), ..Default::default() });
+        assert_eq!(worktree_ties(&r, "wt-a"), ["wt-b"]);
+        assert_eq!(worktree_ties(&r, "wt-b"), ["wt-a"]);
+        r.get_mut("wt-a").unwrap().moving = Some(a_move(MovePhase::Shown { at: 3 }));
+        assert_eq!(worktree_ties(&r, "wt-a"), ["wt-b"], "a later move of the old chat keeps the tie");
+        // No worktree between them: no tie.
+        r.get_mut("wt-b").unwrap().moved_from = Some(tie(false));
+        assert!(worktree_ties(&r, "wt-a").is_empty() && worktree_ties(&r, "wt-b").is_empty());
+    }
+
+    #[test]
+    fn a_worktree_move_waits_for_what_its_old_chat_is_owed() {
+        assert_eq!(worktree_held("mvh-old"), None);
+        reg().lock().unwrap().owed.insert(("mvh-old".into(), "mvh-peer".into()), crate::agents::owed::Owed::pending(1, 0));
+        let why = worktree_held("mvh-old").unwrap();
+        assert!(why.contains("1 answer(s) owed") && why.contains("send again"), "{why}");
+        // Refused at Send.
+        let (chat, new) = ("mvh-old", "mvh-new");
+        let m = shown(chat, new, true);
+        let mut launch = m.launch.clone().unwrap();
+        launch["worktreeName"] = "mv".into();
+        let text = "# Moved\n";
+        let e = confirm_with(chat, "m1", text, &sha256_hex(text.as_bytes()), &launch, &scrub::Roots::default(), &|_| Ok(())).unwrap_err();
+        assert!(e.contains("owed"), "{e}");
+        reg().lock().unwrap().owed.remove(&("mvh-old".to_string(), "mvh-peer".to_string()));
+        let _ = store::remove(chat);
+    }
+
+    #[test]
+    fn the_line_goes_in_only_at_a_prompt_between_turns_as_it_is_typed() {
+        use crate::activity::Turn;
+        assert!(ready_now(true, Some(Turn::Idle)) && ready_now(true, None));
+        assert!(!ready_now(false, Some(Turn::Idle)), "a dialog or a screen of its own");
+        assert!(!ready_now(true, Some(Turn::Busy)) && !ready_now(true, Some(Turn::Waiting)), "a turn begun meanwhile");
+    }
+
+    #[test]
+    fn the_old_chats_name_in_the_line_is_cleaned_as_the_document_is() {
+        let key = format!("sk-ant-api03-{}", "a1B2".repeat(10));
+        let line = prompt_line("m1", Source::Luna, "c1", Some(&format!("use {key}\u{200B} now")), "p");
+        assert!(!line.contains(&key) && !line.contains('\u{200B}') && line.contains("<redacted>"), "{line}");
     }
     #[test]
     fn the_line_names_the_document_and_passes_lunas_own_check() {
