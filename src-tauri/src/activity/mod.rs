@@ -181,6 +181,17 @@ pub fn in_background(chat_id: &str) -> bool {
     children_hold(chat_id) || crate::agents::owes_answer(chat_id)
 }
 
+/// Whether a CLI that says busy is busy only for its subagents: Claude Code's
+/// registry does so while one works, the turn that started it over or not, and
+/// the hook said it is over. By the hook rather than the last sample, which a
+/// `Stop` or a new prompt is ahead of by up to SAMPLE_EVERY. Not with one of
+/// them on a prompt, which is a wait. Codex says no such busy: a rollout that
+/// says working is a turn.
+pub fn busy_for_subagents_only(chat_id: &str) -> bool {
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
+    st.tracks.get(chat_id).is_some_and(|t| t.hook == Some(Turn::Idle) && !t.agents.is_empty() && !t.agents.values().any(|asks| *asks))
+}
+
 /// `background::left_quiet` for a session the activity track follows. None
 /// while a subagent of it works: no process tells whether it is stuck.
 pub fn left_quiet(chat_id: &str) -> Option<(u64, String)> {
@@ -231,13 +242,14 @@ pub(crate) fn subagents_for_test(chat_id: &str, n: usize) {
     t.agents = (0..n).map(|i| (format!("a{i}"), false)).collect();
 }
 
-/// A session whose last sample came to `turn`, for the tests of what a chat
-/// reads.
+/// A sample's verdict on a session whose disk says `disk`, for the tests of what
+/// a chat reads.
 #[cfg(test)]
-pub(crate) fn turn_for_test(chat_id: &str, turn: Turn) {
+pub(crate) fn sampled_for_test(chat_id: &str, disk: Option<Turn>) {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;
-    track(&mut st.tracks, &mut st.ended, chat_id).turn = turn;
+    let t = track(&mut st.tracks, &mut st.ended, chat_id);
+    t.turn = combine(t, disk, now_ms());
 }
 
 /// How many subagents of a session are at work, as its hooks or rollouts have

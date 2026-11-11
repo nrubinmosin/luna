@@ -76,8 +76,13 @@ marker, turns a chat whose status folds to idle into `background` when
 the same moment the PC does, or an answer its helpers or theirs still owe it
 (`agents::owes_answer`). The order is no live session (resting), waiting,
 working, background, resting. A Claude Code registry says busy while a subagent
-works, so busy with subagents and a turn the hooks ended reads `background` too;
-a session without hooks has no subagents known and stays working. The MCP
+works, so busy with subagents and a turn the hooks ended reads `background` too
+(`activity::busy_for_subagents_only`), and the marker is looked for on such a
+turn as on an idle one, so a question still reads `waiting`. Both go by the
+hook, not the last sample: a new prompt's hook reads working at once, and an
+idle registry under a busy hook is left as the CLI says. A session without
+hooks has no subagents known and stays working; a Codex rollout says working as
+a turn starts. The MCP
 `state_of` has its own `background`, by `children_busy`, where any surviving
 child counts: an agent may see `background` for a leftover whose dot is idle.
 
