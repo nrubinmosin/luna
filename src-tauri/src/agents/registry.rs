@@ -405,6 +405,12 @@ pub(super) fn waits_on_helpers(id: &str, except: &str) -> bool {
     waits_on_helpers_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), id, except)
 }
 
+/// Whether a chat is owed an answer by its helpers, or its helpers' helpers:
+/// work of its own going on beside its turn (`activity::in_background`).
+pub fn owes_answer(id: &str) -> bool {
+    waits_on_helpers(id, "")
+}
+
 pub(super) fn waits_on_helpers_in(r: &Registry, id: &str, except: &str) -> bool {
     r.owed.keys().any(|(caller, helper)| caller == id && helper != except && is_descendant(r, id, helper))
 }

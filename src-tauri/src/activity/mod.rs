@@ -174,6 +174,13 @@ pub fn children_hold(chat_id: &str) -> bool {
     })
 }
 
+/// Whether work of a chat's goes on beside its turn: what holds the machine of
+/// it (`children_hold`), so that the dot and the power-off let go at the same
+/// moment, or a helper of it, or of its helpers, it is still owed an answer by.
+pub fn in_background(chat_id: &str) -> bool {
+    children_hold(chat_id) || crate::agents::owes_answer(chat_id)
+}
+
 /// `background::left_quiet` for a session the activity track follows. None
 /// while a subagent of it works: no process tells whether it is stuck.
 pub fn left_quiet(chat_id: &str) -> Option<(u64, String)> {
@@ -222,6 +229,15 @@ pub(crate) fn subagents_for_test(chat_id: &str, n: usize) {
     let st = &mut *st;
     let t = track(&mut st.tracks, &mut st.ended, chat_id);
     t.agents = (0..n).map(|i| (format!("a{i}"), false)).collect();
+}
+
+/// A session whose last sample came to `turn`, for the tests of what a chat
+/// reads.
+#[cfg(test)]
+pub(crate) fn turn_for_test(chat_id: &str, turn: Turn) {
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+    let st = &mut *st;
+    track(&mut st.tracks, &mut st.ended, chat_id).turn = turn;
 }
 
 /// How many subagents of a session are at work, as its hooks or rollouts have
@@ -443,6 +459,47 @@ pub fn reset_idle() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A job a turn left, last at work `idle_ms` ago, as a sample has it: still
+    /// `young` while it lives, whatever it does.
+    fn left_idle_for(id: &str, idle_ms: u64) {
+        let now = now_ms();
+        let mut st = state().lock().unwrap();
+        let st = &mut *st;
+        let t = track(&mut st.tracks, &mut st.ended, id);
+        t.procs = Some(procs::Busy { active: Vec::new(), young: vec![7] });
+        t.left = vec![procs::Leftover {
+            pid: 7,
+            exe: "tail".into(),
+            started_ms: 0,
+            cpu_ms: 0,
+            io_bytes: 0,
+            read_ms: now,
+            seen_ms: now,
+            moved_ms: now - idle_ms,
+        }];
+    }
+
+    #[test]
+    fn a_subagent_at_work_is_in_the_background() {
+        let id = "ib-agent";
+        assert!(!in_background(id), "nothing known of it");
+        subagents_for_test(id, 1);
+        assert!(in_background(id));
+        subagents_for_test(id, 0);
+        assert!(!in_background(id));
+        forget(id);
+    }
+
+    #[test]
+    fn a_leftover_is_in_the_background_as_long_as_it_holds_the_machine() {
+        let id = "ib-left";
+        left_idle_for(id, procs::LEFTOVER_HOLD_MS - 60_000);
+        assert!(in_background(id), "idle, but not yet for long enough");
+        left_idle_for(id, procs::LEFTOVER_HOLD_MS + 1);
+        assert!(!in_background(id), "forgotten: the dot lets go when the machine does");
+        forget(id);
+    }
 
     #[test]
     fn a_session_that_comes_back_counts_on() {

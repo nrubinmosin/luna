@@ -70,6 +70,17 @@ reads `waiting` with `marked`. Cleared by hand (`dismiss_waiting`), it stays
 cleared while the same words and time are shown. Activity keeps the turn idle,
 so power counts it as done.
 
+**Background** (`pty/probe.rs` `overlay_background`): `session_meta`, after the
+marker, turns a chat whose status folds to idle into `background` when
+`activity::in_background` holds: `children_hold`, so the dot lets go of a job at
+the same moment the PC does, or an answer its helpers or theirs still owe it
+(`agents::owes_answer`). The order is no live session (resting), waiting,
+working, background, resting. A Claude Code registry says busy while a subagent
+works, so busy with subagents and a turn the hooks ended reads `background` too;
+a session without hooks has no subagents known and stays working. The MCP
+`state_of` has its own `background`, by `children_busy`, where any surviving
+child counts: an agent may see `background` for a leftover whose dot is idle.
+
 ## Leftovers
 
 Doing something is measured per process (`procs::leftovers`): CPU at 1% of a

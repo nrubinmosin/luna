@@ -16,7 +16,8 @@ use std::sync::Arc;
 pub struct SessionMeta {
     pub name: Option<String>,
     /// Claude Code's own vocabulary as the registry has it, or for Codex
-    /// `working` | `waiting` | `resting`.
+    /// `working` | `waiting` | `resting`; for either, `background` between
+    /// turns with work of its own going on (`activity::in_background`).
     pub status: Option<String>,
     pub cwd: Option<String>,
     pub session_id: Option<String>,
