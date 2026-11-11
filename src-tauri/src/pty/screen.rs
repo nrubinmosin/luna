@@ -303,7 +303,10 @@ pub fn at_empty_prompt(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -
     // the rule under the composer, or the screen's end where a short pane has
     // no room for one, nothing but that placeholder.
     let below = (top + 1..rows).find(|&r| rule(r)).unwrap_or(rows);
-    nothing(top, 1) && top > 0 && rule(top - 1) && (top + 1..below).all(|r| nothing(r, 0))
+    // A pane so short its first row is the composer has no room for the rule
+    // over it either: an empty mark there, nothing under it, is the prompt.
+    let over = top == 0 || rule(top - 1);
+    nothing(top, 1) && over && (top + 1..below).all(|r| nothing(r, 0))
 }
 
 /// The composer's length after a person's keys, roughly: characters add,
@@ -724,6 +727,10 @@ mod tests {
         assert!(narrow(&hidden(&[(5, 1, &rule16), (6, 1, wrapped), (7, 1, "\x1b[2merrors\"\x1b[22m"), (8, 1, &rule16)])));
         assert!(narrow(&hidden(&[(6, 1, &rule16), (7, 1, wrapped), (8, 1, "\x1b[2merrors\"\x1b[22m")])), "no rule under it");
         assert!(!narrow(&hidden(&[(5, 1, &rule16), (6, 1, caret), (7, 1, "typed text"), (8, 1, &rule16)])), "a draft's next line");
+        // Shrunk to three rows: the composer first, its placeholder, its rule.
+        let tiny = |bytes: &[u8]| at_empty_prompt(bytes, 3, 16, Provider::Claude);
+        assert!(tiny(&hidden(&[(1, 1, wrapped), (2, 1, "\x1b[2merrors\"\x1b[22m"), (3, 1, &rule16)])));
+        assert!(!tiny(&hidden(&[(1, 1, "❯ say hello"), (3, 1, "working")])), "a prompt in the conversation is no composer");
         assert!(!at(&hidden(&[(6, 1, &rule), (7, 1, "❯ a draft"), (8, 1, &rule)])), "text in it");
         assert!(!at(&hidden(&[(3, 1, "Use this API key?"), (5, 1, "❯ No (recommended)"), (6, 1, "  Yes")])), "a dialog's choice");
         assert!(!at(&hidden(&[(1, 1, "❯ say hello"), (3, 1, "working")])), "a prompt in the conversation, with no composer under it");

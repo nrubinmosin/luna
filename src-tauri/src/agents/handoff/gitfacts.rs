@@ -40,16 +40,34 @@ pub(super) struct Git {
 /// (`filter_overrides`): `git status` and `git diff` run a file's clean or
 /// process filter on what they compare, as Luna's user, outside any CLI's
 /// sandbox.
+/// Where the drivers cannot be told for certain, git is not asked at all.
+#[cfg(test)]
 pub(super) fn run(folder: &str, args: &[&str], wait: Duration) -> Result<String, String> {
-    let overrides = filter_overrides(folder);
+    let overrides = filter_overrides(folder)?;
     run_with(folder, &overrides, args, wait)
 }
 
 /// `-c` pairs that leave each filter driver configured for `folder` with
 /// no command and not required, so none runs: a driver's empty command is no
 /// filter to git. Read with `git config`, which runs nothing.
-fn filter_overrides(folder: &str) -> Vec<String> {
-    let listed = run_with(folder, &[], &["config", "--name-only", "--get-regexp", r"^filter\."], GIT_WAIT).unwrap_or_default();
+/// Fails closed: a listing that failed, or was cut at the output's cap, may
+/// leave a driver out, and then nothing is run.
+fn filter_overrides(folder: &str) -> Result<Vec<String>, String> {
+    let (code, bytes) = run_out(folder, &[], &["config", "--name-only", "--get-regexp", r"^filter\."], GIT_WAIT)?;
+    overrides_of(code, &bytes)
+}
+
+/// The overrides from `git config --get-regexp`'s exit code and output: 1 is
+/// no match, anything else but 0 a listing not to be trusted.
+fn overrides_of(code: i32, bytes: &[u8]) -> Result<Vec<String>, String> {
+    if bytes.len() as u64 >= OUTPUT_MAX {
+        return Err("the repository names more filters than Luna reads".into());
+    }
+    let listed = match code {
+        0 => String::from_utf8_lossy(bytes).into_owned(),
+        1 => String::new(),
+        _ => return Err("git could not list the repository's filters".into()),
+    };
     let mut drivers: Vec<String> = Vec::new();
     for name in listed.lines() {
         // filter.<driver>.<key>, the driver's name possibly holding dots.
@@ -66,11 +84,19 @@ fn filter_overrides(folder: &str) -> Vec<String> {
             out.push(format!("filter.{d}.{key}={value}"));
         }
     }
-    out
+    Ok(out)
 }
 
 /// `run` with `overrides` given before the command.
 fn run_with(folder: &str, overrides: &[String], args: &[&str], wait: Duration) -> Result<String, String> {
+    match run_out(folder, overrides, args, wait)? {
+        (0, bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        _ => Err(format!("git {} failed", args.first().unwrap_or(&""))),
+    }
+}
+
+/// git run as `run_with` says: its exit code and its output, up to the cap.
+fn run_out(folder: &str, overrides: &[String], args: &[&str], wait: Duration) -> Result<(i32, Vec<u8>), String> {
     let mut c = Command::new("git");
     c.arg("-C").arg(folder).args(["-c", "core.fsmonitor=false", "--no-optional-locks"]);
     c.args(overrides).args(args);
@@ -121,8 +147,7 @@ fn run_with(folder: &str, overrides: &[String], args: &[&str], wait: Duration) -
     let bytes = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(200)).unwrap_or_default();
     match status {
         None => Err(format!("git {} took longer than {} s", args.first().unwrap_or(&""), wait.as_secs())),
-        Some(s) if !s.success() => Err(format!("git {} failed", args.first().unwrap_or(&""))),
-        Some(_) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        Some(s) => Ok((s.code().unwrap_or(-1), bytes)),
     }
 }
 
@@ -136,6 +161,15 @@ fn kept(text: &str, max: usize) -> (Vec<String>, usize) {
 /// the chat began, for its commits.
 pub(super) fn of(folder: &str, since: Option<i64>) -> Git {
     let mut g = Git { at: crate::background::iso(crate::throttle::now_ms()).unwrap_or_default(), ..Default::default() };
+    // Nothing is asked of a repository whose filters Luna cannot all turn off.
+    let overrides = match filter_overrides(folder) {
+        Ok(o) => o,
+        Err(e) => {
+            g.missing.push(format!("git: {e}, so Luna asked git nothing"));
+            return g;
+        }
+    };
+    let run = |folder: &str, args: &[&str], wait: Duration| run_with(folder, &overrides, args, wait);
     match run(folder, &["rev-parse", "--abbrev-ref", "HEAD"], GIT_WAIT) {
         Ok(b) => g.branch = Some(b.trim().to_string()).filter(|b| !b.is_empty()),
         Err(e) => {
@@ -182,6 +216,16 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_listing_luna_cannot_trust_stops_git_altogether() {
+        assert_eq!(overrides_of(1, b""), Ok(Vec::new()), "no filter at all");
+        let one = overrides_of(0, b"filter.lfs.clean\nfilter.lfs.process\n").unwrap();
+        assert!(one.contains(&"filter.lfs.process=".to_string()) && one.contains(&"filter.lfs.required=false".to_string()));
+        assert!(overrides_of(128, b"").is_err(), "git failed to list them");
+        let full = vec![b'x'; OUTPUT_MAX as usize];
+        assert!(overrides_of(0, &full).is_err(), "a listing cut at the cap may hide a driver");
+    }
+
+    #[test]
     fn a_command_past_its_time_is_killed_and_said() {
         // `git` reading a pager-less help forever is not to be had; a wait of
         // nothing is: the first look finds it still running.
@@ -216,7 +260,7 @@ mod tests {
         let g = of(&d, Some(0));
         assert!(g.status.iter().any(|l| l.contains("a.txt")), "{g:?}");
         assert!(!mark.exists(), "the repository's filter ran");
-        assert!(filter_overrides(&d).contains(&"filter.spy.clean=".to_string()));
+        assert!(filter_overrides(&d).unwrap().contains(&"filter.spy.clean=".to_string()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

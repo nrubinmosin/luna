@@ -105,6 +105,11 @@ pub(super) struct Record {
     /// The move that opened this chat, for a chat that is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_from: Option<super::moving::MovedFrom>,
+    /// The Claude Code worktree a move put this chat in with others: its
+    /// project and name (moving.rs `worktree_key`). No two chats with the
+    /// same one run at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_key: Option<String>,
 }
 
 pub(super) type Records = BTreeMap<String, Record>;
