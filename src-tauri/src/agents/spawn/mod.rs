@@ -160,6 +160,14 @@ impl SpawnUnderWay {
         };
         let request = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            // A chat stopping for a move into another account looks at its
+            // helpers and then stops: nothing of its may start between the two
+            // (agents/handoff/moving.rs `stopping`), so the mark is looked at
+            // under the same lock the spawn is recorded under.
+            let top = top_of(&r, caller);
+            if crate::agents::handoff::stopping_for_move(&top) {
+                return Err(format!("{top} is being stopped for a move to another account: no helper starts under it now"));
+            }
             cap_room(&r, caller, replaces)?;
             let request = r.next_request;
             r.next_request += 1;

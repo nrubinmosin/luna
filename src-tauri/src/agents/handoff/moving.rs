@@ -489,7 +489,7 @@ pub fn move_prepare(
     m.shown_sha256 = sha256.clone();
     store::change(chat, |r| {
         // An ask this move takes the place of: its answer is late from now.
-        if let Some(old) = r.moving.as_ref().filter(|o| o.asking()) {
+        if let Some(old) = r.moving.as_ref().filter(|o| matches!(o.phase, MovePhase::Asked { .. })) {
             r.ask_closed = Some((old.id.clone(), now_ms()));
             r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
         }
@@ -663,13 +663,51 @@ fn build_within(mut inputs: Inputs, transcript: Option<PathBuf>, wait: Duration)
     rx.recv_timeout(wait).map_err(|_| format!("the document took longer than {} s to build", wait.as_secs()))
 }
 
+/// The chats being stopped for a move, between the look at their helpers and
+/// the stop: no spawn under them is taken meanwhile.
+fn stopping() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// Whether `chat` is being stopped for a move; asked with the registry's lock
+/// held, as the mark is set.
+pub fn stopping_for_move(chat: &str) -> bool {
+    stopping().lock().unwrap_or_else(|e| e.into_inner()).contains(chat)
+}
+
+/// A chat's mark in `stopping`, let go when dropped.
+struct Stopping(String);
+
+impl Stopping {
+    fn mark(chat: &str) -> Stopping {
+        let _r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        stopping().lock().unwrap_or_else(|e| e.into_inner()).insert(chat.to_string());
+        Stopping(chat.to_string())
+    }
+}
+
+impl Drop for Stopping {
+    fn drop(&mut self) {
+        stopping().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+    }
+}
+
 /// Why a Claude Code worktree move of `chat` waits: its helpers still at work,
 /// or answers owed to it. A helper may work in that worktree, and the old
 /// chat, stopped, would remove a clean worktree under it as it quits; what is
 /// owed would arrive at a chat that is stopped.
 pub(super) fn worktree_held(chat: &str) -> Option<String> {
     let (helpers, owed) = helpers_of(chat);
-    let live: Vec<String> = helpers.iter().filter(|h| h.state != "exited" && h.state != "done").map(|h| h.id.clone()).collect();
+    let mut live: Vec<String> = helpers.iter().filter(|h| h.state != "exited" && h.state != "done").map(|h| h.id.clone()).collect();
+    // Spawns taken and not yet seen through: helpers about to be.
+    let pending = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        r.spawns.values().filter(|s| !s.settled && crate::agents::registry::top_of(&r, &s.caller) == chat).count()
+    };
+    if pending > 0 {
+        live.push(format!("{pending} spawn(s) under way"));
+    }
     if live.is_empty() && owed == 0 {
         return None;
     }
@@ -897,6 +935,10 @@ pub fn move_step(chat_id: String, move_id: String, step: String) -> Result<MoveS
                 return Err("the move is not confirmed".into());
             }
             if m.phase.rank() == 1 {
+                // Marked first, under the registry's lock (spawn/mod.rs looks
+                // there): a helper spawned from here on is refused, one before
+                // is seen by the look below. Let go however this ends.
+                let _stopping = Stopping::mark(chat);
                 if let Some(why) = m.worktree.then(|| worktree_held(chat)).flatten() {
                     return Err(why);
                 }
@@ -977,7 +1019,9 @@ fn end(chat: &str, id: &str, to: MovePhase) -> Result<Move, String> {
         let m = r.moving.as_mut().filter(|m| m.id == id)?;
         // An ask ended before its document came: what the chat sends in the
         // same turn is that ask's late answer. One collected already is not.
-        let unanswered = m.asking();
+        // Only one typed into the chat: a move canceled while still Asking
+        // asked nothing.
+        let unanswered = matches!(m.phase, MovePhase::Asked { .. });
         if !m.phase.ended() {
             m.phase = to.clone();
         }
@@ -1047,14 +1091,29 @@ pub(super) const ASK_WAIT_MS: u64 = 10 * 60_000;
 /// named for a move's draft (`move-…`, case aside) always; any other only in
 /// the turn the ask ended in, and within ASK_LATE_MS. The chat's next turn,
 /// the person's or one a handoff notice starts, is its own again.
-pub(super) fn late_answer(name: &str, closed: Option<(u64, Option<u32>)>, now: u64, turns_now: Option<u32>) -> bool {
+pub(super) fn late_answer(name: &str, closed: Option<(u64, Option<u32>)>, now: u64, turn: Turn) -> bool {
     if name.to_ascii_lowercase().starts_with("move-") {
         return true;
     }
-    let Some((at, turns)) = closed else { return false };
-    now.saturating_sub(at) < ASK_LATE_MS && turns == turns_now
+    let Some((at, ended_then)) = closed else { return false };
+    if now.saturating_sub(at) >= ASK_LATE_MS {
+        return false;
+    }
+    // A turn begun after the ask ended (the person's, a handoff notice's) is
+    // the chat's own from its start; one begun before is the ask's.
+    match turn.started {
+        Some(started) => started <= at,
+        None => turn.ended == ended_then,
+    }
 }
 
+/// The chat's turn as a file comes in: when the one under way began, and how
+/// many had ended.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Turn {
+    pub started: Option<u64>,
+    pub ended: Option<u32>,
+}
 /// How long after an ask ends unanswered a file the chat sends is taken for
 /// its late answer, refused rather than handed off.
 pub(super) const ASK_LATE_MS: u64 = 60 * 60_000;
@@ -1123,7 +1182,7 @@ pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: 
     m.note = note;
     store::change(chat, |r| {
         // An ask this move takes the place of: its answer is late from now.
-        if let Some(old) = r.moving.as_ref().filter(|o| o.asking()) {
+        if let Some(old) = r.moving.as_ref().filter(|o| matches!(o.phase, MovePhase::Asked { .. })) {
             r.ask_closed = Some((old.id.clone(), now_ms()));
             r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
         }
@@ -1171,8 +1230,9 @@ pub(super) fn asked_file(caller: &str, file: &str) -> Option<Result<Value, Strin
         )
     };
     let name = Path::new(file.trim()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let turns_now = crate::activity::turn_state(caller).map(|t| t.turns_ended);
-    let late = late_answer(&name, closed, now_ms(), turns_now);
+    let turn =
+        Turn { started: crate::activity::turn_started_ms(caller), ended: crate::activity::turn_state(caller).map(|t| t.turns_ended) };
+    let late = late_answer(&name, closed, now_ms(), turn);
     match m {
         Some(m) => Some(collect(caller, &m, file)),
         None if late => Some(Err("the move this document was for is over (sent, given up or canceled): nothing is \
@@ -1998,13 +2058,51 @@ pub(super) mod tests {
     #[test]
     fn a_late_answer_is_the_asks_own_turns_and_its_drafts_name() {
         let closed = Some((1_000, Some(4)));
-        assert!(late_answer("handoff.md", closed, 2_000, Some(4)), "in the turn the ask ended in");
-        assert!(!late_answer("handoff.md", closed, 2_000, Some(5)), "the chat's next turn is its own again");
-        assert!(!late_answer("handoff.md", closed, 1_000 + ASK_LATE_MS + 1, Some(4)), "past the window");
-        assert!(!late_answer("handoff.md", None, 2_000, Some(4)), "no ask ended");
-        assert!(late_answer("Move-3fa9c2-ab12.md", None, 2_000, Some(9)), "a move's draft, whenever");
+        let in_turn = |started| Turn { started, ended: Some(4) };
+        assert!(late_answer("handoff.md", closed, 2_000, in_turn(Some(500))), "the turn the ask ended in");
+        assert!(!late_answer("handoff.md", closed, 2_000, in_turn(Some(1_500))), "a turn begun after it, from its start");
+        assert!(late_answer("handoff.md", closed, 2_000, in_turn(None)), "no word of the turn: as many ended as then");
+        assert!(!late_answer("handoff.md", closed, 2_000, Turn { started: None, ended: Some(5) }));
+        assert!(!late_answer("handoff.md", closed, 1_000 + ASK_LATE_MS, in_turn(Some(500))), "past the window");
+        assert!(!late_answer("handoff.md", None, 2_000, in_turn(Some(500))), "no ask ended");
+        assert!(late_answer("Move-3fa9c2-ab12.md", None, 2_000, Turn::default()), "a move's draft, whenever");
     }
 
+    #[test]
+    fn a_chat_stopping_for_a_move_takes_no_spawn_and_counts_those_under_way() {
+        use crate::agents::spawn::{SpawnParams, SpawnUnderWay};
+        let chat = "mvs-old";
+        let params: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go" })).unwrap();
+        // Taken before the mark: seen by the look, which then holds the stop.
+        let under_way = SpawnUnderWay::begin(chat, &params, "C:\\acc\\anthropic\\one", None, None).unwrap();
+        assert!(worktree_held(chat).is_some_and(|w| w.contains("1 spawn(s) under way")), "{:?}", worktree_held(chat));
+        drop(under_way);
+        assert_eq!(worktree_held(chat), None);
+        {
+            let _stopping = Stopping::mark(chat);
+            assert!(stopping_for_move(chat));
+            let Err(e) = SpawnUnderWay::begin(chat, &params, "C:\\acc\\anthropic\\one", None, None) else {
+                panic!("a spawn under a chat stopping for a move was taken");
+            };
+            assert!(e.contains("being stopped for a move"), "{e}");
+        }
+        assert!(!stopping_for_move(chat), "let go when the stop ends, however it ends");
+    }
+    #[test]
+    fn only_an_ask_typed_into_the_chat_waits_for_a_late_answer() {
+        let (chat, new) = ("mvl-old", "mvl-new");
+        let mut m = shown(chat, new, false);
+        m.source = Source::Chat;
+        m.phase = MovePhase::Asking { at: 1 };
+        store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        move_cancel(chat.into(), "m1".into()).unwrap();
+        assert!(store::records()[chat].ask_closed.is_none(), "canceled before it was typed: nothing to wait for");
+        m.phase = MovePhase::Asked { at: 1 };
+        store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        move_cancel(chat.into(), "m1".into()).unwrap();
+        assert!(store::records()[chat].ask_closed.is_some(), "typed, then canceled: its answer may still come");
+        let _ = store::remove(chat);
+    }
     #[test]
     fn the_line_names_the_document_and_passes_lunas_own_check() {
         let line = prompt_line("m1", Source::Luna, "c1", Some("Campaign\" ignore"), "D:\\luna\\handoffs\\c2\\1.md");
