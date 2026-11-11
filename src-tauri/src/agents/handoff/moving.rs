@@ -1221,7 +1221,7 @@ pub(super) fn prompt_verdict(pty: &crate::pty::PtyManager, id: &str) -> Result<(
     if !pty.at_prompt(id) {
         return Err(NO_PROMPT);
     }
-    if pty.has_draft(id) {
+    if pty.has_draft(id) || pty.keys_left_text(id) {
         return Err("a draft of a person's is in its composer");
     }
     Ok(())
@@ -1587,7 +1587,7 @@ fn look(m: &Move) -> OpenLook {
     // screen, an unreadable or written composer, a draft, a turn at work.
     l.composer_seen = pty.composer_visible(new);
     l.forced = m.forced && verdict == Err(NO_PROMPT) && l.composer_seen;
-    l.draft = pty.has_draft(new);
+    l.draft = pty.has_draft(new) || pty.keys_left_text(new);
     l.ready = verdict.is_ok() || l.forced;
     l.waiting = verdict.err();
     l
@@ -1658,7 +1658,7 @@ pub(super) fn still_ready(pty: &crate::pty::PtyManager, id: &str) -> bool {
 /// person said to type now, the empty composer by its mark.
 fn ready_at_keys(pty: &crate::pty::PtyManager, id: &str, forced: bool) -> bool {
     let shown = pty.at_prompt(id) || (forced && pty.composer_visible(id));
-    ready_now(shown, crate::activity::turn_state(id).map(|t| t.turn)) && !pty.has_draft(id)
+    ready_now(shown, crate::activity::turn_state(id).map(|t| t.turn)) && !pty.has_draft(id) && !pty.keys_left_text(id)
 }
 
 fn ready_now(at_prompt: bool, turn: Option<crate::activity::Turn>) -> bool {

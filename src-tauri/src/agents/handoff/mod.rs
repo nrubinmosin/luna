@@ -449,7 +449,10 @@ fn type_line_with(chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refuse
         Some(c) => !c.text.trim().is_empty() || c.stashed,
         None => readable && !pty.composer_visible(chat),
     };
-    if written || pty.has_draft(chat) || pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS) {
+    // A move's line also takes Luna's own count of a person's keys as a veto
+    // no read of the screen clears (`keys_left_text`).
+    let keys = readable && pty.keys_left_text(chat);
+    if written || keys || pty.has_draft(chat) || pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS) {
         return Ok(Typed::NotClear);
     }
     if let Err(r) = commit() {

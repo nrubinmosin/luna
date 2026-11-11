@@ -35,6 +35,8 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
     }
     let draft = draft_after(s.draft.load(Ordering::Relaxed), &data);
     s.draft.store(draft, Ordering::Relaxed);
+    let keys = draft_after(s.keys_draft.load(Ordering::Relaxed), &data);
+    s.keys_draft.store(keys, Ordering::Relaxed);
     if s.provider == Provider::Claude && data.contains('\x13') {
         s.stashing.store(true, Ordering::Relaxed);
     }
