@@ -28,7 +28,7 @@ pub fn find_transcript(account_path: &str, session_id: &str) -> Option<PathBuf> 
 
 /// Text of a transcript content field, which is either a bare string or an
 /// array of blocks.
-pub(super) fn content_text(content: &serde_json::Value) -> Option<String> {
+pub(crate) fn content_text(content: &serde_json::Value) -> Option<String> {
     if let Some(t) = content.as_str() {
         return Some(t.to_string());
     }
@@ -373,6 +373,15 @@ fn message_of(line: &str, with_tools: bool) -> Option<Line> {
     Some(Line::Said(crate::agents::Message { role: role.to_string(), text, after_cli: false, final_answer }))
 }
 
+/// One transcript line as something said in the conversation, tools left
+/// out, and nothing the CLI put in itself: what a moved chat's document
+/// quotes (agents/handoff/excerpts.rs).
+pub fn said_line(line: &str) -> Option<crate::agents::Message> {
+    match message_of(line, false)? {
+        Line::Said(m) => Some(m),
+        Line::Injected => None,
+    }
+}
 /// A user line Claude Code wrote itself, not one it was given: the end of a
 /// background task it takes up in a turn of its own (`<task-notification>`),
 /// a wake-up it scheduled, a compaction's summary, the marker an interrupt

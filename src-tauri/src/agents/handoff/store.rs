@@ -67,6 +67,10 @@ pub(super) struct Past {
     /// went by the notices alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<Served>,
+    /// The document a move to another account opened this chat with
+    /// (moving.rs), not a handoff of its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub moved: bool,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
@@ -94,6 +98,13 @@ pub(super) struct Record {
     /// the middle leaves no copy anyone schedules from.
     #[serde(skip)]
     pub reserved: Option<u32>,
+    /// This chat's move to another account, under way or the last one ended
+    /// (moving.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moving: Option<super::moving::Move>,
+    /// The move that opened this chat, for a chat that is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<super::moving::MovedFrom>,
 }
 
 pub(super) type Records = BTreeMap<String, Record>;
@@ -149,6 +160,9 @@ pub(super) fn from_bytes(bytes: &[u8], now: u64) -> Records {
                 }
                 Phase::Scheduled => s.scheduled_at = now,
             }
+        }
+        if let Some(m) = rec.moving.as_mut() {
+            super::moving::taken_up(m, now);
         }
     }
     r
@@ -274,6 +288,9 @@ mod tests {
             saved.insert(chat.into(), Record { last: 1, switch: Some(s(phase)), ..Default::default() });
         }
         saved.get_mut("reset").unwrap().reserved = Some(2);
+        // A move's preview nobody confirmed before the core went.
+        let shown = super::super::moving::tests::a_move(super::super::moving::MovePhase::Shown { at: 3 });
+        saved.insert("moving".into(), Record { moving: Some(shown), ..Default::default() });
         let back = from_bytes(&serde_json::to_vec(&saved).unwrap(), 900);
         assert_eq!(back["reset"].reserved, None, "a number being copied under is never saved");
         for chat in ["reset", "prompt", "again"] {
@@ -281,6 +298,8 @@ mod tests {
         }
         let waiting = back["waiting"].switch.as_ref().unwrap();
         assert_eq!((waiting.phase, waiting.scheduled_at, waiting.attempts), (Phase::Scheduled, 900, 1));
+        let gave_up = back["moving"].moving.as_ref().unwrap();
+        assert!(matches!(&gave_up.phase, super::super::moving::MovePhase::Failed { at: 900, .. }), "never sent unconfirmed");
         assert!(from_bytes(b"not json", 1).is_empty());
     }
 
