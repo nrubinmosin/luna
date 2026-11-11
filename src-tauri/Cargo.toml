@@ -1,6 +1,6 @@
 [package]
 name = "luna"
-version = "0.13.0"
+version = "0.14.0"
 description = "Thin desktop UI over Claude Code and Codex CLI sessions"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nrubinmosin/luna"
