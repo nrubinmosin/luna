@@ -64,6 +64,10 @@ hooks run unasked.
   narrower pane shows `▸2 ◦1 !1`, the narrowest `3 !1`. A helper that asks
   counts as working: its turn waits on the answer. One that has exited is not
   counted. Both glow a few seconds on a spawn.
+- A chat that a helper, or a helper's helper, still owes an answer reads
+  **background** between turns ([Chats: Status](chats.md#status)), also while
+  that helper asks something: the question shows on the pill and in the list.
+  Helpers another chat started never color it.
 - Hovering the pill or the row's count, focusing it with Tab, or clicking or
   tapping it (which keeps it open until Escape or a click elsewhere) opens
   the list, in two tabs, **Working** and **Idle**: Working first when any

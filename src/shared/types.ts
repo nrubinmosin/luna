@@ -1,4 +1,4 @@
-export type ChatStatus = 'working' | 'waiting' | 'resting';
+export type ChatStatus = 'working' | 'waiting' | 'background' | 'resting';
 
 /** Which window group a chat belongs to: an index into the panes store's
  *  groups. Lives here rather than in the panes store so chats can carry it

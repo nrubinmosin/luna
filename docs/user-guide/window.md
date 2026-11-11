@@ -67,7 +67,8 @@ alone; **Even out** puts the splits back to half.
 ## Status bar
 
 Runs the width of the window: how many chats are working, how many waiting (a
-click goes to the next one), every account with every limit window (how full,
+click goes to the next one), how many have work going on in the background
+(named on hover), every account with every limit window (how full,
 and how long until it resets; a click opens the Accounts window), then
 Recommendations, power, settings and help. Short of room, each account keeps its
 name and its fullest window. There is no clock; the taskbar has one.
