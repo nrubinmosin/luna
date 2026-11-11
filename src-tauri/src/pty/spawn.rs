@@ -94,6 +94,9 @@ pub(super) struct Launch {
     pub(super) describe: String,
     /// What Luna applied in it (applied.rs), kept for the chat once it runs.
     pub(super) applied: Vec<crate::applied::Applied>,
+    /// The account counted as in use since before the start's library pass
+    /// (`library::lay_out_for`), until the process is counted itself.
+    pub(super) reserved: Option<crate::account_use::Running>,
 }
 
 impl Launch {
@@ -192,7 +195,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let Some(launch) = capture::keep(&id, launch) else {
         return Ok(String::new());
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -212,6 +215,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // Counted from here until the process has exited, however long a delete
     // takes over it: the map lets go of a session before it is gone.
     let on_account = crate::account_use::running_on(&account_path);
+    drop(reserved);
 
     let pty_system = native_pty_system();
     let pair = pty_system

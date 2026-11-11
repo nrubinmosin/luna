@@ -301,14 +301,18 @@ impl Ledger {
     /// was renamed to: kept under the spelling a pass will go by, a change of
     /// case alone included, since some lookups take a key as it is.
     fn moved(&mut self, from: &Path, to: &Path) {
-        fn rekey<V>(map: &mut BTreeMap<String, V>, from: &Path, to: &Path) {
-            let moving: Vec<(String, String)> = map.keys().filter_map(|k| Some((k.clone(), moved_under(k, from, to)?))).collect();
+        self.rekeyed(|k| moved_under(k, from, to));
+    }
+    /// Every note whose place `new` spells anew under that spelling.
+    fn rekeyed(&mut self, new: impl Fn(&str) -> Option<String>) {
+        fn rekey<V>(map: &mut BTreeMap<String, V>, new: &dyn Fn(&str) -> Option<String>) {
+            let moving: Vec<(String, String)> = map.keys().filter_map(|k| Some((k.clone(), new(k)?))).collect();
             let values: Vec<(String, V)> = moving.into_iter().filter_map(|(old, new)| Some((new, map.remove(&old)?))).collect();
             map.extend(values);
         }
-        rekey(&mut self.written, from, to);
-        rekey(&mut self.worded, from, to);
-        rekey(&mut self.kept, from, to);
+        rekey(&mut self.written, &new);
+        rekey(&mut self.worded, &new);
+        rekey(&mut self.kept, &new);
     }
     /// Every note of a place under `dir` gone, as the folder is; whether there
     /// was any.
@@ -319,6 +323,12 @@ impl Ledger {
         self.kept.retain(|k, _| !within(Path::new(k), dir));
         before != self.written.len() + self.worded.len() + self.kept.len()
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The ledger refusing to be saved, as a full disk would.
+    static SAVE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `place` as it is spelled once the folder `from` it lies under is renamed
@@ -339,6 +349,10 @@ impl Ledger {
         std::fs::read_to_string(dirs.ledger()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }
     fn save(&self, dirs: &Dirs) -> Result<(), String> {
+        #[cfg(test)]
+        if SAVE_FAILS.with(|f| f.get()) {
+            return Err(format!("{}: will not write for the test", dirs.ledger().display()));
+        }
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         // Luna's own, in the data dir: private like the rest of it, where
         // `write_file` is for the copies in account folders.

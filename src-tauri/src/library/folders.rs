@@ -105,6 +105,29 @@ pub(super) fn move_folder_copies(dirs: &Dirs, name: &str, to: &str) -> Vec<(Path
     moved
 }
 
+/// `place`, under the folder copies of the Claude Code account `name`
+/// (`<data>/library-folders/<slug>/<name>/...`), spelled for the account
+/// renamed `to`; None for any other place.
+pub(super) fn folder_copy_renamed(dirs: &Dirs, place: &str, name: &str, to: &str) -> Option<String> {
+    let (top, at) = (dirs.folders(), Path::new(place));
+    let depth = top.components().count();
+    let head: PathBuf = at.components().take(depth).collect();
+    let rest: Vec<_> = at.components().skip(depth).collect();
+    if ident(&head) != ident(&top) || rest.len() < 3 || ident(Path::new(rest[1].as_os_str())) != ident(Path::new(name)) {
+        return None;
+    }
+    let below: PathBuf = rest[2..].iter().collect();
+    Some(top.join(rest[0]).join(to).join(below).to_string_lossy().into_owned())
+}
+
+/// Whether the folder of copies `place` lies in (`<slug>/<name>`) is there,
+/// a link included.
+pub(super) fn old_folder_copies_there(dirs: &Dirs, place: &str) -> bool {
+    let top = dirs.folders();
+    let container: PathBuf = Path::new(place).components().take(top.components().count() + 2).collect();
+    std::fs::symlink_metadata(container).is_ok()
+}
+
 /// Luna's marketplace folder in a Codex account's plugin cache.
 fn codex_market_dir(a: &AccountInfo) -> PathBuf {
     Path::new(&a.path).join("plugins").join("cache").join(CODEX_MARKET)

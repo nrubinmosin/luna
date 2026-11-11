@@ -165,37 +165,87 @@ fn carry_rename(
     for (a, b) in &moves {
         ledger.moved(a, b);
     }
+    // A folder copy's notes where its folder is not there (none laid out
+    // yet, or taken out by hand) follow the name too; those of one that
+    // stayed where it is (a link) stay with it.
+    if provider == Provider::Claude {
+        ledger.rekeyed(|k| folder_copy_renamed(dirs, k, name, to).filter(|_| !old_folder_copies_there(dirs, k)));
+    }
     let (old_key, new_key) = (format!("{}/{name}", provider.as_str()), format!("{}/{to}", provider.as_str()));
     let carry = |lib: &mut LibrarySettings| {
         rename_account(lib, &old_key, Some(&new_key));
+        // A place left out is the person's word on where a copy goes, whether
+        // or not anything lies there: it follows the name wherever it does.
         for place in &mut lib.skipped {
-            if let Some(moved) = moves.iter().find_map(|(a, b)| moved_under(place, a, b)) {
+            let moved = moves.iter().find_map(|(a, b)| moved_under(place, a, b));
+            let folder = || (provider == Provider::Claude).then(|| folder_copy_renamed(dirs, place, name, to)).flatten();
+            if let Some(moved) = moved.or_else(folder) {
                 *place = moved;
             }
         }
     };
-    let done = ledger.save(dirs).and_then(|()| settings(&carry));
-    if let Err(e) = done {
-        // Back as it was, the account's folder last: it is what the chats on
-        // the old name point at.
-        let ledger_back = match &before {
-            Some(bytes) => crate::secret::write_private(&dirs.ledger(), bytes).map_err(|e| e.to_string()),
-            None => match std::fs::remove_file(dirs.ledger()) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
-                _ => Ok(()),
-            },
-        };
-        if let Err(back) = ledger_back {
-            crate::log::warn("library", &format!("could not put {} back: {back}", dirs.ledger().display()));
-        }
-        for (a, b) in moves.iter().rev() {
-            if let Err(back) = std::fs::rename(b, a) {
-                crate::log::warn("library", &format!("could not move {} back to {}: {back}", b.display(), a.display()));
-            }
-        }
-        return Err(e);
+    match ledger.save(dirs).and_then(|()| settings(&carry)) {
+        Ok(()) => Ok(dest),
+        Err(e) => Err(match put_back(dirs, before.as_deref(), &moves) {
+            Ok(()) => e,
+            Err(left) => format!("{e}. Not all of it could be put back: {left}"),
+        }),
     }
-    Ok(dest)
+}
+
+/// A rename undone: each folder moved back, the account's last (it is what
+/// the chats on the old name point at), then the ledger as it was, or —
+/// where a folder would not move back — as it was with that folder's notes
+/// where the folder now is, so that the ledger and the disk agree. What would
+/// not, said.
+fn put_back(dirs: &Dirs, before: Option<&[u8]>, moves: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    let mut stuck = Vec::new();
+    let mut said = Vec::new();
+    for (a, b) in moves.iter().rev() {
+        if let Err(e) = rename_back(b, a) {
+            said.push(format!("{} is still there, not at {}: {e}", b.display(), a.display()));
+            stuck.push((a, b));
+        }
+    }
+    let restored = match before {
+        Some(bytes) if stuck.is_empty() => crate::secret::write_private(&dirs.ledger(), bytes).map_err(|e| e.to_string()),
+        None if stuck.is_empty() => match std::fs::remove_file(dirs.ledger()) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        },
+        _ => {
+            let mut ledger: Ledger = before.and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default();
+            for (a, b) in &stuck {
+                ledger.moved(a, b);
+            }
+            ledger.save(dirs)
+        }
+    };
+    if let Err(e) = restored {
+        said.push(format!("{} holds the notes under the new name: {e}", dirs.ledger().display()));
+    }
+    for line in &said {
+        crate::log::warn("library", &format!("undoing an account's rename: {line}"));
+    }
+    if said.is_empty() {
+        Ok(())
+    } else {
+        Err(said.join("; "))
+    }
+}
+
+// A folder a test makes refuse to move back.
+#[cfg(test)]
+thread_local! {
+    static STUCK: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+fn rename_back(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if STUCK.with(|s| s.borrow().as_deref() == Some(from)) {
+        return Err(std::io::Error::other("held for the test"));
+    }
+    std::fs::rename(from, to)
 }
 
 /// The ledger's bytes (None: there is none yet) and what they say, for a
@@ -215,9 +265,11 @@ fn ledger_as_it_is(dirs: &Dirs) -> Result<(Option<Vec<u8>>, Ledger), String> {
 }
 
 /// The account `provider/name` at `dir` deleted (`remove`), under the
-/// library's lock: the ledger's notes under its folder go with it, and so do
-/// its reaches and the places left out in it, in `settings`. Its folder
-/// copies outside it are a pass's to take out, as copies no longer wanted.
+/// library's lock: its reaches and the places left out in it go with it, in
+/// `settings`, then the ledger's notes under its folder. Each step can be
+/// done again: a deletion that failed partway is finished by the next, the
+/// folder gone already. Its folder copies outside it are a pass's to take
+/// out, as copies no longer wanted.
 pub(crate) fn delete_account_held(
     provider: Provider,
     dir: &Path,
@@ -239,14 +291,15 @@ fn carry_delete(
 ) -> Result<(), String> {
     let (_, mut ledger) = ledger_as_it_is(dirs)?;
     remove()?;
-    if ledger.dropped(dir) {
-        ledger.save(dirs)?;
-    }
     let key = format!("{}/{name}", provider.as_str());
     settings(&|lib: &mut LibrarySettings| {
         rename_account(lib, &key, None);
         lib.skipped.retain(|place| !within(Path::new(place), dir));
-    })
+    })?;
+    if ledger.dropped(dir) {
+        ledger.save(dirs)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -516,6 +569,77 @@ mod tests {
         assert!(!copies.with_file_name("office").exists());
         assert_eq!(std::fs::read(f.dirs.ledger()).unwrap(), ledger, "the ledger as it was");
         assert_eq!(serde_json::to_string(&lib).unwrap(), settings);
+    }
+
+    /// A folder copy's place left out, with no folder of copies on disk for the
+    /// account (nothing ever laid out there): it follows the name all the same,
+    /// and so does a note of Luna's there.
+    #[test]
+    fn a_folder_copy_left_out_follows_the_name_with_nothing_on_disk() {
+        let mut f = Fixture::new("rename-skip-folder");
+        let mut lib = laid_for_a_rename(&f);
+        let copies = folder_copies(&f, 0);
+        let place = copies.join(".claude").join("skills").join("notes");
+        lib.skipped.push(place.to_string_lossy().into_owned());
+        std::fs::remove_dir_all(&copies).unwrap();
+        rename(&mut f, 0, "office", &mut lib, Ok(())).unwrap();
+        let new_place = folder_copies(&f, 0).join(".claude").join("skills").join("notes");
+        assert!(lib.skipped.iter().any(|s| Path::new(s) == new_place), "{:?}", lib.skipped);
+        assert!(lib.skipped.iter().all(|s| !within(Path::new(s), &copies)), "{:?}", lib.skipped);
+        assert!(Ledger::load(&f.dirs).written.keys().any(|k| Path::new(k) == new_place));
+        let mut ledger = Ledger::load(&f.dirs);
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(Fixture::status(&p, &new_place), Status::Skipped);
+        assert!(!new_place.exists(), "still left out");
+    }
+
+    /// A folder that will not move back: the error says where it is, and the
+    /// ledger has its notes there, the rest as they were.
+    #[test]
+    fn a_rename_that_cannot_be_undone_says_where_things_are() {
+        let mut f = Fixture::new("rename-stuck");
+        let mut lib = laid_for_a_rename(&f);
+        let (account, copies) = (f.account(0), folder_copies(&f, 0));
+        let office = account.with_file_name("office");
+        STUCK.with(|s| *s.borrow_mut() = Some(office.clone()));
+        let why = rename(&mut f, 0, "office", &mut lib, Err("disk full".into())).unwrap_err();
+        STUCK.with(|s| *s.borrow_mut() = None);
+        assert!(why.starts_with("disk full. Not all of it could be put back"), "{why}");
+        assert!(why.contains(&*office.to_string_lossy()), "{why}");
+        assert!(office.join("CLAUDE.md").is_file() && !account.exists());
+        assert!(copies.join(".claude/skills/notes/SKILL.md").is_file(), "the folder copies came back");
+        let ledger = Ledger::load(&f.dirs);
+        assert!(ledger.written.keys().any(|k| Path::new(k) == office.join("CLAUDE.md")), "the notes where the folder is");
+        assert!(ledger.written.keys().all(|k| !within(Path::new(k), &account)));
+        assert!(ledger.written.keys().any(|k| within(Path::new(k), &copies)), "the folder copies' as they were");
+    }
+
+    /// A ledger that will not save after the folder is gone: the settings are
+    /// clean already, and deleting again, the folder gone, finishes the rest.
+    #[test]
+    fn a_deletion_that_failed_partway_is_finished_by_the_next() {
+        let f = Fixture::new("delete-again");
+        let mut lib = laid_for_a_rename(&f);
+        let dir = f.account(0);
+        let remove = || match dir.exists() {
+            true => std::fs::remove_dir_all(&dir).map_err(|e| e.to_string()),
+            false => Ok(()),
+        };
+        SAVE_FAILS.with(|s| s.set(true));
+        let failed = carry_delete(&f.dirs, Provider::Claude, &dir, "work", remove, |carry| {
+            carry(&mut lib);
+            Ok(())
+        });
+        SAVE_FAILS.with(|s| s.set(false));
+        assert!(failed.is_err() && !dir.exists());
+        assert_eq!(lib.skills["review"], reach(&["codex/home"]), "the settings are clean all the same");
+        assert!(Ledger::load(&f.dirs).written.keys().any(|k| within(Path::new(k), &dir)));
+        carry_delete(&f.dirs, Provider::Claude, &dir, "work", remove, |carry| {
+            carry(&mut lib);
+            Ok(())
+        })
+        .unwrap();
+        assert!(Ledger::load(&f.dirs).written.keys().all(|k| !within(Path::new(k), &dir)));
     }
 
     /// A ledger that will not parse refuses the rename before anything moves,

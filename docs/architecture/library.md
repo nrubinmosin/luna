@@ -44,11 +44,21 @@ take a key as it is), the places left out there, and for Claude Code its folder
 copies, outside the account but named after it: each
 `library-folders/<slug>/<name>` is renamed `<slug>/<new>` and its notes follow,
 unless a link or junction lies on the way or the new name is taken, when it
-stays for a pass to lay out anew and take out. Codex's folder plugins lie in the
-account and move with it. Settings that will not write put the ledger, the
-folder copies and the account's folder back. A deletion drops the ledger's
-notes under the folder and the places left out in it under the same lock;
-its folder copies go at the next pass, as copies no longer wanted.
+stays for a pass to lay out anew and take out. Where no such folder is on disk,
+its notes and places left out follow the name all the same. Codex's folder
+plugins lie in the account and move with it. Settings that will not write put
+the folder copies and the account's folder back, then the ledger as it was, or,
+where a folder would not move back, with that folder's notes where it now is;
+the error names what stayed where. A deletion, under the same lock, cleans the
+settings (reaches, places left out) and then the ledger's notes under the
+folder, each step one that a second deletion of a folder already gone
+finishes; its folder copies go at the next pass, as copies no longer wanted.
+
+A session's start (a chat's, a helper's turn) counts its account as in use
+from before its pass waits for the lock until its process is counted itself
+(`lay_out_for`), and a rename asks again under the lock: a rename waiting
+behind a start refuses, and a start waiting behind a rename that moved its
+account is refused rather than made on the old path.
 
 An account has one instructions file, so the closest reach decides (`chosen`):
 named beats a provider beats `all`; `library.noInstructions` names accounts
