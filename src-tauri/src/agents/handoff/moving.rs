@@ -66,21 +66,46 @@ pub(in crate::agents) enum Source {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "phase", rename_all = "camelCase")]
 pub(in crate::agents) enum MovePhase {
-    Shown { at: u64 },
-    Confirmed { at: u64 },
-    OldStopped { at: u64 },
-    RowCreated { at: u64 },
-    Prompting { at: u64 },
-    Done { at: u64 },
-    Failed { at: u64, why: String },
-    Canceled { at: u64 },
+    /// The chat is to be asked for its document, once at a strict prompt.
+    Asking {
+        at: u64,
+    },
+    /// The ask is typed; its document is awaited through its handoff tool.
+    Asked {
+        at: u64,
+    },
+    Shown {
+        at: u64,
+    },
+    Confirmed {
+        at: u64,
+    },
+    OldStopped {
+        at: u64,
+    },
+    RowCreated {
+        at: u64,
+    },
+    Prompting {
+        at: u64,
+    },
+    Done {
+        at: u64,
+    },
+    Failed {
+        at: u64,
+        why: String,
+    },
+    Canceled {
+        at: u64,
+    },
 }
 
 impl MovePhase {
     /// Its order: what a step may move on from.
     fn rank(&self) -> u8 {
         match self {
-            MovePhase::Shown { .. } => 0,
+            MovePhase::Asking { .. } | MovePhase::Asked { .. } | MovePhase::Shown { .. } => 0,
             MovePhase::Confirmed { .. } => 1,
             MovePhase::OldStopped { .. } => 2,
             MovePhase::RowCreated { .. } => 3,
@@ -95,7 +120,9 @@ impl MovePhase {
 
     fn at(&self) -> u64 {
         match self {
-            MovePhase::Shown { at }
+            MovePhase::Asking { at }
+            | MovePhase::Asked { at }
+            | MovePhase::Shown { at }
             | MovePhase::Confirmed { at }
             | MovePhase::OldStopped { at }
             | MovePhase::RowCreated { at }
@@ -108,6 +135,8 @@ impl MovePhase {
 
     fn word(&self) -> &'static str {
         match self {
+            MovePhase::Asking { .. } => "asking",
+            MovePhase::Asked { .. } => "asked",
             MovePhase::Shown { .. } => "shown",
             MovePhase::Confirmed { .. } => "confirmed",
             MovePhase::OldStopped { .. } => "oldStopped",
@@ -158,6 +187,24 @@ pub(in crate::agents) struct Move {
     pub payload: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_sha256: Option<String>,
+    /// The person's note, for a document the chat writes: Luna adds it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+    /// A document the chat wrote, as the preview is to show it, kept private
+    /// in the old chat's folder of copies until the move ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    /// What cleaning that preview took out: secret shapes, paths, characters
+    /// no screen shows.
+    #[serde(default)]
+    pub cleaned: [usize; 3],
+}
+
+impl Move {
+    /// The chat is being asked for its document.
+    pub(super) fn asking(&self) -> bool {
+        matches!(self.phase, MovePhase::Asking { .. } | MovePhase::Asked { .. })
+    }
 }
 
 /// The new chat's side: which move opened it.
@@ -425,19 +472,120 @@ pub fn move_prepare(
     note: String,
 ) -> Result<MovePreview, String> {
     let chat = chat_id.as_str();
-    super::dir_of(&new_id).map_err(|_| "the new chat's id is not one Luna makes".to_string())?;
-    if new_id == chat_id
-        || reg().lock().unwrap_or_else(|e| e.into_inner()).known.contains_key(&new_id)
-        || store::records().contains_key(&new_id)
+    let (old, to_account, worktree, warnings) = checked(chat, &new_id, &to_account_path)?;
+    let name = chat_name(chat);
+    let session_id = session_id.filter(|s| !s.trim().is_empty());
+    let note_for_line = note.clone();
+    let mut inputs = inputs_of(chat, &old, &to_account, note);
+    inputs.last_handoff = last_handoff(chat);
+    let transcript = transcript_of(chat, old.provider, &old.account_path, session_id.as_deref());
+    let built = build_within(inputs, transcript, BUILD_WAIT)?;
+    let id = crate::secret::random_hex(6);
+    let sha256 = sha256_hex(built.text.as_bytes());
+    let payload = super::dir_of(&new_id).map(|d| d.join(format!("{PAYLOAD_N}.md"))).unwrap_or_default();
+    let prompt = prompt_line_with(&id, Source::Luna, chat, name.as_deref(), &payload.to_string_lossy(), &note_for_line);
+    let mut m = new_move(&id, &new_id, &old, to_account, to_account_path, prompt, Source::Luna, worktree);
+    m.phase = MovePhase::Shown { at: now_ms() };
+    m.shown_sha256 = sha256.clone();
+    store::change(chat, |r| r.moving = Some(m.clone())).map_err(|e| format!("the move could not be saved: {e}"))?;
+    crate::log::info("move", &format!("{} has a move to another account built ({id}, {} bytes)", label(chat), built.text.len()));
+    Ok(preview_of(&m, built.text, [built.redacted, built.paths_cut, built.invisible], warnings))
+}
+
+/// A move of the chat `old` to `new_id`, as it begins.
+#[allow(clippy::too_many_arguments)]
+fn new_move(
+    id: &str,
+    new_id: &str,
+    old: &Old,
+    to_account: String,
+    to_account_path: String,
+    line: String,
+    source: Source,
+    worktree: bool,
+) -> Move {
+    Move {
+        id: id.to_string(),
+        new_id: new_id.to_string(),
+        provider: old.provider,
+        from_account: old.account.clone(),
+        to_account,
+        to_account_path,
+        folder: old.folder.clone(),
+        line,
+        source,
+        stop_old: worktree,
+        worktree,
+        phase: MovePhase::Asking { at: now_ms() },
+        shown_sha256: String::new(),
+        binding: None,
+        launch: None,
+        payload: None,
+        payload_sha256: None,
+        note: String::new(),
+        preview: None,
+        cleaned: [0; 3],
+    }
+}
+
+/// What the window is shown of move `m` with its document `text`.
+fn preview_of(m: &Move, text: String, cleaned: [usize; 3], warnings: Vec<String>) -> MovePreview {
+    MovePreview {
+        move_id: m.id.clone(),
+        new_id: m.new_id.clone(),
+        prompt: m.line.clone(),
+        sha256: sha256_hex(text.as_bytes()),
+        highlights: scrub::highlights(&text),
+        text,
+        redacted: cleaned[0],
+        paths_cut: cleaned[1],
+        invisible: cleaned[2],
+        stop_old: m.worktree,
+        worktree: m.worktree,
+        warnings,
+        max_bytes: document::MAX_BYTES,
+    }
+}
+
+/// What the document is written from, but its transcript and git, which
+/// `build_within` reads off the caller's thread.
+fn inputs_of(chat: &str, old: &Old, to_account: &str, note: String) -> Inputs {
+    let (helpers, _) = helpers_of(chat);
+    Inputs {
+        provider: old.provider,
+        chat: chat.to_string(),
+        name: chat_name(chat),
+        from_account: old.account.clone(),
+        to_account: to_account.to_string(),
+        folder: crate::pty::manager().probe(chat).and_then(|p| p.working_dir()).unwrap_or_else(|| old.folder.clone()),
+        settings: old.settings.clone(),
+        note,
+        stopped: stopped_of(chat, old.provider),
+        transcript: Err(String::new()),
+        last_handoff: None,
+        git: gitfacts::Git::default(),
+        helpers,
+        at: crate::background::iso(now_ms()).unwrap_or_default(),
+        boundary: crate::secret::random_hex(6),
+        chat_text: None,
+    }
+}
+
+/// What every move of `chat` to the account at `to_account_path` as
+/// `new_id` is held to before it begins: the old chat, the account, and
+/// what the window is to warn of.
+fn checked(chat: &str, new_id: &str, to_account_path: &str) -> Result<(Old, String, bool, Vec<String>), String> {
+    super::dir_of(new_id).map_err(|_| "the new chat's id is not one Luna makes".to_string())?;
+    if new_id == chat || reg().lock().unwrap_or_else(|e| e.into_inner()).known.contains_key(new_id) || store::records().contains_key(new_id)
     {
         return Err("the new chat's id is taken".into());
     }
     let old = old_of(chat)?;
-    let (to_provider, to_account) = account_at(&to_account_path)?;
+    let (to_provider, to_account) = account_at(to_account_path)?;
     if to_provider != old.provider {
         return Err("a chat moves only to another account of its own CLI".into());
     }
-    if crate::paths::path_key(&to_account_path) == crate::paths::path_key(&old.account_path) {
+    if crate::paths::path_key(to_account_path) == crate::paths::path_key(&old.account_path) {
         return Err("the chat is on that account already".into());
     }
     // Started with `--worktree` by Luna (pty/start.rs) or running in one:
@@ -455,6 +603,12 @@ pub fn move_prepare(
         }
     }
     let worktree = old.provider == Provider::Claude && old.settings["worktree"] == true;
+    let warnings = warnings_of(chat, worktree);
+    Ok((old, to_account, worktree, warnings))
+}
+
+/// What the window is to warn of before chat moves.
+fn warnings_of(chat: &str, worktree: bool) -> Vec<String> {
     let (helpers, owed) = helpers_of(chat);
     let mut warnings = Vec::new();
     let live = helpers.iter().filter(|h| h.state != "exited" && h.state != "done").count();
@@ -471,68 +625,7 @@ pub fn move_prepare(
                 .into(),
         );
     }
-    let name = chat_name(chat);
-    let session_id = session_id.filter(|s| !s.trim().is_empty());
-    let note_for_line = note.clone();
-    let inputs = Inputs {
-        provider: old.provider,
-        chat: chat.to_string(),
-        name: name.clone(),
-        from_account: old.account.clone(),
-        to_account: to_account.clone(),
-        folder: crate::pty::manager().probe(chat).and_then(|p| p.working_dir()).unwrap_or_else(|| old.folder.clone()),
-        settings: old.settings.clone(),
-        note,
-        stopped: stopped_of(chat, old.provider),
-        transcript: Err(String::new()),
-        last_handoff: last_handoff(chat),
-        git: gitfacts::Git::default(),
-        helpers,
-        at: crate::background::iso(now_ms()).unwrap_or_default(),
-        boundary: crate::secret::random_hex(6),
-    };
-    let transcript = transcript_of(chat, old.provider, &old.account_path, session_id.as_deref());
-    let built = build_within(inputs, transcript, BUILD_WAIT)?;
-    let id = crate::secret::random_hex(6);
-    let sha256 = sha256_hex(built.text.as_bytes());
-    let payload = super::dir_of(&new_id).map(|d| d.join(format!("{PAYLOAD_N}.md"))).unwrap_or_default();
-    let prompt = prompt_line_with(&id, Source::Luna, chat, name.as_deref(), &payload.to_string_lossy(), &note_for_line);
-    let m = Move {
-        id: id.clone(),
-        new_id: new_id.clone(),
-        provider: old.provider,
-        from_account: old.account,
-        to_account,
-        to_account_path,
-        folder: old.folder.clone(),
-        line: prompt.clone(),
-        source: Source::Luna,
-        stop_old: worktree,
-        worktree,
-        phase: MovePhase::Shown { at: now_ms() },
-        shown_sha256: sha256.clone(),
-        binding: None,
-        launch: None,
-        payload: None,
-        payload_sha256: None,
-    };
-    store::change(chat, |r| r.moving = Some(m)).map_err(|e| format!("the move could not be saved: {e}"))?;
-    crate::log::info("move", &format!("{} has a move to another account built ({id}, {} bytes)", label(chat), built.text.len()));
-    Ok(MovePreview {
-        move_id: id,
-        new_id,
-        prompt,
-        sha256,
-        text: built.text,
-        redacted: built.redacted,
-        paths_cut: built.paths_cut,
-        highlights: built.highlights,
-        invisible: built.invisible,
-        stop_old: worktree,
-        worktree,
-        warnings,
-        max_bytes: document::MAX_BYTES,
-    })
+    warnings
 }
 
 /// The document built on a thread of its own and given `wait`: its transcript
@@ -649,6 +742,9 @@ fn confirm_with(
         } else {
             Err("this move was confirmed already, with another text or other settings".into())
         };
+    }
+    if !matches!(m.phase, MovePhase::Shown { .. }) {
+        return Err("the chat has not written its document yet".into());
     }
     if text_sha != sha256 {
         return Err("the text is not the one shown: show the preview again".into());
@@ -876,13 +972,21 @@ fn end(chat: &str, id: &str, to: MovePhase) -> Result<Move, String> {
         }
         Some(m.clone())
     };
-    match store::change(chat, set) {
+    let ended = match store::change(chat, set) {
         Ok(m) => m.ok_or_else(|| "no such move of this chat".to_string()),
         Err(e) => {
             crate::log::warn("move", &format!("{}: move {id} could not be saved as ended: {e}", label(chat)));
             store::records().get_mut(chat).and_then(set).ok_or_else(|| "no such move of this chat".to_string())
         }
+    };
+    // A document the chat wrote goes with its move's end: the new chat has its
+    // own copy of what was sent.
+    if let Some(p) = ended.as_ref().ok().filter(|m| m.phase.ended()).and_then(|m| m.preview.clone()) {
+        if copies_of(chat).is_ok_and(|dir| Path::new(&p).parent() == Some(dir.as_path())) {
+            let _ = std::fs::remove_file(p);
+        }
     }
+    ended
 }
 
 /// Why `id`'s CLI may not start now: it is a moved chat whose old chat ran
@@ -918,6 +1022,248 @@ pub fn moved_dir(id: &str) -> Option<PathBuf> {
     copies_of(id).ok()
 }
 
+/// How long a chat asked for its document gets to come to rest for the ask,
+/// and then to write it.
+pub(super) const ASK_REST_MS: u64 = 10 * 60_000;
+pub(super) const ASK_WAIT_MS: u64 = 10 * 60_000;
+
+/// What Luna types into a chat asked for its move's document: fixed words.
+pub(super) fn ask_line(id: &str) -> String {
+    format!(
+        "{MOVE_TAG} {id} request, not typed by the user] The person is moving this chat to another account of this CLI, \
+         where a new chat goes on from a document you write now. Call luna_session_handoff without arguments for how, \
+         write the document, call luna_session_handoff with file set to its absolute path, and end your turn. Nothing is \
+         cleared: this conversation goes on as it is."
+    )
+}
+
+/// Why `chat` is not to be asked for its document now: its CLI not running,
+/// stopped on a usage limit, or waiting on a question.
+fn ask_refusal(chat: &str, provider: Provider) -> Option<String> {
+    if !crate::pty::manager().alive(chat) {
+        return Some("its CLI is not running".into());
+    }
+    if let Some(kind) = crate::activity::limit_of(chat, provider) {
+        return Some(format!("it stopped on a usage limit ({kind}) and cannot write now"));
+    }
+    crate::activity::turn_state(chat)
+        .filter(|t| t.turn == crate::activity::Turn::Waiting)
+        .map(|_| "it is waiting on a question of its CLI's".into())
+}
+
+/// Whether `id`'s CLI stands at its prompt, strictly: the composer drawn and
+/// empty, no turn under way, nobody typing. A dialog or a first-run screen is
+/// not one, and a Codex line typed mid-turn would steer the turn.
+fn strict_prompt(pty: &crate::pty::PtyManager, id: &str) -> bool {
+    let quiet = pty.typed_ago_ms(id).is_none_or(|ms| ms >= SEND_TYPING_MS);
+    let idle = crate::activity::turn_state(id).is_none_or(|t| t.turn == crate::activity::Turn::Idle);
+    pty.alive(id) && quiet && idle && !pty.has_draft(id) && pty.at_prompt(id)
+}
+
+/// Whether `chat` is being asked for a move's document: no threshold notice
+/// goes in meanwhile.
+pub(super) fn asking(chat: &str) -> bool {
+    store::records().get(chat).and_then(|r| r.moving.as_ref()).is_some_and(Move::asking)
+}
+
+/// The window's "Ask the chat": a chat with auto-handoff on, whose CLI has
+/// Luna's handoff tool, asked to write its own document for the move through
+/// that tool, collected without a reset. Only where it can write a file and
+/// is running, not stopped on a limit; typed only at a strict prompt.
+pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: String) -> Result<MoveStatus, String> {
+    let chat = chat_id.as_str();
+    let (old, to_account, worktree, _) = checked(chat, &new_id, &to_account_path)?;
+    if !super::offers_tool(chat) || !super::is_listed(chat) {
+        return Err("only a chat with auto-handoff on, whose CLI has Luna's handoff tool, writes its own document: let Luna \
+                    build it"
+            .into());
+    }
+    if let Some(why) = super::served::unwritable(&old.settings) {
+        return Err(format!("the chat writes no file: {why}"));
+    }
+    if let Some(why) = ask_refusal(chat, old.provider) {
+        return Err(format!("the chat is not to be asked now: {why}; let Luna build the document"));
+    }
+    let id = crate::secret::random_hex(6);
+    let payload = super::dir_of(&new_id).map(|d| d.join(format!("{PAYLOAD_N}.md"))).unwrap_or_default();
+    let line = prompt_line(&id, Source::Chat, chat, chat_name(chat).as_deref(), &payload.to_string_lossy());
+    let mut m = new_move(&id, &new_id, &old, to_account, to_account_path, line, Source::Chat, worktree);
+    m.note = note;
+    store::change(chat, |r| r.moving = Some(m.clone())).map_err(|e| format!("the move could not be saved: {e}"))?;
+    crate::log::info("move", &format!("{} is to be asked for its move's document ({id})", label(chat)));
+    Ok(status_of(chat, &m))
+}
+
+/// The preview of a document the chat wrote, once collected: read back as
+/// the private copy Luna made, its hash the one shown.
+pub fn move_preview(chat_id: String, move_id: String) -> Result<MovePreview, String> {
+    let chat = chat_id.as_str();
+    let m = current(chat, &move_id)?;
+    if !matches!(m.phase, MovePhase::Shown { .. }) {
+        return Err(format!("there is no preview to show ({})", m.phase.word()));
+    }
+    let path = m.preview.clone().ok_or("this move's preview was handed over as it was built")?;
+    let dir = copies_of(chat)?;
+    if Path::new(&path).parent() != Some(dir.as_path()) {
+        return Err("the preview is not in this chat's folder of copies".into());
+    }
+    let bytes = crate::secret::read_private(Path::new(&path), document::MAX_BYTES as u64 + 1)
+        .map_err(|e| e.to_string())?
+        .ok_or("the preview is gone")?;
+    if sha256_hex(&bytes) != m.shown_sha256 {
+        return Err("the preview is not the one Luna made".into());
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "the preview is not text")?;
+    Ok(preview_of(&m, text, m.cleaned, warnings_of(chat, m.worktree)))
+}
+
+/// `luna_session_handoff` with `file` from a chat asked for its move's
+/// document: collected, with nothing scheduled and nothing reset. A file
+/// named for a move (`move-…`) when none is asking is refused, so a late
+/// answer never becomes a handoff. None: an ordinary handoff.
+pub(super) fn asked_file(caller: &str, file: &str) -> Option<Result<Value, String>> {
+    let m = store::records().get(caller).and_then(|r| r.moving.clone()).filter(Move::asking);
+    let for_a_move = Path::new(file.trim()).file_name().is_some_and(|n| n.to_string_lossy().starts_with("move-"));
+    match m {
+        Some(m) => Some(collect(caller, &m, file)),
+        None if for_a_move => Some(Err("the move this document was for is over (sent, given up or canceled): nothing is \
+                                        done with it and nothing switches. Go on as you were."
+            .into())),
+        None => None,
+    }
+}
+
+/// The chat's document copied and checked as a handoff's is (file.rs), Luna's
+/// facts added, cleaned and kept private as the preview: the move is shown.
+fn collect(caller: &str, m: &Move, file: &str) -> Result<Value, String> {
+    let dir = copies_of(caller)?;
+    let free = super::file::next_free(&dir);
+    let n = store::change(caller, |r| {
+        let n = (r.last + 1).max(free);
+        r.last = n;
+        n
+    })?;
+    let snap = super::file::snapshot(caller, file, &crate::paths::data_dir(), &dir, n)?;
+    let _ = std::fs::remove_file(&snap.path);
+    let text = super::file::without_bom(&snap.text).to_string();
+    if text.len() > document::CHAT_DOC_MAX {
+        return Err(format!(
+            "the document is over {} KB, which leaves no room for what Luna adds: write it shorter and call again",
+            document::CHAT_DOC_MAX / 1024
+        ));
+    }
+    let old = old_of(caller)?;
+    let mut inputs = inputs_of(caller, &old, &m.to_account, m.note.clone());
+    inputs.chat_text = Some(text);
+    let built = build_within(inputs, None, BUILD_WAIT)?;
+    let preview = dir.join(format!("move-{}.md", m.id));
+    crate::secret::write_private(&preview, built.text.as_bytes()).map_err(|e| format!("the document could not be kept: {e}"))?;
+    let sha = sha256_hex(built.text.as_bytes());
+    let path = preview.to_string_lossy().into_owned();
+    let shown = store::change(caller, |r| match r.moving.as_mut().filter(|x| x.id == m.id && x.asking()) {
+        Some(x) => {
+            x.phase = MovePhase::Shown { at: now_ms() };
+            x.shown_sha256 = sha.clone();
+            x.preview = Some(path.clone());
+            x.cleaned = [built.redacted, built.paths_cut, built.invisible];
+            true
+        }
+        None => false,
+    });
+    if !matches!(shown, Ok(true)) {
+        let _ = std::fs::remove_file(&preview);
+        return Err("the move was given up meanwhile: nothing is done with the document, and nothing switches".into());
+    }
+    crate::log::info("move", &format!("{} wrote its move's document ({} bytes from {})", label(caller), snap.size, snap.source));
+    Ok(serde_json::json!({
+        "collected": true,
+        "next": "End your turn now. Nothing is cleared and nothing switches: this conversation goes on as it is. The \
+                 person reads your document, with what Luna adds, and decides whether it goes.",
+    }))
+}
+
+/// `luna_session_handoff` without `file` while the chat is asked for its
+/// move's document: how to write that one, and where. None otherwise.
+pub(super) fn ask_instructions(caller: &str) -> Result<Option<String>, String> {
+    let Some(m) = store::records().get(caller).and_then(|r| r.moving.clone()).filter(Move::asking) else { return Ok(None) };
+    let place = match super::drafts_refused(caller) {
+        Some(_) => format!("a file of your own outside Luna's folder (in your workspace, say), named move-{}.md", m.id),
+        None => {
+            let drafts = super::drafts_of(caller)?;
+            let at = drafts.join(format!("move-{}-{}.md", m.id, crate::secret::random_hex(4)));
+            format!("{}, in a folder Luna keeps for this chat alone", at.display())
+        }
+    };
+    Ok(Some(super::facts::move_how_to(&place)))
+}
+
+/// The moves whose chat is being asked, a step on: the ask typed at a strict
+/// prompt, given up where the chat cannot or does not answer in time.
+fn asks() {
+    let pty = crate::pty::manager();
+    let asking: Vec<(String, Move)> =
+        store::records().iter().filter_map(|(c, r)| Some((c.clone(), r.moving.clone().filter(Move::asking)?))).collect();
+    for (chat, m) in asking {
+        if super::running().lock().unwrap_or_else(|e| e.into_inner()).contains(&chat) {
+            continue;
+        }
+        let now = now_ms();
+        // A question of its CLI's (a permission to write the file, say) is the person's to answer: it holds the ask, it fails nothing.
+        let refused = ask_refusal(&chat, m.provider).filter(|w| !w.contains("question"));
+        match (m.phase.clone(), refused) {
+            (_, Some(why)) => failed(&chat, &m, format!("the chat cannot write its document: {why}")),
+            (MovePhase::Asking { at }, None) => {
+                if strict_prompt(pty, &chat) {
+                    type_ask(&chat, &m);
+                } else if now.saturating_sub(at) > ASK_REST_MS {
+                    failed(&chat, &m, format!("the chat did not come to rest within {} minutes", ASK_REST_MS / 60_000));
+                }
+            }
+            (MovePhase::Asked { at }, None) if now.saturating_sub(at) > ASK_WAIT_MS => {
+                failed(&chat, &m, format!("the chat wrote no document within {} minutes", ASK_WAIT_MS / 60_000))
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The ask typed into `chat` on a thread of its own, its terminal claimed,
+/// under `Asked` taken first.
+fn type_ask(chat: &str, m: &Move) {
+    if !super::running().lock().unwrap_or_else(|e| e.into_inner()).insert(chat.to_string()) {
+        return;
+    }
+    let (chat, m) = (chat.to_string(), m.clone());
+    let held = chat.clone();
+    let started = std::thread::Builder::new().name("luna-move-ask".into()).spawn(move || {
+        let _running = super::Running(chat.clone());
+        let Some(_typing) = TypingInto::wait_for(&chat, TYPING_WAIT) else { return };
+        let commit = || {
+            let taken = store::change(&chat, |r| match r.moving.as_mut().filter(|x| x.id == m.id) {
+                Some(x) if matches!(x.phase, MovePhase::Asking { .. }) => {
+                    x.phase = MovePhase::Asked { at: now_ms() };
+                    true
+                }
+                _ => false,
+            });
+            match taken {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(Refused::Gone),
+                Err(e) => Err(Refused::Unsaved(e)),
+            }
+        };
+        match super::type_line(&chat, &ask_line(&m.id), &commit) {
+            Ok(Typed::In) => crate::log::info("move", &format!("{}: asked for move {}'s document", label(&chat), m.id)),
+            Ok(Typed::NotClear | Typed::NotCommitted(Refused::Gone)) => {}
+            Ok(Typed::NotCommitted(Refused::Unsaved(e))) => failed(&chat, &m, format!("its state could not be saved: {e}")),
+            Err(e) => failed(&chat, &m, format!("the ask could not be typed: {e}")),
+        }
+    });
+    if let Err(e) = started {
+        super::running().lock().unwrap_or_else(|e| e.into_inner()).remove(&held);
+        crate::log::warn("move", &format!("could not ask {held}: {e}"));
+    }
+}
 /// What a look at the new chat finds.
 #[derive(Clone, Debug, Default)]
 pub(super) struct OpenLook {
@@ -1030,9 +1376,7 @@ fn look(m: &Move) -> OpenLook {
         .and_then(|p| crate::pty::tail(&p, 1024 * 1024))
         .is_some_and(|t| t.contains(&line_opening(&m.id)));
     l.draft = pty.has_draft(new);
-    let quiet = pty.typed_ago_ms(new).is_none_or(|ms| ms >= SEND_TYPING_MS);
-    let idle = crate::activity::turn_state(new).is_none_or(|t| t.turn == crate::activity::Turn::Idle);
-    l.ready = quiet && idle && pty.at_prompt(new);
+    l.ready = strict_prompt(pty, new);
     l
 }
 
@@ -1050,6 +1394,7 @@ fn ready_now(at_prompt: bool, turn: Option<crate::activity::Turn>) -> bool {
 /// chat stands at its prompt, done once its transcript holds it, given up
 /// where its start is not the one confirmed or its wait is out.
 pub(super) fn beat() {
+    asks();
     let opening: Vec<(String, Move)> = store::records()
         .iter()
         .filter_map(|(c, r)| Some((c.clone(), r.moving.clone().filter(|m| m.phase.rank() == 3 || m.phase.rank() == 4)?)))
@@ -1194,6 +1539,9 @@ pub(super) fn taken_up(m: &mut Move, now: u64) {
         MovePhase::Shown { .. } => {
             m.phase = MovePhase::Failed { at: now, why: "Luna restarted before the preview was confirmed; nothing was sent".into() };
         }
+        MovePhase::Asking { .. } | MovePhase::Asked { .. } => {
+            m.phase = MovePhase::Failed { at: now, why: "Luna restarted while the chat was asked for its document".into() };
+        }
         MovePhase::RowCreated { .. } | MovePhase::Prompting { .. } => m.phase = MovePhase::RowCreated { at: now },
         _ => {}
     }
@@ -1224,6 +1572,9 @@ pub(super) mod tests {
             ),
             payload: Some("/d/handoffs/c-new/1.md".into()),
             payload_sha256: Some("cd".into()),
+            note: String::new(),
+            preview: None,
+            cleaned: [0; 3],
         }
     }
 
@@ -1527,6 +1878,56 @@ pub(super) mod tests {
         let key = format!("sk-ant-api03-{}", "a1B2".repeat(10));
         let line = prompt_line("m1", Source::Luna, "c1", Some(&format!("use {key}\u{200B} now")), "p");
         assert!(!line.contains(&key) && !line.contains('\u{200B}') && line.contains("<redacted>"), "{line}");
+    }
+
+    #[test]
+    fn a_chat_asked_writes_its_document_through_its_tool_and_nothing_resets() {
+        let (chat, new) = ("mva-old", "mva-new");
+        let mut m = shown(chat, new, false);
+        crate::agents::registry::register(
+            chat,
+            Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            None,
+            true,
+            serde_json::json!({ "handoff": 70, "permissionMode": "acceptEdits" }),
+        );
+        m.source = Source::Chat;
+        m.phase = MovePhase::Asked { at: now_ms() };
+        m.note = "Keep going.".into();
+        store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        assert!(asking(chat), "no threshold notice meanwhile");
+        // Served the move's own text, with a drafts name for it.
+        super::super::drafts_at_start(chat).unwrap();
+        let how = ask_instructions(chat).unwrap().unwrap();
+        for want in ["move to another account", &format!("move-{}-", m.id), "Nothing is cleared", "not approvals"] {
+            assert!(how.contains(want), "{want}:\n{how}");
+        }
+        let line = ask_line(&m.id);
+        assert!(line.starts_with("[Luna move m1 request, not typed by the user]"));
+        crate::agents::privilege::plain_text(&line).expect("an ask Luna types passes its own check");
+        // Its file: collected, the move shown, nothing scheduled or reset.
+        let dir = std::env::temp_dir().join(format!("luna-move-ask-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("move-doc.md");
+        std::fs::write(&file, "# Goal\nShip it.\n").unwrap();
+        let v = asked_file(chat, &file.to_string_lossy()).unwrap().unwrap();
+        assert_eq!(v["collected"], true);
+        assert!(store::records()[chat].switch.is_none(), "nothing scheduled, nothing reset");
+        let p = move_preview(chat.into(), "m1".into()).unwrap();
+        for want in ["Written by the earlier chat", "Ship it.", "Your note\n\nKeep going."] {
+            assert!(p.text.contains(want), "{want}:\n{}", p.text);
+        }
+        assert_eq!(p.prompt, m.line);
+        // Over: a late file named for a move is refused, and becomes no handoff.
+        assert_eq!(move_cancel(chat.into(), "m1".into()).unwrap().phase, "canceled");
+        let late = asked_file(chat, &dir.join("move-late.md").to_string_lossy()).unwrap().unwrap_err();
+        assert!(late.contains("is over") && late.contains("nothing switches"), "{late}");
+        assert!(store::records()[chat].switch.is_none());
+        assert!(asked_file(chat, &dir.join("handoff.md").to_string_lossy()).is_none(), "an ordinary handoff is the handoff's");
+        crate::agents::teardown::forget(chat);
+        let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
     fn the_line_names_the_document_and_passes_lunas_own_check() {

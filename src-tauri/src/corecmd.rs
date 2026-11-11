@@ -73,6 +73,8 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("move_step", Lane::Call),
     ("move_cancel", Lane::Call),
     ("move_list", Lane::Call),
+    ("move_ask", Lane::Call),
+    ("move_preview", Lane::Call),
 ];
 
 /// The lane `cmd` comes on, or None for a command the page may not send.
@@ -213,6 +215,8 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "move_step" => call!(res args, agents::move_step, chat_id: String, move_id: String, step: String),
         "move_cancel" => call!(res args, agents::move_cancel, chat_id: String, move_id: String),
         "move_list" => call!(ok args, agents::move_list),
+        "move_ask" => call!(res args, agents::move_ask, chat_id: String, new_id: String, to_account_path: AccountPath, note: String),
+        "move_preview" => call!(res args, agents::move_preview, chat_id: String, move_id: String),
         "recommendations" => call!(res args, checks::recommendations),
         "apply_recommendation" => call!(res args, checks::apply_recommendation, id: String, account: Option<String>, confirmed: bool),
         "dismiss_recommendation" => call!(res args, checks::dismiss_recommendation, id: String, account: Option<String>, dismissed: bool),

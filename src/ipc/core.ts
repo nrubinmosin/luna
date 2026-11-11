@@ -75,7 +75,9 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'move_confirm',
   'move_step',
   'move_cancel',
-  'move_list'
+  'move_list',
+  'move_ask',
+  'move_preview'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
 

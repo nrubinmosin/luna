@@ -38,7 +38,9 @@ mod served;
 mod store;
 mod watch;
 
-pub use moving::{move_cancel, move_confirm, move_list, move_prepare, move_step, moved_dir, opening_refusal, MOVE_TAG};
+pub use moving::{
+    move_ask, move_cancel, move_confirm, move_list, move_prepare, move_preview, move_step, moved_dir, opening_refusal, MOVE_TAG,
+};
 pub use served::{applied_of, HandoffApplied};
 
 use crate::agents::delivery::{type_in, TypingInto, POLL, SEND_TYPING_MS, TYPING_WAIT};
@@ -238,6 +240,11 @@ pub fn instructions(caller: &str) -> Result<String, String> {
 pub fn handoff(caller: &str, file: &str) -> Result<Value, String> {
     if !offers_tool(caller) {
         return Err(NOT_OFFERED.into());
+    }
+    // Asked for a move's document: collected, nothing reset, so the CLI's
+    // own jobs may go on (moving.rs).
+    if let Some(answer) = moving::asked_file(caller, file) {
+        return answer;
     }
     let jobs = crate::activity::own_jobs(caller);
     if !jobs.is_empty() {
@@ -771,7 +778,7 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
     let chats = opted_in();
     b.turns.retain(|id, _| chats.iter().any(|(c, ..)| c == id));
     for (chat, threshold, provider) in chats {
-        if holds_text(&chat) || !is_listed(&chat) {
+        if holds_text(&chat) || moving::asking(&chat) || !is_listed(&chat) {
             continue;
         }
         let Some(ts) = crate::activity::turn_state(&chat).filter(|t| t.turn == crate::activity::Turn::Idle) else { continue };
