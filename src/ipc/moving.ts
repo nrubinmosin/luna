@@ -97,8 +97,9 @@ export const movePrepare = (
 export const moveConfirm = (chatId: string, moveId: string, text: string, sha256: string, launch: MoveLaunch) =>
   call<MoveStatusDto>('move_confirm', { chatId, moveId, text, sha256, launch });
 
-/** The window's own part done: the old chat stopped, or the new row made. */
-export const moveStep = (chatId: string, moveId: string, step: 'oldStopped' | 'rowCreated') =>
+/** A step of the window's: the old chat stopped by the core once it has looked
+ *  at what its worktree holds (`stopOld`), or the new row made. */
+export const moveStep = (chatId: string, moveId: string, step: 'stopOld' | 'oldStopped' | 'rowCreated') =>
   call<MoveStatusDto>('move_step', { chatId, moveId, step });
 
 export const moveCancel = (chatId: string, moveId: string) => call<MoveStatusDto>('move_cancel', { chatId, moveId });

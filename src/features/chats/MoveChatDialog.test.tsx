@@ -346,4 +346,43 @@ describe('moving a chat to another account', () => {
       markWords({ n: 1, at: 0, state: 'failed', moved: true, previous: false, why: 'no line within 60 s' })
     ).toMatch(/did not go through: no line within 60 s/);
   });
+
+  it('leaves stopping the old chat to the core, which looks at its worktree first', async () => {
+    useChats.setState({ folders: [folder([chat({})])] });
+    useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
+    const launch = launchFor(chat({}), '/repo', account('backend', 'claude'), 'Opus', 'high', true);
+    vi.mocked(moving.moveStep).mockClear();
+    await carryOut({
+      moveId: 'm-stop',
+      chatId: 'c1',
+      newId: 'c-stop',
+      phase: 'confirmed',
+      at: 1,
+      stopOld: true,
+      worktree: true,
+      toAccount: 'backend',
+      source: 'luna',
+      launch
+    });
+    expect(vi.mocked(moving.moveStep).mock.calls[0]).toEqual(['c1', 'm-stop', 'stopOld']);
+  });
+
+  it('lays the strip over the terminal, taking none of its rows', () => {
+    useAccounts.setState({ accounts: [account('team', 'claude', [0.95]), account('backend', 'claude')] });
+    useMoveHints.setState({ limits: {}, dismissed: {} });
+    render(<MoveHint chat={chat({})} onMove={() => {}} />);
+    expect(screen.getByTestId('move-hint-slot').style.height).toBe('0px');
+    expect(screen.getByTestId('move-hint').style.position).toBe('absolute');
+  });
+
+  it('marks a signed-out account and does not move a chat to it', async () => {
+    const c = chat({});
+    useChats.setState({ folders: [folder([c])] });
+    const out = { ...account('backend', 'claude'), signedIn: false };
+    useAccounts.setState({ accounts: [account('team', 'claude'), out] });
+    expect(defaultTarget([account('team', 'claude'), out, account('spare', 'claude')], c)?.name).toBe('spare');
+    render(<MoveChatDialog chat={c} onClose={() => {}} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('backend is signed out');
+    expect(screen.getByRole('button', { name: 'Preview' })).toBeDisabled();
+  });
 });
