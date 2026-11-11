@@ -64,6 +64,11 @@ folders, boards). The page computes no session state of its own: status,
 titles, context and drafts come from the core (`session_meta`), polled by
 `useSessionWatch` and pushed by events.
 
+- **Status.** `ChatStatus` is `working`, `waiting`, `background` or `resting`.
+  `mapStatus` folds the CLIs' words into it and passes on `background`, the
+  core's own word ([power and lifecycle](power-and-lifecycle.md#busy-is-measured));
+  a chat with no live session is `resting`. `status.ts` holds each state's look.
+  Only `resting` lets an auto-handoff go, and only `waiting` raises a notification.
 - **Naming.** `Chat.nameSource` says where a name came from and `mayRename`
   decides what may replace it: a typed first line (`prompt`) replaces only the
   placeholder; the CLI's first title (`cli`) the placeholder or the prompt, then
