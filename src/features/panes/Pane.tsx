@@ -12,7 +12,7 @@ import { AppliedPanel } from '../chats/AppliedPanel';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { askedWords, HandoffBar } from '../chats/Handoff';
 import { MoveChatDialog } from '../chats/MoveChatDialog';
-import { MoveHint } from '../chats/MoveHint';
+import { MoveHint, OpeningHint } from '../chats/MoveHint';
 import { draftTag, useDrafts } from '../chats/drafts.store';
 import { CLEAR_WAITING_TITLE, clearWaiting, useMarked } from '../chats/marked.store';
 import { claude, codex } from '../providers';
@@ -616,6 +616,7 @@ ${chat.worktreePath}`
           {moving && <MoveChatDialog chat={chat} onClose={() => setMoving(false)} />}
           <HandoffBar chat={chat} />
           <MoveHint chat={chat} onMove={() => setMoving(true)} />
+          <OpeningHint chat={chat} />
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
             <Terminal chat={chat} folderPath={folder.path} />
             {/* Keyed on the chat: a pane handed a new chat fades it in. */}

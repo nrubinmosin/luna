@@ -274,9 +274,8 @@ export function MoveChatDialog({ chat, onClose }: { chat: Chat; onClose: () => v
     return createPortal(
       <div className="window move-banner" role="status" data-testid="move-banner">
         <div className="window-body">
-          <span>
-            "{chat.name}" is asked to write its document for the move, once it is at its prompt. Nothing is cleared
-            there; if its CLI asks to create the file, answer in its pane.
+          <span title="Nothing is cleared there. If its CLI asks to create the file, answer in its pane.">
+            Asking "{chat.name}" for its document — answer its CLI in its pane if it asks
           </span>
           <button onClick={cancel}>Cancel the move</button>
         </div>

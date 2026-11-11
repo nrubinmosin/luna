@@ -4,6 +4,8 @@
  * account is a click away. Shown only where another account of the CLI is
  * there to move to; dismissed for this run of the window.
  */
+import { useEffect, useState } from 'react';
+import { moveStep } from '../../ipc/moving';
 import type { Chat } from '../../shared/types';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { useMoveHints } from './moveHints.store';
@@ -55,6 +57,50 @@ export function MoveHint({ chat, onMove }: { chat: Chat; onMove: () => void }) {
           onClick={() => useMoveHints.getState().dismiss(chat.id)}
         >
           ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** How long a moved chat's opening waits before the person is offered to
+ *  have Luna's line typed now (the core logs the screen at the same mark). */
+export const STALL_MS = 2 * 60_000;
+
+/**
+ * On a chat a move opened, while Luna's line waits for a prompt its screen
+ * check does not see: what it waits on, and "Type it now" for the person who
+ * sees the prompt. Over the terminal, as the strip above.
+ */
+export function OpeningHint({ chat, now: given }: { chat: Chat; now?: number }) {
+  const m = useMoveHints(s => s.opening[chat.id]);
+  const [asked, setAsked] = useState(false);
+  // The clock, read off the render: a tick every few seconds is enough.
+  const [ticked, setTicked] = useState(0);
+  useEffect(() => {
+    if (given !== undefined) return;
+    const t = setInterval(() => setTicked(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, [given]);
+  const now = given ?? ticked;
+  if (!m || m.phase !== 'rowCreated' || !m.waiting || now - (m.waitingSince ?? now) < STALL_MS) return null;
+  return (
+    <div style={{ position: 'relative', height: 0, zIndex: 3 }}>
+      <div
+        className="move-hint"
+        role="note"
+        data-testid="opening-hint"
+        style={{ position: 'absolute', left: 0, right: 0, top: 0 }}
+      >
+        <span title={m.waiting}>Luna has not typed its line yet: {m.waiting}.</span>
+        <button
+          disabled={asked}
+          onClick={() => {
+            setAsked(true);
+            void moveStep(m.chatId, m.moveId, 'typeNow').catch(() => setAsked(false));
+          }}
+        >
+          Type it now
         </button>
       </div>
     </div>

@@ -18,6 +18,7 @@ import { claude, codex } from '../providers';
 import { claudeModels, codexModels } from '../../ipc/defaults';
 import { modelLabelOf } from '../../shared/types';
 import { useChats } from './chats.store';
+import { useMoveHints } from './moveHints.store';
 
 /** How often moves under way are looked at. */
 const MOVES_EVERY_MS = 3000;
@@ -200,7 +201,9 @@ export function useMoves() {
     const look = async () => {
       let pending = false;
       try {
-        for (const m of await moveList()) {
+        const moves = await moveList();
+        useMoveHints.getState().setMoves(moves);
+        for (const m of moves) {
           if (m.phase === 'done') useChats.getState().setMoved(m.chatId, { movedTo: m.newId });
           if (m.phase !== 'confirmed' && m.phase !== 'oldStopped') {
             pending ||= m.phase === 'rowCreated' || m.phase === 'prompting';

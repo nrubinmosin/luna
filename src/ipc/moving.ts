@@ -82,6 +82,9 @@ export interface MoveStatusDto {
   toAccount: string;
   source: 'luna' | 'chat';
   launch?: MoveLaunch | null;
+  /** An opening that waits: on what, and since when. */
+  waiting?: string | null;
+  waitingSince?: number | null;
 }
 
 /** Builds the document and keeps the move as shown; nothing goes anywhere. */
@@ -99,7 +102,7 @@ export const moveConfirm = (chatId: string, moveId: string, text: string, sha256
 
 /** A step of the window's: the old chat stopped by the core once it has looked
  *  at what its worktree holds (`stopOld`), or the new row made. */
-export const moveStep = (chatId: string, moveId: string, step: 'stopOld' | 'oldStopped' | 'rowCreated') =>
+export const moveStep = (chatId: string, moveId: string, step: 'stopOld' | 'oldStopped' | 'rowCreated' | 'typeNow') =>
   call<MoveStatusDto>('move_step', { chatId, moveId, step });
 
 export const moveCancel = (chatId: string, moveId: string) => call<MoveStatusDto>('move_cancel', { chatId, moveId });

@@ -5,7 +5,8 @@ import type { Account, Chat, Folder, LimitWindow } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
 import { useChats } from './chats.store';
 import { askRefusal, defaultTarget, MoveChatDialog } from './MoveChatDialog';
-import { MoveHint } from './MoveHint';
+import { MoveHint, OpeningHint, STALL_MS } from './MoveHint';
+import { AccountPicker } from '../new-chat/AccountPicker';
 import { useMoveHints } from './moveHints.store';
 import { carryOut, launchFor, movedName } from './moving';
 import { markWords } from './Handoff';
@@ -384,5 +385,41 @@ describe('moving a chat to another account', () => {
     render(<MoveChatDialog chat={c} onClose={() => {}} />);
     expect(await screen.findByRole('alert')).toHaveTextContent('backend is signed out');
     expect(screen.getByRole('button', { name: 'Preview' })).toBeDisabled();
+  });
+
+  it('offers "Type it now" on a moved chat whose opening has waited past the mark', async () => {
+    const c = chat({ id: 'c-open' });
+    const m: MoveStatusDto = {
+      moveId: 'm-open',
+      chatId: 'c1',
+      newId: 'c-open',
+      phase: 'rowCreated',
+      at: 1,
+      stopOld: false,
+      worktree: false,
+      toAccount: 'backend',
+      source: 'luna',
+      waiting: 'its screen shows no empty prompt',
+      waitingSince: 1_000
+    };
+    useMoveHints.setState({ opening: { 'c-open': m } });
+    const { rerender } = render(<OpeningHint chat={c} now={1_000 + STALL_MS - 1} />);
+    expect(screen.queryByTestId('opening-hint')).toBeNull();
+    rerender(<OpeningHint chat={c} now={1_000 + STALL_MS + 1} />);
+    expect(screen.getByTestId('opening-hint')).toHaveTextContent('its screen shows no empty prompt');
+    vi.mocked(moving.moveStep).mockClear();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Type it now' }));
+    expect(moving.moveStep).toHaveBeenCalledWith('c1', 'm-open', 'typeNow');
+  });
+
+  it('marks a signed-out account in the account list itself', async () => {
+    const out = { ...account('rOut', 'claude'), signedIn: false };
+    const user = userEvent.setup();
+    render(<AccountPicker accounts={[account('rA', 'claude'), out]} value="claude/rA" onChange={() => {}} />);
+    await user.click(document.querySelector('.picker-face') as HTMLElement);
+    const row = [
+      ...document.querySelectorAll('.picker-list [role="option"], .picker-list button, .picker-list li')
+    ].find(r => r.textContent?.includes('rOut'));
+    expect(row?.textContent).toContain('signed out');
   });
 });
