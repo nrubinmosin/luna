@@ -290,6 +290,7 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
     }
     if let Some(m) = meta.as_mut() {
         crate::asking::overlay(&id, m);
+        overlay_background(&id, m);
         // The screen may be read for it, which replays the scrollback: off
         // the main thread, like the disk.
         let of = id.clone();
@@ -302,12 +303,153 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
     Ok(meta)
 }
 
+/// A chat between turns with work of its own going on reads `background`, under
+/// waiting and working. Claude Code's registry says busy for as long as a
+/// subagent works, its turn over or not: only with the turn over, by its
+/// hooks, is that busy the subagent's. A hook that says a turn has begun is
+/// newer than any sample, and an idle registry may not have caught up with it
+/// yet. With the turn over, a subagent on a prompt is a wait, as the sampler
+/// has it. A Codex rollout says idle whatever its subagents do, and working as
+/// soon as a turn starts.
+fn overlay_background(id: &str, m: &mut SessionMeta) {
+    use crate::activity::{self, Turn};
+    let over = match m.status.as_deref().map_or(Turn::Idle, activity::turn_of) {
+        Turn::Idle => activity::hook_turn(id) != Some(Turn::Busy),
+        Turn::Busy if activity::turn_over_under_subagents(id) && activity::subagent_asks(id) => {
+            m.status = Some("waiting".into());
+            return;
+        }
+        Turn::Busy => activity::turn_over_under_subagents(id),
+        Turn::Waiting => false,
+    };
+    if over && activity::in_background(id) {
+        m.status = Some("background".into());
+    }
+}
+
 /// A conversation a handoff opened begins on Luna's prompt, which is no name
 /// for the chat: it keeps the one it had (Codex names a chat after its
 /// conversation's first prompt).
 fn pin_name(m: &mut SessionMeta) {
     if m.first_prompt.as_deref().is_some_and(|p| p.trim_start().starts_with(crate::agents::handoff::PROMPT_TAG)) {
         m.first_prompt = None;
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+    use crate::activity::{forget, on_hook, sampled_for_test, subagents_for_test, HookEvent, Turn};
+
+    const MARKER: &str = "AWAITING OPERATOR";
+
+    fn reads(id: &str, status: Option<&str>) -> Option<String> {
+        said_and_reads(id, status, "All done.")
+    }
+
+    /// What a chat reads as `session_meta` works it out, its CLI's word being
+    /// `status` and its last message `said`.
+    fn said_and_reads(id: &str, status: Option<&str>, said: &str) -> Option<String> {
+        let mut m = SessionMeta { status: status.map(Into::into), last_said: Some(said.into()), ..Default::default() };
+        crate::asking::overlay_marked(id, &mut m, MARKER);
+        overlay_background(id, &mut m);
+        m.status
+    }
+
+    /// A turn that started a subagent and ended with it at work, by the hooks.
+    fn turn_over_with_a_subagent(id: &str) {
+        on_hook(id, HookEvent::Busy);
+        on_hook(id, HookEvent::AgentAtWork("a1".into()));
+        on_hook(id, HookEvent::Idle);
+    }
+
+    #[test]
+    fn a_chat_between_turns_with_a_job_reads_background() {
+        let id = "ob-idle";
+        assert_eq!(reads(id, Some("idle")).as_deref(), Some("idle"), "nothing goes on");
+        assert_eq!(reads(id, None), None);
+        subagents_for_test(id, 1);
+        assert_eq!(reads(id, Some("idle")).as_deref(), Some("background"));
+        assert_eq!(reads(id, Some("resting")).as_deref(), Some("background"), "Codex's word for it");
+        assert_eq!(reads(id, None).as_deref(), Some("background"));
+        forget(id);
+    }
+
+    #[test]
+    fn waiting_and_working_beat_background() {
+        let id = "ob-beat";
+        on_hook(id, HookEvent::Busy);
+        on_hook(id, HookEvent::AgentAtWork("a1".into()));
+        assert_eq!(reads(id, Some("waiting")).as_deref(), Some("waiting"), "a prompt's");
+        sampled_for_test(id, Some(Turn::Busy));
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"), "its turn runs");
+        on_hook(id, HookEvent::Idle);
+        on_hook(id, HookEvent::AgentWaiting("a1".into()));
+        sampled_for_test(id, Some(Turn::Busy));
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("waiting"), "a subagent's prompt after the turn is a wait, not background");
+        forget(id);
+    }
+
+    /// The registry goes on saying busy for the subagent, so only the hooks
+    /// tell that the turn ended, on a question to the user.
+    #[test]
+    fn a_turn_ended_on_the_marker_waits_while_its_subagent_works() {
+        let id = "ob-marker";
+        let asks = "Ship it?\n\n`STATUS: AWAITING OPERATOR`";
+        turn_over_with_a_subagent(id);
+        assert_eq!(said_and_reads(id, Some("busy"), asks).as_deref(), Some("waiting"), "before any sample");
+        sampled_for_test(id, Some(Turn::Busy));
+        assert_eq!(said_and_reads(id, Some("busy"), asks).as_deref(), Some("waiting"), "and after one");
+        assert_eq!(said_and_reads(id, Some("busy"), "All done.").as_deref(), Some("background"), "no marker");
+        on_hook(id, HookEvent::AgentWaiting("a1".into()));
+        sampled_for_test(id, Some(Turn::Busy));
+        let mut m = SessionMeta { status: Some("busy".into()), last_said: Some(asks.into()), ..Default::default() };
+        crate::asking::overlay_marked(id, &mut m, MARKER);
+        overlay_background(id, &mut m);
+        assert_eq!(m.status.as_deref(), Some("waiting"), "its subagent asks too: the turn's own question stands");
+        assert!(m.marked.is_some(), "on the marker, which the user may clear");
+        assert_eq!(said_and_reads(id, Some("busy"), "All done.").as_deref(), Some("waiting"), "no marker: the subagent's prompt");
+        crate::asking::forget(id);
+        forget(id);
+    }
+
+    #[test]
+    fn a_new_prompt_is_working_before_the_next_sample() {
+        let id = "ob-prompt";
+        turn_over_with_a_subagent(id);
+        sampled_for_test(id, Some(Turn::Busy));
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("background"), "the sample said the turn is over");
+        on_hook(id, HookEvent::Busy);
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"), "the hook is newer than the sample");
+        assert_eq!(reads(id, Some("idle")).as_deref(), Some("idle"), "nor while the registry catches up");
+        sampled_for_test(id, Some(Turn::Busy));
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"));
+        forget(id);
+    }
+
+    /// Codex has no hooks: its rollout says a turn has started before any
+    /// sample does.
+    #[test]
+    fn a_codex_turn_is_working_before_the_next_sample() {
+        let id = "ob-codex";
+        subagents_for_test(id, 1);
+        sampled_for_test(id, Some(Turn::Idle));
+        assert_eq!(reads(id, Some("resting")).as_deref(), Some("background"));
+        assert_eq!(reads(id, Some("working")).as_deref(), Some("working"));
+        forget(id);
+    }
+
+    /// As in `a_background_agent_is_no_turn`: the turn is over and the registry
+    /// goes on saying busy for the agent it started.
+    #[test]
+    fn claude_busy_only_for_its_subagents_reads_background() {
+        let id = "ob-claude";
+        turn_over_with_a_subagent(id);
+        sampled_for_test(id, Some(Turn::Busy));
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("background"));
+        on_hook(id, HookEvent::AgentDone("a1".into()));
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"), "no subagent left: a turn on its result");
+        forget(id);
     }
 }
 

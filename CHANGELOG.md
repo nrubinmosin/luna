@@ -8,6 +8,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- A chat has a new state, **background**: its turn is over but a subagent, a
+  job its turns started or a helper it awaits is still at work. Its dot is blue
+  with a slow pulse, and the status bar counts these chats and names them on
+  hover. A job idle for 2 hours stops counting, as it stops keeping the PC awake.
+
+### Changed
+
+- A Claude chat whose background subagent works after its turn has ended no
+  longer reads "working": it reads "background".
+- The list of running sessions says "background:" for what runs between turns.
+
 ### Fixed
 
 - Skills & instructions: where Luna cannot lock its library (a disk that

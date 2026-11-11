@@ -155,8 +155,8 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
     t.hook_at_ms = now;
 }
 
-/// The hook's last word on a session, if any — for the listener's test.
-#[cfg(test)]
+/// The hook's last word on a session, if any: newer than the last sample's
+/// verdict, as a hook takes effect here at once.
 pub fn hook_turn(chat_id: &str) -> Option<Turn> {
     state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id).and_then(|t| t.hook)
 }
