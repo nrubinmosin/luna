@@ -7,7 +7,7 @@ export const doing = (s: SessionActivityDto): string => {
   if (s.turn === 'waiting' && !s.busy) return s.stalled ? `stopped on ${s.stalled}` : 'waiting for you';
   const why = [
     s.turn === 'busy' ? 'mid-turn' : '',
-    s.procs.length ? `running ${s.procs.join(', ')}` : '',
+    s.procs.length ? `${s.turn === 'idle' ? 'background:' : 'running'} ${s.procs.join(', ')}` : '',
     s.outputFresh && s.turn !== 'busy' ? 'printing' : ''
   ].filter(Boolean);
   return why.length ? why.join(', ') : 'idle';
@@ -17,7 +17,7 @@ export const doing = (s: SessionActivityDto): string => {
  * Every running session with what it is doing, for the dialogs whose confirm
  * stops them all — an update and Quit. The busy ones come first and stand
  * out: those are the ones that lose work. A subagent left at work after its
- * session's turn ended is no process of its own, and reads as running here
+ * session's turn ended is no process of its own, and reads as background here
  * ("1 subagent"): Claude Code's by its hooks, Codex's by its own rollout. The
  * dialogs speak of every session all the same, not only of the busy ones.
  */

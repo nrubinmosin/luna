@@ -397,6 +397,35 @@ mod tests {
     }
 
     #[test]
+    fn a_chat_is_in_the_background_while_its_helpers_owe_it_an_answer() {
+        use crate::activity::in_background;
+        let none = serde_json::json!({});
+        let acc = "C:\\acc\\anthropic\\one";
+        register("ib-top", Provider::Claude, "C:\\p", acc, None, true, none.clone());
+        register("ib-mid", Provider::Claude, "C:\\p", acc, Some("ib-top"), true, none.clone());
+        register("ib-low", Provider::Claude, "C:\\p", acc, Some("ib-mid"), false, none.clone());
+        register("ib-other", Provider::Claude, "C:\\p", acc, None, true, none.clone());
+        register("ib-theirs", Provider::Claude, "C:\\p", acc, Some("ib-other"), false, none);
+        let settle = |caller: &str, helper: &str| reg().lock().unwrap().owed.remove(&(caller.to_string(), helper.to_string()));
+
+        assert!(!in_background("ib-top"), "nothing owed yet");
+        owe_from("ib-top", "ib-mid", 0, 0);
+        assert!(in_background("ib-top"), "by its helper");
+        settle("ib-top", "ib-mid");
+        owe_from("ib-top", "ib-low", 0, 0);
+        assert!(in_background("ib-top"), "by its helper's helper");
+        settle("ib-top", "ib-low");
+        assert!(!in_background("ib-top"), "answered");
+
+        owe_from("ib-other", "ib-theirs", 0, 0);
+        assert!(!in_background("ib-top"), "a helper owed to another chat is none of its");
+        assert!(in_background("ib-other"));
+        for id in ["ib-low", "ib-mid", "ib-top", "ib-theirs", "ib-other"] {
+            forget(id);
+        }
+    }
+
+    #[test]
     fn asked_again_the_earlier_answer_is_still_owed() {
         let key = ("m-parent".to_string(), "m-child".to_string());
         let owed = || reg().lock().unwrap().owed.get(&key).map(|o| (o.baseline, o.cursor));

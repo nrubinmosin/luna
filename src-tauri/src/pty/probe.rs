@@ -290,6 +290,7 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
     }
     if let Some(m) = meta.as_mut() {
         crate::asking::overlay(&id, m);
+        overlay_background(&id, m);
         // The screen may be read for it, which replays the scrollback: off
         // the main thread, like the disk.
         let of = id.clone();
@@ -302,12 +303,78 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
     Ok(meta)
 }
 
+/// A chat between turns with work of its own going on reads `background`, under
+/// waiting and working. Claude Code's registry says busy for as long as a
+/// subagent works, its turn over or not: only with the turn over, by its
+/// hooks, is that busy the subagent's. A Codex rollout says idle whatever its
+/// subagents do.
+fn overlay_background(id: &str, m: &mut SessionMeta) {
+    use crate::activity::{self, Turn};
+    let said = m.status.as_deref().map_or(Turn::Idle, activity::turn_of);
+    let only_subagents =
+        said == Turn::Busy && activity::subagents(id) > 0 && activity::turn_state(id).is_some_and(|t| t.turn == Turn::Idle);
+    if (said == Turn::Idle || only_subagents) && activity::in_background(id) {
+        m.status = Some("background".into());
+    }
+}
+
 /// A conversation a handoff opened begins on Luna's prompt, which is no name
 /// for the chat: it keeps the one it had (Codex names a chat after its
 /// conversation's first prompt).
 fn pin_name(m: &mut SessionMeta) {
     if m.first_prompt.as_deref().is_some_and(|p| p.trim_start().starts_with(crate::agents::handoff::PROMPT_TAG)) {
         m.first_prompt = None;
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+    use crate::activity::{forget, on_hook, subagents_for_test, turn_for_test, HookEvent, Turn};
+
+    fn reads(id: &str, status: Option<&str>) -> Option<String> {
+        let mut m = SessionMeta { status: status.map(Into::into), ..Default::default() };
+        overlay_background(id, &mut m);
+        m.status
+    }
+
+    #[test]
+    fn a_chat_between_turns_with_a_job_reads_background() {
+        let id = "ob-idle";
+        assert_eq!(reads(id, Some("idle")).as_deref(), Some("idle"), "nothing goes on");
+        assert_eq!(reads(id, None), None);
+        subagents_for_test(id, 1);
+        assert_eq!(reads(id, Some("idle")).as_deref(), Some("background"));
+        assert_eq!(reads(id, Some("resting")).as_deref(), Some("background"), "Codex's word for it");
+        assert_eq!(reads(id, None).as_deref(), Some("background"));
+        forget(id);
+    }
+
+    #[test]
+    fn waiting_and_working_beat_background() {
+        let id = "ob-beat";
+        subagents_for_test(id, 1);
+        assert_eq!(reads(id, Some("waiting")).as_deref(), Some("waiting"), "a marker's or a prompt's");
+        turn_for_test(id, Turn::Busy);
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"), "its turn runs");
+        turn_for_test(id, Turn::Waiting);
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"), "a prompt inside a busy registry is not background");
+        forget(id);
+    }
+
+    /// As in `a_background_agent_is_no_turn`: the turn is over and the registry
+    /// goes on saying busy for the agent it started.
+    #[test]
+    fn claude_busy_only_for_its_subagents_reads_background() {
+        let id = "ob-claude";
+        on_hook(id, HookEvent::Busy);
+        on_hook(id, HookEvent::AgentAtWork("a1".into()));
+        on_hook(id, HookEvent::Idle);
+        turn_for_test(id, Turn::Idle);
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("background"));
+        on_hook(id, HookEvent::AgentDone("a1".into()));
+        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"), "no subagent left: a turn on its result");
+        forget(id);
     }
 }
 

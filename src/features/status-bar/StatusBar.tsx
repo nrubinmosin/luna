@@ -270,6 +270,7 @@ export function StatusBar() {
   const all = allChats(folders);
   const working = all.filter(c => c.status === 'working').length;
   const waiting = all.filter(c => c.status === 'waiting');
+  const background = all.filter(c => c.status === 'background');
   const openAccounts = () => useAccountsWindow.getState().setOpen(true);
 
   return (
@@ -292,6 +293,18 @@ export function StatusBar() {
       >
         <span className="sb-dot" style={{ background: waiting.length ? 'var(--wait)' : 'var(--faint)' }} />
         {waiting.length} waiting
+      </div>
+      {/* Not loud: nothing here asks for anyone, the work just is not over. */}
+      <div
+        className="sb-field"
+        title={
+          background.length
+            ? `At work in the background:\n${background.map(c => c.name).join('\n')}`
+            : 'Nothing is at work in the background'
+        }
+      >
+        <span className="sb-dot" style={{ background: background.length ? STATUS.background.color : 'var(--faint)' }} />
+        {background.length} background
       </div>
 
       <div
