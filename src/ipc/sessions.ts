@@ -154,6 +154,8 @@ export interface SessionMetaDto {
   handoff: HandoffMark | null;
   /** A handoff it was asked for and has not made (agents/handoff). */
   handoffAsked: HandoffAsked | null;
+  /** The usage limit its last turn stopped on (activity `limit_of`), if any. */
+  limit?: string | null;
 }
 
 export interface CliTitleDto {

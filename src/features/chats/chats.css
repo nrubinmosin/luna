@@ -308,3 +308,101 @@
   opacity: 1;
   pointer-events: auto;
 }
+
+/* The pane's offer of a move to another account (MoveHint.tsx): one row
+   under the title, in the waiting color's ring, dismissed with its ×. */
+[data-app] .move-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  font-size: var(--fs-3);
+  color: var(--dim);
+  box-shadow: inset 0 -1px 0 var(--wait);
+  min-width: 0;
+}
+[data-app] .move-hint > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-app] .move-hint .move-hint-close {
+  margin-left: auto;
+  min-width: 0;
+  padding: 0 6px;
+}
+
+/* "Move to another account…" (MoveChatDialog.tsx): its body scrolls on a
+   short screen, the foot with Send stays. */
+[data-app] .move-dialog .move-body {
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: var(--fs-4);
+}
+[data-app] .move-dialog p {
+  margin: 0;
+  line-height: 1.5;
+}
+[data-app] .move-dialog .move-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-app] .move-dialog .move-check {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+[data-app] .move-dialog .move-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+[data-app] .move-dialog .move-facts,
+[data-app] .move-dialog .move-counts {
+  color: var(--dim);
+  font-size: var(--fs-3);
+}
+[data-app] .move-dialog .move-warn {
+  color: var(--wait);
+  font-size: var(--fs-3);
+}
+[data-app] .move-dialog .move-error {
+  color: var(--wait);
+  font-weight: 600;
+  font-size: var(--fs-3);
+  white-space: pre-wrap;
+}
+[data-app] .move-dialog .move-label {
+  font-size: var(--fs-3);
+  color: var(--faint);
+}
+[data-app] .move-dialog .move-line {
+  margin: 0;
+  padding: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--chip);
+  color: var(--fg);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: var(--fs-3);
+}
+[data-app] .move-dialog .move-doc {
+  width: 100%;
+  min-height: 160px;
+  height: 40vh;
+  resize: vertical;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: var(--fs-3);
+  box-sizing: border-box;
+}
+[data-app] .move-dialog .move-note textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}

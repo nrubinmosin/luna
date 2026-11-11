@@ -64,6 +64,9 @@ pub struct SessionMeta {
     pub handoff: Option<crate::agents::HandoffMark>,
     /// A handoff it was asked for and has not made, for its pane's chip.
     pub handoff_asked: Option<crate::agents::HandoffAsked>,
+    /// The usage limit its last turn stopped on, in Luna's words
+    /// (activity `limit_of`): what the pane offers a move for.
+    pub limit: Option<&'static str>,
 }
 
 /// A session's title as its CLI has it, and whether the user typed it.

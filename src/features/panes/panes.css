@@ -211,8 +211,8 @@
 
 /* A narrow pane gives up its settings chip by chip, then the words of its
    helper pill, then the folder; the name, the pill's counts and the controls
-   stay. Past 420px the four rarer window buttons fold into the "…" menu. */
-[data-app] .pane-more,
+   stay. Past 420px the four rarer window buttons fold into the "…" menu,
+   which is always there: the move to another account lives only in it. */
 [data-app] .hpill .hp-short,
 [data-app] .hpill .hp-tiny {
   display: none;

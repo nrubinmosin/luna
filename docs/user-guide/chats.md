@@ -232,8 +232,50 @@ A chat without Luna tools cannot have it: their server is what offers it.
 See [ADR-0020](../adr/0020-session-self-handoff.md) and
 [ADR-0022](../adr/0022-content-luna-serves-at-its-own-trigger.md).
 
-## Status
+## Moving a chat to another account
 
+When a chat's account runs out, the chat can go on on another account of the
+same CLI: **Move to another account…** in the pane's "…" menu. A pane offers it
+itself, in a strip under the title, when the account is at 90% of a usage window
+or a usage limit stopped the chat's last turn; × dismisses the strip until Luna
+starts again.
+
+The conversation does not move: neither CLI resumes another account's. A new
+chat opens there, named `<name> (moved)`, in the same folder, group and color,
+with the same Luna tools, guard, auto-handoff and permissions, and the model and
+effort the chat had where the other account lists them (else that account's
+defaults). It goes on from a document:
+
+- **Luna writes it** from the chat's records, with no model asked: how to go
+  on, your note, the folder's state from git, how the chat stopped, its task
+  (its last handoff, or its first prompt), the plan it last proposed, the
+  latest turns of the conversation, its helpers, the first steps. Tool output
+  is never in it.
+- **Ask the chat** (a chat with auto-handoff on, running, not in plan mode or a
+  read-only sandbox, not stopped on a limit): the chat writes it through its
+  handoff tool, once it is at its prompt. Nothing is cleared in it. Claude Code
+  in its default mode asks you in its pane before it creates the file.
+
+Either way you see everything that goes before it goes: the line Luna types
+into the new chat, and the document, which you may edit. Luna has cut out the
+folders of accounts and its own, taken out what looks like a key or a
+password, and says how many; long random-looking strings are listed for you to
+look at. That is no guarantee: something secret you pasted into the chat
+yourself is what to look for. **Send** sends exactly the text shown.
+
+The old chat can be kept or stopped. Kept, both chats work in one folder. A
+Claude Code chat in a worktree is always stopped first, and the new chat goes
+into the same worktree; while the new one runs there, the old one does not
+start. A Codex chat in a worktree does not move: Codex keeps that worktree in
+the old account's folder. Helpers stay with the old chat.
+
+On an account no chat used yet, the CLI's first-run screens (a theme, security
+notes, trusting the folder) show in the new chat's pane: answer them there;
+Luna types its line only once the prompt shows. If something goes wrong, the
+new chat stays with its document (its divider's **open document**), and a
+notification says why.
+
+## Status
 - **Working / waiting for you / resting**, read from the CLI's own session
   registry, so it is right whether or not the chat has a pane.
 - **Background:** the chat's turn is over, but work of its own goes on: a

@@ -15,7 +15,9 @@ import { PERM_CLI, type Account, type Chat } from '../../shared/types';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { createChat } from '../new-chat/create';
 import { forget } from '../panes/terminals';
-import { claude } from '../providers';
+import { claude, codex } from '../providers';
+import { claudeModels, codexModels } from '../../ipc/defaults';
+import { modelLabelOf } from '../../shared/types';
 import { useChats } from './chats.store';
 
 /** How often moves under way are looked at. */
@@ -75,6 +77,31 @@ export function launchFor(
     hooksUnasked: chat.hooksUnasked ?? false,
     worktree: false
   };
+}
+
+/** The model and effort a moved chat starts with: the old chat's where the
+ *  account it goes to lists that model (or lists none yet: same CLI), else
+ *  that account's defaults for the folder. */
+export async function modelFor(
+  chat: Chat,
+  to: Account,
+  folder: string
+): Promise<{ model: string | null; effort: string; kept: boolean }> {
+  if (chat.provider === 'claude') {
+    const models = await claudeModels(to.path, false).catch(() => []);
+    if (models.length === 0 || models.some(m => modelLabelOf(m.slug) === chat.model)) {
+      const listed = models.find(m => modelLabelOf(m.slug) === chat.model);
+      return { model: chat.model, effort: claude.effortMovedTo(listed, chat.effort) ?? chat.effort, kept: true };
+    }
+    const { values } = await claude.settingsDefaults(to.path, folder);
+    return { model: values.model, effort: values.effort, kept: false };
+  }
+  const models = await codexModels(to.path).catch(() => []);
+  if (chat.model === null || models.length === 0 || models.some(m => m.slug === chat.model)) {
+    return { model: chat.model, effort: chat.effort, kept: true };
+  }
+  const { values } = await codex.settingsDefaults(to.path, folder);
+  return { model: values.model, effort: values.effort, kept: false };
 }
 
 /** The new chat's row, from the launch the person confirmed. */

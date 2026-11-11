@@ -22,6 +22,9 @@ place) and [ADR-0022](../adr/0022-content-luna-serves-at-its-own-trigger.md)
 | `library/system.rs` | the instructions resolved: Luna's own or the library's override (`handoff_instructions`) |
 | `resources/skills/session-handoff/SKILL.md` | Luna's own instructions, compiled in (`LUNA_HANDOFF`) |
 | `src/features/chats/Handoff.tsx` | the panel's box, the divider, the chip's words (`askedWords`, `instructionsWords`) |
+| `agents/handoff/moving.rs` | a chat moved to another account: its phases, the commands, the ask, the new chat's opening |
+| `agents/handoff/document.rs`, `excerpts.rs`, `gitfacts.rs`, `scrub.rs` | the document Luna writes for a move, what it reads, and how it is cleaned |
+| `src/features/chats/MoveChatDialog.tsx`, `moving.ts`, `MoveHint.tsx` | the move's dialog, the window's steps of it, the pane's offer |
 
 ## Who knows of it
 
@@ -255,3 +258,93 @@ until they are through.
   `pin_name`).
 - `forget` drops a deleted chat's record and its folder of copies; a chat keeps
   its last 20 on record.
+
+## Moving a chat to another account
+
+[ADR-0023](../adr/0023-moving-a-chat-to-another-account.md). The chat's
+conversation stays; a new chat on another account of the same CLI goes on from
+a document the person confirmed. User-facing behavior:
+[chats](../user-guide/chats.md#moving-a-chat-to-another-account).
+
+**Phases** (`moving.rs`, `Record::moving` of the old chat's record, each on
+disk before what follows): `Asking` → `Asked` (the ask route only) → `Shown`
+→ `Confirmed` → `OldStopped` (where the old chat stops) → `RowCreated` →
+`Prompting` → `Done`; `Failed` and `Canceled` end one. A step taken again
+answers as it stands. A core taking the record up gives up a move that is
+`Shown`, `Asking` or `Asked` (nothing unconfirmed is ever sent), and takes
+`Prompting` back to `RowCreated`, which types the line only if the new
+transcript lacks it (`taken_up`).
+
+**Commands.** `move_prepare` builds Luna's document (bounded, within 30 s) and
+keeps the move as shown; `move_ask` asks the chat; `move_preview` reads what
+it wrote back; `move_confirm` is Send; `move_step` is the window's word that it
+stopped the old chat (`oldStopped`, looked at: its CLI no longer runs) or made
+the row (`rowCreated`); `move_cancel`; `move_list`. The window's part is
+`features/chats/moving.ts` (`carryOut`, and `useMoves`, which goes on with a
+move a restart left half way).
+
+**Send is bound** (`binding`) to the text's SHA-256, the account, the launch
+settings the window sends and the line Luna types, made once with the preview
+(`Move::line`). The text is refused when it names a folder of an account or of
+Luna's in any spelling (`scrub::named_roots`), holds characters no screen
+shows, or is over 96 KB; it is written private as `handoffs/<new>/1.md`, and
+the new chat's record says it was opened by a move (`moved_from`), which gives
+its Claude Code starts that folder as an `--add-dir` (`moved_dir`,
+`moved-chat`).
+
+**Opening** (`beat`): the line is typed into the new chat only when it is
+registered as confirmed (`start_mismatch`: account, folder, permissions,
+tools, an agent, Codex's unasked hooks), at a strict prompt (`strict_prompt`:
+the composer drawn and empty, no turn, nobody typing), its copy still the one
+confirmed. No wait shorter than a day while its CLI runs: an account's
+first-run screens take a person. Done once its transcript holds
+`[Luna move <id>, not typed by the user]`; 60 s after typing without it,
+given up and the person told.
+
+**Worktrees.** A Claude Code chat whose start had `worktree` moves into the
+same worktree by name, its old chat stopped first; `opening_refusal` refuses
+the new chat's start while the old one runs, and, once the new one is in, the
+old one's while the new one runs (the session that made a worktree removes it
+on exit when clean, whoever is inside: docs/cli-compatibility.md). Deleting
+either chat keeps a worktree the other's row names. A Codex chat whose folder
+is in its account's folder does not move (`codex_worktree_refusal`).
+
+**Luna's document** (`document.rs`): rules of going on; the person's note;
+the state (folder, git as of a time: `git status`, `git diff --stat`, commit
+subjects since the chat began; how it stopped, from `activity::limit_of` and
+its turn; the paths its edit tools were called on, as attempts); the task (the
+last handoff that went through, its hash checked, else the first prompt and
+the CLI's last compaction summary); the last plan proposed; the conversation
+by turns, newest first within about 40 KB (the last request and answer to
+16 KB, earlier answers to 3 KB, requests to 6 KB, start and end kept, an
+unfinished turn's narration to 400 characters); helpers, which stay; first
+steps. Every excerpt is fenced by a random word per document, a line opening
+`[Luna ` in one escaped. The transcript is read 512 KB from its start and 16 MB
+from its end, lines over 1 MB skipped and counted, its size and time looked at
+before and after (`excerpts.rs`); git runs with five seconds and 256 KB a
+command, without the repository's file monitor, optional locks, external diff
+or text conversion (`gitfacts.rs`). The plan, the summary and the edit paths
+come from shapes no CLI documents and are left out silently where they differ.
+
+**Cleaning** (`scrub.rs`): roots (Luna's data folder, the accounts' root, each
+CLI's folder of accounts and each account, `~/.claude` and `~/.codex` as paths
+and as written from the home folder) matched with either slash, JSON's doubled
+backslash, Git Bash's `/e/` and WSL's `/mnt/e/`, case aside on Windows, and cut
+with the rest of their path; token shapes (known prefixes, PEM private keys,
+a URL's `user:password@`, `NAME=value` where the name says secret) taken out;
+zero-width, bidirectional and tag characters taken out; long high-entropy
+strings listed, never taken out.
+
+**The ask** (a chat offered `luna_session_handoff` whose CLI has listed it,
+not in plan mode or a read-only sandbox, running, not stopped on a limit):
+`Asking` until the chat stands at a strict prompt, then the fixed line
+`[Luna move <id> request, not typed by the user]` typed under `Asked`. The
+tool without `file` then serves the move's own text (`facts::move_how_to`,
+a drafts name `move-<id>-<random>.md`), never the handoff's instructions; with
+`file` it is collected (`asked_file`): copied and checked as a handoff's file
+is, Luna's facts added, kept private as `move-<id>.md` in the chat's folder of
+copies, nothing scheduled or reset, the CLI's own jobs no matter. A file named
+`move-…` when no move is asking is refused, so a late answer never becomes a
+handoff. No threshold notice goes in while it is asked. Ten minutes to come to
+rest and ten more to answer; a question of its CLI's (a permission to write)
+holds it without failing it.
