@@ -8,6 +8,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-11
+
+A chat whose turn is over but whose subagents, jobs or helpers are still at
+work now reads "background", with its own dot and count. The library refuses
+to write rather than go on unlocked, and renaming an account no longer loses
+what Skills & instructions knew of its copies.
+
+### Security
+
+- The `rustix` crate goes to 1.1.6, out of RUSTSEC-2026-0486 (its xattr
+  functions marked unwritten bytes as initialized for a zero-length buffer).
+
 ### Added
 
 - A chat has a new state, **background**: its turn is over but a subagent, a
@@ -831,7 +843,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/nrubinmosin/luna/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/nrubinmosin/luna/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/nrubinmosin/luna/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/nrubinmosin/luna/compare/v0.10.2...v0.11.0
