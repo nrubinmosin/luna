@@ -1103,7 +1103,7 @@ pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: 
     }
     let id = crate::secret::random_hex(6);
     let payload = super::dir_of(&new_id).map(|d| d.join(format!("{PAYLOAD_N}.md"))).unwrap_or_default();
-    let line = prompt_line(&id, Source::Chat, chat, chat_name(chat).as_deref(), &payload.to_string_lossy());
+    let line = prompt_line_with(&id, Source::Chat, chat, chat_name(chat).as_deref(), &payload.to_string_lossy(), &note);
     let mut m = new_move(&id, &new_id, &old, to_account, to_account_path, line, Source::Chat, worktree);
     m.note = note;
     store::change(chat, |r| {
@@ -1185,6 +1185,11 @@ fn collect(caller: &str, m: &Move, file: &str) -> Result<Value, String> {
     }
     let old = old_of(caller)?;
     let mut inputs = inputs_of(caller, &old, &m.to_account, m.note.clone());
+    // The turn under way is the one writing this document, asked at a prompt
+    // between turns: the chat's own work had ended.
+    if inputs.stopped == Stopped::MidTurn {
+        inputs.stopped = Stopped::Finished;
+    }
     inputs.chat_text = Some(text);
     let built = build_within(inputs, None, BUILD_WAIT)?;
     let preview = dir.join(format!("move-{}.md", m.id));
@@ -1952,10 +1957,11 @@ pub(super) mod tests {
         assert_eq!(v["collected"], true);
         assert!(store::records()[chat].switch.is_none(), "nothing scheduled, nothing reset");
         let p = move_preview(chat.into(), "m1".into()).unwrap();
-        for want in ["Written by the earlier chat", "Ship it.", "Your note\n\nKeep going."] {
+        for want in ["Written by the earlier chat", "Ship it.", "## The person's instruction", "\n\nKeep going.\n"] {
             assert!(p.text.contains(want), "{want}:\n{}", p.text);
         }
         assert_eq!(p.prompt, m.line);
+        assert!(!p.text.contains("did not finish"), "the writing turn is not the unfinished one");
         // Over: a late file named for a move is refused, and becomes no handoff.
         assert_eq!(move_cancel(chat.into(), "m1".into()).unwrap().phase, "canceled");
         let late = asked_file(chat, &dir.join("move-late.md").to_string_lossy()).unwrap().unwrap_err();
