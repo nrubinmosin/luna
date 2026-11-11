@@ -115,6 +115,10 @@ pub(super) struct Record {
     /// late answer, never a handoff (moving.rs `asked_file`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_closed: Option<(String, u64)>,
+    /// The chat's ended turns when that ask ended: its next turn, the
+    /// person's or a handoff's, ends the window (moving.rs `late_answer`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_closed_turns: Option<u32>,
 }
 
 pub(super) type Records = BTreeMap<String, Record>;
