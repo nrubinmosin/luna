@@ -8,6 +8,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Auto-handoff ticked on a chat already past its threshold, or set lower than
+  where it stands, asks as soon as the chat is at rest rather than at its
+  next turn's end. Turned off before Luna typed its notice, the notice is
+  dropped.
+
 ## [0.17.0] - 2026-11-13
 
 A chat can hand off to a fresh conversation whenever you ask: **Hand off now**

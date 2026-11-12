@@ -202,7 +202,9 @@ menu, so words injected into the chat cannot hand it off on their own.
   asking for a handoff. A firmer notice follows near where the CLI would
   compact the conversation by itself, carrying the file's headings itself
   (goal, next action, the user's words, state, pending, decisions and dead
-  ends) for a chat short of context. A conversation a handoff began is asked
+  ends) for a chat short of context. Ticked on a chat already past the
+  threshold, Auto-handoff asks as soon as the chat is at rest, not at its
+  next turn's end. A conversation a handoff began is asked
   only once it has grown 5 points past where it began. Nothing switches
   unless the chat asks.
 - If the CLI compacts the conversation before a handoff, or the chat goes on
@@ -257,9 +259,12 @@ menu, so words injected into the chat cannot hand it off on their own.
   quick resume of the chat on the same conversation once it is idle: on the
   first Hand off now, or when you tick Auto-handoff. A CLI lists Luna's tools
   as it starts.
-- Turning Auto-handoff off closes only the threshold's ask, and drops a
-  handoff it only scheduled. Your own Hand off now stands. Turned on again, a
-  chat past its threshold is asked again at its next turn's end.
+- Turning Auto-handoff off closes only the threshold's ask, drops its notice
+  if Luna has not typed it yet, and drops a handoff it only scheduled. Your
+  own Hand off now stands. Turned on again, or set to another share, a chat
+  past its threshold is asked as soon as it is at rest (after the quick
+  resume, if its CLI needs one); a move of it, a handoff or your own ask
+  under way puts that off until it ends.
 - A Codex chat watching one of its subagents (`/subagents`) is still on its
   own conversation: its ask stays open.
 - The chat's **What Luna applied** panel lists the tool as `handoff-tool`
