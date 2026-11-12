@@ -410,7 +410,11 @@ turn, stopped on a prompt (once per stop) or exited.
   After that the caller hears only of a turn no notice started (`notice_turn`,
   `real_turn_past`) or the job's end (`Verdict::JobOver`). All of it idle for 30
   min (`IDLE_JOB_MS`): one notice that only idle processes are left
-  (`Settled::Idle`); the debt stays open. A job's end is clocked on the debt
+  (`Settled::Idle`), with what the transcript started them as (`idle_line`:
+  Claude Code's open background calls, `claude::session::background_calls`;
+  Codex's `exec_command` calls whose output said `Process running with session
+  ID N` and no `write_stdin` to it since said it exited,
+  `codex::session::background_calls`); the debt stays open. A job's end is clocked on the debt
   itself (`Owed::held`): the notifier and a `wait` go by the same 20 s
   (`held_for_wait`, `job_end_stood`), so the end reaches the caller once.
 - A notice is an ordinary turn of the caller; a dev caller with no terminal gets

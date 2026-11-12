@@ -414,6 +414,79 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
     open.iter().map(|(_, due)| *due).max()
 }
 
+/// The commands the conversation left running past their call, as the model
+/// gave them: an `exec_command` whose output says it is still at its yield
+/// (`Process running with session ID N`, 0.166+), until a `write_stdin` to
+/// that session comes back saying it exited. What an idle notice names beside
+/// the processes it sees (notifier lines.rs `idle_line`).
+pub fn background_calls(path: &Path) -> Vec<String> {
+    tail(path, crate::claude::session::DUE_TAIL).map(|t| background_calls_in(&t)).unwrap_or_default()
+}
+
+pub(super) fn background_calls_in(text: &str) -> Vec<String> {
+    // Asked, by call id: the command, or the session written to.
+    let mut asked: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    // Running, by session id, with its command.
+    let mut running: Vec<(String, String)> = Vec::new();
+    let output_text = |out: &Value| match out.as_str() {
+        Some(s) => s.to_string(),
+        None => out.as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+    };
+    for line in text.lines() {
+        if !line.contains("exec_command") && !line.contains("write_stdin") && !line.contains("function_call_output") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let payload = &v["payload"];
+        let Some(id) = payload["call_id"].as_str() else { continue };
+        match payload["type"].as_str() {
+            Some("function_call") => {
+                let args = payload["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok()).unwrap_or(Value::Null);
+                let cmd = match &args["cmd"] {
+                    Value::String(s) => Some(s.clone()),
+                    Value::Array(words) => Some(words.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+                    _ => None,
+                };
+                let session = args["session_id"].as_u64().map(|n| n.to_string()).or_else(|| args["session_id"].as_str().map(str::to_owned));
+                match payload["name"].as_str() {
+                    Some("exec_command") => asked.insert(id.to_string(), (cmd, None)),
+                    Some("write_stdin") => asked.insert(id.to_string(), (None, session)),
+                    _ => None,
+                };
+            }
+            Some("function_call_output") => {
+                let Some((cmd, session)) = asked.remove(id) else { continue };
+                let out = output_text(&payload["output"]);
+                // Its header, the lines before `Output:`, says how it stands.
+                let head: Vec<&str> = out.lines().take_while(|l| l.trim_end() != "Output:").collect();
+                let still =
+                    head.iter().find_map(|l| l.trim().strip_prefix("Process running with session ID ")).map(|s| s.trim().to_string());
+                let exited = head.iter().any(|l| l.trim().starts_with("Process exited with code "));
+                match (cmd, session) {
+                    (Some(cmd), _) => {
+                        if let Some(s) = still {
+                            running.retain(|(r, _)| *r != s);
+                            running.push((s, cmd));
+                        }
+                    }
+                    (None, Some(s)) if exited => running.retain(|(r, _)| *r != s),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    let short = |s: &str| {
+        let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if s.chars().count() > 160 {
+            format!("{}…", s.chars().take(160).collect::<String>())
+        } else {
+            s
+        }
+    };
+    running.into_iter().map(|(_, cmd)| format!("exec_command `{}`", short(&cmd))).collect()
+}
+
 /// Whether a Codex screen shows an approval dialog — a command to run, an edit
 /// to make, a permission to grant. The rollout records none of them, and the
 /// screen does not go quiet under one (the quiet-screen guess below misses
@@ -625,6 +698,32 @@ pub(super) fn message_in(line: &str) -> Option<crate::agents::Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commands_left_running_past_their_call_are_named_until_they_exit() {
+        let call = |id: &str, name: &str, args: Value| {
+            serde_json::json!({ "type": "response_item", "payload": { "type": "function_call", "name": name, "call_id": id, "arguments": args.to_string() } })
+                .to_string()
+        };
+        let out = |id: &str, head: &str| {
+            serde_json::json!({ "type": "response_item", "payload": { "type": "function_call_output", "call_id": id, "output": format!("Chunk ID: 1\nWall time: 10 seconds\n{head}\nOutput:\nProcess running with session ID 9 is not this") } })
+                .to_string()
+        };
+        let lines = [
+            call("c1", "exec_command", serde_json::json!({ "cmd": "pnpm test --watch" })),
+            out("c1", "Process running with session ID 7"),
+            call("c2", "exec_command", serde_json::json!({ "cmd": ["bash", "-lc", "sleep 1"] })),
+            out("c2", "Process exited with code 0"),
+            call("c3", "exec_command", serde_json::json!({ "cmd": "tail -f lane.log" })),
+            out("c3", "Process running with session ID 8"),
+        ];
+        assert_eq!(background_calls_in(&lines.join("\n")), ["exec_command `pnpm test --watch`", "exec_command `tail -f lane.log`"]);
+        // Written to and found exited: no longer left running.
+        let done =
+            [call("c4", "write_stdin", serde_json::json!({ "session_id": 7, "chars": "" })), out("c4", "Process exited with code 0")];
+        let all = format!("{}\n{}", lines.join("\n"), done.join("\n"));
+        assert_eq!(background_calls_in(&all), ["exec_command `tail -f lane.log`"]);
+    }
 
     #[test]
     fn a_rollout_names_its_model_and_context() {

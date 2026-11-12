@@ -60,6 +60,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - `budgetTokens` on a spawn is deprecated for `budgetPct`: still taken, and
   read from saved helpers, as the share of the window it is.
+- The notice that a helper has only idle processes left names what its
+  transcript started them as (Claude Code's background calls, Codex's
+  commands still running), not the processes alone.
+
 - Auto-handoff ticked on a chat already past its threshold, or set lower than
   where it stands, asks as soon as the chat is at rest rather than at its
   next turn's end. Turned off before Luna typed its notice, the notice is

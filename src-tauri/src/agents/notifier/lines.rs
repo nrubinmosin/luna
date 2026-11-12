@@ -225,10 +225,7 @@ pub(in crate::agents) fn notice_line(
     if now == Verdict::AtWork && !o.told_idle {
         if let Some((quiet, names)) = left.as_ref().filter(|(quiet, _)| *quiet >= IDLE_JOB_MS) {
             return Some((
-                Some(format!(
-                    "{who} has only idle processes left, which have done nothing for {} min: {names}. They may be stuck or waiting on something; luna_session_stop ends them. You will still hear when they end.",
-                    quiet / 60_000
-                )),
+                Some(idle_line(who, *quiet, names, &background_calls(pty, id, k.provider))),
                 Settled::Idle(now_ms().saturating_sub(quiet - IDLE_JOB_MS)),
             ));
         }
@@ -393,9 +390,10 @@ pub(in crate::agents) fn notice_line(
             let due = due_ms(pty, id, k.provider);
             if due.is_none_or(|due| at >= due.saturating_add(PAST_DUE_MS)) {
                 return Some(match waiting {
-                    Some(w) => {
-                        (Some(background_wait_line(who, quiet, &background_calls(pty, id), &w.procs)), Settled::WaitsOnBackground(ended))
-                    }
+                    Some(w) => (
+                        Some(background_wait_line(who, quiet, &background_calls(pty, id, k.provider), &w.procs)),
+                        Settled::WaitsOnBackground(ended),
+                    ),
                     None => (Some(quiet_line(who, quiet, due.map(|due| at - due))), Settled::Quiet(ended)),
                 });
             }
@@ -492,10 +490,28 @@ fn background_wait_line(who: &str, quiet_ms: u64, calls: &[String], procs: &[Str
     )
 }
 
-/// What a helper's turn left in the background, off its transcript
-/// (`claude::session::background_calls`).
-fn background_calls(pty: &crate::pty::PtyManager, id: &str) -> Vec<String> {
-    transcript_path(pty, id).map(|p| crate::claude::session::background_calls(&p)).unwrap_or_default()
+/// What a session's turns left in the background and its transcript has not
+/// seen the end of, as the model asked for it: Claude Code's background calls
+/// (`claude::session::background_calls`), Codex's commands still running past
+/// their call (`codex::session::background_calls`).
+fn background_calls(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> Vec<String> {
+    let Some(path) = transcript_path(pty, id) else { return Vec::new() };
+    match provider {
+        Provider::Claude => crate::claude::session::background_calls(&path),
+        Provider::Codex => crate::codex::session::background_calls(&path),
+    }
+}
+
+/// All a session's turns left has sat idle (IDLE_JOB_MS): the processes
+/// (`names`), and what the transcript says they were started to do (`calls`,
+/// `background_calls`), which is what a caller needs to tell a stuck wait from
+/// a job; a list of `timeout.exe, grep.exe, tail.exe` alone left it guessing.
+fn idle_line(who: &str, quiet_ms: u64, names: &str, calls: &[String]) -> String {
+    let waits = if calls.is_empty() { String::new() } else { format!(" Its transcript has them started as: {}.", calls.join("; ")) };
+    format!(
+        "{who} has only idle processes left, which have done nothing for {} min: {names}.{waits} They may be stuck or waiting on something; luna_session_stop ends them. You will still hear when they end.",
+        quiet_ms / 60_000
+    )
 }
 
 /// When the commands a session's turn waits on are due, the latest of them:
@@ -1418,5 +1434,26 @@ mod tests {
         assert_eq!(ties_of("tp-helper").unwrap().told_pending, vec!["tp-caller".to_string()]);
         crate::background::gone_for_test("tp-helper");
         forget("tp-helper");
+    }
+
+    /// Part 2 of the feedback: "only idle processes left: timeout.exe, grep.exe,
+    /// tail.exe, 6 more", and nothing of what they waited on.
+    #[test]
+    fn an_idle_notice_names_what_the_transcript_started_them_as() {
+        use serde_json::json;
+        let (known, o, path) = job_over_helper("in-s", "in-c", "");
+        let call = json!({ "type": "assistant", "timestamp": "2026-11-13T01:00:00Z", "message": { "content": [{ "type": "tool_use", "id": "t1", "name": "Bash",
+            "input": { "command": "timeout 3600 tail -f lane.log | grep -m1 DONE", "run_in_background": true } }] } });
+        let started = json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "…" }] },
+            "toolUseResult": { "backgroundTaskId": "b1" } });
+        std::fs::write(&path, format!("{call}\n{started}\n")).unwrap();
+        crate::background::left_for_test("in-s", &[("timeout.exe", 1, IDLE_JOB_MS + 60_000), ("tail.exe", 2, IDLE_JOB_MS + 60_000)]);
+        let Some((Some(text), Settled::Idle(_))) = notice_line(crate::pty::manager(), "in-c", "Your helper", "in-s", &known, o) else {
+            panic!("idle")
+        };
+        assert!(text.contains("Its transcript has them started as: Bash `timeout 3600 tail -f lane.log | grep -m1 DONE`."), "{text}");
+        crate::background::gone_for_test("in-s");
+        forget("in-s");
+        let _ = std::fs::remove_file(&path);
     }
 }

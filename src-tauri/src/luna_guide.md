@@ -139,7 +139,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   its own helpers have yet to answer it. Said once. The next notice comes when that is over, or
   when it ends a turn on your words or on its own helper's last answer. A turn it ran only on a
   Luna notice brings none, unless it wrote a message of 400+ characters to you, its parent. All
-  of it idle 30 min: one notice says so (stuck, or waiting).
+  of it idle 30 min: one notice says so, with the commands they were started as (stuck, or
+  waiting).
 - Past 12 turn-end notices about one session in 15 minutes Luna stops telling you of its turns
   and jobs (the last says so; its prompts and questions still come) until a person types into
   either chat; waits and reads still work.
