@@ -51,6 +51,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   under it are told last among their instructions, at every start and resume.
   A spawn adds to what its caller carries; nothing removes any. Shown in
   `luna_session_get`.
+- A lead whose delegates have all finished (its helpers answered, what its
+  CLI ran in the background over) and that says nothing of it is woken by
+  Luna, once per such end: "Your delegates have finished: …". Its parent
+  hears of the turn that brings, or that it seems stuck if that turn says
+  nothing.
+- An answer that covers several requests to one session (a spawn and a send,
+  two sends) says which is whose: requests are numbered per caller (the spawn
+  1, each send one more, a `requestKey` named), the notice says it answers
+  several, and the answer file, `luna_report_get` and `luna_session_wait`
+  open each request's part with "Re request N".
+- `expectReply: false` on `luna_session_send`: the helper's answer to it
+  wakes the caller only if it opens on a status word or is a report of 400
+  characters or more; it stays in the report.
 - `budgetPct` on `luna_session_spawn`, and Settings → Agents & trust →
   Helpers: **Tell me when a helper's context passes** (50% unless changed, or
   never). Past it, every notice about the helper ends "(context N%)"; past
@@ -58,6 +71,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- A lead's turns no longer wake its parent while its own helpers or its CLI's
+  background work are still at it, a long interim report included, and it is
+  never told "NOT done yet" of one: what it writes waits in its report for
+  the notice that comes once they are done. A message that opens on `DONE`,
+  `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` goes at once; questions,
+  prompts, errors and exits as ever.
 - `budgetTokens` on a spawn is deprecated for `budgetPct`: still taken, and
   read from saved helpers, as the share of the window it is.
 - The notice that a helper has only idle processes left names what its

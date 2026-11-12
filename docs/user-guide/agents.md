@@ -30,6 +30,14 @@ does a background helper spawned without tools.
   `budgetPct` sets one helper's), every notice about a helper ends "(context
   N%)"; past 85% its parent hears so once on its own. Nothing is stopped.
   `budgetTokens` still works, read as the share of the window it is.
+- A lead (a helper given Luna's tools) does not wake its parent with what it
+  writes while its own helpers or background work are still at it; that waits
+  for the notice that comes once they are done, unless a message opens on
+  `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`. Once they are all done and
+  it has said nothing, Luna wakes the lead itself, once, and its parent hears
+  what came of that, or that it seems stuck.
+- A send may ask for no reply (`expectReply: false`): the helper's answer then
+  wakes the agent only for a status word or a report.
 - An agent reads, waits on, sends text to and answers its own helpers. One of
   your own chats reaches your other chats and other chats' helpers only by
   saying so (`scope: "all"`), and what it sends them, an answer typed in as a

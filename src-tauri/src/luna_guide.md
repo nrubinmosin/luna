@@ -143,10 +143,14 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   near-simultaneous ends come as one notice. A question or a prompt is never held.
 - "NOT done yet": a job it started still runs (named), a subagent its CLI started works on, or
   its own helpers have yet to answer it. Said once. The next notice comes when that is over, or
-  when it ends a turn on your words or on its own helper's last answer. A turn it ran only on a
-  Luna notice brings none, unless it wrote a message of 400+ characters to you, its parent. All
-  of it idle 30 min: one notice says so, with the commands they were started as (stuck, or
-  waiting).
+  when it ends a turn on your words or on its own helper's last answer. All of it idle 30 min:
+  one notice says so, with the commands they were started as (stuck, or waiting).
+- A lead (a helper with these tools) is not told of as "NOT done yet": while its helpers or its
+  CLI's background work run, what it writes waits for the next notice, unless a message's
+  first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` (as written, then `:`
+  or a space): that goes at once. As a lead, open a message you need your parent to see now
+  with one. Once all of it is done and you have said nothing, Luna wakes you once ("Your
+  delegates have finished: …"); say nothing then either, and your parent hears you seem stuck.
 - Past 12 turn-end notices about one session in 15 minutes Luna stops telling you of its turns
   and jobs (the last says so; its prompts and questions still come) until a person types into
   either chat; waits and reads still work.
@@ -169,7 +173,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   `screen: true` gives a helper's last log lines. A whole read of all it said since you asked,
   after it finished, collects the answer too.
 - Asked again before an answer reached you, the next reply, read or notice covers all since the
-  first question.
+  first question. Your requests to a session are numbered (the spawn 1, each send one more;
+  its `requestKey` named): covering several, the notice says so and which one its quote
+  answers, and the file, report and wait reply open each part with "Re request N".
 - A turn that has written nothing for 30 min is told of once, and not before 5 min past the
   timeout of a command it waits on: hung, or long. `screen: true` on a read tells which.
 - Claude Code hands a background wait's result over HTML-escaped (`&lt;`, `&gt;`): take code
@@ -193,6 +199,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   `interrupt: true` (your own only) makes the text the next turn, behind any queued (`queued` if
   that turn would not stop). Where the user is typing, or left a draft Luna cannot put aside,
   the result says `held: true`: Luna types it in once they are done. Do not send again.
+- `expectReply: false` on a send to a helper (an FYI, "carry on"): its answer comes as a notice
+  only if it opens on a status word or is a report (400+ characters); else it waits in the
+  report for you.
 - `autoDelete` (on by default): Luna deletes the helper 30 minutes after its answer reached you,
   not while a job or helper of its runs (processes idle 2 h do not count: they go with it, and
   you hear so); a read, a report or a send starts that over (`deletesInMin` counts down). The

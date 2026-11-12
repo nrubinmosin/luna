@@ -67,6 +67,7 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "autoDelete",
         "budgetTokens",
         "budgetPct",
+        "expectReply",
         "connectors",
         "name",
         "until",
@@ -343,7 +344,16 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
             .map(|s| json!(s)),
         "luna_session_send" => crate::power::admit()
             .and_then(|_admitted| agents::in_scope(caller, &id, scope, "send to"))
-            .and_then(|()| agents::send(caller, &id, a["text"].as_str().unwrap_or(""), a["interrupt"].as_bool().unwrap_or(false)))
+            .and_then(|()| {
+                agents::send(
+                    caller,
+                    &id,
+                    a["text"].as_str().unwrap_or(""),
+                    a["interrupt"].as_bool().unwrap_or(false),
+                    a["requestKey"].as_str().filter(|k| !k.is_empty()),
+                    a["expectReply"].as_bool().unwrap_or(true),
+                )
+            })
             .map(|s| json!(s)),
         "luna_session_answer" => agents::in_scope(caller, &id, scope, "answer").and_then(|()| {
             let entered = crate::power::enter();

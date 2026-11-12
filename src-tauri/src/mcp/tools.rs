@@ -93,6 +93,7 @@ pub(super) fn tools() -> Value {
             "inputSchema": s(json!({
                 "id": string, "text": string,
                 "interrupt": { "type": "boolean", "description": "stop its turn first (yours only)" },
+                "expectReply": { "type": "boolean", "description": "false: no notice unless a status word or report" },
                 "scope": scope, "requestKey": key
             }), &["id", "text"]),
             "annotations": acts
