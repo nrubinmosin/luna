@@ -378,9 +378,14 @@ pub(in crate::agents) fn notice_line(
     if turn == Some(crate::activity::Turn::Busy) && alive && untold {
         let waiting = crate::background::waits_on_background(id).filter(|_| answered);
         // What its job does counts too: a subagent's long command writes
-        // nothing to the stream until it ends.
+        // nothing to the stream until it ends. Only so long: a watcher that
+        // polls, a growing `tail -f` or a chatty dev server keeps its job busy
+        // for good, and is what this notice is for.
         let job_quiet = waiting.as_ref().and_then(|w| w.job_quiet_ms);
-        let quiet = turn_quiet_ms(pty, id).map(|q| job_quiet.map_or(q, |j| q.min(j)));
+        let quiet = turn_quiet_ms(pty, id).map(|q| match job_quiet {
+            Some(j) if q < JOB_HOLDS_MS => q.min(j),
+            _ => q,
+        });
         if let Some(quiet) = quiet.filter(|q| *q >= QUIET_TURN_MS) {
             // Looked for only once the turn is that quiet: a deadline holds the
             // notice back, never brings it sooner.
@@ -423,6 +428,11 @@ pub(in crate::agents) const BACKGROUND_STOPPED: &str = " Its CLI stopped the sub
 /// otherwise hear nothing until a person asks. A long build looks the same,
 /// hence once per turn and not its end.
 pub(in crate::agents) const QUIET_TURN_MS: u64 = 30 * 60 * 1000;
+
+/// How long a helper's job at work holds back the notice that its answered
+/// turn waits on its background work, its stream quiet all the while: past
+/// this the notice goes, whatever the job does.
+const JOB_HOLDS_MS: u64 = 90 * 60 * 1000;
 
 /// A command its own timeout has yet to stop is no sign of a hang: a quiet turn
 /// that waits on one is told of only this long past that timeout, by when the
@@ -1077,12 +1087,26 @@ mod tests {
             panic!("all of it idle")
         };
         assert!(text.contains("processes claude.exe, node.exe") && text.contains("luna_session_stop ends it now"), "{text}");
+        // A watcher that keeps at it (a dev server's polling) holds the notice
+        // back only so long.
+        crate::background::watched_for_test(id, &[("claude.exe", 1, QUIET_TURN_MS + 60_000), ("node.exe", 2, 1_000)]);
+        assert!(matches!(notice_line(pty, caller, "Your helper", id, &known, told), None | Some((None, _))), "its job works");
+        crate::background::quiet_for_test(id, JOB_HOLDS_MS + 60_000);
+        let Some((Some(text), Settled::WaitsOnBackground(3))) = notice_line(pty, caller, "Your helper", id, &known, told) else {
+            panic!("a busy watcher past the bound")
+        };
+        assert!(text.contains("for 91 min. It waits on: Bash `npm run dev`; processes claude.exe, node.exe."), "{text}");
+        crate::background::quiet_for_test(id, QUIET_TURN_MS + 60_000);
         // A subagent among what it waits on: said without calling it a hang.
         let agent = json!({ "type": "assistant", "timestamp": at, "message": { "content": [{ "type": "tool_use", "id": "t2", "name": "Agent",
             "input": { "description": "port the parser", "prompt": "…", "run_in_background": true } }] } });
         let launched = json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t2", "content": "…" }] },
             "toolUseResult": { "isAsync": true, "status": "async_launched", "agentId": "a1" } });
         std::fs::write(&path, format!("{call}\n{started}\n{agent}\n{launched}\n")).unwrap();
+        // A subagent's long command at work holds it back.
+        crate::background::watched_for_test(id, &[("claude.exe", 1, QUIET_TURN_MS + 60_000), ("cargo.exe", 2, 1_000)]);
+        assert!(matches!(notice_line(pty, caller, "Your helper", id, &known, told), None | Some((None, _))), "the subagent works");
+        crate::background::watched_for_test(id, &[("claude.exe", 1, QUIET_TURN_MS + 60_000), ("node.exe", 2, QUIET_TURN_MS + 60_000)]);
         let Some((Some(text), _)) = notice_line(pty, caller, "Your helper", id, &known, told) else { panic!("still news") };
         assert!(text.contains("subagent \"port the parser\"") && text.contains("may still be at work"), "{text}");
         assert!(!text.contains("luna_session_stop ends it now"), "{text}");
