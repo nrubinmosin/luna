@@ -8,6 +8,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-12
+
+A CLI version can now be marked good as well as bad, and either mark taken
+back; a pane's title bar is down to the buttons used often, with the rest in
+its "…" menu. Claude Code 2.1.322 and Codex 0.167.2 join the known-good list.
+
 ### Added
 
 - **Mark good** in Settings → CLIs: an installed CLI version this Luna does
@@ -893,7 +899,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/nrubinmosin/luna/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/nrubinmosin/luna/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/nrubinmosin/luna/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/nrubinmosin/luna/compare/v0.12.0...v0.13.0
