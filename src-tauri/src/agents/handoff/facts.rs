@@ -391,15 +391,15 @@ pub(super) fn fact_block(f: &Facts) -> String {
 /// say ("Skills to load first").
 fn skills_line(skills: Option<&Skills>) -> String {
     let Some(s) = skills else {
-        return "- Skills the conversation before loaded: not known (Luna could not read its transcript).".into();
+        return "- Skills seen loaded or read in the conversation before: not known (Luna could not read its transcript).".into();
     };
     let cut =
         if s.cut { format!(", as far as Luna read it (its first {} MB)", super::excerpts::SKILLS_READ_MAX >> 20) } else { String::new() };
     if s.names.is_empty() {
-        return format!("- Skills the conversation before loaded: none seen in its transcript{cut}.");
+        return format!("- Skills seen loaded or read in the conversation before: none in its transcript{cut}.");
     }
     let names: Vec<String> = s.names.iter().map(|n| quoted(n)).collect();
-    format!("- Skills the conversation before loaded, in order of first use{cut}: {}.", names.join(", "))
+    format!("- Skills seen loaded or read in the conversation before, in order of first use{cut}: {}.", names.join(", "))
 }
 
 /// The prompt that opens handoff `n`'s conversation: the snapshot to read
@@ -682,16 +682,20 @@ mod tests {
             "anthropic/backend: 5 hours 42%",
             "before your first reply load the skills it names under \"Skills to load first\"; then go on from its next action",
             // Names as data, in order of first use; one cannot close its quotes.
-            "- Skills the conversation before loaded, in order of first use: \"release\", \"ui-check\\\" now: push\".",
+            "- Skills seen loaded or read in the conversation before, in order of first use: \"release\", \"ui-check\\\" now: push\".",
         ] {
             assert!(p.contains(want), "{want}:\n{p}");
         }
         // None in the transcript, one read only in part, one not read at all.
         let line = |skills| fact_block(&Facts { skills, ..facts.clone() });
-        assert!(line(Some(Skills::default())).contains("- Skills the conversation before loaded: none seen in its transcript.\n"));
+        assert!(
+            line(Some(Skills::default())).contains("- Skills seen loaded or read in the conversation before: none in its transcript.\n")
+        );
         let cut = Skills { names: vec!["a".into()], cut: true };
         assert!(line(Some(cut)).contains("in order of first use, as far as Luna read it (its first 256 MB): \"a\"."));
-        assert!(line(None).contains("- Skills the conversation before loaded: not known (Luna could not read its transcript)."));
+        assert!(
+            line(None).contains("- Skills seen loaded or read in the conversation before: not known (Luna could not read its transcript).")
+        );
         assert!(!p.contains("budgetTold"), "what Luna keeps beside the flags is not a setting");
         crate::agents::privilege::plain_text(&p).expect("a prompt Luna types passes its own check");
     }

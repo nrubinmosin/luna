@@ -13,12 +13,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A handoff has a seventh section, **Skills to load first**: the skills the
   next conversation loads before its first reply, and why. The prompt that
   opens it says to load them first, and Luna's facts name the skills the
-  conversation before loaded, read off its transcript (Claude Code's `Skill`
-  calls that went through, the skills a person started with `/name`, and a
-  `SKILL.md` read; Codex's `<skill>` blocks and a `SKILL.md` a command it ran
-  printed). A move's document carries the same line, the move's own ask left
-  out, and the moved chat is told to load what it lists before its first
-  reply.
+  conversation before was seen loading or reading, off its transcript
+  (Claude Code's `Skill` calls that went through, the skills a person
+  started with `/name`, and a `SKILL.md` read; Codex's `<skill>` blocks and a
+  `SKILL.md` a shell command it ran printed without failing; not a skill's
+  file the conversation also edited in its own folder). A move's document
+  carries the same line, the move's own ask left out, and the moved chat is
+  told to load what it lists before its first reply.
 
 ### Changed
 

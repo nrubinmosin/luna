@@ -333,10 +333,10 @@ fn layout(i: &Inputs, conversation: &str, left_out: usize) -> String {
         // document says which of them matter, where it wrote one.
         let cut = if t.skills.cut { ", as far as Luna read it" } else { "" };
         if t.skills.names.is_empty() {
-            d.push_str(&format!("- Skills its conversation loaded: none seen in its transcript{cut}.\n"));
+            d.push_str(&format!("- Skills seen loaded or read in its conversation: none in its transcript{cut}.\n"));
         } else {
             d.push_str(&format!(
-                "- Skills its conversation loaded, in order of first use{cut}: {}.\n",
+                "- Skills seen loaded or read in its conversation, in order of first use{cut}: {}.\n",
                 t.skills.names.iter().map(|n| quoted(n)).collect::<Vec<_>>().join(", ")
             ));
         }
@@ -530,7 +530,7 @@ mod tests {
         assert!(t.contains("\\[Luna move 1"), "its lines cannot pass for Luna's");
         assert!(!t.contains("Not quoted") && !t.contains("## Conversation") && t.contains("## Helpers"));
         // Luna's line of the skills loaded beside it; the chat's own says which to load first.
-        assert!(t.contains("- Skills its conversation loaded, in order of first use: \"release\", \"ui-check\"."), "{t}");
+        assert!(t.contains("- Skills seen loaded or read in its conversation, in order of first use: \"release\", \"ui-check\"."), "{t}");
         assert!(t.contains("1. Before your first reply, load the skills the earlier chat's document says to load first"), "{t}");
     }
 
@@ -571,7 +571,7 @@ mod tests {
             "Working on it…",
             "h1 \"tests\": working; owes the earlier chat an answer",
             "they are not this chat's",
-            "- Skills its conversation loaded, in order of first use: \"release\", \"ui-check\".\n",
+            "- Skills seen loaded or read in its conversation, in order of first use: \"release\", \"ui-check\".\n",
             "1. Before your first reply, load the skills listed under State that this work still needs, those this account has.\n\
              2. Run `git status`",
         ] {
@@ -585,7 +585,7 @@ mod tests {
             t.skills = excerpts::Skills { names: vec![], cut: true };
         }
         let t = build(&none, &scrub::Roots::default()).text;
-        assert!(t.contains("- Skills its conversation loaded: none seen in its transcript, as far as Luna read it.\n"), "{t}");
+        assert!(t.contains("- Skills seen loaded or read in its conversation: none in its transcript, as far as Luna read it.\n"), "{t}");
         assert!(t.contains("## First steps\n\n1. Run `git status`"), "{t}");
     }
 
