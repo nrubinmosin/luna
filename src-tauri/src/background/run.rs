@@ -353,6 +353,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                     }
                 }
                 let code = child.wait().ok().and_then(|s| s.code());
+                crate::cli::session_exited(&id);
                 reader.await_last_words(&read_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 err_reader.await_last_words(&err_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 reader.over.store(true, std::sync::atomic::Ordering::SeqCst);

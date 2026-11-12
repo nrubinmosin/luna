@@ -8,6 +8,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- **Mark good** in Settings → CLIs: an installed CLI version this Luna does
+  not list becomes one the known-good channel may install, on this machine.
+  **Clear bad** and **Unmark good** take a mark back, also on a version no
+  longer installed, now listed under the versions: a bad mark could not be
+  undone before.
+- A CLI version whose first three sessions all got past their start is
+  tagged "first 3 sessions ok", and the log says so once.
+
 ### Changed
 
 - A pane's title bar keeps only the "…" menu, delete, peek, take off the

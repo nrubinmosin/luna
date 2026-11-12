@@ -2,15 +2,18 @@ import { useState } from 'react';
 import { agoLabel } from '../../../shared/lib/format';
 import {
   cliCanaryDismiss,
+  cliClearMark,
   cliMarkBad,
+  cliMarkGood,
   cliSetChannel,
   cliUpdateNow,
   cliUseVersion,
   type CliChannel,
   type CliStatusDto,
-  type CliVersionRowDto
+  type CliVersionRowDto,
+  type CliVersionsDto
 } from '../../../ipc/cli';
-import { canaryWarning, useCli } from '../../updates/cli.store';
+import { CANARY_WATCH, canaryThrough, canaryWarning, useCli } from '../../updates/cli.store';
 import { PROVIDER_LABEL, PROVIDERS, type Provider } from '../../../shared/types';
 import { Group, List, ListItem, Row, type About } from '../SettingsRows';
 
@@ -30,34 +33,87 @@ function statusLine(s: CliStatusDto | null): string {
 }
 
 /** What one installed version is, in words after its number. */
-function tags(r: CliVersionRowDto): string[] {
+function tags(r: CliVersionRowDto, v: CliVersionsDto | null): string[] {
   return [
     r.current && 'current',
     r.previous && 'previous',
     r.knownGood && 'known-good',
+    r.good != null && 'marked good',
+    canaryThrough(v, r.version) && `first ${CANARY_WATCH} sessions ok`,
     r.inUse && !r.current && 'in use',
     r.bad != null && 'bad'
   ].filter((t): t is string => !!t);
 }
 
-function VersionItem({
+const tagClass = (t: string) => `set-tag${t === 'bad' ? ' set-tag-bad' : t === 'current' ? ' set-tag-on' : ''}`;
+
+/** The marks on a version and how each is undone or made: a bad one is
+ *  cleared, a good one unmarked; one with neither can be marked either way,
+ *  good only if this Luna's list does not vouch for it already. */
+function MarkButtons({
   row,
   busy,
-  onUse,
-  onBad
+  onGood,
+  onBad,
+  onClear
 }: {
   row: CliVersionRowDto;
   busy: boolean;
-  onUse: () => void;
+  onGood: () => void;
   onBad: () => void;
+  onClear: () => void;
+}) {
+  if (row.bad != null)
+    return (
+      <button className="slim" disabled={busy} onClick={onClear}>
+        Clear bad
+      </button>
+    );
+  return (
+    <>
+      {row.good != null ? (
+        <button className="slim" disabled={busy} onClick={onClear}>
+          Unmark good
+        </button>
+      ) : (
+        !row.knownGood && (
+          <button
+            className="slim"
+            disabled={busy}
+            onClick={onGood}
+            title="The known-good channel may install this version from now on"
+          >
+            Mark good
+          </button>
+        )
+      )}
+      <button className="slim" disabled={busy} onClick={onBad}>
+        Mark bad
+      </button>
+    </>
+  );
+}
+
+function VersionItem({
+  row,
+  versions,
+  busy,
+  onUse,
+  marks
+}: {
+  row: CliVersionRowDto;
+  versions: CliVersionsDto | null;
+  busy: boolean;
+  onUse: () => void;
+  marks: { onGood: () => void; onBad: () => void; onClear: () => void };
 }) {
   return (
     <ListItem>
       <span className="set-item-main">
         <span className="set-item-name">
           <span style={{ fontVariantNumeric: 'tabular-nums' }}>{row.version}</span>
-          {tags(row).map(t => (
-            <span key={t} className={`set-tag${t === 'bad' ? ' set-tag-bad' : t === 'current' ? ' set-tag-on' : ''}`}>
+          {tags(row, versions).map(t => (
+            <span key={t} className={tagClass(t)}>
               {t}
             </span>
           ))}
@@ -72,8 +128,41 @@ function VersionItem({
         <button className="slim" disabled={busy || row.current} onClick={onUse}>
           Use
         </button>
-        <button className="slim" disabled={busy || row.bad != null} onClick={onBad}>
-          Mark bad
+        <MarkButtons row={row} busy={busy} {...marks} />
+      </span>
+    </ListItem>
+  );
+}
+
+/** A mark on a version no longer installed (the sweep took it, or the offline
+ *  probe failed it), which only clearing is left for. */
+function MarkItem({
+  version,
+  bad,
+  why,
+  busy,
+  onClear
+}: {
+  version: string;
+  bad: boolean;
+  why: string;
+  busy: boolean;
+  onClear: () => void;
+}) {
+  return (
+    <ListItem>
+      <span className="set-item-main">
+        <span className="set-item-name">
+          <span style={{ fontVariantNumeric: 'tabular-nums' }}>{version}</span>
+          <span className={tagClass(bad ? 'bad' : 'marked good')}>{bad ? 'bad' : 'marked good'}</span>
+        </span>
+        <span className="set-cmd" title={why}>
+          {why}
+        </span>
+      </span>
+      <span className="set-item-actions">
+        <button className="slim" disabled={busy} onClick={onClear}>
+          {bad ? 'Clear bad' : 'Unmark good'}
         </button>
       </span>
     </ListItem>
@@ -93,6 +182,11 @@ function CliGroup({ provider, about }: { provider: Provider; about?: About }) {
   const previous = v?.versions.find(r => r.previous);
   const pinned = v?.pinned ? v.versions.find(r => r.dir === v.pinned) : undefined;
   const warning = canaryWarning(v);
+  const installed = new Set(v?.versions.map(r => r.version));
+  const gone = [
+    ...Object.entries(v?.bad ?? {}).map(([version, why]) => ({ version, why, bad: true })),
+    ...Object.entries(v?.good ?? {}).map(([version, why]) => ({ version, why, bad: false }))
+  ].filter(m => !installed.has(m.version));
   const passing = s?.phase === 'checking' || s?.phase === 'downloading';
 
   const act = (f: () => Promise<void>) => {
@@ -135,7 +229,7 @@ function CliGroup({ provider, about }: { provider: Provider; about?: About }) {
         label="Channel"
         desc={
           channel === 'knownGood'
-            ? 'Versions this Luna release was checked with.'
+            ? 'Versions this Luna release was checked with, and those you marked good.'
             : 'Each new release, once it passes an offline check.'
         }
         control={
@@ -201,12 +295,31 @@ function CliGroup({ provider, about }: { provider: Provider; about?: About }) {
                 <VersionItem
                   key={r.dir}
                   row={r}
+                  versions={v}
                   busy={busy || passing}
                   onUse={() => act(() => cliUseVersion(provider, r.dir))}
-                  onBad={() => act(() => cliMarkBad(provider, r.version))}
+                  marks={{
+                    onGood: () => act(() => cliMarkGood(provider, r.version)),
+                    onBad: () => act(() => cliMarkBad(provider, r.version)),
+                    onClear: () => act(() => cliClearMark(provider, r.version))
+                  }}
                 />
               ))}
             />
+            {gone.length > 0 && (
+              <List
+                label={`${name} marks on versions not installed`}
+                empty=""
+                items={gone.map(m => (
+                  <MarkItem
+                    key={m.version}
+                    {...m}
+                    busy={busy || passing}
+                    onClear={() => act(() => cliClearMark(provider, m.version))}
+                  />
+                ))}
+              />
+            )}
             {error && <div className="set-error">{error}</div>}
           </>
         }
@@ -222,15 +335,18 @@ const ABOUT = {
     <>
       <p>
         Luna keeps its own copy of each CLI and checks for a new one every 6 hours. On the known-good channel it
-        installs the newest version this Luna release lists as checked; a release with a security fix comes as a Luna
-        update. On latest it installs each new release, after running it offline to see that it still knows every flag
-        Luna passes. Nothing older than the oldest safe version a Luna release names ever runs.
+        installs the newest version this Luna release lists as checked, or one you marked good here; a release with a
+        security fix comes as a Luna update. On latest it installs each new release, after running it offline to see
+        that it still knows every flag Luna passes. Nothing older than the oldest safe version a Luna release names ever
+        runs.
       </p>
       <p>
         The first sessions on a new version are watched: if two of the first three fail soon after starting, Luna says
-        so here and in the status bar. It never rolls back on its own. Use goes back to any installed version (the one
-        before is always kept) once its files match their checksums again, and holds there until you follow the channel
-        again. Running sessions always keep the version they started with.
+        so here and in the status bar, and once all three are past their start with none failed, the version says so. It
+        never rolls back on its own. Use goes back to any installed version (the one before is always kept) once its
+        files match their checksums again, and holds there until you follow the channel again. Mark good lets the
+        known-good channel install an installed version this Luna does not list, Mark bad keeps any version out, and
+        Clear bad or Unmark good takes a mark back. Running sessions always keep the version they started with.
       </p>
     </>
   )
