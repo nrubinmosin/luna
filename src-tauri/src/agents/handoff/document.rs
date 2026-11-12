@@ -331,9 +331,9 @@ fn layout(i: &Inputs, conversation: &str, left_out: usize) -> String {
         }
         // Read off the transcript, not the chat's word: the earlier chat's
         // document says which of them matter, where it wrote one.
-        let cut = if t.skills.cut { ", as far as Luna read its transcript" } else { "" };
+        let cut = if t.skills.cut { ", as far as Luna read it" } else { "" };
         if t.skills.names.is_empty() {
-            d.push_str(&format!("- Skills its conversation loaded: none{cut}.\n"));
+            d.push_str(&format!("- Skills its conversation loaded: none seen in its transcript{cut}.\n"));
         } else {
             d.push_str(&format!(
                 "- Skills its conversation loaded, in order of first use{cut}: {}.\n",
@@ -585,7 +585,7 @@ mod tests {
             t.skills = excerpts::Skills { names: vec![], cut: true };
         }
         let t = build(&none, &scrub::Roots::default()).text;
-        assert!(t.contains("- Skills its conversation loaded: none, as far as Luna read its transcript.\n"), "{t}");
+        assert!(t.contains("- Skills its conversation loaded: none seen in its transcript, as far as Luna read it.\n"), "{t}");
         assert!(t.contains("## First steps\n\n1. Run `git status`"), "{t}");
     }
 

@@ -175,20 +175,26 @@ that beat is skipped and the turn looked at again at the next.
   under the same lock, so a move or the person's ask begun right after drops
   it as it opens. None is opened while a move of the chat is under way
   (`moving::under_way`), and the notifier types none then: one put together
-  before the move began is dropped where it goes in (`withheld`). Past `firm_at`
+  before the move began is dropped where it goes in (`withheld`). The ask
+  keeps its notice's SHA-256 (`Asked::notice`), and a copy the notifier put
+  together goes in only while that very ask is the one open with auto-handoff
+  on (else dropped: turned off, or a later ask's notice in its place), and,
+  looked at again with the person's keys held, only with the chat on the
+  conversation it asks (`withheld`, `notice_here`). Past `firm_at`
   (threshold + 10, kept within 85-95) a firmer one; with Luna's own
   instructions in effect it carries their seven headings inline (`SECTIONS`),
   with an override it sends the chat to the call. Once each per conversation
   (`Told`, by the transcript's name), each ask's percentage kept
   (`Told::shares`, read under its old name `asked` too).
-- A conversation a handoff began (`Record::fresh`) keeps its first reading as a
-  floor and is asked only past it by `GROWTH` (5 points): one that begins above
-  the threshold is not sent straight into the next handoff. Only while it is
-  still at the turn the handoff's prompt opened (`at_handoffs_first_turn`:
-  that prompt the first thing said in its transcript, nothing said since):
-  first looked at later, after a handoff taken with auto-handoff off and
-  turned on since, or a core started again, or on a conversation the person
-  opened, it gets no floor and is asked if past the threshold.
+- A conversation a handoff began (`Record::fresh`) has a floor and is asked
+  only past it by `GROWTH` (5 points): one that begins above the threshold is
+  not sent straight into the next handoff. The floor is where its first turn
+  ended (`handoffs_first_turn`: Luna's prompt the first thing said in its
+  transcript; the last usage before the next thing said, a helper's notice
+  or a draft the person sent included), or where it stands while that turn
+  is the last: so however late it is first looked at (auto-handoff turned on
+  since, a notice before the beat's look, a core started again). A
+  conversation Luna's prompt did not open has none.
 - **Re-arm.** A conversation told of its threshold whose context is then well
   under it (`rearm_below`: 15 points, or half the threshold where that is less)
   starts over, level and floor, and is asked again once past the threshold.
@@ -374,9 +380,14 @@ quotes hold as far as the user's quoted words go and no further, and
 `fact_block` (from `list::list`, the debts, `held`, `undelivered_for`,
 `Registry::usage`, the settings; per helper its model and effort, task,
 worktree, branch and SHA and transcript; the skills the conversation left
-loaded, read off its transcript, `excerpts::skills_in`: names only, each once
-in order of first use, from its first 256 MB, or "not known" where it cannot
-be read; names, tasks and skills fenced in double quotes as data); past 6,000
+loaded, read off its transcript, `excerpts::skills_in`: Claude Code's `Skill`
+calls and `Read`s of a `SKILL.md` whose result was no error, a person's
+`/name` of a skill; Codex's `<skill>` blocks and the commands it ran that print
+a `SKILL.md` (`skills_read_by`: `Get-Content`, `cat`, `sed` and the like, the
+first word of a command); names only (a file's by its folder), each once in
+order of first use, from its first 256 MB, "none seen" where none is, or "not
+known" where it cannot be read; names, tasks and skills fenced in double
+quotes as data); past 6,000
 characters the facts go in `<n>-facts.md` beside it → the transcript other than
 the one left holds that opening → done. Then what waited goes in. A person
 writing in the new conversation before the prompt holds it back (`Recovering`)
@@ -518,7 +529,9 @@ the state (folder, git as of a time: `git status`, `git diff --stat`, commit
 subjects since the chat began; how it stopped, from `activity::limit_of` and
 its turn; the paths its edit tools were called on, as attempts; the skills
 its conversation loaded, read before the window from the transcript's start
-and within it as the rest is, the ask's turns left out); the task (the
+through the line the window's start cuts, and within it as the rest is, the
+ask's turns left out on both sides, the read before carrying over whether it
+ended inside one); the task (the
 last handoff that went through, its hash checked, else the first prompt and
 the CLI's last compaction summary); the last plan proposed; the conversation
 by turns, newest first within about 40 KB (the last request and answer to
