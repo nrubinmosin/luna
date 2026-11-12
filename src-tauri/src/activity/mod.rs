@@ -31,11 +31,13 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 mod hooks;
+mod limit;
 mod sample;
 
 // Every file of the module reaches the others' items through `use super::*`,
 // and the rest of the crate keeps its `crate::activity::X` paths.
 pub use hooks::*;
+pub use limit::*;
 pub use sample::*;
 
 pub const SAMPLE_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
@@ -268,6 +270,14 @@ pub fn subagents(chat_id: &str) -> usize {
 /// The API error a session's last turn ended on, per its `StopFailure` hook.
 pub fn failed_of(chat_id: &str) -> Option<&'static str> {
     state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id)?.failed
+}
+
+/// The API error a session's last turn ended on, per its `StopFailure` hook,
+/// and when that hook came: the moment the turn stopped.
+pub fn failed_at(chat_id: &str) -> Option<(&'static str, u64)> {
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
+    let t = st.tracks.get(chat_id)?;
+    Some((t.failed?, t.hook_at_ms))
 }
 
 /// When a visible session's current turn began, None between turns.

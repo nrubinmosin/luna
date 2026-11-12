@@ -28,10 +28,13 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) mcp: Option<(&'a Path, &'a str)>,
     pub(crate) notes_dir: Option<&'a Path>,
     pub(crate) instructions_dir: Option<&'a Path>,
-    /// Auto-handoff's threshold, and the folder its copies are kept in, or
-    /// why it is not given: its drafts folder could not be made private
-    /// (agents/handoff `drafts_at_start`).
-    pub(crate) handoff: Option<(u8, Result<&'a Path, &'a str>)>,
+    /// For a chat listed Luna's handoff tool (every person's chat with Luna's
+    /// tools): the folder its copies are kept in, or why it is not given, its
+    /// drafts folder not made private (agents/handoff `drafts_at_start`).
+    pub(crate) handoff: Option<Result<&'a Path, &'a str>>,
+    /// Auto-handoff's threshold, where it is set: Luna's own notices, nothing
+    /// the CLI is given.
+    pub(crate) auto_handoff: Option<u8>,
     /// A chat opened by a move to another account: its folder of copies,
     /// where the document it opens from is (agents/handoff `moved_dir`).
     pub(crate) moved: Option<&'a Path>,
@@ -104,10 +107,10 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.push(path(dir));
         applied.push(instructions_applied(&path(dir)));
     }
-    // Auto-handoff (agents/handoff): the copy of a handoff is what the next
+    // The handoff (agents/handoff): the copy of a handoff is what the next
     // conversation reads first, from a folder of the chat's own, without asking.
-    if let Some((threshold, dir)) = s.handoff {
-        let mut value = format!("at {threshold}% of the context: luna_session_handoff");
+    if let Some(dir) = s.handoff {
+        let mut value = "on request: luna_session_handoff".to_string();
         match dir {
             Ok(dir) => {
                 args.push("--add-dir".into());
@@ -116,12 +119,15 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             }
             Err(why) => value.push_str(&crate::agents::handoff::no_drafts_applied(why)),
         }
-        applied.push(Item::AutoHandoff.with(value));
+        applied.push(Item::HandoffTool.with(value));
+        if let Some(threshold) = s.auto_handoff {
+            applied.push(Item::AutoHandoff.with(format!("at {threshold}% of the context")));
+        }
     }
     // A moved chat reads the document it opened from without asking: the
-    // same folder auto-handoff gives, given once.
+    // same folder the handoff gives, given once.
     if let Some(dir) = s.moved {
-        let given = matches!(s.handoff, Some((_, Ok(h))) if h == dir);
+        let given = matches!(s.handoff, Some(Ok(h)) if h == dir);
         if !given {
             args.push("--add-dir".into());
             args.push(path(dir));

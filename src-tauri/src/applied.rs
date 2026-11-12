@@ -92,8 +92,10 @@ items! {
         "A helper has nobody to stop a command that waits forever: such a command is refused before it runs.";
     LunaTools = "luna-tools", UserAction,
         "The Luna tools box (or the agent that spawned it): Luna's MCP server, its tools allowed without a prompt.";
+    HandoffTool = "handoff-tool", UserAction,
+        "The Luna tools box: luna_session_handoff, which starts the chat's next conversation from a handoff it writes, answering only when Luna asks for one (Hand off now in the pane's menu, or auto-handoff). It writes the file in a private drafts folder of its own in Luna's data folder, given to it with the copies' folder (Claude Code, read without asking) or alone and writable (Codex, where its sandbox writes).";
     AutoHandoff = "auto-handoff", UserAction,
-        "The Auto-handoff box: past this share of its context Luna asks the chat for a handoff, and offers it luna_session_handoff, which starts its next conversation from that file. It writes the file in a private drafts folder of its own in Luna's data folder, given to it with the copies' folder (Claude Code, read without asking) or alone and writable (Codex, where its sandbox writes).";
+        "The Auto-handoff box: past this share of its context Luna asks the chat for a handoff through luna_session_handoff.";
     MovedChat = "moved-chat", UserAction,
         "You moved this chat here from another account: the document you confirmed for it is in this folder of Luna's, read without asking.";
     NotesDir = "notes-dir", Runtime,

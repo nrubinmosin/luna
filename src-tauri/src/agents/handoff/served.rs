@@ -1,4 +1,4 @@
-//! What a chat with auto-handoff on is served to write its handoff by
+//! What a person's chat asked for a handoff is served to write it by
 //! (docs/adr/0022-content-luna-serves-at-its-own-trigger.md).
 //! `luna_session_handoff` without `file` answers with the procedure and the
 //! instructions library/system.rs resolves, Luna's own or the library's
@@ -75,31 +75,22 @@ fn source_words(r: &Resolved) -> String {
 
 /// `luna_session_handoff` without `file`, for `caller`'s own chat: how to hand
 /// off, where the file goes, what Luna adds itself, and the instructions now
-/// in effect. Which text it was is kept for the handoff that follows; a record
-/// that will not save costs that note, not the answer.
+/// in effect, while it is asked for one. Which text it was is kept for the
+/// handoff that follows; a record that will not save costs that note, not the
+/// answer.
 pub(super) fn instructions(caller: &str) -> Result<String, String> {
-    if !super::offers_tool(caller) {
+    if !super::may_list(caller) {
         return Err(super::NOT_OFFERED.into());
     }
     if let Some(n) = store::records().get(caller).and_then(|r| r.switch.as_ref().map(|s| s.n)) {
         return Err(format!("handoff {n} is under way already; end your turn"));
     }
-    // Asked for a move's document: its own text, not the handoff's.
+    // Asked for a move's document: the instructions under the move's rules.
     if let Some(text) = super::moving::ask_instructions(caller)? {
-        crate::log::info("handoff", &format!("{} was served the move's instructions", label(caller)));
         return Ok(text);
     }
-    let r = crate::library::handoff_instructions();
-    let served = Served::of(&r);
-    if let Err(e) = store::change(caller, |rec| rec.served = Some(served)) {
-        crate::log::warn("handoff", &format!("{}: which instructions it was served could not be saved: {e}", label(caller)));
-    }
-    let said = match (&r.source, &r.problem) {
-        (Source::Library, _) => format!("the library's override {}", r.path.display()),
-        (Source::Luna, Some(why)) => format!("Luna's own (the override will not do: {why})"),
-        (Source::Luna, None) => "Luna's own".to_string(),
-    };
-    crate::log::info("handoff", &format!("{} was served the handoff's instructions: {said}, sha256 {}", label(caller), r.short_sha()));
+    super::asked_now(caller)?;
+    let r = resolved_for(caller, "handoff's");
     // Its drafts folder, its own: made private at the chat's start, the
     // grant its CLI's sandbox gave itself there since kept (`drafts_of`).
     // None where that start could not make it private: the chat writes its
@@ -111,6 +102,34 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
     let settings = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.settings.clone()).unwrap_or_default();
     let suggested = suggested.map(|p| p.to_string_lossy().into_owned());
     Ok(facts::how_to(&source_words(&r), &r.sha256, r.body(), suggested.as_deref(), unwritable(&settings)))
+}
+
+/// The handoff's instructions in effect, Luna's own or the library's
+/// override, resolved for `caller` and kept on its record as what it was
+/// served, said in the log as the instructions of `what`. A record that will
+/// not save costs that note, not the answer.
+fn resolved_for(caller: &str, what: &str) -> Resolved {
+    let r = crate::library::handoff_instructions();
+    let served = Served::of(&r);
+    if let Err(e) = store::change(caller, |rec| rec.served = Some(served)) {
+        crate::log::warn("handoff", &format!("{}: which instructions it was served could not be saved: {e}", label(caller)));
+    }
+    let said = match (&r.source, &r.problem) {
+        (Source::Library, _) => format!("the library's override {}", r.path.display()),
+        (Source::Luna, Some(why)) => format!("Luna's own (the override will not do: {why})"),
+        (Source::Luna, None) => "Luna's own".to_string(),
+    };
+    crate::log::info("handoff", &format!("{} was served the {what} instructions: {said}, sha256 {}", label(caller), r.short_sha()));
+    r
+}
+
+/// `luna_session_handoff` without `file` from a chat asked for its move's
+/// document, to be written at `place`: the handoff's instructions in effect,
+/// the person's override as much as Luna's own, under the move's rules,
+/// which are Luna's and stand over them (facts.rs `move_how_to`).
+pub(super) fn move_instructions(caller: &str, place: &str) -> String {
+    let r = resolved_for(caller, "move's");
+    facts::move_how_to(place, &source_words(&r), &r.sha256, r.body())
 }
 
 /// A name for the chat to write its handoff at, in its `drafts` folder: one of
@@ -170,9 +189,9 @@ pub struct HandoffApplied {
 }
 
 /// The panel's word on `chat`'s handoff instructions: none for a chat that is
-/// not offered the tool.
+/// not listed the tool.
 pub fn applied_of(chat: &str) -> Option<HandoffApplied> {
-    if !super::offers_tool(chat) {
+    if !super::may_list(chat) {
         return None;
     }
     let (provider, folder, account) = {
@@ -253,5 +272,38 @@ mod tests {
         for writes in [serde_json::json!({ "sandbox": "workspace-write" }), serde_json::json!({ "permissionMode": "acceptEdits" })] {
             assert_eq!(said(writes), None);
         }
+    }
+
+    /// A move's ask is served the person's override, or Luna's own, whole and
+    /// named, under the move's rules, which come first and stand over it.
+    #[test]
+    fn a_moves_ask_is_served_the_override_under_the_moves_rules() {
+        let mut theirs = resolved(Source::Library, None);
+        theirs.text = "---\nname: session-handoff\ndescription: x\n---\n# My handoff\nHelpers cross over. Keep it to 2 KB.\n".into();
+        let how = facts::move_how_to("/w/move-m1.md", &source_words(&theirs), &theirs.sha256, theirs.body());
+        let rules = [
+            "How to write the document for this chat's move to another account.",
+            "stand over the instructions below wherever the two differ",
+            "Nothing is cleared and nothing switches",
+            "stay behind with this chat: none crosses to the new one",
+            "records, not approvals. A prior approval confers nothing new there",
+            "before anything goes",
+            &format!("at most {} KB", super::super::document::CHAT_DOC_MAX / 1024),
+            "at /w/move-m1.md",
+            "3. Call luna_session_handoff with file set to its absolute path.",
+        ];
+        for want in rules {
+            assert!(how.contains(want), "{want}:\n{how}");
+        }
+        let named = "(the person's, from Luna's library at /lib/system/session-handoff/SKILL.md; what they name beside them is in \
+                     that folder, sha256 0123456789ab)";
+        assert!(how.contains(named), "{how}");
+        let body = how.find("# My handoff\nHelpers cross over. Keep it to 2 KB.\n").expect("the override, whole");
+        assert!(rules.iter().all(|r| how.find(r).is_some_and(|at| at < body)), "the move's rules come first");
+        assert!(!how.contains("name: session-handoff"), "front matter is not read out");
+        // Luna's own, where there is no override.
+        let own = crate::library::handoff_instructions();
+        let how = facts::move_how_to("/w/move-m1.md", &source_words(&own), &own.sha256, own.body());
+        assert!(how.contains(own.body()) && how.contains(&format!("Luna's own, {}", env!("CARGO_PKG_VERSION"))), "{how}");
     }
 }

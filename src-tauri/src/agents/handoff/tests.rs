@@ -1,6 +1,6 @@
-//! The handoff as the rest of Luna meets it: who is offered the tool, whose
-//! chat a call can touch, what waits while one is under way, and what a
-//! chat's deletion takes with it. The machine itself is tested in phase.rs,
+//! The handoff as the rest of Luna meets it: who is listed the tool, when a
+//! call is answered, whose chat a call can touch, what waits while one is
+//! under way, and what a chat's deletion takes with it. The machine itself is tested in phase.rs,
 //! the file in file.rs, the words in facts.rs, the save in store.rs.
 
 use super::*;
@@ -12,7 +12,8 @@ const ACC: &str = "C:/acc/anthropic/one";
 
 /// A chat of the person's with Luna's tools, auto-handoff at `threshold`, and
 /// no copies on disk from a run before: tests share the data dir, and one that
-/// stopped half way leaves its folder.
+/// stopped half way leaves its folder. With a threshold, it has been asked by
+/// it, as its notice would (`ask`).
 fn chat(id: &str, threshold: Option<u8>) {
     if let Ok(dir) = dir_of(id) {
         let _ = std::fs::remove_dir_all(dir);
@@ -22,6 +23,19 @@ fn chat(id: &str, threshold: Option<u8>) {
         None => json!({ "model": "opus" }),
     };
     register(id, Provider::Claude, "C:/p", ACC, None, true, settings);
+    set_conversation_for_test(id, Some("old"));
+    if threshold.is_some() {
+        ask(id, store::AskKind::Auto);
+    }
+}
+
+/// `id` asked for a handoff, by its threshold's notice or the person's
+/// request typed, in the conversation its CLI is on (`before`'s).
+fn ask(id: &str, kind: store::AskKind) {
+    let at = now_ms();
+    let typed = (kind == store::AskKind::Manual).then_some(at);
+    let asked = store::Asked { typed, conversation: Some("old".into()), ..store::Asked::new(kind, at, None) };
+    store::change(id, |r| r.asked = Some(asked)).unwrap();
 }
 
 fn listed_names(id: &str) -> Vec<String> {
@@ -53,24 +67,25 @@ fn before() -> Before {
 fn done_with(ids: &[&str], scratch: &Path) {
     for id in ids {
         forget_session(id);
+        set_conversation_for_test(id, None);
     }
     let _ = std::fs::remove_dir_all(scratch);
 }
 
 #[test]
-fn the_tool_is_listed_only_to_a_persons_chat_with_auto_handoff_on() {
+fn the_tool_is_listed_to_every_persons_chat_with_luna_tools() {
     chat("hohv-on", Some(70));
     chat("hohv-off", None);
     register("hohv-kid", Provider::Claude, "C:/p", ACC, Some("hohv-on"), true, json!({ "handoff": 70 }));
     register("hohv-plain", Provider::Claude, "C:/p", ACC, None, false, json!({ "handoff": 70 }));
     chat("hohv-odd", Some(99));
-    assert!(listed_names("hohv-on").contains(&"luna_session_handoff".to_string()));
-    assert!(is_listed("hohv-on"), "its CLI has it now");
-    for id in ["hohv-off", "hohv-kid", "hohv-odd"] {
-        let names = listed_names(id);
-        assert!(names.contains(&"luna_session_list".to_string()), "{id} has the rest");
-        assert!(!names.contains(&"luna_session_handoff".to_string()), "{id}");
+    for id in ["hohv-on", "hohv-off", "hohv-odd"] {
+        assert!(listed_names(id).contains(&"luna_session_handoff".to_string()), "{id}: the tick is only the threshold");
+        assert!(is_listed(id), "{id}: its CLI has it now");
     }
+    assert!(auto_on("hohv-on") && !auto_on("hohv-off") && !auto_on("hohv-odd"), "no threshold Luna takes");
+    let names = listed_names("hohv-kid");
+    assert!(names.contains(&"luna_session_list".to_string()) && !names.contains(&"luna_session_handoff".to_string()));
     assert!(listed_names("hohv-plain").is_empty(), "no tools: nothing, not even this one");
     // Started again, its CLI lists them anew.
     chat("hohv-on", Some(70));
@@ -78,6 +93,25 @@ fn the_tool_is_listed_only_to_a_persons_chat_with_auto_handoff_on() {
     for id in ["hohv-on", "hohv-off", "hohv-kid", "hohv-plain", "hohv-odd"] {
         forget_session(id);
     }
+}
+
+/// Listed is not answered: a call, with a file or without, goes through only
+/// while someone asked the chat for a handoff, and unasked it is told where
+/// the person asks for one.
+#[test]
+fn a_call_nobody_asked_for_is_refused_naming_the_button() {
+    chat("honask-me", None);
+    let (dir, file) = scratch_file("nask");
+    for args in [json!({}), json!({ "file": file.to_string_lossy() })] {
+        let (failed, e) = call("honask-me", args.clone());
+        assert!(failed && e.contains("nobody asked this chat for a handoff") && e.contains("Hand off now"), "{args}: {e}");
+    }
+    assert!(!holds_text("honask-me") && store::records().get("honask-me").is_none_or(|r| r.served.is_none()), "nothing kept");
+    // Asked by the person: answered.
+    ask("honask-me", store::AskKind::Manual);
+    let (failed, how) = call("honask-me", json!({}));
+    assert!(!failed && how.contains("How to hand this chat off"), "{how}");
+    done_with(&["honask-me"], &dir);
 }
 
 #[test]
@@ -94,11 +128,12 @@ fn a_call_reaches_only_the_callers_own_chat() {
     // Without a file it only answers how: nothing is scheduled.
     let (failed, how) = call("hont-me", json!({}));
     assert!(!failed && how.contains("How to hand this chat off") && !holds_text("hont-me"), "{how}");
-    // Not offered: refused as a tool there is not, whoever's file it names.
-    for id in ["hont-off", "hont-kid"] {
-        let (failed, e) = call(id, json!({ "file": "C:/x/h.md" }));
-        assert!(failed && e.contains("unknown tool luna_session_handoff"), "{id}: {e}");
-    }
+    // Not listed: refused as a tool there is not, whoever's file it names.
+    let (failed, e) = call("hont-kid", json!({ "file": "C:/x/h.md" }));
+    assert!(failed && e.contains("unknown tool luna_session_handoff"), "{e}");
+    // Listed, not asked: refused, nothing run.
+    let (failed, e) = call("hont-off", json!({ "file": "C:/x/h.md" }));
+    assert!(failed && e.contains("nobody asked"), "{e}");
     let (failed, e) = call(DEV_CALLER, json!({ "file": "C:/x/h.md" }));
     assert!(failed, "{e}");
     // Offered, but not running in a terminal here: nothing scheduled.
@@ -108,7 +143,7 @@ fn a_call_reaches_only_the_callers_own_chat() {
     let (dir, file) = scratch_file("nt");
     schedule("hont-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     assert!(holds_text("hont-me") && !holds_text("hont-other"));
-    assert!(store::records().get("hont-other").is_none());
+    assert!(store::records().get("hont-other").is_some_and(|r| r.switch.is_none() && r.last == 0));
     done_with(&["hont-me", "hont-other", "hont-off", "hont-kid"], &dir);
 }
 
@@ -146,6 +181,8 @@ fn a_schedule_copies_numbers_and_refuses_a_second_under_way() {
     assert!(!holds_text("hosc-me"));
     assert_eq!(mark_of("hosc-me").map(|m| (m.n, m.state)), Some((1, "done")));
     assert_eq!(handoff_file("hosc-me".into(), 1).unwrap(), "# Objective\nFinish the campaign.\n");
+    assert_eq!(open_ask("hosc-me"), None, "the ask it answered closed with it");
+    ask("hosc-me", store::AskKind::Auto);
     let v = schedule("hosc-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     assert_eq!(v["n"], 2);
     reg().lock().unwrap().news.retain(|(c, _)| c != "hosc-me");
@@ -201,27 +238,262 @@ fn a_handoff_given_up_before_its_reset_tells_the_old_conversation() {
     done_with(&["hogu-me"], &dir);
 }
 
+/// The notifier types a failure line later than it is made: one with the
+/// continuation in it goes in whole only while the chat is on the
+/// conversation Luna's reset opened, and anywhere else, or where Luna cannot
+/// tell, as the line naming only the copy.
 #[test]
-fn turning_it_off_gives_up_a_scheduled_handoff_and_the_setting_follows_at_once() {
+fn a_failure_line_with_the_continuation_goes_only_into_the_conversation_the_reset_opened() {
+    chat("hocont-me", Some(70));
+    let (dir, file) = scratch_file("cont");
+    schedule("hocont-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    store::change("hocont-me", |r| r.switch.as_mut().unwrap().opened = Some("new".into())).unwrap();
+    let why = "the new conversation did not take Luna's prompt within 60 s";
+    finish("hocont-me", 1, Ended::Failed { why: why.into(), reset: true }, &|| "PROMPT".into());
+    let news: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hocont-me").map(|(_, l)| l.clone()).collect();
+    let line = &news[0];
+    assert!(line.ends_with("PROMPT"), "{line}");
+    set_conversation_for_test("hocont-me", Some("new"));
+    assert_eq!(as_told("hocont-me", line), *line, "on the conversation it was made for: whole");
+    let copy = dir_of("hocont-me").unwrap().join("1.md").to_string_lossy().into_owned();
+    for elsewhere in [Some("theirs"), None] {
+        set_conversation_for_test("hocont-me", elsewhere);
+        let short = as_told("hocont-me", line);
+        assert!(!short.contains("PROMPT") && short.contains(&copy) && short.contains("Handoff 1") && short.contains(why), "{short}");
+    }
+    // A line Luna has no record of is told without its prompt; any other as it is.
+    let unbound = facts::failed_line(9, "x", "/c/9.md", true, false, "PROMPT");
+    set_conversation_for_test("hocont-me", Some("new"));
+    assert!(!as_told("hocont-me", &unbound).contains("PROMPT"));
+    assert_eq!(as_told("hocont-me", "Your helper h1 answered."), "Your helper h1 answered.");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hocont-me");
+    done_with(&["hocont-me"], &dir);
+}
+
+/// A move under way keeps the chat from a handoff: a call whose file was
+/// being copied as the move began schedules nothing, and the person's ask
+/// is neither typed nor closed until the move ends, then looked at again.
+#[test]
+fn no_handoff_is_scheduled_or_asked_while_a_move_is_under_way() {
+    chat("homove-me", None);
+    ask("homove-me", store::AskKind::Manual);
+    let (dir, file) = scratch_file("homove");
+    let shown = moving::tests::a_move(moving::MovePhase::Shown { at: 1 });
+    store::change("homove-me", |r| r.moving = Some(shown)).unwrap();
+    let e = schedule("homove-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap_err();
+    assert!(e.contains("a move of this chat") && e.contains("nothing will switch"), "{e}");
+    let r = store::records()["homove-me"].clone();
+    assert!(r.switch.is_none() && r.reserved.is_none(), "nothing scheduled, nothing held");
+    assert!(!dir_of("homove-me").unwrap().join(format!("{}.md", r.last)).exists(), "its copy gone");
+    // Not typed in time, long ago: left as it is while the move is under way.
+    store::change("homove-me", |r| r.asked = Some(store::Asked::new(store::AskKind::Manual, 1, None))).unwrap();
+    manual_ask_of("homove-me", now_ms());
+    assert_eq!(store::records()["homove-me"].asked.as_ref().map(|a| a.kind), Some(store::AskKind::Manual));
+    assert!(!reg().lock().unwrap().news.iter().any(|(c, _)| c == "homove-me"), "nothing said to the chat");
+    // The move over: looked at again, and withdrawn as undelivered.
+    store::change("homove-me", |r| r.moving = Some(moving::tests::a_move(moving::MovePhase::Canceled { at: 2 }))).unwrap();
+    manual_ask_of("homove-me", now_ms());
+    assert!(store::records()["homove-me"].asked.is_none());
+    reg().lock().unwrap().news.retain(|(c, _)| c != "homove-me");
+    let _ = store::remove("homove-me");
+    done_with(&["homove-me"], &dir);
+}
+
+/// The person's `/clear` or `/new` lands between the notifier's look at a
+/// failure line with the continuation and its text going in: looked at
+/// again once their keys are held, right before the paste, nothing is typed,
+/// and the next look tells the conversation they started only of the copy.
+/// A threshold notice already put together as a move began is not typed
+/// either.
+#[test]
+fn a_queued_line_is_looked_at_again_under_the_held_keys_before_it_goes_in() {
+    chat("hokey-me", Some(70));
+    let (dir, file) = scratch_file("keys");
+    schedule("hokey-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    store::change("hokey-me", |r| r.switch.as_mut().unwrap().opened = Some("new".into())).unwrap();
+    finish("hokey-me", 1, Ended::Failed { why: "x".into(), reset: true }, &|| "PROMPT".into());
+    let line = reg().lock().unwrap().news.iter().find(|(c, _)| c == "hokey-me").map(|(_, l)| l.clone()).unwrap();
+    set_conversation_for_test("hokey-me", Some("new"));
+    crate::pty::fake_terminal_for_test("hokey-me", true);
+    let told = as_told("hokey-me", &line);
+    assert_eq!(told, line, "as the notifier's look puts it: whole");
+    let clear = Box::new(|| set_conversation_for_test("hokey-me", Some("theirs")));
+    crate::agents::notifier::deliver_news_for_test("hokey-me", vec![(told, line.clone())], clear);
+    let (typed, held) = crate::pty::fake_terminal_of("hokey-me");
+    assert_eq!(typed, "", "nothing typed into the conversation the person started");
+    assert!(!held, "their keys go on");
+    assert!(reg().lock().unwrap().news.iter().any(|(c, l)| c == "hokey-me" && *l == line), "still queued, for the next look");
+    assert!(!as_told("hokey-me", &line).contains("PROMPT"), "which names only the copy");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hokey-me");
+    // A threshold notice put together before a move began.
+    set_conversation_for_test("hokey-me", Some("new"));
+    let notice = facts::notice(72, 70, false, true);
+    let shown = moving::tests::a_move(moving::MovePhase::Shown { at: 1 });
+    let begin = Box::new(move || store::change("hokey-me", |r| r.moving = Some(shown)).unwrap());
+    crate::agents::notifier::deliver_news_for_test("hokey-me", vec![(notice.clone(), notice)], begin);
+    assert_eq!(crate::pty::fake_terminal_of("hokey-me"), (String::new(), false), "no handoff asked in the middle of a move");
+    crate::pty::fake_terminal_for_test("hokey-me", false);
+    let _ = store::remove("hokey-me");
+    done_with(&["hokey-me"], &dir);
+}
+
+/// The person's `/new` sent just before the notifier held their keys is
+/// still on its way to the CLI, which reads as the conversation the
+/// continuation was made for: a key of theirs since the notifier's look keeps
+/// the line back all the same, still queued, and a line bound to no
+/// conversation goes in.
+#[test]
+fn a_continuation_waits_for_a_key_the_cli_has_not_acted_on() {
+    chat("hokeyq-me", Some(70));
+    let (dir, file) = scratch_file("keyq");
+    schedule("hokeyq-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    store::change("hokeyq-me", |r| r.switch.as_mut().unwrap().opened = Some("new".into())).unwrap();
+    finish("hokeyq-me", 1, Ended::Failed { why: "x".into(), reset: true }, &|| "PROMPT".into());
+    let line = reg().lock().unwrap().news.iter().find(|(c, _)| c == "hokeyq-me").map(|(_, l)| l.clone()).unwrap();
+    set_conversation_for_test("hokeyq-me", Some("new"));
+    crate::pty::fake_terminal_for_test("hokeyq-me", true);
+    let told = as_told("hokeyq-me", &line);
+    assert_eq!(told, line);
+    // Their keys queued, the conversation not changed yet.
+    let keys = Box::new(|| crate::pty::fake_person_keys("hokeyq-me"));
+    crate::agents::notifier::deliver_news_for_test("hokeyq-me", vec![(told, line.clone())], keys);
+    assert_eq!(crate::pty::fake_terminal_of("hokeyq-me"), (String::new(), false), "nothing typed, their keys go on");
+    assert!(reg().lock().unwrap().news.iter().any(|(c, l)| c == "hokeyq-me" && *l == line), "still queued, for the next look");
+    crate::pty::fake_terminal_for_test("hokeyq-me", false);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hokeyq-me");
+    let _ = store::remove("hokeyq-me");
+    done_with(&["hokeyq-me"], &dir);
+}
+
+#[test]
+fn turning_it_off_closes_the_thresholds_ask_and_gives_up_its_scheduled_handoff() {
     chat("hots-me", None);
-    assert!(!offers_tool("hots-me"));
+    assert!(!auto_on("hots-me") && may_list("hots-me"));
     assert!(set_auto_handoff("hots-me".into(), Some(91)).unwrap_err().contains("not one"));
     assert!(set_auto_handoff("hots-me".into(), Some(0)).is_err());
     // On: the registry has it now; no CLI runs here, so nothing to resume.
     assert_eq!(set_auto_handoff("hots-me".into(), Some(60)), Ok(AutoHandoff { resume: false }));
-    assert!(offers_tool("hots-me"));
+    assert!(auto_on("hots-me"));
     assert_eq!(crate::agents::settings_of("hots-me")["handoff"], 60);
+    assert_eq!(open_ask("hots-me"), None, "on asks nothing by itself: its threshold does");
+    ask("hots-me", store::AskKind::Auto);
     let (dir, file) = scratch_file("ts");
     schedule("hots-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
-    // Off: the tool refuses from now, and what was only scheduled is given up.
+    // Off: the threshold's ask closes, and what was only scheduled from it is given up.
     set_auto_handoff("hots-me".into(), None).unwrap();
-    assert!(!offers_tool("hots-me") && crate::agents::settings_of("hots-me").get("handoff").is_none());
+    assert!(!auto_on("hots-me") && crate::agents::settings_of("hots-me").get("handoff").is_none());
+    assert!(may_list("hots-me"), "still listed: the person may still ask");
+    assert_eq!(open_ask("hots-me"), None);
     assert!(!holds_text("hots-me"));
     assert_eq!(mark_of("hots-me").and_then(|m| m.why), Some("auto-handoff was turned off for this chat".into()));
     let told: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hots-me").map(|(_, l)| l.clone()).collect();
-    assert!(told[0].contains("refuses until the person turns it on"), "not asked to call a tool it no longer has: {}", told[0]);
+    assert!(told[0].contains("Nobody asks this chat for a handoff any more"), "not asked to call again: {}", told[0]);
+    assert!(!told[0].contains("turns it on"), "{}", told[0]);
+    let (failed, e) = call("hots-me", json!({}));
+    assert!(failed && e.contains("nobody asked"), "{e}");
     reg().lock().unwrap().news.retain(|(c, _)| c != "hots-me");
     done_with(&["hots-me"], &dir);
+}
+
+/// The person's Hand off now: an ask of theirs, which turning auto-handoff
+/// off leaves be with the handoff answering it, which a core restart keeps,
+/// and which lapses MANUAL_ASK_MS after its request went in, the chat and the
+/// person told.
+#[test]
+fn the_persons_ask_survives_auto_handoff_off_and_a_restart_and_lapses() {
+    chat("homan-me", Some(70));
+    assert_eq!(open_ask("homan-me"), Some(store::AskKind::Auto));
+    reg().lock().unwrap().news.push(("homan-me".into(), facts::notice(75, 70, false, true)));
+    assert_eq!(open_manual("homan-me"), Ok(HandoffNow { resume: true }), "its CLI never listed the tool here");
+    assert_eq!(open_ask("homan-me"), Some(store::AskKind::Manual), "in the threshold's place");
+    let news = |id: &str| -> Vec<String> { reg().lock().unwrap().news.iter().filter(|(c, _)| c == id).map(|(_, l)| l.clone()).collect() };
+    assert!(news("homan-me").is_empty(), "the threshold's notice not yet typed would ask a second time");
+    assert!(now_refusal("homan-me").is_some_and(|e| e.contains("asked for a handoff already")));
+    let at = store::records()["homan-me"].asked.as_ref().unwrap().at;
+    store::change("homan-me", |r| assert!(manual_typed(r, at, at + 1, "old".into()))).unwrap();
+    // Off: the person's ask, and the handoff answering it, stay.
+    let (dir, file) = scratch_file("man");
+    schedule("homan-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    set_auto_handoff("homan-me".into(), None).unwrap();
+    assert_eq!(open_ask("homan-me"), Some(store::AskKind::Manual));
+    assert!(holds_text("homan-me"), "the switch goes on");
+    // A core started later takes it up as it was.
+    let saved = serde_json::to_vec(&*store::records()).unwrap();
+    let back = store::from_bytes(&saved, 5);
+    assert_eq!(back["homan-me"].asked, store::records()["homan-me"].asked);
+    assert!(back["homan-me"].asked.is_some());
+    finish("homan-me", 1, Ended::Done, &String::new);
+    assert_eq!(open_ask("homan-me"), None, "answered");
+    // Asked again: its request typed only at a strict prompt, never through
+    // the notifier, then its time runs out.
+    open_manual("homan-me").unwrap();
+    let at = store::records()["homan-me"].asked.as_ref().unwrap().at;
+    manual_ask_of("homan-me", at + 1);
+    assert!(news("homan-me").is_empty(), "nothing for the notifier to type");
+    assert_eq!(store::records()["homan-me"].asked.as_ref().unwrap().typed, None, "no CLI at its prompt here: not typed");
+    store::change("homan-me", |r| assert!(manual_typed(r, at, at + 2, "conv".into()))).unwrap();
+    let typed = store::records()["homan-me"].asked.clone().unwrap();
+    assert_eq!((typed.typed, typed.conversation.as_deref()), (Some(at + 2), Some("conv")), "gone in, into that conversation");
+    store::change("homan-me", |r| assert!(!manual_typed(r, at, at + 3, "conv".into()), "once")).unwrap();
+    manual_ask_of("homan-me", at + 2 + MANUAL_ASK_MS);
+    assert_eq!(open_ask("homan-me"), Some(store::AskKind::Manual), "not before its time");
+    manual_ask_of("homan-me", at + 3 + MANUAL_ASK_MS);
+    assert_eq!(open_ask("homan-me"), None, "lapsed");
+    assert_eq!(news("homan-me"), [facts::manual_lapsed(MANUAL_ASK_MS / 60_000)]);
+    let (failed, e) = call("homan-me", json!({}));
+    assert!(failed && e.contains("nobody asked"), "{e}");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "homan-me");
+    done_with(&["homan-me"], &dir);
+}
+
+/// Hand off now is refused, with what stands in the way, where the chat
+/// could not answer it.
+#[test]
+fn hand_off_now_is_refused_where_the_chat_cannot_answer_saying_why() {
+    chat("honow-me", None);
+    register("honow-kid", Provider::Claude, "C:/p", ACC, Some("honow-me"), true, json!({}));
+    register("honow-plain", Provider::Claude, "C:/p", ACC, None, false, json!({}));
+    register("honow-ro", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({ "sandbox": "read-only" }));
+    register("honow-plan", Provider::Claude, "C:/p", ACC, None, true, json!({ "permissionMode": "plan" }));
+    let refused = |id: &str| now_refusal(id).unwrap_or_default();
+    for id in ["honow-kid", "honow-plain", DEV_CALLER] {
+        assert!(refused(id).contains("started with Luna's tools"), "{id}: {}", refused(id));
+        assert!(handoff_now(id.into()).is_err());
+    }
+    assert!(refused("honow-ro").contains("read-only sandbox"), "{}", refused("honow-ro"));
+    assert!(refused("honow-plan").contains("plan mode"), "{}", refused("honow-plan"));
+    // Its CLI's own jobs cannot cross.
+    crate::activity::subagents_for_test("honow-me", 1);
+    assert!(refused("honow-me").contains("own jobs running"), "{}", refused("honow-me"));
+    crate::activity::subagents_for_test("honow-me", 0);
+    crate::activity::forget("honow-me");
+    // Nothing in the way here but its CLI, which does not run in a terminal here.
+    assert_eq!(now_refusal("honow-me"), None);
+    assert!(handoff_now("honow-me".into()).unwrap_err().contains("not running"));
+    assert_eq!(open_ask("honow-me"), None, "nothing opened");
+    // A move under way, asking the chat or not: quiet for the whole move.
+    for phase in [
+        moving::MovePhase::Asking { at: 1 },
+        moving::MovePhase::Shown { at: 1 },
+        moving::MovePhase::Confirmed { at: 1 },
+        moving::MovePhase::RowCreated { at: 1 },
+    ] {
+        let m = moving::tests::a_move(phase);
+        store::change("honow-me", |r| r.moving = Some(m)).unwrap();
+        assert!(refused("honow-me").contains("move of this chat to another account is under way"), "{}", refused("honow-me"));
+        assert!(open_manual("honow-me").is_err(), "looked at again where it is opened");
+    }
+    store::change("honow-me", |r| r.moving = Some(moving::tests::a_move(moving::MovePhase::Done { at: 2 }))).unwrap();
+    assert_eq!(now_refusal("honow-me"), None, "a move over is no bar");
+    store::change("honow-me", |r| r.moving = None).unwrap();
+    // A handoff under way.
+    ask("honow-me", store::AskKind::Auto);
+    let (dir, file) = scratch_file("now");
+    schedule("honow-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    assert!(refused("honow-me").contains("handoff 1 of this chat is under way"), "{}", refused("honow-me"));
+    assert!(open_manual("honow-me").is_err());
+    finish("honow-me", 1, Ended::Done, &String::new);
+    done_with(&["honow-me", "honow-kid", "honow-plain", "honow-ro", "honow-plan"], &dir);
 }
 
 #[test]
@@ -276,6 +548,7 @@ fn a_handoff_given_up_between_the_look_and_the_reset_types_nothing() {
     // A switch that has taken its reset is not given up by turning it off: the
     // prompt is still to follow.
     set_auto_handoff("hocr-me".into(), Some(70)).unwrap();
+    ask("hocr-me", store::AskKind::Auto);
     schedule("hocr-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     Stored.advance("hocr-me", 2, Phase::Scheduled, Phase::Resetting { at: 1 }, 1).unwrap();
     set_auto_handoff("hocr-me".into(), None).unwrap();
@@ -390,34 +663,38 @@ fn turning_it_off_while_the_file_is_read_leaves_nothing_to_switch() {
     assert!(e.contains("nothing will switch"), "{e}");
     assert!(!holds_text("hooff-me"), "no switch to reset the chat with");
     assert!(!dir_of("hooff-me").unwrap().join("1.md").exists(), "its copy gone");
-    // Or the chat starts again without it as the file is read: the same.
+    // Or the chat starts again without Luna's tools as the file is read: the same.
     set_auto_handoff("hooff-me".into(), Some(70)).unwrap();
+    ask("hooff-me", store::AskKind::Auto);
     file::on_read(&path, || {
-        register("hooff-me", Provider::Claude, "C:/p", ACC, None, true, json!({ "model": "opus" }));
+        register("hooff-me", Provider::Claude, "C:/p", ACC, None, false, json!({ "model": "opus" }));
     });
     let e = schedule("hooff-me", Provider::Claude, &path, before()).unwrap_err();
-    assert!(e.contains("turned off for this chat while the file was copied"), "{e}");
+    assert!(e.contains("closed while the file was copied") && e.contains("nothing will switch"), "{e}");
     assert!(!holds_text("hooff-me"));
     reg().lock().unwrap().news.retain(|(c, _)| c != "hooff-me");
     done_with(&["hooff-me"], &dir);
 }
 
-/// Only a person's chat with auto-handoff on knows of it: a helper, a chat
-/// without Luna's tools, one with them but without the tick, and the dev caller
-/// are not offered the tool, are told nothing of it at their start, find no
-/// topic of it in the guide, and calling it all the same are refused as for a
-/// tool there is not, with nothing kept for them.
+/// Only a person's chat with Luna's tools knows of the handoff: a helper, a
+/// chat without Luna's tools and the dev caller are not offered the tool, are
+/// told nothing of it at their start, and calling it all the same are refused
+/// as for a tool there is not, with nothing kept for them. No session finds a
+/// topic of it in the guide: the tool speaks for itself. A chat's threshold
+/// is its own to know of.
 #[test]
-fn nobody_but_a_chat_with_auto_handoff_on_hears_of_it() {
+fn nobody_but_a_persons_chat_with_luna_tools_hears_of_it() {
     chat("hoaud-me", Some(70));
     chat("hoaud-tools", None);
     register("hoaud-kid", Provider::Claude, "C:/p", ACC, Some("hoaud-me"), true, json!({ "handoff": 70 }));
     register("hoaud-plain", Provider::Claude, "C:/p", ACC, None, false, json!({ "handoff": 70 }));
     let tells = |text: &str| {
         let t = text.to_lowercase();
-        ["auto-handoff", "session-handoff", "what luna applied", "takes: file", "hand this chat off"].iter().any(|w| t.contains(w))
+        ["auto-handoff", "session-handoff", "what luna applied", "takes: file", "hand this chat off", "hand off now"]
+            .iter()
+            .any(|w| t.contains(w))
     };
-    for id in ["hoaud-tools", "hoaud-kid", "hoaud-plain", DEV_CALLER] {
+    for id in ["hoaud-kid", "hoaud-plain", DEV_CALLER] {
         assert!(!listed_names(id).iter().any(|n| n.contains("handoff")), "{id}");
         let init = crate::mcp::handle(id, r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#).unwrap();
         assert!(!init.to_string().to_lowercase().contains("handoff"), "{id}: {init}");
@@ -425,11 +702,13 @@ fn nobody_but_a_chat_with_auto_handoff_on_hears_of_it() {
             let (failed, e) = call(id, args.clone());
             assert!(failed && !tells(&e), "{id} {args}: {e}");
         }
+        assert!(!holds_text(id) && store::records().get(id).is_none(), "{id}: nothing kept for it");
+    }
+    for id in ["hoaud-me", "hoaud-tools", "hoaud-kid", DEV_CALLER] {
         let guide = json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": { "name": "luna_guide_get", "arguments": { "topic": "luna_session_handoff" } } });
         let r = crate::mcp::handle(id, &guide.to_string()).unwrap();
         assert_eq!(r["result"]["isError"], true, "{id}: no such topic");
-        assert!(!holds_text(id) && store::records().get(id).is_none(), "{id}: nothing kept for it");
     }
     // Its row as another session reads it: a helper of its own asking by id,
     // another chat with `scope: "all"`, a listing: its settings without its
@@ -451,8 +730,10 @@ fn nobody_but_a_chat_with_auto_handoff_on_hears_of_it() {
     let to = |caller: &str| crate::agents::list::list(caller, Some(&["hoaud-me".to_string()]), true).sessions[0].settings.clone();
     assert_eq!((to("hoaud-me")["handoff"].clone(), to("hoaud-kid").get("handoff")), (json!(70), None));
     assert_eq!(to("hoaud-kid")["model"], "opus", "the rest of its settings as they are");
-    // The chat that has it on: the tool, and how to write by.
-    assert!(listed_names("hoaud-me").contains(&"luna_session_handoff".to_string()));
+    // The person's chats: the tool, and how to write by once asked.
+    for id in ["hoaud-me", "hoaud-tools"] {
+        assert!(listed_names(id).contains(&"luna_session_handoff".to_string()), "{id}");
+    }
     let (failed, how) = call("hoaud-me", json!({}));
     assert!(!failed && how.contains("How to hand this chat off"), "{how}");
     for id in ["hoaud-me", "hoaud-tools", "hoaud-kid", "hoaud-plain"] {
@@ -623,12 +904,15 @@ fn the_chats_own_drafts_folder_is_where_it_writes_and_what_is_taken() {
     let e = schedule("hodr-other", Provider::Claude, &draft.to_string_lossy(), before()).unwrap_err();
     assert!(e.contains("Luna's own folder"), "{e}");
     // A chat that can write no file is told so, not sent to write one.
-    register("hodr-ro", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({ "sandbox": "read-only", "handoff": 70 }));
+    register("hodr-ro", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({ "sandbox": "read-only" }));
+    set_conversation_for_test("hodr-ro", Some("old"));
+    ask("hodr-ro", store::AskKind::Manual);
     let (failed, how) = call("hodr-ro", json!({}));
     assert!(!failed && how.contains("Codex's read-only sandbox, which writes no file"), "{how}");
     finish("hodr-me", 1, Ended::Done, &String::new);
     for id in ["hodr-me", "hodr-other", "hodr-ro"] {
         forget_session(id);
+        set_conversation_for_test(id, None);
     }
 }
 
@@ -668,7 +952,7 @@ fn a_drafts_folder_its_start_could_not_make_private_is_neither_named_nor_taken_f
 fn a_handoff_written_by_the_firm_notice_alone_records_its_checklist() {
     chat("hochk-me", Some(70));
     let (dir, file) = scratch_file("chk");
-    let told = |level| store::Told { conversation: "c".into(), level, floor: 0, asked: vec![91], compacted: 0, tokens: 182_000 };
+    let told = |level| store::Told { conversation: "c".into(), level, floor: 0, shares: vec![91], compacted: 0, tokens: 182_000 };
     // The first notice gives nothing to write by; the firm one its checklist.
     store::change("hochk-me", |r| told_of(r, told(1), false)).unwrap();
     assert!(store::records()["hochk-me"].served.is_none());
@@ -682,6 +966,7 @@ fn a_handoff_written_by_the_firm_notice_alone_records_its_checklist() {
     finish("hochk-me", 1, Ended::Done, &String::new);
     assert_eq!(store::records()["hochk-me"].past[0].instructions.as_ref(), Some(&given));
     // Given the whole instructions first, a firm notice does not take their place.
+    ask("hochk-me", store::AskKind::Auto);
     let (failed, _) = call("hochk-me", json!({}));
     assert!(!failed);
     store::change("hochk-me", |r| told_of(r, told(2), true)).unwrap();
@@ -735,6 +1020,7 @@ fn a_thin_file_written_to_luna_s_instructions_is_named_not_refused() {
     assert_eq!(missing, ["Goal", "Next action", "The user's words", "State", "Pending", "Decisions and dead ends"]);
     assert!(v["note"].as_str().unwrap().contains("goes as it is"));
     finish("hothin-me", 1, Ended::Done, &String::new);
+    ask("hothin-me", store::AskKind::Auto);
     // Written to an override: its sections are its author's, none looked for.
     store::change("hothin-me", |r| {
         r.served = Some(served::Served {
@@ -756,10 +1042,10 @@ fn a_chat_asked_and_not_handing_off_shows_it_until_a_handoff_goes_through() {
     chat("hoask-off", None);
     let (dir, file) = scratch_file("ask");
     assert_eq!(asked_of("hoask-me"), None, "never asked");
-    let told = store::Told { conversation: "c".into(), level: 2, floor: 0, asked: vec![71, 86], compacted: 1, tokens: 172_000 };
+    let told = store::Told { conversation: "c".into(), level: 2, floor: 0, shares: vec![71, 86], compacted: 1, tokens: 172_000 };
     store::change("hoask-me", |r| r.told = Some(told.clone())).unwrap();
     assert_eq!(asked_of("hoask-me"), Some(HandoffAsked { at: vec![71, 86], compacted: 1 }));
-    // Asked of a chat that no longer has it on: nothing to show.
+    // Asked of a chat that no longer has its threshold: nothing to show.
     store::change("hoask-off", |r| r.told = Some(told.clone())).unwrap();
     assert_eq!(asked_of("hoask-off"), None);
     // Under way, then through: no longer "not done".
@@ -767,9 +1053,10 @@ fn a_chat_asked_and_not_handing_off_shows_it_until_a_handoff_goes_through() {
     assert_eq!(asked_of("hoask-me"), None);
     finish("hoask-me", 1, Ended::Done, &String::new);
     assert_eq!(asked_of("hoask-me"), None);
-    assert!(store::records()["hoask-me"].told.as_ref().is_some_and(|t| t.asked.is_empty() && t.compacted == 0));
+    assert!(store::records()["hoask-me"].told.as_ref().is_some_and(|t| t.shares.is_empty() && t.compacted == 0));
     // A handoff given up leaves the asks standing.
     store::change("hoask-me", |r| r.told = Some(told.clone())).unwrap();
+    ask("hoask-me", store::AskKind::Auto);
     schedule("hoask-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     finish("hoask-me", 2, Ended::Failed { why: "no rest".into(), reset: false }, &String::new);
     assert_eq!(asked_of("hoask-me").map(|a| a.at), Some(vec![71, 86]));
@@ -796,16 +1083,313 @@ fn the_panel_names_the_instructions_and_skills_of_the_same_name() {
     // Each CLI's own place in the project, and the account's for both.
     assert_eq!(served::same_named(Provider::Claude, &folder, &account), [claude_project, in_account.clone()]);
     assert_eq!(served::same_named(Provider::Codex, &folder, &account), [codex_project, in_account]);
-    // The panel's word: for a chat with it on, what it would be served now.
+    // The panel's word: for a chat listed the tool, what it would be served now.
     let (folder_s, account_s) = (folder.to_string_lossy().into_owned(), account.to_string_lossy().into_owned());
     register("hopan-me", Provider::Claude, &folder_s, &account_s, None, true, json!({ "handoff": 70 }));
     register("hopan-off", Provider::Claude, &folder_s, &account_s, None, true, json!({}));
+    register("hopan-plain", Provider::Claude, &folder_s, &account_s, None, false, json!({ "handoff": 70 }));
     let shown = applied_of("hopan-me").expect("a chat with it on");
     assert_eq!(shown.same_named.len(), 2);
     assert_eq!(shown.instructions, crate::library::handoff_instructions().state());
     assert_eq!(crate::applied::applied_by_luna("hopan-me".into()).handoff, Some(shown), "in the panel, started or not");
-    assert!(applied_of("hopan-off").is_none() && crate::applied::applied_by_luna("hopan-off".into()).handoff.is_none());
-    forget_session("hopan-me");
-    forget_session("hopan-off");
+    // Listed the tool, the threshold set or not; nothing without Luna's tools.
+    assert_eq!(applied_of("hopan-off").map(|a| a.same_named.len()), Some(2));
+    assert!(applied_of("hopan-plain").is_none() && crate::applied::applied_by_luna("hopan-plain".into()).handoff.is_none());
+    for id in ["hopan-me", "hopan-off", "hopan-plain"] {
+        forget_session(id);
+    }
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The threshold's ask is opened only if what its look found still stands
+/// under the record's lock: auto-handoff turned off or set elsewhere while the
+/// context was read, the person's ask opened, or a handoff scheduled, and it
+/// is not, nor is the chat told anything.
+#[test]
+fn the_thresholds_ask_is_not_opened_over_what_changed_as_its_context_was_read() {
+    chat("hoaa-me", None);
+    let (dir, file) = scratch_file("aa");
+    let told = store::Told { conversation: "c".into(), level: 1, floor: 0, shares: vec![72], compacted: 0, tokens: 1 };
+    let asked = store::Asked { conversation: Some("conv".into()), ..store::Asked::new(store::AskKind::Auto, 5, Some(1)) };
+    let line = facts::notice(72, 70, false, true);
+    let open = |threshold| {
+        store::change("hoaa-me", |r| ask_auto("hoaa-me", r, threshold, told.clone(), false, asked.clone(), line.clone())).unwrap()
+    };
+    let queued = || reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hoaa-me").count();
+    // Off as it was read: its closing stands.
+    set_auto_handoff("hoaa-me".into(), Some(70)).unwrap();
+    set_auto_handoff("hoaa-me".into(), None).unwrap();
+    assert!(!open(70));
+    assert_eq!((open_ask("hoaa-me"), store::records()["hoaa-me"].told.clone()), (None, None), "nothing opened, nothing told");
+    // Set at another threshold: the reading was for the old one.
+    set_auto_handoff("hoaa-me".into(), Some(80)).unwrap();
+    assert!(!open(70));
+    set_auto_handoff("hoaa-me".into(), Some(70)).unwrap();
+    // The person asked meanwhile: theirs stays.
+    ask("hoaa-me", store::AskKind::Manual);
+    assert!(!open(70));
+    assert_eq!(open_ask("hoaa-me"), Some(store::AskKind::Manual));
+    // A handoff scheduled meanwhile.
+    schedule("hoaa-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    store::change("hoaa-me", |r| r.asked = None).unwrap();
+    assert!(!open(70));
+    finish("hoaa-me", 1, Ended::Done, &String::new);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hoaa-me");
+    // Nothing changed: opened, of the conversation read, its notice queued
+    // with it under the record's lock.
+    assert!(open(70));
+    assert_eq!(store::records()["hoaa-me"].asked, Some(asked.clone()));
+    assert_eq!(store::records()["hoaa-me"].told.as_ref().map(|t| t.level), Some(1));
+    assert_eq!(queued(), 1);
+    // The person's ask opened after it drops that notice, under the same lock.
+    open_manual("hoaa-me").unwrap();
+    assert_eq!(queued(), 0, "no second request");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hoaa-me");
+    done_with(&["hoaa-me"], &dir);
+}
+
+/// An ask holds only in the conversation it asks, and is closed once the
+/// chat is found on another the person started, never while Luna's own
+/// switch is under way. A call from another conversation, or from one Luna
+/// cannot name, schedules nothing. The threshold's ask closes as the
+/// threshold re-arms.
+#[test]
+fn an_ask_holds_only_in_the_conversation_it_asks() {
+    chat("hoconv-me", Some(70));
+    let (dir, file) = scratch_file("conv");
+    let asked = || store::records()["hoconv-me"].asked.clone();
+    let bound = store::Asked { conversation: Some("c1".into()), ..store::Asked::new(store::AskKind::Auto, 3, None) };
+    store::change("hoconv-me", |r| r.asked = Some(bound.clone())).unwrap();
+    // The chat's conversation not known: refused, not accepted.
+    set_conversation_for_test("hoconv-me", None);
+    let (failed, e) = call("hoconv-me", json!({}));
+    assert!(failed && e.contains("cannot tell yet"), "{e}");
+    set_conversation_for_test("hoconv-me", Some("old"));
+    assert!(ask_holds(&bound, Some("c1")) && !ask_holds(&bound, Some("c2")) && !ask_holds(&bound, None));
+    assert!(!drifted_to("hoconv-me", &bound, "c1"), "still there: still open");
+    store::change("hoconv-me", |r| r.asked = Some(bound.clone())).unwrap();
+    // A call made from another conversation than the one asked: nothing switches.
+    let e = schedule("hoconv-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap_err();
+    assert!(e.contains("another conversation") && e.contains("nothing will switch"), "{e}");
+    let unknown = Before { conversation: None, ..before() };
+    let e = schedule("hoconv-me", Provider::Claude, &file.to_string_lossy(), unknown).unwrap_err();
+    assert!(e.contains("nothing will switch"), "a conversation not known: {e}");
+    assert!(!holds_text("hoconv-me"));
+    // The person's /clear: closed.
+    assert!(drifted_to("hoconv-me", &bound, "c2"));
+    assert_eq!(open_ask("hoconv-me"), None);
+    let (failed, e) = call("hoconv-me", json!({}));
+    assert!(failed && e.contains("nobody asked"), "{e}");
+    // Luna's own switch moves the chat on: its ask is the switch's to close.
+    store::change("hoconv-me", |r| {
+        r.asked = Some(store::Asked { conversation: Some("old".into()), ..store::Asked::new(store::AskKind::Auto, 7, None) })
+    })
+    .unwrap();
+    let n = schedule("hoconv-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap()["n"].as_u64().unwrap();
+    assert!(!drifted_to("hoconv-me", &asked().unwrap(), "new"));
+    assert!(asked().is_some(), "kept while the switch runs");
+    finish("hoconv-me", n as u32, Ended::Done, &String::new);
+    assert_eq!(asked(), None, "answered");
+    // The threshold re-armed (a compaction, a larger window, another
+    // conversation): its ask closes with its notice; the person's stays.
+    ask("hoconv-me", store::AskKind::Manual);
+    let at = |level| store::Told { conversation: "c3".into(), level, floor: 0, shares: vec![72], compacted: 0, tokens: 1 };
+    store::change("hoconv-me", |r| {
+        r.told = Some(at(1));
+        assert!(!kept_told(r, at(0)), "the person's");
+        assert!(r.asked.is_some());
+        r.asked = Some(store::Asked::new(store::AskKind::Auto, 9, None));
+        r.told = Some(at(1));
+        assert!(!kept_told(r, at(1)) && r.asked.is_some(), "not re-armed");
+        assert!(kept_told(r, at(0)) && r.asked.is_none(), "re-armed");
+        r.asked = Some(store::Asked::new(store::AskKind::Auto, 10, None));
+        assert!(!kept_told(r, at(0)) && r.asked.is_some(), "told nothing before");
+        r.asked = None;
+    })
+    .unwrap();
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hoconv-me");
+    done_with(&["hoconv-me"], &dir);
+}
+
+/// The person's ask authorizes nothing until its request is typed, and then
+/// only in the conversation it went into: while Luna waits to type it, the
+/// person may start another conversation, and text injected there must not
+/// find the tool open. Neither bound nor closed while it waits.
+#[test]
+fn the_persons_ask_answers_only_once_typed_and_only_where_it_went() {
+    chat("hopend-me", None);
+    let (dir, file) = scratch_file("pend");
+    open_manual("hopend-me").unwrap();
+    let pending = store::records()["hopend-me"].asked.clone().unwrap();
+    assert_eq!((pending.typed, pending.conversation.as_deref()), (None, None));
+    assert!(!ask_holds(&pending, Some("old")) && !ask_holds(&pending, None));
+    // The person's /new while it waits: no request was typed there.
+    set_conversation_for_test("hopend-me", Some("theirs"));
+    for args in [json!({}), json!({ "file": file.to_string_lossy() })] {
+        let (failed, e) = call("hopend-me", args.clone());
+        assert!(failed && e.contains("nobody asked"), "{args}: {e}");
+    }
+    let theirs = Before { conversation: Some("theirs".into()), ..before() };
+    let e = schedule("hopend-me", Provider::Claude, &file.to_string_lossy(), theirs).unwrap_err();
+    assert!(e.contains("nothing will switch"), "{e}");
+    assert!(!holds_text("hopend-me"));
+    assert!(!drifted_to("hopend-me", &pending, "theirs"));
+    assert_eq!(store::records()["hopend-me"].asked, Some(pending.clone()), "neither bound nor closed");
+    assert_eq!(handoff_ask_of("hopend-me").map(|a| (a.kind, a.typed)), Some(("manual", None)), "the pane: pending");
+    // Typed into "theirs": answered there, and only there.
+    store::change("hopend-me", |r| assert!(manual_typed(r, pending.at, pending.at + 1, "theirs".into()))).unwrap();
+    let (failed, how) = call("hopend-me", json!({}));
+    assert!(!failed && how.contains("How to hand this chat off"), "{how}");
+    set_conversation_for_test("hopend-me", Some("later"));
+    let (failed, e) = call("hopend-me", json!({}));
+    assert!(failed && e.contains("nobody asked"), "{e}");
+    // What the pane is told: typed, with its lapse.
+    let typed = pending.at + 1;
+    assert_eq!(
+        handoff_ask_of("hopend-me").map(|a| (a.kind, a.typed, a.lapses_at)),
+        Some(("manual", Some(typed), Some(typed + MANUAL_ASK_MS)))
+    );
+    store::change("hopend-me", |r| r.asked = None).unwrap();
+    assert_eq!(handoff_ask_of("hopend-me"), None);
+    done_with(&["hopend-me"], &dir);
+}
+
+/// A person's /clear while a scheduled handoff waits for rest: the switch is
+/// given up, nothing reset, its copy kept, the ask closed, and the
+/// conversation the person went on in hears what became of it.
+#[test]
+fn a_handoff_whose_chat_went_on_elsewhere_before_its_reset_is_given_up() {
+    chat("holeft-me", Some(70));
+    let (dir, file) = scratch_file("left");
+    let n = schedule("holeft-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap()["n"].as_u64().unwrap() as u32;
+    let s = store::records()["holeft-me"].switch.clone().unwrap();
+    let theirs = Look { conversation: Some("theirs".into()), ..phase::tests::rest(s.scheduled_at + 10) };
+    assert_eq!(phase::next(&s, &theirs, 5), Step::Left);
+    finish("holeft-me", n, Ended::Left, &|| "PROMPT".into());
+    assert!(!holds_text("holeft-me") && open_ask("holeft-me").is_none(), "released, and the ask with it");
+    let rec = store::records()["holeft-me"].clone();
+    let past = rec.past.last().unwrap();
+    assert!(!past.done && past.why.as_deref() == Some(phase::LEFT), "{past:?}");
+    assert!(Path::new(&past.snapshot).exists(), "the copy is kept");
+    let news: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "holeft-me").map(|(_, l)| l.clone()).collect();
+    assert_eq!(news, [facts::left_line(n, &past.snapshot)]);
+    assert!(!news[0].contains("PROMPT") && news[0].contains("cleared nothing"), "{}", news[0]);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "holeft-me");
+    done_with(&["holeft-me"], &dir);
+}
+
+/// The person's ask lapses only as the one looked at, and never under a
+/// handoff a call scheduled since that look; nor is it taken as typed then.
+#[test]
+fn the_persons_ask_does_not_lapse_under_a_handoff_scheduled_since_the_look() {
+    chat("holap-me", None);
+    let (dir, file) = scratch_file("lap");
+    open_manual("holap-me").unwrap();
+    let at = store::records()["holap-me"].asked.as_ref().unwrap().at;
+    store::change("holap-me", |r| assert!(manual_typed(r, at, at + 1, "old".into()))).unwrap();
+    let looked = store::records()["holap-me"].asked.clone().unwrap();
+    // A call schedules its handoff between the look and the lapse.
+    schedule("holap-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    assert!(!store::change("holap-me", |r| lapsed(r, &looked)).unwrap());
+    assert_eq!(store::records()["holap-me"].asked, Some(looked.clone()), "the ask it answers stays");
+    store::change("holap-me", |r| assert!(!manual_typed(r, at, at + 2, "old".into()), "nor typed under it")).unwrap();
+    finish("holap-me", 1, Ended::Done, &String::new);
+    // Another ask in its place since the look: not that one.
+    ask("holap-me", store::AskKind::Manual);
+    assert!(!store::change("holap-me", |r| lapsed(r, &looked)).unwrap());
+    assert_eq!(open_ask("holap-me"), Some(store::AskKind::Manual));
+    let now = store::records()["holap-me"].asked.clone().unwrap();
+    assert!(store::change("holap-me", |r| lapsed(r, &now)).unwrap());
+    assert_eq!(open_ask("holap-me"), None);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "holap-me");
+    done_with(&["holap-me"], &dir);
+}
+
+/// What a chat is found on is no evidence of its conversation unless the
+/// transcript is that conversation's own: after Codex's `/new` the rollout is
+/// the old thread's until the new one writes its own, and after a `/clear` a
+/// transcript not found now is the last one found. The threshold opens no
+/// ask on it.
+#[test]
+fn a_transcript_is_the_conversation_s_only_when_it_is_its_own() {
+    let (a, b) = ("019a0000-0000-7000-8000-00000000000a", "019a0000-0000-7000-8000-00000000000b");
+    let rollout = |id: &str| PathBuf::from(format!("/s/2026/11/12/rollout-2026-11-12T10-00-00-{id}.jsonl"));
+    assert!(transcript_is(&rollout(a), Provider::Codex, a));
+    assert!(transcript_is(&rollout(a), Provider::Codex, &a[..25]), "the start of it, as Codex's title names it");
+    assert!(!transcript_is(&rollout(a), Provider::Codex, b), "after /new: the thread before's rollout");
+    assert!(!transcript_is(&rollout(a), Provider::Codex, ""));
+    let claude = |id: &str| PathBuf::from(format!("/p/{id}.jsonl"));
+    assert!(transcript_is(&claude("s1"), Provider::Claude, "s1"));
+    assert!(!transcript_is(&claude("s1"), Provider::Claude, "s2"), "after /clear: the transcript found last");
+}
+
+/// The person's ask whose request Luna could never type (the chat never at
+/// its prompt, its conversation not known, its CLI not running) is withdrawn
+/// in time, from when it was opened, with its own word to the chat; only
+/// that same ask, never one typed since; and the person may ask again.
+#[test]
+fn the_persons_ask_never_typed_is_withdrawn_in_time_saying_so() {
+    chat("hound-me", None);
+    open_manual("hound-me").unwrap();
+    let a = store::records()["hound-me"].asked.clone().unwrap();
+    assert!(now_refusal("hound-me").is_some_and(|e| e.contains("asked for a handoff already") && e.contains("withdrawn")));
+    assert!(now_refusal("hound-me").is_some_and(|e| !e.contains("  ")), "no run of spaces from a lost line break");
+    manual_ask_of("hound-me", a.at + MANUAL_DELIVER_MS);
+    assert_eq!(open_ask("hound-me"), Some(store::AskKind::Manual), "not before its time");
+    // A core started later goes by when it was opened, not by its own start.
+    let back = store::from_bytes(&serde_json::to_vec(&*store::records()).unwrap(), a.at + MANUAL_DELIVER_MS);
+    assert_eq!(back["hound-me"].asked.as_ref().map(|x| x.at), Some(a.at));
+    manual_ask_of("hound-me", a.at + MANUAL_DELIVER_MS + 1);
+    assert_eq!(open_ask("hound-me"), None, "withdrawn");
+    let news: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hound-me").map(|(_, l)| l.clone()).collect();
+    assert_eq!(news, [facts::manual_undelivered(MANUAL_DELIVER_MS / 60_000)]);
+    assert_ne!(news[0], facts::manual_lapsed(MANUAL_ASK_MS / 60_000), "not the typed request's lapse");
+    for line in [&news[0], &facts::manual_lapsed(10), &facts::manual_notice(), NOT_YET, NOT_ASKED] {
+        assert!(!line.contains("  "), "{line}");
+    }
+    assert!(now_refusal("hound-me").is_none(), "asked again freely");
+    // Typed since the look: that ask stays.
+    open_manual("hound-me").unwrap();
+    let looked = store::records()["hound-me"].asked.clone().unwrap();
+    store::change("hound-me", |r| assert!(manual_typed(r, looked.at, looked.at + 1, "old".into()))).unwrap();
+    undelivered("hound-me", &looked);
+    assert_eq!(store::records()["hound-me"].asked.as_ref().and_then(|x| x.typed), Some(looked.at + 1), "typed: not withdrawn");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hound-me");
+    store::change("hound-me", |r| r.asked = None).unwrap();
+    forget_session("hound-me");
+    set_conversation_for_test("hound-me", None);
+}
+
+/// The person's ask that took the threshold's place, closed with no handoff
+/// (lapsed or withdrawn), leaves the threshold armed: the conversation past
+/// it is asked again at its next turn's end, not left unasked at the level
+/// it was told of. So does auto-handoff turned off and on again.
+#[test]
+fn the_threshold_asks_again_once_what_took_its_place_closes() {
+    chat("horearm-me", Some(70));
+    let told = store::Told { conversation: "c".into(), level: 1, floor: 0, shares: vec![72], compacted: 0, tokens: 1 };
+    store::change("horearm-me", |r| r.told = Some(told.clone())).unwrap();
+    open_manual("horearm-me").unwrap();
+    let level = || store::records()["horearm-me"].told.as_ref().map(|t| t.level);
+    assert_eq!(level(), Some(1), "the person's ask open: nothing re-armed");
+    let a = store::records()["horearm-me"].asked.clone().unwrap();
+    assert!(store::change("horearm-me", |r| lapsed(r, &a)).unwrap());
+    let after = store::records()["horearm-me"].told.clone().unwrap();
+    assert_eq!((after.level, after.shares.clone()), (0, vec![72]), "re-armed, what it was asked at kept");
+    assert!(watch::due(&after, watch::level(75, 70, after.floor)), "asked again past the threshold");
+    // Off and on again at the same threshold.
+    store::change("horearm-me", |r| r.told = Some(told.clone())).unwrap();
+    set_auto_handoff("horearm-me".into(), None).unwrap();
+    assert_eq!(level(), Some(1));
+    set_auto_handoff("horearm-me".into(), Some(70)).unwrap();
+    assert_eq!(level(), Some(0), "on again: armed");
+    // On with the threshold's ask open: it stands, and so does its level.
+    store::change("horearm-me", |r| r.told = Some(told.clone())).unwrap();
+    ask("horearm-me", store::AskKind::Auto);
+    set_auto_handoff("horearm-me".into(), Some(70)).unwrap();
+    assert_eq!(level(), Some(1));
+    store::change("horearm-me", |r| r.asked = None).unwrap();
+    reg().lock().unwrap().news.retain(|(c, _)| c != "horearm-me");
+    forget_session("horearm-me");
+    set_conversation_for_test("horearm-me", None);
 }

@@ -136,11 +136,12 @@ case), so an account renamed in case only keeps its copies.
 ## System skills
 
 One text in the library is no skill of yours to lay out but Luna's own, which
-you may override: **`session-handoff`**, what a chat with
-[Auto-handoff](chats.md#auto-handoff) on is given when it writes its handoff.
-Luna serves it only to such chats, through their `luna_session_handoff` tool,
-once they are asked for a handoff; it is never put into an account or a folder,
-and no other session, helper or chat without the tick sees it.
+you may override: **`session-handoff`**, what a chat with Luna tools is given
+when it writes its [handoff](chats.md#handoff), or a move's document (under
+the move's own rules). Luna serves it only to such chats, through their
+`luna_session_handoff` tool, once they are asked for a handoff or a move's
+document; it is never put into an account or a folder, and no helper or other
+session sees it.
 
 The window's **System skills** section, below your skills and set apart from
 them, has it on a row of its own: what it is, whose text is served now, and

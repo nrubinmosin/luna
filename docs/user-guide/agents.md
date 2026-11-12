@@ -95,7 +95,9 @@ hooks run unasked.
 - Every session gets its id as `LUNA_SESSION_ID`, a helper its parent's as
   `LUNA_PARENT_ID`. A helper is told what it is — not the chat of whoever its
   instructions call the operator, the user or the person at this machine — and
-  to write in the language of its task: Claude Code through its system prompt
+  to write in the language of its task, and to install nothing and change
+  nothing machine-wide or in its account's folder unless its task names that
+  change, handing its caller the command instead: Claude Code through its system prompt
   and a note after its first prompt; Codex, which can only replace
   `developer_instructions`, through a note Luna appends to each prompt. A prompt
   opening with a slash command goes without it.
@@ -252,18 +254,21 @@ its own CLI) with their usage as the Accounts window shows it; `luna_account_get
 settings a helper would get there (read from the account's and the project's settings the way
 the new-chat dialog reads them) and its models.
 
-## Auto-handoff
+## Handoff
 
-A chat of yours with Luna tools and **Auto-handoff** on is offered one more
-tool, `luna_session_handoff`, and asked to use it once its context passes the
-threshold. Called without arguments it answers how: the steps, where the file
+A chat of yours with Luna tools is offered one more tool,
+`luna_session_handoff`, which answers only once Luna asks the chat for a
+handoff: you pressed **Hand off now** in its pane, its context passed its
+**Auto-handoff** threshold, or a move asks it for its document. Unasked, it
+refuses and names the pane's menu. Asked and called without arguments it
+answers how: the steps, where the file
 goes, what Luna adds by itself, and the instructions for the file. Called with
 the file, Luna clears the conversation and opens the next from it. Its helpers
 keep their ids, their answers still come to it, and `luna_session_wait` still
-reaches them. Only that chat has the tool, and it acts on that chat alone: no
-other session is offered it or finds it in `luna_guide_get`, and one that calls
-it all the same is answered as for a tool there is not. See
-[Chats: Auto-handoff](chats.md#auto-handoff).
+reaches them. Only your chats with Luna tools have the tool, and it acts on
+the calling chat alone: no helper or other session is offered it or finds it
+in `luna_guide_get`, and one that calls it all the same is answered as for a
+tool there is not. See [Chats: Handoff](chats.md#handoff).
 
 ## Lifetime
 

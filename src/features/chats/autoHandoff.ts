@@ -6,7 +6,7 @@
  * chat is idle: a CLI lists its tools once, as it starts (agents/handoff).
  */
 import { setAutoHandoff } from '../../ipc/handoff';
-import { handoffOf } from '../../shared/types';
+import { handoffOf, type Chat } from '../../shared/types';
 import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { useRestarts } from '../panes/restarts.store';
 import { resumeSession } from '../panes/terminals';
@@ -27,10 +27,12 @@ export async function applyAutoHandoff(chatId: string, on: boolean, at: number):
 
 /**
  * Starts the chat's CLI again once it is idle with nothing typed in it, unless
- * auto-handoff is turned off or the chat deleted meanwhile. Resting is what its
- * row says; a draft or text Luna holds for it waits, as a person's keys would.
+ * what asked for it no longer holds (`wanted`: auto-handoff still on, by
+ * default; Hand off now asks only that the chat keeps Luna's tools) or the
+ * chat is deleted meanwhile. Resting is what its row says; a draft or text
+ * Luna holds for it waits, as a person's keys would.
  */
-export function resumeWhenIdle(chatId: string): void {
+export function resumeWhenIdle(chatId: string, wanted: (chat: Chat) => boolean = c => !!c.autoHandoff): void {
   const restarts = useRestarts.getState();
   if (restarts.pending[chatId]) return;
   restarts.setPending(chatId, true);
@@ -39,7 +41,7 @@ export function resumeWhenIdle(chatId: string): void {
     const chat = useChats.getState().findChat(chatId);
     const folder = useChats.getState().folderOf(chatId);
     const accountPath = chat ? accountOfChat(useAccounts.getState().accounts, chat)?.path : undefined;
-    if (!chat || !folder || !accountPath || !chat.autoHandoff) {
+    if (!chat || !folder || !accountPath || !wanted(chat)) {
       useRestarts.getState().setPending(chatId, false);
       return;
     }

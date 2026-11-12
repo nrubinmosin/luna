@@ -14,6 +14,13 @@
 //! silently when they do not match): the last plan proposed (Claude Code's
 //! `ExitPlanMode`, Codex's `update_plan`), Claude Code's last compaction
 //! summary, and the paths its edit tools were called on.
+//!
+//! A document built after the chat was asked for its own leaves that ask out:
+//! a turn opened by Luna's ask line (`Skip` says which), up to the next prompt, is the
+//! handoff attempt, not the work, and neither its words nor what its tools
+//! did are read. A window that starts inside a turn, its prompt before it,
+//! is inside the ask's turn where the window's first line falls within the
+//! move's ask, from its typing to its close (or still open).
 
 use crate::provider::Provider;
 use serde_json::Value;
@@ -63,6 +70,28 @@ pub(super) struct Excerpted {
     pub edits: Vec<String>,
 }
 
+/// The turns a reading leaves out: those a prompt `opens` picks, and, for a
+/// window that starts mid-turn, the move's last ask as (typed, closed) in ms.
+#[derive(Clone, Copy)]
+pub(super) struct Skip {
+    pub opens: fn(&str) -> bool,
+    pub ask: Option<(u64, Option<u64>)>,
+}
+
+impl Skip {
+    /// Whether a window whose first line was written at `first` starts inside
+    /// the ask's turn: written once the ask was typed and, where the ask has
+    /// closed, no later than that. A line past the close may be a turn of the
+    /// chat's own, whose prompt lies before the window too: it is read, as
+    /// nothing of the chat's work is to go missing.
+    fn starts_in_ask(&self, first: Option<u64>) -> bool {
+        match (self.ask, first) {
+            (Some((typed, closed)), Some(at)) => at >= typed && closed.is_none_or(|c| at <= c),
+            _ => false,
+        }
+    }
+}
+
 /// A file's size and time: what tells it changed.
 fn stamp(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
     let m = std::fs::metadata(path).ok()?;
@@ -102,12 +131,13 @@ fn read_range(f: &mut std::fs::File, start: u64, len: u64) -> std::io::Result<Ve
     Ok(buf)
 }
 
-/// Reads the transcript at `path` of a `provider` chat as the module says.
-pub(super) fn read(path: &Path, provider: Provider) -> Result<Excerpted, String> {
-    read_bounded(path, provider, HEAD_MAX, TAIL_MAX)
+/// Reads the transcript at `path` of a `provider` chat as the module says,
+/// the turns `skip` picks left out.
+pub(super) fn read(path: &Path, provider: Provider, skip: Option<Skip>) -> Result<Excerpted, String> {
+    read_bounded(path, provider, HEAD_MAX, TAIL_MAX, skip)
 }
 
-pub(super) fn read_bounded(path: &Path, provider: Provider, head_max: u64, tail_max: u64) -> Result<Excerpted, String> {
+pub(super) fn read_bounded(path: &Path, provider: Provider, head_max: u64, tail_max: u64, skip: Option<Skip>) -> Result<Excerpted, String> {
     let before = stamp(path).ok_or_else(|| format!("{} cannot be read", path.display()))?;
     let len = before.0;
     let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -136,20 +166,36 @@ pub(super) fn read_bounded(path: &Path, provider: Provider, head_max: u64, tail_
         if out.began.is_none() {
             out.began = v["timestamp"].as_str().map(str::to_owned);
         }
-        if let Some(m) = said(line).filter(|m| m.role == "user") {
+        if let Some(m) = said(line).filter(|m| m.role == "user" && !skip.is_some_and(|s| (s.opens)(&m.text))) {
             out.first = Some(Said { role: m.role, text: m.text, final_answer: false, at: v["timestamp"].as_str().map(str::to_owned) });
             break;
         }
     }
     let mut edits: Vec<String> = Vec::new();
+    // Inside a turn the skipped prompt opened: until the next prompt. A
+    // window cut from the front may start inside the ask's turn, its prompt
+    // before the window.
+    let first_at = tail
+        .iter()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find_map(|v| v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()))
+        .map(|t| t.timestamp_millis().max(0) as u64);
+    let mut skipping = cut_front && skip.is_some_and(|s| s.starts_in_ask(first_at));
     for line in &tail {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         let at = v["timestamp"].as_str().map(str::to_owned);
+        let m = said(line);
+        if let (Some(skip), Some(m)) = (skip, m.as_ref().filter(|m| m.role == "user")) {
+            skipping = (skip.opens)(&m.text);
+        }
+        if skipping {
+            continue;
+        }
         match provider {
             Provider::Claude => claude_artifacts(&v, &mut out, &mut edits),
             Provider::Codex => codex_artifacts(&v, &mut out, &mut edits),
         }
-        if let Some(m) = said(line) {
+        if let Some(m) = m {
             out.said.push(Said { role: m.role, text: m.text, final_answer: m.final_answer, at });
         }
     }
@@ -285,7 +331,7 @@ pub(super) mod tests {
             claude_line("assistant", "Done: the build is green.", "2026-11-10T10:01:00Z", true),
         ];
         let p = file("claude", &(lines.join("\n") + "\n"));
-        let r = read(&p, Provider::Claude).unwrap();
+        let r = read(&p, Provider::Claude, None).unwrap();
         assert_eq!(r.first.as_ref().map(|s| s.text.as_str()), Some("Fix the build."));
         assert_eq!(r.began.as_deref(), Some("2026-11-10T10:00:00Z"));
         let said: Vec<(&str, &str, bool)> = r.said.iter().map(|s| (s.role.as_str(), s.text.as_str(), s.final_answer)).collect();
@@ -318,7 +364,7 @@ pub(super) mod tests {
             msg("assistant", "output_text", "Added.", Some("final_answer")),
         ];
         let p = file("codex", &lines.join("\n"));
-        let r = read(&p, Provider::Codex).unwrap();
+        let r = read(&p, Provider::Codex, None).unwrap();
         assert_eq!(r.first.as_ref().map(|s| s.text.as_str()), Some("Add a flag."));
         assert_eq!(r.plan.as_deref(), Some("Two steps\n- [completed] Patch\n- [in_progress] Test\n"));
         assert_eq!(r.edits, ["src/main.rs", "docs/x.md"]);
@@ -339,12 +385,71 @@ pub(super) mod tests {
         text.push_str(&claude_line("user", "The last ask.", "2026-11-01T00:00:03Z", false));
         text.push('\n');
         let p = file("bounded", &text);
-        let r = read_bounded(&p, Provider::Claude, 4 * 1024, LINE_MAX as u64 + 64 * 1024).unwrap();
+        let r = read_bounded(&p, Provider::Claude, 4 * 1024, LINE_MAX as u64 + 64 * 1024, None).unwrap();
         assert!(r.cut_front, "the tail did not reach the start");
         assert_eq!(r.first.as_ref().map(|s| s.text.as_str()), Some("The first task."), "the head still gives the task");
         assert_eq!(r.skipped, 1, "the long line skipped, not kept");
         assert!(r.said.len() < 2000 && r.said.last().is_some_and(|s| s.text == "The last ask."));
         assert!(r.said.iter().all(|s| s.text.len() < 1024));
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn the_turn_an_ask_opened_is_left_out_to_the_next_prompt() {
+        let ask = "[Luna move m1 request, not typed by the user] The person is moving this chat.";
+        let lines = [
+            claude_line("user", "Fix the build.", "2026-11-10T10:00:00Z", false),
+            claude_line("assistant", "Fixed.", "2026-11-10T10:01:00Z", true),
+            claude_line("user", ask, "2026-11-10T10:02:00Z", false),
+            serde_json::json!({ "type": "assistant", "timestamp": "2026-11-10T10:02:05Z", "message": { "model": "m", "stop_reason": "tool_use",
+                "content": [{ "type": "tool_use", "name": "Write", "input": { "file_path": "drafts/move-m1-ab.md" } }] } })
+            .to_string(),
+            claude_line("assistant", "The document is written.", "2026-11-10T10:03:00Z", true),
+            claude_line("user", "Now the tests.", "2026-11-10T10:30:00Z", false),
+            claude_line("assistant", "Green.", "2026-11-10T10:31:00Z", true),
+        ];
+        let p = file("skip", &(lines.join("\n") + "\n"));
+        let r = read(&p, Provider::Claude, Some(Skip { opens: |t: &str| t.starts_with("[Luna move m1 request"), ask: None })).unwrap();
+        let said: Vec<&str> = r.said.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(said, ["Fix the build.", "Fixed.", "Now the tests.", "Green."]);
+        assert!(r.edits.is_empty(), "what the ask's turn wrote is not the work: {:?}", r.edits);
+        let whole = read(&p, Provider::Claude, None).unwrap();
+        assert!(whole.said.iter().any(|s| s.text.starts_with("[Luna move m1 request")));
+        assert_eq!(whole.edits, ["drafts/move-m1-ab.md"]);
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// The ask's turn longer than the window: its prompt is before it, its
+    /// narration and edits inside, and they are still left out.
+    #[test]
+    fn a_window_that_starts_inside_the_asks_turn_leaves_it_out() {
+        let ask = "[Luna move m1 request, not typed by the user] The person is moving this chat.";
+        let mut text = claude_line("user", "Fix the build.", "2026-11-10T10:00:00Z", false) + "\n";
+        text.push_str(&claude_line("user", ask, "2026-11-10T10:02:00Z", false));
+        text.push('\n');
+        for i in 0..400 {
+            text.push_str(&claude_line("assistant", &format!("writing {i} {}", "x".repeat(200)), "2026-11-10T10:02:30Z", false));
+            text.push('\n');
+        }
+        text.push_str(
+            &serde_json::json!({ "type": "assistant", "timestamp": "2026-11-10T10:03:00Z", "message": { "model": "m", "stop_reason": "tool_use",
+                "content": [{ "type": "tool_use", "name": "Write", "input": { "file_path": "drafts/move-m1-ab.md" } }] } })
+            .to_string(),
+        );
+        text.push('\n');
+        let p = file("skip-mid", &text);
+        let typed = chrono::DateTime::parse_from_rfc3339("2026-11-10T10:02:00Z").unwrap().timestamp_millis() as u64;
+        let opens: fn(&str) -> bool = |t| t.starts_with("[Luna move m1 request");
+        let read_with = |ask| read_bounded(&p, Provider::Claude, 4 * 1024, 32 * 1024, Some(Skip { opens, ask })).unwrap();
+        let r = read_with(Some((typed, None)));
+        assert!(r.cut_front && !r.said.iter().any(|s| s.text.contains(ask)), "the ask's prompt is before the window");
+        assert!(r.said.is_empty() && r.edits.is_empty(), "the ask's turn is not the work: {:?} {:?}", r.said.len(), r.edits);
+        // Closed before the window's first line: that may be a turn of the
+        // chat's own, and is read.
+        let r = read_with(Some((typed, Some(typed + 1_000))));
+        assert!(!r.said.is_empty() && r.edits == ["drafts/move-m1-ab.md"]);
+        // No ask on record: read as ever.
+        assert_eq!(read_with(None).edits, ["drafts/move-m1-ab.md"]);
         let _ = std::fs::remove_file(p);
     }
 }

@@ -258,7 +258,9 @@ mod tests {
                 "luna_run_list",
                 "luna_guide_get",
                 "luna_notification_send",
-                "luna_power_set"
+                "luna_power_set",
+                // A person's chat with Luna's tools (agents/handoff `may_list`).
+                "luna_session_handoff"
             ]
         );
         // One without them is offered none, and may call none.
@@ -657,12 +659,13 @@ mod tests {
         }
     }
 
-    /// Every session with Luna's tools reads the same guide, instructions and
-    /// tool list; auto-handoff, which only a chat with it on is to know of, is
-    /// in none of them: no topic, no section, no word in the index, the enum or
-    /// a tool's description. That chat has it from the tool itself.
+    /// Every session with Luna's tools, helpers included, reads the same
+    /// guide, instructions and tool list; the handoff, which only a person's
+    /// chat is to know of, is in none of them: no topic, no section, no word in
+    /// the index, the enum or a tool's description. That chat has it from the
+    /// tool itself, listed to it alone (agents/handoff `may_list`).
     #[test]
-    fn what_every_tooled_session_reads_says_nothing_of_auto_handoff() {
+    fn what_every_tooled_session_reads_leaves_the_handoff_to_its_own_tool() {
         assert!(TOPICS.iter().all(|(topic, title)| !topic.contains("handoff") && !title.to_lowercase().contains("handoff")));
         for (title, text) in sections() {
             assert!(!text.to_lowercase().contains("handoff"), "{title}");

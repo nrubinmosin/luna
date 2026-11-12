@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { handoffAsk } from '../../ipc/handoff';
 import { savedTitle, sessionMeta } from '../../ipc/sessions';
 import { notifyWaiting } from '../../shared/lib/notify';
 import { PROVIDER_LABEL, type Chat } from '../../shared/types';
@@ -62,6 +63,10 @@ export function useSessionWatch() {
           if (fresh.status !== 'resting') store.setStatus(chat.id, 'resting');
           useDrafts.getState().set(chat.id, null);
           useMarked.getState().set(chat.id, null);
+          // The ask for a handoff is the core's, CLI or none: one that lapsed
+          // while it was down must not keep the chip and the menu's refusal.
+          const ask = await handoffAsk(chat.id).catch(() => undefined);
+          if (ask !== undefined) store.setHandoffAsk(chat.id, ask);
           // A chat restored from an earlier run may still wear the opening
           // prompt it was named after; the CLI's title is on disk by now.
           if (fresh.sessionId && fresh.nameSource !== 'user' && !titleLooked.has(chat.id)) {
@@ -83,6 +88,7 @@ export function useSessionWatch() {
         useDrafts.getState().set(chat.id, { draft: meta.draft, held: meta.held });
         if (meta.handoff) store.setHandoffMark(chat.id, meta.handoff);
         store.setHandoffAsked(chat.id, meta.handoffAsked ?? null);
+        store.setHandoffAsk(chat.id, meta.handoffAsk ?? null);
         useMoveHints.getState().setLimit(chat.id, meta.limit ?? null);
         useMarked.getState().set(chat.id, meta.marked);
 

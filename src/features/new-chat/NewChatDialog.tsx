@@ -565,7 +565,8 @@ export function NewChatDialog() {
               tools
                 ? 'Past this share of its context, Luna asks the chat to write a handoff; on its word the chat goes on ' +
                   'in a fresh conversation from it, its helpers and their answers carrying on. Nothing switches ' +
-                  'unless the chat asks.'
+                  'unless the chat asks. This only sets when Luna asks on its own: "Hand off now" in the pane\'s … ' +
+                  'menu asks at any time, for any chat with Luna tools.'
                 : 'Only with Luna tools: their server is what offers the handoff'
             }
           >

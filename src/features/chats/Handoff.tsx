@@ -104,8 +104,10 @@ export function askedWords(a: HandoffAsked): string {
 /**
  * The chat's own auto-handoff, as the new-chat dialog has it, for a chat
  * made without it or to change one's mind while it runs. Takes effect in Luna
- * at once; the tool reaches a running CLI by a quick resume of the chat, on
- * the same conversation, once it is idle. With it on, `instructions` (the
+ * at once; a CLI started before Luna offered it the tool gets it by a quick
+ * resume of the chat, on the same conversation, once it is idle. It only sets
+ * when Luna asks on its own: the pane's Hand off now asks at any time
+ * (handoffNow.ts). With it on, `instructions` (the
  * core's word, asked again through `onApplied` once the core has taken a
  * change made here) says whose instructions the chat is served for its
  * handoff, and warns of a skill of the same name its CLI may show the model,
@@ -151,8 +153,10 @@ export function HandoffBox({
       </div>
       <div style={noteStyle}>
         Past it, Luna asks this chat to write a handoff; on its word the chat goes on in a fresh conversation from it,
-        its helpers and their answers carrying on. Nothing switches unless the chat asks. Turned on while the chat runs,
-        it takes effect at a quick resume of the chat, on the same conversation, once it is idle
+        its helpers and their answers carrying on. Nothing switches unless the chat asks. Auto-handoff only asks at that
+        share: "Hand off now" in the pane's … menu asks at any time, for any chat with Luna tools. A chat whose CLI
+        started before Luna offered it the handoff tool gets it at a quick resume, on the same conversation, once it is
+        idle
         {pending ? ' — waiting for it to be idle.' : '.'}
       </div>
       {on && able && instructions && (

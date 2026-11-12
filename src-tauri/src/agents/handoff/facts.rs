@@ -151,33 +151,73 @@ pub(super) fn how_to(source: &str, sha256: &str, body: &str, suggested: Option<&
 }
 
 /// `luna_session_handoff` without `file` while the person moves the chat to
-/// another account: how to write the document for that, and where (`place`).
-/// Its own text, not the handoff's instructions: nothing is cleared, helpers
-/// stay, and the document goes to another account after the person reads it.
-pub(super) fn move_how_to(place: &str) -> String {
+/// another account: how to write the document for that, and where (`place`),
+/// by the handoff's instructions (`body`, with whose they are, `source`) under
+/// the move's own rules, which stand over them: nothing is cleared, helpers
+/// stay, no approval carries over, and the document goes to another account
+/// only once the person has read it.
+pub(super) fn move_how_to(place: &str, source: &str, sha256: &str, body: &str) -> String {
+    let short: String = sha256.chars().take(12).collect();
     format!(
         "How to write the document for this chat's move to another account.\n\n\
          The person is moving this chat to another account of this CLI. A new chat there knows nothing of this \
-         conversation and goes on from a document you write now. Nothing is cleared: this conversation goes on as it is, \
-         and your helpers and your CLI's own jobs stay with it.\n\n\
-         1. Write the document as a Markdown file (.md, at most {kb} KB) at {place}. Use these headings, in this order: \
-         {list}. A heading with nothing to say holds \"None.\". Quote the person's decisions word for word: on the other \
-         side they are records, not approvals.\n\
+         conversation and goes on from a document you write now.\n\n\
+         Luna's rules for a move, which stand over the instructions below wherever the two differ:\n\
+         - Nothing is cleared and nothing switches: this conversation goes on as it is.\n\
+         - Your helpers, Luna's and your CLI's own background jobs and subagents, stay behind with this chat: none \
+         crosses to the new one. Say in the document what each is doing and where its output is.\n\
+         - Quote the person's decisions word for word: on the other side they are records, not approvals. A prior \
+         approval confers nothing new there: the new chat's permissions are its own settings.\n\
+         - The person reads the document, with what Luna adds, before anything goes, and decides whether it does.\n\
+         - The document is one Markdown file (.md) of at most {kb} KB.\n\n\
+         1. Write the document as the instructions below say, at {place}.\n\
          2. Leave out secrets, tokens and credentials, paths into account folders (yours or Luna's), and pasted logs \
          (give paths in the working folder instead). Luna adds the working folder's state, your helpers and the person's \
          note itself.\n\
          3. Call luna_session_handoff with file set to its absolute path.\n\
-         4. End your turn. The person reads the document with what Luna adds, and decides whether it goes.",
+         4. End your turn.\n\n\
+         The instructions ({source}, sha256 {short}), written for a handoff to a fresh conversation of this chat: read \
+         \"the next conversation\" as the new chat on the other account.\n\n{body}",
         kb = super::document::CHAT_DOC_MAX / 1024,
-        list = checklist()
     )
 }
 
-/// Whether a line queued for a chat's notice is a threshold notice: one not
-/// yet typed when a handoff is scheduled is dropped, the new conversation
-/// having nothing to hand off.
+/// How the person's request for a handoff opens.
+const MANUAL_LEAD: &str = "The person asks for a handoff of this chat now";
+
+/// The person's request for a handoff (the pane's Hand off now), the
+/// notifier's tag aside: what to do, as the threshold's first notice says it.
+pub(super) fn manual_notice() -> String {
+    format!(
+        "{MANUAL_LEAD}: hand off to a fresh conversation at the next point where your work can pause. Call \
+         luna_session_handoff without arguments for how to write the handoff, write it, then call luna_session_handoff with \
+         file set to its absolute path and end your turn. Nothing changes until you call it with file."
+    )
+}
+
+/// What the chat hears when the person's request lapsed with no handoff:
+/// the tool refuses again from now.
+pub(super) fn manual_lapsed(minutes: u64) -> String {
+    format!(
+        "The person's request for a handoff of this chat lapsed: no handoff came within {minutes} minutes of it. \
+         luna_session_handoff refuses again until Luna asks for one; go on as you were."
+    )
+}
+
+/// What the chat hears when the person's request could not be typed into it
+/// in time and was withdrawn: it was never asked, and the tool refuses.
+pub(super) fn manual_undelivered(minutes: u64) -> String {
+    format!(
+        "The person asked for a handoff of this chat, but Luna could not deliver the request within {minutes} minutes, so it is withdrawn. luna_session_handoff refuses until Luna asks for one; go on as you were."
+    )
+}
+
+/// Whether a line queued for a chat's notice asks it for a handoff, the
+/// threshold's notice or the person's request: one not yet typed when a
+/// handoff is scheduled is dropped, the new conversation having nothing to
+/// hand off.
 pub(super) fn is_notice(line: &str) -> bool {
-    line.starts_with("This chat's context is at ")
+    line.starts_with("This chat's context is at ") || line.starts_with(MANUAL_LEAD)
 }
 
 /// One helper of the chat's, as the fact block names it.
@@ -360,22 +400,76 @@ pub(super) fn prompt(
 
 /// The line into the chat when a handoff is given up. Before the reset took,
 /// the conversation it is in is the one that asked: it goes on, and may call
-/// again only where the tool is still its (`offered`). After, it is the new
-/// one, which has to hear what it is and where to start.
-pub(super) fn failed_line(n: u32, why: &str, snapshot: &str, reset: bool, offered: bool, prompt: &str) -> String {
+/// again only while it is still asked (`asked`). After, it is the new one,
+/// which has to hear what it is and where to start.
+pub(super) fn failed_line(n: u32, why: &str, snapshot: &str, reset: bool, asked: bool, prompt: &str) -> String {
     if reset && prompt.is_empty() {
         // No prompt to give: it would point at a copy Luna cannot vouch for.
         format!("Handoff {n} cleared the conversation, but Luna gives the new one no handoff ({why}). Ask the person how to go on.")
     } else if reset {
-        format!("Handoff {n} cleared the conversation, but Luna's prompt for the new one did not go in ({why}). It was:\n{prompt}")
+        format!("Handoff {n} {CONTINUED} ({why}). It was:\n{prompt}")
     } else {
-        let next = if offered {
+        let next = if asked {
             "Call luna_session_handoff again once what stood in the way is done."
         } else {
-            "Auto-handoff is off for this chat now: luna_session_handoff refuses until the person turns it on again."
+            "Nobody asks this chat for a handoff any more: luna_session_handoff refuses until Luna asks for one again."
         };
         format!("Handoff {n} did not go through: {why}. This conversation goes on as it was; your handoff's copy is at {snapshot}. {next}")
     }
+}
+
+/// What a failure line carrying the continuation says of itself: how the
+/// notifier knows such a line from any other (mod.rs `as_told`).
+pub(super) const CONTINUED: &str = "cleared the conversation, but Luna's prompt for the new one did not go in";
+
+/// What takes the place of a failure line carrying the continuation where the
+/// chat is not on the conversation Luna's reset opened, or Luna cannot tell
+/// (mod.rs `as_told`): what became of the handoff and where its copy is, and
+/// no prompt. None of them where the line's record is gone: then only that
+/// a prompt was held back.
+pub(super) fn continued_short(n: Option<u32>, why: Option<&str>, snapshot: Option<&str>) -> String {
+    let which = n.map(|n| format!("Handoff {n}")).unwrap_or_else(|| "A handoff".into());
+    let why = why.map(|w| format!(" ({w})")).unwrap_or_default();
+    let copy = snapshot.map(|s| format!(" Its copy is at {s}.")).unwrap_or_default();
+    format!(
+        "{which} of this chat cleared the conversation that wrote it, but Luna's prompt for the new one did not go in{why}, \
+         and this chat may be on another conversation since, so that prompt is not typed here.{copy} Nobody asks this \
+         conversation for a handoff: go on as you were, or ask the person."
+    )
+}
+
+/// `text` past the wrapper Claude Code keeps a pasted prompt in, in its
+/// transcript (`<pasted_content id="…">` … , docs/cli-compatibility.md) and
+/// the whitespace around it: what a check for a line of Luna's own, typed as
+/// a paste, looks at the start of. Text with no wrapper, trimmed at its start.
+pub(super) fn unwrapped(text: &str) -> &str {
+    let text = text.trim_start();
+    match text.strip_prefix("<pasted_content").filter(|r| r.starts_with([' ', '>'])).and_then(|r| r.split_once('>')) {
+        Some((_, inner)) => inner.trim_start(),
+        None => text,
+    }
+}
+
+/// What a chat hears when its handoff was given up because the person went
+/// on in another conversation before Luna's reset (phase.rs `LEFT`): heard in
+/// that conversation, which asked for nothing.
+pub(super) fn left_line(n: u32, snapshot: &str) -> String {
+    format!(
+        "Handoff {n} of this chat did not go through: this conversation was started (a /clear or /new) before Luna cleared \
+         the one that wrote it, so Luna cleared nothing and typed no handoff here. Its copy is at {snapshot}. Nobody asks \
+         this conversation for a handoff: go on as you were."
+    )
+}
+
+/// What the conversation a chat is on hears where Luna, past its reset,
+/// cannot tell that conversation is the one the reset opened (phase.rs
+/// `STRAY`): nothing was typed here, and where the handoff's copy is.
+pub(super) fn stray_line(n: u32, snapshot: &str) -> String {
+    format!(
+        "Handoff {n} of this chat did not go through: Luna was clearing the conversation that wrote it, and cannot tell \
+         that this conversation is the one its reset opened (another may have been started as it went in), so it typed no \
+         handoff here. Its copy is at {snapshot}. Nobody asks this conversation for a handoff: go on as you were."
+    )
 }
 
 #[cfg(test)]
@@ -417,7 +511,21 @@ mod tests {
                  file set to its absolute path and end your turn."
             )
         );
-        for text in [notice(71, 70, false, true), notice(91, 70, true, true), notice(91, 70, true, false)] {
+        assert_eq!(
+            manual_notice(),
+            "The person asks for a handoff of this chat now: hand off to a fresh conversation at the next point where your \
+             work can pause. Call luna_session_handoff without arguments for how to write the handoff, write it, then call \
+             luna_session_handoff with file set to its absolute path and end your turn. Nothing changes until you call it with \
+             file."
+        );
+        assert_eq!(
+            manual_lapsed(10),
+            "The person's request for a handoff of this chat lapsed: no handoff came within 10 minutes of it. \
+             luna_session_handoff refuses again until Luna asks for one; go on as you were."
+        );
+        assert!(!is_notice(&manual_lapsed(10)), "no request: nothing to drop");
+        assert!(manual_lapsed(10).chars().all(|c| !c.is_control()));
+        for text in [notice(71, 70, false, true), notice(91, 70, true, true), notice(91, 70, true, false), manual_notice()] {
             assert!(text.chars().all(|c| !c.is_control()), "one line, as a notice is");
             assert!(is_notice(&text));
         }

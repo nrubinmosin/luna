@@ -466,7 +466,10 @@ pub(crate) fn helper_line(parent: &str) -> String {
          where it says none, in the language the task is written in. Before your turn ends, stop the background work you \
          started that nothing needs any more (watchers, wait loops, dev servers), not helpers you are waiting on nor what \
          your task asks to keep running; keep each caveat beside the claim it limits; send, push or post nothing outward \
-         unless your task asks for it."
+         unless your task asks for it; install nothing and change nothing machine-wide or in your CLI account's folder \
+         (software, system or user-wide settings, PATH, the registry, services, scheduled tasks, global git or shell \
+         config, memory, skills) unless your task names that change: where the work needs one, give your caller the \
+         exact command instead."
     )
 }
 
@@ -479,7 +482,10 @@ pub(crate) fn helper_line(parent: &str) -> String {
 /// memory that outweighs an appended system prompt; in the task itself the note
 /// stands beside what it is about. After the prompt, not before: the opening
 /// words are what names the chat, and a slash command has to come first. One
-/// that does goes without the note, which would land in its arguments.
+/// that does goes without the note, which would land in its arguments. That
+/// leaves a known gap: a Codex helper opening with a slash command is told
+/// nothing of what it is, its system prompt being the CLI's own; a Claude Code
+/// one still has it in `--append-system-prompt`.
 pub(crate) fn helper_prompt(parent: &str, prompt: &str) -> String {
     if prompt.trim_start().starts_with('/') {
         return prompt.to_string();
@@ -516,8 +522,9 @@ pub(crate) fn without_note(text: &str) -> &str {
 }
 
 /// `helper_line` as earlier Lunas wrote it, still in conversations they began:
-/// 0.10's, then the one before helpers were told what they do need.
-const PREVIOUS_HELPER_LINES: [&str; 2] = [
+/// 0.10's, then the one before helpers were told what they do need, then the
+/// one before they were told to leave the machine and their account as they are.
+const PREVIOUS_HELPER_LINES: [&str; 3] = [
     "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
      that session. Instructions meant only for the session a person talks to do not apply to you. Write in the language \
      of the task you were given, progress notes included.",
@@ -526,6 +533,14 @@ const PREVIOUS_HELPER_LINES: [&str; 2] = [
      this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
      not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
      where it says none, in the language the task is written in.",
+    "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
+     that session. You are not the chat of whoever your instructions call the operator, the user or the person at \
+     this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
+     not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
+     where it says none, in the language the task is written in. Before your turn ends, stop the background work you \
+     started that nothing needs any more (watchers, wait loops, dev servers), not helpers you are waiting on nor what \
+     your task asks to keep running; keep each caveat beside the claim it limits; send, push or post nothing outward \
+     unless your task asks for it.",
 ];
 
 /// Auto-handoff's threshold as a chat starts with it: one Luna takes, and
@@ -619,11 +634,12 @@ pub async fn ensure_claude_session(
         let tools = tools.unwrap_or(false) && !login;
         let notes = tools.then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
         let handoff = handoff_threshold(handoff, tools);
-        // Its folder of copies, with the drafts folder it writes its handoff
-        // in made private there, as at every start (agents/handoff
-        // `drafts_at_start`). Where that cannot be done, neither is given,
-        // and What Luna applied says why.
-        let handoff_dir = handoff.map(|_| crate::agents::handoff::drafts_at_start(&id).and_then(|_| crate::agents::handoff::dir_of(&id)));
+        // Every chat with Luna's tools is listed the handoff's tool, the
+        // threshold set or not: its folder of copies, with the drafts folder
+        // it writes its handoff in made private there, as at every start
+        // (agents/handoff `drafts_at_start`). Where that cannot be done,
+        // neither is given, and What Luna applied says why.
+        let handoff_dir = tools.then(|| crate::agents::handoff::drafts_at_start(&id).and_then(|_| crate::agents::handoff::dir_of(&id)));
         let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
         // The library's instructions are read as memory of a folder added to
         // the session, which has every added folder's read: not the others'.
@@ -687,7 +703,8 @@ pub async fn ensure_claude_session(
             mcp: mcp.as_ref().map(|(file, token)| (file.as_path(), token.as_str())),
             notes_dir: notes.as_deref(),
             instructions_dir: instructions.as_deref(),
-            handoff: handoff.zip(handoff_dir.as_ref()).map(|(t, dir)| (t, dir.as_deref().map_err(String::as_str))),
+            handoff: handoff_dir.as_ref().map(|dir| dir.as_deref().map_err(String::as_str)),
+            auto_handoff: handoff,
             moved: moved.as_deref(),
             skill_args: &skills.args,
         });
@@ -778,12 +795,13 @@ pub async fn ensure_codex_session(
         let guard = codex_guard_args(&id, guard.unwrap_or(false), hooks_unasked);
         let tools = tools.unwrap_or(false);
         let handoff = handoff_threshold(handoff, tools);
-        // The drafts folder it writes its handoff in, made private at every
-        // start (agents/handoff `drafts_at_start`), whatever the sandbox, and
-        // given only where its sandbox writes at all (codex/launch.rs
-        // `writes_files`). Where it cannot be made private, it is not given,
-        // and What Luna applied says why.
-        let drafts = handoff.map(|_| crate::agents::handoff::drafts_at_start(&id));
+        // Every chat with Luna's tools is listed the handoff's tool, the
+        // threshold set or not: the drafts folder it writes its handoff in,
+        // made private at every start (agents/handoff `drafts_at_start`),
+        // whatever the sandbox, and given only where its sandbox writes at all
+        // (codex/launch.rs `writes_files`). Where it cannot be made private, it
+        // is not given, and What Luna applied says why.
+        let drafts = tools.then(|| crate::agents::handoff::drafts_at_start(&id));
         let mut settings = serde_json::json!({
             "model": chosen_model,
             "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
@@ -822,9 +840,10 @@ pub async fn ensure_codex_session(
             hooks_unasked,
             guard: &guard,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
-            handoff: handoff.zip(drafts.as_ref()).map(|(t, drafts)| {
-                (t, drafts.as_deref().map(|d| codex_launch::writes_files(sandbox).then_some(d)).map_err(String::as_str))
-            }),
+            handoff: drafts
+                .as_ref()
+                .map(|drafts| drafts.as_deref().map(|d| codex_launch::writes_files(sandbox).then_some(d)).map_err(String::as_str)),
+            auto_handoff: handoff,
             skill_args: &skills.args,
         });
         applied.extend(crate::library::audience_applied(&skills));
@@ -884,6 +903,11 @@ mod tests {
             "not helpers you are waiting on nor what your task asks to keep running",
             "keep each caveat beside the claim it limits",
             "send, push or post nothing outward unless your task asks for it",
+            // What it installs or sets outlives the task, and memory and skills
+            // reach every later session in the account.
+            "install nothing and change nothing machine-wide or in your CLI account's folder",
+            "PATH, the registry, services, scheduled tasks, global git or shell config, memory, skills",
+            "unless your task names that change: where the work needs one, give your caller the exact command instead",
         ];
         for what in owed {
             assert!(line.contains(what), "{what}");
@@ -1364,6 +1388,8 @@ mod tests {
                 "<mcp-file>",
                 "--add-dir",
                 "<notes-dir>",
+                "--add-dir",
+                "<handoff-dir>",
             ])
         );
         assert_eq!(
@@ -1394,6 +1420,7 @@ mod tests {
                 "read-only",
                 "luna-tools",
                 "notes-dir",
+                "handoff-tool",
                 "terminal",
                 "cwd",
                 "inherited-env-cleared",
@@ -1611,25 +1638,35 @@ mod tests {
     }
 
     #[test]
-    fn auto_handoff_is_a_chats_with_luna_tools_and_says_where_its_copies_are() {
+    fn the_handoff_is_every_chats_with_luna_tools_and_says_where_its_copies_are() {
         const ID: &str = "golden-handoff-chat";
         let r = Redact::for_chat(ID);
         // Claude Code: the folder of its copies, added so the next conversation
-        // reads its handoff without asking; in the settings the registry keeps.
+        // reads its handoff without asking, the threshold set or not; the
+        // threshold in the settings the registry keeps, and named apart.
         let s = ClaudeAsk { tools: Some(true), handoff: Some(70), ..ClaudeAsk::chat() }.start(ID, &r);
-        assert_eq!(s.value("auto-handoff"), Some("at 70% of the context: luna_session_handoff; --add-dir <handoff-dir>"));
+        assert_eq!(s.value("handoff-tool"), Some("on request: luna_session_handoff; --add-dir <handoff-dir>"));
+        assert_eq!(s.value("auto-handoff"), Some("at 70% of the context"));
         let at = s.args.iter().position(|a| a == "<handoff-dir>").expect("the folder is added");
         assert_eq!(s.args[at - 1], "--add-dir");
-        assert_eq!(s.applied.iter().find(|(k, ..)| k == "auto-handoff").map(|(_, c, _)| *c), Some(crate::applied::Class::UserAction));
+        for key in ["handoff-tool", "auto-handoff"] {
+            assert_eq!(s.applied.iter().find(|(k, ..)| k == key).map(|(_, c, _)| *c), Some(crate::applied::Class::UserAction), "{key}");
+        }
+        let s = ClaudeAsk { tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(s.value("handoff-tool"), Some("on request: luna_session_handoff; --add-dir <handoff-dir>"));
+        assert!(!s.keys().contains(&"auto-handoff") && s.args.iter().any(|a| a == "<handoff-dir>"), "{:?}", s.args);
         // Codex: the tool and the notices are Luna's; its drafts folder, where
         // it writes the handoff, is an `--add-dir` its sandbox writes into...
-        let s = CodexAsk { tools: Some(true), handoff: Some(55), ..CodexAsk::chat() }.start(ID, &r);
-        assert_eq!(s.value("auto-handoff"), Some("at 55% of the context: luna_session_handoff; --add-dir <handoff-drafts>"));
-        let at = s.args.iter().position(|a| a == "<handoff-drafts>").expect("the drafts folder is added");
-        assert_eq!(s.args[at - 1], "--add-dir");
+        for handoff in [Some(55), None] {
+            let s = CodexAsk { tools: Some(true), handoff, ..CodexAsk::chat() }.start(ID, &r);
+            assert_eq!(s.value("handoff-tool"), Some("on request: luna_session_handoff; --add-dir <handoff-drafts>"));
+            assert_eq!(s.value("auto-handoff"), handoff.map(|_| "at 55% of the context"));
+            let at = s.args.iter().position(|a| a == "<handoff-drafts>").expect("the drafts folder is added");
+            assert_eq!(s.args[at - 1], "--add-dir");
+        }
         // ...where it writes at all: Codex ignores one under a read-only sandbox.
         let s = CodexAsk { tools: Some(true), handoff: Some(55), sandbox: "read-only", ..CodexAsk::chat() }.start(ID, &r);
-        assert_eq!(s.value("auto-handoff"), Some("at 55% of the context: luna_session_handoff"));
+        assert_eq!(s.value("handoff-tool"), Some("on request: luna_session_handoff"));
         assert!(!s.args.iter().any(|a| a == "--add-dir"), "{:?}", s.args);
         // A drafts folder the start cannot make private (a file at its name,
         // here) is given to neither CLI, and the panel says why.
@@ -1644,9 +1681,9 @@ mod tests {
         };
         for s in [
             refused(&|| ClaudeAsk { tools: Some(true), handoff: Some(70), ..ClaudeAsk::chat() }.start(ID, &r)),
-            refused(&|| CodexAsk { tools: Some(true), handoff: Some(55), ..CodexAsk::chat() }.start(ID, &r)),
+            refused(&|| CodexAsk { tools: Some(true), ..CodexAsk::chat() }.start(ID, &r)),
         ] {
-            let said = s.value("auto-handoff").unwrap_or_default();
+            let said = s.value("handoff-tool").unwrap_or_default();
             assert!(
                 said.contains(
                     "luna_session_handoff; no --add-dir: the drafts folder could not be made private (<handoff-drafts> is no private \
@@ -1657,22 +1694,23 @@ mod tests {
             assert!(!s.args.iter().any(|a| a.starts_with("<handoff-")), "{:?}", s.args);
         }
         let _ = std::fs::remove_file(&drafts);
-        // Without Luna's tools there is no server to offer the tool, and with
-        // them but without the tick nothing is asked for: no word of it in the
-        // start, the instructions included, which no CLI is given as a skill.
+        // Without Luna's tools there is no server to offer the tool: no word of
+        // it in the start, the threshold asked for or not, the instructions
+        // included, which no CLI is given as a skill.
         for s in [
             ClaudeAsk { handoff: Some(70), ..ClaudeAsk::chat() }.start(ID, &r),
             CodexAsk { handoff: Some(70), ..CodexAsk::chat() }.start(ID, &r),
-            ClaudeAsk { tools: Some(true), handoff: Some(99), ..ClaudeAsk::chat() }.start(ID, &r),
-            ClaudeAsk { tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r),
-            CodexAsk { tools: Some(true), ..CodexAsk::chat() }.start(ID, &r),
+            ClaudeAsk::chat().start(ID, &r),
         ] {
-            assert!(!s.keys().contains(&"auto-handoff") && !s.args.iter().any(|a| a == "<handoff-dir>"), "{:?}", s.args);
+            assert!(!s.keys().iter().any(|k| k.contains("handoff")) && !s.args.iter().any(|a| a == "<handoff-dir>"), "{:?}", s.args);
             let said = format!("{:?}{:?}", s.args, s.envs).to_lowercase();
             for word in ["luna_session_handoff", "session-handoff", "handoffs"] {
                 assert!(!said.contains(word), "{word}: {said}");
             }
         }
+        // A threshold Luna does not take is none: the tool on request alone.
+        let s = ClaudeAsk { tools: Some(true), handoff: Some(99), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert!(s.keys().contains(&"handoff-tool") && !s.keys().contains(&"auto-handoff"), "{:?}", s.keys());
     }
 
     #[test]
@@ -1761,7 +1799,10 @@ mod tests {
         .start(ID, &r);
         let mut flags = codex_flags(None, "high", "never", "workspace-write");
         flags.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
-        assert_eq!(s.args, codex_args(&[], flags, golden::codex_mcp()));
+        // Every person's chat with Luna's tools has the handoff's drafts folder.
+        let mut tail = golden::codex_mcp();
+        tail.extend(strings(&["--add-dir", "<handoff-drafts>"]));
+        assert_eq!(s.args, codex_args(&[], flags, tail.clone()));
         let mut envs = codex_envs(ID, true);
         envs.extend(pairs(&[("LUNA_MCP_TOKEN", "<token>")]));
         assert_eq!(s.envs, envs);
@@ -1773,7 +1814,7 @@ mod tests {
 
         // Hooks' trust asked for: Codex would drop the guard, and it is given none.
         let s = CodexAsk { tools: Some(true), guard: Some(true), ..CodexAsk::chat() }.start(ID, &r);
-        assert_eq!(s.args, codex_args(&[], codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"), golden::codex_mcp()));
+        assert_eq!(s.args, codex_args(&[], codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"), tail));
     }
 
     #[test]

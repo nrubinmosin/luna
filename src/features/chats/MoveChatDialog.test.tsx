@@ -1,10 +1,10 @@
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Account, Chat, Folder, LimitWindow } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
 import { useChats } from './chats.store';
-import { askRefusal, defaultTarget, MoveChatDialog } from './MoveChatDialog';
+import { askRefusal, defaultTarget, MoveChatDialog, quotaWords } from './MoveChatDialog';
 import { MoveHint, OpeningHint, STALL_MS } from './MoveHint';
 import { AccountPicker } from '../new-chat/AccountPicker';
 import { useMoveHints } from './moveHints.store';
@@ -30,7 +30,10 @@ vi.mock('../../ipc/moving', async importOriginal => ({
   moveStep: vi.fn((chatId: string, moveId: string, step: string) =>
     Promise.resolve({ chatId, moveId, newId: 'c-new', phase: step, stopOld: false })
   ),
-  moveList: vi.fn(() => Promise.resolve([]))
+  moveList: vi.fn(() => Promise.resolve([])),
+  moveFacts: vi.fn(() => Promise.resolve({})),
+  moveBuildFromRecords: vi.fn(),
+  movePreview: vi.fn()
 }));
 vi.mock('../new-chat/create', () => ({ createChat: vi.fn(() => new Promise(r => setTimeout(() => r('c-new'), 20))) }));
 vi.mock('../../ipc/trust', async importOriginal => ({
@@ -88,18 +91,42 @@ describe('moving a chat to another account', () => {
     expect(defaultTarget([account('team', 'claude'), account('codex-one', 'codex')], chat({}))).toBeNull();
   });
 
-  it('offers "Ask the chat" only to a running chat with auto-handoff that can write a file', () => {
-    const on = { tools: true, autoHandoff: true };
+  it('has a chat with Luna tools write its document, auto-handoff or not, and says how to clear what blocks it', () => {
+    const on = { tools: true };
     expect(askRefusal(chat(on), null)).toBeNull();
-    expect(askRefusal(chat({}), null)).toMatch(/auto-handoff/);
-    expect(askRefusal(chat({ ...on, perm: 'Plan only' }), null)).toMatch(/plan mode/);
-    expect(askRefusal(chat({ ...on, provider: 'codex', sandbox: 'read-only' }), null)).toMatch(/read-only/);
-    // At rest is no stopped CLI: an idle chat reads so. The core refuses one
-    // whose CLI does not run.
+    expect(askRefusal(chat({ ...on, autoHandoff: false }), null)).toBeNull();
+    const none = askRefusal(chat({}), null);
+    expect(none?.why).toMatch(/Luna tools box ticked/);
+    expect(none?.blocks).toBe(true);
+    expect(askRefusal(chat({ ...on, perm: 'Plan only' }), null)?.why).toMatch(/leave plan mode/);
+    expect(askRefusal(chat({ ...on, provider: 'codex', sandbox: 'read-only' }), null)?.why).toMatch(/workspace-write/);
+    // At rest is no stopped CLI: an idle chat reads so. The core says whether
+    // its CLI runs.
     expect(askRefusal(chat({ ...on, status: 'resting' }), null)).toBeNull();
-    // Its turn over, subagents at work: at its prompt, so it may be asked.
-    expect(askRefusal(chat({ ...on, status: 'background' }), null)).toBeNull();
-    expect(askRefusal(chat(on), 'usage_limit')).toMatch(/usage limit/);
+    const stopped = askRefusal(
+      chat(on),
+      'the chat is not to be asked now: its CLI is not running; ask again once that is past'
+    );
+    expect(stopped?.why).toMatch(/start the chat in its pane/);
+    expect(stopped?.blocks).toBe(true);
+    expect(
+      askRefusal(
+        chat(on),
+        'the chat is not to be asked now: it stopped on a usage limit (usage_limit) and cannot write now'
+      )
+    ).toMatchObject({ blocks: true });
+    // A question of its CLI's is answered in its pane, the dialog open: the
+    // choice stays.
+    const question = askRefusal(
+      chat(on),
+      "the chat is not to be asked now: it is waiting on a question of its CLI's; ask again once that is past"
+    );
+    expect(question?.why).toMatch(/answer its CLI's question in its pane/);
+    expect(question?.blocks).toBe(false);
+    // Words the window does not know are passed on as the core put them.
+    expect(askRefusal(chat(on), 'you asked this chat for a handoff, which is still open')?.why).toBe(
+      'You asked this chat for a handoff, which is still open.'
+    );
   });
 
   it("starts the new chat with the old one's permissions, folder, look and worktree by name", () => {
@@ -160,9 +187,10 @@ describe('moving a chat to another account', () => {
     useChats.setState({ folders: [folder([c])] });
     useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
     render(<MoveChatDialog chat={c} onClose={() => {}} />);
-    const ask = screen.getByRole('radio', { name: /Ask the chat/ });
+    const ask = screen.getByRole('radio', { name: /The chat writes it/ });
     expect(ask).toBeDisabled();
-    expect(screen.getByText(/Only a chat with auto-handoff on/)).toBeInTheDocument();
+    expect(screen.getByText(/runs without Luna's tools/)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Luna builds it/ })).toBeChecked();
     expect(screen.getByRole('radio', { name: /Keep it/ })).toBeDisabled();
     expect(screen.getByRole('radio', { name: /Stop it/ })).toBeChecked();
   });
@@ -218,7 +246,7 @@ describe('moving a chat to another account', () => {
   });
 
   it('gives up an ask whose dialog closed while the core was still answering', async () => {
-    const c = chat({ tools: true, autoHandoff: true });
+    const c = chat({ tools: true });
     useChats.setState({ folders: [folder([c])] });
     useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
     useMoveHints.setState({ limits: {}, dismissed: {} });
@@ -227,7 +255,6 @@ describe('moving a chat to another account', () => {
     vi.mocked(moving.moveCancel).mockClear();
     const user = userEvent.setup();
     const { unmount } = render(<MoveChatDialog chat={c} onClose={() => {}} />);
-    await user.click(screen.getByRole('radio', { name: /Ask the chat/ }));
     const ask = await screen.findByRole('button', { name: 'Ask the chat' });
     await vi.waitFor(() => expect(ask).toBeEnabled());
     await user.click(ask);
@@ -262,7 +289,7 @@ describe('moving a chat to another account', () => {
     useChats.setState({ folders: [folder([c])] });
     useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
     render(<MoveChatDialog chat={c} onClose={() => {}} />);
-    for (const name of [/Luna writes it/, /Ask the chat/, /Keep it/, /Stop it/]) {
+    for (const name of [/Luna builds it/, /The chat writes it/, /Keep it/, /Stop it/]) {
       const radio = screen.getByRole('radio', { name });
       expect(radio.nextElementSibling?.tagName).toBe('LABEL');
       expect(radio.nextElementSibling?.getAttribute('for')).toBe(radio.id);
@@ -294,7 +321,6 @@ describe('moving a chat to another account', () => {
     app.appendChild(panes);
     document.body.appendChild(app);
     render(<MoveChatDialog chat={c} onClose={() => {}} />);
-    await user.click(screen.getByRole('radio', { name: /Ask the chat/ }));
     const ask = screen.getByRole('button', { name: 'Ask the chat' });
     await vi.waitFor(() => expect(ask).toBeEnabled());
     await user.click(ask);
@@ -437,5 +463,188 @@ describe('moving a chat to another account', () => {
       ...document.querySelectorAll('.picker-list [role="option"], .picker-list button, .picker-list li')
     ].find(r => r.textContent?.includes('rOut'));
     expect(row?.textContent).toContain('signed out');
+  });
+});
+
+const asked = (extra: Partial<MoveStatusDto>): MoveStatusDto => ({
+  moveId: 'm-ask',
+  chatId: 'c1',
+  newId: 'c-new',
+  phase: 'asking',
+  at: 1,
+  stopOld: false,
+  worktree: false,
+  toAccount: 'backend',
+  source: 'chat',
+  ...extra
+});
+const shown = (moveId: string): moving.MovePreviewDto => ({
+  moveId,
+  newId: 'c-new',
+  prompt: `[Luna move ${moveId}, not typed by the user] Read it.`,
+  text: '# Moved\n',
+  sha256: '',
+  redacted: 0,
+  pathsCut: 0,
+  invisible: 0,
+  highlights: [],
+  stopOld: false,
+  worktree: false,
+  warnings: [],
+  maxBytes: 96 * 1024
+});
+const LIMIT: moving.LimitFact = {
+  kind: 'usage_limit',
+  since: Date.now() - 60_000,
+  window: '5 hours',
+  used: 1,
+  resetsAt: new Date(Date.now() + 90 * 60_000 + 20_000).toISOString(),
+  readingAgeMs: 4 * 60_000
+};
+/** Polls of two seconds and more: waited for past them. */
+const LONG = { timeout: 5000 };
+
+describe('who writes a moved chat’s document', () => {
+  afterEach(() => {
+    vi.mocked(moving.moveList).mockImplementation(() => Promise.resolve([]));
+    vi.mocked(moving.moveFacts).mockImplementation(() => Promise.resolve({}));
+  });
+
+  /** The dialog on chat `c` with two accounts, once the core has answered. */
+  async function open(c: Chat) {
+    useChats.setState({ folders: [folder([c])] });
+    useAccounts.setState({ accounts: [account('team', 'claude'), account('backend', 'claude')] });
+    const user = userEvent.setup();
+    const shownDialog = render(<MoveChatDialog chat={c} onClose={() => {}} />);
+    const go = screen.getByRole('button', { name: /Ask the chat|Preview/ });
+    await vi.waitFor(() => expect(go).toBeEnabled());
+    return { user, ...shownDialog };
+  }
+
+  /** Asked the chat, the banner up. */
+  async function ask(c: Chat) {
+    vi.mocked(moving.moveAsk).mockResolvedValue(asked({}));
+    const o = await open(c);
+    await o.user.click(screen.getByRole('button', { name: 'Ask the chat' }));
+    await screen.findByTestId('move-banner');
+    return o;
+  }
+
+  it('is the chat by default, with no limit in force', async () => {
+    await open(chat({ tools: true }));
+    expect(screen.getByRole('radio', { name: /The chat writes it/ })).toBeChecked();
+    expect(screen.queryByTestId('move-limit')).toBeNull();
+    expect(screen.queryByTestId('move-quota')).toBeNull();
+  });
+
+  it("is Luna's from records while a usage limit holds the chat, with why and the window's facts", async () => {
+    vi.mocked(moving.moveFacts).mockResolvedValue({
+      limit: LIMIT,
+      askBlocked: 'the chat is not to be asked now: it stopped on a usage limit (usage_limit) and cannot write now'
+    });
+    await open(chat({ tools: true }));
+    await vi.waitFor(() => expect(screen.getByRole('radio', { name: /Luna builds it/ })).toBeChecked());
+    expect(screen.getByRole('radio', { name: /The chat writes it/ })).toBeDisabled();
+    expect(screen.getByTestId('move-limit')).toHaveTextContent('The chat stopped on a usage limit at');
+    expect(screen.getByTestId('move-quota')).toHaveTextContent(
+      /5 hours at 100% · resets .+ \(in 1h 30m\) · usage read 4 min ago/
+    );
+    // Nothing known of the window: nothing said of it, no threshold made up.
+    expect(quotaWords({ kind: 'usage_limit', since: 1 })).toBeNull();
+  });
+
+  it('leaves the chat to be picked while its CLI asks the person something', async () => {
+    vi.mocked(moving.moveFacts).mockResolvedValue({
+      askBlocked:
+        "the chat is not to be asked now: it is waiting on a question of its CLI's; ask again once that is past"
+    });
+    await open(chat({ tools: true }));
+    await screen.findByText(/answer its CLI's question in its pane/);
+    expect(screen.getByRole('radio', { name: /The chat writes it/ })).toBeEnabled();
+    expect(screen.getByRole('radio', { name: /The chat writes it/ })).toBeChecked();
+  });
+
+  it('says whether the chat is still to be asked, writing, or held by its CLI', async () => {
+    const c = chat({ tools: true });
+    const { rerender } = await ask(c);
+    expect(screen.getByTestId('move-banner-words')).toHaveTextContent(`Waiting for "Campaign"'s turn to end`);
+    vi.mocked(moving.moveList).mockResolvedValue([asked({ phase: 'asked', askedAt: 2 })]);
+    await vi.waitFor(
+      () => expect(screen.getByTestId('move-banner-words')).toHaveTextContent('"Campaign" is writing its document'),
+      LONG
+    );
+    rerender(<MoveChatDialog chat={{ ...c, status: 'waiting' }} onClose={() => {}} />);
+    expect(screen.getByTestId('move-banner-words')).toHaveTextContent('CLI asks you something: answer it in its pane');
+    expect(screen.getByRole('button', { name: 'Cancel the move' })).toBeInTheDocument();
+  });
+
+  it("gives up waiting for Luna's document, said so on the preview", async () => {
+    vi.mocked(moving.moveBuildFromRecords).mockResolvedValue(shown('m-ask'));
+    const { user } = await ask(chat({ tools: true }));
+    await user.click(screen.getByRole('button', { name: "Use Luna's document now" }));
+    expect(moving.moveBuildFromRecords).toHaveBeenCalledWith('c1', 'm-ask', null);
+    expect(await screen.findByTestId('move-source')).toHaveTextContent(
+      "Built by Luna from the chat's records — you did not wait for the chat"
+    );
+  });
+
+  it('says the chat wrote the document it wrote', async () => {
+    vi.mocked(moving.movePreview).mockResolvedValue(shown('m-ask'));
+    await ask(chat({ tools: true }));
+    vi.mocked(moving.moveList).mockResolvedValue([asked({ phase: 'shown' })]);
+    expect(await screen.findByTestId('move-source', {}, LONG)).toHaveTextContent('Written by the chat');
+  });
+
+  it("does not turn a failed ask into Luna's document unasked, and keeps the person's choices for it", async () => {
+    vi.mocked(moving.moveBuildFromRecords).mockClear();
+    vi.mocked(moving.moveBuildFromRecords).mockResolvedValue(shown('m-ask'));
+    vi.mocked(moving.moveConfirm).mockClear();
+    vi.mocked(moving.moveAsk).mockResolvedValue(asked({}));
+    const { user } = await open(chat({ tools: true }));
+    await user.click(screen.getByRole('radio', { name: /Stop it/ }));
+    await user.click(screen.getByRole('button', { name: 'Ask the chat' }));
+    vi.mocked(moving.moveList).mockResolvedValue([
+      asked({ phase: 'failed', why: 'no document within 10 minutes', askFailed: true, askAgain: true })
+    ]);
+    expect(await screen.findByTestId('move-failed', {}, LONG)).toHaveTextContent(
+      'The chat did not write its document: no document within 10 minutes'
+    );
+    // Nothing built, nothing picked for the person.
+    expect(moving.moveBuildFromRecords).not.toHaveBeenCalled();
+    expect(screen.queryByRole('radio', { name: /Luna builds it/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Ask again' })).toHaveAttribute(
+      'title',
+      expect.stringMatching(/whole context/)
+    );
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Build from records' }));
+    expect(moving.moveBuildFromRecords).toHaveBeenCalledWith('c1', 'm-ask', null);
+    expect(await screen.findByTestId('move-source')).toHaveTextContent(
+      'the chat did not write its document: no document within 10 minutes'
+    );
+    await user.click(screen.getByRole('button', { name: /Send to backend/ }));
+    await vi.waitFor(() => expect(moving.moveConfirm).toHaveBeenCalled());
+    expect(vi.mocked(moving.moveConfirm).mock.calls[0]?.[4]).toMatchObject({ stopOld: true, account: 'backend' });
+  });
+
+  it('offers no second ask where one would not go through', async () => {
+    await ask(chat({ tools: true }));
+    vi.mocked(moving.moveList).mockResolvedValue([
+      asked({ phase: 'failed', why: 'it stopped on a usage limit', askFailed: true, askAgain: false })
+    ]);
+    await screen.findByTestId('move-failed', {}, LONG);
+    expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Build from records' })).toBeInTheDocument();
+  });
+
+  it("says, opened again, why the chat's last ask came to nothing", async () => {
+    vi.mocked(moving.moveList).mockResolvedValue([
+      asked({ phase: 'failed', at: 5, why: 'its CLI exited', askFailed: true }),
+      asked({ moveId: 'm-old', phase: 'canceled', at: 1 })
+    ]);
+    await open(chat({ tools: true }));
+    expect(await screen.findByTestId('move-last-failed')).toHaveTextContent(
+      'Last time the chat did not write its document: its CLI exited'
+    );
   });
 });
