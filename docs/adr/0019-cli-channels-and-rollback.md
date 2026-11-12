@@ -57,13 +57,25 @@ let a person decide.
   every file matches the sha256 its install record kept; Codex records now
   keep one per file (as unpacked, held to the tarball's checksum), where they
   kept sizes alone.
+- **Marks by hand go both ways** (amended 2026-11-12). "Mark good" on an
+  installed version off the list adds it, on this machine, to what the
+  known-good channel picks from (`good.json`), as a `chosen` version under the
+  same floor and `minSafe`; "Clear bad" and "Unmark good" undo either mark,
+  installed or not. The canary also says when a version got through: three
+  watched sessions past their first half minute, none failed. Neither mark
+  nor the canary's word is a Luna release's check, and Settings keeps them
+  apart (known-good, marked good, first 3 sessions ok). Weighed: no local
+  marks, "Use" alone holding a version the person trusts; it keeps the
+  version from following a later list, which marking does not.
 - **MCP** gets the version a session's CLI started from (`luna_session_get`,
   `cliVersion`), read-only: changing versions is the person's.
 
 ## Consequences
 
 - A CLI release reaches users only once someone has checked it and a Luna
-  release lists it, unless they chose `latest`. Each version checked goes onto
+  release lists it, unless they chose `latest` or marked it good themselves
+  after running it. A version marked good is one the person vouches for on
+  this machine, not one Luna's gate and live suite passed. Each version checked goes onto
   the list as a step of the cli-upgrade skill; a Luna that is not updated
   stays on its list's versions.
 - On the known-good channel the release server cannot choose the version at
@@ -77,4 +89,7 @@ let a person decide.
 - Disk: the previous version and any still in use stay, about 200 MB for
   Claude Code and 600 MB for Codex each.
 - New state at each provider's root: `previous`, `floor`, `channel`,
-  `bad.json`, `pinned`, `canary.json` and its lock, `in-use/`.
+  `bad.json`, `good.json` and `marks.lock`, `pinned`, `canary.json` and its
+  lock, `in-use/`. A same-user process that can write `good.json` could
+  already choose `latest` or hold any installed version; it gains no reach,
+  and the floor and `minSafe` still hold against it.

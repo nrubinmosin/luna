@@ -50,5 +50,13 @@ export const useCli = create<CliState>((set, get) => ({
 }));
 
 /** The canary of the current version, while it warns and nobody said to keep it. */
+/** How many sessions the canary watches (cli/canary.rs `WATCH`). */
+export const CANARY_WATCH = 3;
+
+/** Whether `version` got through the canary: its watched sessions all past
+ *  their start, none failed. */
+export const canaryThrough = (v: CliVersionsDto | null, version: string) =>
+  !!v?.canary && v.canary.version === version && v.canary.settled >= CANARY_WATCH && v.canary.failures.length === 0;
+
 export const canaryWarning = (v: CliVersionsDto | null) =>
   v?.canary && v.canary.warned && !v.canary.dismissed ? v.canary : null;

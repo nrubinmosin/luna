@@ -44,6 +44,8 @@
     "allow-cli-use-version",
     "allow-cli-set-channel",
     "allow-cli-mark-bad",
+    "allow-cli-mark-good",
+    "allow-cli-clear-mark",
     "allow-cli-canary-dismiss",
     "allow-claude-defaults",
     "allow-claude-models",

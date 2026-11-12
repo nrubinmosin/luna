@@ -92,8 +92,18 @@ fn without_escapes(line: &str) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct Canary {
     pub version: String,
+    /// New with each reset, so a session watched for an earlier watch of the
+    /// same version (flipped away and back meanwhile) counts for none.
+    #[serde(default)]
+    pub run: String,
     /// Sessions started on it so far, up to `WATCH`.
     pub watched: u32,
+    /// Watched sessions past `EARLY` with no failure: ended well, stopped,
+    /// or still running. `WATCH` of them with no failures is a version that
+    /// got through its first sessions; a core that went away with some
+    /// still inside `EARLY` leaves them uncounted, and the count short.
+    #[serde(default)]
+    pub settled: u32,
     /// Why each watched session failed.
     pub failures: Vec<String>,
     /// `WARN_AT` failures were seen.
@@ -126,35 +136,50 @@ pub(crate) fn read_in(root: &Path) -> Option<Canary> {
 
 /// A version has just become current: watch its first sessions.
 pub(super) fn reset_in(root: &Path, version: &str) -> Result<(), String> {
-    locked(root, |c| *c = Some(Canary { version: version.to_string(), ..Default::default() }))
+    let run = crate::secret::random_hex(8);
+    locked(root, |c| *c = Some(Canary { version: version.to_string(), run, ..Default::default() }))
 }
 
-/// A session starts on `version`: whether it is one the canary watches.
-fn watch_in(root: &Path, version: &str) -> Result<bool, String> {
+/// Which watch a session counts for: a version, as one reset began watching it.
+#[derive(Clone, Debug, PartialEq)]
+struct Watch {
+    version: String,
+    run: String,
+}
+
+impl Watch {
+    fn of(&self, c: &Canary) -> bool {
+        c.version == self.version && c.run == self.run
+    }
+}
+
+/// A session starts on `version`: the watch it counts for, if the canary
+/// watches it.
+fn watch_in(root: &Path, version: &str) -> Result<Option<Watch>, String> {
     locked(root, |c| match c {
         Some(c) if c.version == version && c.watched < WATCH => {
             c.watched += 1;
-            true
+            Some(Watch { version: c.version.clone(), run: c.run.clone() })
         }
-        _ => false,
+        _ => None,
     })
 }
 
-/// A watched session on `version` said nothing of it: its watch goes to the
-/// next session.
-fn unwatch_in(root: &Path, version: &str) -> Result<(), String> {
+/// A watched session said nothing of its version: its watch goes to the next
+/// session.
+fn unwatch_in(root: &Path, w: &Watch) -> Result<(), String> {
     locked(root, |c| {
-        if let Some(c) = c.as_mut().filter(|c| c.version == version) {
+        if let Some(c) = c.as_mut().filter(|c| w.of(c)) {
             c.watched = c.watched.saturating_sub(1);
         }
     })
 }
 
-/// A watched session on `version` failed for `why`: the canary as it now
-/// stands when this failure is the one that raised the warning.
-fn fail_in(root: &Path, version: &str, why: &str) -> Result<Option<Canary>, String> {
+/// A watched session failed for `why`: the canary as it now stands when this
+/// failure is the one that raised the warning.
+fn fail_in(root: &Path, w: &Watch, why: &str) -> Result<Option<Canary>, String> {
     locked(root, |c| match c {
-        Some(c) if c.version == version => {
+        Some(c) if w.of(c) => {
             c.failures.push(why.to_string());
             let raised = !c.warned && c.failures.len() >= WARN_AT;
             c.warned |= raised;
@@ -162,6 +187,35 @@ fn fail_in(root: &Path, version: &str, why: &str) -> Result<Option<Canary>, Stri
         }
         _ => None,
     })
+}
+
+/// A watched session ended well or got past `EARLY` with no failure: the
+/// canary as it now stands when this one is the last of `WATCH` and none
+/// failed.
+fn settle_in(root: &Path, w: &Watch) -> Result<Option<Canary>, String> {
+    locked(root, |c| match c {
+        Some(c) if w.of(c) && c.settled < WATCH => {
+            c.settled += 1;
+            (c.settled == WATCH && c.failures.is_empty()).then(|| c.clone())
+        }
+        _ => None,
+    })
+}
+
+/// Settles a watched session; once its version is through, the log says so
+/// and the window reads the versions again (`cli://canary`) for Settings' tag.
+fn settled(provider: Provider, root: &Path, w: &Watch) {
+    match settle_in(root, w) {
+        Ok(Some(c)) => {
+            crate::log::info(
+                "cli",
+                &format!("canary: {} {}: its first {WATCH} sessions got past their start", provider.as_str(), c.version),
+            );
+            crate::emit::to_ui("cli://canary", serde_json::json!({ "provider": provider, "version": c.version }));
+        }
+        Ok(None) => {}
+        Err(e) => crate::log::warn("cli", &format!("canary: {e}")),
+    }
 }
 
 /// "Keep it": the warning stays in the record, its badge goes.
@@ -173,8 +227,26 @@ pub(super) fn dismiss_in(root: &Path) -> Result<(), String> {
     })
 }
 
-/// The watched sessions of this core: provider, root, version, start.
-type Watching = HashMap<String, (Provider, std::path::PathBuf, String, Instant)>;
+/// A session the canary watches, in this core.
+struct Watched {
+    provider: Provider,
+    root: std::path::PathBuf,
+    watch: Watch,
+    /// Its CLI's start.
+    at: Instant,
+    /// When its CLI's process was reaped (`session_exited`): what it left on
+    /// its pipes may take a while yet to be read before `session_ended`.
+    exited: Option<Instant>,
+}
+
+impl Watched {
+    /// How long its CLI ran, or has run so far.
+    fn ran(&self) -> Duration {
+        self.exited.unwrap_or_else(Instant::now).saturating_duration_since(self.at)
+    }
+}
+
+type Watching = HashMap<String, Watched>;
 
 fn watching() -> &'static Mutex<Watching> {
     static W: OnceLock<Mutex<Watching>> = OnceLock::new();
@@ -183,44 +255,71 @@ fn watching() -> &'static Mutex<Watching> {
 
 /// The core starts `session`'s CLI from `version` under `root`.
 pub(super) fn session_started(provider: Provider, root: &Path, version: &str, session: &str) {
-    match watch_in(root, version) {
-        Ok(true) => {}
-        Ok(false) => return,
+    let watch = match watch_in(root, version) {
+        Ok(Some(w)) => w,
+        Ok(None) => return,
         Err(e) => {
             crate::log::warn("cli", &format!("canary: {e}"));
             return;
         }
-    }
+    };
     if crate::paths::is_test() && fs::symlink_metadata(root.join(FORCE_FAIL)).is_ok() {
-        failed(provider, root, version, &format!("{session}: forced by the test build's {FORCE_FAIL} switch"));
+        failed(provider, root, &watch, &format!("{session}: forced by the test build's {FORCE_FAIL} switch"));
         return;
     }
+    let at = Instant::now();
     watching()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(session.to_string(), (provider, root.to_path_buf(), version.to_string(), Instant::now()));
+        .insert(session.to_string(), Watched { provider, root: root.to_path_buf(), watch, at, exited: None });
+    // Still running once `EARLY` is up: nothing it does from then on counts,
+    // so it settles now rather than whenever it ends. One whose process has
+    // gone is `session_ended`'s to judge, by when it went.
+    let id = session.to_string();
+    let spawned = std::thread::Builder::new().name("luna-canary".into()).spawn(move || {
+        std::thread::sleep(EARLY);
+        let mut w = watching().lock().unwrap_or_else(|e| e.into_inner());
+        if w.get(&id).is_some_and(|s| s.at == at && s.exited.is_none()) {
+            let s = w.remove(&id).expect("just looked up");
+            drop(w);
+            settled(s.provider, &s.root, &s.watch);
+        }
+    });
+    if let Err(e) = spawned {
+        crate::log::warn("cli", &format!("canary: {e}; {session} settles only as it ends"));
+    }
+}
+
+/// `session`'s CLI process has been reaped, before what it wrote is read to
+/// the end: its run is timed from here, not from `session_ended`.
+pub fn session_exited(session: &str) {
+    if let Some(s) = watching().lock().unwrap_or_else(|e| e.into_inner()).get_mut(session) {
+        s.exited.get_or_insert_with(Instant::now);
+    }
 }
 
 /// `session`'s CLI has exited, with an error or not. `last_words`: what it
 /// left on its screen (a pane's) or its stderr (a helper's), read only for a
 /// watched session's early error, for a cause outside the CLI.
 pub fn session_ended(session: &str, error: bool, last_words: impl FnOnce() -> String) {
-    let Some((provider, root, version, at)) = watching().lock().unwrap_or_else(|e| e.into_inner()).remove(session) else { return };
-    if !error || at.elapsed() >= EARLY {
+    let Some(s) = watching().lock().unwrap_or_else(|e| e.into_inner()).remove(session) else { return };
+    let ran = s.ran();
+    if !error || ran >= EARLY {
+        settled(s.provider, &s.root, &s.watch);
         return;
     }
-    let after = at.elapsed().as_secs();
+    let (after, version) = (ran.as_secs(), &s.watch.version);
     match cause_outside(&last_words()) {
         Some(cause) => {
             crate::log::info(
                 "cli",
-                &format!("canary: {} {version}: {session} exited {after}s after it started, for {cause}: not counted", provider.as_str()),
+                &format!("canary: {} {version}: {session} exited {after}s after it started, for {cause}: not counted", s.provider.as_str()),
             );
-            if let Err(e) = unwatch_in(&root, &version) {
+            if let Err(e) = unwatch_in(&s.root, &s.watch) {
                 crate::log::warn("cli", &format!("canary: {e}"));
             }
         }
-        None => failed(provider, &root, &version, &format!("{session}: exited with an error {after}s after it started")),
+        None => failed(s.provider, &s.root, &s.watch, &format!("{session}: exited with an error {after}s after it started")),
     }
 }
 
@@ -229,17 +328,17 @@ pub fn session_ended(session: &str, error: bool, last_words: impl FnOnce() -> St
 /// exits with is Luna's doing: not counted, and one stopped within `EARLY`
 /// gives its watch to the next session. Called before the stop.
 pub fn session_stopped(session: &str) {
-    let Some((_, root, version, at)) = watching().lock().unwrap_or_else(|e| e.into_inner()).remove(session) else { return };
-    if at.elapsed() < EARLY {
-        if let Err(e) = unwatch_in(&root, &version) {
-            crate::log::warn("cli", &format!("canary: {e}"));
-        }
+    let Some(s) = watching().lock().unwrap_or_else(|e| e.into_inner()).remove(session) else { return };
+    if s.ran() >= EARLY {
+        settled(s.provider, &s.root, &s.watch);
+    } else if let Err(e) = unwatch_in(&s.root, &s.watch) {
+        crate::log::warn("cli", &format!("canary: {e}"));
     }
 }
 
-fn failed(provider: Provider, root: &Path, version: &str, why: &str) {
-    crate::log::warn("cli", &format!("canary: {} {version}: {why}", provider.as_str()));
-    match fail_in(root, version, why) {
+fn failed(provider: Provider, root: &Path, w: &Watch, why: &str) {
+    crate::log::warn("cli", &format!("canary: {} {}: {why}", provider.as_str(), w.version));
+    match fail_in(root, w, why) {
         Ok(Some(canary)) => warn(provider, &canary),
         Ok(None) => {}
         Err(e) => crate::log::warn("cli", &format!("canary: {e}")),
@@ -275,27 +374,42 @@ mod tests {
         dir
     }
 
+    /// The watch a session started on `version` now would count for.
+    fn watch(root: &Path, version: &str) -> Watch {
+        Watch { version: version.into(), run: read_in(root).map(|c| c.run).unwrap_or_default() }
+    }
+
+    /// Makes `session`'s start half a minute older.
+    fn age(session: &str) {
+        let mut w = watching().lock().unwrap();
+        let at = &mut w.get_mut(session).unwrap().at;
+        *at = at.checked_sub(EARLY).expect("a clock half a minute old");
+    }
+
     #[test]
     fn two_failures_among_the_first_sessions_raise_one_warning() {
         let root = scratch("warn");
         reset_in(&root, "2.0.0").unwrap();
         // A session on another version is none of this canary's.
-        assert!(!watch_in(&root, "1.0.0").unwrap());
+        assert!(watch_in(&root, "1.0.0").unwrap().is_none());
         for _ in 0..WATCH {
-            assert!(watch_in(&root, "2.0.0").unwrap());
+            assert_eq!(watch_in(&root, "2.0.0").unwrap(), Some(watch(&root, "2.0.0")));
         }
-        assert!(!watch_in(&root, "2.0.0").unwrap(), "only the first {WATCH}");
-        assert_eq!(fail_in(&root, "2.0.0", "a").unwrap(), None);
-        let raised = fail_in(&root, "2.0.0", "b").unwrap().expect("the second failure warns");
+        assert!(watch_in(&root, "2.0.0").unwrap().is_none(), "only the first {WATCH}");
+        let w = watch(&root, "2.0.0");
+        assert_eq!(fail_in(&root, &w, "a").unwrap(), None);
+        let raised = fail_in(&root, &w, "b").unwrap().expect("the second failure warns");
         assert_eq!((raised.watched, raised.failures.len(), raised.warned), (WATCH, 2, true));
-        assert_eq!(fail_in(&root, "2.0.0", "c").unwrap(), None, "once");
-        assert_eq!(fail_in(&root, "1.0.0", "d").unwrap(), None);
+        assert_eq!(fail_in(&root, &w, "c").unwrap(), None, "once");
+        assert_eq!(fail_in(&root, &watch(&root, "1.0.0"), "d").unwrap(), None);
 
         dismiss_in(&root).unwrap();
         assert!(read_in(&root).unwrap().dismissed);
         // The next version starts afresh.
         reset_in(&root, "3.0.0").unwrap();
-        assert_eq!(read_in(&root).unwrap(), Canary { version: "3.0.0".into(), ..Default::default() });
+        let fresh = read_in(&root).unwrap();
+        assert_eq!(fresh, Canary { version: "3.0.0".into(), run: fresh.run.clone(), ..Default::default() });
+        assert_eq!(fresh.run.len(), 16);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -314,13 +428,65 @@ mod tests {
         assert_eq!((c.watched, c.failures.len(), c.warned), (3, 1, false), "d was not watched, a ended well: {c:?}");
         assert!(c.failures[0].starts_with("canary-b: exited with an error"));
         // A late one: watched, failed after its first half minute.
+        age("canary-c");
+        session_ended("canary-c", true, String::new);
+        let c = read_in(&root).unwrap();
+        assert_eq!((c.failures.len(), c.settled), (1, 2), "a and c got past their start: {c:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_version_gets_through_once_its_watched_sessions_settle_with_no_failure() {
+        let root = scratch("settle");
+        reset_in(&root, "2.0.0").unwrap();
+        for _ in 0..WATCH {
+            watch_in(&root, "2.0.0").unwrap().unwrap();
+        }
+        let w = watch(&root, "2.0.0");
+        assert_eq!(settle_in(&root, &w).unwrap(), None);
+        assert_eq!(settle_in(&root, &watch(&root, "1.0.0")).unwrap(), None, "another version's");
+        assert_eq!(settle_in(&root, &w).unwrap(), None, "started is not settled: one is still to come");
+        let through = settle_in(&root, &w).unwrap().expect("the last of them");
+        assert_eq!((through.watched, through.settled), (WATCH, WATCH));
+        assert_eq!(settle_in(&root, &w).unwrap(), None, "once");
+        // One failure among them: no way through, though no warning either.
+        reset_in(&root, "3.0.0").unwrap();
+        let w = watch(&root, "3.0.0");
+        fail_in(&root, &w, "a").unwrap();
+        assert!((0..WATCH).all(|_| settle_in(&root, &w).unwrap().is_none()));
+        // A watch of the same version from before a reset counts for nothing.
+        reset_in(&root, "3.0.0").unwrap();
+        assert!(settle_in(&root, &w).unwrap().is_none() && fail_in(&root, &w, "b").unwrap().is_none());
+        unwatch_in(&root, &w).unwrap();
+        let c = read_in(&root).unwrap();
+        assert_eq!((c.watched, c.settled, c.failures.len()), (0, 0, 0), "{c:?}");
+        // A canary.json from before the field: none settled.
+        fs::write(root.join(FILE), r#"{"version":"4.0.0","watched":3,"failures":[],"warned":false,"dismissed":false}"#).unwrap();
+        assert_eq!(read_in(&root).unwrap().settled, 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A helper's process gone with an error inside its half minute, whose
+    /// pipes take longer than that to read to the end, still fails it: the
+    /// timer leaves it be, and its run is timed to when it was reaped.
+    #[test]
+    fn an_early_exit_read_out_late_still_counts() {
+        let root = scratch("reaped");
+        reset_in(&root, "2.0.0").unwrap();
+        session_started(Provider::Codex, &root, "2.0.0", "canary-late");
+        session_exited("canary-late");
         {
             let mut w = watching().lock().unwrap();
-            let started = &mut w.get_mut("canary-c").unwrap().3;
-            *started = started.checked_sub(EARLY).expect("a clock half a minute old");
+            let s = w.get_mut("canary-late").unwrap();
+            // Started 10 s before it was reaped, and read out a minute later.
+            let exited = s.exited.unwrap().checked_sub(Duration::from_secs(60)).expect("a clock a minute old");
+            s.exited = Some(exited);
+            s.at = exited.checked_sub(Duration::from_secs(10)).expect("a clock 70 s old");
         }
-        session_ended("canary-c", true, String::new);
-        assert_eq!(read_in(&root).unwrap().failures.len(), 1);
+        session_ended("canary-late", true, String::new);
+        let c = read_in(&root).unwrap();
+        assert_eq!((c.failures.len(), c.settled), (1, 0), "{c:?}");
+        assert!(c.failures[0].contains("10s after it started"), "{c:?}");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -362,11 +528,7 @@ mod tests {
         session_stopped("canary-stop-a");
         session_ended("canary-stop-a", true, String::new);
         // One that ran its half minute and more keeps its watch.
-        {
-            let mut w = watching().lock().unwrap();
-            let started = &mut w.get_mut("canary-stop-b").unwrap().3;
-            *started = started.checked_sub(EARLY).expect("a clock half a minute old");
-        }
+        age("canary-stop-b");
         session_stopped("canary-stop-b");
         session_ended("canary-stop-b", true, String::new);
         let c = read_in(&root).unwrap();

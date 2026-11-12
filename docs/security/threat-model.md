@@ -277,7 +277,10 @@ releases (`codex/cli.rs`), both over HTTPS.
 - Both: which version is taken is the provider's channel
   ([ADR-0019](../adr/0019-cli-channels-and-rollback.md)). On `known-good`, the
   default, it is the newest version on the list compiled into the Luna
-  release (`src-tauri/cli-known-good.json`); on `latest`, what the unsigned
+  release (`src-tauri/cli-known-good.json`) or marked good by hand on this
+  machine ("Mark good", `cli_mark_good`: an installed version, off the list,
+  not below `minSafe`; `good.json`, read back held to the reading Luna's
+  `minSafe` and losing to a bad mark, `choice::good_in`); on `latest`, what the unsigned
   pointer names, never below the floor (`cli.rs` `update_in`). Nothing below
   `minSafe` is installed, made current, gone back to or started: a launch
   refuses a current version below it, with no fall back to PATH, and the
@@ -309,9 +312,13 @@ below the CLI root for a link before deleting (`link_free_below`), and the
 sweep takes no folder a process of Luna's still holds (`cli/in_use.rs`: a
 shared lock per running process on `in-use/<dir>`, made private and never
 through a link, and never removed, so a start waiting through a sweep holds
-the same file every later sweep locks). The state at the root (`channel`, `bad.json`, `pinned`,
-`canary.json`, `floor`) is written private like `current`; a `bad.json` that
-does not parse marks nothing bad, which only lets the channel choose again.
+the same file every later sweep locks). The state at the root (`channel`, `bad.json`, `good.json`,
+`pinned`, `canary.json`, `floor`) is written private like `current`, the two
+marks files under `marks.lock` together; a `bad.json` that does not parse
+marks nothing bad, which only lets the channel choose again, and a `good.json`
+that does not parse marks nothing good. A version marked good is a `chosen`
+one, as a listed one is: below the floor it is taken only while installed,
+never downloaded again.
 
 **What an origin compromise gets.** The bucket or its CDN alone: no new code
 runs. A replaced exe fails the signed checksum, a replaced manifest the
@@ -328,7 +335,8 @@ binary and checksum replaced together, installed and run (F10).
 | STRIDE | Threat | Status |
 | --- | --- | --- |
 | T, S | Claude Code's bucket or CDN serves a forged exe or manifest | mitigated: the manifest is verified against the pinned release key before its checksum is used (`claude/manifest_sig.rs`), must name the requested version, and must not be below the floor (`cli.rs` `floor_in`, raised when a version becomes current) |
-| T | A release pointer names an older version, or one Luna has not been checked with | mitigated: the known-good channel, the default, takes only versions on the list compiled into the release; a pointer's version below the floor is refused, installed or not; nothing below `minSafe` runs (`cli.rs` `update_in`, `cli/choice.rs`, `cli/known_good.rs`) |
+| T | A release pointer names an older version, or one Luna has not been checked with | mitigated: the known-good channel, the default, takes only versions on the list compiled into the release or marked good by the person on this machine, never one the pointer names; a pointer's version below the floor is refused, installed or not; nothing below `minSafe` runs (`cli.rs` `update_in`, `cli/choice.rs`, `cli/known_good.rs`) |
+| T, E | A same-user process writes `good.json` to have the known-good channel take a version | accepted with R3: it could already choose `latest` or hold any installed version (`channel`, `pinned`); the floor, `minSafe`, the signed manifest (Claude Code) and the probe still hold; the marks are the person's through Settings only, never an MCP tool (`cli_mark_good`, `cli_clear_mark`: B1 commands of the window) |
 | T, E | A version gone back to by hand was altered on disk since it ran | mitigated: "Use" holds every file to its recorded sha256 first; below the floor a record without one per file is refused (`cli.rs` `reverify`) |
 | D | A new version breaks every session started on it | mitigated: an offline probe before it becomes current (`cli/probe.rs`), a canary over its first sessions that warns (`cli/canary.rs`), the previous version always kept and "Use" to go back; no automatic rollback (ADR-0019) |
 | D, E | The sweep deletes a version folder under a running session (Unix: a Codex session's helpers) | mitigated: a shared lock per running process, the sweep only under the exclusive one (`cli/in_use.rs`); a launch whose lock cannot be had is refused, never started unheld (`cli.rs` `launch_in`) |

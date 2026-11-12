@@ -60,10 +60,11 @@ pub(crate) fn min_safe(provider: Provider) -> &'static str {
     &entry(provider).min_safe
 }
 
-/// What the known-good channel installs: the newest listed version that is
-/// not marked bad.
-pub(crate) fn pick<'a>(list: &'a Entry, bad: &dyn Fn(&str) -> bool) -> Option<&'a str> {
-    list.known_good.iter().filter(|v| !bad(v)).max_by(|a, b| super::version_cmp(a, b)).map(String::as_str)
+/// What the known-good channel installs: the newest version that the list
+/// or `good` names (those marked good on this machine, held to the minimum
+/// by `choice::good_in`) and that is not marked bad.
+pub(crate) fn pick<'a>(list: &'a Entry, good: impl Iterator<Item = &'a String>, bad: &dyn Fn(&str) -> bool) -> Option<&'a str> {
+    list.known_good.iter().chain(good).filter(|v| !bad(v)).max_by(|a, b| super::version_cmp(a, b)).map(String::as_str)
 }
 
 #[cfg(test)]
@@ -86,8 +87,8 @@ mod tests {
     #[test]
     fn the_newest_known_good_version_not_marked_bad_is_picked() {
         let e = Entry { min_safe: "1.0.0".into(), known_good: vec!["1.2.0".into(), "1.10.0".into(), "1.9.0".into()] };
-        assert_eq!(pick(&e, &|_| false), Some("1.10.0"));
-        assert_eq!(pick(&e, &|v| v == "1.10.0"), Some("1.9.0"));
-        assert_eq!(pick(&e, &|_| true), None);
+        assert_eq!(pick(&e, std::iter::empty(), &|_| false), Some("1.10.0"));
+        assert_eq!(pick(&e, std::iter::empty(), &|v| v == "1.10.0"), Some("1.9.0"));
+        assert_eq!(pick(&e, std::iter::empty(), &|_| true), None);
     }
 }
