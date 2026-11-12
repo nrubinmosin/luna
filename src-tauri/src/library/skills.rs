@@ -124,7 +124,7 @@ pub(super) fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
             Err(e) => (String::new(), Some(e.clone())),
         };
         let files = checked.and(files);
-        out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new(), audience: Audience::Both }, files));
+        out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new(), audience: Audience::EVERY }, files));
     }
     Ok(out)
 }
@@ -142,6 +142,10 @@ pub struct InstructionsInfo {
     pub accounts: Reach,
     /// Whose sessions it is for (audience.rs).
     pub audience: Audience,
+    /// For some roles only: given to each of their sessions as Luna starts
+    /// it, never laid into an account, so its accounts do not compete with
+    /// other instructions for one (audience.rs `laid_into_accounts`).
+    pub per_session: bool,
 }
 
 /// Every instructions file in the library, by name. A folder that will not
@@ -218,6 +222,7 @@ pub(super) fn instructions_info(name: &str, text: &Result<Option<Vec<u8>>, Strin
         problem,
         accounts: lib.instructions.get(name).cloned().unwrap_or_default(),
         audience: instructions_audience(lib, name),
+        per_session: !laid_into_accounts(lib, name),
     }
 }
 

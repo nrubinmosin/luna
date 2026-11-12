@@ -43,6 +43,11 @@ pub struct Spec {
     /// `connectors`; else it has Luna's server alone.
     #[serde(default)]
     pub connectors: bool,
+    /// What it and every session under it keep to, its caller's first
+    /// (agents/spawn `Constraint`): set at the spawn and never changed, and
+    /// given as the last of its role layers at every turn (`command_for`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<crate::agents::Constraint>,
     /// The bearer token of its MCP config: Luna's tools when `tools`, and
     /// `luna_permission` for every Claude Code helper. Never saved: a core
     /// started later issues its own.

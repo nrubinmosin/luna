@@ -8,7 +8,7 @@ import type { LibraryOverviewDto, LibrarySkillDto } from '../../ipc/library';
 import { LibraryEditor } from './LibraryEditor';
 import { useLibrary } from './library.store';
 import { SkillsGrid } from './SkillsGrid';
-import { stateWords, SystemSkills } from './SystemSkills';
+import { stateWords, SystemSkills, systemKind } from './SystemSkills';
 
 vi.mock('../../ipc/library', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/library')>()),
@@ -25,6 +25,7 @@ const PATH = 'C:\\lib\\system\\session-handoff\\SKILL.md';
 const SHA = '3054a9e14c774f592c9c2fed08da4ff7eb38befdb00321184f3d1b324c8aedd9';
 const state = (s: Partial<SystemSkillState>): SystemSkillState => ({
   name: 'session-handoff',
+  kind: 'skill',
   state: 'luna',
   version: '0.12.0',
   sha256: SHA,
@@ -55,7 +56,7 @@ const reserved: LibrarySkillDto = {
   description: '',
   problem: "session-handoff is the name of Luna's system skill for handoffs: no skill of that name is laid out",
   accounts: ['all'],
-  audience: 'both'
+  audience: 'every'
 };
 
 const button = (name: RegExp | string) => screen.getByRole('button', { name });
@@ -99,6 +100,19 @@ describe('SystemSkills', () => {
     render(<SystemSkills o={{ ...overview(state({})), systemAside: [kept] }} act={vi.fn()} edit={vi.fn()} />);
     expect(screen.getByRole('alert')).toHaveTextContent(`Kept aside, not served: ${kept}`);
     expect(screen.getByText('Luna’s own: 0.12.0, sha 3054a9e14c77')).toBeInTheDocument();
+  });
+
+  it('shows a role’s text and a note as texts of their own, each for its role', async () => {
+    const edit = vi.fn();
+    const role = state({ name: 'role-lead', kind: 'role', path: 'C:\\lib\\system\\role-lead\\TEXT.md' });
+    render(<SystemSkills o={overview(role)} act={vi.fn()} edit={edit} />);
+    expect(screen.getByText(/What a lead .* is told of its role/)).toBeInTheDocument();
+    expect(button('Edit').title).toMatch(/one override for every session of that role/);
+    await userEvent.click(button('Edit'));
+    expect(edit).toHaveBeenCalledWith({ system: 'role-lead' });
+    expect(systemKind('note-helper')).toBe('note');
+    expect(systemKind('role-chat')).toBe('role');
+    expect(systemKind('session-handoff')).toBe('skill');
   });
 
   it('opens the editor on the system skill', async () => {
@@ -157,8 +171,8 @@ describe('a skill of a system skill’s name', () => {
     const row = screen.getByText(/no skill of that name is laid out/).closest('tr')!;
     expect(row).toHaveAttribute('data-reserved', 'yes');
     // Its own row has no reach or audience picker; review's has them.
-    expect(row.querySelectorAll('[role="radio"]')).toHaveLength(0);
-    expect(screen.getAllByRole('radio')).toHaveLength(3);
+    expect(row.querySelectorAll('[role="checkbox"]')).toHaveLength(0);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(3);
     await userEvent.click(button('Make it the override…'));
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveTextContent('skills/session-handoff');

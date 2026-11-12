@@ -24,6 +24,8 @@ src-tauri/src/luna_guide.md  eol=lf
 # The same for the system skills Luna serves (library/system.rs `include_str!`),
 # whose SHA-256 names the text a chat was served: one hash from every checkout.
 src-tauri/resources/skills/** text eol=lf
+# And for the system texts: role defaults and notes.
+src-tauri/resources/system/** text eol=lf
 
 # The transcript fixtures go into the tests byte for byte (`include_bytes!`), and
 # one of them has CRLF endings on purpose: no conversion either way.

@@ -20,11 +20,36 @@ const BG_WAIT_CEILING_ENV: &str = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS";
 /// (run.rs `stops_background`).
 const BG_WAIT_CEILING_MS: &str = "10800000";
 
-/// The arguments and working directory of the next turn. Err when a Claude
-/// Code turn's mandatory settings — its core-folder deny (threat model F3) —
-/// cannot be written: the turn refuses rather than run without the deny.
+/// A helper's role: a lead where it was spawned with Luna's tools, which
+/// make it able to start helpers of its own, else a helper.
+pub(crate) fn role_of(s: &Spec) -> crate::library::Role {
+    match s.tools {
+        true => crate::library::Role::Lead,
+        false => crate::library::Role::Helper,
+    }
+}
+
+/// `command_with` on the texts its role is served now.
+#[cfg(test)]
 pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
+    command_with(e, id, &crate::library::role_texts(role_of(&e.spec)))
+}
+
+/// `stdin_with` on the note its role is served now.
+#[cfg(test)]
+pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
+    stdin_with(e, prompt, crate::library::role_texts(role_of(&e.spec)).note.as_deref())
+}
+
+/// The arguments and working directory of the next turn, `texts` its role's
+/// system texts, read before this module's lock (`spawn_turn`). Err when a
+/// Claude Code turn's mandatory settings — its core-folder deny (threat model
+/// F3) — cannot be written, or a Codex turn's role layers do not fit on its
+/// command line: the turn refuses rather than run without them.
+pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleTexts) -> Result<Command, String> {
     let s = &e.spec;
+    let role = role_of(s);
+    let constraints: Vec<String> = s.constraints.iter().map(|c| c.text.clone()).collect();
     let mut args: Vec<String> = Vec::new();
     let mut envs: Vec<(&'static str, String)> = Vec::new();
     let mut applied = vec![
@@ -121,9 +146,8 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
                         .push(Item::HelperPermissionPrompt.with(format!("Luna's own tool hidden: --disallowedTools {}", denied.join(","))));
                 }
             }
-            if let Some(parent) = &s.parent {
-                args.extend(crate::claude::launch::claude_helper_args(parent));
-                applied.push(Item::HelperIdentity.with(format!("--append-system-prompt: {}", crate::pty::helper_line(parent))));
+            if let (Some(_), Some(note)) = (&s.parent, &texts.note) {
+                applied.push(Item::HelperIdentity.with(format!("a note after its first prompt: {note}")));
             }
             // A helper with tools has helpers of its own to hear from: what a
             // notice names is a file there, to read without asking.
@@ -141,8 +165,11 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             // from them, on every turn: each is a process of its own
             // (library/folders.rs `session_args`). No hooks: its stream says it all; but
             // the guard against endless waits, a helper's as any (guard.rs).
-            let mut skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir, crate::library::SessionKind::Helper);
-            let instructions = crate::pty::claude_instructions_dir(id, skills.instructions.as_deref());
+            let mut skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir, role);
+            // Its role layers, written afresh every turn: an edit reaches it
+            // at its next (library/role.rs).
+            let layers = crate::library::role_layers(texts, &skills, &constraints);
+            let instructions = crate::pty::claude_instructions_dir(id, layers.as_deref());
             let mut luna_dirs: Vec<String> = skills.args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect();
             luna_dirs.extend(notes);
             let own = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
@@ -162,10 +189,12 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
             applied.extend(holds);
             if let Some(dir) = instructions {
+                let file = dir.join("CLAUDE.md").to_string_lossy().into_owned();
                 let dir = dir.to_string_lossy().into_owned();
                 args.extend(["--add-dir".into(), dir.clone()]);
                 envs.push((crate::claude::launch::CLAUDE_ADDED_DIR_MEMORY, "1".into()));
                 applied.push(crate::claude::launch::instructions_applied(&dir));
+                applied.extend(crate::library::layers_applied(texts, &skills, &constraints, &file));
             }
             applied.extend(crate::claude::launch::skills_applied(&skills.args));
             args.extend(skills.args);
@@ -295,12 +324,19 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             }
             envs.extend(git);
             envs.push(("CODEX_HOME", s.account_path.clone()));
-            let library = crate::library::session_args(Provider::Codex, &s.account_path, &dir, crate::library::SessionKind::Helper);
+            let mut library = crate::library::session_args(Provider::Codex, &s.account_path, &dir, role);
             applied.extend(crate::codex::launch::library_applied(&library.args));
             applied.extend(crate::library::audience_applied(&library));
-            args.extend(library.args);
-            if let Some(parent) = &s.parent {
-                applied.push(Item::HelperIdentity.with(format!("a note after every prompt: {}", crate::pty::helper_line(parent))));
+            args.extend(std::mem::take(&mut library.args));
+            // Its role layers, given every turn: Codex takes them at the
+            // thread's start and after a compaction (library/role.rs). The
+            // folder is trusted for the run, so its project's config counts.
+            let (role_args, role_applied) = crate::pty::codex_role_args(&s.account_path, &dir, true, texts, &library, &constraints)
+                .map_err(|why| format!("the helper's turn is not started: {why}; its role and constraints would not reach it"))?;
+            args.extend(role_args);
+            applied.extend(role_applied);
+            if let (Some(_), Some(note)) = (&s.parent, &texts.note) {
+                applied.push(Item::HelperIdentity.with(format!("a note after every prompt: {note}")));
             }
             // The prompt comes on stdin; Claude Code reads it there unasked.
             args.push("-".into());
@@ -328,19 +364,19 @@ fn profile_deny(args: &[String]) -> Option<(String, String)> {
     Some((profile.to_string(), dir.to_string()))
 }
 
-/// What a turn's CLI is given: `prompt`, which on every turn of a Codex helper
-/// carries Luna's note (`pty::helper_prompt`), naming its parent as it is
-/// now. Claude Code's system prompt says it every turn, and its first prompt
-/// too, beside the task its account's instructions would otherwise outweigh;
-/// Codex has nowhere but the conversation, where one note at its start goes
-/// with a compaction, and a long helper would go on as the chat of a person.
-/// Not in `Entry::opening`, which goes back to the caller as what it asked, nor
-/// in what `luna_message_list` gives back (`message_of` in codex/session/read.rs and
-/// claude/session/transcript.rs).
-pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
-    match (&e.spec.parent, e.spec.provider) {
-        (Some(parent), Provider::Codex) => crate::pty::helper_prompt(parent, prompt),
-        (Some(parent), Provider::Claude) if e.session.is_none() => crate::pty::helper_prompt(parent, prompt),
+/// What a turn's CLI is given: `prompt`, with the note for its role
+/// (`pty::helper_prompt`, `note` as `spawn_turn` read it) after the first of
+/// a Claude Code helper's conversation and after every one of a Codex
+/// helper's. Both have their role layers at memory level every turn too;
+/// the note stands beside the task, which a Codex thread may have compacted
+/// away from where its developer message was. Not in `Entry::opening`, which
+/// goes back to the caller as what it asked, nor in what `luna_message_list`
+/// gives back (`message_of` in codex/session/read.rs and
+/// claude/session/transcript.rs). A helper whose parent is gone is told none.
+pub(super) fn stdin_with(e: &Entry, prompt: &str, note: Option<&str>) -> String {
+    match (&e.spec.parent, note, e.spec.provider) {
+        (Some(_), Some(note), Provider::Codex) => crate::pty::helper_prompt(note, prompt),
+        (Some(_), Some(note), Provider::Claude) if e.session.is_none() => crate::pty::helper_prompt(note, prompt),
         _ => prompt.to_string(),
     }
 }
@@ -383,16 +419,14 @@ mod tests {
     #[test]
     fn notes_are_open_to_a_helper_with_tools() {
         let mut e = entry(Provider::Claude);
-        let has_dir = |e: &Entry| command_for(e, "x").unwrap().0.iter().any(|a| a == "--add-dir");
+        let notes = crate::agents::notes_dir().to_string_lossy().into_owned();
+        let has_dir = |e: &Entry| command_for(e, "x").unwrap().0.windows(2).any(|w| w[0] == "--add-dir" && w[1] == notes);
         assert!(!has_dir(&e), "one with no tools gets no notices");
         e.spec.tools = true;
         assert!(has_dir(&e));
-        let (args, _, _, _) = command_for(&e, "x").unwrap();
-        let at = args.iter().position(|a| a == "--add-dir").unwrap();
-        assert_eq!(args[at + 1], crate::agents::notes_dir().to_string_lossy());
         let mut codex = entry(Provider::Codex);
         codex.spec.tools = true;
-        assert!(!has_dir(&codex), "Codex's sandboxes read anywhere");
+        assert!(!command_for(&codex, "x").unwrap().0.iter().any(|a| a == "--add-dir"), "Codex's sandboxes read anywhere");
     }
 
     #[test]
@@ -514,29 +548,49 @@ mod tests {
     fn a_codex_helpers_note_goes_with_every_turn() {
         let mut e = entry(Provider::Codex);
         e.spec.parent = Some("p-1".into());
-        let notes = |text: String| text.matches("A note from Luna").count();
+        let notes = |text: String| text.matches("[A note, not part of the task: ").count();
         assert_eq!(notes(stdin_text(&e, "the prompt")), 1, "the turn that starts its conversation");
         assert_eq!(stdin_text(&e, "/review"), "/review", "not into a command's arguments");
         e.session = Some("t-1".into());
         assert_eq!(notes(stdin_text(&e, "Carry on where you left off.")), 1, "and each one after: a compaction loses the first");
         // Claude Code's first prompt has it too, beside the task its account's
-        // instructions would otherwise outweigh; after that its system prompt
-        // says it on every turn.
+        // instructions would otherwise outweigh; after that its role layers
+        // say it on every turn.
         let mut e = entry(Provider::Claude);
         e.spec.parent = Some("p-1".into());
         let first = stdin_text(&e, "the prompt");
         assert!(first.starts_with("the prompt\n\n") && notes(first.clone()) == 1, "{first}");
-        assert!(first.contains("the operator, the user or the person at this machine"), "{first}");
+        assert!(first.contains("comes from another agent, not a person"), "{first}");
+        for word in ["operator", "Luna", "session p-1"] {
+            assert!(!first.contains(word), "the note names nobody: {word}");
+        }
         assert_eq!(stdin_text(&e, "/review"), "/review");
         e.session = Some("s-1".into());
-        assert_eq!(stdin_text(&e, "the next"), "the next", "its system prompt says it there");
+        assert_eq!(stdin_text(&e, "the next"), "the next", "its role layers say it there");
         e.session = None;
         e.spec.parent = None;
         assert_eq!(stdin_text(&e, "the prompt"), "the prompt", "a helper of nobody's is told nothing");
     }
 
+    /// The text of a turn's role layers: Claude Code's `CLAUDE.md` in the
+    /// folder it is given, Codex's `developer_instructions`.
+    fn layers_of(provider: Provider, args: &[String]) -> Option<String> {
+        match provider {
+            Provider::Claude => {
+                let hooks = crate::paths::data_dir().join("hooks");
+                args.windows(2)
+                    .filter(|w| w[0] == "--add-dir" && std::path::Path::new(&w[1]).starts_with(&hooks))
+                    .find_map(|w| std::fs::read_to_string(std::path::Path::new(&w[1]).join("CLAUDE.md")).ok())
+            }
+            Provider::Codex => args.iter().find_map(|a| a.strip_prefix("developer_instructions=")).map(|v| {
+                let doc: toml_edit::DocumentMut = format!("v = {v}").parse().unwrap();
+                doc["v"].as_str().unwrap().to_string()
+            }),
+        }
+    }
+
     #[test]
-    fn a_helper_passed_to_another_parent_is_told_on_its_next_turn() {
+    fn a_helper_passed_to_another_parent_keeps_its_role_and_is_told_of_nobody_without_one() {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut e = entry(provider);
             e.spec.parent = Some("old".into());
@@ -547,24 +601,19 @@ mod tests {
             let e = &r.entries["moved"];
             let (args, _, envs, _) = command_for(e, "moved").unwrap();
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "new"), "{provider:?}");
+            assert!(layers_of(provider, &args).unwrap().contains("Your task comes from another agent"));
             let line = stdin_text(e, "go on");
             match provider {
-                Provider::Claude => {
-                    assert!(value_of(&args, "--append-system-prompt").unwrap().contains("by session new"));
-                    assert_eq!(line, "go on", "its system prompt says it");
-                }
-                Provider::Codex => {
-                    assert!(line.starts_with("go on") && line.contains("by session new"), "{line}");
-                    assert_eq!(line.matches("A note from Luna").count(), 1);
-                }
+                Provider::Claude => assert_eq!(line, "go on", "its role layers say it"),
+                Provider::Codex => assert_eq!(line.matches("[A note, not part of the task: ").count(), 1, "{line}"),
             }
             drop(r);
-            // With nobody to answer to, it is told of nobody.
+            // With nobody to answer to, it hears no note; its role stays.
             set_parent("moved", None);
             let e = lock().entries.remove("moved").unwrap();
             let (args, _, envs, _) = command_for(&e, "moved").unwrap();
             assert!(!envs.iter().any(|(k, _)| *k == "LUNA_PARENT_ID"));
-            assert!(!args.iter().any(|a| a == "--append-system-prompt"));
+            assert!(layers_of(provider, &args).is_some());
             assert_eq!(stdin_text(&e, "go on"), "go on");
         }
     }
@@ -613,20 +662,63 @@ mod tests {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut e = entry(provider);
             e.spec.parent = Some("p-1".into());
-            let (args, _, envs, _) = command_for(&e, "x").unwrap();
+            let (args, _, envs, applied) = command_for(&e, "x").unwrap();
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_SESSION_ID" && v == "x"));
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
-            assert!(!args.iter().any(|a| a.contains("developer_instructions")), "that would replace what its config says");
+            assert!(!args.iter().any(|a| a == "--append-system-prompt"), "memory outweighs it: the role goes there");
+            let layers = layers_of(provider, &args).unwrap_or_else(|| panic!("{provider:?}: {args:?}"));
+            assert!(layers.starts_with("# Your role\n\nYour task comes from another agent"), "{layers}");
+            assert!(!layers.contains("helpers of your own"), "a helper is no lead");
+            assert!(applied.iter().any(|a| a.key == "role.layers"), "{provider:?}");
             if provider == Provider::Claude {
-                assert!(value_of(&args, "--append-system-prompt").unwrap().contains("started through Luna by session p-1"));
+                assert!(envs.iter().any(|(k, v)| *k == crate::claude::launch::CLAUDE_ADDED_DIR_MEMORY && v == "1"));
             }
+            // A lead is told of its helpers.
+            e.spec.tools = true;
+            let (args, _, _, _) = command_for(&e, "x").unwrap();
+            assert!(layers_of(provider, &args).unwrap().contains("You may start helpers of your own"), "{provider:?}");
         }
         for provider in [Provider::Claude, Provider::Codex] {
-            let (args, _, envs, _) = command_for(&entry(provider), "x").unwrap();
+            let (_, _, envs, _) = command_for(&entry(provider), "x").unwrap();
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_SESSION_ID" && v == "x"), "whoever started it");
             assert!(!envs.iter().any(|(k, _)| *k == "LUNA_PARENT_ID"));
-            assert!(!args.iter().any(|a| a == "--append-system-prompt"));
         }
+    }
+
+    #[test]
+    fn constraints_are_the_last_layer_on_every_turn_of_both_clis() {
+        let chain = vec![
+            crate::agents::Constraint { from: "top".into(), text: "Touch nothing in src/.".into() },
+            crate::agents::Constraint { from: "lead".into(), text: "No network.".into() },
+        ];
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut e = entry(provider);
+            e.spec.parent = Some("lead".into());
+            e.spec.constraints = chain.clone();
+            for session in [None, Some("s-1".to_string())] {
+                e.session = session.clone();
+                let (args, _, _, applied) = command_for(&e, "constrained").unwrap();
+                let layers = layers_of(provider, &args).unwrap();
+                let (role, rules) = layers.split_once("# Constraints").expect("a heading of their own");
+                assert!(role.contains("# Your role"), "{provider:?} {session:?}");
+                assert!(rules.find("Touch nothing in src/.") < rules.find("No network."), "the caller's first: {rules}");
+                assert!(rules.trim_end().ends_with("No network."), "nothing after them");
+                let said = applied.iter().find(|a| a.key == "constraints").expect("said");
+                assert_eq!(said.value, "Touch nothing in src/.\n\nNo network.");
+            }
+        }
+    }
+
+    #[test]
+    fn a_codex_turn_whose_role_layers_do_not_fit_is_refused() {
+        let mut e = entry(Provider::Codex);
+        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
+        let why = command_for(&e, "too-long").unwrap_err();
+        assert!(why.contains("not started") && why.contains("24 KB"), "{why}");
+        // Claude Code reads them from a file: no command line to fit.
+        let mut e = entry(Provider::Claude);
+        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
+        assert!(command_for(&e, "too-long").is_ok());
     }
 
     #[test]
@@ -705,6 +797,8 @@ mod tests {
         settings: Option<Value>,
         mcp: Option<Value>,
         instructions: Option<String>,
+        /// Codex: its `developer_instructions`, the role layers.
+        role: Option<String>,
         /// What Luna applied, as (key, class, value), placeholders in.
         applied: Vec<(String, crate::applied::Class, String)>,
     }
@@ -723,7 +817,15 @@ mod tests {
         Redact::assert_shown(&args, &envs, &dir, &applied);
         Redact::assert_probed(e.spec.provider, &args);
         let applied = r.applied(&applied, &envs);
-        let args = r.args(&args);
+        let role = golden::developer_instructions(&args);
+        let mut args = r.args(&args);
+        // A Codex turn's role layers, every turn, just before its prompt on
+        // stdin: compared apart (`role`), the rest of its arguments as ever.
+        if e.spec.provider == Provider::Codex {
+            let n = args.len();
+            assert!(n >= 3 && args[n - 3..] == strings(&["-c", "developer_instructions=<role-layers>", "-"]), "{args:?}");
+            args.drain(n - 3..n - 1);
+        }
         let data = crate::paths::data_dir();
         let read = |sub: &str, placeholder: &str| {
             let path = data.join(sub).join(format!("{}.json", crate::paths::id_file_name(id)));
@@ -733,7 +835,7 @@ mod tests {
         };
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
         let instructions = golden::instructions(id, &args);
-        Turn { dir: r.text(&dir), envs: r.envs(&envs), settings, mcp, instructions, args, applied }
+        Turn { dir: r.text(&dir), envs: r.envs(&envs), settings, mcp, instructions, role, args, applied }
     }
 
     /// A Claude Code turn's arguments up to where a conversation is named.
@@ -757,6 +859,7 @@ mod tests {
 
     fn claude_turn_envs(id: &str) -> Vec<(String, String)> {
         pairs(&[
+            ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
             ("CLAUDE_CONFIG_DIR", "C:\\acc"),
             ("DISABLE_AUTOUPDATER", "1"),
             ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
@@ -801,6 +904,7 @@ mod tests {
         assert_eq!(t.dir, "C:\\p");
         assert_eq!(t.envs, claude_turn_envs(ID));
         assert_eq!(t.value("helper.background-wait"), Some("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=10800000"), "said where it is set");
+        assert_eq!(t.instructions.as_deref(), Some(golden::role_layers(crate::library::Role::Helper).as_str()));
         let settings = golden::claude_helper_settings(golden::claude_settings_alone());
         assert_eq!((t.settings, t.mcp), (Some(settings), None), "no hooks: its stream says it all");
     }
@@ -811,9 +915,10 @@ mod tests {
         args
     }
 
-    /// `args`, then the settings file every Claude Code turn is given.
+    /// `args`, then the settings file every Claude Code turn is given, and
+    /// the folder of its role layers.
     fn with_settings(mut args: Vec<String>) -> Vec<String> {
-        args.extend(strings(&["--settings", "<settings-file>"]));
+        args.extend(strings(&["--settings", "<settings-file>", "--add-dir", "<instructions-dir>"]));
         args
     }
 
@@ -878,20 +983,29 @@ mod tests {
             "mcp__luna",
             "--disallowedTools",
             "Edit,Write,NotebookEdit,mcp__luna__luna_permission",
-            "--append-system-prompt",
-            &golden::helper_line("golden-parent"),
             "--add-dir",
             "<notes-dir>",
             "--settings",
             "<settings-file>",
+            "--add-dir",
+            "<instructions-dir>",
         ]));
         assert_eq!(t.args, want);
+        assert_eq!(t.instructions.as_deref(), Some(golden::role_layers(crate::library::Role::Lead).as_str()));
         let mut envs = pairs(&[("LUNA_MCP_TOKEN", "<token>")]);
         envs.extend(claude_turn_envs(ID));
         envs.extend(pairs(&[("LUNA_PARENT_ID", "golden-parent")]));
         assert_eq!(t.envs, envs);
         let mut guard = golden::claude_helper_settings(golden::claude_settings_alone());
         guard["hooks"] = json!({ "PreToolUse": [golden::claude_guard_entry()] });
+        // Its role layers read as memory of a folder added: the other added
+        // folders' memory is not.
+        guard["claudeMdExcludes"] = json!([
+            "<notes-dir>/CLAUDE.md",
+            "<notes-dir>/CLAUDE.local.md",
+            "<notes-dir>/.claude/CLAUDE.md",
+            "<notes-dir>/.claude/rules/**"
+        ]);
         assert_eq!(t.settings, Some(guard), "the guard alone");
         assert_eq!(t.mcp, Some(golden::claude_mcp_config()));
 
@@ -976,6 +1090,7 @@ mod tests {
         assert_eq!(t.args, want);
         assert_eq!(t.dir, "C:\\p");
         assert_eq!(t.envs, codex_turn_envs(ID, true));
+        assert_eq!(t.role.as_deref(), Some(golden::role_layers(crate::library::Role::Helper).as_str()), "its config sets none");
     }
 
     #[test]
@@ -1250,7 +1365,9 @@ mod tests {
             "<library-dir>/.claude/rules/**"
         ]);
         assert_eq!(t.settings, Some(settings), "no hooks, no guard: what the folder keeps from it alone");
-        assert_eq!(t.instructions.as_deref(), Some(crate::library::GoldenLibrary::INSTRUCTIONS), "the library's, word for word");
+        let want =
+            format!("{}\n\n{}", crate::library::GoldenLibrary::INSTRUCTIONS.trim(), golden::role_layers(crate::library::Role::Helper));
+        assert_eq!(t.instructions, Some(want), "the library's, word for word, in the account's place, then its role");
     }
 
     #[test]
@@ -1297,7 +1414,7 @@ mod tests {
         settings["skillOverrides"] = json!({ "report": "off" });
         settings["claudeMdExcludes"] = json!(["<acc>/CLAUDE.md"]);
         assert_eq!(t.settings, Some(settings));
-        assert_eq!(t.instructions, None);
+        assert_eq!(t.instructions.as_deref(), Some(golden::role_layers(crate::library::Role::Helper).as_str()), "its role alone");
         assert_eq!(t.value("library.audience"), Some("instructions main (chats only); skill report (chats only)"));
         assert_eq!(t.value("library.hidden-skills"), Some("skillOverrides off: report"));
         assert_eq!(t.value("library.account-instructions-off"), Some("claudeMdExcludes <acc>/CLAUDE.md"));

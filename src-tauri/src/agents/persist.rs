@@ -361,7 +361,8 @@ pub(super) fn take_up_chats(saved: SavedChats) {
 
 /// What only a helper's settings hold (`registry::CORE_SETTINGS`, `background`):
 /// a chat of the person's has none of them.
-pub(super) const HELPER_SETTINGS: [&str; 6] = ["background", "resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "connectors"];
+pub(super) const HELPER_SETTINGS: [&str; 7] =
+    ["background", "resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "connectors", "constraints"];
 
 /// How long this core has been up.
 pub(super) fn core_up_ms() -> u64 {

@@ -56,7 +56,14 @@ impl Redact {
     /// put as `<profile>`.
     pub(crate) fn args(&self, args: &[String]) -> Vec<String> {
         let profile = args.iter().find_map(|a| a.strip_prefix("default_permissions=\"")?.strip_suffix('"').map(str::to_owned));
-        let args: Vec<String> = args.iter().map(|a| self.text(a)).collect();
+        // A Codex session's role layers, compared apart (`developer_instructions`).
+        let args: Vec<String> = args
+            .iter()
+            .map(|a| match a.starts_with("developer_instructions=") {
+                true => "developer_instructions=<role-layers>".to_string(),
+                false => self.text(a),
+            })
+            .collect();
         match profile {
             Some(p) => args.into_iter().map(|a| a.replace(&p, "<profile>")).collect(),
             None => args,
@@ -218,6 +225,25 @@ impl Drop for Project {
     }
 }
 
+/// What a session of `role` is told of it, as Luna's own texts compose with
+/// nothing else to add: its role's default under its heading.
+pub(crate) fn role_layers(role: crate::library::Role) -> String {
+    let text = match role {
+        crate::library::Role::Chat => return String::new(),
+        crate::library::Role::Lead => include_str!("../resources/system/role-lead.md"),
+        crate::library::Role::Helper => include_str!("../resources/system/role-helper.md"),
+    };
+    format!("# Your role\n\n{}\n", text.trim())
+}
+
+/// The `developer_instructions` a Codex start was given, as a TOML string
+/// in its arguments (not yet redacted).
+pub(crate) fn developer_instructions(args: &[String]) -> Option<String> {
+    let value = args.iter().find_map(|a| a.strip_prefix("developer_instructions="))?;
+    let doc: toml_edit::DocumentMut = format!("v = {value}").parse().expect("a TOML string");
+    doc["v"].as_str().map(str::to_owned)
+}
+
 /// The `CLAUDE.md` a start of chat `id` copied into its instructions folder,
 /// where its arguments (placeholders in) name that folder; the folder removed.
 pub(crate) fn instructions(id: &str, args: &[String]) -> Option<String> {
@@ -307,23 +333,6 @@ pub(crate) fn codex_curl() -> String {
         return "curl.exe".into();
     }
     "curl".into()
-}
-
-/// What a helper started by `parent` is told, word for word.
-pub(crate) fn helper_line(parent: &str) -> String {
-    format!(
-        "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
-         that session. You are not the chat of whoever your instructions call the operator, the user or the person at \
-         this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
-         not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
-         where it says none, in the language the task is written in. Before your turn ends, stop the background work you \
-         started that nothing needs any more (watchers, wait loops, dev servers), not helpers you are waiting on nor what \
-         your task asks to keep running; keep each caveat beside the claim it limits; send, push or post nothing outward \
-         unless your task asks for it; install nothing and change nothing machine-wide or in your CLI account's folder \
-         (software, system or user-wide settings, PATH, the registry, services, scheduled tasks, global git or shell \
-         config, memory, skills) unless your task names that change: where the work needs one, give your caller the \
-         exact command instead."
-    )
 }
 
 /// The settings file's hooks for a chat (`<hook-url>`), with the guard's

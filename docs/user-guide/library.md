@@ -28,38 +28,78 @@ each name has a copy button, to name a skill or instructions in a chat.
   `description`, then the instructions) and any files beside it. It goes into
   each picked account's `skills/`, for every session in every project.
 
-## Chats, helpers or both
+## Whose sessions: chats, leads, helpers
 
-Each skill and instructions file is for your own chats, for helpers (the
-sessions another session starts and briefs, through Luna's tools), or for both:
-the **For** column, **Both** until you pick another. A helper is briefed by an
-agent rather than by you, so what you wrote for your own chat (the language you
-want answers in, how replies to you look, agreeing a plan with you first) and a
-skill only your chat uses cost it context and mislead it.
+Luna starts sessions in three roles: your own **chats**; **leads**, the
+helpers another session starts with Luna's tools, which may start helpers of
+their own; and **helpers**, started without them. A lead or a helper is
+briefed by an agent rather than by you, so what you wrote for your own chat
+(the language you want answers in, how replies to you look, agreeing a plan
+with you first) and a skill only your chat uses cost it context and mislead
+it, and a lead needs rules a helper does not.
 
-- **Claude Code** leaves an entry out of each session of the other kind at its
-  start: instructions through `claudeMdExcludes`, skills through
-  `skillOverrides`, both in the settings Luna starts it with. The account's
-  files stay as they are.
-- **Codex** turns a skill off for one run (`-c skills.config`), but reads its
-  account's `AGENTS.md` in every session with no way to leave it out of one. So
-  instructions for one kind are laid out with a line before them saying whose
-  they are ("For the person's own chats only: …" or "For helper sessions only:
-  …"), and Luna's note to every helper says it is a helper. That line goes into
-  the Claude Code copy too, for sessions Luna does not start; changing the
-  audience rewrites the copies, and taking a copy into the library takes off
-  the line Luna wrote there (even if an editor changed its line endings), and
-  nothing else: the same words in a copy Luna wrote no line into stay yours.
-- An account gets one instructions file, so instructions for your chats only
-  leave a Claude Code helper with none from the library; a Codex helper reads
-  them, worded as yours.
-- **What Luna applied** for a session lists what the audience kept from it
-  (or, on Codex, which instructions say they are for the other kind) under
-  your choices. Where it could not keep them out it says so: a Codex copy
+Each skill and instructions file has a **For** column of three toggles,
+**Chats**, **Leads** and **Helpers**, all on (every session) until you turn
+one off. At least one stays on.
+
+- **Skills** go into the accounts they are for as ever. Claude Code leaves one
+  out of a session whose role is not ticked (`skillOverrides` in the settings
+  Luna starts it with); Codex turns it off for that run (`-c skills.config`).
+- **Instructions for every session** go into the accounts as `CLAUDE.md` and
+  `AGENTS.md`, one per account, as described above.
+- **Instructions for some roles only** are never put into an account. Luna
+  gives them to each session of those roles as it starts it, along with what
+  it tells the session of its role ([below](#what-a-session-is-told-of-its-role)):
+  every such file whose accounts take the session's account, in name order.
+  They reach only sessions Luna starts, not one you start by hand. Their row
+  has a box per account rather than a radio: they compete with no other file
+  for an account.
+- **Instructions for your chats only** that an earlier Luna put into accounts
+  stay there, with a line before them saying whose they are ("For chats with a
+  person only: a session whose task came from another agent skips this whole
+  file."), so that chats you start by hand still read them. Codex reads its
+  account's `AGENTS.md` in every session with no way to leave it out of one;
+  the line, and the note on a lead's or helper's task, tell such a session it
+  is not for it. Claude Code leaves the file out of a lead or helper
+  (`claudeMdExcludes`). Turning any other role on for such a file takes it out
+  of the accounts; from then on it goes per session.
+- **What Luna applied** for a session lists what the audience gave it or kept
+  from it. Where it could not keep something out it says so: a Codex copy
   changed there, left out or not yet written does not say whose it is; and in
   the rare project whose folder name Claude Code's matcher would confuse with
   the account's, the account's `CLAUDE.md` is read after all.
 
+## What a session is told of its role
+
+Beside its account's instructions file, every session Luna starts is told of
+its role in layers of its own, at the level of an instructions file, which
+outweighs a note on a prompt and survives a compaction and a handoff:
+
+1. what Luna says of its role, a [system text](#system-texts) you may change:
+   nothing for a chat, unless you write something; for a lead or a helper,
+   that its task comes from another agent, to answer it in the language and
+   form the task asks for, to stop background work nothing needs, to keep
+   caveats beside their claims, to send nothing outward and to change nothing
+   machine-wide unless the task says so; a lead also that it owns what its
+   helpers report;
+2. the library's instructions for its role, in name order (in a folder that
+   gives a Claude Code session other instructions than its account's, those
+   come first);
+3. its **constraints**: what the agents above it asked of every session under
+   them when they spawned it, word for word ([agents](agents.md#spawning-options)).
+
+Claude Code reads them as the `CLAUDE.md` of a folder of Luna's, written again
+at every start and every turn of a helper, so a change reaches a session at its
+next turn. Codex reads them in `developer_instructions`, after the value its
+own config sets; Codex sends that when a conversation starts and after a
+compaction, not on a resume, so a change reaches a running Codex session only
+then. A Codex chat whose layers, with its config's own value, would not fit on
+a command line (24 KB) starts without them, and its panel says so; a lead or
+helper is not started.
+
+A lead's or helper's task also carries a one-line note after it: that it comes
+from another agent, not a person, and that rules written for a chat with a
+person do not apply. The note is a system text too.
 ## Folders
 
 A folder you add (a repository, say) is for what belongs to one project but not
@@ -133,20 +173,40 @@ so do those of a library that will not read for a moment (a file held open
 mid-save). Paths compare as the system compares them (on Windows regardless of
 case), so an account renamed in case only keeps its copies.
 
-## System skills
+## System texts
 
-One text in the library is no skill of yours to lay out but Luna's own, which
-you may override: **`session-handoff`**, what a chat with Luna tools is given
+Some texts in the library are no entries of yours to lay out but Luna's own,
+which you may override, each with one file for every session it is served to:
+
+- **`role-chat`**, **`role-lead`**, **`role-helper`**: what a session of each
+  role is told of it ([above](#what-a-session-is-told-of-its-role)). Luna's own
+  for a chat is empty. Your override is `system/<name>/TEXT.md`, plain
+  Markdown with no front matter, at most 8 KB; an empty one says nothing.
+- **`note-lead`**, **`note-helper`**: the note after a task another agent gives
+  a lead or a helper. Your override is `system/<name>/TEXT.md`: one line of
+  plain text, at most 1,000 characters, with no brackets (the note goes inside
+  brackets of its own). Luna remembers every note it has served, so none ever
+  shows in what a session was asked, after an update or a change of yours.
+- **`session-handoff`**, described below.
+
+What stays Luna's own and is not a text you can change: its tools' schemas and
+refusals, the facts of its guide, the tag a note opens on.
+
+### The handoff's skill
+
+**`session-handoff`** is what a chat with Luna tools is given
 when it writes its [handoff](chats.md#handoff), or a move's document (under
 the move's own rules). Luna serves it only to such chats, through their
 `luna_session_handoff` tool, once they are asked for a handoff or a move's
 document; it is never put into an account or a folder, and no helper or other
 session sees it.
 
-The window's **System skills** section, below your skills and set apart from
-them, has it on a row of its own: what it is, whose text is served now, and
-what can be done about it. It has no accounts, no **For** column and no
-folders: there is one text for every chat it is served to.
+The window's **System texts** section, below your skills and set apart from
+them, has each system text on a row of its own: what it is, whose text is
+served now, and what can be done about it. None has accounts, a **For** column
+or folders: there is one text for every session it is served to. **Edit**,
+**Compare with Luna's** and **Back to Luna's** below work the same for every
+one of them, each checked as its kind is.
 
 - **Luna's own** is built in, of its version: the row says which, and the
   first 12 characters of the text's SHA-256.
