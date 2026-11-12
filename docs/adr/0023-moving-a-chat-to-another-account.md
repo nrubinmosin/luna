@@ -1,6 +1,7 @@
 # ADR-0023: Move a chat to another account of its CLI by a document the person confirms
 
-- **Status:** Accepted
+- **Status:** Accepted; who writes the document amended by
+  [ADR-0024](0024-handoff-on-request.md)
 - **Date:** 2026-11-11
 
 ## Context
@@ -56,6 +57,10 @@ Codex 0.167.1 found (docs/cli-compatibility.md):
    plan mode, read-only, stalled or not running. That is a second text Luna
    serves at its own trigger, to the chat that opted in alone, as
    [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md) asks of any.
+   (Amended 2026-11-12 by [ADR-0024](0024-handoff-on-request.md): any chat
+   with Luna's tools whose CLI listed the tool is asked by default; Luna's
+   document only by the person's choice, preselected only while a usage
+   limit holds the chat, and a failed ask says why instead of falling back.)
 3. **A mandatory, editable preview of everything that goes.** The line Luna
    types and the whole document are shown; the document may be edited. Send
    is bound by one hash to the text, the account it goes to and the launch

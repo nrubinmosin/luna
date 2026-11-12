@@ -47,12 +47,15 @@ pub use answer::answer;
 pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion};
 pub use delivery::{notes_dir, send};
 pub use handoff::{
-    asked_of, handoff, handoff_file, handoff_transcript, mark_of, move_ask, move_cancel, move_confirm, move_list, move_prepare,
-    move_preview, move_step, set_auto_handoff, HandoffAsked, HandoffMark,
+    asked_of, handoff, handoff_ask, handoff_ask_of, handoff_file, handoff_now, handoff_transcript, mark_of, move_ask,
+    move_build_from_records, move_cancel, move_confirm, move_facts, move_list, move_prepare, move_preview, move_step, set_auto_handoff,
+    HandoffAsk, HandoffAsked, HandoffMark,
 };
 pub use handover::{opening_lapsed, take_over};
 pub use held::held_count;
-pub use list::{account_get, account_list, session_get, session_list, SessionQuery};
+#[cfg(test)]
+pub(crate) use list::stopped_model;
+pub use list::{account_get, account_list, session_get, session_list, stopped_model_of, SessionQuery};
 pub use lost::undelivered_left;
 #[cfg(test)]
 pub(crate) use notifier::riders_go;

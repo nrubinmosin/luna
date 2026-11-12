@@ -35,12 +35,16 @@ import {
   BACKGROUND,
   HANDED_OFF,
   LIBRARY,
+  MOVE_ASKED,
+  MOVE_ASK_FAILED,
+  MOVE_LIMIT,
   LIBRARY_SYSTEM,
   UPDATE_NOTES,
   UPDATE_POWER
 } from './fixtures';
 import { demoState } from './ipc';
 import { useMoveHints } from '../../features/chats/moveHints.store';
+import { useHandoffNow } from '../../features/chats/handoffNow';
 
 /** A Settings page's scene: `settings` is its first page, `settings-links` and
  *  the like the others, each with a `-dark` twin. */
@@ -58,8 +62,11 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
  *  helper list, opened from its pane's title bar),
  *  `?demo=delete-helpers` (deleting a chat whose helpers are at work),
  *  `?demo=handoff` / `handoff-dark` (a chat gone on past a handoff, its divider and copy),
- *  `?demo=move` / `move-dark` (a chat a usage limit stopped, its offer of a move and the move's dialog), `move-preview` /
- *  `move-preview-dark` (the whole of what a move sends, before Send),
+ *  `?demo=hand-off-now` (a pane's … menu with Hand off now), `hand-off-now-refused` (the core's refusal of it shown in
+ *  the pane, the menu closed as the click left it),
+ *  `?demo=move` / `move-dark` (a chat a usage limit stopped, its offer of a move and the move's dialog, Luna's
+ *  document picked), `move-preview` / `move-preview-dark` (the whole of what a move sends, before Send),
+ *  `move-asking` (the banner while the chat writes its document), `move-failed` (the chat asked and no document),
  *  `?demo=login` (an account's sign-in), `?demo=shortcuts`, `?demo=update` (the update's
  *  confirmation with eight sessions at work and a long note), `?demo=orphans` (sessions with no chat). */
 export type Scene =
@@ -92,10 +99,14 @@ export type Scene =
   | 'delete-helpers'
   | 'handoff'
   | 'handoff-dark'
+  | 'hand-off-now'
+  | 'hand-off-now-refused'
   | 'move'
   | 'move-dark'
   | 'move-preview'
   | 'move-preview-dark'
+  | 'move-asking'
+  | 'move-failed'
   | 'login'
   | 'shortcuts'
   | 'update'
@@ -130,10 +141,14 @@ export const SCENES: Scene[] = [
   'delete-helpers',
   'handoff',
   'handoff-dark',
+  'hand-off-now',
+  'hand-off-now-refused',
   'move',
   'move-dark',
   'move-preview',
   'move-preview-dark',
+  'move-asking',
+  'move-failed',
   'login',
   'shortcuts',
   'update',
@@ -279,8 +294,20 @@ export function seedDemo(scene: Scene) {
   // The first chat stopped on a usage limit: its offer of a move, and the
   // move's dialog opened from its "…" menu the way a click would; the
   // preview one step on, as Preview would show it.
+  // Asked instead, the chat writes its document or fails to, and the
+  // dialog's Ask the chat is clicked as the person would.
+  const asks = scene === 'move-asking' || scene === 'move-failed';
+  demoState.asked = false;
+  demoState.moveAsked = scene === 'move-asking' ? MOVE_ASKED : scene === 'move-failed' ? MOVE_ASK_FAILED : null;
+  demoState.moveFacts = asks
+    ? {}
+    : {
+        limit: MOVE_LIMIT,
+        askBlocked:
+          'the chat is not to be asked now: it stopped on a usage limit (usage_limit) and cannot write now; ask again once that is past'
+      };
   if (scene.startsWith('move')) {
-    useMoveHints.setState({ limits: { 'demo-1': 'usage_limit' }, dismissed: {} });
+    if (!asks) useMoveHints.setState({ limits: { 'demo-1': 'usage_limit' }, dismissed: {} });
     setTimeout(() => {
       document.querySelector<HTMLElement>('.pane button[data-glyph="more"]')?.click();
       setTimeout(() => {
@@ -293,8 +320,30 @@ export function seedDemo(scene: Scene) {
               .find(b => b.textContent === 'Preview')
               ?.click();
           }, 600);
+        if (asks)
+          setTimeout(() => {
+            [...document.querySelectorAll<HTMLElement>('.move-dialog .dialog-foot button')]
+              .find(b => b.textContent === 'Ask the chat')
+              ?.click();
+          }, 600);
       }, 200);
     }, 300);
+  }
+  // The first chat's … menu, Hand off now in it; or, as a person sees it
+  // after the click closed the menu, why the core refused the ask, over its
+  // terminal.
+  if (scene === 'hand-off-now' || scene === 'hand-off-now-refused') {
+    useHandoffNow.setState({
+      refused:
+        scene === 'hand-off-now-refused'
+          ? {
+              'demo-1':
+                "the chat's CLI has its own jobs running (Bash: pnpm dev), which cannot cross to a new conversation: let them finish or stop them, then ask again"
+            }
+          : {}
+    });
+    if (scene === 'hand-off-now')
+      setTimeout(() => document.querySelector<HTMLElement>('.pane button[data-glyph="more"]')?.click(), 300);
   }
   // The first chat's Delete, with its helpers listed and their boxes ticked.
   if (scene === 'delete-helpers') {

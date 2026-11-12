@@ -442,7 +442,7 @@ pub(super) fn put_in(
     // Before the text goes in: `type_in` waits for the turn to start, and a
     // short one is over, and written, by then.
     let cursor = transcript_end(id);
-    let Some(started) = type_text(pty, id, text, turn_before, baseline)? else { return Ok(None) };
+    let Some(started) = type_text(pty, id, text, turn_before, baseline, &|| true)? else { return Ok(None) };
     let started = started && !queued;
     if turn_before == Some(crate::activity::Turn::Waiting) {
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
@@ -472,17 +472,33 @@ pub(super) fn put_in(
     }))
 }
 
+/// Why `type_text` typed nothing: what the text was put together for no
+/// longer stood once the person's keys were held.
+pub(super) const NO_LONGER_STANDS: &str = "what it was put together for changed before it went in";
+
 /// Types text in as a prompt (`type_in`) — around a person's draft where
 /// there is one and the CLI can put it aside (`stash_and_type`). Ok(None):
-/// a draft is in the way, and nothing was typed.
+/// a draft is in the way, and nothing was typed. `stands` is asked once the
+/// person's keys are held, before anything goes in: text bound to the
+/// conversation the chat is on (a handoff's continuation) is looked at there,
+/// where no key of theirs gets in before the paste. A `/clear` or `/new` sent
+/// just before the hold may still be on its way to the CLI, the conversation
+/// not changed yet: the caller's `stands` also asks that no key of theirs
+/// came since its look (notifier `deliver_notice`). False: nothing typed,
+/// Err(NO_LONGER_STANDS).
 pub(super) fn type_text(
     pty: &crate::pty::PtyManager,
     id: &str,
     text: &str,
     turn_before: Option<crate::activity::Turn>,
     baseline: u32,
+    stands: &dyn Fn() -> bool,
 ) -> Result<Option<bool>, String> {
     let hold = pty.hold_keys(id).ok_or("no such session")?;
+    if !stands() {
+        drop(hold);
+        return Err(NO_LONGER_STANDS.into());
+    }
     if !pty.has_draft(id) {
         return type_in(pty, id, text, turn_before, baseline, hold).map(Some);
     }

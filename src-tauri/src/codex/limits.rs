@@ -8,7 +8,7 @@ use crate::throttle::{self, now_ms};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
@@ -27,6 +27,11 @@ pub struct LimitWindow {
     pub window_minutes: Option<i64>,
     /// ISO instant.
     pub resets_at: Option<String>,
+    /// The model it counts alone: an additional limit's, or a rollout
+    /// snapshot's other than the general `codex` one. What a usage limit's
+    /// hold on a chat goes by, not shown.
+    #[serde(skip)]
+    pub model: Option<String>,
 }
 
 #[derive(Serialize, Default)]
@@ -161,6 +166,7 @@ fn window_from_api(id: &str, label: Option<&str>, w: &Value) -> Option<LimitWind
         used,
         window_minutes: minutes,
         resets_at: iso(w["reset_at"].as_i64()),
+        model: None,
     })
 }
 
@@ -175,14 +181,18 @@ pub fn windows_from_api(body: &Value) -> (Vec<LimitWindow>, Option<String>) {
             let feature = lim["metered_feature"].as_str().unwrap_or("extra");
             let name = lim["limit_name"].as_str().or_else(|| lim["normal_model_slug"].as_str()).unwrap_or(feature);
             let r = &lim["rate_limit"];
+            // Its model by slug where the answer gives one, else by name.
+            let model = lim["normal_model_slug"].as_str().filter(|s| !s.is_empty()).unwrap_or(name).to_string();
             if let Some(mut w) = window_from_api(feature, Some(name), &r["primary_window"]) {
                 let wl = window_label(w.window_minutes);
                 w.label = format!("{name} · {wl}");
+                w.model = Some(model.clone());
                 out.push(w);
             }
             if let Some(mut w) = window_from_api(&format!("{feature}:secondary"), Some(name), &r["secondary_window"]) {
                 let wl = window_label(w.window_minutes);
                 w.label = format!("{name} · {wl}");
+                w.model = Some(model);
                 out.push(w);
             }
         }
@@ -193,6 +203,12 @@ pub fn windows_from_api(body: &Value) -> (Vec<LimitWindow>, Option<String>) {
 /// Windows and plan out of a rollout's `rate_limits` snapshot.
 pub fn windows_from_rollout(snapshot: &Value) -> (Vec<LimitWindow>, Option<String>) {
     let mut out = vec![];
+    // `limit_id` is `codex` for the limit every model counts against (seen
+    // on 0.167.1); any other is a model's own, by its name where it has one.
+    let model = snapshot["limit_id"]
+        .as_str()
+        .filter(|id| !id.is_empty() && *id != "codex")
+        .map(|id| snapshot["limit_name"].as_str().filter(|n| !n.is_empty()).unwrap_or(id).to_string());
     for (id, key) in [("primary", "primary"), ("secondary", "secondary")] {
         let w = &snapshot[key];
         let Some(used) = w["used_percent"].as_f64() else { continue };
@@ -204,6 +220,7 @@ pub fn windows_from_rollout(snapshot: &Value) -> (Vec<LimitWindow>, Option<Strin
             used: used / 100.0,
             window_minutes: minutes,
             resets_at: iso(w["resets_at"].as_i64()),
+            model: model.clone(),
         });
     }
     (out, snapshot["plan_type"].as_str().and_then(plan_label))
@@ -266,6 +283,85 @@ fn from_newest_known(out: &mut CodexLimits, account_path: &str) {
     if out.plan.is_none() {
         out.plan = plan;
     }
+}
+
+/// The account's usage as last known, asking nothing of the network: what a
+/// usage limit's hold on a chat is judged on (activity `limit_in_force`).
+/// Each limit as its newest reading has it, with when that was taken: Luna's
+/// last answer from the endpoint, the whole picture as of then, and each
+/// limit's newest rollout snapshot after it (`known_limits`), `own` (the
+/// chat's rollout) read among them.
+pub(crate) fn known_reading(account_path: &str, own: Option<&Path>) -> Option<crate::activity::UsageReading> {
+    let answer = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
+    known_limits(answer, timed(super::session::latest_rate_limits_by_id(account_path, own)))
+}
+
+/// Rollout snapshots with their lines' timestamps, as ms.
+fn timed(snapshots: Vec<(Value, String)>) -> Vec<(Value, Option<u64>)> {
+    snapshots
+        .into_iter()
+        .map(|(snapshot, ts)| (snapshot, chrono::DateTime::parse_from_rfc3339(&ts).ok().map(|t| t.timestamp_millis().max(0) as u64)))
+        .collect()
+}
+
+/// `known_reading` of rollout snapshots alone, for the session reader's tests.
+#[cfg(test)]
+pub(crate) fn known_limits_for_test(snapshots: Vec<(Value, String)>) -> crate::activity::UsageReading {
+    known_limits(None, timed(snapshots)).unwrap_or_default()
+}
+
+/// The limit a window of the endpoint's answer belongs to, as a rollout
+/// snapshot names it (`limit_id`): the general one's two windows are
+/// `codex`'s, an additional limit's its metered feature's.
+fn limit_of_window(id: &str) -> &str {
+    match id {
+        "primary" | "secondary" => "codex",
+        other => other.strip_suffix(":secondary").unwrap_or(other),
+    }
+}
+
+/// `known_reading` of Luna's last `answer` (when, and its body) and each
+/// limit's newest rollout `snapshots` (with when). A snapshot holds one limit
+/// alone, so it stands for that limit and no other: a newer one of a model's
+/// own limit takes nothing of the general one's from the picture, nor a
+/// general one a model's full window. The answer is the whole picture as of
+/// its time: a snapshot no newer than it is past, and a limit it lacks is gone.
+fn known_limits(answer: Option<(u64, Value)>, snapshots: Vec<(Value, Option<u64>)>) -> Option<crate::activity::UsageReading> {
+    let mut limits: BTreeMap<String, (Option<u64>, Vec<LimitWindow>)> = BTreeMap::new();
+    let answered = answer.as_ref().filter(|(_, body)| body["rate_limit"].is_object()).map(|(at, _)| *at);
+    if let Some((at, body)) = answer.as_ref().filter(|_| answered.is_some()) {
+        for w in windows_from_api(body).0 {
+            limits.entry(limit_of_window(&w.id).to_string()).or_insert((Some(*at), Vec::new())).1.push(w);
+        }
+    }
+    for (snapshot, at) in snapshots {
+        let (windows, _) = windows_from_rollout(&snapshot);
+        if windows.is_empty() || answered.is_some_and(|t| at.is_none_or(|a| a <= t)) {
+            continue;
+        }
+        let id = snapshot["limit_id"].as_str().filter(|id| !id.is_empty()).unwrap_or("codex").to_string();
+        if limits.get(&id).is_some_and(|(known, _)| known.is_some() && at.is_none_or(|a| Some(a) <= *known)) {
+            continue;
+        }
+        limits.insert(id, (at, windows));
+    }
+    if limits.is_empty() && answered.is_none() {
+        return None;
+    }
+    let at = limits.values().filter_map(|(at, _)| *at).chain(answered).max();
+    let windows = limits
+        .into_values()
+        .flat_map(|(at, windows)| {
+            windows.into_iter().map(move |w| crate::activity::UsageWindow {
+                label: w.label,
+                used: w.used,
+                resets_at: w.resets_at,
+                model: w.model,
+                at,
+            })
+        })
+        .collect();
+    Some(crate::activity::UsageReading { at, windows })
 }
 
 /// A `wham/usage` answer, taken at `at`, into the DTO. One that carries its
@@ -450,6 +546,31 @@ mod tests {
         assert_eq!(windows_from_rollout(&snap).0[0].label, "1 day");
     }
 
+    /// Each window says which model it counts alone, if one: what a usage
+    /// limit's hold on a chat on another model leaves aside.
+    #[test]
+    fn a_window_names_the_model_it_counts_alone() {
+        let body = serde_json::json!({
+            "rate_limit": { "primary_window": { "used_percent": 12, "limit_window_seconds": 18000, "reset_at": 1789000000 } },
+            "additional_rate_limits": [
+                { "limit_name": "GPT-5 Codex Spark", "metered_feature": "codex_spark",
+                  "rate_limit": { "primary_window": { "used_percent": 100, "limit_window_seconds": 18000, "reset_at": 1789001000 } } },
+                { "limit_name": "Other", "normal_model_slug": "gpt-other", "metered_feature": "other",
+                  "rate_limit": { "primary_window": { "used_percent": 1, "limit_window_seconds": 18000, "reset_at": 1789001000 } } },
+            ]
+        });
+        let models: Vec<Option<String>> = windows_from_api(&body).0.into_iter().map(|w| w.model).collect();
+        assert_eq!(models, [None, Some("GPT-5 Codex Spark".into()), Some("gpt-other".into())]);
+        assert!(serde_json::to_value(windows_from_api(&body).0[1].clone()).unwrap().get("model").is_none(), "not shown");
+        // A rollout's snapshot: the general `codex` limit, as 0.167.1 wrote it, is every model's.
+        let general =
+            serde_json::json!({ "limit_id": "codex", "limit_name": null, "primary": { "used_percent": 22, "window_minutes": 10080 } });
+        assert_eq!(windows_from_rollout(&general).0[0].model, None);
+        let spark =
+            serde_json::json!({ "limit_id": "codex_spark", "limit_name": null, "primary": { "used_percent": 100, "window_minutes": 300 } });
+        assert_eq!(windows_from_rollout(&spark).0[0].model.as_deref(), Some("codex_spark"));
+    }
+
     /// An answer whose rate limits hold no window is usage known, none of it:
     /// the UI keeps its last numbers only through a round that brought nothing.
     #[test]
@@ -518,6 +639,36 @@ mod tests {
         assert_eq!((labels(&out), out.source.as_deref()), (vec!["5 hours".to_string(), "week".to_string()], Some("rollout")));
         last_answer().lock().unwrap().remove(&path);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Each limit as its own newest reading has it: a Spark chat's newer
+    /// snapshot takes nothing of the general limit's, nor a general one a
+    /// full Spark window, and Luna's answer is the whole picture as of its time.
+    #[test]
+    fn each_limit_stands_by_its_own_newest_reading() {
+        let general = |used: u64| serde_json::json!({ "limit_id": "codex", "primary": { "used_percent": used, "window_minutes": 300 } });
+        let spark = |used: u64| {
+            serde_json::json!({ "limit_id": "codex_spark", "limit_name": "GPT-5 Codex Spark",
+            "primary": { "used_percent": used, "window_minutes": 300 } })
+        };
+        let rows = |r: &crate::activity::UsageReading| {
+            r.windows.iter().map(|w| (w.model.clone(), (w.used * 100.0).round() as u64, w.at)).collect::<Vec<_>>()
+        };
+        // The general limit full at 10, a Spark chat's snapshot at 20.
+        let r = known_limits(None, vec![(general(100), Some(10)), (spark(5), Some(20))]).unwrap();
+        assert_eq!(rows(&r), [(None, 100, Some(10)), (Some("GPT-5 Codex Spark".into()), 5, Some(20))]);
+        assert_eq!(r.at, Some(20));
+        // Newer of the general limit, Spark full before: both kept, each its own.
+        let r = known_limits(None, vec![(spark(100), Some(10)), (general(3), Some(20))]).unwrap();
+        assert_eq!(rows(&r), [(None, 3, Some(20)), (Some("GPT-5 Codex Spark".into()), 100, Some(10))]);
+        // The answer at 30 has the general limit alone: older snapshots are
+        // past, Spark is gone; a newer Spark snapshot comes in beside it.
+        let answer = serde_json::json!({ "rate_limit": { "primary_window": { "used_percent": 7, "limit_window_seconds": 18000 } } });
+        let r = known_limits(Some((30, answer.clone())), vec![(spark(100), Some(10)), (general(100), Some(20))]).unwrap();
+        assert_eq!(rows(&r), [(None, 7, Some(30))]);
+        let r = known_limits(Some((30, answer)), vec![(spark(100), Some(40))]).unwrap();
+        assert_eq!(rows(&r), [(None, 7, Some(30)), (Some("GPT-5 Codex Spark".into()), 100, Some(40))]);
+        assert_eq!(known_limits(None, vec![]), None);
     }
 
     #[test]

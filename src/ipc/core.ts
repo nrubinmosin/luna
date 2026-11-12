@@ -69,6 +69,8 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'claude_trust_folder',
   'applied_by_luna',
   'set_auto_handoff',
+  'handoff_now',
+  'handoff_ask',
   'handoff_file',
   'handoff_transcript',
   'move_prepare',
@@ -77,7 +79,9 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'move_cancel',
   'move_list',
   'move_ask',
-  'move_preview'
+  'move_preview',
+  'move_build_from_records',
+  'move_facts'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
 

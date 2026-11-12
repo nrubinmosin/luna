@@ -2,9 +2,9 @@
 //! names and a few that are no tool's (notices, restart, helpers), fixed, so a
 //! caller names the one it needs rather than guessing at a title's words; with
 //! none, a short index. Nobody is asked to read the whole guide. Every session
-//! with Luna's tools reads the same guide, so auto-handoff, which only a chat
-//! with it on is to know of, is no topic of it: `luna_session_handoff` itself
-//! answers that chat's how (agents/handoff).
+//! with Luna's tools reads the same guide, helpers included, so the handoff,
+//! which only a person's chat is to know of, is no topic of it:
+//! `luna_session_handoff` itself answers that chat's how (agents/handoff).
 
 /// The guide: an opening, then `## ` sections, each the answer to some topics.
 pub(super) const GUIDE: &str = include_str!("../luna_guide.md");

@@ -11,6 +11,8 @@ import { useChats } from '../chats/chats.store';
 import { AppliedPanel } from '../chats/AppliedPanel';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { askedWords, HandoffBar } from '../chats/Handoff';
+import { askHandoffNow, askStands, handoffNowRefusal, useHandoffNow } from '../chats/handoffNow';
+import { useMoveHints } from '../chats/moveHints.store';
 import { MoveChatDialog } from '../chats/MoveChatDialog';
 import { MoveHint, OpeningHint } from '../chats/MoveHint';
 import { draftTag, useDrafts } from '../chats/drafts.store';
@@ -103,6 +105,9 @@ function ColorPicker({ chat, anchor, onClose }: { chat: Chat; anchor: HTMLElemen
 interface MenuItem {
   label: string;
   title: string;
+  /** Offered, but not now: `title` says why. Left in reach of the keys and
+   *  the pointer, so that its why can be read. */
+  disabled?: boolean;
   run: (at: HTMLElement) => void;
 }
 
@@ -178,7 +183,9 @@ export function PaneMenu({ anchor, items, onClose }: { anchor: HTMLElement; item
           key={i.label}
           role="menuitem"
           title={i.title}
+          aria-disabled={i.disabled || undefined}
           onClick={() => {
+            if (i.disabled) return;
             onClose();
             i.run(anchor);
           }}
@@ -189,6 +196,21 @@ export function PaneMenu({ anchor, items, onClose }: { anchor: HTMLElement; item
     </div>,
     host
   );
+}
+
+const ASKED_NOW_TITLE =
+  'You asked this chat for a handoff from its … menu: it writes one and goes on from it in a fresh conversation, or the ask lapses';
+
+/** The menu's "Hand off now", offered with what it does, or not with `why`. */
+export function handoffNowItem(chat: Chat, why: string | null): MenuItem {
+  return {
+    label: 'Hand off now',
+    title:
+      why ??
+      'The chat writes a handoff and goes on from it in a fresh conversation, its helpers carrying on. Nothing is reset unless it writes one.',
+    disabled: !!why,
+    run: () => void askHandoffNow(chat.id)
+  };
 }
 
 /**
@@ -226,6 +248,9 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const pressedOn = useRef<Element | null>(null);
   const [copied, setCopied] = useState(false);
   const [draft, setDraft] = useState('');
+  const refusedNow = useHandoffNow(s => (chatId ? s.refused[chatId] : undefined));
+  const moves = useMoveHints(s => s.opening);
+  const askedNow = !!chat && askStands(chat);
 
   const commitRename = () => {
     setEditing(false);
@@ -365,7 +390,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 aria-label="More"
                 aria-haspopup="menu"
                 aria-expanded={!!menu}
-                title="Rename, chat color, What Luna applied, move to another account"
+                title="Rename, chat color, What Luna applied, hand off now, move to another account"
                 onClick={e => {
                   e.stopPropagation();
                   const at = e.currentTarget;
@@ -435,6 +460,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                     title: "Everything Luna added to this chat's CLI, and why",
                     run: () => setShowApplied(true)
                   },
+                  handoffNowItem(chat, handoffNowRefusal(chat, Object.values(moves))),
                   {
                     label: 'Move to another account…',
                     title: 'Goes on as a new chat on another account of its CLI, from a document you read first',
@@ -529,12 +555,19 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   {chat.tools && chat.autoHandoff && (
                     <span
                       className="pchip opt-2"
-                      data-state={chat.handoffAsked ? 'asked' : undefined}
+                      data-state={chat.handoffAsked || askedNow ? 'asked' : undefined}
                       title={`Auto-handoff at ${chat.handoffAt ?? HANDOFF_AT.default}% of the context: past it, Luna asks this chat for a handoff and starts its next conversation from it on the chat's word${
                         chat.handoffAsked ? `\n${askedWords(chat.handoffAsked)}` : ''
-                      }`}
+                      }${askedNow ? `\n${ASKED_NOW_TITLE}` : ''}`}
                     >
-                      handoff {chat.handoffAt ?? HANDOFF_AT.default}%{chat.handoffAsked && ' · asked'}
+                      handoff {chat.handoffAt ?? HANDOFF_AT.default}%{(chat.handoffAsked || askedNow) && ' · asked'}
+                    </span>
+                  )}
+                  {/* The person's own ask, threshold or not: said where the
+                      threshold's would be. */}
+                  {askedNow && !(chat.tools && chat.autoHandoff) && (
+                    <span className="pchip opt-2" data-state="asked" title={ASKED_NOW_TITLE}>
+                      handoff asked
                     </span>
                   )}
                   {(chat.worktree || chat.worktreePath) && (
@@ -587,6 +620,28 @@ ${chat.worktreePath}`
           {showApplied && <AppliedPanel chat={chat} onClose={() => setShowApplied(false)} />}
           {moving && <MoveChatDialog chat={chat} onClose={() => setMoving(false)} />}
           <HandoffBar chat={chat} />
+          {/* Over the terminal's top rows, as the move's offer is: a row that
+              took room would resize the terminal under the CLI. */}
+          {refusedNow && (
+            <div style={{ position: 'relative', height: 0, zIndex: 4 }}>
+              <div
+                className="handoff-now-note"
+                role="alert"
+                data-testid="handoff-now-refused"
+                style={{ position: 'absolute', left: 0, right: 0, top: 0 }}
+              >
+                <span title={refusedNow}>Hand off now: {refusedNow}</span>
+                <button
+                  className="move-hint-close"
+                  aria-label="Dismiss"
+                  title="Dismiss"
+                  onClick={() => useHandoffNow.getState().setRefused(chat.id, null)}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          )}
           <MoveHint chat={chat} onMove={() => setMoving(true)} />
           <OpeningHint chat={chat} />
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>

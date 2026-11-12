@@ -64,6 +64,9 @@ pub struct SessionMeta {
     pub handoff: Option<crate::agents::HandoffMark>,
     /// A handoff it was asked for and has not made, for its pane's chip.
     pub handoff_asked: Option<crate::agents::HandoffAsked>,
+    /// The ask for a handoff open on it, the threshold's or the person's,
+    /// for its pane's menu and chip.
+    pub handoff_ask: Option<crate::agents::HandoffAsk>,
     /// The usage limit its last turn stopped on, in Luna's words
     /// (activity `limit_of`): what the pane offers a move for.
     pub limit: Option<&'static str>,

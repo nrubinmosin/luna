@@ -110,6 +110,14 @@ const EXTRAS = [
   },
   { name: 'library-reach', scene: 'library', setup: click('.picker-face'), opens: has('.popover') },
   {
+    // The scene's ask fails on the dialog's first look after it, past the
+    // wait every scene gets: its buttons are looked at once they are there.
+    name: 'move-failed-buttons',
+    scene: 'move-failed',
+    setup: wait(2500),
+    opens: has('[data-testid="move-failed"]')
+  },
+  {
     name: 'library-reach-scroll',
     scene: 'library',
     setup: click('.picker-face'),

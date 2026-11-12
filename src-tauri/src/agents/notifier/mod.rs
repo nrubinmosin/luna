@@ -6,7 +6,7 @@ pub(super) mod lines;
 pub(super) mod usage;
 
 use crate::agents::ask::live;
-use crate::agents::delivery::{still_starting, type_text, TypingInto};
+use crate::agents::delivery::{still_starting, type_text, TypingInto, NO_LONGER_STANDS};
 use crate::agents::held::DRAFT_ALERT_MS;
 use crate::agents::lost::{take_undelivered, worktrees_left_line};
 use crate::agents::notifier::lines::{
@@ -435,6 +435,25 @@ pub(super) fn notifier() {
                 news.entry(caller.clone()).or_default().push(line.clone());
             }
         }
+        // Looked at with the registry let go: a move's state is under the
+        // handoff records' lock, taken before the registry's where both are.
+        let withheld: Vec<(String, String)> = news
+            .iter()
+            .flat_map(|(caller, lines)| lines.iter().map(move |line| (caller, line)))
+            .filter(|(caller, line)| crate::agents::handoff::withheld(caller, line))
+            .map(|(caller, line)| (caller.clone(), line.clone()))
+            .collect();
+        if !withheld.is_empty() {
+            for (caller, line) in &withheld {
+                crate::log::info("agents", &format!("handoff notice to {} dropped: a move of it is under way", label(caller)));
+                if let Some(lines) = news.get_mut(caller) {
+                    lines.retain(|l| l != line);
+                }
+            }
+            news.retain(|_, lines| !lines.is_empty());
+            reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|queued| !withheld.contains(queued));
+            crate::agents::save_chats();
+        }
         for caller in news.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
@@ -525,8 +544,15 @@ pub(super) fn notifier() {
             }
             let quota_lines = quota.remove(&caller).unwrap_or_default();
             lines.extend(quota_lines.iter().map(|n| n.line.clone()));
-            let news_lines = news.remove(&caller).unwrap_or_default();
-            lines.extend(news_lines.iter().cloned());
+            // Each with the words it is typed in now, which deliver_notice
+            // looks at again where it goes in (handoff `as_told`).
+            let news_lines: Vec<(String, String)> = news
+                .remove(&caller)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|line| (crate::agents::handoff::as_told(&caller, &line), line))
+                .collect();
+            lines.extend(news_lines.iter().map(|(told, _)| told.clone()));
             let spawn_lines = spawns.remove(&caller).unwrap_or_default();
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
             let breaches = budget.remove(&caller).unwrap_or_default();
@@ -715,7 +741,8 @@ fn counts_for_breaker(how: &Settled) -> bool {
 /// Types a notice into `caller` and settles what it said (`settled`: the
 /// session, what became of it, the debt as it was announced; `quota_lines`: the
 /// usage windows it told of; `spawn_lines`: the spawns cut off by a core going;
-/// `budget_lines`: the budgets passed).
+/// `news_lines`: the queued lines, as typed and as queued; `budget_lines`: the
+/// budgets passed).
 #[allow(clippy::too_many_arguments)]
 fn deliver_notice(
     pty: &crate::pty::PtyManager,
@@ -724,7 +751,7 @@ fn deliver_notice(
     settled: Vec<(String, Settled, Owed)>,
     quota_lines: Vec<QuotaNews>,
     spawn_lines: Vec<(u64, String)>,
-    news_lines: Vec<String>,
+    news_lines: Vec<(String, String)>,
     budget_lines: Vec<BudgetNews>,
 ) {
     let before = crate::activity::turn_state(caller);
@@ -739,6 +766,37 @@ fn deliver_notice(
         crate::log::info("agents", &format!("notice to {} not typed: what it told of changed as it was about to go in", label(caller)));
         return;
     };
+    // A queued line says what it was put together to say only while the
+    // conversation it is for is still the chat's (a handoff's continuation,
+    // handoff `as_told`), and a handoff's notice goes in only with no move of
+    // the chat under way (handoff `withheld`): else the next look puts it in
+    // other words, or drops it. Looked at here and again once the person's
+    // keys are held (`type_text`), right before the text goes in: a `/clear`
+    // or `/new` of theirs between the two would otherwise take the
+    // continuation into a conversation that never asked for it.
+    let stands = || {
+        news_lines
+            .iter()
+            .all(|(told, line)| !crate::agents::handoff::withheld(caller, line) && crate::agents::handoff::as_told(caller, line) == *told)
+    };
+    // A `/clear` or `/new` the person sent just before their keys were held
+    // is on its way to a CLI that has not acted on it yet, and the
+    // conversation still reads as the old one. So a line bound to its
+    // conversation also goes in only with no key of theirs since this look,
+    // nor within the quiet the look before it asked for (`ready_for_notice`),
+    // which covers the stretch up to here: otherwise nothing goes in, and
+    // the next look sees where their keys took the chat.
+    let bound = news_lines.iter().any(|(_, line)| crate::agents::handoff::bound_to_conversation(line));
+    let keys_at = pty.typed_at_ms(caller);
+    let no_keys_since = || pty.typed_at_ms(caller) == keys_at && pty.typed_ago_ms(caller).is_none_or(|ms| ms >= TYPING_QUIET_MS);
+    let stands_held = || stands() && (!bound || no_keys_since());
+    if !stands() {
+        crate::log::info(
+            "agents",
+            &format!("notice to {} not typed: a queued line's conversation or move changed as it was about to go in", label(caller)),
+        );
+        return;
+    }
     #[cfg(test)]
     tests::between_check_and_typing(caller);
     // The turn it starts: the next, or for a background caller that has begun
@@ -752,7 +810,7 @@ fn deliver_notice(
             Err(e) => (Err(e), 0),
         }
     } else {
-        (type_text(pty, caller, text, before.map(|t| t.turn), baseline), baseline + 1)
+        (type_text(pty, caller, text, before.map(|t| t.turn), baseline, &stands_held), baseline + 1)
     };
     // In, or not to be: a handover waiting on it goes ahead.
     drop(telling);
@@ -830,7 +888,7 @@ fn deliver_notice(
             for n in quota_lines {
                 r.quota_told.insert(n.key, n.told);
             }
-            r.news.retain(|(c, line)| !(c == caller && news_lines.contains(line)));
+            r.news.retain(|(c, line)| !(c == caller && news_lines.iter().any(|(_, queued)| queued == line)));
             // Told: not to be told again by a core after this one.
             let told_news = !news_lines.is_empty();
             let told_spawns = !spawn_lines.is_empty();
@@ -857,8 +915,26 @@ fn deliver_notice(
                 breaker_tripped(caller, &id);
             }
         }
+        Err(e) if e == NO_LONGER_STANDS => crate::log::info(
+            "agents",
+            &format!(
+                "notice to {} not typed: a queued line's conversation or move changed, or the person typed, as their keys were held",
+                label(caller)
+            ),
+        ),
         Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(caller))),
     }
+}
+
+/// A notice of the queued lines `news_lines` (as typed, as queued) typed into
+/// `caller` as the notifier would, `between` run after its first look and
+/// before its text goes in (`tests::between_check_and_typing`): for the tests
+/// of what a queued line may say where.
+#[cfg(test)]
+pub(in crate::agents) fn deliver_news_for_test(caller: &str, news_lines: Vec<(String, String)>, between: Box<dyn FnOnce() + Send>) {
+    tests::run_between(caller, between);
+    let text = format!("{NOTICE_TAG} {}", news_lines.iter().map(|(told, _)| told.as_str()).collect::<Vec<_>>().join(" "));
+    deliver_notice(crate::pty::manager(), caller, &text, vec![], vec![], vec![], news_lines, vec![]);
 }
 
 /// What a notice that went in does to the debt it told of (`told`). Only to
@@ -941,6 +1017,10 @@ mod tests {
     /// What a test has run in a notice's delivery to a caller, once, between its
     /// check and its text going in (`deliver_notice`).
     static BETWEEN: std::sync::Mutex<Vec<Between>> = std::sync::Mutex::new(Vec::new());
+
+    pub(super) fn run_between(caller: &str, run: Box<dyn FnOnce() + Send>) {
+        BETWEEN.lock().unwrap_or_else(|e| e.into_inner()).push((caller.to_string(), run));
+    }
 
     pub(super) fn between_check_and_typing(caller: &str) {
         let hook = {

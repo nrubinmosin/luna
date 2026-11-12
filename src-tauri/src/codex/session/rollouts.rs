@@ -269,6 +269,26 @@ pub(super) fn rollout_on(live: &Live, thread: Option<String>) -> Option<PathBuf>
     Some(found)
 }
 
+/// The conversation a live session's TUI is on, its title naming `thread`:
+/// that thread, unless it is one of its subagents' it is watching
+/// (`/subagents`), which runs in the session but is not its conversation;
+/// then the thread of the rollout it stays on (`rollout_on`), cut to the
+/// length the title names a thread by, so it reads as the title would. A
+/// thread whose file's first line does not read yet is not known to be
+/// either, nor is one whose own rollout is not found: None. One with no file
+/// yet (a `/new`, written at its first prompt) is the thread it names.
+pub fn own_thread(live: &Live, thread: Option<String>) -> Option<String> {
+    let thread = thread?;
+    let Some(found) = thread_file(live.account_path, &thread) else { return Some(thread) };
+    let meta = first_line(&found)?;
+    if spawned_by(&meta).is_none() {
+        return Some(thread);
+    }
+    let own = rollout_on(live, Some(thread.clone()))?;
+    let (_, id) = parse_name(&own.file_name()?.to_string_lossy())?;
+    id.get(..thread.len()).map(str::to_owned).filter(|own| *own != thread)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,9 +395,16 @@ mod tests {
         };
         assert_eq!(on(&own).as_deref(), Some(own.as_str()));
         assert_eq!(on(&kid).as_deref(), Some(own.as_str()), "watching its subagent");
+        // Its conversation too stays its own, by the title's length of id.
+        let conversation = |thread: &str| own_thread(&live, Some(thread.to_string()));
+        assert_eq!(conversation(&own).as_deref(), Some(own.as_str()));
+        assert_eq!(conversation(&kid).as_deref(), Some(own.as_str()), "watching its subagent is no new conversation");
+        assert_eq!(conversation(&kid[..kid.len() - 2]).as_deref(), Some(&own[..own.len() - 2]), "a title's shorter id");
+        assert_eq!(conversation("newthread-unwritten").as_deref(), Some("newthread-unwritten"), "a /new not written yet");
         let half = rollout_path(&root, &young, t0 + 3_000);
         std::fs::write(&half, r#"{"type":"session_meta","payload":{"cwd":"E:\\p","sou"#).unwrap();
         assert_eq!(on(&young).as_deref(), Some(own.as_str()), "its first line half written");
+        assert_eq!(conversation(&young), None, "not known to be either yet");
         std::fs::write(
             &half,
             format!(r#"{{"type":"session_meta","payload":{{"cwd":"E:\\p","source":{}}}}}"#, spawned_by_json(&own)) + "\n",

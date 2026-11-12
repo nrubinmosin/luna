@@ -8,6 +8,89 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- **Hand off now** in a pane's "…" menu: any chat with Luna tools writes a
+  handoff and goes on from it in a fresh conversation, with no threshold set.
+  Grayed with why where the chat could not answer; the core's refusal shows
+  over the pane. The ask lapses 10 minutes after Luna types it, and asks
+  nothing before; one Luna could not type within 10 minutes is withdrawn,
+  saying so. The menu and the chip show it as the core holds it, across a
+  window reload and with the chat's CLI not running.
+- **Move to another account…** has the chat write its own document by
+  default, for any chat with Luna tools. Luna's document from records is
+  taken only when you pick it: before the ask, while it waits (**Use Luna's
+  document now**), or after a failed ask (**Build from records**). It is
+  picked for you only while a usage limit holds the chat, with the window,
+  its reset and how old the usage reading is.
+- A failed move ask says why, and offers **Ask again** where another ask may
+  go through. The preview says who wrote the document.
+
+### Changed
+
+- Every helper is told to install nothing and change nothing machine-wide or
+  in its account unless its task names it, and to give its caller the command
+  instead.
+- `luna_session_handoff` is listed to every person's chat with Luna tools,
+  and answers only when the chat is asked: by Hand off now, by auto-handoff's
+  threshold, or by a move. Unasked, it refuses. An ask holds only for the
+  conversation it was typed into, a move's ask too, and a handoff called for
+  there is given up, nothing cleared, if you start another conversation
+  before Luna switches. The continuation goes only into the conversation
+  Luna's reset opened: if you start one of your own as Luna resets, or
+  Luna's core stopped mid-switch, and Luna cannot tell the conversation the
+  chat is on is the one its reset opened, the handoff is given up with only
+  its copy's path said there. A failure's line that carries the
+  continuation is typed only while the chat is still on that conversation,
+  else as a line naming the copy. A chat answering a move's ask that was
+  since decided otherwise hears that the move is over, not that nobody
+  asked it.
+  Every such chat gets its private drafts folder at its start.
+- Auto-handoff now only asks at its threshold; turning it off closes only its
+  own ask. Its ask closes when the threshold re-arms. A move of the chat,
+  asked of it or built from records, closes its ask and drops its notice not
+  yet typed; it asks nothing while the move is under way, preview and all,
+  and asks again once the move ends with the chat not stopped (before its
+  stop step, or in a move that keeps it running), if it is still past its
+  threshold. Hand off now is refused for the whole move too.
+- A usage limit counts as holding a chat only until every window of its
+  model is read after the stop and not full, or their resets pass. A Codex
+  limit is judged by its own newest reading, not by another model's, and a
+  model's own limit with no reading since the stop keeps the chat held; its
+  reading is kept however old, a full one days from its reset included.
+
+### Fixed
+
+- A move whose ask for the chat's document failed no longer switches to
+  Luna's document without a word.
+- A move's instructions follow the person's handoff override in the library,
+  under the move's own rules.
+- A usage limit scoped to one model is judged by the model of the turn it
+  stopped, not the one that answered last: a Codex chat switched to Spark
+  stays held by Spark's full limit. A Claude Code chat, whose failed request
+  names no model, is judged by the model that answered last, a `/model`
+  switch included, before the model it was started on.
+- A Codex chat watching a subagent (`/subagents`) no longer has its handoff
+  ask closed as if it had left its conversation.
+- Auto-handoff asks again once the person's ask that took its place lapses
+  or is withdrawn, once a move that took it ends with the chat not stopped,
+  and once it is turned on again, rather than leaving a chat past its
+  threshold unasked.
+- A failure's line carrying the continuation is looked at again with your
+  keys held, right before it goes in, and waits while a key of yours since
+  Luna's look may not have reached the CLI yet: a `/clear` or `/new` of
+  yours just before no longer lets it into the conversation you started.
+- A move of a chat you began withdraws your Hand off now still open, saying
+  so in the pane and on the desktop, instead of leaving it to reset the chat
+  mid-move; a move is refused while a handoff of the chat is under way, and
+  no handoff is scheduled while a move is.
+- A move's ask fails at once, saying why, when the chat goes on in another
+  conversation, instead of waiting out its ten minutes; Ask again is offered.
+- Two refusals and a desktop notice about the person's handoff ask no longer
+  carry a run of stray spaces.
+- Luna's document from records leaves out the turns its own ask opened in the
+  chat.
+
 ## [0.16.0] - 2026-11-12
 
 A CLI version can now be marked good as well as bad, and either mark taken
