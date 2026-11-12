@@ -28,6 +28,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- Every helper is told to install nothing and change nothing machine-wide or
+  in its account unless its task names it, and to give its caller the command
+  instead.
 - `luna_session_handoff` is listed to every person's chat with Luna tools,
   and answers only when the chat is asked: by Hand off now, by auto-handoff's
   threshold, or by a move. Unasked, it refuses. An ask holds only for the
@@ -44,7 +47,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   asked it.
   Every such chat gets its private drafts folder at its start.
 - Auto-handoff now only asks at its threshold; turning it off closes only its
-  own ask. Its ask closes when the threshold re-arms.
+  own ask. Its ask closes when the threshold re-arms. It asks nothing while
+  a move of the chat is under way, preview and all, and asks again once a
+  move ends with the chat not stopped, if it is still past its threshold.
 - A usage limit counts as holding a chat only until every window of its
   model is read after the stop and not full, or their resets pass. A Codex
   limit is judged by its own newest reading, not by another model's, and a

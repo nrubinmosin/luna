@@ -59,7 +59,11 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   not reach it, and what it still owes of them: to stop, before its turn ends,
   the background work it started that nothing needs any more (watchers, wait
   loops, dev servers; not helpers it waits on, nor what its task keeps
-  running), keep each caveat with its claim, and send nothing outward unasked. The library can keep such rules from it altogether (an entry's
+  running), keep each caveat with its claim, and send nothing outward unasked; and to
+  install nothing and change nothing machine-wide or in its CLI account's folder
+  (settings, PATH, the registry, services, scheduled tasks, global git or shell
+  config, memory, skills) unless its task names that change, giving its caller
+  the exact command instead. The library can keep such rules from it altogether (an entry's
   audience, [library](library.md#audiences)). Claude Code by `--append-system-prompt` and a note after its
   first prompt (`pty::helper_prompt`), as memory files outweigh an appended
   system prompt; Codex by the note after each turn's prompt, because

@@ -319,7 +319,10 @@ pub(crate) fn helper_line(parent: &str) -> String {
          where it says none, in the language the task is written in. Before your turn ends, stop the background work you \
          started that nothing needs any more (watchers, wait loops, dev servers), not helpers you are waiting on nor what \
          your task asks to keep running; keep each caveat beside the claim it limits; send, push or post nothing outward \
-         unless your task asks for it."
+         unless your task asks for it; install nothing and change nothing machine-wide or in your CLI account's folder \
+         (software, system or user-wide settings, PATH, the registry, services, scheduled tasks, global git or shell \
+         config, memory, skills) unless your task names that change: where the work needs one, give your caller the \
+         exact command instead."
     )
 }
 

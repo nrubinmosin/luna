@@ -95,7 +95,9 @@ hooks run unasked.
 - Every session gets its id as `LUNA_SESSION_ID`, a helper its parent's as
   `LUNA_PARENT_ID`. A helper is told what it is — not the chat of whoever its
   instructions call the operator, the user or the person at this machine — and
-  to write in the language of its task: Claude Code through its system prompt
+  to write in the language of its task, and to install nothing and change
+  nothing machine-wide or in its account's folder unless its task names that
+  change, handing its caller the command instead: Claude Code through its system prompt
   and a note after its first prompt; Codex, which can only replace
   `developer_instructions`, through a note Luna appends to each prompt. A prompt
   opening with a slash command goes without it.
