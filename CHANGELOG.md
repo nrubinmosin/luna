@@ -51,6 +51,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   under it are told last among their instructions, at every start and resume.
   A spawn adds to what its caller carries; nothing removes any. Shown in
   `luna_session_get`.
+- **Auto-handoff for leads** (Settings → Agents & trust → Helpers, on at 60%
+  by default): a helper with Luna tools is offered `luna_session_handoff`, and
+  past that share of its context, at the end of a turn, Luna asks it for a
+  handoff. It goes on in a fresh conversation of its own as its turn ends, in
+  the worktree it works in, with the same id, role, constraints and helpers;
+  its parent hears of it with its next notice. A lead that can write no file
+  goes on from a handoff Luna writes from its records.
 
 ### Changed
 
