@@ -293,11 +293,21 @@ fn from_newest_known(out: &mut CodexLimits, account_path: &str) {
 /// chat's rollout) read among them.
 pub(crate) fn known_reading(account_path: &str, own: Option<&Path>) -> Option<crate::activity::UsageReading> {
     let answer = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
-    let snapshots = super::session::latest_rate_limits_by_id(account_path, own)
+    known_limits(answer, timed(super::session::latest_rate_limits_by_id(account_path, own)))
+}
+
+/// Rollout snapshots with their lines' timestamps, as ms.
+fn timed(snapshots: Vec<(Value, String)>) -> Vec<(Value, Option<u64>)> {
+    snapshots
         .into_iter()
         .map(|(snapshot, ts)| (snapshot, chrono::DateTime::parse_from_rfc3339(&ts).ok().map(|t| t.timestamp_millis().max(0) as u64)))
-        .collect();
-    known_limits(answer, snapshots)
+        .collect()
+}
+
+/// `known_reading` of rollout snapshots alone, for the session reader's tests.
+#[cfg(test)]
+pub(crate) fn known_limits_for_test(snapshots: Vec<(Value, String)>) -> crate::activity::UsageReading {
+    known_limits(None, timed(snapshots)).unwrap_or_default()
 }
 
 /// The limit a window of the endpoint's answer belongs to, as a rollout

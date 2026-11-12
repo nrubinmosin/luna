@@ -520,8 +520,8 @@ const LIMIT_FILES: usize = 32;
 /// so the newest snapshot of all is not the account's whole picture; and a
 /// chat that changed models wrote each one's in turn, so every limit a
 /// rollout's tail holds is read (`rate_limits_in`). What this core has read
-/// is kept for two days, newest per limit: a limit whose rollouts fall out of
-/// the newest is still known, as of when it was read, not taken for gone.
+/// is kept, newest per limit: a limit whose rollouts fall out of the newest is
+/// still known, as of when it was read, not taken for gone, however old.
 pub fn latest_rate_limits_by_id(account_path: &str, own: Option<&Path>) -> Vec<(Value, String)> {
     let today = Local::now().date_naive();
     let ms = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
@@ -546,8 +546,11 @@ pub fn latest_rate_limits_by_id(account_path: &str, own: Option<&Path>) -> Vec<(
             }
         }
     }
-    let horizon = chrono::Utc::now().timestamp_millis() - 2 * 24 * 60 * 60_000;
-    known.retain(|_, (at, _)| *at >= horizon);
+    // None is dropped for its age: a reading is judged as of its own time
+    // (activity/limit.rs), and one gone is a limit unknown, which a newer
+    // reading of another limit would then stand in for. A model's full limit
+    // days from its reset would let the general one lift a chat on it. One
+    // reading a limit, a handful an account: nothing grows.
     known.values().map(|(_, hit)| hit.clone()).collect()
 }
 
@@ -957,6 +960,42 @@ mod limit_tests {
         assert_eq!(ids(latest_rate_limits_by_id(&account, None)), ["codex"], "out of the newest, never read");
         assert_eq!(ids(latest_rate_limits_by_id(&account, Some(&own))), ["codex", "codex_spark"], "the chat's own, read");
         assert_eq!(ids(latest_rate_limits_by_id(&account, None)), ["codex", "codex_spark"], "and known since");
+        seen_limits().lock().unwrap().remove(&account);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A Spark chat stopped days ago on its own limit, whose week resets days
+    /// from now: its reading, days old, stays known however often it is read
+    /// again, and a newer general reading, not full, lifts nothing of it.
+    #[test]
+    fn a_full_reading_days_old_is_not_dropped_for_its_age() {
+        let (root, at) = rollout_bench("limits-old-full");
+        let day = 24 * 60 * 60_000;
+        let iso = |ms: u64| chrono::DateTime::from_timestamp_millis(ms as i64).unwrap().to_rfc3339();
+        let snapshot = |ts: u64, id: &str, used: u64, resets_s: u64| {
+            serde_json::json!({ "timestamp": iso(ts), "type": "event_msg", "payload": { "type": "token_count", "info": null,
+                "rate_limits": { "limit_id": id, "limit_name": "GPT-5 Codex Spark",
+                    "primary": { "used_percent": used, "window_minutes": 10080, "resets_at": resets_s } } } })
+            .to_string()
+        };
+        let own_id = "00000000-0000-4000-8000-0000000000aa";
+        write_rollout(&root, at, own_id, Some(r#""cli""#));
+        let own = rollout_path(&root, own_id, at);
+        append(own.clone(), format!("{}\n", snapshot(at - 3 * day, "codex_spark", 100, (at + 2 * day) / 1000)));
+        let other = "00000000-0000-4000-8000-0000000000bb";
+        write_rollout(&root, at, other, Some(r#""cli""#));
+        append(rollout_path(&root, other, at), format!("{}\n", snapshot(at, "codex", 5, (at + day) / 1000)));
+        let account = root.to_string_lossy().into_owned();
+        let spark = |got: &[(Value, String)]| got.iter().any(|(v, _)| limit_id(v) == "codex_spark");
+        for round in 0..2 {
+            let got = latest_rate_limits_by_id(&account, Some(&own));
+            assert!(spark(&got), "round {round}: the chat's own limit, read again from its own rollout");
+            let reading = crate::codex::limits::known_limits_for_test(got);
+            let held =
+                crate::activity::in_force("usage_limit", at - 3 * day + 1_000, Some(&reading.for_model(Some("gpt-5-codex-spark"))), at);
+            assert!(held.is_some(), "round {round}: the general reading does not lift it");
+        }
+        assert!(spark(&latest_rate_limits_by_id(&account, None)), "known without the chat's rollout too");
         seen_limits().lock().unwrap().remove(&account);
         let _ = std::fs::remove_dir_all(&root);
     }

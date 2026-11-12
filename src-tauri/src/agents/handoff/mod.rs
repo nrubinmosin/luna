@@ -560,12 +560,18 @@ impl Term for Pty {
             typing: pty.typed_ago_ms(chat).is_some_and(|ms| ms < SEND_TYPING_MS),
             jobs: crate::activity::own_jobs(chat),
             conversation: conversation_of(pty, chat, s.provider),
+            // After the conversation, in this order (`Look::keys`).
+            keys: pty.typed_at_ms(chat),
             prompted,
         }
     }
 
     fn conversation(&self, chat: &str, s: &Switch) -> Option<String> {
         conversation_of(crate::pty::manager(), chat, s.provider)
+    }
+
+    fn keys(&self, chat: &str) -> u64 {
+        crate::pty::manager().typed_at_ms(chat)
     }
 
     fn type_line(&self, chat: &str, text: &str, commit: &dyn Fn() -> Result<(), Refused>) -> Result<Typed, String> {
@@ -638,12 +644,15 @@ impl Phases for Stored {
     }
 
     fn opened(&self, chat: &str, n: u32, conversation: &str) -> Result<(), Refused> {
-        let set = store::change(chat, |r| match r.switch.as_mut().filter(|s| s.n == n && matches!(s.phase, Phase::Resetting { .. })) {
-            Some(s) => {
-                s.opened = Some(conversation.to_string());
-                true
+        // Once: a conversation on record is never written over.
+        let set = store::change(chat, |r| {
+            match r.switch.as_mut().filter(|s| s.n == n && matches!(s.phase, Phase::Resetting { .. }) && s.opened.is_none()) {
+                Some(s) => {
+                    s.opened = Some(conversation.to_string());
+                    true
+                }
+                None => false,
             }
-            None => false,
         });
         match set {
             Ok(true) => {
@@ -880,7 +889,7 @@ fn finish(chat: &str, n: u32, ended: Ended, prompt: &dyn Fn() -> String) {
         Ended::Done => (true, None, true, None),
         Ended::Failed { why, reset } => (false, Some(why), reset, None),
         Ended::Left => (false, Some(phase::LEFT.to_string()), false, Some(facts::left_line)),
-        Ended::Stray => (false, Some(phase::STRAY.to_string()), false, Some(facts::stray_line)),
+        Ended::Stray(why) => (false, Some(why), false, Some(facts::stray_line)),
     };
     let end = |r: &mut store::Record| {
         let closed = close(r, Some(n), done, why.clone(), |_| true);
@@ -1429,15 +1438,13 @@ fn switches(b: &mut Beat) {
             }
             Step::Done => finish(&chat, s.n, Ended::Done, &String::new),
             Step::Left => finish(&chat, s.n, Ended::Left, &String::new),
-            Step::Stray => finish(&chat, s.n, Ended::Stray, &String::new),
+            Step::Stray => finish(&chat, s.n, Ended::Stray(phase::STRAY.into()), &String::new),
             Step::Fail(why) => {
-                // Still scheduled, nothing was reset: another conversation
-                // the chat is on is the person's, not the one Luna opened.
-                let reset = s.phase != Phase::Scheduled && look.conversation.is_some() && look.conversation != s.before.conversation;
-                // The prompt again for the new conversation, only on a copy
-                // that is still Luna's.
+                // The prompt again for the new conversation, only on the one
+                // the reset opened (`phase::failed`) and a copy that is still
+                // Luna's.
                 let prompt = || if copy_holds(&chat, &s).is_ok() { continuation(&chat, &s) } else { String::new() };
-                finish(&chat, s.n, Ended::Failed { why, reset }, &prompt);
+                finish(&chat, s.n, phase::failed(&s, &look, why), &prompt);
             }
             Step::Wait => {}
         }
