@@ -65,18 +65,26 @@ owed by the person's chats, outlive a core restart.
   `helper.background-wait`): subagents and gates run long, but `0` would let a
   forgotten watcher (a dev server, `tail -f`, a Monitor with no end) hold the
   turn, and every message to the helper, for good. Until then the turn is
-  busy; once its result is in (`Run::after_result`) and it has been quiet for
-  30 min, the caller is told it waits on its background work, by the calls its
-  transcript has open (`claude::session::background_calls`) and the processes
-  in its job (`waits_on_background`), and `luna_session_stop` ends it. When the
-  CLI stops that work, its stderr line ("Background tasks still running …
-  stopping them") is caught (`run.rs` `stops_background`) and kept in
-  `Observed`, saved across cores with the callers told so far: every line that
-  settles a debt on it says so to a caller not yet told (rather than "it has
-  said nothing"), a delivered one marks that caller (notifier
-  `ack_background_stop`, never a line without it such as an exited helper's),
-  and it is done once every caller still owed has been told, or the next turn
-  begins. The quiet notice of a turn that has answered and waits on its
+  busy; once its result is in (`Run::after_result`) and both its stream and
+  every process in its job (`Run::watched`, sampled with the activity) have
+  been quiet for 30 min, the caller is told it waits on its background work,
+  by the calls its transcript has open (`claude::session::background_calls`)
+  and the processes in its job (`waits_on_background`), and `luna_session_stop`
+  ends it; with a subagent among them the line does not call it a hang. The
+  stream does show a subagent's steps (2.1.322 writes a `task_progress` event
+  for each tool call of one) but not one long command of its, which the job
+  does. When the CLI stops that work, its stderr line ("Background tasks still
+  running … stopping them") is caught (`run.rs` `stops_background`) and kept in
+  `Observed` with the turn it ended (`stopped_turn`), saved across cores with
+  the callers told so far and kept across later turns (a queued message starts
+  one at once). Every line that settles a debt owed from before that turn's
+  end says so to a caller not yet told (rather than "it has said nothing"), as
+  does a wait, read or report that hands the answer over (`backgroundStopped`,
+  owed.rs `background_stopped_note`); a delivered notice marks that caller
+  (notifier `ack_background_stop`, never a line without it such as an exited
+  helper's), as does the hand-over (`hand_over`, put back with a reply that
+  never reached it), and it is done once every caller owed from before has
+  been told. The quiet notice of a turn that has answered and waits on its
   background work is told once per turn apart from the plain quiet one
   (`Owed::told_background_wait`).
 - A Codex helper's `exec` has no such ceiling: it reads its prompt from stdin

@@ -472,24 +472,43 @@ pub fn background_stopped(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.observed.background_stopped)
 }
 
-/// Whether `caller`'s notice of it is to say that its CLI stopped its
-/// background work: so, and not yet said to `caller`.
-pub fn background_stopped_for(id: &str, caller: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| e.observed.background_stopped && !e.observed.stop_told.iter().any(|c| c == caller))
+/// Whether what `caller` is told of it, owed the end of a turn past count
+/// `from` (agents `Owed::owed_from`), is to say that its CLI stopped its
+/// background work: so, at the end of such a turn, and not yet said to `caller`.
+pub fn background_stopped_for(id: &str, caller: &str, from: u32) -> bool {
+    lock().entries.get(id).is_some_and(|e| {
+        let o = &e.observed;
+        o.background_stopped && from < o.stopped_turn && !o.stop_told.iter().any(|c| c == caller)
+    })
 }
 
-/// A notice saying so has settled `caller`'s debt: not to be said to it again,
-/// by this core or the next (the notifier saves). Once every caller still owed
-/// by it (`owed`) has had it too, it is done with.
-pub fn background_stop_told(id: &str, caller: &str, owed: &[String]) {
+/// Where a stop stands, for putting back what a canceled reply acknowledged
+/// (`background_stop_restore`).
+pub type StopState = (bool, Vec<String>);
+
+/// It has been said to `caller`, whose debt it settled: not again, by this core
+/// or the next (the notifier saves). Once every caller still owed (`owed`, each
+/// with the turn count it is owed from) that is to hear of it has, it is done
+/// with. What stood before, for an undo.
+pub fn background_stop_told(id: &str, caller: &str, owed: &[(String, u32)]) -> Option<StopState> {
     let mut r = lock();
-    let Some(o) = r.entries.get_mut(id).map(|e| &mut e.observed).filter(|o| o.background_stopped) else { return };
+    let o = r.entries.get_mut(id).map(|e| &mut e.observed).filter(|o| o.background_stopped)?;
+    let before = (o.background_stopped, o.stop_told.clone());
     if !o.stop_told.iter().any(|c| c == caller) {
         o.stop_told.push(caller.to_string());
     }
-    if owed.iter().all(|c| o.stop_told.contains(c)) {
+    if owed.iter().filter(|(_, from)| *from < o.stopped_turn).all(|(c, _)| o.stop_told.contains(c)) {
         o.background_stopped = false;
         o.stop_told.clear();
+    }
+    Some(before)
+}
+
+/// Puts back what `background_stop_told` found: the reply that said it to its
+/// caller never reached it.
+pub fn background_stop_restore(id: &str, before: StopState) {
+    if let Some(e) = lock().entries.get_mut(id) {
+        (e.observed.background_stopped, e.observed.stop_told) = before;
     }
 }
 
