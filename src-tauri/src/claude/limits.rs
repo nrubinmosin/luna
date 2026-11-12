@@ -279,10 +279,10 @@ pub(crate) fn known_reading(account_path: &str) -> Option<crate::activity::Usage
     apply_limits(&mut out, &limits);
     let mut windows = Vec::new();
     if let Some(used) = out.h5 {
-        windows.push(UsageWindow { label: "5 hours".into(), used, resets_at: out.reset_h5.clone(), model: None });
+        windows.push(UsageWindow { label: "5 hours".into(), used, resets_at: out.reset_h5.clone(), model: None, at: None });
     }
     if let Some(used) = out.week {
-        windows.push(UsageWindow { label: "week".into(), used, resets_at: out.reset_week.clone(), model: None });
+        windows.push(UsageWindow { label: "week".into(), used, resets_at: out.reset_week.clone(), model: None, at: None });
     }
     // A window scoped to a model holds only a chat on it (`UsageReading::for_model`).
     for s in &out.scoped {
@@ -291,10 +291,17 @@ pub(crate) fn known_reading(account_path: &str) -> Option<crate::activity::Usage
             used: s.used,
             resets_at: s.resets_at.clone(),
             model: s.model.clone(),
+            at: None,
         });
     }
     for o in &out.other {
-        windows.push(UsageWindow { label: o.label.clone(), used: o.used, resets_at: o.resets_at.clone(), model: o.model.clone() });
+        windows.push(UsageWindow {
+            label: o.label.clone(),
+            used: o.used,
+            resets_at: o.resets_at.clone(),
+            model: o.model.clone(),
+            at: None,
+        });
     }
     Some(crate::activity::UsageReading { at: Some(at), windows })
 }

@@ -175,9 +175,11 @@ up by itself, its helpers carrying on. It does so only when it is asked:
   (the CLI's own jobs running, its CLI not running); its reason then shows in
   a strip over the pane, × to dismiss. Luna types the request only once the
   chat stands at its prompt, with nothing in its composer. The chip on the
-  title bar reads **handoff asked** (or **· asked** beside a threshold). Your
-  ask lapses 10 minutes after Luna typed it if no handoff came; the chat is
-  told, and the desktop says so.
+  title bar reads **handoff asked** (or **· asked** beside a threshold), and
+  the menu item's tooltip says when the ask lapses, both as Luna's core holds
+  them, so a reload of the window shows the same. Your ask lapses 10 minutes
+  after Luna typed it if no handoff came; the chat is told, and the desktop
+  says so. Until Luna has typed it, it asks nothing of the chat.
 - **Auto-handoff at N% of its context** asks by itself once the context passes
   a threshold. Tick it in the new-chat dialog (70% unless you change it, from
   10 to 90), or later in the chat's **What Luna applied** panel. A chat
@@ -201,7 +203,10 @@ menu, so words injected into the chat cannot hand it off on their own.
   context it was asked and how often the CLI compacted it since (a larger
   window is no compaction); it goes once a handoff is under way or through.
 - An ask holds only for the conversation it was typed into. Start a new one
-  yourself (`/clear`, `/new`) and that one is asked nothing.
+  yourself (`/clear`, `/new`) and that one is asked nothing. A handoff the
+  chat already called for and Luna has not yet switched is given up then:
+  Luna clears nothing, keeps the file's copy, and tells the new conversation
+  and the desktop.
 - Asked, the chat calls `luna_session_handoff` without arguments and gets the
   steps and the instructions for the file: Luna's own, or yours from the
   library ([System skills](library.md#system-skills)).

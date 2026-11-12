@@ -13,7 +13,6 @@ import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { askedWords, HandoffBar } from '../chats/Handoff';
 import { askHandoffNow, askStands, handoffNowRefusal, useHandoffNow } from '../chats/handoffNow';
 import { useMoveHints } from '../chats/moveHints.store';
-import { useNow } from '../accounts/limits';
 import { MoveChatDialog } from '../chats/MoveChatDialog';
 import { MoveHint, OpeningHint } from '../chats/MoveHint';
 import { draftTag, useDrafts } from '../chats/drafts.store';
@@ -249,12 +248,9 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const pressedOn = useRef<Element | null>(null);
   const [copied, setCopied] = useState(false);
   const [draft, setDraft] = useState('');
-  const askedAt = useHandoffNow(s => (chatId ? s.asked[chatId] : undefined));
   const refusedNow = useHandoffNow(s => (chatId ? s.refused[chatId] : undefined));
   const moves = useMoveHints(s => s.opening);
-  // A minute's tick is enough for an ask that lapses after ten.
-  const now = useNow(60_000);
-  const askedNow = !!chat && askStands(chat, askedAt, now);
+  const askedNow = !!chat && askStands(chat);
 
   const commitRename = () => {
     setEditing(false);
@@ -464,7 +460,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                     title: "Everything Luna added to this chat's CLI, and why",
                     run: () => setShowApplied(true)
                   },
-                  handoffNowItem(chat, handoffNowRefusal(chat, Object.values(moves), askedAt, now)),
+                  handoffNowItem(chat, handoffNowRefusal(chat, Object.values(moves))),
                   {
                     label: 'Move to another account…',
                     title: 'Goes on as a new chat on another account of its CLI, from a document you read first',

@@ -334,7 +334,6 @@ export function seedDemo(scene: Scene) {
   // terminal.
   if (scene === 'hand-off-now' || scene === 'hand-off-now-refused') {
     useHandoffNow.setState({
-      asked: {},
       refused:
         scene === 'hand-off-now-refused'
           ? {

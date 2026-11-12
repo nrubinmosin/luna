@@ -13,7 +13,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - **Hand off now** in a pane's "…" menu: any chat with Luna tools writes a
   handoff and goes on from it in a fresh conversation, with no threshold set.
   Grayed with why where the chat could not answer; the core's refusal shows
-  over the pane. The ask lapses 10 minutes after Luna types it.
+  over the pane. The ask lapses 10 minutes after Luna types it, and asks
+  nothing before; the menu and the chip show it as the core holds it, across
+  a window reload.
 - **Move to another account…** has the chat write its own document by
   default, for any chat with Luna tools. Luna's document from records is
   taken only when you pick it: before the ask, while it waits (**Use Luna's
@@ -28,12 +30,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - `luna_session_handoff` is listed to every person's chat with Luna tools,
   and answers only when the chat is asked: by Hand off now, by auto-handoff's
   threshold, or by a move. Unasked, it refuses. An ask holds only for the
-  conversation it was typed into. Every such chat gets its private drafts
-  folder at its start.
+  conversation it was typed into, and a handoff called for there is given up,
+  nothing cleared, if you start another conversation before Luna switches.
+  Every such chat gets its private drafts folder at its start.
 - Auto-handoff now only asks at its threshold; turning it off closes only its
   own ask. Its ask closes when the threshold re-arms.
-- A usage limit counts as holding a chat only until a newer usage reading
-  shows its model's windows not full, or their resets pass.
+- A usage limit counts as holding a chat only until every window of its
+  model is read after the stop and not full, or their resets pass. A Codex
+  limit is judged by its own newest reading, not by another model's.
 
 ### Fixed
 

@@ -83,6 +83,7 @@ export function useSessionWatch() {
         useDrafts.getState().set(chat.id, { draft: meta.draft, held: meta.held });
         if (meta.handoff) store.setHandoffMark(chat.id, meta.handoff);
         store.setHandoffAsked(chat.id, meta.handoffAsked ?? null);
+        store.setHandoffAsk(chat.id, meta.handoffAsk ?? null);
         useMoveHints.getState().setLimit(chat.id, meta.limit ?? null);
         useMarked.getState().set(chat.id, meta.marked);
 

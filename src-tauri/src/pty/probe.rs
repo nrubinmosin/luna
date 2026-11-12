@@ -298,6 +298,7 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
         m.held = crate::agents::held_count(&id);
         m.handoff = crate::agents::mark_of(&id);
         m.handoff_asked = crate::agents::asked_of(&id);
+        m.handoff_ask = crate::agents::handoff_ask_of(&id);
         // A Codex rollout's tail is read for it: off the main thread too.
         let of = id.clone();
         m.limit = tauri::async_runtime::spawn_blocking(move || manager().provider(&of).and_then(|p| crate::activity::limit_of(&of, p)))

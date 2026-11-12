@@ -7,7 +7,7 @@ import type { Account, Chat } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
 import { RESUME_LOOK_MS } from '../chats/autoHandoff';
 import { useChats } from '../chats/chats.store';
-import { ASK_HOLDS_MS, handoffNowRefusal, useHandoffNow } from '../chats/handoffNow';
+import { handoffNowRefusal, useHandoffNow } from '../chats/handoffNow';
 import { handoffNowItem, PaneMenu } from './Pane';
 import { useRestarts } from './restarts.store';
 import * as terminals from './terminals';
@@ -120,20 +120,21 @@ function menuFor(c: Chat, why = handoffNowRefusal(c, [])) {
 describe('Hand off now', () => {
   afterEach(() => {
     vi.useRealTimers();
-    useHandoffNow.setState({ asked: {}, refused: {} });
+    useHandoffNow.setState({ refused: {} });
     useRestarts.setState({ by: {}, pending: {} });
     vi.mocked(handoffIpc.handoffNow).mockClear();
     vi.mocked(terminals.resumeSession).mockClear();
   });
 
   it('asks a chat with Luna tools for a handoff, auto-handoff or not, and says what it does', async () => {
+    useChats.setState({ folders: [{ id: 'f', path: '/repo', open: true, chats: [chat({ autoHandoff: false })] }] });
     const { item, onClose } = menuFor(chat({ autoHandoff: false }));
     expect(item).not.toHaveAttribute('aria-disabled');
     expect(item).toHaveAttribute('title', expect.stringMatching(/fresh conversation.*Nothing is reset unless/));
     await userEvent.setup().click(item);
     expect(onClose).toHaveBeenCalled();
     expect(handoffIpc.handoffNow).toHaveBeenCalledWith('c1');
-    await waitFor(() => expect(useHandoffNow.getState().asked.c1).toBeTypeOf('number'));
+    await waitFor(() => expect(useChats.getState().findChat('c1')?.handoffAsk?.kind).toBe('manual'));
     expect(terminals.resumeSession).not.toHaveBeenCalled();
   });
 
@@ -149,12 +150,14 @@ describe('Hand off now', () => {
     );
     expect(handoffNowRefusal(chat({}), [move('asked')])).toMatch(/move's document/);
     expect(handoffNowRefusal(chat({}), [move('done')])).toBeNull();
-    // Asked already: until it lapses, or a handoff came of it.
-    expect(handoffNowRefusal(chat({}), [], 1000, 2000)).toMatch(/Asked already/);
-    expect(handoffNowRefusal(chat({}), [], 1000, 1000 + ASK_HOLDS_MS + 1)).toBeNull();
+    // Asked already, as the core says: waiting to be typed, or typed and
+    // open until it lapses; the threshold's ask is no reason not to.
+    expect(handoffNowRefusal(chat({ handoffAsk: { kind: 'manual', at: 1000 } }), [])).toMatch(/Asked already.*at rest/);
     expect(
-      handoffNowRefusal(chat({ handoff: { n: 1, at: 1500, state: 'done', previous: true } }), [], 1000, 2000)
-    ).toBeNull();
+      handoffNowRefusal(chat({ handoffAsk: { kind: 'manual', at: 1000, typed: 2000, lapsesAt: 602_000 } }), [])
+    ).toMatch(/Asked already: the ask lapses at/);
+    expect(handoffNowRefusal(chat({ handoffAsk: { kind: 'auto', at: 1000 } }), [])).toBeNull();
+    expect(handoffNowRefusal(chat({ handoffAsk: null }), [])).toBeNull();
 
     const { item, onClose } = menuFor(chat({ tools: false }));
     expect(item).toHaveAttribute('aria-disabled', 'true');
@@ -165,13 +168,14 @@ describe('Hand off now', () => {
   });
 
   it("keeps the core's refusal for the pane to show", async () => {
+    useChats.setState({ folders: [{ id: 'f', path: '/repo', open: true, chats: [chat({})] }] });
     vi.mocked(handoffIpc.handoffNow).mockRejectedValueOnce("the chat's CLI has its own jobs running (Bash)");
     const { item } = menuFor(chat({}));
     await userEvent.setup().click(item);
     await waitFor(() =>
       expect(useHandoffNow.getState().refused.c1).toBe("the chat's CLI has its own jobs running (Bash)")
     );
-    expect(useHandoffNow.getState().asked.c1).toBeUndefined();
+    expect(useChats.getState().findChat('c1')?.handoffAsk ?? null).toBeNull();
   });
 
   it('starts a CLI that lacks the tool again once the chat is idle, auto-handoff off', async () => {
