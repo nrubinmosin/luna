@@ -190,7 +190,9 @@ that beat is skipped and the turn looked at again at the next.
 `luna_session_handoff` is listed to every person's chat with Luna tools, and
 answers, with `file` or without, only while the chat is asked
 (`Record::asked`, saved in `handoffs.json`, or a move's ask, moving.rs).
-Unasked, it refuses naming the pane's menu (`NOT_ASKED`), and nothing is kept.
+Unasked, it refuses naming the pane's menu (`NOT_ASKED`), and nothing is kept;
+a call in the turn that answered a move's ask Luna has since closed hears that
+the move is over instead (`moving::MOVE_OVER`), not that nobody asked it.
 
 - **Who asks.** `AskKind::Auto`, the threshold's notice ([above](#the-threshold));
   `AskKind::Manual`, the person's Hand off now (`handoff_now`, a core
@@ -344,6 +346,12 @@ until they are through.
   conversation its reset opened (`phase::failed`): past the reset on any
   other, or on none Luna can name once the prompt was typed, the switch ends
   as `Ended::Stray` with the failure's why, and the line names only the copy.
+- The notifier types a failure's line later than it is made. One that carries
+  the prompt is bound to the conversation its reset opened (`Record::continued`,
+  by the line's SHA-256): it goes in whole only while the chat is still on
+  that one, looked at as the notice is put together and again where it goes
+  in (`as_told`); on any other, or where Luna cannot tell, a short line
+  (`facts::continued_short`) naming the copy takes its place.
 - A core restart: `from_bytes` makes a switch in `Resetting` or `Prompting`
   `Recovering`. On another conversation than the one it left and not the one
   its reset opened (`Switch::opened`), or with none on record (the core gone
@@ -517,7 +525,12 @@ folder of copies, nothing scheduled or reset, the CLI's own jobs no matter.
 Each call writes a file of its own: of two overlapping in one ask, the one
 that takes `Shown` keeps its preview, and the other removes only its own. A file named
 `move-…` when no move is asking is refused, so a late answer never becomes a
-handoff. No threshold notice goes in while it is asked. Ten minutes to come to
+handoff; so is any call, with `file` or without, in the turn that answered an
+ask Luna closed (Use Luna's document now, Cancel, a failure) within an hour of its
+close (`answers_closed_ask`, `late_answer`), with `MOVE_OVER`: the move was
+decided otherwise, and the chat is not to take it for a failure of its own.
+The log says an ask is typed as it is taken as typed, before the paste
+returns, and again once its CLI took it. No threshold notice goes in while it is asked. Ten minutes to come to
 rest and ten more to answer; a question of its CLI's (a permission to write)
 holds it without failing it. A failure is taken only while the move is still
 asking (`ask_ended`, `failed_where`), so it never fails a preview Luna built

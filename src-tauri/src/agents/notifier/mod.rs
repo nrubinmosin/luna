@@ -525,8 +525,15 @@ pub(super) fn notifier() {
             }
             let quota_lines = quota.remove(&caller).unwrap_or_default();
             lines.extend(quota_lines.iter().map(|n| n.line.clone()));
-            let news_lines = news.remove(&caller).unwrap_or_default();
-            lines.extend(news_lines.iter().cloned());
+            // Each with the words it is typed in now, which deliver_notice
+            // looks at again where it goes in (handoff `as_told`).
+            let news_lines: Vec<(String, String)> = news
+                .remove(&caller)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|line| (crate::agents::handoff::as_told(&caller, &line), line))
+                .collect();
+            lines.extend(news_lines.iter().map(|(told, _)| told.clone()));
             let spawn_lines = spawns.remove(&caller).unwrap_or_default();
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
             let breaches = budget.remove(&caller).unwrap_or_default();
@@ -715,7 +722,8 @@ fn counts_for_breaker(how: &Settled) -> bool {
 /// Types a notice into `caller` and settles what it said (`settled`: the
 /// session, what became of it, the debt as it was announced; `quota_lines`: the
 /// usage windows it told of; `spawn_lines`: the spawns cut off by a core going;
-/// `budget_lines`: the budgets passed).
+/// `news_lines`: the queued lines, as typed and as queued; `budget_lines`: the
+/// budgets passed).
 #[allow(clippy::too_many_arguments)]
 fn deliver_notice(
     pty: &crate::pty::PtyManager,
@@ -724,7 +732,7 @@ fn deliver_notice(
     settled: Vec<(String, Settled, Owed)>,
     quota_lines: Vec<QuotaNews>,
     spawn_lines: Vec<(u64, String)>,
-    news_lines: Vec<String>,
+    news_lines: Vec<(String, String)>,
     budget_lines: Vec<BudgetNews>,
 ) {
     let before = crate::activity::turn_state(caller);
@@ -739,6 +747,16 @@ fn deliver_notice(
         crate::log::info("agents", &format!("notice to {} not typed: what it told of changed as it was about to go in", label(caller)));
         return;
     };
+    // A queued line says what it was put together to say only while the
+    // conversation it is for is still the chat's (a handoff's continuation,
+    // handoff `as_told`): else the next look puts it in other words.
+    if news_lines.iter().any(|(told, line)| crate::agents::handoff::as_told(caller, line) != *told) {
+        crate::log::info(
+            "agents",
+            &format!("notice to {} not typed: the conversation a queued line is for changed as it was about to go in", label(caller)),
+        );
+        return;
+    }
     #[cfg(test)]
     tests::between_check_and_typing(caller);
     // The turn it starts: the next, or for a background caller that has begun
@@ -830,7 +848,7 @@ fn deliver_notice(
             for n in quota_lines {
                 r.quota_told.insert(n.key, n.told);
             }
-            r.news.retain(|(c, line)| !(c == caller && news_lines.contains(line)));
+            r.news.retain(|(c, line)| !(c == caller && news_lines.iter().any(|(_, queued)| queued == line)));
             // Told: not to be told again by a core after this one.
             let told_news = !news_lines.is_empty();
             let told_spawns = !spawn_lines.is_empty();
