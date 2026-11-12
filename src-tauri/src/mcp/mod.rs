@@ -439,6 +439,63 @@ mod tests {
         }
     }
 
+    /// A helper with tools (a lead) reaches its own subtree and nothing past it,
+    /// in every verb, `scope: "all"` or not; nor does it notify the person or
+    /// set the PC's power. Its parent, a person's chat, keeps all of it.
+    #[test]
+    fn a_helper_reaches_only_its_own_subtree_in_every_tool() {
+        let claude = crate::provider::Provider::Claude;
+        let bg = json!({ "background": true });
+        tooled("lr-top");
+        agents::register("lr-lead", claude, "C:/p", "C:/acc/anthropic/one", Some("lr-top"), true, bg.clone());
+        agents::register("lr-mine", claude, "C:/p", "C:/acc/anthropic/one", Some("lr-lead"), false, bg.clone());
+        agents::register("lr-sib", claude, "C:/p", "C:/acc/anthropic/one", Some("lr-top"), false, bg);
+        agents::register("lr-chat", claude, "C:/p", "C:/acc/anthropic/one", None, false, json!({}));
+        let call = |caller: &str, name: &str, args: Value| {
+            let body = json!({ "jsonrpc": "2.0", "id": 19, "method": "tools/call", "params": { "name": name, "arguments": args } });
+            let r = handle(caller, &body.to_string()).unwrap()["result"].clone();
+            (r["isError"] == true, r["content"][0]["text"].as_str().unwrap_or("").to_string())
+        };
+        let refused = |(failed, text): (bool, String), what: &str| assert!(failed && text.contains(what), "{text}");
+        for target in ["lr-top", "lr-sib", "lr-chat"] {
+            for scope in [json!(null), json!("all")] {
+                let past = if scope.is_null() { "not under you" } else { "is for a person's chats" };
+                refused(call("lr-lead", "luna_message_list", json!({ "id": target, "scope": scope })), past);
+                refused(call("lr-lead", "luna_report_get", json!({ "id": target, "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_wait", json!({ "id": target, "timeoutSec": 1, "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_wait", json!({ "ids": ["lr-mine", target], "timeoutSec": 1, "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_send", json!({ "id": target, "text": "hi", "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_answer", json!({ "id": target, "answers": ["1"], "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_get", json!({ "id": target, "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_list", json!({ "ids": [target], "scope": scope })), past);
+            }
+            refused(call("lr-lead", "luna_session_stop", json!({ "id": target })), "not one you spawned");
+            refused(call("lr-lead", "luna_session_delete", json!({ "id": target })), "not one you spawned");
+        }
+        refused(call("lr-lead", "luna_session_list", json!({ "scope": "all" })), "is for a person's chats");
+        refused(call("lr-lead", "luna_run_list", json!({ "scope": "all" })), "is for a person's chats");
+        refused(call("lr-lead", "luna_notification_send", json!({ "text": "done" })), "is for a person's chats");
+        refused(call("lr-lead", "luna_power_set", json!({ "action": "cancel" })), "is for a person's chats");
+        // Its own: itself and what is under it.
+        let (failed, text) = call("lr-lead", "luna_session_list", json!({ "ids": ["lr-lead", "lr-mine"] }));
+        assert!(!failed && text.contains("lr-mine") && text.contains("\"places\""), "{text}");
+        let (failed, text) = call("lr-lead", "luna_session_get", json!({ "id": "lr-mine" }));
+        assert!(!failed, "{text}");
+        let (_, text) = call("lr-lead", "luna_message_list", json!({ "id": "lr-mine" }));
+        assert!(!text.contains("not under you"), "{text}");
+        // The person's chat at the top keeps its reach.
+        let (_, text) = call("lr-top", "luna_message_list", json!({ "id": "lr-chat", "scope": "all" }));
+        assert!(!text.contains("scope") && !text.contains("not under you"), "{text}");
+        let (failed, text) = call("lr-top", "luna_session_list", json!({ "scope": "all" }));
+        assert!(!failed && text.contains("lr-chat"), "{text}");
+        // Past the gate to the tool's own check, with nothing armed or disarmed.
+        let (_, text) = call("lr-top", "luna_power_set", json!({ "action": "explode" }));
+        assert!(text.contains("unknown action"), "{text}");
+        for id in ["lr-mine", "lr-lead", "lr-sib", "lr-chat", "lr-top"] {
+            agents::forget(id);
+        }
+    }
+
     #[test]
     fn what_another_session_asks_or_was_asked_needs_scope_all() {
         tooled("ms-me");

@@ -100,19 +100,31 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 
 | Tool | May target |
 | --- | --- |
-| `luna_session_list`, `luna_session_get` | the caller's own; with `scope: "all"` every session of this launch, and with `ids` any session's row, as metadata: another's `ask`, `askId` and `task` only with `scope: "all"` |
-| `luna_run_list` | the caller's spawns and its helpers' (by owner now, else the recorded lineage); everyone's with `scope: "all"` |
-| `luna_message_list`, `luna_report_get` | its descendants; with `scope: "all"` any session but its own |
-| `luna_session_send` | its descendants; with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
-| `luna_session_wait` | its descendants; with `scope: "all"` any session but its own |
+| `luna_session_list`, `luna_session_get` | the caller's own; from a person's chat, with `scope: "all"` every session of this launch, and with `ids` any session's row, as metadata: another's `ask`, `askId` and `task` only with `scope: "all"`. A helper names only itself and its subtree (`ids_in_reach`) |
+| `luna_run_list` | the caller's spawns and its helpers' (by owner now, else the recorded lineage); everyone's with `scope: "all"`, from a person's chat |
+| `luna_message_list`, `luna_report_get` | its descendants; from a person's chat with `scope: "all"` any session but its own |
+| `luna_session_send` | its descendants; from a person's chat with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
+| `luna_session_wait` | its descendants; from a person's chat with `scope: "all"` any session but its own |
 | `luna_session_stop`, `luna_session_delete` | descendants only, never one the person is opening as a chat (`promoting`) |
-| `luna_session_answer` to a model's question | its descendants; with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`) |
+| `luna_session_answer` to a model's question | its descendants; from a person's chat with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`) |
 | `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, at the caller's privilege |
 | `luna_session_spawn` | a background helper at no more privilege than the caller, never in or above the data dir; a Codex one never with an approval that asks a person |
+| `luna_notification_send`, `luna_power_set` | a person's chat only (`persons_chat_only`): a helper's word reaches the person through the chat above it |
 | `luna_session_handoff` | the caller's own chat only (no target argument); offered only to a person's chat with Luna tools, and answered only while that chat has an open ask (the threshold's, the person's Hand off now, a move's); to any other, a tool there is not |
 
 Every descendant is a background helper: a chat the window runs has no parent,
 so no agent interrupts, stops, deletes or approves for it.
+
+**A helper reaches only its own subtree**
+([ADR-0025](../adr/0025-a-helper-reaches-only-its-own-subtree.md)). Only a
+person's chat (`registry.rs` `persons_chat_in`: no parent, not an orphan, not
+run in the background; or the dev caller) may say `scope: "all"`, notify the
+person or set the PC's power. A helper, a lead with tools included, is refused
+`scope: "all"` in every tool (`scope_all_in`, `SCOPE_ALL_REFUSED`), and
+`in_scope`, `authorize_view` and `authorize_send` (`beneath`) refuse it any
+session not under it, its parent and the person's chats among them, saying
+that what is for anyone else goes in its reply. A prompt injected into a
+helper deep in a tree stays in that tree.
 
 Every call's arguments are held to its tool's schema first (`arguments_fit`):
 an unknown key is refused naming those the tool takes, a value of the wrong
@@ -120,8 +132,10 @@ type or outside its enum is refused, a required one must be there and not
 empty. `scope` is checked in `mcp.rs` (`agents::in_scope`) before the tool runs;
 an unknown session or the caller itself is left to the tool's own refusal.
 
-Tool depth is 1 (a helper's helpers get no tools); at most 8 descendants per
-chat. The full matrix with code references is in the
+Tool depth is 1 (a helper's helpers get no tools). A line, a person's chat and
+every session under it, has as many places as Settings → Helpers says
+(`Settings::max_helpers`, 8 by default, held to 1–32 by `max_descendants`);
+see Places below. The full matrix with code references is in the
 [threat model](../security/threat-model.md#5-mcp-authorization-matrix).
 
 **Lineage.** Children outlive their parent (`forget`): each passes to the
@@ -188,7 +202,49 @@ spawn on disk (`SpawnUnderWay`), registers the helper with its parent
 (`spawn_is` notes its task and, for a Codex one in a worktree of its own, the
 worktrees there were), starts its first turn and answers with `id`,
 `settings`, `turnsEnded`, `sameFolder` (other live sessions in its folder) and
-the worktree once the CLI has made it (`worktreePending` until then).
+the worktree once the CLI has made it (`worktreePending` until then), and
+`places`.
+
+**Places.** The cap is the line's: every session under the top chat, every
+generation, and every spawn under way with no session yet, counted in the hold
+that records a spawn (`under_cap`, `cap_room`); an `autoDelete` helper whose
+answer reached its caller takes none. `places` (`Places`, in the spawn's result
+and in `luna_session_list`) is `inUse` of `of` on the caller's line and
+`underYou`, those under the caller itself. A refusal names the sessions the
+caller can delete itself (`free_first`); below the top it says the rest are
+the top chat's to free, and the top chat hears it (`refused_a_place`, kept in
+`Registry::places_refused`): one line per burst of refusals, riding its next
+notice or going alone after `RIDE_MAX_MS` as other riders do (`riders_go`),
+cleared once that notice is in (`places_told`); a refusal after that starts a
+new line.
+
+**Mode when not given.** A spawn that names no mode (Claude: no
+`permissionMode`; Codex: neither `sandbox` nor `approval`) takes, with
+Settings → Helpers → "Helpers' mode when not given" at "The spawning chat's"
+(`HelperMode::Inherit`, the default), the caller's own mode on the same CLI,
+and across CLIs the highest helper mode its privilege covers on the one scale
+(`privilege.rs` `inherited`, `CLAUDE_LADDER`, `CODEX_LADDER`): a Codex chat
+that asks a person gives `never` with its sandbox; a Claude Code `acceptEdits`
+chat a Codex `read-only`. "The account's default" (`HelperMode::Account`)
+takes the account's and project's default, as before. Either way the mode is
+held to the caller's (`cap`) and pinned; `settings.modeFrom` says `caller`,
+`callerNearest` or `account`. The dev caller has no mode and always takes the
+account's. Claude Code helpers start in `auto` and `dontAsk` too
+(`CLAUDE_MODES`: `claude -p --permission-mode` takes both, 2.1.322).
+
+**One worktree at a time per repository.** Each CLI makes a helper's worktree
+with `git worktree add` as its first turn starts, and two of those in one
+repository at once failed with "unable to stat just-written file". A spawn
+with `worktree: true` holds its repository's queue (`worktree_queue`, keyed by
+the common git folder, `worktree::repository_key`) from starting the turn
+until the CLI has said where its worktree is, the turn has ended without one,
+or `WORKTREE_WAIT` is up.
+
+**Looking into a helper's worktree.** `luna_session_get` on a helper in a
+worktree adds `lastCommit` (its subject) and `status` (`git status
+--porcelain`, the same lines as `--short`, at most 20, `statusMore` the rest;
+`worktree::work_in`): a parent whose CLI keeps it out of other worktrees can
+see uncommitted work all the same.
 
 `account` may be a list of one provider's accounts: the first signed in with
 every window under 95%, else the one with most room; `accountChoice` says why.

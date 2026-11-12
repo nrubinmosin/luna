@@ -113,7 +113,8 @@ impl Privilege {
         match provider {
             Provider::Claude => match mode {
                 "plan" => at(Reach::ReadOnly, false),
-                "default" | "dontAsk" => at(Reach::Asks, false),
+                // `manual` is Claude Code's alias of `default` (2.1.322).
+                "default" | "dontAsk" | "manual" => at(Reach::Asks, false),
                 "acceptEdits" => at(Reach::Edits, false),
                 "auto" => at(Reach::Reviewed, true),
                 "bypassPermissions" => at(Reach::Full, true),
@@ -268,10 +269,56 @@ fn cap(
     ))
 }
 
-/// A spawn's mode settled before anything is made, on every path: resolved
-/// over the defaults, checked for its exact spelling, held to the caller's
+/// The helper modes on the scale, highest first, each as Luna starts one:
+/// what `inherited` picks from where the caller's own does not carry over.
+/// Claude's `default` stands for its rung (`dontAsk` is on it too): it asks,
+/// and its caller answers within its own privilege.
+const CLAUDE_LADDER: [&str; 5] = ["bypassPermissions", "auto", "acceptEdits", "default", "plan"];
+const CODEX_LADDER: [(&str, &str); 5] = [
+    ("danger-full-access", "never"),
+    (crate::codex::launch::AUTO_REVIEW_SANDBOX, crate::codex::launch::AUTO_REVIEW),
+    ("workspace-write", "never"),
+    (crate::codex::launch::READ_ONLY_NET, "never"),
+    ("read-only", "never"),
+];
+
+/// The mode a helper inherits from its caller when its spawn names none
+/// (`HelperMode::Inherit`): the caller's own, where the helper runs on the same
+/// CLI and that mode is one a helper starts in; else the highest mode of the
+/// helper's CLI the caller's privilege covers (`Privilege::covers`): a Codex
+/// chat that asks a person gives `never` with its sandbox, a Claude Code
+/// `acceptEdits` chat a Codex `read-only`. Claude: (permissionMode, None);
+/// Codex: (sandbox, Some(approval)); and whether it is the caller's own.
+pub(super) fn inherited(caller: (Provider, &serde_json::Value), helper: Provider) -> ((String, Option<String>), bool) {
+    let (provider, settings) = caller;
+    if provider == helper {
+        let mode = settings[if helper == Provider::Claude { "permissionMode" } else { "sandbox" }].as_str().unwrap_or("");
+        // As `Privilege::of` reads a Codex chat with none: never.
+        let approval = (helper == Provider::Codex).then(|| settings["approval"].as_str().unwrap_or("never"));
+        if canonical_mode(helper, mode, approval, false).is_ok() {
+            return ((mode.to_string(), approval.map(str::to_owned)), true);
+        }
+    }
+    let has = Privilege::of_caller(provider, settings);
+    let covered = |mode: &str, approval: Option<&str>| Privilege::of(helper, mode, approval).is_some_and(|p| has.covers(p));
+    let picked = match helper {
+        Provider::Claude => CLAUDE_LADDER.iter().find(|m| covered(m, None)).map(|m| (m.to_string(), None)),
+        Provider::Codex => CODEX_LADDER.iter().find(|(m, a)| covered(m, Some(a))).map(|(m, a)| (m.to_string(), Some(a.to_string()))),
+    };
+    // The lowest rung is read-only, which every privilege covers.
+    let lowest = match helper {
+        Provider::Claude => ("plan".to_string(), None),
+        Provider::Codex => ("read-only".to_string(), Some("never".to_string())),
+    };
+    (picked.unwrap_or(lowest), false)
+}
+
+/// A spawn's mode settled before anything is made, on every path: named, or
+/// inherited from the caller (`inherit`, the person's setting), or else the
+/// account's default; checked for its exact spelling, held to the caller's
 /// (unless `above_allowed`), then pinned in the request so the helper starts
 /// in what was checked, not in what the window reads from the defaults later.
+/// A Codex spawn names its mode with either of sandbox and approval.
 pub(super) fn settle_mode(
     params: &mut SpawnParams,
     provider: Provider,
@@ -279,8 +326,24 @@ pub(super) fn settle_mode(
     account_path: &str,
     folder: &str,
     above_allowed: bool,
+    inherit: bool,
 ) -> Result<(), String> {
+    let unnamed = match provider {
+        Provider::Claude => asked(&params.permission_mode).is_none(),
+        Provider::Codex => asked(&params.sandbox).is_none() && asked(&params.approval).is_none(),
+    };
+    if unnamed && inherit {
+        let ((mode, approval), own) = inherited(caller, provider);
+        match provider {
+            Provider::Claude => params.permission_mode = Some(mode),
+            Provider::Codex => (params.sandbox, params.approval) = (Some(mode), approval),
+        }
+        params.mode_from = Some(if own { "caller" } else { "callerNearest" });
+    } else if unnamed {
+        params.mode_from = Some("account");
+    }
     let (mode, approval) = effective_mode(params, provider, account_path, folder);
+    // An inherited mode is pinned by now: only what the defaults filled in counts.
     let defaulted = match provider {
         Provider::Claude => asked(&params.permission_mode).is_none(),
         Provider::Codex => asked(&params.sandbox).is_none() || asked(&params.approval).is_none(),
@@ -624,6 +687,7 @@ mod tests {
             ("ro-net", codex("read-only-net", "never")),
             ("default", claude("default")),
             ("dontAsk", claude("dontAsk")),
+            ("manual", claude("manual")),
             ("ro-ask", codex("read-only", "on-request")),
             ("acceptEdits", claude("acceptEdits")),
             ("ww", codex("workspace-write", "on-request")),
@@ -635,15 +699,18 @@ mod tests {
         let helpers: [((Provider, &str, Option<&str>), &[&str]); 9] = [
             (
                 (Provider::Claude, "plan", None),
-                &["plan", "ro", "ro-net", "default", "dontAsk", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+                &["plan", "ro", "ro-net", "default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
             ),
             (
                 (Provider::Codex, "read-only", Some("never")),
-                &["plan", "ro", "ro-net", "default", "dontAsk", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+                &["plan", "ro", "ro-net", "default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
             ),
             // The network is an escalation of its own.
             ((Provider::Codex, "read-only-net", Some("never")), &["ro-net", "review", "bypass", "full"]),
-            ((Provider::Claude, "default", None), &["default", "dontAsk", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"]),
+            (
+                (Provider::Claude, "default", None),
+                &["default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+            ),
             ((Provider::Claude, "acceptEdits", None), &["acceptEdits", "ww", "review", "bypass", "full"]),
             // Commands in a sandbox go further than edits.
             ((Provider::Codex, "workspace-write", Some("never")), &["ww", "review", "bypass", "full"]),
@@ -694,30 +761,104 @@ mod tests {
         // comparison, the setting on or not.
         for above in [false, true] {
             let mut p = asked(|p| (p.sandbox, p.approval) = (Some("DANGER-FULL-ACCESS".into()), Some("never".into())));
-            let e = settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", above).unwrap_err();
+            let e = settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", above, false).unwrap_err();
             assert!(e.contains("unknown sandbox \"DANGER-FULL-ACCESS\""), "{e}");
             let mut p = asked(|p| p.permission_mode = Some("BypassPermissions".into()));
-            assert!(settle_mode(&mut p, Provider::Claude, (Provider::Codex, &full), "", "", above)
+            assert!(settle_mode(&mut p, Provider::Claude, (Provider::Codex, &full), "", "", above, false)
                 .unwrap_err()
                 .contains("unknown permission mode"));
             let mut p = asked(|p| (p.sandbox, p.approval) = (Some("read-only".into()), Some("Never".into())));
-            assert!(settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", above)
+            assert!(settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", above, false)
                 .unwrap_err()
                 .contains("unknown approval"));
         }
         // Spelled right, it is held to the caller's and pinned as checked.
         let mut p = asked(|p| (p.sandbox, p.approval) = (Some("danger-full-access".into()), Some("never".into())));
-        assert!(settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false).unwrap_err().contains("more privilege"));
+        assert!(settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false, false).unwrap_err().contains("more privilege"));
         let mut p = asked(|p| (p.sandbox, p.approval) = (Some(" read-only ".into()), Some("never".into())));
-        settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false).unwrap();
+        settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false, false).unwrap();
         assert_eq!((p.sandbox.as_deref(), p.approval.as_deref()), (Some("read-only"), Some("never")));
         // A background Codex never asks unless a reviewer answers; its sandbox is then fixed.
         let mut p = SpawnParams { approval: Some("auto-review".into()), ..Default::default() };
-        settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", false).unwrap();
+        settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", false, false).unwrap();
         assert_eq!((p.sandbox.as_deref(), p.approval.as_deref()), (Some("workspace-write"), Some("auto-review")));
         let mut p = SpawnParams { sandbox: Some("read-only".into()), ..Default::default() };
-        settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false).unwrap();
+        settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false, false).unwrap();
         assert_eq!(p.approval.as_deref(), Some("never"));
+    }
+
+    /// A spawn that names no mode takes its caller's, on the same CLI exactly
+    /// and across them the highest the caller's privilege covers; never more
+    /// than the caller, and what is named still wins.
+    #[test]
+    fn a_helper_inherits_its_callers_mode_or_the_nearest_below_it() {
+        use serde_json::json;
+        let claude = |mode: &str| (Provider::Claude, json!({ "permissionMode": mode }));
+        let codex = |sandbox: &str, approval: &str| (Provider::Codex, json!({ "sandbox": sandbox, "approval": approval }));
+        let s = |m: &str, a: Option<&str>| (m.to_string(), a.map(str::to_owned));
+        // The same CLI: the caller's own, auto and dontAsk among them.
+        for m in ["plan", "default", "dontAsk", "acceptEdits", "auto", "bypassPermissions"] {
+            let (c, settings) = claude(m);
+            assert_eq!(inherited((c, &settings), Provider::Claude), (s(m, None), true), "{m}");
+        }
+        let (c, settings) = codex("workspace-write", "auto-review");
+        assert_eq!(inherited((c, &settings), Provider::Codex), (s("workspace-write", Some("auto-review")), true));
+        // A Codex chat that asks a person: its sandbox, and never, as nobody is there to ask.
+        for (sandbox, want) in
+            [("workspace-write", "workspace-write"), ("read-only", "read-only"), ("danger-full-access", "danger-full-access")]
+        {
+            let (c, settings) = codex(sandbox, "on-request");
+            assert_eq!(inherited((c, &settings), Provider::Codex).0, s(want, Some("never")), "{sandbox}");
+        }
+        // Across CLIs, the highest rung covered, the network apart.
+        let across = [
+            (claude("plan"), s("read-only", Some("never"))),
+            (claude("default"), s("read-only", Some("never"))),
+            (claude("acceptEdits"), s("read-only", Some("never"))),
+            (claude("auto"), s("workspace-write", Some("auto-review"))),
+            (claude("bypassPermissions"), s("danger-full-access", Some("never"))),
+            (codex("read-only-net", "never"), s("plan", None)),
+            (codex("workspace-write", "never"), s("acceptEdits", None)),
+            (codex("workspace-write", "auto-review"), s("auto", None)),
+            (codex("danger-full-access", "never"), s("bypassPermissions", None)),
+        ];
+        for ((c, settings), want) in across {
+            let helper = if c == Provider::Claude { Provider::Codex } else { Provider::Claude };
+            let ((m, a), own) = inherited((c, &settings), helper);
+            assert_eq!(((m.clone(), a.clone()), own), (want.clone(), false), "{settings}");
+            let wants = Privilege::of(helper, &m, a.as_deref()).unwrap();
+            assert!(Privilege::of_caller(c, &settings).covers(wants), "{settings}: never above the caller");
+        }
+        // `manual`, Claude Code's own name for `default`, asks as `default` does.
+        let (c, manual) = claude("manual");
+        assert_eq!(Privilege::of_caller(c, &manual), Privilege { reach: Reach::Asks, net: false });
+        assert_eq!(inherited((c, &manual), Provider::Claude), (s("default", None), false));
+        assert_eq!(inherited((c, &manual), Provider::Codex).0, s("read-only", Some("never")));
+        // A caller whose mode Luna cannot read passes on the least.
+        assert_eq!(inherited((Provider::Claude, &json!({})), Provider::Claude), (s("plan", None), false));
+        assert_eq!(inherited((Provider::Claude, &json!({})), Provider::Codex).0, s("read-only", Some("never")));
+
+        // Through settle_mode: pinned, said, and held to the caller as any other.
+        let (c, auto) = claude("auto");
+        let mut p = SpawnParams::default();
+        settle_mode(&mut p, Provider::Claude, (c, &auto), "", "", false, true).unwrap();
+        assert_eq!((p.permission_mode.as_deref(), p.mode_from), (Some("auto"), Some("caller")));
+        let mut p = SpawnParams::default();
+        settle_mode(&mut p, Provider::Codex, (c, &auto), "", "", false, true).unwrap();
+        assert_eq!(
+            (p.sandbox.as_deref(), p.approval.as_deref(), p.mode_from),
+            (Some("workspace-write"), Some("auto-review"), Some("callerNearest"))
+        );
+        // Named, it wins, and is capped as ever.
+        let mut p = SpawnParams { permission_mode: Some("plan".into()), ..Default::default() };
+        settle_mode(&mut p, Provider::Claude, (c, &auto), "", "", false, true).unwrap();
+        assert_eq!((p.permission_mode.as_deref(), p.mode_from), (Some("plan"), None));
+        let mut p = SpawnParams { permission_mode: Some("bypassPermissions".into()), ..Default::default() };
+        assert!(settle_mode(&mut p, Provider::Claude, (c, &auto), "", "", false, true).unwrap_err().contains("more privilege"));
+        // Not inheriting, an unnamed mode is the account's: said so.
+        let mut p = SpawnParams::default();
+        let _ = settle_mode(&mut p, Provider::Claude, (c, &auto), "C:\\no\\such\\account", "", false, false);
+        assert_eq!(p.mode_from, Some("account"));
     }
 
     /// Helpers run in the background, so a Codex policy that asks a person has
@@ -731,7 +872,7 @@ mod tests {
         for approval in ["on-request", "untrusted", "on-failure"] {
             for above in [false, true] {
                 let mut p = SpawnParams { approval: Some(approval.into()), sandbox: Some("read-only".into()), ..Default::default() };
-                let e = settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", above).unwrap_err();
+                let e = settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", above, false).unwrap_err();
                 assert!(e.contains("nobody there to ask") && e.contains("never or auto-review"), "{approval}: {e}");
             }
             let chat = json!({ "sandbox": "read-only", "approval": approval });

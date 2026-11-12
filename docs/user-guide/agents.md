@@ -27,12 +27,15 @@ does a background helper spawned without tools.
   action `cancel` disarms it too.
 - A spawn may set `budgetTokens`: once that helper's context passes it, its
   parent hears so, once; nothing is stopped.
-- An agent reads, waits on, sends text to and answers its own helpers. Your
-  own chats, another chat's helpers and its own parent it reaches only by
+- An agent reads, waits on, sends text to and answers its own helpers. One of
+  your own chats reaches your other chats and other chats' helpers only by
   saying so (`scope: "all"`), and what it sends them, an answer typed in as a
   message too, arrives opened `[From session <id> via Luna]`, so that chat
-  knows the words are not yours. Only its own helpers
-  can it interrupt, stop or delete.
+  knows the words are not yours. A helper, even one given Luna's tools, reaches
+  only the helpers under it: never your chats, its own parent or another
+  chat's helpers, and it cannot send desktop notifications or set the PC's
+  power. What it has for anyone else goes in its answer. Only its own helpers
+  can an agent interrupt, stop or delete.
 - A helper starts without its account's MCP servers and connectors (claude.ai's
   Gmail, Slack and the like; Codex's apps and the servers in its account's
   `config.toml`), and a Claude Code helper with auto-memory off, so that what
@@ -91,7 +94,14 @@ hooks run unasked.
     helper goes back to its agent after 15 minutes, and the agent is told.
   - **Stop** and **Delete**; Delete waits while it is at work, and keeps a
     worktree that holds uncommitted work.
-- At most eight helpers under one chat, and a helper's helpers get no tools.
+- Each of your chats has a number of places for the sessions under it, its
+  helpers' helpers included: 8 unless you change it in Settings → Agents &
+  trust → Helpers (1 to 32). A helper whose answer reached its caller and that
+  only waits to be deleted takes none. A spawn's result and
+  `luna_session_list` say how many are in use (`places`: `inUse` of `of`, and
+  `underYou`). A helper refused for want of a place is told which of its own
+  it can delete, and your chat is told too, as only it can free the rest. A
+  helper's helpers get no tools.
 - Every session gets its id as `LUNA_SESSION_ID`, a helper its parent's as
   `LUNA_PARENT_ID`. A helper is told what it is — not the chat of whoever its
   instructions call the operator, the user or the person at this machine — and
@@ -126,6 +136,17 @@ hooks run unasked.
   sandbox, approval and network) unless Settings → Agents & trust allows helpers
   above their caller, and never in or above Luna's data folder. Turning that
   setting on asks again in a system dialog; turning it off does not.
+- A spawn that names no mode takes the spawning chat's: the same mode on the
+  same CLI, or on the other CLI the highest mode its own covers (a Claude Code
+  chat in Accept edits gets a read-only Codex helper; a Codex chat that asks
+  you gets its sandbox with approval `never`, as nobody is there to ask).
+  Settings → Agents & trust → Helpers → "Helpers' mode when not given" can make
+  it the account's default instead; either way it is held to the caller's.
+  The spawn's `settings.modeFrom` says which (`caller`, `callerNearest`,
+  `account`). A Claude Code helper may also run in `auto` or `dontAsk`.
+- Helpers that each make a worktree in the same repository start one after
+  another, each once its CLI has made its worktree, as two made at once could
+  fail.
 - A Codex helper never asks a person: its approval is `never` or `auto-review`,
   and one that asks (`on-request` and the like) is refused, as nobody is there.
 
@@ -246,7 +267,9 @@ one of your own chats an agent may answer only a question its model asked
 
 `luna_session_list` shows per helper its state, the first line of its task and when it last
 did anything; `luna_session_get` adds its transcript and the CLI's own conversation id, its
-branch and commit, when its turn began, the model it
+branch and commit (for a helper in a worktree also its last commit's subject
+and up to 20 lines of `git status --short`, which its parent may not be able to
+open itself), when its turn began, the model it
 ran on (none until a model has answered), how full its context is after its last turn and
 the version of the CLI its process last started from (`cliVersion`).
 `luna_account_list` names the accounts agents may use (the account alone is enough: it brings

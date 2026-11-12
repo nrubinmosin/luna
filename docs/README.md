@@ -55,7 +55,7 @@
 | [0009](adr/0009-modules-now-crates-later.md) | Modules now, crates later | Accepted |
 | [0010](adr/0010-registry-encapsulation.md) | Encapsulate the agents Registry behind transition methods | Proposed |
 | [0011](adr/0011-private-data-dir-beside-the-exe.md) | Luna's data lives in one private folder beside the exe | Accepted |
-| [0012](adr/0012-agents-over-mcp-with-notices.md) | Agents drive sessions over MCP; answers come back as notices | Accepted |
+| [0012](adr/0012-agents-over-mcp-with-notices.md) | Agents drive sessions over MCP; answers come back as notices | Accepted, reach narrowed by 0025 |
 | [0013](adr/0013-own-cli-binaries.md) | Luna ships and updates its own copies of the CLIs | Accepted |
 | [0014](adr/0014-core-credential-behind-a-read-deny.md) | The core credential stays a bearer token behind a read deny | Superseded by 0021 |
 | [0015](adr/0015-the-page-gets-only-what-it-calls.md) | The page gets only the commands it calls | Accepted |
@@ -68,6 +68,7 @@
 | [0022](adr/0022-content-luna-serves-at-its-own-trigger.md) | Serve the handoff's instructions through Luna's own tool, to the chat that opted in alone | Accepted, amended by 0024 |
 | [0023](adr/0023-moving-a-chat-to-another-account.md) | Move a chat to another account of its CLI by a document the person confirms | Accepted, amended by 0024 |
 | [0024](adr/0024-handoff-on-request.md) | List the handoff to every chat with Luna's tools, and answer it only when asked | Accepted |
+| [0025](adr/0025-a-helper-reaches-only-its-own-subtree.md) | A helper reaches only its own subtree | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 
