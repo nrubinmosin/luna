@@ -68,13 +68,23 @@ pub(in crate::agents) struct Asked {
     /// The chat's ended turns then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turns: Option<u32>,
-    /// A person's ask: when Luna queued its request for the notifier, and
-    /// when the request was seen to have gone in (no longer queued), from
-    /// which its time runs (mod.rs `MANUAL_ASK_MS`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queued: Option<u64>,
+    /// A person's ask: when Luna typed its request into the chat, from which
+    /// its time runs (mod.rs `MANUAL_ASK_MS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typed: Option<u64>,
+    /// The conversation it asks, as `phase::Before::conversation` names one:
+    /// the threshold's, the one whose context passed it; the person's, the one
+    /// its request went into. The ask holds only there (mod.rs `ask_holds`):
+    /// the person's own `/clear` or `/new` starts a conversation nobody asked.
+    /// None until that conversation is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
+}
+
+impl Asked {
+    pub fn new(kind: AskKind, at: u64, turns: Option<u32>) -> Asked {
+        Asked { kind, at, turns, typed: None, conversation: None }
+    }
 }
 
 /// A handoff through, or given up.
@@ -212,8 +222,29 @@ pub(super) fn from_bytes(bytes: &[u8], now: u64) -> Records {
         if let Some(m) = rec.moving.as_mut() {
             super::moving::taken_up(m, now);
         }
+        rearmed_unasked(rec);
     }
     r
+}
+
+/// A conversation told of its threshold with no ask open and no handoff
+/// under way is told nothing yet, so the threshold asks it again at its next
+/// turn's end if it is still past it. A record from before asks were kept
+/// (the notice itself let the chat call) has none, and would otherwise be
+/// refused and never noticed again at that level. Not migrated into an open
+/// ask: such a record cannot be told from one whose ask closed since (the
+/// person's lapsed in its place), and an ask the chat would answer now must
+/// have been typed into the conversation it binds (`Asked::conversation`),
+/// which the notice, gone long ago, cannot vouch for. A notice more after a
+/// restart is the smaller harm: it goes only to a chat past its threshold
+/// that nothing asks.
+fn rearmed_unasked(rec: &mut Record) {
+    if rec.asked.is_some() || rec.switch.is_some() {
+        return;
+    }
+    if let Some(t) = rec.told.as_mut().filter(|t| t.level > 0) {
+        t.level = 0;
+    }
 }
 
 /// The most the record may hold as it is read back: KEPT handoffs a chat,
@@ -349,6 +380,28 @@ mod tests {
         let gave_up = back["moving"].moving.as_ref().unwrap();
         assert!(matches!(&gave_up.phase, super::super::moving::MovePhase::Failed { at: 900, .. }), "never sent unconfirmed");
         assert!(from_bytes(b"not json", 1).is_empty());
+    }
+
+    /// A conversation a core told of its threshold, with no ask kept for it
+    /// (a record from before asks were kept), is told nothing yet, so the
+    /// threshold asks it again; one with an ask or a handoff under way keeps
+    /// what it was told.
+    #[test]
+    fn a_conversation_told_with_no_ask_kept_is_asked_again() {
+        let told = |level| Some(Told { conversation: "c".into(), level, floor: 3, asked: vec![71], compacted: 0, tokens: 9 });
+        let mut saved = Records::new();
+        saved.insert("old".into(), Record { told: told(2), ..Default::default() });
+        let open = Asked::new(AskKind::Auto, 1, None);
+        saved.insert("asked".into(), Record { told: told(1), asked: Some(open), ..Default::default() });
+        // As a record from before asks were kept is written.
+        let mut bytes = serde_json::to_value(&saved).unwrap();
+        bytes["old"].as_object_mut().unwrap().remove("asked");
+        let back = from_bytes(&serde_json::to_vec(&bytes).unwrap(), 9);
+        let old = back["old"].told.as_ref().unwrap();
+        assert_eq!((old.level, old.floor, old.asked.clone()), (0, 3, vec![71]), "asked again, the rest kept");
+        assert!(super::super::watch::due(old, 1), "the threshold's next look notices it");
+        assert_eq!(back["asked"].told, told(1), "an ask open: the notice stands");
+        assert_eq!(back["asked"].asked.as_ref().map(|a| a.kind), Some(AskKind::Auto));
     }
 
     /// `handoffs.json` planted as a link, to a folder (a junction on Windows)

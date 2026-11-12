@@ -2505,10 +2505,7 @@ pub(super) mod tests {
         super::super::listed("mvb-me");
         // Past the tool: what is left is that no CLI runs here.
         assert!(blocked("mvb-me").contains("its CLI is not running"), "{}", blocked("mvb-me"));
-        store::change("mvb-me", |r| {
-            r.asked = Some(store::Asked { kind: store::AskKind::Manual, at: 1, turns: None, queued: None, typed: None })
-        })
-        .unwrap();
+        store::change("mvb-me", |r| r.asked = Some(store::Asked::new(store::AskKind::Manual, 1, None))).unwrap();
         let e = blocked("mvb-me");
         assert!(e.contains("you asked this chat for a handoff") && e.contains("lapse"), "{e}");
         for e in [blocked("mvb-plain"), blocked("mvb-me")] {

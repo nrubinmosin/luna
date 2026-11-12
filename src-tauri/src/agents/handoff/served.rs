@@ -89,7 +89,7 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
     if let Some(text) = super::moving::ask_instructions(caller)? {
         return Ok(text);
     }
-    if super::open_ask(caller).is_none() {
+    if !super::asked_now(caller) {
         return Err(super::NOT_ASKED.into());
     }
     let r = resolved_for(caller, "handoff's");
