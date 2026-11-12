@@ -22,9 +22,10 @@ export interface Draft<S extends object> {
    *  stays as it was. */
   force: <K extends keyof S>(key: K, value: S[K]) => void;
   /** What a field resolves to once another changed (the effort a newly
-   *  picked model starts on, which Claude Code keeps per model): it is then
-   *  what the origin line names and "back to …" returns to, and shown unless
-   *  set by hand. `source` undefined: no file said it. */
+   *  picked model starts on, which Claude Code keeps per model): what the
+   *  origin line names and "back to …" returns to. The value shown is not
+   *  touched: setting it is the caller's, in the same step. `source`
+   *  undefined: no file said it. */
   rebase: <K extends keyof S>(key: K, value: S[K], source: string | undefined) => void;
   /** Whether the user has set this field by hand. */
   touched: (key: keyof S) => boolean;
@@ -85,7 +86,6 @@ export function useSettingsDraft<S extends object>(
         else next[key] = source;
         return next;
       });
-      if (!touched.current[key]) setSettings(s => ({ ...s, [key]: value }));
     },
     touched: key => !!touched.current[key],
     revert: key => {
