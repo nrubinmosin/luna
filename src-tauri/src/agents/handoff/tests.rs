@@ -530,7 +530,16 @@ fn the_facts_name_the_chats_helpers_and_what_they_owe() {
         { "type": "tool_use", "id": "toolu_1", "name": "Skill", "input": { "skill": "release" }, "caller": { "type": "direct" } }] } });
     let result = json!({ "type": "user", "message": { "role": "user", "content": [
         { "type": "tool_result", "tool_use_id": "toolu_1", "content": "Launching skill: release" }] } });
-    std::fs::write(&previous, format!("{call}\n{result}\n")).unwrap();
+    // Then the threshold's notice, typed with a helper's line before it, whose
+    // turn loads a skill to write the handoff: that one is left out.
+    let tag = crate::agents::notifier::NOTICE_TAG;
+    let asked = json!({ "type": "user", "message": { "role": "user",
+        "content": format!("{tag} Your helper h1 answered. {}", facts::notice(71, 70, false, true)) } });
+    let for_the_ask = json!({ "type": "assistant", "message": { "content": [
+        { "type": "tool_use", "id": "toolu_2", "name": "Skill", "input": { "skill": "session-handoff" } }] } });
+    let its_result = json!({ "type": "user", "message": { "role": "user", "content": [
+        { "type": "tool_result", "tool_use_id": "toolu_2", "content": "Launching skill: session-handoff" }] } });
+    std::fs::write(&previous, format!("{call}\n{result}\n{asked}\n{for_the_ask}\n{its_result}\n")).unwrap();
     let f = gather("hogf-me", Some(&previous.to_string_lossy()), Provider::Claude);
     assert_eq!(f.helpers.len(), 1);
     assert_eq!((f.helpers[0].id.as_str(), f.helpers[0].owes, f.helpers[0].account.as_str()), ("hogf-kid", true, "codex/two"));

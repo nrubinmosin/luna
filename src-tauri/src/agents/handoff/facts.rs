@@ -226,7 +226,19 @@ pub(super) fn is_notice(line: &str) -> bool {
 /// Whether a queued line is the threshold's notice (`notice`), bound to the
 /// ask it was queued with (mod.rs `withheld`).
 pub(super) fn is_threshold_notice(line: &str) -> bool {
-    line.starts_with("This chat's context is at ")
+    line.starts_with(THRESHOLD_LEAD)
+}
+
+/// How the threshold's notice opens (`notice`).
+const THRESHOLD_LEAD: &str = "This chat's context is at ";
+
+/// Whether a prompt in a chat's transcript is a handoff's ask as the
+/// notifier typed it: its tag, then among the lines it joins the threshold's
+/// notice or the person's request (`is_notice`). The turn it opens is the
+/// handoff being written, not the chat's work.
+pub(super) fn is_ask_prompt(text: &str) -> bool {
+    let Some(lines) = unwrapped(text).strip_prefix(crate::agents::notifier::NOTICE_TAG) else { return false };
+    lines.contains(THRESHOLD_LEAD) || lines.contains(MANUAL_LEAD)
 }
 
 /// One helper of the chat's, as the fact block names it.
@@ -556,6 +568,14 @@ mod tests {
              luna_session_handoff refuses again until Luna asks for one; go on as you were."
         );
         assert!(!is_notice(&manual_lapsed(10)), "no request: nothing to drop");
+        // An ask as typed into the chat: the notifier's tag, its lines joined.
+        let tag = crate::agents::notifier::NOTICE_TAG;
+        for ask in [notice(71, 70, false, true), notice(91, 70, true, false), manual_notice()] {
+            assert!(is_ask_prompt(&format!("{tag} Your helper h1 answered. {ask}")));
+            assert!(is_ask_prompt(&format!("<pasted_content id=\"1\">\n{tag} {ask}\n</pasted_content id=\"1\">")));
+            assert!(!is_ask_prompt(&ask), "no tag: the person's own words");
+        }
+        assert!(!is_ask_prompt(&format!("{tag} {}", manual_lapsed(10))));
         assert!(manual_lapsed(10).chars().all(|c| !c.is_control()));
         for text in [notice(71, 70, false, true), notice(91, 70, true, true), notice(91, 70, true, false), manual_notice()] {
             assert!(text.chars().all(|c| !c.is_control()), "one line, as a notice is");
