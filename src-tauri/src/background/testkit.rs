@@ -169,13 +169,21 @@ pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
 }
 
 /// A test helper whose CLI said it stopped what its last turn left in the
-/// background (`stops_background`).
+/// background (`stops_background`), with `owed` owed an answer then.
 #[cfg(test)]
-pub(crate) fn background_stopped_for_test(id: &str) {
+pub(crate) fn background_stopped_for_test(id: &str, owed: &[&str]) {
     let mut r = lock();
     let e = r.entries.get_mut(id).expect("a test helper");
     e.observed.background_stopped = true;
     e.observed.stopped_turn = e.turns_ended;
+    e.observed.stop_owed = owed.iter().map(|c| c.to_string()).collect();
+    e.observed.stop_told.clear();
+}
+
+/// A line on a test helper's turn's stderr, as its reader takes it.
+#[cfg(test)]
+pub(crate) fn stderr_for_test(id: &str, line: &str) {
+    take_stderr(id, &OutReader::default(), line.as_bytes());
 }
 
 /// A test helper as the next core takes it up from what this one saves: through

@@ -682,6 +682,45 @@ mod tests {
         }
     }
 
+    /// A parent that writes again while its helper's turn waits on its
+    /// background work is owed that turn's answer still, though its debt now
+    /// counts from the turn its text starts: when the CLI cuts that work off,
+    /// the parent hears of it. A caller who wrote only after the cut does not.
+    #[test]
+    fn a_message_queued_behind_a_cut_off_turn_still_hears_of_the_cut() {
+        use crate::agents::owed::{background_stopped_note, hand_over, owe_from};
+        let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
+        let (me, later, id) = ("qc-me", "qc-later", "qc-kid");
+        register(me, Provider::Claude, "C:\\p", account, None, true, none.clone());
+        register(later, Provider::Claude, "C:\\p", account, None, true, none);
+        register(id, Provider::Claude, "C:\\p", account, Some(me), false, serde_json::json!({ "background": true }));
+        crate::background::test_helper(id, account, Some("sid"), true);
+        // Its spawn's answer is the end of its first turn, which waits on a subagent.
+        owe_from(me, id, 0, 0);
+        assert!(send(me, id, "and the docs too", false).unwrap().queued);
+        let baseline = || reg().lock().unwrap().owed.get(&(me.to_string(), id.to_string())).map(|o| o.baseline);
+        assert_eq!(baseline(), Some(1), "owed from the turn its text starts");
+        crate::background::stderr_for_test(
+            id,
+            "Background tasks still running 3h after the last turn (1 agent: \"docs\"); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.",
+        );
+        // That turn ends, the queued text starts the next, and another caller writes.
+        crate::background::test_turn_ended(id);
+        crate::background::set_running_for_test(id);
+        assert!(send(later, id, "how is it going?", false).unwrap().queued);
+        assert!(background_stopped_note(me, id).is_some(), "the parent is told");
+        assert_eq!(background_stopped_note(later, id), None, "it wrote after the cut");
+        // The answer to the parent's text, at the next turn's end, carries it.
+        crate::background::test_turn_ended(id);
+        drop(hand_over(me, id, 2, None));
+        assert_eq!(background_stopped_note(me, id), None);
+        assert!(!crate::background::background_stopped(id), "everyone it concerned has had it");
+        crate::background::remove(id);
+        for id in [id, later, me] {
+            forget(id);
+        }
+    }
+
     #[test]
     fn a_long_message_points_at_its_file_in_the_senders_name() {
         let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));

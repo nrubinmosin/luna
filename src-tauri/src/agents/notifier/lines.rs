@@ -241,7 +241,7 @@ pub(in crate::agents) fn notice_line(
                 // Its turns on notices may have said something since.
                 let said = said_since(pty, id, k.provider, o.cursor);
                 let failed = failure_of(pty, id, k.provider);
-                let stopped = background_stopped(id, caller, o.owed_from());
+                let stopped = background_stopped(id, caller);
                 // A core's going took the job, or its CLI cut it off: news, whatever was said.
                 let how = if said.is_empty() && failed.is_none() && !o.job_went && stopped.is_empty() {
                     Settled::NoNews(at)
@@ -326,7 +326,7 @@ pub(in crate::agents) fn notice_line(
         }
         let lost = undelivered_line(&lost, !replies.is_empty(), file.as_deref());
         // In every line that settles the debt: the next does not say it again.
-        let stopped = background_stopped(id, caller, o.owed_from());
+        let stopped = background_stopped(id, caller);
         let unsure = if o.unsure {
             " Luna cannot tell whether your last message reached it: the core went as it was going in, and its transcript cannot be read. luna_message_list shows what it has."
         } else {
@@ -406,11 +406,11 @@ pub(in crate::agents) fn notice_line(
 
 /// What a notice says of a helper whose CLI stopped what its last turn left in
 /// the background, out of time to wait for it (background/run.rs
-/// `stops_background`), to a caller owed from `baseline` that has not had it
-/// yet; nothing for any other. Without it, the end of those subagents reads as
-/// a job that finished and said nothing.
-fn background_stopped(id: &str, caller: &str, baseline: u32) -> &'static str {
-    if crate::background::background_stopped_for(id, caller, baseline) {
+/// `stops_background`), to a caller it owed an answer then that has not had
+/// it yet; nothing for any other. Without it, the end of those subagents reads
+/// as a job that finished and said nothing.
+fn background_stopped(id: &str, caller: &str) -> &'static str {
+    if crate::background::background_stopped_for(id, caller) {
         BACKGROUND_STOPPED
     } else {
         ""
@@ -1008,7 +1008,7 @@ mod tests {
     fn a_helper_whose_cli_stopped_its_background_work_says_so() {
         let pty = crate::pty::manager();
         let (known, o, path) = job_over_helper("bs-s", "bs-c", "");
-        crate::background::background_stopped_for_test("bs-s");
+        crate::background::background_stopped_for_test("bs-s", &["bs-c", "bs-other"]);
         let stood = Owed { held: Some((3, now_ms() - BACKGROUND_GRACE_MS)), ..o };
         let Some((Some(text), Settled::Answered)) = notice_line(pty, "bs-c", "Your helper", "bs-s", &known, stood) else {
             panic!("its work cut off is news")
@@ -1029,13 +1029,13 @@ mod tests {
             panic!("still news after a restart")
         };
         assert!(text.contains("Its CLI stopped the subagents"), "{text}");
-        // Who has had it is kept across cores too; once everyone owed has, it is done.
-        crate::background::background_stop_told("bs-s", "bs-c", &[("bs-other".to_string(), 2)]);
+        // Who has had it is kept across cores too; once everyone it concerns has, it is done.
+        crate::background::background_stop_told("bs-s", "bs-c", &["bs-c".to_string(), "bs-other".to_string()]);
         crate::background::restart_for_test("bs-s");
         let told = notice_line(pty, "bs-c", "Your helper", "bs-s", &known, stood).and_then(|(t, _)| t).unwrap_or_default();
         assert!(!told.contains("Its CLI stopped"), "said to this caller already: {told}");
-        assert!(crate::background::background_stopped_for("bs-s", "bs-other", 2));
-        crate::background::background_stop_told("bs-s", "bs-other", &[]);
+        assert!(crate::background::background_stopped_for("bs-s", "bs-other"));
+        crate::background::background_stop_told("bs-s", "bs-other", &["bs-other".to_string()]);
         assert!(!crate::background::background_stopped("bs-s"));
         crate::background::gone_for_test("bs-s");
         forget("bs-s");
