@@ -8,6 +8,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- Helpers spawned side by side with `worktree: true` in one repository no
+  longer fail with "unable to stat just-written file": their worktrees are
+  made one at a time.
+
 ## [0.17.0] - 2026-11-13
 
 A chat can hand off to a fresh conversation whenever you ask: **Hand off now**

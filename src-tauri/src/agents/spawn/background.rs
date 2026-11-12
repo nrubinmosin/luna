@@ -4,7 +4,7 @@
 use crate::agents::delivery::POLL;
 use crate::agents::owed::{owe_from, shown};
 use crate::agents::registry::{chat_name, issue_token, reg, register, set_name};
-use crate::agents::spawn::worktree::{helper_worktree_name, neighbors_in, worktree_of, Worktree};
+use crate::agents::spawn::worktree::{helper_worktree_name, neighbors_in, worktree_of, worktree_queue, Worktree};
 use crate::agents::spawn::{spawn_is, SpawnParams, Spawned};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
@@ -262,6 +262,11 @@ pub(in crate::agents) fn spawn_background(
         forget(&id);
         return Err(e);
     }
+    // Its CLI makes its worktree as its first turn starts: one at a time per
+    // repository (`worktree_queue`), held until it has said where, its turn
+    // has ended without, or WORKTREE_WAIT is up.
+    let queue = own_worktree.then(|| worktree_queue(&project));
+    let making = queue.as_ref().map(|q| q.lock().unwrap_or_else(|e| e.into_inner()));
     if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
         forget(&id);
         return Err(e);
@@ -291,12 +296,14 @@ pub(in crate::agents) fn spawn_background(
         let deadline = std::time::Instant::now() + WORKTREE_WAIT;
         loop {
             worktree = worktree_of(pty, &id);
-            if worktree.path.is_some() || std::time::Instant::now() >= deadline {
+            let ended = crate::activity::turn_state(&id).is_some_and(|t| t.turns_ended > 0);
+            if worktree.path.is_some() || ended || std::time::Instant::now() >= deadline {
                 break;
             }
             std::thread::sleep(POLL);
         }
     }
+    drop(making);
     let worktree_pending = own_worktree && worktree.path.is_none();
     let mcp_left_on = mcp_left_on(&id);
     Ok(Spawned { id, turns_ended: 0, settings, same_folder, worktree, worktree_pending, mcp_left_on, account_choice: None })
