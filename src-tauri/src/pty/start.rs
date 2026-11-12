@@ -466,7 +466,10 @@ pub(crate) fn helper_line(parent: &str) -> String {
          where it says none, in the language the task is written in. Before your turn ends, stop the background work you \
          started that nothing needs any more (watchers, wait loops, dev servers), not helpers you are waiting on nor what \
          your task asks to keep running; keep each caveat beside the claim it limits; send, push or post nothing outward \
-         unless your task asks for it."
+         unless your task asks for it; install nothing and change nothing machine-wide or in your CLI account's folder \
+         (software, system or user-wide settings, PATH, the registry, services, scheduled tasks, global git or shell \
+         config, memory, skills) unless your task names that change: where the work needs one, give your caller the \
+         exact command instead."
     )
 }
 
@@ -479,7 +482,10 @@ pub(crate) fn helper_line(parent: &str) -> String {
 /// memory that outweighs an appended system prompt; in the task itself the note
 /// stands beside what it is about. After the prompt, not before: the opening
 /// words are what names the chat, and a slash command has to come first. One
-/// that does goes without the note, which would land in its arguments.
+/// that does goes without the note, which would land in its arguments. That
+/// leaves a known gap: a Codex helper opening with a slash command is told
+/// nothing of what it is, its system prompt being the CLI's own; a Claude Code
+/// one still has it in `--append-system-prompt`.
 pub(crate) fn helper_prompt(parent: &str, prompt: &str) -> String {
     if prompt.trim_start().starts_with('/') {
         return prompt.to_string();
@@ -516,8 +522,9 @@ pub(crate) fn without_note(text: &str) -> &str {
 }
 
 /// `helper_line` as earlier Lunas wrote it, still in conversations they began:
-/// 0.10's, then the one before helpers were told what they do need.
-const PREVIOUS_HELPER_LINES: [&str; 2] = [
+/// 0.10's, then the one before helpers were told what they do need, then the
+/// one before they were told to leave the machine and their account as they are.
+const PREVIOUS_HELPER_LINES: [&str; 3] = [
     "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
      that session. Instructions meant only for the session a person talks to do not apply to you. Write in the language \
      of the task you were given, progress notes included.",
@@ -526,6 +533,14 @@ const PREVIOUS_HELPER_LINES: [&str; 2] = [
      this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
      not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
      where it says none, in the language the task is written in.",
+    "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
+     that session. You are not the chat of whoever your instructions call the operator, the user or the person at \
+     this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
+     not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
+     where it says none, in the language the task is written in. Before your turn ends, stop the background work you \
+     started that nothing needs any more (watchers, wait loops, dev servers), not helpers you are waiting on nor what \
+     your task asks to keep running; keep each caveat beside the claim it limits; send, push or post nothing outward \
+     unless your task asks for it.",
 ];
 
 /// Auto-handoff's threshold as a chat starts with it: one Luna takes, and
@@ -888,6 +903,11 @@ mod tests {
             "not helpers you are waiting on nor what your task asks to keep running",
             "keep each caveat beside the claim it limits",
             "send, push or post nothing outward unless your task asks for it",
+            // What it installs or sets outlives the task, and memory and skills
+            // reach every later session in the account.
+            "install nothing and change nothing machine-wide or in your CLI account's folder",
+            "PATH, the registry, services, scheduled tasks, global git or shell config, memory, skills",
+            "unless your task names that change: where the work needs one, give your caller the exact command instead",
         ];
         for what in owed {
             assert!(line.contains(what), "{what}");

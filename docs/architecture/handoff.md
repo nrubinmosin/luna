@@ -529,9 +529,13 @@ The chat found on another conversation once it is typed fails the ask at
 once (`left_asked`, `LEFT_ASKED`, `AskEnd::Left`), Ask again offered, rather
 than the dialog saying it writes until the wait runs out. Opening the ask
 takes the chat from the threshold's ask, which closes, its notice not yet
-typed dropped and the threshold re-armed (`ask_taken`): while the move asks,
-any file the chat sends is the move's (`asked_file`), never a handoff, so
-the threshold's ask could only refuse; the person asked for the move. Not
+typed dropped (`ask_taken`): while the move asks, any file the chat sends is
+the move's (`asked_file`), never a handoff, so the threshold's ask could only
+refuse; the person asked for the move. The threshold stays quiet for the
+whole move, any move, its preview under review and the steps after
+confirmation included (`moving::under_way`), and is re-armed as the move ends
+before the old chat was stopped (`end_where`, `store::rearmed_unasked`): the
+chat goes on where it is and is asked again if it is still past it. Not
 while the person's ask is open, a handoff is under way or its file is being
 copied. The tool without `file` then serves
 the move's text (`served::move_instructions`, `facts::move_how_to`, a drafts

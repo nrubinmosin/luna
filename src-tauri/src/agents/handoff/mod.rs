@@ -1110,7 +1110,8 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
     b.turns.retain(|id, _| chats.iter().any(|(c, ..)| c == id));
     for (chat, threshold, provider) in chats {
         // A person's ask open is the chat's request already: no second one.
-        if holds_text(&chat) || moving::asking(&chat) || !is_listed(&chat) || open_ask(&chat) == Some(store::AskKind::Manual) {
+        // Nor while a move is under way (`moving::under_way`).
+        if holds_text(&chat) || moving::under_way(&chat) || !is_listed(&chat) || open_ask(&chat) == Some(store::AskKind::Manual) {
             continue;
         }
         let Some(ts) = crate::activity::turn_state(&chat).filter(|t| t.turn == crate::activity::Turn::Idle) else { continue };
@@ -1199,14 +1200,14 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
 /// told (`told_of`), if what the look before found still stands under the
 /// record's lock: its context was read outside it, and meanwhile auto-handoff
 /// may have been turned off (`set_auto_handoff` closes the ask under this
-/// lock) or set to another threshold, the person asked, a move begun to ask
-/// it, or a handoff been scheduled. Opening it then would undo the one or
+/// lock) or set to another threshold, the person asked, a move begun, or a
+/// handoff been scheduled. Opening it then would undo the one or
 /// take the place of the other. From it on, what the chat sends is its own,
 /// not an earlier ask's late answer (moving.rs `late_answer`). Whether it
 /// opened.
 fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told, inline: bool, asked: store::Asked) -> bool {
     let manual = r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Manual);
-    let moving = r.moving.as_ref().is_some_and(moving::Move::asking);
+    let moving = r.moving.as_ref().is_some_and(moving::Move::under_way);
     if manual || moving || r.switch.is_some() || r.reserved.is_some() || threshold_now(chat) != Some(threshold) {
         return false;
     }

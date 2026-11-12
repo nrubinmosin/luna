@@ -244,6 +244,12 @@ impl Move {
         matches!(self.phase, MovePhase::Asking { .. } | MovePhase::Asked { .. })
     }
 
+    /// The move has not ended: from its ask or preview until it is done,
+    /// failed or canceled.
+    pub(super) fn under_way(&self) -> bool {
+        !self.phase.ended()
+    }
+
     /// The chat was asked for its document, and the move failed before one
     /// came: the person may have Luna build it from records, or ask again.
     pub(super) fn ask_failed(&self) -> bool {
@@ -1153,7 +1159,10 @@ fn end(chat: &str, id: &str, to: MovePhase) -> Result<Move, String> {
 /// `end`, only where the move as it stands then is one `may` takes, `also`
 /// done to it in the same change; with whether it was ended here. What looked
 /// at the move before (an ask's timeout, say) may find it gone on meanwhile:
-/// its preview built from records, or confirmed.
+/// its preview built from records, or confirmed. A move ended before the old
+/// chat was stopped re-arms the threshold (`store::rearmed_unasked`), quiet
+/// while it was under way: the chat goes on where it is, and is asked again
+/// if it is still past its threshold.
 fn end_where(chat: &str, id: &str, to: MovePhase, may: impl Fn(&Move) -> bool, also: impl Fn(&mut Move)) -> Result<(Move, bool), String> {
     let set = |r: &mut store::Record| {
         let m = r.moving.as_mut().filter(|m| m.id == id)?;
@@ -1163,6 +1172,7 @@ fn end_where(chat: &str, id: &str, to: MovePhase, may: impl Fn(&Move) -> bool, a
         // Only one typed into the chat: a move canceled while still Asking
         // asked nothing.
         let unanswered = taken && matches!(m.phase, MovePhase::Asked { .. });
+        let chat_goes_on = taken && to.ended() && m.phase.rank() < MovePhase::OldStopped { at: 0 }.rank();
         if taken {
             also(m);
             m.phase = to.clone();
@@ -1171,6 +1181,9 @@ fn end_where(chat: &str, id: &str, to: MovePhase, may: impl Fn(&Move) -> bool, a
         if unanswered {
             r.ask_closed = Some((m.id.clone(), now_ms()));
             r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
+        }
+        if chat_goes_on {
+            store::rearmed_unasked(r);
         }
         Some((m, taken))
     };
@@ -1345,10 +1358,17 @@ pub(super) fn prompt_verdict(pty: &crate::pty::PtyManager, id: &str) -> Result<(
     Ok(())
 }
 
-/// Whether `chat` is being asked for a move's document: no threshold notice
-/// goes in meanwhile.
+/// Whether `chat` is being asked for a move's document.
 pub(super) fn asking(chat: &str) -> bool {
     store::records().get(chat).and_then(|r| r.moving.as_ref()).is_some_and(Move::asking)
+}
+
+/// Whether `chat` has a move under way: no threshold notice goes in until it
+/// ends, its preview under review and its steps after confirmation included.
+/// A handoff asked of a chat the person is moving would race the move for
+/// what the chat writes, and the move carries it on anyway.
+pub(super) fn under_way(chat: &str) -> bool {
+    store::records().get(chat).and_then(|r| r.moving.as_ref()).is_some_and(Move::under_way)
 }
 
 /// Why `chat`, run with `settings`, is not to be asked for its move's
@@ -1389,9 +1409,10 @@ fn ask_blocked(chat: &str, settings: &Value, provider: Provider) -> Option<Strin
 /// by the person meanwhile; typed only at a strict prompt. The threshold's ask
 /// open gives way: a file the chat sends goes to the move while it asks
 /// (`asked_file`), never to a handoff, so the threshold's ask closes, its
-/// notice not typed yet dropped, and the threshold is re-armed
-/// (`store::rearmed_unasked`) to ask again once the move no longer asks. The
-/// person asked for the move; the threshold asked on its own, and asks again.
+/// notice not typed yet dropped. The threshold stays quiet for the whole move
+/// (`under_way`) and is re-armed as the move ends with the chat not stopped
+/// (`end_where`), to ask again if the chat is still past it. The person asked
+/// for the move; the threshold asked on its own, and asks again.
 pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: String) -> Result<MoveStatus, String> {
     let chat = chat_id.as_str();
     let (old, to_account, worktree, _) = checked(chat, &new_id, &to_account_path)?;
@@ -1416,14 +1437,13 @@ pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: 
 /// Move `m`, its ask opening, taken on `chat`'s record `r` if nothing keeps
 /// the chat: the person's ask or a handoff begun since the look before, or
 /// one being copied, which would race the move's ask for one file. The
-/// threshold's ask gives way (`move_ask`). Whether it was.
+/// threshold's ask gives way (`move_ask`), re-armed only as the move ends.
+/// Whether it was.
 fn ask_taken(chat: &str, r: &mut store::Record, m: &Move) -> bool {
     if r.switch.is_some() || r.reserved.is_some() || r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Manual) {
         return false;
     }
-    if r.asked.take().is_some() {
-        store::rearmed_unasked(r);
-    }
+    r.asked = None;
     // An ask this move takes the place of: its answer is late from now.
     if let Some(old) = r.moving.as_ref().filter(|o| matches!(o.phase, MovePhase::Asked { .. })) {
         r.ask_closed = Some((old.id.clone(), now_ms()));
@@ -2993,9 +3013,9 @@ Ship it.
         store::remove(chat).unwrap();
     }
 
-    /// A move's ask takes the chat from the threshold's ask, which closes and
-    /// re-arms the threshold; never from the person's, a handoff under way, or
-    /// one whose file is being copied.
+    /// A move's ask takes the chat from the threshold's ask, which closes,
+    /// the threshold re-armed only as the move ends; never from the person's,
+    /// a handoff under way, or one whose file is being copied.
     #[test]
     fn a_moves_ask_takes_the_place_of_the_thresholds_only() {
         let chat = "mvtake-old";
@@ -3004,12 +3024,60 @@ Ship it.
         let auto = store::Asked::new(store::AskKind::Auto, 1, None);
         let mut r = store::Record { told: Some(told.clone()), asked: Some(auto.clone()), ..Default::default() };
         assert!(ask_taken(chat, &mut r, &m));
-        assert_eq!((r.asked.as_ref(), r.told.as_ref().map(|t| t.level)), (None, Some(0)), "closed and re-armed");
+        assert_eq!((r.asked.as_ref(), r.told.as_ref().map(|t| t.level)), (None, Some(1)), "closed, not re-armed yet");
         assert!(r.moving.as_ref().is_some_and(Move::asking));
         let manual = store::Asked::new(store::AskKind::Manual, 1, None);
         let mut r = store::Record { told: Some(told.clone()), asked: Some(manual), ..Default::default() };
         assert!(!ask_taken(chat, &mut r, &m) && r.moving.is_none(), "the person's ask keeps it");
         let mut r = store::Record { asked: Some(auto), reserved: Some(3), ..Default::default() };
         assert!(!ask_taken(chat, &mut r, &m) && r.asked.is_some(), "a handoff's file being copied keeps it");
+    }
+
+    /// The threshold asks nothing while a move is under way, its preview
+    /// under review and its steps after confirmation included, and is re-armed
+    /// as a move ends with the chat not stopped, not after it was.
+    #[test]
+    fn the_threshold_is_quiet_for_the_whole_move_and_rearmed_where_the_chat_goes_on() {
+        let chat = "mvquiet-old";
+        let told = store::Told { conversation: "c".into(), level: 1, floor: 0, shares: vec![72], compacted: 0, tokens: 1 };
+        let open = [
+            MovePhase::Asking { at: 1 },
+            MovePhase::Asked { at: 1 },
+            MovePhase::Shown { at: 1 },
+            MovePhase::Confirmed { at: 1 },
+            MovePhase::OldStopped { at: 1 },
+            MovePhase::RowCreated { at: 1 },
+            MovePhase::Prompting { at: 1 },
+        ];
+        for phase in open {
+            let word = phase.word();
+            store::change(chat, |r| r.moving = Some(a_move(phase))).unwrap();
+            assert!(under_way(chat), "{word}");
+            let asked = store::Asked::new(store::AskKind::Auto, 2, None);
+            let opened = store::change(chat, |r| super::super::ask_auto(chat, r, 70, told.clone(), false, asked)).unwrap();
+            assert!(!opened, "no threshold ask while {word}");
+        }
+        for phase in [MovePhase::Done { at: 1 }, MovePhase::Failed { at: 1, why: "x".into() }, MovePhase::Canceled { at: 1 }] {
+            store::change(chat, |r| r.moving = Some(a_move(phase))).unwrap();
+            assert!(!under_way(chat));
+        }
+        let level = || store::records().get(chat).and_then(|r| r.told.as_ref().map(|t| t.level));
+        // Canceled at its preview: the chat goes on, asked again if still past.
+        store::change(chat, |r| {
+            r.told = Some(told.clone());
+            r.moving = Some(a_move(MovePhase::Shown { at: 1 }));
+        })
+        .unwrap();
+        end(chat, "m1", MovePhase::Canceled { at: 2 }).unwrap();
+        assert_eq!(level(), Some(0), "re-armed");
+        // Failed once the old chat was stopped: nothing to ask there.
+        store::change(chat, |r| {
+            r.told = Some(told.clone());
+            r.moving = Some(a_move(MovePhase::OldStopped { at: 1 }));
+        })
+        .unwrap();
+        end(chat, "m1", MovePhase::Failed { at: 2, why: "x".into() }).unwrap();
+        assert_eq!(level(), Some(1), "not re-armed");
+        let _ = store::remove(chat);
     }
 }
