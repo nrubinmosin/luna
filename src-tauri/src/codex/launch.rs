@@ -47,12 +47,15 @@ pub(crate) struct ChatStart<'a> {
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
-    /// Auto-handoff's threshold (agents/handoff), Luna's own tool and notices,
-    /// and the chat's drafts folder where its sandbox writes at all
-    /// (`writes_files`): an `--add-dir`, which Codex makes writable. Or why
-    /// it is not given: it could not be made private (agents/handoff
+    /// For a chat listed Luna's handoff tool (every person's chat with Luna's
+    /// tools, agents/handoff): its drafts folder where its sandbox writes at
+    /// all (`writes_files`), an `--add-dir`, which Codex makes writable. Or
+    /// why it is not given: it could not be made private (agents/handoff
     /// `drafts_at_start`).
-    pub(crate) handoff: Option<(u8, Result<Option<&'a std::path::Path>, &'a str>)>,
+    pub(crate) handoff: Option<Result<Option<&'a std::path::Path>, &'a str>>,
+    /// Auto-handoff's threshold, where it is set: Luna's own notices, nothing
+    /// the CLI is given.
+    pub(crate) auto_handoff: Option<u8>,
     pub(crate) skill_args: &'a [String],
 }
 
@@ -173,8 +176,8 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         envs.push(("LUNA_MCP_TOKEN", token.to_string()));
         applied.push(Item::LunaTools.with(LUNA_TOOLS_VALUE));
     }
-    if let Some((threshold, drafts)) = s.handoff {
-        let mut value = format!("at {threshold}% of the context: luna_session_handoff");
+    if let Some(drafts) = s.handoff {
+        let mut value = "on request: luna_session_handoff".to_string();
         match drafts {
             Ok(Some(drafts)) => {
                 let drafts = drafts.to_string_lossy().into_owned();
@@ -185,7 +188,10 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             Ok(None) => {}
             Err(why) => value.push_str(&crate::agents::handoff::no_drafts_applied(why)),
         }
-        applied.push(Item::AutoHandoff.with(value));
+        applied.push(Item::HandoffTool.with(value));
+        if let Some(threshold) = s.auto_handoff {
+            applied.push(Item::AutoHandoff.with(format!("at {threshold}% of the context")));
+        }
     }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(library_applied(s.skill_args));

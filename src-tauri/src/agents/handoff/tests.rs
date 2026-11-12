@@ -1,6 +1,6 @@
-//! The handoff as the rest of Luna meets it: who is offered the tool, whose
-//! chat a call can touch, what waits while one is under way, and what a
-//! chat's deletion takes with it. The machine itself is tested in phase.rs,
+//! The handoff as the rest of Luna meets it: who is listed the tool, when a
+//! call is answered, whose chat a call can touch, what waits while one is
+//! under way, and what a chat's deletion takes with it. The machine itself is tested in phase.rs,
 //! the file in file.rs, the words in facts.rs, the save in store.rs.
 
 use super::*;
@@ -12,7 +12,8 @@ const ACC: &str = "C:/acc/anthropic/one";
 
 /// A chat of the person's with Luna's tools, auto-handoff at `threshold`, and
 /// no copies on disk from a run before: tests share the data dir, and one that
-/// stopped half way leaves its folder.
+/// stopped half way leaves its folder. With a threshold, it has been asked by
+/// it, as its notice would (`ask`).
 fn chat(id: &str, threshold: Option<u8>) {
     if let Ok(dir) = dir_of(id) {
         let _ = std::fs::remove_dir_all(dir);
@@ -22,6 +23,14 @@ fn chat(id: &str, threshold: Option<u8>) {
         None => json!({ "model": "opus" }),
     };
     register(id, Provider::Claude, "C:/p", ACC, None, true, settings);
+    if threshold.is_some() {
+        ask(id, store::AskKind::Auto);
+    }
+}
+
+/// `id` asked for a handoff, by its threshold's notice or the person.
+fn ask(id: &str, kind: store::AskKind) {
+    store::change(id, |r| r.asked = Some(store::Asked { kind, at: now_ms(), turns: None, queued: None, typed: None })).unwrap();
 }
 
 fn listed_names(id: &str) -> Vec<String> {
@@ -58,19 +67,19 @@ fn done_with(ids: &[&str], scratch: &Path) {
 }
 
 #[test]
-fn the_tool_is_listed_only_to_a_persons_chat_with_auto_handoff_on() {
+fn the_tool_is_listed_to_every_persons_chat_with_luna_tools() {
     chat("hohv-on", Some(70));
     chat("hohv-off", None);
     register("hohv-kid", Provider::Claude, "C:/p", ACC, Some("hohv-on"), true, json!({ "handoff": 70 }));
     register("hohv-plain", Provider::Claude, "C:/p", ACC, None, false, json!({ "handoff": 70 }));
     chat("hohv-odd", Some(99));
-    assert!(listed_names("hohv-on").contains(&"luna_session_handoff".to_string()));
-    assert!(is_listed("hohv-on"), "its CLI has it now");
-    for id in ["hohv-off", "hohv-kid", "hohv-odd"] {
-        let names = listed_names(id);
-        assert!(names.contains(&"luna_session_list".to_string()), "{id} has the rest");
-        assert!(!names.contains(&"luna_session_handoff".to_string()), "{id}");
+    for id in ["hohv-on", "hohv-off", "hohv-odd"] {
+        assert!(listed_names(id).contains(&"luna_session_handoff".to_string()), "{id}: the tick is only the threshold");
+        assert!(is_listed(id), "{id}: its CLI has it now");
     }
+    assert!(auto_on("hohv-on") && !auto_on("hohv-off") && !auto_on("hohv-odd"), "no threshold Luna takes");
+    let names = listed_names("hohv-kid");
+    assert!(names.contains(&"luna_session_list".to_string()) && !names.contains(&"luna_session_handoff".to_string()));
     assert!(listed_names("hohv-plain").is_empty(), "no tools: nothing, not even this one");
     // Started again, its CLI lists them anew.
     chat("hohv-on", Some(70));
@@ -78,6 +87,25 @@ fn the_tool_is_listed_only_to_a_persons_chat_with_auto_handoff_on() {
     for id in ["hohv-on", "hohv-off", "hohv-kid", "hohv-plain", "hohv-odd"] {
         forget_session(id);
     }
+}
+
+/// Listed is not answered: a call, with a file or without, goes through only
+/// while someone asked the chat for a handoff, and unasked it is told where
+/// the person asks for one.
+#[test]
+fn a_call_nobody_asked_for_is_refused_naming_the_button() {
+    chat("honask-me", None);
+    let (dir, file) = scratch_file("nask");
+    for args in [json!({}), json!({ "file": file.to_string_lossy() })] {
+        let (failed, e) = call("honask-me", args.clone());
+        assert!(failed && e.contains("nobody asked this chat for a handoff") && e.contains("Hand off now"), "{args}: {e}");
+    }
+    assert!(!holds_text("honask-me") && store::records().get("honask-me").is_none_or(|r| r.served.is_none()), "nothing kept");
+    // Asked by the person: answered.
+    ask("honask-me", store::AskKind::Manual);
+    let (failed, how) = call("honask-me", json!({}));
+    assert!(!failed && how.contains("How to hand this chat off"), "{how}");
+    done_with(&["honask-me"], &dir);
 }
 
 #[test]
@@ -94,11 +122,12 @@ fn a_call_reaches_only_the_callers_own_chat() {
     // Without a file it only answers how: nothing is scheduled.
     let (failed, how) = call("hont-me", json!({}));
     assert!(!failed && how.contains("How to hand this chat off") && !holds_text("hont-me"), "{how}");
-    // Not offered: refused as a tool there is not, whoever's file it names.
-    for id in ["hont-off", "hont-kid"] {
-        let (failed, e) = call(id, json!({ "file": "C:/x/h.md" }));
-        assert!(failed && e.contains("unknown tool luna_session_handoff"), "{id}: {e}");
-    }
+    // Not listed: refused as a tool there is not, whoever's file it names.
+    let (failed, e) = call("hont-kid", json!({ "file": "C:/x/h.md" }));
+    assert!(failed && e.contains("unknown tool luna_session_handoff"), "{e}");
+    // Listed, not asked: refused, nothing run.
+    let (failed, e) = call("hont-off", json!({ "file": "C:/x/h.md" }));
+    assert!(failed && e.contains("nobody asked"), "{e}");
     let (failed, e) = call(DEV_CALLER, json!({ "file": "C:/x/h.md" }));
     assert!(failed, "{e}");
     // Offered, but not running in a terminal here: nothing scheduled.
@@ -108,7 +137,7 @@ fn a_call_reaches_only_the_callers_own_chat() {
     let (dir, file) = scratch_file("nt");
     schedule("hont-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     assert!(holds_text("hont-me") && !holds_text("hont-other"));
-    assert!(store::records().get("hont-other").is_none());
+    assert!(store::records().get("hont-other").is_some_and(|r| r.switch.is_none() && r.last == 0));
     done_with(&["hont-me", "hont-other", "hont-off", "hont-kid"], &dir);
 }
 
@@ -146,6 +175,8 @@ fn a_schedule_copies_numbers_and_refuses_a_second_under_way() {
     assert!(!holds_text("hosc-me"));
     assert_eq!(mark_of("hosc-me").map(|m| (m.n, m.state)), Some((1, "done")));
     assert_eq!(handoff_file("hosc-me".into(), 1).unwrap(), "# Objective\nFinish the campaign.\n");
+    assert_eq!(open_ask("hosc-me"), None, "the ask it answered closed with it");
+    ask("hosc-me", store::AskKind::Auto);
     let v = schedule("hosc-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     assert_eq!(v["n"], 2);
     reg().lock().unwrap().news.retain(|(c, _)| c != "hosc-me");
@@ -202,26 +233,122 @@ fn a_handoff_given_up_before_its_reset_tells_the_old_conversation() {
 }
 
 #[test]
-fn turning_it_off_gives_up_a_scheduled_handoff_and_the_setting_follows_at_once() {
+fn turning_it_off_closes_the_thresholds_ask_and_gives_up_its_scheduled_handoff() {
     chat("hots-me", None);
-    assert!(!offers_tool("hots-me"));
+    assert!(!auto_on("hots-me") && may_list("hots-me"));
     assert!(set_auto_handoff("hots-me".into(), Some(91)).unwrap_err().contains("not one"));
     assert!(set_auto_handoff("hots-me".into(), Some(0)).is_err());
     // On: the registry has it now; no CLI runs here, so nothing to resume.
     assert_eq!(set_auto_handoff("hots-me".into(), Some(60)), Ok(AutoHandoff { resume: false }));
-    assert!(offers_tool("hots-me"));
+    assert!(auto_on("hots-me"));
     assert_eq!(crate::agents::settings_of("hots-me")["handoff"], 60);
+    assert_eq!(open_ask("hots-me"), None, "on asks nothing by itself: its threshold does");
+    ask("hots-me", store::AskKind::Auto);
     let (dir, file) = scratch_file("ts");
     schedule("hots-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
-    // Off: the tool refuses from now, and what was only scheduled is given up.
+    // Off: the threshold's ask closes, and what was only scheduled from it is given up.
     set_auto_handoff("hots-me".into(), None).unwrap();
-    assert!(!offers_tool("hots-me") && crate::agents::settings_of("hots-me").get("handoff").is_none());
+    assert!(!auto_on("hots-me") && crate::agents::settings_of("hots-me").get("handoff").is_none());
+    assert!(may_list("hots-me"), "still listed: the person may still ask");
+    assert_eq!(open_ask("hots-me"), None);
     assert!(!holds_text("hots-me"));
     assert_eq!(mark_of("hots-me").and_then(|m| m.why), Some("auto-handoff was turned off for this chat".into()));
     let told: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hots-me").map(|(_, l)| l.clone()).collect();
-    assert!(told[0].contains("refuses until the person turns it on"), "not asked to call a tool it no longer has: {}", told[0]);
+    assert!(told[0].contains("Nobody asks this chat for a handoff any more"), "not asked to call again: {}", told[0]);
+    assert!(!told[0].contains("turns it on"), "{}", told[0]);
+    let (failed, e) = call("hots-me", json!({}));
+    assert!(failed && e.contains("nobody asked"), "{e}");
     reg().lock().unwrap().news.retain(|(c, _)| c != "hots-me");
     done_with(&["hots-me"], &dir);
+}
+
+/// The person's Hand off now: an ask of theirs, which turning auto-handoff
+/// off leaves be with the handoff answering it, which a core restart keeps,
+/// and which lapses MANUAL_ASK_MS after its request went in, the chat and the
+/// person told.
+#[test]
+fn the_persons_ask_survives_auto_handoff_off_and_a_restart_and_lapses() {
+    chat("homan-me", Some(70));
+    assert_eq!(open_ask("homan-me"), Some(store::AskKind::Auto));
+    reg().lock().unwrap().news.push(("homan-me".into(), facts::notice(75, 70, false, true)));
+    assert_eq!(open_manual("homan-me"), Ok(HandoffNow { resume: true }), "its CLI never listed the tool here");
+    assert_eq!(open_ask("homan-me"), Some(store::AskKind::Manual), "in the threshold's place");
+    let news = |id: &str| -> Vec<String> { reg().lock().unwrap().news.iter().filter(|(c, _)| c == id).map(|(_, l)| l.clone()).collect() };
+    assert!(news("homan-me").is_empty(), "the threshold's notice not yet typed would ask a second time");
+    assert!(now_refusal("homan-me").is_some_and(|e| e.contains("asked for a handoff already")));
+    // Off: the person's ask, and the handoff answering it, stay.
+    let (dir, file) = scratch_file("man");
+    schedule("homan-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    set_auto_handoff("homan-me".into(), None).unwrap();
+    assert_eq!(open_ask("homan-me"), Some(store::AskKind::Manual));
+    assert!(holds_text("homan-me"), "the switch goes on");
+    // A core started later takes it up as it was.
+    let saved = serde_json::to_vec(&*store::records()).unwrap();
+    let back = store::from_bytes(&saved, 5);
+    assert_eq!(back["homan-me"].asked, store::records()["homan-me"].asked);
+    assert!(back["homan-me"].asked.is_some());
+    finish("homan-me", 1, Ended::Done, &String::new);
+    assert_eq!(open_ask("homan-me"), None, "answered");
+    // Asked again: its request queued and gone in, then its time runs out.
+    open_manual("homan-me").unwrap();
+    let at = store::records()["homan-me"].asked.as_ref().unwrap().at;
+    store::change("homan-me", |r| r.asked.as_mut().unwrap().queued = Some(at)).unwrap();
+    reg().lock().unwrap().news.push(("homan-me".into(), facts::manual_notice()));
+    manual_ask_of("homan-me", at + 1);
+    assert_eq!(store::records()["homan-me"].asked.as_ref().unwrap().typed, None, "still queued");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "homan-me");
+    manual_ask_of("homan-me", at + 2);
+    assert_eq!(store::records()["homan-me"].asked.as_ref().unwrap().typed, Some(at + 2), "gone in");
+    manual_ask_of("homan-me", at + 2 + MANUAL_ASK_MS);
+    assert_eq!(open_ask("homan-me"), Some(store::AskKind::Manual), "not before its time");
+    manual_ask_of("homan-me", at + 3 + MANUAL_ASK_MS);
+    assert_eq!(open_ask("homan-me"), None, "lapsed");
+    assert_eq!(news("homan-me"), [facts::manual_lapsed(MANUAL_ASK_MS / 60_000)]);
+    let (failed, e) = call("homan-me", json!({}));
+    assert!(failed && e.contains("nobody asked"), "{e}");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "homan-me");
+    done_with(&["homan-me"], &dir);
+}
+
+/// Hand off now is refused, with what stands in the way, where the chat
+/// could not answer it.
+#[test]
+fn hand_off_now_is_refused_where_the_chat_cannot_answer_saying_why() {
+    chat("honow-me", None);
+    register("honow-kid", Provider::Claude, "C:/p", ACC, Some("honow-me"), true, json!({}));
+    register("honow-plain", Provider::Claude, "C:/p", ACC, None, false, json!({}));
+    register("honow-ro", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({ "sandbox": "read-only" }));
+    register("honow-plan", Provider::Claude, "C:/p", ACC, None, true, json!({ "permissionMode": "plan" }));
+    let refused = |id: &str| now_refusal(id).unwrap_or_default();
+    for id in ["honow-kid", "honow-plain", DEV_CALLER] {
+        assert!(refused(id).contains("started with Luna's tools"), "{id}: {}", refused(id));
+        assert!(handoff_now(id.into()).is_err());
+    }
+    assert!(refused("honow-ro").contains("read-only sandbox"), "{}", refused("honow-ro"));
+    assert!(refused("honow-plan").contains("plan mode"), "{}", refused("honow-plan"));
+    // Its CLI's own jobs cannot cross.
+    crate::activity::subagents_for_test("honow-me", 1);
+    assert!(refused("honow-me").contains("own jobs running"), "{}", refused("honow-me"));
+    crate::activity::subagents_for_test("honow-me", 0);
+    crate::activity::forget("honow-me");
+    // Nothing in the way here but its CLI, which does not run in a terminal here.
+    assert_eq!(now_refusal("honow-me"), None);
+    assert!(handoff_now("honow-me".into()).unwrap_err().contains("not running"));
+    assert_eq!(open_ask("honow-me"), None, "nothing opened");
+    // A move asking the chat for its document.
+    let asking = moving::tests::a_move(moving::MovePhase::Asking { at: 1 });
+    store::change("honow-me", |r| r.moving = Some(asking)).unwrap();
+    assert!(refused("honow-me").contains("move's document"), "{}", refused("honow-me"));
+    assert!(open_manual("honow-me").is_err(), "looked at again where it is opened");
+    store::change("honow-me", |r| r.moving = None).unwrap();
+    // A handoff under way.
+    ask("honow-me", store::AskKind::Auto);
+    let (dir, file) = scratch_file("now");
+    schedule("honow-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    assert!(refused("honow-me").contains("handoff 1 of this chat is under way"), "{}", refused("honow-me"));
+    assert!(open_manual("honow-me").is_err());
+    finish("honow-me", 1, Ended::Done, &String::new);
+    done_with(&["honow-me", "honow-kid", "honow-plain", "honow-ro", "honow-plan"], &dir);
 }
 
 #[test]
@@ -276,6 +403,7 @@ fn a_handoff_given_up_between_the_look_and_the_reset_types_nothing() {
     // A switch that has taken its reset is not given up by turning it off: the
     // prompt is still to follow.
     set_auto_handoff("hocr-me".into(), Some(70)).unwrap();
+    ask("hocr-me", store::AskKind::Auto);
     schedule("hocr-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     Stored.advance("hocr-me", 2, Phase::Scheduled, Phase::Resetting { at: 1 }, 1).unwrap();
     set_auto_handoff("hocr-me".into(), None).unwrap();
@@ -390,34 +518,38 @@ fn turning_it_off_while_the_file_is_read_leaves_nothing_to_switch() {
     assert!(e.contains("nothing will switch"), "{e}");
     assert!(!holds_text("hooff-me"), "no switch to reset the chat with");
     assert!(!dir_of("hooff-me").unwrap().join("1.md").exists(), "its copy gone");
-    // Or the chat starts again without it as the file is read: the same.
+    // Or the chat starts again without Luna's tools as the file is read: the same.
     set_auto_handoff("hooff-me".into(), Some(70)).unwrap();
+    ask("hooff-me", store::AskKind::Auto);
     file::on_read(&path, || {
-        register("hooff-me", Provider::Claude, "C:/p", ACC, None, true, json!({ "model": "opus" }));
+        register("hooff-me", Provider::Claude, "C:/p", ACC, None, false, json!({ "model": "opus" }));
     });
     let e = schedule("hooff-me", Provider::Claude, &path, before()).unwrap_err();
-    assert!(e.contains("turned off for this chat while the file was copied"), "{e}");
+    assert!(e.contains("closed while the file was copied") && e.contains("nothing will switch"), "{e}");
     assert!(!holds_text("hooff-me"));
     reg().lock().unwrap().news.retain(|(c, _)| c != "hooff-me");
     done_with(&["hooff-me"], &dir);
 }
 
-/// Only a person's chat with auto-handoff on knows of it: a helper, a chat
-/// without Luna's tools, one with them but without the tick, and the dev caller
-/// are not offered the tool, are told nothing of it at their start, find no
-/// topic of it in the guide, and calling it all the same are refused as for a
-/// tool there is not, with nothing kept for them.
+/// Only a person's chat with Luna's tools knows of the handoff: a helper, a
+/// chat without Luna's tools and the dev caller are not offered the tool, are
+/// told nothing of it at their start, and calling it all the same are refused
+/// as for a tool there is not, with nothing kept for them. No session finds a
+/// topic of it in the guide: the tool speaks for itself. A chat's threshold
+/// is its own to know of.
 #[test]
-fn nobody_but_a_chat_with_auto_handoff_on_hears_of_it() {
+fn nobody_but_a_persons_chat_with_luna_tools_hears_of_it() {
     chat("hoaud-me", Some(70));
     chat("hoaud-tools", None);
     register("hoaud-kid", Provider::Claude, "C:/p", ACC, Some("hoaud-me"), true, json!({ "handoff": 70 }));
     register("hoaud-plain", Provider::Claude, "C:/p", ACC, None, false, json!({ "handoff": 70 }));
     let tells = |text: &str| {
         let t = text.to_lowercase();
-        ["auto-handoff", "session-handoff", "what luna applied", "takes: file", "hand this chat off"].iter().any(|w| t.contains(w))
+        ["auto-handoff", "session-handoff", "what luna applied", "takes: file", "hand this chat off", "hand off now"]
+            .iter()
+            .any(|w| t.contains(w))
     };
-    for id in ["hoaud-tools", "hoaud-kid", "hoaud-plain", DEV_CALLER] {
+    for id in ["hoaud-kid", "hoaud-plain", DEV_CALLER] {
         assert!(!listed_names(id).iter().any(|n| n.contains("handoff")), "{id}");
         let init = crate::mcp::handle(id, r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#).unwrap();
         assert!(!init.to_string().to_lowercase().contains("handoff"), "{id}: {init}");
@@ -425,11 +557,13 @@ fn nobody_but_a_chat_with_auto_handoff_on_hears_of_it() {
             let (failed, e) = call(id, args.clone());
             assert!(failed && !tells(&e), "{id} {args}: {e}");
         }
+        assert!(!holds_text(id) && store::records().get(id).is_none(), "{id}: nothing kept for it");
+    }
+    for id in ["hoaud-me", "hoaud-tools", "hoaud-kid", DEV_CALLER] {
         let guide = json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": { "name": "luna_guide_get", "arguments": { "topic": "luna_session_handoff" } } });
         let r = crate::mcp::handle(id, &guide.to_string()).unwrap();
         assert_eq!(r["result"]["isError"], true, "{id}: no such topic");
-        assert!(!holds_text(id) && store::records().get(id).is_none(), "{id}: nothing kept for it");
     }
     // Its row as another session reads it: a helper of its own asking by id,
     // another chat with `scope: "all"`, a listing: its settings without its
@@ -451,8 +585,10 @@ fn nobody_but_a_chat_with_auto_handoff_on_hears_of_it() {
     let to = |caller: &str| crate::agents::list::list(caller, Some(&["hoaud-me".to_string()]), true).sessions[0].settings.clone();
     assert_eq!((to("hoaud-me")["handoff"].clone(), to("hoaud-kid").get("handoff")), (json!(70), None));
     assert_eq!(to("hoaud-kid")["model"], "opus", "the rest of its settings as they are");
-    // The chat that has it on: the tool, and how to write by.
-    assert!(listed_names("hoaud-me").contains(&"luna_session_handoff".to_string()));
+    // The person's chats: the tool, and how to write by once asked.
+    for id in ["hoaud-me", "hoaud-tools"] {
+        assert!(listed_names(id).contains(&"luna_session_handoff".to_string()), "{id}");
+    }
     let (failed, how) = call("hoaud-me", json!({}));
     assert!(!failed && how.contains("How to hand this chat off"), "{how}");
     for id in ["hoaud-me", "hoaud-tools", "hoaud-kid", "hoaud-plain"] {
@@ -623,7 +759,8 @@ fn the_chats_own_drafts_folder_is_where_it_writes_and_what_is_taken() {
     let e = schedule("hodr-other", Provider::Claude, &draft.to_string_lossy(), before()).unwrap_err();
     assert!(e.contains("Luna's own folder"), "{e}");
     // A chat that can write no file is told so, not sent to write one.
-    register("hodr-ro", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({ "sandbox": "read-only", "handoff": 70 }));
+    register("hodr-ro", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({ "sandbox": "read-only" }));
+    ask("hodr-ro", store::AskKind::Manual);
     let (failed, how) = call("hodr-ro", json!({}));
     assert!(!failed && how.contains("Codex's read-only sandbox, which writes no file"), "{how}");
     finish("hodr-me", 1, Ended::Done, &String::new);
@@ -682,6 +819,7 @@ fn a_handoff_written_by_the_firm_notice_alone_records_its_checklist() {
     finish("hochk-me", 1, Ended::Done, &String::new);
     assert_eq!(store::records()["hochk-me"].past[0].instructions.as_ref(), Some(&given));
     // Given the whole instructions first, a firm notice does not take their place.
+    ask("hochk-me", store::AskKind::Auto);
     let (failed, _) = call("hochk-me", json!({}));
     assert!(!failed);
     store::change("hochk-me", |r| told_of(r, told(2), true)).unwrap();
@@ -735,6 +873,7 @@ fn a_thin_file_written_to_luna_s_instructions_is_named_not_refused() {
     assert_eq!(missing, ["Goal", "Next action", "The user's words", "State", "Pending", "Decisions and dead ends"]);
     assert!(v["note"].as_str().unwrap().contains("goes as it is"));
     finish("hothin-me", 1, Ended::Done, &String::new);
+    ask("hothin-me", store::AskKind::Auto);
     // Written to an override: its sections are its author's, none looked for.
     store::change("hothin-me", |r| {
         r.served = Some(served::Served {
@@ -759,7 +898,7 @@ fn a_chat_asked_and_not_handing_off_shows_it_until_a_handoff_goes_through() {
     let told = store::Told { conversation: "c".into(), level: 2, floor: 0, asked: vec![71, 86], compacted: 1, tokens: 172_000 };
     store::change("hoask-me", |r| r.told = Some(told.clone())).unwrap();
     assert_eq!(asked_of("hoask-me"), Some(HandoffAsked { at: vec![71, 86], compacted: 1 }));
-    // Asked of a chat that no longer has it on: nothing to show.
+    // Asked of a chat that no longer has its threshold: nothing to show.
     store::change("hoask-off", |r| r.told = Some(told.clone())).unwrap();
     assert_eq!(asked_of("hoask-off"), None);
     // Under way, then through: no longer "not done".
@@ -770,6 +909,7 @@ fn a_chat_asked_and_not_handing_off_shows_it_until_a_handoff_goes_through() {
     assert!(store::records()["hoask-me"].told.as_ref().is_some_and(|t| t.asked.is_empty() && t.compacted == 0));
     // A handoff given up leaves the asks standing.
     store::change("hoask-me", |r| r.told = Some(told.clone())).unwrap();
+    ask("hoask-me", store::AskKind::Auto);
     schedule("hoask-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     finish("hoask-me", 2, Ended::Failed { why: "no rest".into(), reset: false }, &String::new);
     assert_eq!(asked_of("hoask-me").map(|a| a.at), Some(vec![71, 86]));
@@ -796,16 +936,20 @@ fn the_panel_names_the_instructions_and_skills_of_the_same_name() {
     // Each CLI's own place in the project, and the account's for both.
     assert_eq!(served::same_named(Provider::Claude, &folder, &account), [claude_project, in_account.clone()]);
     assert_eq!(served::same_named(Provider::Codex, &folder, &account), [codex_project, in_account]);
-    // The panel's word: for a chat with it on, what it would be served now.
+    // The panel's word: for a chat listed the tool, what it would be served now.
     let (folder_s, account_s) = (folder.to_string_lossy().into_owned(), account.to_string_lossy().into_owned());
     register("hopan-me", Provider::Claude, &folder_s, &account_s, None, true, json!({ "handoff": 70 }));
     register("hopan-off", Provider::Claude, &folder_s, &account_s, None, true, json!({}));
+    register("hopan-plain", Provider::Claude, &folder_s, &account_s, None, false, json!({ "handoff": 70 }));
     let shown = applied_of("hopan-me").expect("a chat with it on");
     assert_eq!(shown.same_named.len(), 2);
     assert_eq!(shown.instructions, crate::library::handoff_instructions().state());
     assert_eq!(crate::applied::applied_by_luna("hopan-me".into()).handoff, Some(shown), "in the panel, started or not");
-    assert!(applied_of("hopan-off").is_none() && crate::applied::applied_by_luna("hopan-off".into()).handoff.is_none());
-    forget_session("hopan-me");
-    forget_session("hopan-off");
+    // Listed the tool, the threshold set or not; nothing without Luna's tools.
+    assert_eq!(applied_of("hopan-off").map(|a| a.same_named.len()), Some(2));
+    assert!(applied_of("hopan-plain").is_none() && crate::applied::applied_by_luna("hopan-plain".into()).handoff.is_none());
+    for id in ["hopan-me", "hopan-off", "hopan-plain"] {
+        forget_session(id);
+    }
     let _ = std::fs::remove_dir_all(&base);
 }

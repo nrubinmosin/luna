@@ -1237,38 +1237,71 @@ pub(super) fn asking(chat: &str) -> bool {
     store::records().get(chat).and_then(|r| r.moving.as_ref()).is_some_and(Move::asking)
 }
 
-/// The window's "Ask the chat": a chat with auto-handoff on, whose CLI has
-/// Luna's handoff tool, asked to write its own document for the move through
-/// that tool, collected without a reset. Only where it can write a file and
-/// is running, not stopped on a limit; typed only at a strict prompt.
+/// Why `chat`, run with `settings`, is not to be asked for its move's
+/// document now, with what would clear the way: no handoff tool to send it
+/// with, one its CLI has not listed, the person's ask for a handoff open, no
+/// file it can write, or its CLI not in a state to answer.
+fn ask_blocked(chat: &str, settings: &Value, provider: Provider) -> Option<String> {
+    if !super::may_list(chat) {
+        return Some(
+            "the chat runs without Luna's tools, so it has no luna_session_handoff to send its document with: start \
+             it with the Luna tools box ticked to ask it"
+                .into(),
+        );
+    }
+    if !super::is_listed(chat) {
+        return Some(
+            "the chat's CLI started before Luna offered it luna_session_handoff: resume it on the same conversation, \
+             then ask it"
+                .into(),
+        );
+    }
+    if super::open_ask(chat) == Some(store::AskKind::Manual) {
+        return Some("you asked this chat for a handoff, which is still open: let it go through or lapse, then ask".into());
+    }
+    if let Some(why) = super::served::unwritable(settings) {
+        return Some(format!("the chat writes no file: {why}"));
+    }
+    if let Some(why) = ask_refusal(chat, provider) {
+        return Some(format!("the chat is not to be asked now: {why}; ask again once that is past"));
+    }
+    None
+}
+
+/// The window's "Ask the chat": a person's chat with Luna's tools, whose CLI
+/// has listed Luna's handoff tool, asked to write its own document for the
+/// move through that tool, collected without a reset. Only where it can write
+/// a file and is running, not stopped on a limit, and not asked for a handoff
+/// by the person meanwhile; typed only at a strict prompt.
 pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: String) -> Result<MoveStatus, String> {
     let chat = chat_id.as_str();
     let (old, to_account, worktree, _) = checked(chat, &new_id, &to_account_path)?;
-    if !super::offers_tool(chat) || !super::is_listed(chat) {
-        return Err("only a chat with auto-handoff on, whose CLI has Luna's handoff tool, writes its own document: let Luna \
-                    build it"
-            .into());
-    }
-    if let Some(why) = super::served::unwritable(&old.settings) {
-        return Err(format!("the chat writes no file: {why}"));
-    }
-    if let Some(why) = ask_refusal(chat, old.provider) {
-        return Err(format!("the chat is not to be asked now: {why}; let Luna build the document"));
+    if let Some(why) = ask_blocked(chat, &old.settings, old.provider) {
+        return Err(why);
     }
     let id = crate::secret::random_hex(6);
     let payload = super::dir_of(&new_id).map(|d| d.join(format!("{PAYLOAD_N}.md"))).unwrap_or_default();
     let line = prompt_line_with(&id, Source::Chat, chat, chat_name(chat).as_deref(), &payload.to_string_lossy(), &note);
     let mut m = new_move(&id, &new_id, &old, to_account, to_account_path, line, Source::Chat, worktree);
     m.note = note;
-    store::change(chat, |r| {
+    let taken = store::change(chat, |r| {
+        // The person's ask or a handoff begun since the look before keeps the
+        // chat: two asks would race for one file.
+        if r.switch.is_some() || r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Manual) {
+            return false;
+        }
         // An ask this move takes the place of: its answer is late from now.
         if let Some(old) = r.moving.as_ref().filter(|o| matches!(o.phase, MovePhase::Asked { .. })) {
             r.ask_closed = Some((old.id.clone(), now_ms()));
             r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
         }
         r.moving = Some(m.clone());
+        true
     })
     .map_err(|e| format!("the move could not be saved: {e}"))?;
+    if !taken {
+        return Err("a handoff of this chat began meanwhile: ask once it is through or has lapsed".into());
+    }
     crate::log::info("move", &format!("{} is to be asked for its move's document ({id})", label(chat)));
     Ok(status_of(chat, &m))
 }
@@ -2201,7 +2234,9 @@ pub(super) mod tests {
             "C:/acc/anthropic/one",
             None,
             true,
-            serde_json::json!({ "handoff": 70, "permissionMode": "acceptEdits" }),
+            // No threshold: a chat with Luna's tools has the handoff's tool,
+            // and the move's ask is what it answers.
+            serde_json::json!({ "permissionMode": "acceptEdits" }),
         );
         m.source = Source::Chat;
         m.phase = MovePhase::Asked { at: now_ms() };
@@ -2246,6 +2281,37 @@ pub(super) mod tests {
         crate::agents::teardown::forget(chat);
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// The move's ask goes to a person's chat with Luna's tools, threshold or
+    /// none, whose CLI has listed the tool; each refusal says what stands in
+    /// the way and how to clear it, and the person's own ask for a handoff
+    /// keeps the chat until it goes through or lapses.
+    #[test]
+    fn a_move_asks_a_chat_with_the_tool_listed_and_not_while_the_person_asked_for_a_handoff() {
+        use crate::agents::registry::register;
+        let acc = "C:/acc/anthropic/one";
+        register("mvb-plain", Provider::Claude, "C:/p", acc, None, false, serde_json::json!({}));
+        register("mvb-me", Provider::Claude, "C:/p", acc, None, true, serde_json::json!({}));
+        let blocked = |chat: &str| ask_blocked(chat, &serde_json::json!({}), Provider::Claude).unwrap_or_default();
+        let e = blocked("mvb-plain");
+        assert!(e.contains("without Luna's tools") && e.contains("Luna tools box"), "{e}");
+        let e = blocked("mvb-me");
+        assert!(e.contains("started before Luna offered it") && e.contains("resume it"), "{e}");
+        super::super::listed("mvb-me");
+        // Past the tool: what is left is that no CLI runs here.
+        assert!(blocked("mvb-me").contains("its CLI is not running"), "{}", blocked("mvb-me"));
+        store::change("mvb-me", |r| {
+            r.asked = Some(store::Asked { kind: store::AskKind::Manual, at: 1, turns: None, queued: None, typed: None })
+        })
+        .unwrap();
+        let e = blocked("mvb-me");
+        assert!(e.contains("you asked this chat for a handoff") && e.contains("lapse"), "{e}");
+        for e in [blocked("mvb-plain"), blocked("mvb-me")] {
+            assert!(!e.contains("let Luna build"), "{e}");
+        }
+        crate::agents::teardown::forget("mvb-plain");
+        crate::agents::teardown::forget("mvb-me");
+    }
+
     #[test]
     fn a_late_answer_is_the_asks_own_turns_and_its_drafts_name() {
         let closed = Some((1_000, Some(4)));
