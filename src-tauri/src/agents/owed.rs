@@ -72,6 +72,10 @@ pub(super) struct Owed {
     /// that answers them wakes the caller only with a status word or a report
     /// (lines.rs `worth_waking`), and the answer is left in the report.
     pub(super) no_reply: bool,
+    /// Made by a send (`owe_from_at`), not a spawn: what a lead says to it is
+    /// the answer its caller asked for, whatever its delegates are doing
+    /// (lines.rs `worth_waking`), until it has been told it is not done.
+    pub(super) by_send: bool,
     /// Which debt this is, whatever its numbers: asked again with nothing
     /// moved since, a new one has the same baseline and cursor as the old, and
     /// what was decided about the old is not to touch it.
@@ -105,6 +109,7 @@ impl Owed {
             told_quiet: None,
             told_background_wait: None,
             no_reply: false,
+            by_send: false,
         }
     }
 
@@ -380,7 +385,9 @@ fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64
     let no_reply = asked.is_some_and(|a| !a.reply) && before.is_none_or(|o| o.no_reply);
     // Text can miss its turn before the send that placed it gets here (`retried`).
     let floor = r.delivery_floors.get(&key).copied().unwrap_or(0);
-    r.owed.insert(key.clone(), Owed { resumed, no_reply, ..Owed::from(baseline.max(floor), cursor) });
+    // Only a send to a helper's queue comes with a count of handovers.
+    let by_send = handovers.is_some();
+    r.owed.insert(key.clone(), Owed { resumed, no_reply, by_send, ..Owed::from(baseline.max(floor), cursor) });
     let requests = r.requests.entry(key).or_default();
     // A debt of its own: what earlier ones covered has been answered.
     if before.is_none() {

@@ -146,11 +146,12 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   when it ends a turn on your words or on its own helper's last answer. All of it idle 30 min:
   one notice says so, with the commands they were started as (stuck, or waiting).
 - A lead (a helper with these tools) is not told of as "NOT done yet": while its helpers or its
-  CLI's background work run, what it writes waits for the next notice, unless a message's
-  first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` (as written, then `:`
-  or a space): that goes at once. As a lead, open a message you need your parent to see now
-  with one. Once all of it is done and you have said nothing, Luna wakes you once ("Your
-  delegates have finished: …"); say nothing then either, and your parent hears you seem stuck.
+  CLI's background work run, what it writes waits for the next notice (its answer to your send
+  excepted), unless a message's first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or
+  `PLAN` (as written, then `:` or a space): that goes at once. As a lead, open a message you
+  need your parent to see now with one. Once all of it is done and you have said nothing, Luna
+  wakes you once ("Your delegates have finished: …"); say nothing then either, and your parent
+  hears you seem stuck.
 - Past 12 turn-end notices about one session in 15 minutes Luna stops telling you of its turns
   and jobs (the last says so; its prompts and questions still come) until a person types into
   either chat; waits and reads still work.

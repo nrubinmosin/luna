@@ -445,7 +445,10 @@ turn, stopped on a prompt (once per stop) or exited.
   (its own helpers out, or what its CLI left in the background) is not done as
   a matter of course: a turn it ends then settles as `Settled::Skip` (no
   notice, `told_pending` set, the debt's offset kept), so what it wrote rides
-  in its report with the next notice, never "NOT done yet". A message whose
+  in its report with the next notice, never "NOT done yet". Not the first
+  turn to answer a send of its caller's (`Owed::by_send`, before
+  `told_pending`): that is the answer asked for, unless the send asked for
+  none. A message whose
   first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`
   (`said::says_status`, case-sensitive, alone or before `:` or a space,
   markdown marks aside) goes at once (`worth_waking`), and so does a turn on

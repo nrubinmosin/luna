@@ -503,8 +503,10 @@ pub(in crate::agents) fn notice_line(
             // A lead's delegates at work are its normal state, and what it
             // writes meanwhile waits in its report for the notice that comes
             // once they are done; so does an answer to sends that asked for
-            // none. A status word gets either through now.
-            if !worth_waking(&replies, lead, o.no_reply) {
+            // none. A status word gets either through now, and the first turn
+            // that answers a send of its caller's is no interim report.
+            let held_as_lead = lead && !(o.by_send && !o.told_pending);
+            if !worth_waking(&replies, held_as_lead, o.no_reply) {
                 return Some((None, Settled::Skip(ended)));
             }
             // Said first and plainly: a weak model read "ended a turn" as
@@ -1698,6 +1700,13 @@ mod tests {
             std::fs::write(&path, said_line(not_one)).unwrap();
             assert!(matches!(line(first), Some((None, Settled::Skip(1)))), "{not_one}");
         }
+        // Its parent asked it something: the answer is no interim report.
+        std::fs::write(&path, said_line("Lane 2 of 3; the gate is still out.")).unwrap();
+        let sent = Owed { by_send: true, ..first };
+        let Some((Some(text), Settled::Pending(1, _))) = line(sent) else { panic!("an answer to a send goes") };
+        assert!(text.contains("Lane 2 of 3") && !text.contains("NOT done yet"), "{text}");
+        let quiet = Owed { no_reply: true, ..sent };
+        assert!(matches!(line(quiet), Some((None, Settled::Skip(1)))), "unless the send asked for no reply");
         // A prompt it stops on comes as ever.
         crate::background::set_running_for_test(id);
         crate::background::hold_for_test(id);
