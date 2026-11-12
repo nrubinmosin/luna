@@ -396,7 +396,7 @@ fn skills_line(skills: Option<&Skills>) -> String {
     let cut =
         if s.cut { format!(", as far as Luna read it (its first {} MB)", super::excerpts::SKILLS_READ_MAX >> 20) } else { String::new() };
     if s.names.is_empty() {
-        return format!("- Skills the conversation before loaded: none in its transcript{cut}.");
+        return format!("- Skills the conversation before loaded: none seen in its transcript{cut}.");
     }
     let names: Vec<String> = s.names.iter().map(|n| quoted(n)).collect();
     format!("- Skills the conversation before loaded, in order of first use{cut}: {}.", names.join(", "))
@@ -688,7 +688,7 @@ mod tests {
         }
         // None in the transcript, one read only in part, one not read at all.
         let line = |skills| fact_block(&Facts { skills, ..facts.clone() });
-        assert!(line(Some(Skills::default())).contains("- Skills the conversation before loaded: none in its transcript.\n"));
+        assert!(line(Some(Skills::default())).contains("- Skills the conversation before loaded: none seen in its transcript.\n"));
         let cut = Skills { names: vec!["a".into()], cut: true };
         assert!(line(Some(cut)).contains("in order of first use, as far as Luna read it (its first 256 MB): \"a\"."));
         assert!(line(None).contains("- Skills the conversation before loaded: not known (Luna could not read its transcript)."));
