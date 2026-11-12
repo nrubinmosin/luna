@@ -22,10 +22,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   minutes after its turn: Claude Code 2.1.319+ stops what a `-p` run left in
   the background that long after its input closed, unfinished and uncommitted
   work with it, and Luna closes a helper's input with each turn. Its turns now
-  run with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (in "What Luna applied"),
-  so they wait for that work; one that hangs is still told to its caller as a
-  quiet turn and stopped with `luna_session_stop`. Should the CLI stop that
-  work anyway, the caller's notice says so instead of "it has said nothing".
+  wait up to 3 hours for that work (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, in
+  "What Luna applied"), not forever, so a forgotten watcher cannot hold a
+  helper for good. A helper that has answered but still waits on its
+  background work is told to its caller after 30 quiet minutes, naming the
+  commands, Monitors and subagents it waits on and the processes in its job.
+  When the CLI stops that work, the caller's notice says so instead of "it
+  has said nothing", across a restart of Luna's core too.
+- In the new-chat dialog, a model picked now opens on the effort kept for it
+  even where the level shown before was one it does not take, rather than on
+  its catalog default.
 
 ## [0.17.0] - 2026-11-13
 

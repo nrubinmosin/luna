@@ -175,6 +175,24 @@ pub(crate) fn background_stopped_for_test(id: &str) {
     lock().entries.get_mut(id).expect("a test helper").observed.background_stopped = true;
 }
 
+/// A test helper as the next core takes it up from what this one saves: through
+/// `helpers.json`'s JSON and back.
+#[cfg(test)]
+pub(crate) fn restart_for_test(id: &str) {
+    let saved = snapshot().into_iter().find(|s| s.id == id).expect("a test helper");
+    let saved: Saved = serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+    let e = taken_up(saved);
+    lock().entries.insert(id.to_string(), e);
+}
+
+/// A test helper in a turn whose CLI has written its result (`waits_on_background`).
+#[cfg(test)]
+pub(crate) fn after_result_for_test(id: &str) {
+    if let Some(run) = lock().entries.get_mut(id).and_then(|e| e.run.as_mut()) {
+        run.after_result = true;
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn gone_for_test(id: &str) {
     lock().entries.remove(id);

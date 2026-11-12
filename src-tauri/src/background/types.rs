@@ -148,8 +148,10 @@ pub(super) struct Observed {
     pub(super) answered: bool,
     /// Its CLI said on stderr that it stopped what the turn left in the
     /// background, its wait for it over (`take_stderr`): subagents' work may be
-    /// unfinished and uncommitted, which the caller's notice says.
-    #[serde(skip)]
+    /// unfinished and uncommitted, which the caller's notice says. Saved: a
+    /// core that goes before that notice is in must not lose it. Until the
+    /// notice that carries it is settled (`background_stop_told`) or the next
+    /// turn begins.
     pub(super) background_stopped: bool,
 }
 
@@ -186,6 +188,10 @@ pub(super) struct Run {
     /// A `result` of this process's said it failed: a later one that succeeds
     /// clears what that one left in `Entry::error`.
     pub(super) result_failed: bool,
+    /// Its CLI has written the turn's `result` and the main loop has said
+    /// nothing since: the process is up only for what the turn left in the
+    /// background (`waits_on_background`).
+    pub(super) after_result: bool,
     /// Which claim this is, of all this core has made: a batch reserved on it
     /// (`Reservation`) tells the claim it holds from one made after it.
     pub(super) claim: u64,
@@ -195,7 +201,7 @@ impl Run {
     pub(super) fn claimed(pid: Option<u32>, started_ms: u64) -> Run {
         static CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let claim = CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Run { pid, started_ms, stopped: false, feed: None, line: None, result_failed: false, claim }
+        Run { pid, started_ms, stopped: false, feed: None, line: None, result_failed: false, after_result: false, claim }
     }
 }
 

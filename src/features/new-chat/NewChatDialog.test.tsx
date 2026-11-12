@@ -343,6 +343,38 @@ describe('NewChatDialog: Claude models from the account’s own list', () => {
     expect(screen.getByRole('radio', { name: 'high' })).toHaveAttribute('aria-checked', 'true');
   });
 
+  it('takes the level kept for the next model over its catalog default where the shown one is not taken', async () => {
+    const kept = (value: string, model: string) => ({
+      value,
+      source: 'account' as const,
+      key: `modelSettings.${model}.effortLevel`
+    });
+    mocked.claudeDefaults.mockResolvedValue({
+      model: fromAccount('opus'),
+      effort: fromAccount('xhigh'),
+      permissionMode: null,
+      effortByModel: {
+        opus: fromAccount('xhigh'),
+        // Takes medium and xhigh, catalog default xhigh: kept at medium.
+        'claude-opus-4-7': kept('medium', 'claude-opus-4-7'),
+        // Takes low and high, catalog default low: kept at high.
+        mythos: kept('high', 'mythos')
+      }
+    });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    // From xhigh, which Mythos lacks: its kept level, not its catalog's.
+    await user.selectOptions(screen.getByRole('combobox'), 'Mythos');
+    expect(screen.getByRole('radio', { name: 'high' })).toHaveAttribute('aria-checked', 'true');
+    // From high, which Opus 4.7 lacks: medium, not its catalog's xhigh.
+    await user.selectOptions(screen.getByRole('combobox'), 'claude-opus-4-7');
+    expect(screen.getByRole('radio', { name: 'medium' })).toHaveAttribute('aria-checked', 'true');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ model: 'claude-opus-4-7', effort: 'medium' });
+  });
+
   it('opens on a full id the settings file names, as that model', async () => {
     mocked.claudeDefaults.mockResolvedValue({
       model: fromAccount('claude-opus-4-7'),

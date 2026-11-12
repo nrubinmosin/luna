@@ -9,8 +9,16 @@ use crate::applied::{Applied, Item};
 pub(super) type Command = (Vec<String>, String, Vec<(&'static str, String)>, Vec<Applied>);
 
 /// How long `claude -p`, its stdin closed, waits for what its turn left in the
-/// background before it stops it, in ms; `0` waits as long as that takes.
+/// background before it stops it, in ms (`0`: as long as that takes).
 const BG_WAIT_CEILING_ENV: &str = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS";
+
+/// A helper's: 3 hours, not the CLI's 10 min nor no end. Subagents and test
+/// gates a turn put in the background legitimately run for an hour and more,
+/// but a watcher left behind (a dev server, a `tail -f`, a Monitor with no
+/// end) keeps the CLI up, and with it the helper's turn: messages to it would
+/// queue for good. Past this the CLI stops what is left and says so on stderr
+/// (run.rs `stops_background`).
+const BG_WAIT_CEILING_MS: &str = "10800000";
 
 /// The arguments and working directory of the next turn. Err when a Claude
 /// Code turn's mandatory settings — its core-folder deny (threat model F3) —
@@ -169,13 +177,13 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             // Its stdin closes with each turn's result (events.rs), and from then
             // `claude -p` waits only so long for what the turn left in the
             // background before it stops it, subagents and their uncommitted
-            // work included (2.1.319+, 10 min by default). `0` waits for them;
-            // the turn is the helper's until then, and one that hangs is told to
-            // the parent as a turn gone quiet (agents/notifier `QUIET_TURN_MS`),
-            // or as idle processes once it is over (`left_quiet`), and ends with
+            // work included (2.1.319+, 10 min by default). The turn is the
+            // helper's until then: one that waits that long is told to the
+            // parent as a turn gone quiet, with what it waits on
+            // (agents/notifier `QUIET_TURN_MS`), and ends with
             // `luna_session_stop`. Set always, over anything inherited.
-            envs.push((BG_WAIT_CEILING_ENV, "0".into()));
-            applied.push(Item::HelperBackgroundWait.with(format!("{BG_WAIT_CEILING_ENV}=0")));
+            envs.push((BG_WAIT_CEILING_ENV, BG_WAIT_CEILING_MS.into()));
+            applied.push(Item::HelperBackgroundWait.with(format!("{BG_WAIT_CEILING_ENV}={BG_WAIT_CEILING_MS}")));
         }
         Provider::Codex => {
             args.push("exec".into());
@@ -752,7 +760,7 @@ mod tests {
             ("CLAUDE_CONFIG_DIR", "C:\\acc"),
             ("DISABLE_AUTOUPDATER", "1"),
             ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
-            ("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0"),
+            ("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "10800000"),
             ("LUNA_SESSION_ID", id),
         ])
     }
@@ -792,7 +800,7 @@ mod tests {
         assert_eq!(t.args, with_settings(strict(claude_turn("acceptEdits"))));
         assert_eq!(t.dir, "C:\\p");
         assert_eq!(t.envs, claude_turn_envs(ID));
-        assert_eq!(t.value("helper.background-wait"), Some("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0"), "said where it is set");
+        assert_eq!(t.value("helper.background-wait"), Some("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=10800000"), "said where it is set");
         let settings = golden::claude_helper_settings(golden::claude_settings_alone());
         assert_eq!((t.settings, t.mcp), (Some(settings), None), "no hooks: its stream says it all");
     }
@@ -1228,7 +1236,7 @@ mod tests {
                 ("CLAUDE_CONFIG_DIR", "<acc>"),
                 ("DISABLE_AUTOUPDATER", "1"),
                 ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
-                ("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0"),
+                ("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "10800000"),
                 ("LUNA_SESSION_ID", ID),
             ])
         );

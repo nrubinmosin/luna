@@ -907,6 +907,9 @@ fn deliver_notice(
             }
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));
+                // Every line that settles a helper's debt says it, when it is so
+                // (lines.rs `background_stopped`).
+                crate::background::background_stop_told(id);
             }
             if !told_lost.is_empty() || !told_left.is_empty() || told_news || told_spawns || told_budgets {
                 crate::background::save();
