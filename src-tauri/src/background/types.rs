@@ -151,12 +151,16 @@ pub(super) struct Observed {
     /// unfinished and uncommitted, which its callers' notices and replies say.
     /// Saved: a core that goes before they are in must not lose it. Kept past
     /// later turns (a queued message starts one at once) until every caller
-    /// owed an answer from that turn has had it (`background_stop_told`).
+    /// it concerns (`stop_owed`) has had it (`background_stop_told`).
     pub(super) background_stopped: bool,
-    /// The turn count that stop came at the end of: callers owed from before
-    /// it are to hear of it, those who asked after it are not.
+    /// The turn count that stop came at the end of: which stop it is, so an
+    /// undo of a reply that told of one leaves a later one alone.
     pub(super) stopped_turn: u32,
-    /// The callers it has been said to.
+    /// The callers owed an answer when it came (`stop_owed_to`), who are to
+    /// hear of it: taken then, as the turn each is owed moves on with a
+    /// message queued behind that turn, a retry or a resume.
+    pub(super) stop_owed: Vec<String>,
+    /// Those of them it has been said to.
     pub(super) stop_told: Vec<String>,
 }
 

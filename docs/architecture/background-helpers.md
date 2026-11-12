@@ -78,16 +78,19 @@ owed by the person's chats, outlive a core restart.
   for each tool call of one) but not one long command of its, which the job
   does. When the CLI stops that work, its stderr line ("Background tasks still
   running … stopping them") is caught (`run.rs` `stops_background`) and kept in
-  `Observed` with the turn it ended (`stopped_turn`), saved across cores with
-  the callers told so far and kept across later turns (a queued message starts
-  one at once). Every line that settles a debt owed from before that turn's
-  end says so to a caller not yet told (rather than "it has said nothing"), as
-  does a wait, read or report that hands the answer over (`backgroundStopped`,
-  owed.rs `background_stopped_note`); a delivered notice marks that caller
-  (notifier `ack_background_stop`, never a line without it such as an exited
-  helper's), as does the hand-over (`hand_over`, put back with a reply that
-  never reached it), and it is done once every caller owed from before has
-  been told. The quiet notice of a turn that has answered and waits on its
+  `Observed` with the turn it ended (`stopped_turn`) and the callers owed an
+  answer as it came (`stop_owed`, taken then: a message one of them queues
+  behind that turn moves the turn its debt counts from, not who it is), saved
+  across cores with those told so far and kept across later turns (a queued
+  message starts one at once). Every line that settles the debt of one of
+  them says so to a caller not yet told (rather than "it has said nothing"),
+  as does a wait, read or report that hands the answer over
+  (`backgroundStopped`, owed.rs `background_stopped_note`); a delivered
+  notice marks that caller (notifier `ack_background_stop`, never a line
+  without it such as an exited helper's), as does the hand-over (`hand_over`;
+  a reply that never reached its caller unmarks that caller alone, and only
+  for that stop), and it is done once every one of them still owed has been
+  told. The quiet notice of a turn that has answered and waits on its
   background work is told once per turn apart from the plain quiet one
   (`Owed::told_background_wait`).
 - A Codex helper's `exec` has no such ceiling: it reads its prompt from stdin
