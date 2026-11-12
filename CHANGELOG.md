@@ -23,7 +23,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Auto-handoff ticked on a chat already past its threshold, or set lower than
   where it stands, asks as soon as the chat is at rest rather than at its
   next turn's end. Turned off before Luna typed its notice, the notice is
-  dropped. A conversation a handoff began is spared at its start only while
+  not typed, even one Luna was about to type. A conversation a handoff began is spared at its start only while
   it is still at its first turn: one handed off with Auto-handoff off and
   gone on since is asked once Auto-handoff is turned on.
 

@@ -220,7 +220,13 @@ pub(super) fn manual_undelivered(minutes: u64) -> String {
 /// handoff is scheduled is dropped, the new conversation having nothing to
 /// hand off.
 pub(super) fn is_notice(line: &str) -> bool {
-    line.starts_with("This chat's context is at ") || line.starts_with(MANUAL_LEAD)
+    is_threshold_notice(line) || line.starts_with(MANUAL_LEAD)
+}
+
+/// Whether a queued line is the threshold's notice (`notice`), bound to the
+/// ask it was queued with (mod.rs `withheld`).
+pub(super) fn is_threshold_notice(line: &str) -> bool {
+    line.starts_with("This chat's context is at ")
 }
 
 /// One helper of the chat's, as the fact block names it.

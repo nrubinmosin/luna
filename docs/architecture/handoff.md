@@ -175,7 +175,12 @@ that beat is skipped and the turn looked at again at the next.
   under the same lock, so a move or the person's ask begun right after drops
   it as it opens. None is opened while a move of the chat is under way
   (`moving::under_way`), and the notifier types none then: one put together
-  before the move began is dropped where it goes in (`withheld`). Past `firm_at`
+  before the move began is dropped where it goes in (`withheld`). The ask
+  keeps its notice's SHA-256 (`Asked::notice`), and a copy the notifier put
+  together goes in only while that very ask is the one open with auto-handoff
+  on (else dropped: turned off, or a later ask's notice in its place), and,
+  looked at again with the person's keys held, only with the chat on the
+  conversation it asks (`withheld`, `notice_here`). Past `firm_at`
   (threshold + 10, kept within 85-95) a firmer one; with Luna's own
   instructions in effect it carries their seven headings inline (`SECTIONS`),
   with an override it sends the chat to the call. Once each per conversation

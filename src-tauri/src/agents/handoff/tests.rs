@@ -1150,7 +1150,8 @@ fn the_thresholds_ask_is_not_opened_over_what_changed_as_its_context_was_read() 
     // Nothing changed: opened, of the conversation read, its notice queued
     // with it under the record's lock.
     assert!(open(70));
-    assert_eq!(store::records()["hoaa-me"].asked, Some(asked.clone()));
+    let notice = Some(sha256_of(&line));
+    assert_eq!(store::records()["hoaa-me"].asked, Some(store::Asked { notice, ..asked.clone() }), "bound to its notice");
     assert_eq!(store::records()["hoaa-me"].told.as_ref().map(|t| t.level), Some(1));
     assert_eq!(queued(), 1);
     // The person's ask opened after it drops that notice, under the same lock.
@@ -1449,6 +1450,58 @@ fn a_conversation_a_handoff_began_keeps_its_floor_only_at_its_first_turn() {
     let _ = store::remove("hofloor-me");
     forget_session("hofloor-me");
     set_conversation_for_test("hofloor-me", None);
+}
+
+/// Auto-handoff turned off between the notifier putting a threshold notice
+/// together and typing it: the ask it came with is closed, so it is not
+/// typed, nor is it once the ask is another (a later notice's), auto-handoff
+/// is set again meanwhile, or the chat is on another conversation than the
+/// one asked. Typed only while all of it stands.
+#[test]
+fn a_threshold_notice_put_together_goes_in_only_while_its_ask_stands() {
+    chat("hooffq-me", None);
+    listed("hooffq-me");
+    crate::pty::fake_terminal_for_test("hooffq-me", true);
+    set_auto_handoff("hooffq-me".into(), Some(70)).unwrap();
+    let ask = |pct| {
+        store::change("hooffq-me", |r| (r.told, r.asked) = (None, None)).unwrap();
+        look_at("hooffq-me", 70, &reading("old", pct), 2, None);
+        queued("hooffq-me").pop().unwrap()
+    };
+    let deliver = |line: &str, between: Box<dyn FnOnce() + Send>| {
+        crate::agents::notifier::deliver_news_for_test("hooffq-me", vec![(line.to_string(), line.to_string())], between);
+        let (typed, _) = crate::pty::fake_terminal_of("hooffq-me");
+        crate::pty::fake_terminal_for_test("hooffq-me", true);
+        !typed.is_empty()
+    };
+    // Turned off between: nothing typed, and nothing left to type.
+    let line = ask(75);
+    let off = Box::new(|| {
+        set_auto_handoff("hooffq-me".into(), None).unwrap();
+    });
+    assert!(!deliver(&line, off), "no ask for it to answer");
+    assert!(withheld("hooffq-me", &line) && queued("hooffq-me").is_empty());
+    // Replaced by a later ask's notice: the earlier copy is not typed.
+    set_auto_handoff("hooffq-me".into(), Some(70)).unwrap();
+    let first = ask(75);
+    store::change("hooffq-me", |r| r.asked.as_mut().unwrap().notice = Some("another".into())).unwrap();
+    assert!(withheld("hooffq-me", &first), "not typed, and dropped at the notifier's next look");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hooffq-me");
+    // On another conversation than the one asked: not now, still queued for
+    // the beat to close the ask.
+    let line = ask(76);
+    assert!(!deliver(&line, Box::new(|| set_conversation_for_test("hooffq-me", Some("theirs")))));
+    assert!(!withheld("hooffq-me", &line) && queued("hooffq-me") == [line.clone()]);
+    // Back on it, nothing changed: what the notifier looks at under the held
+    // keys lets it go in.
+    set_conversation_for_test("hooffq-me", Some("old"));
+    assert!(notice_here("hooffq-me", &line) && !withheld("hooffq-me", &line));
+    assert!(notice_here("hooffq-me", "Your helper h1 answered"), "any other line, as far as this goes");
+    crate::pty::fake_terminal_for_test("hooffq-me", false);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hooffq-me");
+    let _ = store::remove("hooffq-me");
+    forget_session("hooffq-me");
+    set_conversation_for_test("hooffq-me", None);
 }
 
 fn queued(id: &str) -> Vec<String> {

@@ -81,11 +81,16 @@ pub(in crate::agents) struct Asked {
     /// None until that conversation is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// The threshold's: the SHA-256 of the notice it was queued with, which
+    /// goes in only while this ask is the one open (mod.rs `withheld`). None
+    /// on a record from before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 impl Asked {
     pub fn new(kind: AskKind, at: u64, turns: Option<u32>) -> Asked {
-        Asked { kind, at, turns, typed: None, conversation: None }
+        Asked { kind, at, turns, typed: None, conversation: None, notice: None }
     }
 }
 
