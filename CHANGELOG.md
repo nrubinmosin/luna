@@ -14,8 +14,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   next conversation loads before its first reply, and why. The prompt that
   opens it says to load them first, and Luna's facts name the skills the
   conversation before loaded, read off its transcript (Claude Code's `Skill`
-  calls, Codex's `<skill>` blocks). A move's document carries the same line,
-  and the moved chat is told to load what it lists before its first reply.
+  calls and the skills a person started with `/name`, Codex's `<skill>`
+  blocks). A move's document carries the same line, and the moved chat is
+  told to load what it lists before its first reply.
 
 ### Changed
 
