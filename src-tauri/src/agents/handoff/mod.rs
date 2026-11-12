@@ -754,7 +754,7 @@ fn copy_holds(chat: &str, s: &Switch) -> Result<(), String> {
 /// their own beside the snapshot, in the chat's folder of copies as checked
 /// (`copies_of`), and the prompt names it.
 fn continuation(chat: &str, s: &Switch) -> String {
-    let facts = facts::fact_block(&gather(chat));
+    let facts = facts::fact_block(&gather(chat, s.before.transcript.as_deref(), s.provider));
     let name = chat_name(chat);
     let previous = s.before.transcript.as_deref();
     let whole = facts::prompt(s.n, chat, name.as_deref(), &s.snapshot, &s.sha256, &s.source, previous, &facts);
@@ -774,8 +774,9 @@ fn continuation(chat: &str, s: &Switch) -> String {
     facts::prompt(s.n, chat, name.as_deref(), &s.snapshot, &s.sha256, &s.source, previous, &pointer)
 }
 
-/// What Luna knows of `chat` now, for the prompt.
-fn gather(chat: &str) -> facts::Facts {
+/// What Luna knows of `chat` now, for the prompt: the skills loaded in the
+/// conversation before, too, read off its transcript at `previous`.
+fn gather(chat: &str, previous: Option<&str>, provider: Provider) -> facts::Facts {
     let listing = crate::agents::list::list(chat, None, false);
     let (known, owed, held, usage) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -824,6 +825,13 @@ fn gather(chat: &str) -> facts::Facts {
         owed_by_others,
         held_for,
         accounts,
+        skills: previous.and_then(|p| match excerpts::skills_in(Path::new(p), provider) {
+            Ok(skills) => Some(skills),
+            Err(e) => {
+                crate::log::warn("handoff", &format!("{}: the skills its conversation loaded are not known: {e}", label(chat)));
+                None
+            }
+        }),
         at: crate::background::iso(now_ms()).unwrap_or_default(),
     }
 }

@@ -522,14 +522,26 @@ fn the_facts_name_the_chats_helpers_and_what_they_owe() {
         json!({ "background": true, "model": "gpt-big", "effort": "high" }),
     );
     reg().lock().unwrap().owed.insert(("hogf-me".into(), "hogf-kid".into()), crate::agents::owed::Owed::from(0, 0));
-    let f = gather("hogf-me");
+    // The conversation before loaded a skill, as Claude Code 2.1.322 records
+    // its call.
+    let (dir, _) = scratch_file("gf");
+    let previous = dir.join("old.jsonl");
+    let call = json!({ "type": "assistant", "message": { "content": [
+        { "type": "tool_use", "id": "toolu_1", "name": "Skill", "input": { "skill": "release" }, "caller": { "type": "direct" } }] } });
+    std::fs::write(&previous, format!("{call}\n")).unwrap();
+    let f = gather("hogf-me", Some(&previous.to_string_lossy()), Provider::Claude);
     assert_eq!(f.helpers.len(), 1);
     assert_eq!((f.helpers[0].id.as_str(), f.helpers[0].owes, f.helpers[0].account.as_str()), ("hogf-kid", true, "codex/two"));
     assert_eq!((f.helpers[0].model.as_deref(), f.helpers[0].effort.as_deref()), (Some("gpt-big"), Some("high")));
     assert_eq!(f.threshold, Some(70));
     assert!(f.owed_by_others.is_empty());
+    assert_eq!(f.skills.map(|s| s.names), Some(vec!["release".to_string()]));
+    // Where the conversation before is not known, or not to be read: not known.
+    assert_eq!(gather("hogf-me", None, Provider::Claude).skills, None);
+    assert_eq!(gather("hogf-me", Some(&dir.join("gone.jsonl").to_string_lossy()), Provider::Claude).skills, None);
     forget_session("hogf-kid");
     forget_session("hogf-me");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -1017,7 +1029,7 @@ fn a_thin_file_written_to_luna_s_instructions_is_named_not_refused() {
     let v = schedule("hothin-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     assert_eq!(v["scheduled"], true);
     let missing: Vec<&str> = v["missing"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
-    assert_eq!(missing, ["Goal", "Next action", "The user's words", "State", "Pending", "Decisions and dead ends"]);
+    assert_eq!(missing, ["Goal", "Next action", "The user's words", "State", "Pending", "Decisions and dead ends", "Skills to load first"]);
     assert!(v["note"].as_str().unwrap().contains("goes as it is"));
     finish("hothin-me", 1, Ended::Done, &String::new);
     ask("hothin-me", store::AskKind::Auto);

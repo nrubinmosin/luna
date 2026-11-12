@@ -329,6 +329,17 @@ fn layout(i: &Inputs, conversation: &str, left_out: usize) -> String {
                 ));
             }
         }
+        // Read off the transcript, not the chat's word: the earlier chat's
+        // document says which of them matter, where it wrote one.
+        let cut = if t.skills.cut { ", as far as Luna read its transcript" } else { "" };
+        if t.skills.names.is_empty() {
+            d.push_str(&format!("- Skills its conversation loaded: none{cut}.\n"));
+        } else {
+            d.push_str(&format!(
+                "- Skills its conversation loaded, in order of first use{cut}: {}.\n",
+                t.skills.names.iter().map(|n| quoted(n)).collect::<Vec<_>>().join(", ")
+            ));
+        }
     }
     d.push_str(&format!("\nThe working folder's state as git gave it at {} (not what this chat alone did):\n\n", i.git.at));
     if !i.git.missing.is_empty() {
@@ -421,10 +432,22 @@ fn layout(i: &Inputs, conversation: &str, left_out: usize) -> String {
         }
     }
     d.push_str("\n## First steps\n\n");
-    d.push_str("1. Run `git status` in the working folder again: the state above is as of when this was written.\n");
-    d.push_str("2. Read the files named above again before changing them.\n");
-    d.push_str("3. Do not redo what is recorded as done without checking that it is.\n");
-    d.push_str("4. Ask the person before anything that cannot be undone.\n");
+    let mut steps = Vec::new();
+    // The earlier chat's own document names the skills to load first; Luna's
+    // has only the skills that conversation loaded.
+    let loaded = i.transcript.as_ref().is_ok_and(|t| !t.skills.names.is_empty());
+    if i.chat_text.is_some() {
+        steps.push("Before your first reply, load the skills the earlier chat's document says to load first, those this account has.");
+    } else if loaded {
+        steps.push("Before your first reply, load the skills listed under State that this work still needs, those this account has.");
+    }
+    steps.push("Run `git status` in the working folder again: the state above is as of when this was written.");
+    steps.push("Read the files named above again before changing them.");
+    steps.push("Do not redo what is recorded as done without checking that it is.");
+    steps.push("Ask the person before anything that cannot be undone.");
+    for (n, step) in steps.iter().enumerate() {
+        d.push_str(&format!("{}. {step}\n", n + 1));
+    }
     d
 }
 
@@ -479,6 +502,7 @@ mod tests {
                 said: said_,
                 edits: vec!["E:\\work\\src\\a.rs".into(), "E:\\elsewhere\\b.txt".into()],
                 plan: Some("1. Do it".into()),
+                skills: excerpts::Skills { names: vec!["release".into(), "ui-check".into()], cut: false },
                 ..Default::default()
             }),
             last_handoff: None,
@@ -505,6 +529,9 @@ mod tests {
         assert!(t.contains("· the chat's document ·") && t.contains("# Goal\nShip it."));
         assert!(t.contains("\\[Luna move 1"), "its lines cannot pass for Luna's");
         assert!(!t.contains("Not quoted") && !t.contains("## Conversation") && t.contains("## Helpers"));
+        // Luna's line of the skills loaded beside it; the chat's own says which to load first.
+        assert!(t.contains("- Skills its conversation loaded, in order of first use: \"release\", \"ui-check\"."), "{t}");
+        assert!(t.contains("1. Before your first reply, load the skills the earlier chat's document says to load first"), "{t}");
     }
 
     #[test]
@@ -544,12 +571,22 @@ mod tests {
             "Working on it…",
             "h1 \"tests\": working; owes the earlier chat an answer",
             "they are not this chat's",
-            "1. Run `git status`",
+            "- Skills its conversation loaded, in order of first use: \"release\", \"ui-check\".\n",
+            "1. Before your first reply, load the skills listed under State that this work still needs, those this account has.\n\
+             2. Run `git status`",
         ] {
             assert!(t.contains(want), "{want}:\n{t}");
         }
         assert!(!t.contains("\n[Luna handoff"));
         assert_eq!(b.redacted, 0);
+        // None loaded: said so, and no step to load them.
+        let mut none = inputs(vec![]);
+        if let Ok(t) = none.transcript.as_mut() {
+            t.skills = excerpts::Skills { names: vec![], cut: true };
+        }
+        let t = build(&none, &scrub::Roots::default()).text;
+        assert!(t.contains("- Skills its conversation loaded: none, as far as Luna read its transcript.\n"), "{t}");
+        assert!(t.contains("## First steps\n\n1. Run `git status`"), "{t}");
     }
 
     #[test]
