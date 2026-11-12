@@ -205,8 +205,9 @@ menu, so words injected into the chat cannot hand it off on their own.
   ends, skills to load first) for a chat short of context. Ticked on a chat
   already past the threshold, Auto-handoff asks as soon as the chat is at
   rest, not at its next turn's end. A conversation a handoff began is asked
-  only once it has grown 5 points past where it began. Nothing switches
-  unless the chat asks.
+  only once it has grown 5 points past where it began, if Auto-handoff looks
+  at it as its first turn ends; turned on after it has gone further, it asks
+  as for any conversation. Nothing switches unless the chat asks.
 - If the CLI compacts the conversation before a handoff, or the chat goes on
   with a model of a larger context window, the threshold's ask closes, and the
   chat is asked again once it is past the threshold again. The chip then reads

@@ -1186,7 +1186,11 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         };
         let Some(context) = crate::background::Context::of(&path, provider) else { continue };
         let conversation = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let reading = Reading { live, conversation, pct: context.pct, tokens: context.tokens };
+        // Read only for a record a handoff left fresh, which its first look
+        // clears: once per conversation a handoff began.
+        let fresh = store::records().get(&chat).is_some_and(|r| r.fresh);
+        let first_turn = fresh && excerpts::at_handoffs_first_turn(&path, provider);
+        let reading = Reading { live, conversation, pct: context.pct, tokens: context.tokens, first_turn };
         look_at(&chat, threshold, &reading, turns_ended, mark);
     }
 }
@@ -1211,12 +1215,15 @@ fn to_look(b: &mut Beat, chat: &str, ts: Option<crate::activity::TurnState>) -> 
 
 /// What a look at a chat's context read: the conversation its CLI is on
 /// (`live`), which its transcript was checked to be (`transcript_is`), that
-/// transcript's name, and how full the context is.
+/// transcript's name, how full the context is, and whether the conversation
+/// is still at the turn Luna's handoff prompt opened
+/// (`excerpts::at_handoffs_first_turn`).
 struct Reading {
     live: String,
     conversation: String,
     pct: u64,
     tokens: u64,
+    first_turn: bool,
 }
 
 /// `chat`'s context as `reading` found it at `turns_ended`, held to its
@@ -1228,7 +1235,14 @@ fn look_at(chat: &str, threshold: u8, reading: &Reading, turns_ended: u32, mark:
     if mark.is_some() {
         unmark(chat, mark);
     }
+    // The floor a handoff gives the conversation it began (`Record::fresh`)
+    // is for that conversation's start: one that begins above the threshold
+    // is not to be sent straight into the next handoff. Looked at first only
+    // later, after turns of its own (auto-handoff turned on since, a core
+    // started again), or a conversation the person opened since, it has no
+    // floor, and is asked if it is past the threshold.
     let (told, fresh) = store::records().get(chat).map(|r| (r.told.clone(), r.fresh)).unwrap_or_default();
+    let fresh = fresh && reading.first_turn;
     let now = watch::told_now(told.as_ref(), &reading.conversation, reading.pct, reading.tokens, fresh, threshold);
     if let Some(t) = told.as_ref().filter(|t| t.conversation == now.conversation && t.level > now.level) {
         let why = if now.compacted > t.compacted {

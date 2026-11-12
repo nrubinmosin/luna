@@ -183,7 +183,12 @@ that beat is skipped and the turn looked at again at the next.
   (`Told::shares`, read under its old name `asked` too).
 - A conversation a handoff began (`Record::fresh`) keeps its first reading as a
   floor and is asked only past it by `GROWTH` (5 points): one that begins above
-  the threshold is not sent straight into the next handoff.
+  the threshold is not sent straight into the next handoff. Only while it is
+  still at the turn the handoff's prompt opened (`at_handoffs_first_turn`:
+  that prompt the first thing said in its transcript, nothing said since):
+  first looked at later, after a handoff taken with auto-handoff off and
+  turned on since, or a core started again, or on a conversation the person
+  opened, it gets no floor and is asked if past the threshold.
 - **Re-arm.** A conversation told of its threshold whose context is then well
   under it (`rearm_below`: 15 points, or half the threshold where that is less)
   starts over, level and floor, and is asked again once past the threshold.

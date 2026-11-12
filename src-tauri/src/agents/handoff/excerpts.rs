@@ -403,6 +403,37 @@ fn slash_skill(v: &Value, command: &mut Option<(String, String)>) -> Option<Stri
     command.take_if(|c| c.0 == parent).map(|(_, name)| name)
 }
 
+/// Whether the conversation in the transcript at `path` is still at the turn
+/// Luna's handoff prompt opened: that prompt is the first thing said in it
+/// (what the CLI writes itself aside, the `/clear` that opened it included),
+/// and nothing has been said to it since, by the person or in a notice. Read
+/// as the skills are (`each_line`); one past SKILLS_READ_MAX is long gone
+/// from its first turn, and one that cannot be read is not known to be at it.
+pub(super) fn at_handoffs_first_turn(path: &Path, provider: Provider) -> bool {
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let Ok(len) = f.metadata().map(|m| m.len()) else { return false };
+    if len > SKILLS_READ_MAX {
+        return false;
+    }
+    let (mut opened, mut since) = (false, false);
+    let read = each_line(&mut f, len, |text| {
+        if since || !text.contains("\"user\"") {
+            return;
+        }
+        let said = match provider {
+            Provider::Claude => crate::claude::session::said_line(text),
+            Provider::Codex => crate::codex::session::said_line(text),
+        };
+        let Some(m) = said.filter(|m| m.role == "user") else { return };
+        if !opened && super::facts::unwrapped(&m.text).starts_with(super::facts::PROMPT_TAG) {
+            opened = true;
+        } else {
+            since = true;
+        }
+    });
+    read.is_ok() && opened && !since
+}
+
 /// `text` cut to `max` bytes at a character's edge.
 pub(super) fn clip(text: &str, max: usize) -> &str {
     if text.len() <= max {
@@ -791,6 +822,62 @@ pub(super) mod tests {
         let mut b: Value = serde_json::from_str(&user("s2", "s1", true, None, skill_text("E:\\p\\sub"))).unwrap();
         b["isSidechain"] = serde_json::json!(true);
         format!("{a}\n{b}")
+    }
+
+    #[test]
+    fn a_conversation_is_at_its_handoffs_first_turn_until_something_more_is_said_to_it() {
+        // As Claude Code 2.1.322 opens one: the `/clear` before Luna's
+        // prompt, pasted; then the turn's tool results and a skill's text.
+        let prompt = "\n\n<pasted_content id=\"4da7\">\n[Luna handoff 1, not typed by the user] This is a new conversation.\n</pasted_content id=\"4da7\">";
+        let mut lines = vec![
+            user(
+                "c0",
+                "",
+                true,
+                None,
+                Value::String("<local-command-caveat>The command below was run directly</local-command-caveat>".into()),
+            ),
+            user(
+                "c1",
+                "c0",
+                false,
+                None,
+                Value::String("<command-name>/clear</command-name>\n<command-message>clear</command-message>".into()),
+            ),
+            user("c2", "c1", false, None, Value::String(prompt.into())),
+            skill_call(&["release"], false),
+            user("c3", "c2", false, None, serde_json::json!([{ "type": "tool_result", "content": "ok" }])),
+            user("c4", "c3", true, Some("toolu_0"), skill_text("E:\\p\\release")),
+            claude_line("assistant", "Going on from the next action.", "2026-11-10T10:01:00Z", true),
+        ];
+        let p = file("first-turn", &(lines.join("\n") + "\n"));
+        assert!(at_handoffs_first_turn(&p, Provider::Claude));
+        // The person said more: past its first turn. A notice is the same.
+        lines.push(claude_line("user", "Now the tests.", "2026-11-10T10:30:00Z", false));
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        assert!(!at_handoffs_first_turn(&p, Provider::Claude));
+        // A conversation Luna's prompt did not open, and none at all.
+        std::fs::write(&p, claude_line("user", "Fix the build.", "2026-11-10T10:00:00Z", false) + "\n").unwrap();
+        assert!(!at_handoffs_first_turn(&p, Provider::Claude));
+        let _ = std::fs::remove_file(&p);
+        assert!(!at_handoffs_first_turn(&p, Provider::Claude));
+        // Codex: what it injects before the prompt is no one's word.
+        let msg = |role: &str, text: &str| {
+            serde_json::json!({ "type": "response_item", "payload": { "type": "message", "role": role,
+                "content": [{ "type": "input_text", "text": text }] } })
+            .to_string()
+        };
+        let mut rollout = vec![
+            msg("user", "<environment_context>\n  <cwd>E:\\p</cwd>\n</environment_context>"),
+            msg("user", "[Luna handoff 2, not typed by the user] This is a new conversation."),
+            msg("assistant", "On it."),
+        ];
+        let q = file("first-turn-codex", &(rollout.join("\n") + "\n"));
+        assert!(at_handoffs_first_turn(&q, Provider::Codex));
+        rollout.push(msg("user", "And the docs."));
+        std::fs::write(&q, rollout.join("\n") + "\n").unwrap();
+        assert!(!at_handoffs_first_turn(&q, Provider::Codex));
+        let _ = std::fs::remove_file(q);
     }
 
     /// Read a line at a time, an over-long one passed over; before the move's
