@@ -20,6 +20,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- Claude Code 2.1.322 and Codex 0.167.2 are on the known-good list, so the
+  default channel installs them.
 - A pane's title bar keeps only the "…" menu, delete, peek, take off the
   board and "Not waiting". Rename, chat color and What Luna applied moved
   into the "…" menu, which no longer repeats the buttons beside it; a
