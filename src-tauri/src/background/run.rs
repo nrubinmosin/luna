@@ -253,8 +253,8 @@ fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
 /// last turn left in the background, its stdin closed and its wait for that
 /// over (2.1.319+: "Background tasks still running 10m after the last turn
 /// (…); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait
-/// indefinitely."). A helper's turn sets that to `0` (command.rs); one that
-/// still says this has had it overridden or ignored.
+/// indefinitely."). A helper's turn sets that to 3 hours (command.rs
+/// `BG_WAIT_CEILING_MS`): past that, this is how its caller learns why.
 fn stops_background(line: &str) -> bool {
     line.starts_with("Background tasks still running") && line.contains("; stopping them.")
 }

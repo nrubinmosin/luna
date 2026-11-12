@@ -60,13 +60,20 @@ owed by the person's chats, outlive a core restart.
   `working` and its caller gets one notice. With its stdin closed (from the
   turn's first result on) it waits only `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
   (10 min by default, 2.1.319+) and then stops that work, subagents' unfinished
-  and uncommitted edits with it; a helper's turn sets it to `0`
-  (`background/command.rs`, "What Luna applied": `helper.background-wait`), so
-  it waits as long as they take. One that hangs is told to the caller as a turn
-  gone quiet, and ends with `luna_session_stop`. Should the CLI still stop
-  them, its stderr line ("Background tasks still running … stopping them") is
-  caught (`run.rs` `stops_background`, kept in `Observed` until the next turn)
-  and the caller's notice says so rather than "it has said nothing".
+  and uncommitted edits with it; a helper's turn sets it to 3 hours
+  (`background/command.rs` `BG_WAIT_CEILING_MS`, "What Luna applied":
+  `helper.background-wait`): subagents and gates run long, but `0` would let a
+  forgotten watcher (a dev server, `tail -f`, a Monitor with no end) hold the
+  turn, and every message to the helper, for good. Until then the turn is
+  busy; once its result is in (`Run::after_result`) and it has been quiet for
+  30 min, the caller is told it waits on its background work, by the calls its
+  transcript has open (`claude::session::background_calls`) and the processes
+  in its job (`waits_on_background`), and `luna_session_stop` ends it. When the
+  CLI stops that work, its stderr line ("Background tasks still running …
+  stopping them") is caught (`run.rs` `stops_background`) and kept in
+  `Observed`, saved across cores, until a notice that settles the caller's debt
+  says so (every such line does, rather than "it has said nothing") or the
+  next turn begins.
 - A Codex helper's `exec` has no such ceiling: it reads its prompt from stdin
   once and runs one turn, and 0.167.2 has no variable or config key for how
   long it holds on after it, so Luna sets none. Whether a subagent the turn

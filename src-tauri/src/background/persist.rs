@@ -470,6 +470,14 @@ pub fn background_stopped(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.observed.background_stopped)
 }
 
+/// A notice saying so has gone in and settled its debt: not to be said again,
+/// by this core or the next (the caller saves).
+pub fn background_stop_told(id: &str) {
+    if let Some(e) = lock().entries.get_mut(id) {
+        e.observed.background_stopped = false;
+    }
+}
+
 /// Whether a core's going stopped it before any turn named its conversation:
 /// nothing it did can be carried on from.
 pub fn never_started(id: &str) -> bool {
@@ -527,6 +535,7 @@ mod tests {
             (e.turns_ended, e.observed.model.as_deref(), e.observed.turn_ended_ms, e.observed.answered),
             (3, Some("claude-haiku-5-5"), 7, true)
         );
+        assert!(!e.observed.background_stopped, "saved before it was kept: nothing stopped");
         let json = serde_json::to_value(&e.observed).unwrap();
         assert!(json.get("spend").is_none() && json.get("unreported").is_none(), "and is written without them");
     }

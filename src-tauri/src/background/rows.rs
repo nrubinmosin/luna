@@ -123,6 +123,26 @@ pub fn turn_quiet_ms(id: &str, now: u64) -> Option<u64> {
     Some(now.saturating_sub(e.observed.event_ms.max(run.started_ms)))
 }
 
+/// Whether a helper's turn is only waiting on what it left in the background:
+/// its CLI has written the turn's result and is still up (`Run::after_result`).
+/// Some with the processes in its job besides the CLI, by name, each once.
+pub fn waits_on_background(id: &str) -> Option<Vec<String>> {
+    let (job, cli) = {
+        let r = lock();
+        let e = r.entries.get(id)?;
+        let run = e.run.as_ref().filter(|run| run.after_result)?;
+        (e.job.clone(), run.pid)
+    };
+    // The job is read with no lock held: it takes a snapshot of every process.
+    let mut names: Vec<String> = Vec::new();
+    for (p, name) in job.map(|job| crate::procs::left_in(&job)).unwrap_or_default() {
+        if Some(p.pid) != cli && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Some(names)
+}
+
 /// What the window needs to make a helper a chat of the person's own. No parent:
 /// the chat is nobody's helper.
 #[derive(Serialize)]

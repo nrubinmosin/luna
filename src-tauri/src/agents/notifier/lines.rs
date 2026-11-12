@@ -203,7 +203,7 @@ pub(in crate::agents) fn notice_line(
     let alive = live(pty, id);
     // A Claude Code chat ends a turn on a job it put in the background and takes
     // it up again in a turn of its own when the job is done (`claude -p` stays
-    // in its turn until then, with no ceiling for a helper's: background/
+    // in its turn until then, up to 3 hours for a helper's: background/
     // command.rs); for anything else that job's end is all there
     // will be to hear of.
     let left = if ts.is_some_and(|t| t.children_busy) && alive { left_quiet(id) } else { None };
@@ -325,6 +325,8 @@ pub(in crate::agents) fn notice_line(
             ));
         }
         let lost = undelivered_line(&lost, !replies.is_empty(), file.as_deref());
+        // In every line that settles the debt: the next does not say it again.
+        let stopped = background_stopped(id);
         let unsure = if o.unsure {
             " Luna cannot tell whether your last message reached it: the core went as it was going in, and its transcript cannot be read. luna_message_list shows what it has."
         } else {
@@ -332,7 +334,7 @@ pub(in crate::agents) fn notice_line(
         };
         if cut {
             return Some((
-                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}.{lost}{unsure} luna_session_send has it carry on.")),
+                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}.{stopped}{lost}{unsure} luna_session_send has it carry on.")),
                 Settled::Answered,
             ));
         }
@@ -340,7 +342,7 @@ pub(in crate::agents) fn notice_line(
         if let Some(why) = failed {
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
             return Some((
-                Some(format!("{who} stopped on an error: {}{said}{lost} luna_session_send has it carry on.", sentence(&why))),
+                Some(format!("{who} stopped on an error: {}{said}{stopped}{lost} luna_session_send has it carry on.", sentence(&why))),
                 Settled::Answered,
             ));
         }
@@ -366,7 +368,6 @@ pub(in crate::agents) fn notice_line(
         }
         // Too short a turn for a notice of its own in between.
         let resumed = if o.resumed { " Luna's core stopped it on the way and it resumed automatically." } else { "" };
-        let stopped = background_stopped(id);
         return Some((Some(format!("{who} finished its turn{reply}.{stopped}{lost}{resumed}{unsure}")), Settled::Answered));
     }
     if turn == Some(crate::activity::Turn::Busy) && alive && o.told_quiet != Some(ended) {
@@ -376,7 +377,11 @@ pub(in crate::agents) fn notice_line(
             let at = now_ms();
             let due = due_ms(pty, id, k.provider);
             if due.is_none_or(|due| at >= due.saturating_add(PAST_DUE_MS)) {
-                return Some((Some(quiet_line(who, quiet, due.map(|due| at - due))), Settled::Quiet(ended)));
+                let line = match crate::background::waits_on_background(id) {
+                    Some(procs) => background_wait_line(who, quiet, &background_calls(pty, id), &procs),
+                    None => quiet_line(who, quiet, due.map(|due| at - due)),
+                };
+                return Some((Some(line), Settled::Quiet(ended)));
             }
         }
     }
@@ -419,6 +424,31 @@ fn quiet_line(who: &str, quiet_ms: u64, past_due_ms: Option<u64>) -> String {
             "{who} is mid-turn and has written nothing for {quiet} min. A command it runs may hang, or simply take long; luna_message_list with screen: true shows where it is, luna_session_stop stops the turn. Said once per turn; the usual notice comes when it ends."
         ),
     }
+}
+
+/// A helper that has written its turn's answer and whose CLI is still up only
+/// for what the turn left in the background (background `waits_on_background`):
+/// what it waits on, as the model asked for it (`calls`, its transcript) and as
+/// processes in its job (`procs`). Its turn, and every message to it, waits on
+/// that until it ends or Claude Code stops it (background/command.rs
+/// `BG_WAIT_CEILING_MS`): a watcher left behind looks like this and like nothing
+/// else.
+fn background_wait_line(who: &str, quiet_ms: u64, calls: &[String], procs: &[String]) -> String {
+    let mut what: Vec<String> = calls.to_vec();
+    if !procs.is_empty() {
+        what.push(format!("processes {}", procs.join(", ")));
+    }
+    let what = if what.is_empty() { "nothing Luna can name".to_string() } else { what.join("; ") };
+    format!(
+        "{who} has written its answer, but its turn is not over: its CLI waits on what the turn left in the background, and nothing has come of it for {} min. It waits on: {what}. Messages to it wait until that ends, or until Claude Code stops it 3 h after the answer; luna_session_stop ends it now, luna_message_list shows the answer. Said once per turn; the usual notice comes when it ends.",
+        quiet_ms / 60_000
+    )
+}
+
+/// What a helper's turn left in the background, off its transcript
+/// (`claude::session::background_calls`).
+fn background_calls(pty: &crate::pty::PtyManager, id: &str) -> Vec<String> {
+    transcript_path(pty, id).map(|p| crate::claude::session::background_calls(&p)).unwrap_or_default()
 }
 
 /// When the commands a session's turn waits on are due, the latest of them:
@@ -960,8 +990,51 @@ mod tests {
             panic!("its turn is over")
         };
         assert!(text.starts_with("Your helper finished its turn") && text.contains("Its CLI stopped the subagents"), "{text}");
+        // A core that goes before the notice is in: the next one still says it.
+        crate::background::restart_for_test("bs-s");
+        let Some((Some(text), Settled::Answered)) = notice_line(pty, "bs-c", "Your helper", "bs-s", &known, stood) else {
+            panic!("still news after a restart")
+        };
+        assert!(text.contains("Its CLI stopped the subagents"), "{text}");
+        // Once a notice that carries it has settled the debt, not again.
+        crate::background::background_stop_told("bs-s");
+        crate::background::restart_for_test("bs-s");
+        assert!(!crate::background::background_stopped("bs-s"));
         crate::background::gone_for_test("bs-s");
         forget("bs-s");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A helper's turn that has answered but waits on a watcher it left: the
+    /// quiet notice says so, and names the watcher. Before its result, the
+    /// plain quiet notice.
+    #[test]
+    fn a_quiet_turn_waiting_on_its_background_names_what_it_waits_on() {
+        use serde_json::json;
+        let (caller, id) = ("bw-c", "bw-s");
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(caller), false, json!({}));
+        crate::background::idle_for_test(id, Provider::Claude, 3, false);
+        let o = Owed::from(3, 0);
+        reg().lock().unwrap().owed.insert((caller.into(), id.into()), o);
+        let known = reg().lock().unwrap().known.get(id).cloned().unwrap();
+        let at = crate::background::iso(now_ms() - QUIET_TURN_MS - 60_000).unwrap();
+        let call = json!({ "type": "assistant", "timestamp": at, "message": { "content": [{ "type": "tool_use", "id": "t1", "name": "Bash",
+            "input": { "command": "npm run dev", "run_in_background": true } }] } });
+        let started = json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "…" }] },
+            "toolUseResult": { "backgroundTaskId": "b1" } });
+        let path = std::env::temp_dir().join(format!("luna-{id}-{}.jsonl", std::process::id()));
+        std::fs::write(&path, format!("{call}\n{started}\n")).unwrap();
+        transcripts().lock().unwrap().insert(id.into(), path.clone());
+        crate::background::quiet_for_test(id, QUIET_TURN_MS + 60_000);
+        let pty = crate::pty::manager();
+        let Some((Some(text), Settled::Quiet(3))) = notice_line(pty, caller, "Your helper", id, &known, o) else { panic!("quiet") };
+        assert!(text.contains("written nothing for 31 min. A command it runs may hang"), "not answered yet: {text}");
+        crate::background::after_result_for_test(id);
+        let Some((Some(text), Settled::Quiet(3))) = notice_line(pty, caller, "Your helper", id, &known, o) else { panic!("quiet") };
+        assert!(text.contains("has written its answer, but its turn is not over"), "{text}");
+        assert!(text.contains("It waits on: Bash `npm run dev`."), "{text}");
+        crate::background::gone_for_test(id);
+        forget(id);
         let _ = std::fs::remove_file(&path);
     }
 
