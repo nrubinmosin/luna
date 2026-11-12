@@ -191,20 +191,7 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
             }
         }
     }
-    // The session's thread and every thread spawned under it, at any depth.
-    let mut family = std::collections::HashSet::from([thread]);
-    let mut kids: Vec<(String, PathBuf)> = Vec::new();
-    loop {
-        let found = files.iter().filter(|(id, path)| {
-            !family.contains(id) && seen.parent_of.get(path).and_then(Option::as_ref).is_some_and(|parent| family.contains(parent))
-        });
-        let found: Vec<(String, PathBuf)> = found.cloned().collect();
-        if found.is_empty() {
-            break;
-        }
-        family.extend(found.iter().map(|(id, _)| id.clone()));
-        kids.extend(found);
-    }
+    let kids = descendants(&files, thread, |path| seen.parent_of.get(path).cloned().flatten());
     let since = live.spawned_at_ms as i64;
     let mut at_work = Vec::new();
     for (id, path) in kids {
@@ -218,6 +205,75 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
         }
     }
     Some(at_work)
+}
+
+/// The threads of `files` (thread id, rollout) spawned under `thread`, at any
+/// depth, by the thread each rollout's first line names (`parent_of`).
+fn descendants(files: &[(String, PathBuf)], thread: String, parent_of: impl Fn(&PathBuf) -> Option<String>) -> Vec<(String, PathBuf)> {
+    let mut family = std::collections::HashSet::from([thread]);
+    let mut kids: Vec<(String, PathBuf)> = Vec::new();
+    loop {
+        let found =
+            files.iter().filter(|(id, path)| !family.contains(id) && parent_of(path).is_some_and(|parent| family.contains(&parent)));
+        let found: Vec<(String, PathBuf)> = found.cloned().collect();
+        if found.is_empty() {
+            break;
+        }
+        family.extend(found.iter().map(|(id, _)| id.clone()));
+        kids.extend(found);
+    }
+    kids
+}
+
+/// How long before or after a thread's turn ends a subagent's turn aborted
+/// "interrupted" is taken for `codex exec` cutting it off with that end.
+const CUT_AT_END_MS: i64 = 5_000;
+
+/// How many subagents `codex exec` cut off as the turn of `thread` ended:
+/// Codex 0.167.2 interrupts every subagent still at work then (its rollout's
+/// last turn ends `turn_aborted`, reason `interrupted`, the moment the
+/// parent's does) and exits 0, saying nothing of it. Subagents at any depth
+/// begun since `since_ms`, the turn's start, as `children_at_work` finds
+/// them; one its model interrupted itself earlier in the turn is none of
+/// them.
+pub fn subagents_cut_at_turn_end(account_path: &str, thread: &str, since_ms: u64) -> usize {
+    let Some(own) = rollout_of_thread(account_path, thread) else { return 0 };
+    let Some((_, ended)) = last_turn_end(&own, since_ms as i64) else { return 0 };
+    let Some(started) = Local.timestamp_millis_opt(since_ms as i64).single().map(|t| t.naive_local()) else { return 0 };
+    let not_before = started - chrono::Duration::seconds(5);
+    let today = Local::now().date_naive();
+    let days = (today - not_before.date()).num_days().clamp(0, 13) as usize + 1;
+    let files: Vec<(String, PathBuf)> = rollouts_on(account_path, days_back(today, days))
+        .into_iter()
+        .filter(|(ts, _, _)| *ts >= not_before)
+        .map(|(_, id, p)| (id, p))
+        .collect();
+    let kids = descendants(&files, thread.to_string(), |path| first_line(path).and_then(|meta| spawned_by(&meta)));
+    kids.iter()
+        .filter(|(_, path)| matches!(last_turn_end(path, since_ms as i64), Some((true, at)) if (at - ended).abs() <= CUT_AT_END_MS))
+        .count()
+}
+
+/// How the last turn of a rollout ended, since `since_ms`: whether it was
+/// aborted as interrupted, and when. None while it is open or before any.
+fn last_turn_end(path: &Path, since_ms: i64) -> Option<(bool, i64)> {
+    let mut end = None;
+    crate::pty::complete_lines(path, 0, |line| {
+        if !line.contains("\"event_msg\"") {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return };
+        let at = v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp_millis());
+        let payload = &v["payload"];
+        match payload["type"].as_str() {
+            Some("task_started" | "turn_started") => end = None,
+            Some(kind @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted")) => {
+                end = at.filter(|at| *at >= since_ms).map(|at| (kind.ends_with("_aborted") && payload["reason"] == "interrupted", at));
+            }
+            _ => {}
+        }
+    });
+    end
 }
 
 /// Reads the complete lines from byte `from` on into `scan` and returns the
@@ -349,6 +405,32 @@ mod tests {
         append(grandkid_file, turn_event("task_complete", t0 + 8_000));
         assert!(at_work().is_empty());
         release(&chat);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Codex 0.167.2's `exec` interrupts a subagent its turn spawned as that
+    /// turn ends, seen live: the subagent's turn aborted "interrupted" the
+    /// moment its parent's completed. One done by then, or interrupted well
+    /// before the end (its model's own doing), is not cut off; nor is any
+    /// subagent of a turn before `since`.
+    #[test]
+    fn a_subagent_interrupted_as_its_parents_turn_ended_is_cut_off() {
+        let (root, t0) = rollout_bench("cut-off");
+        let acct = root.to_string_lossy().into_owned();
+        let (cut, done) = ((format!("cutp{t0}"), format!("cutk{t0}")), (format!("donep{t0}"), format!("donek{t0}")));
+        cut_off_pair_for_test(&root, t0, &cut.0, &cut.1, true);
+        cut_off_pair_for_test(&root, t0, &done.0, &done.1, false);
+        assert_eq!(subagents_cut_at_turn_end(&acct, &cut.0, t0), 1);
+        assert_eq!(subagents_cut_at_turn_end(&acct, &done.0, t0), 0, "done before its parent's turn ended");
+        assert_eq!(subagents_cut_at_turn_end(&acct, &cut.0, t0 + 10_000), 0, "of a turn before this one");
+        // Interrupted by its parent's model mid-turn, a minute before the end.
+        let (early, kid) = (format!("earlyp{t0}"), format!("earlyk{t0}"));
+        cut_off_pair_for_test(&root, t0, &early, &kid, false);
+        append(rollout_path(&root, &early, t0), turn_event("task_started", t0 + 5_000) + &turn_event("task_complete", t0 + 65_000));
+        let at = chrono::DateTime::from_timestamp_millis((t0 + 5_000) as i64).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let aborted = format!(r#"{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"turn_aborted","reason":"interrupted"}}}}"#);
+        append(rollout_path(&root, &kid, t0 + 1_000), turn_event("task_started", t0 + 4_500) + &aborted + "\n");
+        assert_eq!(subagents_cut_at_turn_end(&acct, &early, t0), 0, "interrupted long before the end");
         let _ = std::fs::remove_dir_all(&root);
     }
 
