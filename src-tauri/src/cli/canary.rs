@@ -40,6 +40,10 @@ pub(crate) const WARN_AT: usize = 2;
 /// An exit with an error sooner than this after the start is a failure: a
 /// CLI that cannot run its session at all, not one stopped after work.
 const EARLY: Duration = Duration::from_secs(30);
+/// How long after `EARLY` a session still running is taken to be: a pane's
+/// exit is seen by a look once a second (pty/spawn.rs), so one gone just
+/// inside `EARLY` is reaped, and judged by `session_ended`, by then.
+const REAP_SLACK: Duration = Duration::from_secs(2);
 
 /// The line a CLI writes as it gives up on a start for a cause outside
 /// itself, by how that line begins, and the cause; each as it was seen
@@ -277,7 +281,7 @@ pub(super) fn session_started(provider: Provider, root: &Path, version: &str, se
     // gone is `session_ended`'s to judge, by when it went.
     let id = session.to_string();
     let spawned = std::thread::Builder::new().name("luna-canary".into()).spawn(move || {
-        std::thread::sleep(EARLY);
+        std::thread::sleep(EARLY + REAP_SLACK);
         let mut w = watching().lock().unwrap_or_else(|e| e.into_inner());
         if w.get(&id).is_some_and(|s| s.at == at && s.exited.is_none()) {
             let s = w.remove(&id).expect("just looked up");
