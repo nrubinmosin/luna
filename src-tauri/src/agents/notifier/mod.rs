@@ -615,7 +615,10 @@ pub(super) fn notifier() {
             // ends wake the caller once. Not a question or a prompt.
             let owed_by: Vec<&str> = items.iter().map(|(id, ..)| id.as_str()).collect();
             let busy = |id: &str| crate::activity::turn_state(id).is_some_and(|t| t.turn == crate::activity::Turn::Busy);
-            if hold_for_company(&mut company_since, &caller, Instant::now(), &settled, &owed_by, busy) {
+            let now = Instant::now();
+            // Taken before the hold looks, which lets go of it once the notice goes.
+            let held_for = company_since.get(&caller).map(|first| now.saturating_duration_since(*first));
+            if hold_for_company(&mut company_since, &caller, now, &settled, &owed_by, busy) {
                 continue;
             }
             // Typing it waits up to SEND_TIMEOUT for the turn to start, off this
@@ -625,7 +628,8 @@ pub(super) fn notifier() {
             let text = format!("{NOTICE_TAG} {}", lines.join(" "));
             let typed = std::thread::Builder::new().name("luna-notice".into()).spawn(move || {
                 let _typing = typing;
-                deliver_notice(crate::pty::manager(), &caller, &text, settled, quota_lines, spawn_lines, news_lines, budget_lines);
+                let notice = Notice { settled, quota_lines, spawn_lines, news_lines, budget_lines, held_for };
+                deliver_notice(crate::pty::manager(), &caller, &text, notice);
             });
             if let Err(e) = typed {
                 crate::log::warn("agents", &format!("could not start typing a notice: {e}"));
@@ -772,22 +776,47 @@ fn counts_for_breaker(how: &Settled) -> bool {
     matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Pending(..))
 }
 
-/// Types a notice into `caller` and settles what it said (`settled`: the
-/// session, what became of it, the debt as it was announced; `quota_lines`: the
-/// usage windows it told of; `spawn_lines`: the spawns cut off by a core going;
-/// `news_lines`: the queued lines, as typed and as queued; `budget_lines`: the
-/// budgets passed).
-#[allow(clippy::too_many_arguments)]
-fn deliver_notice(
-    pty: &crate::pty::PtyManager,
-    caller: &str,
-    text: &str,
+/// What a notice tells of, for `deliver_notice` to settle once it is in.
+#[derive(Default)]
+struct Notice {
+    /// The session, what became of it, the debt as it was announced.
     settled: Vec<(String, Settled, Owed)>,
+    /// The usage windows it told of.
     quota_lines: Vec<QuotaNews>,
+    /// The spawns cut off by a core going.
     spawn_lines: Vec<(u64, String)>,
+    /// The queued lines, as typed and as queued.
     news_lines: Vec<(String, String)>,
+    /// The budgets passed.
     budget_lines: Vec<BudgetNews>,
-) {
+    /// How long it waited for company (`hold_for_company`), for the log: what
+    /// a wider window of batching would have saved is read off there.
+    held_for: Option<Duration>,
+}
+
+/// The name of what became of a session, for the log line of the notice that
+/// tells of it.
+fn kind_of(how: &Settled) -> &'static str {
+    match how {
+        Settled::Answered => "answered",
+        Settled::Pending(..) => "pending",
+        Settled::Hold(_) => "hold",
+        Settled::Unhold => "unhold",
+        Settled::Skip(_) => "skip",
+        Settled::Waiting => "waiting",
+        Settled::Asked(_) => "asked",
+        Settled::Resumed => "resumed",
+        Settled::Idle(_) => "idle",
+        Settled::NoNews(_) => "no-news",
+        Settled::Quiet(_) => "quiet",
+        Settled::WaitsOnBackground(_) => "waits-on-background",
+        Settled::Exited => "exited",
+    }
+}
+
+/// Types a notice into `caller` and settles what it said (`Notice`).
+fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice: Notice) {
+    let Notice { settled, quota_lines, spawn_lines, news_lines, budget_lines, held_for } = notice;
     let before = crate::activity::turn_state(caller);
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     // Again here, where it goes in, and held from this check until it is in
@@ -872,7 +901,7 @@ fn deliver_notice(
     };
     let about = settled
         .iter()
-        .map(|(id, _, _)| label(id))
+        .map(|(id, how, _)| format!("{} ({})", label(id), kind_of(how)))
         .chain(quota_lines.iter().map(|n| format!("{} at {}%", n.key.1, n.told.level)))
         .chain(spawn_lines.iter().map(|(request, _)| format!("spawn {request}")))
         .chain(news_lines.iter().map(|_| "news no debt brings".to_string()))
@@ -893,10 +922,11 @@ fn deliver_notice(
     match typed {
         Ok(None) => {}
         Ok(Some(started)) => {
+            let held = held_for.map_or(String::new(), |d| format!("; held {} s for company", d.as_secs()));
             if started {
-                crate::log::info("agents", &format!("notice to {} about {about}", label(caller)));
+                crate::log::info("agents", &format!("notice to {} about {about}{held}", label(caller)));
             } else {
-                crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn", label(caller)));
+                crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn{held}", label(caller)));
             }
             // Its words on what never reached them went with this notice.
             let told_lost: Vec<String> = settled
@@ -995,7 +1025,8 @@ fn places_told(r: &mut Registry, caller: &str, news_lines: &[(String, String)]) 
 pub(in crate::agents) fn deliver_news_for_test(caller: &str, news_lines: Vec<(String, String)>, between: Box<dyn FnOnce() + Send>) {
     tests::run_between(caller, between);
     let text = format!("{NOTICE_TAG} {}", news_lines.iter().map(|(told, _)| told.as_str()).collect::<Vec<_>>().join(" "));
-    deliver_notice(crate::pty::manager(), caller, &text, vec![], vec![], vec![], news_lines, vec![]);
+    let notice = Notice { news_lines, ..Notice::default() };
+    deliver_notice(crate::pty::manager(), caller, &text, notice);
 }
 
 /// A notice that went into `caller` (`text`) settles what it told of `id`.
@@ -1159,7 +1190,7 @@ mod tests {
                     sent.send(t).unwrap();
                 }),
             ));
-            deliver_notice(pty, &a, &text, vec![(id.clone(), Settled::Answered, looked_up(&id))], vec![], vec![], vec![], vec![]);
+            deliver_notice(pty, &a, &text, Notice { settled: vec![(id.clone(), Settled::Answered, looked_up(&id))], ..Notice::default() });
             handover.recv().unwrap().join().unwrap();
             assert_eq!(crate::background::queued_for_test(&a), std::slice::from_ref(&text), "the notice went in whole");
             assert_eq!(parent_of(&id), None, "and the handover after it");
@@ -1168,7 +1199,12 @@ mod tests {
             // for nothing and goes nowhere.
             let held = hand_off(&next).unwrap();
             let other = format!("{NOTICE_TAG} {next} answered");
-            deliver_notice(pty, &a, &other, vec![(next.clone(), Settled::Answered, looked_up(&next))], vec![], vec![], vec![], vec![]);
+            deliver_notice(
+                pty,
+                &a,
+                &other,
+                Notice { settled: vec![(next.clone(), Settled::Answered, looked_up(&next))], ..Notice::default() },
+            );
             assert_eq!(crate::background::queued_for_test(&a), [text], "nothing more went in");
             drop(held);
 
@@ -1459,7 +1495,7 @@ mod tests {
             let pty = crate::pty::manager();
             let notice = |helper: &str, o: Owed| {
                 let text = format!("{NOTICE_TAG} {helper} answered");
-                deliver_notice(pty, &a, &text, vec![(helper.to_string(), Settled::Answered, o)], vec![], vec![], vec![], vec![]);
+                deliver_notice(pty, &a, &text, Notice { settled: vec![(helper.to_string(), Settled::Answered, o)], ..Notice::default() });
             };
             notice(&id, told);
             assert!(crate::background::queued_for_test(&a).is_empty(), "the handover's notice went nowhere");
