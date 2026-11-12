@@ -102,7 +102,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   the folder's, but the repository's objects, refs and config are shared, so a branch it pushes
   or deletes is gone for all. The result names the worktree and branch, or `worktreePending` until
   the CLI has made it; spawns making worktrees in one repository wait their turn. `sameFolder`
-  lists live sessions working in the same directory.
+  lists live sessions working in the same directory (from a helper, only those under it).
 - A helper has Luna's MCP server alone: none of its account's servers or connectors (claude.ai's
   Gmail, Slack and the like; Codex's apps and `config.toml` servers), and a Claude Code one no
   auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper still has
