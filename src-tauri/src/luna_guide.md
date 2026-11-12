@@ -6,9 +6,15 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 ## Sessions
 - Every chat in Luna is a session: the user's own chats and the helpers sessions start. Each
   has an id, a name, a provider (`claude` = Claude Code, `codex` = Codex), an account, a
-  project folder and a state: `working`, `waiting` (a permission prompt), `question`,
-  `idle`, `starting` (its CLI has not drawn yet), `background` (a job, a subagent its CLI
-  runs in the background, or a helper of its still runs), `exited`.
+  project folder and a `state` (also `stateBefore` in a send's result):
+  - `working`: a turn is running.
+  - `waiting`: stopped on a permission prompt; `question`: on a question that holds its turn.
+    Both have an `askId` for `luna_session_answer`.
+  - `background`: its turn is over, but a job or a subagent its CLI started, or a helper of
+    its own, still runs: not done yet, though it takes a send as its next turn.
+  - `idle`: between turns, nothing of its running.
+  - `starting`: its CLI has not drawn yet.
+  - `exited`: not running (deleted, or its CLI gone).
 - Every helper runs in the background: no row, no terminal; each turn is one run of the CLI's
   headless mode (`claude -p`, `codex exec`) on the helper's account, and the next turn resumes
   its conversation. The user sees it as a count on your chat's row, can watch it read-only, and
