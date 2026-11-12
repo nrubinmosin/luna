@@ -118,8 +118,11 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   stands for one call: other arguments under it are refused. Keys are kept in the core's memory:
   a core restart forgets them. A key is at most 128 characters; Luna keeps 64 of yours, the
   oldest finished making way. A result too large to keep comes back as what it made (`id`).
-- `budgetTokens`: past that many `context` tokens (its own, not its subagents' or helpers') its
-  parent hears, once; nothing stops. `settings` shows `budgetBreach`, `budgetTold`.
+- `budgetPct`: past that share of its context window (its own, not its subagents' or
+  helpers'), every notice about it ends "(context N%)"; past 85% a notice says so once by
+  itself. Default: the user's setting (50 unless changed); 0: never. Nothing stops.
+  `budgetTokens` (deprecated) counts as the share of the window it is. `settings` shows
+  `budgetBreach`, `budgetTold`.
 
 ## Getting the answer
 - After a spawn or a send you can end your turn. Once the session answers, asks something,

@@ -51,9 +51,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   under it are told last among their instructions, at every start and resume.
   A spawn adds to what its caller carries; nothing removes any. Shown in
   `luna_session_get`.
+- `budgetPct` on `luna_session_spawn`, and Settings → Agents & trust →
+  Helpers: **Tell me when a helper's context passes** (50% unless changed, or
+  never). Past it, every notice about the helper ends "(context N%)"; past
+  85% a notice says so on its own, once.
 
 ### Changed
 
+- `budgetTokens` on a spawn is deprecated for `budgetPct`: still taken, and
+  read from saved helpers, as the share of the window it is.
 - Auto-handoff ticked on a chat already past its threshold, or set lower than
   where it stands, asks as soon as the chat is at rest rather than at its
   next turn's end. Turned off before Luna typed its notice, the notice is

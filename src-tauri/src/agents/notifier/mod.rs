@@ -14,7 +14,7 @@ use crate::agents::notifier::lines::{
     BREAKER_WINDOW_MS,
 };
 use crate::agents::notifier::usage::{
-    budget_news, quota_file, quota_from, quota_news, save_quota_told, your_helper, BudgetNews, QuotaNews,
+    budget_news, context_rider, quota_file, quota_from, quota_news, save_quota_told, your_helper, BudgetNews, QuotaNews,
 };
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
@@ -524,6 +524,8 @@ pub(super) fn notifier() {
                 };
                 match said {
                     Some((Some(mut line), how)) => {
+                        // Where its context stands, past its level (`budget_news`).
+                        line.push_str(&context_rider(id));
                         // Told once, with whatever is told first.
                         if k.parent.as_deref() == Some(caller.as_str()) {
                             line.push_str(&worktrees_left_line(id));

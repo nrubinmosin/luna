@@ -226,7 +226,7 @@ has read the file, so an empty registry never overwrites it.
   a job tied to the core, `Entry::tied`; off Windows only if `end_last_ties`
   finds nothing left). Otherwise the helper is `Entry::unsure` and the caller
   decides.
-- A `budgetTokens` line is marked in the notice itself (`Queued::budget`), so
+- A context line (usage.rs `budget_news`) is marked in the notice itself (`Queued::budget`), so
   `stdin_took` is the one receipt (`budgets_landed`).
 
 ### The person's chats: `chat-ties.json`
