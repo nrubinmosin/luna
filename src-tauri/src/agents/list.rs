@@ -419,17 +419,25 @@ pub struct SessionDetail {
     /// since this core began.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cli_version: Option<String>,
+    /// A helper in a worktree: its last commit's subject and `git status
+    /// --short`, capped (`worktree::work_in`), for a parent whose CLI keeps it
+    /// out of the worktree.
+    #[serde(flatten)]
+    pub work: Option<crate::worktree::WorkIn>,
 }
 
 pub fn session_get(caller: &str, id: &str, all: bool) -> Result<SessionDetail, String> {
     let mut listing = list(caller, Some(&[id.to_string()]), all);
     let row = listing.sessions.pop().ok_or_else(|| format!("unknown session {id}; luna_session_list lists them"))?;
+    // Git run off the registry lock, for a helper only: a person's chat is in
+    // their own window.
+    let work = row.worktree.path.as_deref().filter(|_| row.parent.is_some()).and_then(crate::worktree::work_in);
     let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).map(|k| k.folder.clone()).unwrap_or_default();
     let pty = crate::pty::manager();
     let cwd = pty.probe(id).map(|p| p.cwd).or_else(|| crate::background::working_dir(id)).filter(|c| !crate::pty::same_dir(c, &folder));
     let transcript = transcript_path(pty, id).map(|p| p.to_string_lossy().into_owned());
     let session_id = crate::background::session_id(id).or_else(|| pty.probe(id).as_ref().and_then(disk_meta).and_then(|m| m.session_id));
-    Ok(SessionDetail { row, folder, cwd, transcript, session_id, cli_version: crate::cli::session_version(id) })
+    Ok(SessionDetail { row, folder, cwd, transcript, session_id, cli_version: crate::cli::session_version(id), work })
 }
 
 /// One row of `luna_account_list`: an account agents may spawn on, and its

@@ -27,7 +27,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   (`tokens` in its window against the model's `window`, `pct`, after its last step) and
   `leftRunning`: what its turns left running between turns (`exe`, `pid`, `startedAt`,
   `active` = CPU or I/O in the last 10 min, `quietMin`), which keeps the PC awake until idle 2 h.
-  Times are UTC ISO.
+  Times are UTC ISO. A helper in a worktree adds `lastCommit` (its subject) and `status` (`git
+  status --short`, 20 lines, `statusMore` the rest): your CLI may keep you out of that worktree.
 - Another session's `task`, `askId` and `ask` come only with `scope: "all"`. Without it, you
   read, wait on, send to and answer only sessions you spawned and theirs; with it, any session
   but your own, and your text reaches it opened `[From session <your id> via Luna]`. You stop,
