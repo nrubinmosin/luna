@@ -375,6 +375,25 @@ describe('NewChatDialog: Claude models from the account’s own list', () => {
     expect(chat).toMatchObject({ model: 'claude-opus-4-7', effort: 'medium' });
   });
 
+  it('holds a level kept for the next model that it does not take to what it does', async () => {
+    mocked.claudeDefaults.mockResolvedValue({
+      model: fromAccount('opus'),
+      effort: fromAccount('xhigh'),
+      permissionMode: null,
+      // Opus 4.7 takes medium and xhigh, catalog default xhigh: high is none of its.
+      effortByModel: { opus: fromAccount('xhigh'), 'claude-opus-4-7': fromAccount('high') }
+    });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    await user.selectOptions(screen.getByRole('combobox'), 'claude-opus-4-7');
+    expect(screen.getByRole('radio', { name: 'xhigh' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByRole('radio', { name: 'high' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ model: 'claude-opus-4-7', effort: 'xhigh' });
+  });
+
   it('opens on a full id the settings file names, as that model', async () => {
     mocked.claudeDefaults.mockResolvedValue({
       model: fromAccount('claude-opus-4-7'),

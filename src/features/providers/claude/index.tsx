@@ -251,13 +251,19 @@ export function Fields({
   // does not take that level, its catalog default, a hand-picked one
   // included: a chat cannot run at a level its model lacks. A model that
   // takes no effort runs with none.
+  // The value shown is set to that alone; what "back to …" returns to is the
+  // model's own level as held to it too, said to come from its file only
+  // where the model takes that level.
   const next = nextEffort(listed, settings.effort, ownEffort, draft.touched('effort'));
+  const ownHeld = ownEffort === null ? null : nextEffort(listed, ownEffort, ownEffort, false);
   useEffect(() => {
-    if (own && ownEffort) draft.rebase('effort', ownEffort, sourceOf(own));
-    if (next !== settings.effort) draft.force('effort', next);
+    if (own && ownHeld !== null) {
+      draft.rebase('effort', ownHeld, ownHeld === ownEffort ? sourceOf(own) : SOURCE_LABELS.model);
+    }
+    draft.force('effort', next);
     // `draft` is a new object every render; the model, its own level and where it goes are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listed?.slug, ownEffort, own?.source, own?.key, next]);
+  }, [listed?.slug, ownHeld, own?.source, own?.key, next]);
 
   // Main models first, the rest under "More…"; a model a settings file names
   // that the list does not know still gets an entry of its own, chosen.
