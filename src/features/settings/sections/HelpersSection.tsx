@@ -4,17 +4,22 @@ import {
   helperSettings,
   setHelperMode,
   setHelpersAboveCaller,
+  setLeadHandoff,
   setMaxHelpers,
   type HelperMode,
   type HelperSettingsDto
 } from '../../../ipc/agents';
+import { HANDOFF_AT } from '../../../shared/types';
+import { ThresholdInput } from '../../chats/Handoff';
 import { CheckRow, Group, Row } from '../SettingsRows';
 
 /** How helpers are held: whether one may run with more privilege than the
- *  session spawning it, how many places a chat's line of helpers has, and the
- *  mode a helper takes when its spawn names none. Kept by the Rust side, which
+ *  session spawning it, how many places a chat's line of helpers has, the
+ *  mode a helper takes when its spawn names none, and auto-handoff for leads
+ *  (helpers with Luna tools) with its threshold. Kept by the Rust side, which
  *  holds every spawn to them (agents/privilege.rs `cap`, agents/spawn
- *  `max_descendants`). What turning the first on lets an agent do stays in view. */
+ *  `max_descendants`, agents/handoff `lead.rs`). What turning the first on
+ *  lets an agent do stays in view. */
 export function HelpersSection() {
   const [on, setOn] = useState<boolean | null>(null);
   const [limits, setLimits] = useState<HelperSettingsDto | null>(null);
@@ -91,6 +96,25 @@ export function HelpersSection() {
             <option value="inherit">The spawning chat’s</option>
             <option value="account">The account’s default</option>
           </select>
+        }
+      />
+      <CheckRow
+        label="Auto-handoff for leads"
+        desc="A helper with Luna tools, past this share of its context, writes a handoff and goes on in a fresh conversation, its helpers staying with it."
+        note="One that can write no file goes on from a handoff Luna writes from its records. Its parent hears of each handoff with its next notice."
+        checked={limits?.leadHandoff.on ?? true}
+        disabled={!limits}
+        onChange={v => void setLeadHandoff(v, limits?.leadHandoff.threshold ?? 60).then(setLimits)}
+        below={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <ThresholdInput
+              id="set-lead-handoff-at"
+              value={Math.max(HANDOFF_AT.min, limits?.leadHandoff.threshold ?? 60)}
+              disabled={!limits || !limits.leadHandoff.on}
+              onCommit={v => void setLeadHandoff(true, v).then(setLimits)}
+            />
+            <span style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)' }}>% of a lead’s context</span>
+          </div>
         }
       />
     </Group>
