@@ -20,6 +20,7 @@ use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
 use crate::agents::registry::{chat_name, label, parent_of, reg, waits_on_helpers, Known, Registry, DEV_CALLER};
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
+use crate::agents::spawn::PlacesRefused;
 use crate::agents::teardown::reap;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -461,6 +462,19 @@ pub(super) fn notifier() {
         for caller in spawns.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
+        // Sessions below a chat refused a place on its line: a line that rides
+        // (`riders_go`), as only that chat can free the places.
+        let mut places: HashMap<String, PlacesRefused> = {
+            let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            r.places_refused
+                .iter()
+                .filter(|(caller, _)| r.known.get(*caller).is_some_and(|k| !k.waiting))
+                .map(|(caller, p)| (caller.clone(), p.clone()))
+                .collect()
+        };
+        for caller in places.keys() {
+            by_caller.entry(caller.clone()).or_default();
+        }
         idle_looks.retain(|c, _| by_caller.contains_key(c));
         drafts.retain(|c, _| by_caller.contains_key(c));
         company_since.retain(|c, _| by_caller.contains_key(c));
@@ -546,7 +560,7 @@ pub(super) fn notifier() {
             lines.extend(quota_lines.iter().map(|n| n.line.clone()));
             // Each with the words it is typed in now, which deliver_notice
             // looks at again where it goes in (handoff `as_told`).
-            let news_lines: Vec<(String, String)> = news
+            let mut news_lines: Vec<(String, String)> = news
                 .remove(&caller)
                 .unwrap_or_default()
                 .into_iter()
@@ -556,8 +570,14 @@ pub(super) fn notifier() {
             let spawn_lines = spawns.remove(&caller).unwrap_or_default();
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
             let breaches = budget.remove(&caller).unwrap_or_default();
+            let refused = places.remove(&caller);
             let mut budget_lines = Vec::new();
-            if let Some(oldest) = riders.iter().filter_map(|(_, _, how, _)| rides_since(how)).chain(breaches.iter().map(|n| n.since)).min()
+            if let Some(oldest) = riders
+                .iter()
+                .filter_map(|(_, _, how, _)| rides_since(how))
+                .chain(breaches.iter().map(|n| n.since))
+                .chain(refused.as_ref().map(|p| p.since))
+                .min()
             {
                 if riders_go(!lines.is_empty(), riders.len() == items.len(), oldest, now_ms(), crate::activity::summary().busy) {
                     for (line, id, how, o) in riders {
@@ -566,6 +586,11 @@ pub(super) fn notifier() {
                     }
                     lines.extend(breaches.iter().map(|n| n.line.clone()));
                     budget_lines = breaches;
+                    // Told once it is in, as a queued line is (`deliver_notice`).
+                    if let Some(line) = refused.map(|p| p.line()) {
+                        lines.push(line.clone());
+                        news_lines.push((line.clone(), line));
+                    }
                 }
             }
             if lines.is_empty() {
@@ -889,6 +914,7 @@ fn deliver_notice(
                 r.quota_told.insert(n.key, n.told);
             }
             r.news.retain(|(c, line)| !(c == caller && news_lines.iter().any(|(_, queued)| queued == line)));
+            places_told(&mut r, caller, &news_lines);
             // Told: not to be told again by a core after this one.
             let told_news = !news_lines.is_empty();
             let told_spawns = !spawn_lines.is_empty();
@@ -924,6 +950,13 @@ fn deliver_notice(
         ),
         Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(caller))),
     }
+}
+
+/// The refusals for want of places a notice that went into `caller` told it of
+/// (`news_lines`, as typed and as queued), gone with it. A refusal since the
+/// line was put together makes another line, told next.
+fn places_told(r: &mut Registry, caller: &str, news_lines: &[(String, String)]) {
+    r.places_refused.retain(|c, p| !(c == caller && news_lines.iter().any(|(_, queued)| *queued == p.line())));
 }
 
 /// A notice of the queued lines `news_lines` (as typed, as queued) typed into
@@ -1293,6 +1326,38 @@ mod tests {
         crate::background::gone_for_test("jw-s");
         forget("jw-s");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The top chat hears of a refusal below it for want of places once, with
+    /// the notice it went in; one that came while the line was being typed is
+    /// told next.
+    #[test]
+    fn a_refusal_for_want_of_places_is_told_once_and_a_later_one_again() {
+        let bg = serde_json::json!({ "background": true });
+        register("pt-top", Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
+        register("pt-lead", Provider::Claude, "C:\\p", "C:\\acc\\one", Some("pt-top"), true, bg.clone());
+        register("pt-other", Provider::Claude, "C:\\p", "C:\\acc\\one", Some("pt-top"), true, bg);
+        let refuse = |id: &str| crate::agents::spawn::refused_a_place(&mut reg().lock().unwrap(), id);
+        let line = || reg().lock().unwrap().places_refused.get("pt-top").map(|p| p.line());
+        refuse("pt-lead");
+        let told = line().unwrap();
+        assert!(told.contains("pt-lead"), "{told}");
+        // Another refused while that line went in: not what was told.
+        refuse("pt-other");
+        places_told(&mut reg().lock().unwrap(), "pt-top", &[(told.clone(), told.clone())]);
+        let next = line().expect("told next");
+        assert!(next.contains("pt-lead, pt-other"), "{next}");
+        places_told(&mut reg().lock().unwrap(), "pt-other", &[(next.clone(), next.clone())]);
+        assert!(line().is_some(), "another chat's notice tells this one nothing");
+        places_told(&mut reg().lock().unwrap(), "pt-top", &[(next.clone(), next)]);
+        assert_eq!(line(), None, "told once");
+        // A refusal after that is a new one.
+        refuse("pt-lead");
+        assert!(line().is_some());
+        for id in ["pt-lead", "pt-other", "pt-top"] {
+            forget(id);
+        }
+        assert_eq!(line(), None, "nothing left of a chat gone");
     }
 
     #[test]

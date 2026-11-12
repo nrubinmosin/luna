@@ -8,11 +8,12 @@
 //! runs only the person's own chats (docs/adr/0001-session-state-lives-in-the-cli.md),
 //! and a helper the person opens as a chat is handed over to them for good
 //! (handover.rs). Lineage lives here: every session registered with a parent is
-//! that parent's, and a caller may only reach its own descendants — except to
-//! list every session, and, told `scope: "all"`, to type a message into one and
-//! read or wait on its answer, which is how sessions talk to each other (the
-//! message says whose it is); interrupting, stopping and deleting stay with the
-//! lineage. Helpers outlive their parent: they pass to its parent, or with none
+//! that parent's, and a caller may only reach its own descendants — except a
+//! person's chat, which may list every session and, told `scope: "all"`, type a
+//! message into one and read or wait on its answer, which is how sessions talk
+//! to each other (the message says whose it is); a helper reaches its own
+//! subtree and nothing past it (registry.rs `persons_chat_in`). Interrupting,
+//! stopping and deleting stay with the lineage. Helpers outlive their parent: they pass to its parent, or with none
 //! stand alone, the window's to manage (see `forget`).
 //!
 //! A helper does not report back on its own the way a subagent does: its
@@ -68,8 +69,8 @@ pub(crate) use registry::mint;
 #[cfg(test)]
 pub use registry::set_task_for_test;
 pub use registry::{
-    applied_of, caller_of, chat_name, chat_names, has_tools, in_scope, is_known, label, owes_answer, own_or_self, parent_of, register,
-    register_dev_caller, resumes_on_restart, scope_all, session_exited, set_applied, settings_of, task_of, DEV_CALLER,
+    applied_of, caller_of, chat_name, chat_names, has_tools, in_scope, is_known, is_persons_chat, label, owes_answer, own_or_self,
+    parent_of, register, register_dev_caller, resumes_on_restart, scope_all, session_exited, set_applied, settings_of, task_of, DEV_CALLER,
 };
 pub use spawn::account::account_usage;
 pub use spawn::worktree::{name_to_go_on, report_codex_worktrees};

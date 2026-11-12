@@ -19,7 +19,12 @@ const WORKTREE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 const CLAUDE_EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultracode"];
 const ULTRACODE: &str = "ultracode";
 
-pub(in crate::agents) const CLAUDE_MODES: [&str; 4] = ["default", "acceptEdits", "plan", "bypassPermissions"];
+/// The permission modes a Claude Code helper starts in: every one `claude -p
+/// --permission-mode` takes but `manual`, Luna's `default` by another name
+/// (2.1.322's choices; docs/cli-compatibility.md). `auto` has a model review
+/// what would go further and refuses what it cannot review; `dontAsk` runs what
+/// the allow rules let through and refuses the rest. Neither waits on a person.
+pub(in crate::agents) const CLAUDE_MODES: [&str; 6] = ["default", "acceptEdits", "plan", "bypassPermissions", "auto", "dontAsk"];
 
 /// Given and not blank.
 pub(in crate::agents) fn asked(v: &Option<String>) -> Option<&str> {
@@ -233,6 +238,10 @@ pub(in crate::agents) fn spawn_background(
     if spec.connectors {
         settings["connectors"] = serde_json::json!(true);
     }
+    // Where its mode came from when the spawn named none (privilege.rs `settle_mode`).
+    if let Some(from) = params.mode_from {
+        settings["modeFrom"] = serde_json::json!(from);
+    }
     let tools = spec.tools;
     let auto_delete = params.auto_delete.unwrap_or(true);
     let token = register(&id, provider, &run_in, &account_path, Some(caller), tools, settings.clone());
@@ -306,7 +315,17 @@ pub(in crate::agents) fn spawn_background(
     drop(making);
     let worktree_pending = own_worktree && worktree.path.is_none();
     let mcp_left_on = mcp_left_on(&id);
-    Ok(Spawned { id, turns_ended: 0, settings, same_folder, worktree, worktree_pending, mcp_left_on, account_choice: None })
+    Ok(Spawned {
+        id,
+        turns_ended: 0,
+        settings,
+        same_folder,
+        worktree,
+        worktree_pending,
+        mcp_left_on,
+        account_choice: None,
+        places: Default::default(),
+    })
 }
 
 /// What its first turn's "What Luna applied" lists as kept despite

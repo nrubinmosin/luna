@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-helper-settings"
+description = "Enables the helper_settings command without any pre-configured scope."
+commands.allow = ["helper_settings"]
+
+[[permission]]
+identifier = "deny-helper-settings"
+description = "Denies the helper_settings command without any pre-configured scope."
+commands.deny = ["helper_settings"]
