@@ -178,9 +178,15 @@ that beat is skipped and the turn looked at again at the next.
   before the move began is dropped where it goes in (`withheld`). The ask
   keeps its notice's SHA-256 (`Asked::notice`), and a copy the notifier put
   together goes in only while that very ask is the one open with auto-handoff
-  on (else dropped: turned off, or a later ask's notice in its place), and,
-  looked at again with the person's keys held, only with the chat on the
-  conversation it asks (`withheld`, `notice_here`). Past `firm_at`
+  on (else dropped: turned off, or a later ask's notice in its place), and
+  only with the chat on the conversation it asks (`withheld`, `notice_here`).
+  One the chat cannot be placed for now (its conversation not known, or
+  another) is left out of the notice the notifier puts together, still
+  queued, so what else that notice says goes without it (notifier
+  `placed_now`); it is looked at again with the person's keys held, and, as
+  a continuation is, goes in only with no key of theirs since the
+  notifier's look (`keyed_to_conversation`): a `/clear` or `/new` they just
+  sent may not have reached the CLI yet. Past `firm_at`
   (threshold + 10, kept within 85-95) a firmer one; with Luna's own
   instructions in effect it carries their seven headings inline (`SECTIONS`),
   with an override it sends the chat to the call. Once each per conversation
