@@ -116,11 +116,11 @@ pub fn tick(summary: &Summary) {
                 st.holding = os::hold(on);
                 if on && st.holding {
                     let why = if summary.busy > 0 { busy_now() } else { "armed".to_string() };
-                    crate::log::warn("power", &format!("awake hold set: {why}"));
+                    crate::log::info("power", &format!("awake hold set: {why}"));
                     st.held_since_ms = now;
                     st.hold_logged_ms = now;
                 } else if !on && !st.holding {
-                    crate::log::warn("power", &format!("awake hold let go: nothing busy for a minute; last held by {}", st.held_by));
+                    crate::log::info("power", &format!("awake hold let go: nothing busy for a minute; last held by {}", st.held_by));
                 }
             }
             Effect::Canceled => {
@@ -151,7 +151,7 @@ pub fn tick(summary: &Summary) {
         if now.saturating_sub(st.hold_logged_ms) >= HOLD_LOG_EVERY_MS {
             st.hold_logged_ms = now;
             let hours = now.saturating_sub(st.held_since_ms) / (60 * 60_000);
-            crate::log::warn("power", &format!("awake hold kept for {hours} h: {}", st.held_by));
+            crate::log::info("power", &format!("awake hold kept for {hours} h: {}", st.held_by));
         }
     }
 

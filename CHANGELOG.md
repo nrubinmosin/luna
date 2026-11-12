@@ -14,6 +14,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   board and "Not waiting". Rename, chat color and What Luna applied moved
   into the "…" menu, which no longer repeats the buttons beside it; a
   double-click on a chat's name renames it.
+- The awake hold is logged as INFO, not as a warning.
+
+### Fixed
+
+- A helper turn's log line no longer holds the chat's hook and guard secret
+  (a Codex start passes its guard URL in a `-c` argument), nor the helper's
+  identity line whole, which made up most of the log.
 
 ## [0.15.0] - 2026-11-11
 
