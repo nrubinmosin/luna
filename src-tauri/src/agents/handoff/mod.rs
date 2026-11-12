@@ -815,9 +815,10 @@ fn gather(chat: &str, previous: Option<&str>, provider: Provider) -> facts::Fact
     let accounts = accounts.into_iter().filter_map(|a| Some((a.clone(), usage_words(usage.get(&a)?)?))).collect();
     let mut held_for = held;
     held_for.dedup();
-    // The turn an ask opened is the handoff being written, not the work: left
-    // out of the skills, as a move leaves out its own.
-    let ask_turns = excerpts::Skip { opens: facts::is_ask_prompt, ask: None };
+    // From its handoff call on, a turn an ask opened is the handoff being
+    // written, not the work: left out of the skills. Before it is work the
+    // ask let the chat finish ("at the next point where your work can pause").
+    let ask_turns = excerpts::Skip { opens: facts::is_ask_prompt, ask: None, from_call: true };
     facts::Facts {
         provider: known.as_ref().map(|k| k.provider),
         account: known.as_ref().map(|k| k.account.clone()).unwrap_or_default(),

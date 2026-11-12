@@ -823,7 +823,7 @@ fn build_within(
         .spawn(move || {
             // A turn a move's ask opened is the handoff attempt, not the work.
             inputs.transcript = match &transcript {
-                Some(p) => excerpts::read(p, inputs.provider, Some(excerpts::Skip { opens: is_ask_line, ask })),
+                Some(p) => excerpts::read(p, inputs.provider, Some(excerpts::Skip { opens: is_ask_line, ask, from_call: false })),
                 None => Err("Luna does not know where this chat's transcript is".into()),
             };
             let since = inputs

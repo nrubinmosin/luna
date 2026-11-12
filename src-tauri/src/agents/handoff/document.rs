@@ -333,7 +333,7 @@ fn layout(i: &Inputs, conversation: &str, left_out: usize) -> String {
         // document says which of them matter, where it wrote one.
         let cut = if t.skills.cut { ", as far as Luna read it" } else { "" };
         if t.skills.names.is_empty() {
-            d.push_str(&format!("- Skills seen loaded or read in its conversation: none in its transcript{cut}.\n"));
+            d.push_str(&format!("- Skills seen loaded or read in its conversation: {}{cut}.\n", super::facts::none_seen(&t.skills)));
         } else {
             d.push_str(&format!(
                 "- Skills seen loaded or read in its conversation, in order of first use{cut}: {}.\n",
@@ -502,7 +502,7 @@ mod tests {
                 said: said_,
                 edits: vec!["E:\\work\\src\\a.rs".into(), "E:\\elsewhere\\b.txt".into()],
                 plan: Some("1. Do it".into()),
-                skills: excerpts::Skills { names: vec!["release".into(), "ui-check".into()], cut: false },
+                skills: excerpts::Skills { names: vec!["release".into(), "ui-check".into()], cut: false, code_mode: false },
                 ..Default::default()
             }),
             last_handoff: None,
@@ -582,7 +582,7 @@ mod tests {
         // None loaded: said so, and no step to load them.
         let mut none = inputs(vec![]);
         if let Ok(t) = none.transcript.as_mut() {
-            t.skills = excerpts::Skills { names: vec![], cut: true };
+            t.skills = excerpts::Skills { names: vec![], cut: true, code_mode: false };
         }
         let t = build(&none, &scrub::Roots::default()).text;
         assert!(t.contains("- Skills seen loaded or read in its conversation: none in its transcript, as far as Luna read it.\n"), "{t}");

@@ -530,23 +530,37 @@ fn the_facts_name_the_chats_helpers_and_what_they_owe() {
         { "type": "tool_use", "id": "toolu_1", "name": "Skill", "input": { "skill": "release" }, "caller": { "type": "direct" } }] } });
     let result = json!({ "type": "user", "message": { "role": "user", "content": [
         { "type": "tool_result", "tool_use_id": "toolu_1", "content": "Launching skill: release" }] } });
-    // Then the threshold's notice, typed with a helper's line before it, whose
-    // turn loads a skill to write the handoff: that one is left out.
+    // Then the threshold's notice, typed with a helper's line before it: the
+    // work it lets the chat finish first loads a skill, which counts; from
+    // the chat's call to the handoff tool on, the turn is the handoff's.
     let tag = crate::agents::notifier::NOTICE_TAG;
     let asked = json!({ "type": "user", "message": { "role": "user",
         "content": format!("{tag} Your helper h1 answered. {}", facts::notice(71, 70, false, true)) } });
-    let for_the_ask = json!({ "type": "assistant", "message": { "content": [
-        { "type": "tool_use", "id": "toolu_2", "name": "Skill", "input": { "skill": "session-handoff" } }] } });
-    let its_result = json!({ "type": "user", "message": { "role": "user", "content": [
-        { "type": "tool_result", "tool_use_id": "toolu_2", "content": "Launching skill: session-handoff" }] } });
-    std::fs::write(&previous, format!("{call}\n{result}\n{asked}\n{for_the_ask}\n{its_result}\n")).unwrap();
+    let skill = |id: &str, name: &str| {
+        let call = json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": id, "name": "Skill", "input": { "skill": name } }] } });
+        let result = json!({ "type": "user", "message": { "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": id, "content": format!("Launching skill: {name}") }] } });
+        format!("{call}\n{result}")
+    };
+    let handoff = json!({ "type": "assistant", "message": { "content": [
+        { "type": "tool_use", "id": "toolu_3", "name": "mcp__luna__luna_session_handoff", "input": {} }] } });
+    let lines = [
+        call.to_string(),
+        result.to_string(),
+        asked.to_string(),
+        skill("toolu_2", "finishing"),
+        handoff.to_string(),
+        skill("toolu_4", "session-handoff"),
+    ];
+    std::fs::write(&previous, lines.join("\n") + "\n").unwrap();
     let f = gather("hogf-me", Some(&previous.to_string_lossy()), Provider::Claude);
     assert_eq!(f.helpers.len(), 1);
     assert_eq!((f.helpers[0].id.as_str(), f.helpers[0].owes, f.helpers[0].account.as_str()), ("hogf-kid", true, "codex/two"));
     assert_eq!((f.helpers[0].model.as_deref(), f.helpers[0].effort.as_deref()), (Some("gpt-big"), Some("high")));
     assert_eq!(f.threshold, Some(70));
     assert!(f.owed_by_others.is_empty());
-    assert_eq!(f.skills.map(|s| s.names), Some(vec!["release".to_string()]));
+    assert_eq!(f.skills.map(|s| s.names), Some(vec!["release".to_string(), "finishing".to_string()]));
     // Where the conversation before is not known, or not to be read: not known.
     assert_eq!(gather("hogf-me", None, Provider::Claude).skills, None);
     assert_eq!(gather("hogf-me", Some(&dir.join("gone.jsonl").to_string_lossy()), Provider::Claude).skills, None);
