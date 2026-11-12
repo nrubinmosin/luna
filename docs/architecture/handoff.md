@@ -15,7 +15,7 @@ tools, answered only when asked).
 
 | Path | What it holds |
 | --- | --- |
-| `agents/handoff/mod.rs` | `luna_session_handoff` (`instructions`, `handoff`), who is listed it (`may_list`), the asks (`open_ask`, `asked_now`, `ask_holds`, `handoff_now`, `manual_ask_of`, `drifted`), the beat (`thresholds`, `switches`), the facts gathered for the prompt (`gather`), what the window is shown (`mark_of`, `asked_of`) |
+| `agents/handoff/mod.rs` | `luna_session_handoff` (`instructions`, `handoff`), who is listed it (`may_list`), the asks (`open_ask`, `asked_now`, `ask_holds`, `handoff_now`, `manual_ask_of`, `drifted`), the beat (`thresholds`: `to_look`, `look_at`, the look now `checks_now`; `switches`), the facts gathered for the prompt (`gather`), what the window is shown (`mark_of`, `asked_of`) |
 | `agents/handoff/served.rs` | the instructions served, what is kept of them (`Served`), the panel's word (`applied_of`, `same_named`) |
 | `agents/handoff/watch.rs` | when a notice is due, and the re-arm after a compaction |
 | `agents/handoff/facts.rs` | what the notices, the tool's answer and the prompt say; the checklist (`SECTIONS`) and the look at a file for it (`missing_sections`) |
@@ -152,6 +152,20 @@ new one writes its own (`rollout_on`), and a transcript not found now is the
 last found: neither says how far the conversation the CLI is on has come, so
 that beat is skipped and the turn looked at again at the next.
 
+- **Turned on.** `set_auto_handoff` with a threshold, on or at another one,
+  marks the chat (`checks_now`, numbered): the beat looks at it as soon as it
+  is at rest, at whatever turn count, by the same look as a turn's end
+  (`to_look`, `look_at`), so a chat already past the threshold is asked then
+  rather than at its next turn's end. The mark waits while the CLI has not
+  listed the tool (the window's quick resume, `resume`, brings it), a
+  handoff or a move of the chat is under way, or the person's ask is open;
+  a look lets go only of the mark it was taken under, so one set again
+  meanwhile gets its own. In memory only: a core started again has looked
+  at no turn yet (`Beat::turns`), so its first beat looks at every chat at
+  rest all the same. Turned off, the mark goes, with the threshold's ask and
+  its notice not yet typed (dropped under the record's lock, which the
+  notice is queued under).
+
 - Past the threshold one line in `Registry::news` (the notifier types it): go
   to `luna_session_handoff` without arguments for how. With it the threshold's
   ask (`AskKind::Auto`) is opened on the record, bound to the conversation
@@ -186,12 +200,13 @@ that beat is skipped and the turn looked at again at the next.
 - A switch scheduled drops a notice not yet typed.
 - A record from before asks were kept, told of its threshold with no ask, is
   re-armed as it loads (`store.rs` `rearmed_unasked`): the threshold asks it
-  again at its next turn's end rather than leave it refused and never asked.
+  again at its next look rather than leave it refused and never asked.
   So is a conversation whose threshold's ask gave way and nothing answered
   it: the person's ask that took its place lapsed or was withdrawn
   (`lapsed`), a move retired it as it began and then ended with the chat
   not stopped (`moving::threshold_retired`, `end_where`), or auto-handoff was
-  turned on again with no ask open (`set_auto_handoff`); otherwise the
+  turned on again with no ask open (`set_auto_handoff`, which looks at once,
+  above); otherwise the
   threshold, noticing only above a level it told of, would leave a chat past
   it unasked until its firm mark.
 
