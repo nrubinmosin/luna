@@ -113,7 +113,8 @@ impl Privilege {
         match provider {
             Provider::Claude => match mode {
                 "plan" => at(Reach::ReadOnly, false),
-                "default" | "dontAsk" => at(Reach::Asks, false),
+                // `manual` is Claude Code's alias of `default` (2.1.322).
+                "default" | "dontAsk" | "manual" => at(Reach::Asks, false),
                 "acceptEdits" => at(Reach::Edits, false),
                 "auto" => at(Reach::Reviewed, true),
                 "bypassPermissions" => at(Reach::Full, true),
@@ -686,6 +687,7 @@ mod tests {
             ("ro-net", codex("read-only-net", "never")),
             ("default", claude("default")),
             ("dontAsk", claude("dontAsk")),
+            ("manual", claude("manual")),
             ("ro-ask", codex("read-only", "on-request")),
             ("acceptEdits", claude("acceptEdits")),
             ("ww", codex("workspace-write", "on-request")),
@@ -697,15 +699,18 @@ mod tests {
         let helpers: [((Provider, &str, Option<&str>), &[&str]); 9] = [
             (
                 (Provider::Claude, "plan", None),
-                &["plan", "ro", "ro-net", "default", "dontAsk", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+                &["plan", "ro", "ro-net", "default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
             ),
             (
                 (Provider::Codex, "read-only", Some("never")),
-                &["plan", "ro", "ro-net", "default", "dontAsk", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+                &["plan", "ro", "ro-net", "default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
             ),
             // The network is an escalation of its own.
             ((Provider::Codex, "read-only-net", Some("never")), &["ro-net", "review", "bypass", "full"]),
-            ((Provider::Claude, "default", None), &["default", "dontAsk", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"]),
+            (
+                (Provider::Claude, "default", None),
+                &["default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+            ),
             ((Provider::Claude, "acceptEdits", None), &["acceptEdits", "ww", "review", "bypass", "full"]),
             // Commands in a sandbox go further than edits.
             ((Provider::Codex, "workspace-write", Some("never")), &["ww", "review", "bypass", "full"]),
@@ -824,6 +829,11 @@ mod tests {
             let wants = Privilege::of(helper, &m, a.as_deref()).unwrap();
             assert!(Privilege::of_caller(c, &settings).covers(wants), "{settings}: never above the caller");
         }
+        // `manual`, Claude Code's own name for `default`, asks as `default` does.
+        let (c, manual) = claude("manual");
+        assert_eq!(Privilege::of_caller(c, &manual), Privilege { reach: Reach::Asks, net: false });
+        assert_eq!(inherited((c, &manual), Provider::Claude), (s("default", None), false));
+        assert_eq!(inherited((c, &manual), Provider::Codex).0, s("read-only", Some("never")));
         // A caller whose mode Luna cannot read passes on the least.
         assert_eq!(inherited((Provider::Claude, &json!({})), Provider::Claude), (s("plan", None), false));
         assert_eq!(inherited((Provider::Claude, &json!({})), Provider::Codex).0, s("read-only", Some("never")));
