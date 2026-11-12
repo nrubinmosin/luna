@@ -120,6 +120,7 @@ describe('HandoffBar', () => {
 
 const own: SystemSkillState = {
   name: 'session-handoff',
+  kind: 'skill',
   state: 'luna',
   version: '0.12.0',
   sha256: '0123456789abcdef',

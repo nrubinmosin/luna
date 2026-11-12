@@ -257,8 +257,11 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // lock (library/folders.rs `session_args`).
     // The helper's account counted as in use from here, as a chat's start
     // counts its own (`library::lay_out_for`).
-    let account_path = lock().entries.get(id).map(|e| e.spec.account_path.clone()).ok_or("no such helper")?;
+    let (account_path, role) = lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec))).ok_or("no such helper")?;
     let reserved = crate::library::lay_out_for("before a helper's turn", &account_path)?;
+    // Its role's texts, also off the lock: an override's read waits on the
+    // library's system lock while an adoption swaps one in.
+    let texts = crate::library::role_texts(role);
     let (args, dir, envs, applied, provider, on_stdin, line, account) = {
         let r = lock();
         if r.closed {
@@ -268,10 +271,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         if e.run.as_ref().is_some_and(|run| run.stopped) {
             return Err(STOPPED.into());
         }
-        let (args, dir, envs, applied) = command_for(e, id)?;
+        let (args, dir, envs, applied) = command_with(e, id, &texts)?;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
-        (args, dir, envs, applied, e.spec.provider, stdin_text(e, prompt), line, e.spec.account_path.clone())
+        (args, dir, envs, applied, e.spec.provider, stdin_with(e, prompt, texts.note.as_deref()), line, e.spec.account_path.clone())
     };
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
@@ -476,21 +479,19 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
 
 /// A turn's arguments as the log keeps them. The chat's hook and guard URLs
 /// carry its secret (a Codex start passes them in `-c` overrides) and go in as
-/// what they are; the helper's identity line, the same for every turn and
-/// most of the line's length, goes in as its length.
+/// what they are; a Codex helper's role layers, the same for every turn and
+/// most of the line's length, go in as their length.
 fn args_for_log(id: &str, args: &[String]) -> String {
     let urls: Vec<(String, &str)> = [(crate::hub::hook_url(id), "<hook-url>"), (crate::hub::guard_url(id), "<guard-url>")]
         .into_iter()
         .filter_map(|(url, to)| Some((url?, to)))
         .collect();
     let mut shown = Vec::with_capacity(args.len());
-    let mut elide = false;
     for a in args {
-        if std::mem::take(&mut elide) {
-            shown.push(format!("<{} chars>", a.chars().count()));
+        if let Some(value) = a.strip_prefix("developer_instructions=") {
+            shown.push(format!("developer_instructions=<{} chars>", value.chars().count()));
             continue;
         }
-        elide = a == "--append-system-prompt";
         shown.push(urls.iter().fold(a.clone(), |s, (url, to)| s.replace(url.as_str(), to)));
     }
     shown.join(" ")
@@ -509,22 +510,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_log_gets_no_hub_secret_and_not_the_identity_line() {
+    fn the_log_gets_no_hub_secret_and_not_the_role_layers() {
         crate::hub::start();
         let guard = crate::hub::guard_url("log-1").expect("the hub is listening");
         let secret = guard.rsplit('/').next().unwrap().to_string();
         let args: Vec<String> = [
             "-c".into(),
             format!("hooks.PreToolUse=[{{command='curl {guard}'}}]"),
-            "--append-system-prompt".into(),
-            "You are a helper".into(),
+            "-c".into(),
+            "developer_instructions=\"Your role\"".into(),
             "--model".into(),
             "opus".into(),
         ]
         .into();
         let shown = args_for_log("log-1", &args);
         assert!(!shown.contains(&secret), "{shown}");
-        assert_eq!(shown, "-c hooks.PreToolUse=[{command='curl <guard-url>'}] --append-system-prompt <16 chars> --model opus");
+        assert_eq!(shown, "-c hooks.PreToolUse=[{command='curl <guard-url>'}] -c developer_instructions=<11 chars> --model opus");
     }
 
     #[test]

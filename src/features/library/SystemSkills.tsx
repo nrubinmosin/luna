@@ -17,10 +17,32 @@ import { Changes } from './DiffView';
 import { useLibrary } from './library.store';
 import { GREEN, RED } from './presentation';
 
-/** What each system skill is, as the window says it. */
+/** What each system text is, as the window says it. */
 const WHAT: Record<string, string> = {
   'session-handoff':
-    'What a chat with Auto-handoff on is given when it writes its handoff. Luna serves it only to such chats, at the threshold; it is never put into an account or a folder.'
+    'What a chat with Auto-handoff on is given when it writes its handoff. Luna serves it only to such chats, at the threshold; it is never put into an account or a folder.',
+  'role-chat':
+    'What every chat of yours Luna starts is told of its role, read as an instructions file of its own. Empty: Luna tells a chat nothing.',
+  'role-lead':
+    'What a lead — a helper started with Luna’s tools, able to start helpers of its own — is told of its role, read as an instructions file of its own at every turn.',
+  'role-helper':
+    'What a helper started without Luna’s tools is told of its role, read as an instructions file of its own at every turn.',
+  'note-lead':
+    'The note after a task another agent gives a lead: one line of plain text, no brackets. Every note Luna has served stays known, so it never shows in what a session was asked.',
+  'note-helper':
+    'The note after a task another agent gives a helper: one line of plain text, no brackets. Every note Luna has served stays known, so it never shows in what a session was asked.'
+};
+
+/** What a system text is, by its name, as the core's table has them (library/system.rs `SYSTEM_TEXTS`). */
+export function systemKind(name: string): SystemSkillState['kind'] {
+  return name.startsWith('role-') ? 'role' : name.startsWith('note-') ? 'note' : 'skill';
+}
+
+/** Who a system text is served to, for the buttons' words. */
+const SERVED_TO: Record<SystemSkillState['kind'], string> = {
+  skill: 'every chat it is served to',
+  role: 'every session of that role',
+  note: 'every task of that role'
 };
 
 const short = (sha: string) => sha.slice(0, 12);
@@ -95,7 +117,7 @@ function SystemSkill({
           title={
             mine
               ? `Edit your override of ${s.name}`
-              : `Write your own ${s.name}, starting from Luna’s text: one override for every chat it is served to`
+              : `Write your own ${s.name}, starting from Luna’s text: one override for ${SERVED_TO[s.kind]}`
           }
           onClick={() => edit({ system: s.name })}
         >
@@ -160,7 +182,7 @@ function SystemSkill({
           body={
             <>
               Moves your override of <b>{s.name}</b> out of the library into Luna’s backups, kept for 30 days. From then
-              on, chats are served Luna’s own text of this version.
+              on, {SERVED_TO[s.kind]} gets Luna’s own text of this version.
             </>
           }
           confirmLabel="Back to Luna’s"
@@ -177,9 +199,10 @@ function SystemSkill({
 }
 
 /**
- * The library's system skills, apart from your own: text Luna serves at its
- * own trigger and never lays out (library/system.rs). Each has one override
- * for everyone, so no accounts, no audience and no folders.
+ * The library's system texts, apart from your own: the handoff's skill, each
+ * role's text and its note, which Luna serves at its own trigger and never
+ * lays out (library/system.rs). Each has one override for everyone, so no
+ * accounts, no audience and no folders.
  */
 export function SystemSkills({
   o,
@@ -218,9 +241,10 @@ export function SystemSkills({
       ))}
       <Note>
         Luna’s own text, built in and of its version, unless you write your own: one override in the library, under{' '}
-        <code>system/</code>, for every chat it is served to. One that will not do is not used: Luna’s own is, and the
-        chat’s What Luna applied says why. A skill of the same name among yours, in a project or in an account is never
-        served in its place.
+        <code>system/</code>, for every session it is served to. One that will not do is not used: Luna’s own is, and
+        the session’s What Luna applied says why. A role’s text reaches a Claude Code session at its next turn, a Codex
+        one when its conversation starts afresh or is compacted. A skill of the same name among yours, in a project or
+        in an account is never served in its place.
       </Note>
     </>
   );

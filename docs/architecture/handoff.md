@@ -89,8 +89,8 @@ library may be a folder of the person's that is not private, so not
 it for every firm notice, and nothing beside it is to hold that up. A library
 skill named `session-handoff` under `skills/` is never read for it, and is laid
 out nowhere (the name is reserved, [library](library.md#invariants)). The
-library window's System skills section edits, compares and removes the override
-([user guide](../user-guide/library.md#system-skills)). What a chat
+library window's System texts section edits, compares and removes the override
+([user guide](../user-guide/library.md#system-texts)). What a chat
 was given (`Served`: `Given::Luna`, `Library`, or `Checklist` where the firm
 notice's checklist was all it had, each with its hash, Luna's version or the
 override's path) is kept on the chat's record (`Record::served`: the tool sets

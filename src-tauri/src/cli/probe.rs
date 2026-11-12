@@ -44,7 +44,6 @@ const CLAUDE: &[Command] = &[Command {
         "--strict-mcp-config",
         "--allowedTools",
         "--disallowedTools",
-        "--append-system-prompt",
         "--agent",
         "--add-dir",
         "--permission-prompt-tool",

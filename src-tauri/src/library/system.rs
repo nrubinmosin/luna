@@ -1,11 +1,19 @@
-//! System skills: text Luna serves at its own trigger, never laid out
-//! (docs/adr/0022-content-luna-serves-at-its-own-trigger.md). There is one,
-//! `session-handoff`, what a chat with auto-handoff on is given to write its
-//! handoff by (agents/handoff). Luna's own text is compiled in, so it cannot be
-//! missing; the person may override it with one file for everyone,
-//! `<library>/system/session-handoff/SKILL.md`, checked as a library skill is.
-//! An override that will not do is not served: Luna's own is, and the reason
+//! System texts: text Luna serves at its own trigger, never laid out
+//! (docs/adr/0022-content-luna-serves-at-its-own-trigger.md, ADR-0025). One
+//! is a skill, `session-handoff`, what a chat with auto-handoff on is given to
+//! write its handoff by (agents/handoff); the others are plain texts, what a
+//! session is told of its role (role.rs): Luna's default for each role
+//! (`role-chat`, empty, `role-lead`, `role-helper`) and the note after a task
+//! from another agent (`note-lead`, `note-helper`). Luna's own text is
+//! compiled in, so it cannot be missing; the person may override each with
+//! one file for everyone, `<library>/system/<name>/SKILL.md` for the skill,
+//! checked as a library skill is, and `<library>/system/<name>/TEXT.md` for a
+//! text, checked as UTF-8 within its cap (a note also as one plain line). An
+//! override that will not do is not served: Luna's own is, and the reason
 //! goes with it.
+//!
+//! What stays Luna's alone, as mechanism rather than behavior: tool schemas,
+//! refusals, the guide's facts, the tag a note opens on.
 //!
 //! The pass reads only `skills/` and `instructions/`, so `system/` reaches no
 //! account or folder. A library skill under `skills/` that takes a system
@@ -41,6 +49,79 @@ pub const SYSTEM_MAX_BYTES: usize = 64 * 1024;
 /// Luna's own instructions for a handoff: its version's, compiled in.
 pub const LUNA_HANDOFF: &str = include_str!("../../resources/skills/session-handoff/SKILL.md");
 
+/// The system texts of a role and of its note, by name.
+pub const ROLE_CHAT: &str = "role-chat";
+pub const ROLE_LEAD: &str = "role-lead";
+pub const ROLE_HELPER: &str = "role-helper";
+pub const NOTE_LEAD: &str = "note-lead";
+pub const NOTE_HELPER: &str = "note-helper";
+
+/// The most a role's override may hold: it is read as memory at every start
+/// and turn, and goes on a Codex command line (role.rs `CODEX_ROLE_MAX`).
+pub const ROLE_MAX_BYTES: usize = 8 * 1024;
+
+/// The most a note's override may hold, in characters: it goes after every
+/// task, one line.
+pub const NOTE_MAX_CHARS: usize = 1000;
+
+/// What a system text is served as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextKind {
+    /// A skill's SKILL.md, front matter and all.
+    Skill,
+    /// A role's default, Markdown with no front matter; empty is none.
+    Role,
+    /// A note: one line of plain text, never empty.
+    Note,
+}
+
+/// One system text: its name, what it is, and Luna's own text of it.
+pub struct SystemText {
+    pub name: &'static str,
+    pub kind: TextKind,
+    pub luna: &'static str,
+}
+
+/// The system texts there are.
+pub const SYSTEM_TEXTS: &[SystemText] = &[
+    SystemText { name: HANDOFF, kind: TextKind::Skill, luna: LUNA_HANDOFF },
+    SystemText { name: ROLE_CHAT, kind: TextKind::Role, luna: include_str!("../../resources/system/role-chat.md") },
+    SystemText { name: ROLE_LEAD, kind: TextKind::Role, luna: include_str!("../../resources/system/role-lead.md") },
+    SystemText { name: ROLE_HELPER, kind: TextKind::Role, luna: include_str!("../../resources/system/role-helper.md") },
+    SystemText { name: NOTE_LEAD, kind: TextKind::Note, luna: include_str!("../../resources/system/note-lead.md") },
+    SystemText { name: NOTE_HELPER, kind: TextKind::Note, luna: include_str!("../../resources/system/note-helper.md") },
+];
+
+/// The system text `name`; an error for any other name, so that nothing the
+/// window asks for here reaches past `system/<name>`.
+pub(super) fn text_of(name: &str) -> Result<&'static SystemText, String> {
+    SYSTEM_TEXTS.iter().find(|t| t.name == name).ok_or_else(|| format!("{name} is not a system text"))
+}
+
+impl TextKind {
+    /// The override's one file in its folder.
+    fn file(self) -> &'static str {
+        match self {
+            TextKind::Skill => SKILL_FILE,
+            TextKind::Role | TextKind::Note => TEXT_FILE,
+        }
+    }
+
+    /// The most its override may hold, in bytes.
+    fn max_bytes(self) -> usize {
+        match self {
+            TextKind::Skill => SYSTEM_MAX_BYTES,
+            TextKind::Role => ROLE_MAX_BYTES,
+            // Characters are what a note is held to; four bytes at most each.
+            TextKind::Note => NOTE_MAX_CHARS * 4,
+        }
+    }
+}
+
+/// A plain text override's file.
+const TEXT_FILE: &str = "TEXT.md";
+
 /// Whose text is served.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -51,11 +132,13 @@ pub enum Source {
     Library,
 }
 
-/// What a system skill resolves to now.
+/// What a system text resolves to now.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Resolved {
+    pub name: &'static str,
+    pub kind: TextKind,
     pub source: Source,
-    /// The SKILL.md served, front matter and all.
+    /// The SKILL.md or text served, front matter and all.
     pub text: String,
     /// SHA-256 of `text`, as hex: what tells one text from another.
     pub sha256: String,
@@ -66,9 +149,13 @@ pub struct Resolved {
 }
 
 impl Resolved {
-    /// The text past its front matter: what a session reads.
+    /// What a session reads: a skill past its front matter, a text with no
+    /// blank lines around it.
     pub fn body(&self) -> &str {
-        body_of(&self.text)
+        match self.kind {
+            TextKind::Skill => body_of(&self.text),
+            TextKind::Role | TextKind::Note => self.text.strip_prefix('\u{feff}').unwrap_or(&self.text).trim(),
+        }
     }
 
     /// The first 12 characters of the hash, as the window and a log line say it.
@@ -79,7 +166,8 @@ impl Resolved {
     /// As the window shows it.
     pub fn state(&self) -> SystemSkillState {
         SystemSkillState {
-            name: HANDOFF,
+            name: self.name,
+            kind: self.kind,
             state: match (self.source, &self.problem) {
                 (Source::Library, _) => SystemState::Library,
                 (Source::Luna, Some(_)) => SystemState::Broken,
@@ -112,6 +200,7 @@ pub enum SystemState {
 #[serde(rename_all = "camelCase")]
 pub struct SystemSkillState {
     pub name: &'static str,
+    pub kind: TextKind,
     pub state: SystemState,
     /// Luna's version: whose own text this is, where it is Luna's.
     pub version: &'static str,
@@ -148,25 +237,20 @@ impl Dirs {
     }
 }
 
-/// The system skills there are, by name.
-const SYSTEM_SKILLS: &[&str] = &[HANDOFF];
-
-/// Luna's own text of the system skill `name`; an error for any other name,
+/// Luna's own text of the system text `name`; an error for any other name,
 /// so that nothing the window asks for here reaches past `system/<name>`.
 pub(super) fn luna_text(name: &str) -> Result<&'static str, String> {
-    match name {
-        HANDOFF => Ok(LUNA_HANDOFF),
-        _ => Err(format!("{name} is not a system skill")),
-    }
+    text_of(name).map(|t| t.luna)
 }
 
 /// Whether a library skill named `name` takes a system skill's name: then it
 /// is not that skill's override, and it is laid out nowhere (pass.rs `units`,
 /// folders.rs `hidden_here`), its copies taken out as those of a skill no
 /// longer wanted. Laid out, it would tell every session of the handoff, which
-/// only a chat with auto-handoff on may hear of.
+/// only a chat with auto-handoff on may hear of. The plain texts are no
+/// skills: a skill may have their names.
 pub(super) fn reserved(name: &str) -> bool {
-    SYSTEM_SKILLS.contains(&name)
+    text_of(name).is_ok_and(|t| t.kind == TextKind::Skill)
 }
 
 /// Why a library skill of a system skill's name is laid out nowhere, and why
@@ -174,7 +258,7 @@ pub(super) fn reserved(name: &str) -> bool {
 pub(super) fn reserved_why(name: &str) -> String {
     format!(
         "{name} is the name of Luna's system skill for handoffs: no skill of that name is laid out, so that no session without \
-         Auto-handoff hears of it. Your own text for it is the override, under System skills"
+         Auto-handoff hears of it. Your own text for it is the override, under System texts"
     )
 }
 
@@ -182,8 +266,11 @@ pub(super) fn reserved_why(name: &str) -> String {
 /// (SYSTEM_MAX_BYTES) still opens, to be cut down to size.
 const EDIT_MAX_BYTES: u64 = 1024 * 1024;
 
-fn too_large() -> String {
-    format!("SKILL.md is over {} KB", SYSTEM_MAX_BYTES / 1024)
+fn too_large(kind: TextKind) -> String {
+    match kind {
+        TextKind::Note => format!("{TEXT_FILE} is over {NOTE_MAX_CHARS} characters"),
+        _ => format!("{} is over {} KB", kind.file(), kind.max_bytes() / 1024),
+    }
 }
 
 /// `rel` under `root`, walked down from it (`boundary::walk_down`): nothing on
@@ -363,7 +450,7 @@ pub(super) fn set_aside(dirs: &Dirs) -> Vec<String> {
         .flatten()
         .filter(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            SYSTEM_SKILLS.iter().any(|s| name.starts_with(&format!(".{s}.")))
+            SYSTEM_TEXTS.iter().any(|s| name.starts_with(&format!(".{}.", s.name)))
         })
         .map(|e| e.path().to_string_lossy().into_owned())
         .collect();
@@ -458,16 +545,44 @@ fn move_to_backups(dirs: &Dirs, dir: &Path, was: &Path) -> Result<Moved, String>
     }
 }
 
-/// Why this SKILL.md would not do as the override of `name`, if it would not:
-/// checked as a library skill's is, held to SYSTEM_MAX_BYTES, and with
-/// something past its front matter.
+/// Why this text would not do as the override of `name`, if it would not. A
+/// skill's SKILL.md is checked as a library skill's is, held to
+/// SYSTEM_MAX_BYTES, and with something past its front matter. A role's text
+/// is held to ROLE_MAX_BYTES; empty, it says nothing. A note is one line of
+/// plain text, not empty, at most NOTE_MAX_CHARS long, with no brackets: it
+/// goes inside the brackets of the note Luna puts after a task, which the
+/// readers take off by its closing one (pty/start.rs `without_note`).
 pub(super) fn check_override(name: &str, text: &str) -> Result<(), String> {
-    if text.len() > SYSTEM_MAX_BYTES {
-        return Err(too_large());
+    let kind = text_of(name)?.kind;
+    if text.len() > kind.max_bytes() {
+        return Err(too_large(kind));
     }
-    check_skill(name, text)?;
-    if body_of(text).trim().is_empty() {
-        return Err("SKILL.md has nothing past its front matter".into());
+    match kind {
+        TextKind::Skill => {
+            check_skill(name, text)?;
+            if body_of(text).trim().is_empty() {
+                return Err("SKILL.md has nothing past its front matter".into());
+            }
+        }
+        TextKind::Role => {}
+        TextKind::Note => {
+            let line = text.strip_prefix('\u{feff}').unwrap_or(text).trim();
+            if line.is_empty() {
+                return Err(format!("{TEXT_FILE} is empty: a note says something"));
+            }
+            if line.chars().count() > NOTE_MAX_CHARS {
+                return Err(too_large(kind));
+            }
+            if line.contains(['\n', '\r']) {
+                return Err(format!("{TEXT_FILE} holds more than one line: a note is one"));
+            }
+            if line.contains(['[', ']']) {
+                return Err(format!("{TEXT_FILE} holds a bracket: the note goes inside brackets of its own"));
+            }
+            if let Some(c) = line.chars().find(|c| c.is_control()) {
+                return Err(format!("{TEXT_FILE} holds control character U+{:04X}", c as u32));
+            }
+        }
     }
     Ok(())
 }
@@ -475,12 +590,13 @@ pub(super) fn check_override(name: &str, text: &str) -> Result<(), String> {
 /// The override of `name` for the editor; where there is none yet, Luna's own
 /// text to start one from, at the path saving it makes (`exists` false).
 pub(super) fn read_system(dirs: &Dirs, name: &str) -> Result<LibraryFile, String> {
-    let luna = luna_text(name)?;
-    let path = dirs.system(name).join(SKILL_FILE);
+    let t = text_of(name)?;
+    let luna = t.luna;
+    let path = dirs.system(name).join(t.kind.file());
     let shown = path.to_string_lossy().into_owned();
     let start = || LibraryFile { path: shown.clone(), text: luna.to_string(), exists: false };
     let Some(dir) = override_dir(dirs, name)? else { return Ok(start()) };
-    match read_skill_md(&dir, EDIT_MAX_BYTES + 1)? {
+    match read_own_file(&dir, t.kind.file(), EDIT_MAX_BYTES + 1)? {
         // A folder without SKILL.md: what saving puts there starts from Luna's.
         None => Ok(start()),
         Some(bytes) if bytes.len() as u64 > EDIT_MAX_BYTES => {
@@ -498,11 +614,11 @@ pub(super) fn read_system(dirs: &Dirs, name: &str) -> Result<LibraryFile, String
 /// serves its own meanwhile and says why. More than Luna would ever serve is
 /// refused, and so is a link or a file in the way.
 pub(super) fn write_system(dirs: &Dirs, name: &str, text: &str) -> Result<PathBuf, String> {
-    luna_text(name)?;
-    if text.len() > SYSTEM_MAX_BYTES {
-        return Err(format!("{}, more than Luna serves: not saved", too_large()));
+    let kind = text_of(name)?.kind;
+    if text.len() > kind.max_bytes() {
+        return Err(format!("{}, more than Luna serves: not saved", too_large(kind)));
     }
-    let path = inside(&dirs.root, &[SYSTEM_DIR, name, SKILL_FILE])?;
+    let path = inside(&dirs.root, &[SYSTEM_DIR, name, kind.file()])?;
     if let Ok(m) = std::fs::symlink_metadata(&path) {
         if !m.is_file() {
             return Err(format!("{} is a folder — Luna leaves it alone", path.display()));
@@ -542,7 +658,9 @@ pub(super) fn reset_system(dirs: &Dirs, name: &str) -> Result<Option<Moved>, Str
 /// the backups after. The staging and the swap go under the system lock,
 /// which an adoption that cannot have it is refused for.
 pub(super) fn adopt_system(dirs: &Dirs, name: &str) -> Result<(), String> {
-    luna_text(name)?;
+    if !reserved(name) {
+        return Err(format!("{name} is not a system skill: no skill of the library is its override"));
+    }
     let from = inside(&dirs.root, &["skills", name])?;
     match std::fs::symlink_metadata(&from) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("The library has no skill named {name}")),
@@ -623,54 +741,67 @@ pub fn handoff_instructions() -> Resolved {
 }
 
 pub(super) fn resolve_in(dirs: &Dirs) -> Resolved {
-    let path = dirs.system(HANDOFF).join(SKILL_FILE);
+    resolve_text(dirs, HANDOFF).expect("the handoff is a system text")
+}
+
+pub(super) fn resolve_text(dirs: &Dirs, name: &str) -> Option<Resolved> {
+    let t = text_of(name).ok()?;
+    let path = dirs.system(t.name).join(t.kind.file());
     let luna = |problem: Option<String>| Resolved {
+        name: t.name,
+        kind: t.kind,
         source: Source::Luna,
-        text: LUNA_HANDOFF.to_string(),
-        sha256: sha256_hex(LUNA_HANDOFF.as_bytes()),
+        text: t.luna.to_string(),
+        sha256: sha256_hex(t.luna.as_bytes()),
         path: path.clone(),
         problem,
     };
     let held = system_lock(dirs, false);
-    let read = read_override(dirs);
+    let read = read_override(dirs, t);
     drop(held);
-    match read {
+    Some(match read {
         Ok(None) => luna(None),
-        Ok(Some(text)) => {
-            Resolved { source: Source::Library, sha256: sha256_hex(text.as_bytes()), text, path: path.clone(), problem: None }
-        }
+        Ok(Some(text)) => Resolved {
+            name: t.name,
+            kind: t.kind,
+            source: Source::Library,
+            sha256: sha256_hex(text.as_bytes()),
+            text,
+            path: path.clone(),
+            problem: None,
+        },
         Err(why) => luna(Some(why)),
-    }
+    })
 }
 
-/// The override's SKILL.md if it will do; None where there is none; why not
-/// where it will not. Its front matter checked as a library skill's is
-/// (`check_skill`), and held to SYSTEM_MAX_BYTES of UTF-8 with something past
-/// its front matter. SKILL.md alone is read, as it alone is served: opened as
-/// itself (no link at it, `system/` or its folder; a FIFO there no reason to
-/// wait, `boundary::open_no_follow`) and read no further than the cap, so what
-/// lies beside it cannot hold up or swell the read, which the handoff's beat
-/// makes for every firm notice.
-fn read_override(dirs: &Dirs) -> Result<Option<String>, String> {
-    let Some(dir) = override_dir(dirs, HANDOFF)? else { return Ok(None) };
-    let bytes = read_skill_md(&dir, SYSTEM_MAX_BYTES as u64 + 1)?.ok_or("There is no SKILL.md")?;
-    if bytes.len() > SYSTEM_MAX_BYTES {
-        return Err(too_large());
+/// The override's file if it will do; None where there is none; why not
+/// where it will not: checked by `check_override`, as UTF-8 within its kind's
+/// cap. Its one file alone is read, as it alone is served: opened as itself
+/// (no link at it, `system/` or its folder; a FIFO there no reason to wait,
+/// `boundary::open_no_follow`) and read no further than the cap, so what lies
+/// beside it cannot hold up or swell the read, which the handoff's beat makes
+/// for every firm notice and a helper's start for its role.
+fn read_override(dirs: &Dirs, t: &SystemText) -> Result<Option<String>, String> {
+    let Some(dir) = override_dir(dirs, t.name)? else { return Ok(None) };
+    let (file, max) = (t.kind.file(), t.kind.max_bytes());
+    let bytes = read_own_file(&dir, file, max as u64 + 1)?.ok_or_else(|| format!("There is no {file}"))?;
+    if bytes.len() > max {
+        return Err(too_large(t.kind));
     }
-    let text = String::from_utf8(bytes).map_err(|_| "SKILL.md is not UTF-8 text".to_string())?;
-    check_override(HANDOFF, &text)?;
+    let text = String::from_utf8(bytes).map_err(|_| format!("{file} is not UTF-8 text"))?;
+    check_override(t.name, &text)?;
     Ok(Some(text))
 }
 
-/// The override's SKILL.md in `dir`, opened as itself
+/// The override's `file` in `dir`, opened as itself
 /// (`boundary::open_no_follow`: no link at it, and no FIFO there to wait on),
 /// held to a plain file of one name of this user's making
 /// (`secret::own_file`; not `read_private`, as a library of the person's
 /// choosing keeps its own folder's access) and read no further than `cap`
 /// bytes; None where there is none.
-fn read_skill_md(dir: &Path, cap: u64) -> Result<Option<Vec<u8>>, String> {
+fn read_own_file(dir: &Path, file: &str, cap: u64) -> Result<Option<Vec<u8>>, String> {
     use std::io::Read;
-    let path = dir.join(SKILL_FILE);
+    let path = dir.join(file);
     let not_a_file = || format!("{} is a link or not a file; the override is the file itself", path.display());
     match std::fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -944,8 +1075,8 @@ mod tests {
         assert!(!f.dirs.root.join("system").exists());
         assert_eq!(library_check_system(HANDOFF.into(), OURS.into()), None);
         // It has no audience, and its name takes no skill of yours.
-        assert!(library_set_audience(Entry::System(HANDOFF.into()), Audience::Chats).err().is_some_and(|e| e.contains("no audience")));
-        assert!(library_new_skill(HANDOFF.into()).err().is_some_and(|e| e.contains("System skills")));
+        assert!(library_set_audience(Entry::System(HANDOFF.into()), Audience::CHATS).err().is_some_and(|e| e.contains("no audience")));
+        assert!(library_new_skill(HANDOFF.into()).err().is_some_and(|e| e.contains("System texts")));
         assert!(library_check_skill(HANDOFF.into(), OURS.into()).is_some_and(|why| why.contains("laid out")));
     }
 
@@ -1318,9 +1449,9 @@ mod tests {
             ..Default::default()
         };
         let mut lib = LibrarySettings { skills: skills(&[HANDOFF, "review"]), folders: vec![folder], ..Default::default() };
-        lib.audience.skills.insert(HANDOFF.into(), Audience::Chats);
+        lib.audience.skills.insert(HANDOFF.into(), Audience::CHATS);
         let found = read_skills(&f.dirs).unwrap();
-        assert!(found[HANDOFF].0.problem.as_deref().is_some_and(|p| p.contains("System skills")));
+        assert!(found[HANDOFF].0.problem.as_deref().is_some_and(|p| p.contains("System texts")));
         assert!(found["review"].0.problem.is_none());
 
         // Copies an earlier Luna laid out: one as it wrote it, one changed since.
@@ -1329,7 +1460,7 @@ mod tests {
             let dest = f.account(i).join("skills").join(HANDOFF);
             let files = Files::from([(SKILL_FILE.to_string(), b"old".to_vec())]);
             write_at(&dest, false, &files).unwrap();
-            ledger.wrote(&dest.to_string_lossy(), hashes(&files), Audience::Both);
+            ledger.wrote(&dest.to_string_lossy(), hashes(&files), Audience::EVERY);
         }
         std::fs::write(f.account(2).join("skills").join(HANDOFF).join(SKILL_FILE), "changed there").unwrap();
 
@@ -1342,7 +1473,7 @@ mod tests {
         // Failures name the account by its place and the kind of session,
         // not what the arguments hold: a test's output is a log too.
         for (i, a) in f.accounts.iter().enumerate() {
-            for kind in [SessionKind::Chat, SessionKind::Helper] {
+            for kind in Role::ALL {
                 let s = folder_args(&f.dirs, &lib, a, &repo.to_string_lossy(), kind);
                 let said = format!("{:?} {:?} {:?}", s.args, s.hidden, s.audience);
                 assert!(!said.contains(HANDOFF), "account {i}, {kind:?}: the folder's arguments name the reserved skill");

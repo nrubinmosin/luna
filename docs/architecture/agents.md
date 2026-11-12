@@ -52,24 +52,39 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   ask no permission in any mode; the checkbox is the permission.
 - Tokens are per session and reissued on every spawn. The instruction travels
   in `initialize`; together about 2k tokens once.
-- Every session has `LUNA_SESSION_ID`; a helper also `LUNA_PARENT_ID`. A helper
-  is told what it is and to write in its task's language (`pty::helper_line`),
-  naming the words instructions files use for the person (the operator, the
-  user, the person at this machine) so that rules set for that person's chat do
-  not reach it, and what it still owes of them: to stop, before its turn ends,
-  the background work it started that nothing needs any more (watchers, wait
-  loops, dev servers; not helpers it waits on, nor what its task keeps
-  running), keep each caveat with its claim, and send nothing outward unasked; and to
-  install nothing and change nothing machine-wide or in its CLI account's folder
-  (settings, PATH, the registry, services, scheduled tasks, global git or shell
-  config, memory, skills) unless its task names that change, giving its caller
-  the exact command instead. The library can keep such rules from it altogether (an entry's
-  audience, [library](library.md#audiences)). Claude Code by `--append-system-prompt` and a note after its
-  first prompt (`pty::helper_prompt`), as memory files outweigh an appended
-  system prompt; Codex by the note after each turn's prompt, because
-  `-c developer_instructions=` would replace a value Luna would have to resolve
-  from Codex's config stack. The transcript readers drop the note
-  (`without_note`). Slash-command prompts go without.
+- Every session has `LUNA_SESSION_ID`; a helper also `LUNA_PARENT_ID`. A
+  session is told its role at memory level (ADR-0025, [library: role
+  layers](library.md#role-layers)): a lead (spawned with `tools`) or a helper
+  that its task comes from another agent, to answer it in the language and
+  form the task asks for, and what it still owes of the rules written for a
+  person's chat: to stop, before its turn ends, the background work it started
+  that nothing needs any more, keep each caveat with its claim, send nothing
+  outward unasked, and install nothing and change nothing machine-wide or in
+  its CLI account's folder unless its task names that change; a lead also that
+  it owns what its helpers report and passes its constraints on. Those are
+  system texts the person may override (`role-lead`, `role-helper`). Claude
+  Code reads them as `hooks/<id>/CLAUDE.md` through `--add-dir` at every turn;
+  Codex in `-c developer_instructions`, after its config stack's own value.
+  The library can keep the person's chat's rules from it altogether (an
+  entry's audience, [library](library.md#audiences)). Beside the task, a
+  one-line note (`note-lead`, `note-helper`, `pty::helper_prompt`) says it
+  comes from another agent, not a person, after a Claude Code helper's first
+  prompt and every Codex one's: a Codex thread may have compacted its task far
+  from its developer message. Its tag is `[A note, not part of the task: …]`,
+  naming neither Luna nor any session. The transcript readers drop the note
+  (`without_note`): Luna's defaults, every override note ever served (by
+  hash, `<data>/notes-served.json`, the last 64) and the lines earlier Lunas
+  wrote under their tag. Slash-command prompts go without.
+- **Constraints** (`SpawnParams::constraints`, `spawn::Constraint`): text a
+  spawn adds, word for word, to the chain its caller carries (read from the
+  caller's registry settings, `constraints_of`); checked as plain text (no
+  control characters but line breaks and tabs), at most 4 KB per spawn and
+  16 KB per chain. The chain goes on the helper's `Spec` and into its registry
+  settings as `"constraints"` (kept across starts, `CORE_SETTINGS`; shown by
+  `luna_session_get`), never changes after the spawn, and is the last of its
+  role layers at every turn. Taken over as the person's chat, a session drops
+  it with the other helper settings (`HELPER_SETTINGS`). Text, not
+  enforcement: privilege is still the mode's (ADR-0007).
 - The instruction says the CLIs' own subagents cannot use another provider or
   account (without it a Codex orchestrator used its own `spawn_agent`).
 - A helper gets Luna's server and none of its account's, unless spawned with

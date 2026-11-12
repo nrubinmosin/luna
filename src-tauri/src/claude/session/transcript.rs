@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn a_helpers_prompt_reads_without_lunas_note() {
         let path = std::env::temp_dir().join(format!("luna-claude-note-{}.jsonl", std::process::id()));
-        let prompt = crate::pty::helper_prompt("p-1", "Fix the build.");
+        let prompt = crate::pty::helper_prompt(&crate::library::role_texts(crate::library::Role::Helper).note.unwrap(), "Fix the build.");
         let line = serde_json::json!({ "type": "user", "message": { "role": "user", "content": prompt } });
         std::fs::write(&path, format!("{line}\n")).unwrap();
         let (msgs, _) = messages_from(&path, 0, false);

@@ -226,6 +226,8 @@ mod tests {
 
     fn resolved(source: Source, problem: Option<&str>) -> Resolved {
         Resolved {
+            name: HANDOFF,
+            kind: crate::library::TextKind::Skill,
             source,
             text: "---\nname: session-handoff\ndescription: x\n---\nBody\n".into(),
             sha256: "0123456789abcdef".into(),

@@ -391,8 +391,9 @@ pub fn settings_of(id: &str) -> serde_json::Value {
 
 /// What a helper's settings hold that its CLI is not started with: `register` keeps
 /// them across every start, and ties across cores. `resumeOnRestart`, a budget with
-/// where it stands (`budget_news`), and `connectors` (`Spec::connectors`).
-const CORE_SETTINGS: [&str; 5] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "connectors"];
+/// where it stands (`budget_news`), `connectors` (`Spec::connectors`) and
+/// `constraints` (agents/spawn `Constraint`), which a spawn of its own passes on.
+const CORE_SETTINGS: [&str; 6] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "connectors", "constraints"];
 
 /// Whether a helper was spawned with `resumeOnRestart`.
 pub fn resumes_on_restart(id: &str) -> bool {

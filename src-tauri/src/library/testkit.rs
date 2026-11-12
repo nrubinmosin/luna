@@ -161,8 +161,9 @@ impl GoldenLibrary {
         let repo = f.base.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         let mut lib = LibrarySettings { instructions: first(all()), skills: skills(&["report"]), ..Default::default() };
-        lib.audience.instructions.insert(FIRST_INSTRUCTIONS.into(), Audience::Chats);
-        lib.audience.skills.insert("report".into(), Audience::Chats);
+        lib.audience.instructions.insert(FIRST_INSTRUCTIONS.into(), Audience::CHATS);
+        lib.laid_out.insert(FIRST_INSTRUCTIONS.into());
+        lib.audience.skills.insert("report".into(), Audience::CHATS);
         f.run(&lib, &mut Ledger::default(), true);
         let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
         HELD.lock().unwrap_or_else(|e| e.into_inner()).push((dirs, lib, f.accounts.clone()));

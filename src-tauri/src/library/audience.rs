@@ -1,52 +1,53 @@
-//! Whose sessions a library entry is for: the person's own chats, the helpers
-//! other sessions start, or both (the default, so nothing changes until the
-//! person chooses). A helper is briefed by an agent, not the person: rules
-//! written for the person's chat (its language, its report format, a plan
-//! agreed with them first) and skills whose own descriptions say helpers never
-//! load them only cost it context and mislead it.
+//! Whose sessions a library entry is for: every session (the default, so
+//! nothing changes until the person chooses), or some of the three roles —
+//! the person's own chats, leads (helpers started with Luna's tools) and
+//! helpers. A session briefed by an agent, not the person: rules written for
+//! the person's chat (its language, its report format, a plan agreed with
+//! them first) and skills whose own descriptions say it never loads them only
+//! cost it context and mislead it.
 //!
-//! What each CLI allows:
+//! Where each entry goes:
+//! - Every session's: laid into the accounts its reach takes, one
+//!   instructions file per account (reach.rs `chosen`), as ever.
+//! - Some roles': given per session, never laid into an account, as one of
+//!   the role layers its start composes (role.rs): Claude Code reads it as
+//!   memory of a folder of the session's own, Codex in its
+//!   `developer_instructions`. Every such entry whose audience takes the role
+//!   and whose reach takes the account goes in, in name order.
+//! - Instructions for the person's chats alone that an earlier Luna laid into
+//!   accounts stay there (`LibrarySettings::laid_out`), with a line before
+//!   them saying whose they are (`worded`): a Codex session reads its
+//!   account's `AGENTS.md` whoever's it is, and chats started outside Luna
+//!   read them there.
+//!
+//! What each CLI allows for what is in an account:
 //! - Claude Code leaves a file out of one session (`claudeMdExcludes`) and
 //!   turns a skill off for one (`skillOverrides`), both in the settings it is
-//!   started with: `folder_args` hides what is not for the session's kind.
+//!   started with: `folder_args` hides what is not for the session's role.
 //! - Codex turns a skill off for one run (`-c skills.config`), but reads its
 //!   account's `AGENTS.md` in every session with no switch to leave it out
 //!   (0.167.0: `CodexHomeUserInstructionsProvider` in `codex-rs/codex-home`,
-//!   installed unconditionally by `codex-rs/cli/src/main.rs`).
-//!
-//! So instructions meant for one kind are laid out with a line before them
-//! saying whose they are (`worded`), on both CLIs alike: a Codex session reads
-//! it, and so does a session Luna does not start. The line is part of the copy,
-//! written by the pass; nothing in an account is rewritten per launch.
+//!   installed unconditionally by the app-server).
 
 use super::*;
 
-/// Which kind of session a start is for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionKind {
-    /// The person's own chat, in a pane.
-    Chat,
-    /// A helper another session started, run headless.
-    Helper,
-}
+pub use crate::settings::Role;
 
-impl Audience {
-    /// Whether a session of this kind is meant to see the entry.
-    pub fn takes(self, kind: SessionKind) -> bool {
-        match self {
-            Audience::Both => true,
-            Audience::Chats => kind == SessionKind::Chat,
-            Audience::Helpers => kind == SessionKind::Helper,
-        }
+/// What a list of roles is called where Luna says whose an entry is.
+fn label(audience: Audience) -> String {
+    if audience.is_every() {
+        return "every session".into();
     }
-
-    fn label(self) -> &'static str {
-        match self {
-            Audience::Both => "every session",
-            Audience::Chats => "chats only",
-            Audience::Helpers => "helpers only",
-        }
-    }
+    let names: Vec<&str> = audience
+        .roles()
+        .into_iter()
+        .map(|r| match r {
+            Role::Chat => "chats",
+            Role::Lead => "leads",
+            Role::Helper => "helpers",
+        })
+        .collect();
+    format!("{} only", names.join(" and "))
 }
 
 pub(super) fn instructions_audience(lib: &LibrarySettings, name: &str) -> Audience {
@@ -57,26 +58,56 @@ pub(super) fn skill_audience(lib: &LibrarySettings, name: &str) -> Audience {
     lib.audience.skills.get(name).copied().unwrap_or_default()
 }
 
-/// What goes before instructions meant for one kind of session. A helper is
-/// named by how it came to be, the words a model can check against its own
-/// start: Luna's note tells its helpers they are one.
-const FOR_CHATS: &str = "> For the person's own chats only: a helper session — one another agent started and briefed, \
-through Luna or as a subagent — skips this whole file.";
-const FOR_HELPERS: &str = "> For helper sessions only — those another agent started and briefed, through Luna or as a \
-subagent: the person's own chats skip this whole file.";
+/// Whether the instructions `name` are laid into accounts: every session's,
+/// or the person's chats' that an earlier Luna laid out (`laid_out`). The
+/// rest reach their sessions one session at a time.
+pub(super) fn laid_into_accounts(lib: &LibrarySettings, name: &str) -> bool {
+    let audience = instructions_audience(lib, name);
+    audience.is_every() || (audience == Audience::CHATS && lib.laid_out.contains(name))
+}
 
-fn wording(audience: Audience) -> Option<&'static str> {
-    match audience {
-        Audience::Both => None,
-        Audience::Chats => Some(FOR_CHATS),
-        Audience::Helpers => Some(FOR_HELPERS),
+/// The line an account's copy of the instructions `name` opens on: the
+/// person's chats' where they are laid out for them, none for every
+/// session's.
+pub(super) fn banner_of(lib: &LibrarySettings, name: &str) -> Audience {
+    match laid_into_accounts(lib, name) && !instructions_audience(lib, name).is_every() {
+        true => Audience::CHATS,
+        false => Audience::EVERY,
     }
 }
 
-/// Instructions as their copies hold them: for one kind only, the line saying
-/// whose they are and a blank line before them.
-pub(super) fn worded(text: &[u8], audience: Audience) -> Vec<u8> {
-    match wording(audience) {
+/// What goes before instructions laid into accounts for the person's chats
+/// alone. Named by how a session's task came to it, which every session can
+/// tell of itself: the note on a task from another agent says so.
+const FOR_CHATS: &str = "> For chats with a person only: a session whose task came from another agent skips this whole file.";
+
+/// The lines earlier Lunas put there, for the person's chats and for helpers:
+/// a copy still opening on one is Luna's own line, not the person's text.
+const FOR_CHATS_BEFORE: &str = "> For the person's own chats only: a helper session — one another agent started and briefed, \
+through Luna or as a subagent — skips this whole file.";
+const FOR_HELPERS_BEFORE: &str = "> For helper sessions only — those another agent started and briefed, through Luna or as a \
+subagent: the person's own chats skip this whole file.";
+
+fn wording(banner: Audience) -> Option<&'static str> {
+    (banner == Audience::CHATS).then_some(FOR_CHATS)
+}
+
+/// Every line a copy written for `banner` may open on: this Luna's, then
+/// earlier ones'.
+fn wordings(banner: Audience) -> Vec<&'static str> {
+    if banner == Audience::CHATS {
+        vec![FOR_CHATS, FOR_CHATS_BEFORE]
+    } else if banner == Audience::of(&[Role::Lead, Role::Helper]) {
+        vec![FOR_HELPERS_BEFORE]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Instructions as their copies in accounts hold them: for the person's
+/// chats alone, the line saying whose they are and a blank line before them.
+pub(super) fn worded(text: &[u8], banner: Audience) -> Vec<u8> {
+    match wording(banner) {
         Some(line) => [line.as_bytes(), b"\n\n", text].concat(),
         None => text.to_vec(),
     }
@@ -84,20 +115,21 @@ pub(super) fn worded(text: &[u8], audience: Audience) -> Vec<u8> {
 
 /// A copy's instructions as the library keeps them: without the line `worded`
 /// put before them for `banner` — the one Luna's ledger says it wrote there,
-/// `Both` where it wrote none — while that line and the blank one after it are
-/// still there word for word, with either line ending (an editor may have
-/// turned the copy's into CRLF). Anything else is the person's text, taken
-/// whole: the same words in a copy Luna wrote no line into are theirs.
+/// every session's where it wrote none — this Luna's line or an earlier one's,
+/// while that line and the blank one after it are still there word for word,
+/// with either line ending (an editor may have turned the copy's into CRLF).
+/// Anything else is the person's text, taken whole: the same words in a copy
+/// Luna wrote no line into are theirs.
 pub(super) fn unworded(text: &[u8], banner: Audience) -> Vec<u8> {
-    let Some(line) = wording(banner) else { return text.to_vec() };
-    ["\n\n", "\r\n\r\n"]
-        .iter()
-        .find_map(|end| text.strip_prefix([line.as_bytes(), end.as_bytes()].concat().as_slice()))
+    wordings(banner)
+        .into_iter()
+        .flat_map(|line| ["\n\n", "\r\n\r\n"].map(|end| [line.as_bytes(), end.as_bytes()].concat()))
+        .find_map(|head| text.strip_prefix(head.as_slice()))
         .unwrap_or(text)
         .to_vec()
 }
 
-/// Whether the copy at `path` opens on the line `worded` puts there for
+/// Whether the copy at `path` opens on a line `worded` puts there for
 /// `banner`, with either line ending: what a session reading it is told, not
 /// what the settings would have it told. A copy changed there, left out on
 /// purpose or not yet written may not.
@@ -109,21 +141,27 @@ pub(super) fn carries_banner(path: &Path, banner: Audience) -> bool {
 /// What the library keeps from this session for its audience, as said in
 /// what Luna applied.
 pub(super) fn kept_note(what: &str, name: &str, audience: Audience) -> String {
-    format!("{what} {name} ({})", audience.label())
+    format!("{what} {name} ({})", label(audience))
 }
 
-/// Codex's instructions meant for the other kind: still read, with the line
-/// saying whose they are.
+/// What the library gives this session for its role alone, as said in what
+/// Luna applied.
+pub(super) fn given_note(name: &str, audience: Audience) -> String {
+    format!("instructions {name} ({}): given to this session alone", label(audience))
+}
+
+/// Codex's instructions meant for the person's chats: still read, with the
+/// line saying whose they are.
 pub(super) fn worded_note(name: &str, audience: Audience) -> String {
-    format!("instructions {name} ({}): AGENTS.md says so, as Codex reads it in every session", audience.label())
+    format!("instructions {name} ({}): AGENTS.md says so, as Codex reads it in every session", label(audience))
 }
 
-/// Codex's instructions meant for the other kind, read by this session from a
-/// copy that does not say so (changed there, left out, not written).
+/// Codex's instructions meant for the person's chats, read by this session
+/// from a copy that does not say so (changed there, left out, not written).
 pub(super) fn unworded_note(name: &str, audience: Audience) -> String {
     format!(
         "instructions {name} ({}): the account's AGENTS.md does not say so — changed there, left out or not written — and Codex reads it in every session",
-        audience.label()
+        label(audience)
     )
 }
 
@@ -140,23 +178,28 @@ pub fn audience_applied(s: &SessionSkills) -> Vec<crate::applied::Applied> {
     out
 }
 
-/// Whose sessions a skill or instructions file is for; both drops it from
-/// the settings.
+/// Whose sessions a skill or instructions file is for; every session's drops
+/// it from the settings. Instructions given any other audience than the
+/// person's chats' alone stop being laid into accounts (`laid_out`): from
+/// then on they reach their sessions one session at a time.
 #[tauri::command(async)]
 pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview, String> {
     let (skill, name) = match entry {
         Entry::Skill(n) => (true, n),
         Entry::Instructions(n) => (false, n),
         // Served only where it is due, the same to every chat it is served to.
-        Entry::System(n) => return Err(format!("{n} is a system skill: it has no audience to pick")),
+        Entry::System(n) => return Err(format!("{n} is a system text: it has no audience to pick")),
     };
     check_name(&name)?;
-    crate::log::info("library", &format!("{} {name}: for {}", if skill { "skill" } else { "instructions" }, audience.label()));
+    crate::log::info("library", &format!("{} {name}: for {}", if skill { "skill" } else { "instructions" }, label(audience)));
     change(|l| {
+        if !skill && audience != Audience::CHATS {
+            l.laid_out.remove(&name);
+        }
         let map = if skill { &mut l.audience.skills } else { &mut l.audience.instructions };
-        match audience {
-            Audience::Both => map.remove(&name),
-            other => map.insert(name, other),
+        match audience.is_every() {
+            true => map.remove(&name),
+            false => map.insert(name, audience),
         };
     })
 }
@@ -165,34 +208,74 @@ pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview
 mod tests {
     use super::*;
 
+    const LEADS_AND_HELPERS: Audience = Audience { chat: false, lead: true, helper: true };
+
     #[test]
-    fn instructions_for_one_kind_are_worded_and_come_back_plain() {
+    fn instructions_for_the_chats_are_worded_and_come_back_plain() {
         let text = b"# Me\n\nSpeak Russian to me.\n";
-        assert_eq!(worded(text, Audience::Both), text);
-        for audience in [Audience::Chats, Audience::Helpers] {
-            let w = worded(text, audience);
-            assert!(w.ends_with(text) && w.len() > text.len());
-            assert_eq!(unworded(&w, audience), text, "taken back into the library as it was");
-            // An editor that turned the copy's line endings into CRLF.
-            let crlf = String::from_utf8_lossy(&w).replace('\n', "\r\n").into_bytes();
-            assert_eq!(unworded(&crlf, audience), b"# Me\r\n\r\nSpeak Russian to me.\r\n", "the line goes, the rest as it is");
-        }
-        assert!(String::from_utf8_lossy(&worded(text, Audience::Chats)).starts_with("> For the person's own chats only:"));
+        assert_eq!(worded(text, Audience::EVERY), text);
+        assert_eq!(worded(text, LEADS_AND_HELPERS), text, "only the chats' are laid out with a line");
+        let w = worded(text, Audience::CHATS);
+        assert!(w.ends_with(text) && w.len() > text.len());
+        assert_eq!(unworded(&w, Audience::CHATS), text, "taken back into the library as it was");
+        // An editor that turned the copy's line endings into CRLF.
+        let crlf = String::from_utf8_lossy(&w).replace('\n', "\r\n").into_bytes();
+        assert_eq!(unworded(&crlf, Audience::CHATS), b"# Me\r\n\r\nSpeak Russian to me.\r\n", "the line goes, the rest as it is");
+        assert!(String::from_utf8_lossy(&w).starts_with("> For chats with a person only:"));
         // Only the line Luna wrote there comes off.
-        let w = worded(text, Audience::Chats);
-        assert_eq!(unworded(&w, Audience::Both), w, "a copy Luna wrote no line into: the same words are the person's");
-        assert_eq!(unworded(&w, Audience::Helpers), w, "nor another line than the one it wrote");
+        assert_eq!(unworded(&w, Audience::EVERY), w, "a copy Luna wrote no line into: the same words are the person's");
+        assert_eq!(unworded(&w, LEADS_AND_HELPERS), w, "nor another line than the one it wrote");
         // A line edited there is the person's text now, kept whole.
         let edited = b"> For the person's own chats, mostly.\n\nRest.\n";
-        assert_eq!(unworded(edited, Audience::Chats), edited);
+        assert_eq!(unworded(edited, Audience::CHATS), edited);
     }
 
     #[test]
-    fn an_audience_takes_its_kind_and_both_take_every_kind() {
-        use SessionKind::*;
-        assert!(Audience::Both.takes(Chat) && Audience::Both.takes(Helper));
-        assert!(Audience::Chats.takes(Chat) && !Audience::Chats.takes(Helper));
-        assert!(Audience::Helpers.takes(Helper) && !Audience::Helpers.takes(Chat));
+    fn the_lines_of_before_roles_still_come_off() {
+        let text = b"Be brief.\n";
+        for (line, banner) in [(FOR_CHATS_BEFORE, Audience::CHATS), (FOR_HELPERS_BEFORE, LEADS_AND_HELPERS)] {
+            for end in ["\n\n", "\r\n\r\n"] {
+                let old = [line.as_bytes(), end.as_bytes(), text].concat();
+                assert_eq!(unworded(&old, banner), text, "{line:?}");
+                assert_eq!(unworded(&old, Audience::EVERY), old);
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("luna-banner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("AGENTS.md");
+        std::fs::write(&file, worded(text, Audience::CHATS)).unwrap();
+        assert!(carries_banner(&file, Audience::CHATS));
+        std::fs::write(&file, text).unwrap();
+        assert!(!carries_banner(&file, Audience::CHATS));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_audience_takes_its_roles_and_every_takes_every_role() {
+        for role in Role::ALL {
+            assert!(Audience::EVERY.takes(role));
+            assert_eq!(Audience::of(&[role]).roles(), [role]);
+            for other in Role::ALL.into_iter().filter(|r| *r != role) {
+                assert!(!Audience::of(&[role]).takes(other), "{role:?} {other:?}");
+                assert!(Audience::of(&[role, other]).takes(other));
+            }
+        }
+        assert_eq!(label(Audience::EVERY), "every session");
+        assert_eq!(label(LEADS_AND_HELPERS), "leads and helpers only");
+    }
+
+    #[test]
+    fn only_every_sessions_and_the_chats_laid_out_go_into_accounts() {
+        let mut lib = LibrarySettings::default();
+        assert!(laid_into_accounts(&lib, "main"), "every session's");
+        lib.audience.instructions.insert("main".into(), Audience::CHATS);
+        assert!(!laid_into_accounts(&lib, "main"), "a new chats' entry is given per session");
+        lib.laid_out.insert("main".into());
+        assert!(laid_into_accounts(&lib, "main"));
+        assert_eq!(banner_of(&lib, "main"), Audience::CHATS);
+        lib.audience.instructions.insert("main".into(), LEADS_AND_HELPERS);
+        assert!(!laid_into_accounts(&lib, "main"), "laid out for the chats alone");
+        assert_eq!(banner_of(&lib, "main"), Audience::EVERY);
     }
 
     #[test]
@@ -202,25 +285,65 @@ mod tests {
         let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
-        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n", "both: the library's word for word");
-        lib.audience.instructions.insert("main".into(), Audience::Chats);
+        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n", "every session's: the library's word for word");
+        lib.audience.instructions.insert("main".into(), Audience::CHATS);
+        lib.laid_out.insert("main".into());
         let p = f.run(&lib, &mut ledger, false);
         assert_eq!(Fixture::status(&p, &f.account(1).join("AGENTS.md")), Status::Behind, "Luna's own copy, behind");
         f.run(&lib, &mut ledger, true);
         assert_eq!(f.read(1, "AGENTS.md"), format!("{FOR_CHATS}\n\nBe brief.\n"));
         assert_eq!(f.read(0, "CLAUDE.md"), format!("{FOR_CHATS}\n\nBe brief.\n"), "worded on Claude Code too");
         let agents = f.account(1).join("AGENTS.md").to_string_lossy().into_owned();
-        assert_eq!(ledger.worded.get(&agents), Some(&Audience::Chats), "the ledger says which line Luna wrote there");
+        assert_eq!(ledger.worded.get(&agents), Some(&Audience::CHATS), "the ledger says which line Luna wrote there");
         lib.audience = Default::default();
         f.run(&lib, &mut ledger, true);
         assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n");
         assert!(ledger.worded.is_empty(), "rewritten without it");
     }
 
-    /// `main` for everyone, worded for the person's chats; `report` (theirs),
-    /// `cleanup` (helpers') and `review` (both) into every account; and a
-    /// repository giving every account's sessions there `solo`, the person's
-    /// chats' alone, which no account has as a whole.
+    #[test]
+    fn a_copy_with_the_line_of_before_roles_is_rewritten_with_this_ones() {
+        let f = Fixture::new("audience-reworded");
+        f.instructions("main", "Be brief.\n");
+        let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
+        lib.audience.instructions.insert("main".into(), Audience::CHATS);
+        lib.laid_out.insert("main".into());
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        // As an earlier Luna left it: its line in the copy, and in the ledger.
+        let old = format!("{FOR_CHATS_BEFORE}\n\nBe brief.\n");
+        for i in [0, 1] {
+            let name = if i == 0 { "CLAUDE.md" } else { "AGENTS.md" };
+            let dest = f.account(i).join(name);
+            std::fs::write(&dest, &old).unwrap();
+            ledger.wrote(&dest.to_string_lossy(), hashes(&Files::from([(String::new(), old.clone().into_bytes())])), Audience::CHATS);
+        }
+        let p = f.run(&lib, &mut ledger, false);
+        assert_eq!(Fixture::status(&p, &f.account(1).join("AGENTS.md")), Status::Behind, "Luna's copy, behind: not the person's");
+        f.run(&lib, &mut ledger, true);
+        assert_eq!(f.read(1, "AGENTS.md"), format!("{FOR_CHATS}\n\nBe brief.\n"));
+        assert_eq!(f.read(0, "CLAUDE.md"), format!("{FOR_CHATS}\n\nBe brief.\n"));
+    }
+
+    #[test]
+    fn instructions_for_leads_and_helpers_leave_the_accounts() {
+        let f = Fixture::new("audience-leave");
+        f.instructions("main", "Be brief.\n");
+        let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n");
+        lib.audience.instructions.insert("main".into(), LEADS_AND_HELPERS);
+        f.run(&lib, &mut ledger, true);
+        assert!(!f.account(1).join("AGENTS.md").exists(), "Luna's own copy goes: given per session from now on");
+        assert!(!f.account(0).join("CLAUDE.md").exists());
+    }
+
+    /// `main` for everyone, laid out for the person's chats; `report`
+    /// (theirs), `cleanup` (leads' and helpers') and `review` (every
+    /// session's) into every account; and a repository giving every account's
+    /// sessions there `solo`, the person's chats' alone, which no account has
+    /// as a whole.
     fn audiences(f: &Fixture) -> (LibrarySettings, String, String) {
         f.instructions("main", "Speak Russian to me.\n");
         for s in ["report", "cleanup", "review", "solo"] {
@@ -240,11 +363,12 @@ mod tests {
             folders: vec![folder],
             ..Default::default()
         };
-        lib.audience.instructions.insert("main".into(), Audience::Chats);
+        lib.audience.instructions.insert("main".into(), Audience::CHATS);
+        lib.laid_out.insert("main".into());
         lib.audience.skills.extend([
-            ("report".into(), Audience::Chats),
-            ("cleanup".into(), Audience::Helpers),
-            ("solo".into(), Audience::Chats),
+            ("report".into(), Audience::CHATS),
+            ("cleanup".into(), LEADS_AND_HELPERS),
+            ("solo".into(), Audience::CHATS),
         ]);
         f.run(&lib, &mut Ledger::default(), true);
         codex_manifests(&lib, &f.accounts);
@@ -258,20 +382,23 @@ mod tests {
         let (lib, repo, elsewhere) = audiences(&f);
         let a = &f.accounts[0];
         let claude_md = f.account(0).join("CLAUDE.md").to_string_lossy().replace('\\', "/");
-        let helper = folder_args(&f.dirs, &lib, a, &elsewhere, SessionKind::Helper);
-        assert_eq!(helper.hidden, ["report"]);
-        assert_eq!(helper.excluded, [claude_md], "the account's instructions are the person's chats'");
-        assert_eq!(helper.instructions, None, "and nothing in their place");
-        assert_eq!(helper.audience, ["instructions main (chats only)", "skill report (chats only)"]);
-        let chat = folder_args(&f.dirs, &lib, a, &elsewhere, SessionKind::Chat);
+        for role in [Role::Helper, Role::Lead] {
+            let helper = folder_args(&f.dirs, &lib, a, &elsewhere, role);
+            assert_eq!(helper.hidden, ["report"]);
+            assert_eq!(helper.excluded, std::slice::from_ref(&claude_md), "the account's instructions are the person's chats'");
+            assert_eq!(helper.instructions, None, "and nothing in their place");
+            assert!(helper.role_entries.is_empty());
+            assert_eq!(helper.audience, ["instructions main (chats only)", "skill report (chats only)"]);
+        }
+        let chat = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Chat);
         assert_eq!(chat.hidden, ["cleanup"]);
         assert!(chat.excluded.is_empty(), "the account's own file, worded for it, is read as ever");
-        assert_eq!(chat.audience, ["skill cleanup (helpers only)"]);
+        assert_eq!(chat.audience, ["skill cleanup (leads and helpers only)"]);
         // In the repository a folder's copy goes too, by the name it is listed under.
-        let helper = folder_args(&f.dirs, &lib, a, &repo, SessionKind::Helper);
+        let helper = folder_args(&f.dirs, &lib, a, &repo, Role::Helper);
         assert_eq!(helper.hidden, ["report", "solo"]);
         assert_eq!(helper.args.len(), 2, "the folder's skills are still added, for what is the helper's");
-        let chat = folder_args(&f.dirs, &lib, a, &repo, SessionKind::Chat);
+        let chat = folder_args(&f.dirs, &lib, a, &repo, Role::Chat);
         assert_eq!(chat.hidden, ["cleanup"]);
     }
 
@@ -280,7 +407,7 @@ mod tests {
         let f = Fixture::new("audience-codex");
         let (lib, repo, elsewhere) = audiences(&f);
         let a = &f.accounts[1];
-        let helper = folder_args(&f.dirs, &lib, a, &elsewhere, SessionKind::Helper);
+        let helper = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper);
         assert_eq!(helper.args, ["-c", "skills.config=[{name=\"report\",enabled=false}]"]);
         assert!(helper.excluded.is_empty() && helper.hidden.is_empty(), "nothing Codex could take");
         assert_eq!(
@@ -290,7 +417,7 @@ mod tests {
         assert!(helper.unkept.is_empty());
         // A copy changed there, without the line: not claimed, said as not kept.
         std::fs::write(f.account(1).join("AGENTS.md"), "Speak Russian to me.\n").unwrap();
-        let changed = folder_args(&f.dirs, &lib, a, &elsewhere, SessionKind::Helper);
+        let changed = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper);
         assert_eq!(changed.audience, ["skill report (chats only)"]);
         assert!(changed.unkept.len() == 1 && changed.unkept[0].contains("does not say so"), "{:?}", changed.unkept);
         let applied = audience_applied(&changed);
@@ -298,11 +425,11 @@ mod tests {
         assert_eq!(unkept.class, crate::applied::Class::UserAction);
         // In CRLF, as an editor may leave it, it still says so.
         std::fs::write(f.account(1).join("AGENTS.md"), format!("{FOR_CHATS}\r\n\r\nSpeak Russian to me.\r\n")).unwrap();
-        assert!(folder_args(&f.dirs, &lib, a, &elsewhere, SessionKind::Helper).unkept.is_empty());
-        let chat = folder_args(&f.dirs, &lib, a, &elsewhere, SessionKind::Chat);
+        assert!(folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper).unkept.is_empty());
+        let chat = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Chat);
         assert_eq!(chat.args, ["-c", "skills.config=[{name=\"cleanup\",enabled=false}]"]);
-        assert_eq!(chat.audience, ["skill cleanup (helpers only)"]);
-        let helper = folder_args(&f.dirs, &lib, a, &repo, SessionKind::Helper);
+        assert_eq!(chat.audience, ["skill cleanup (leads and helpers only)"]);
+        let helper = folder_args(&f.dirs, &lib, a, &repo, Role::Helper);
         assert_eq!(
             helper.args,
             [
@@ -315,17 +442,65 @@ mod tests {
     }
 
     #[test]
-    fn with_every_entry_for_both_a_session_of_either_kind_gets_what_it_did() {
+    fn with_every_entry_for_every_session_each_role_gets_what_it_did() {
         let f = Fixture::new("audience-none");
         let (mut lib, repo, elsewhere) = audiences(&f);
         lib.audience = Default::default();
         for a in &f.accounts {
             for folder in [&repo, &elsewhere] {
-                let chat = folder_args(&f.dirs, &lib, a, folder, SessionKind::Chat);
-                assert_eq!(folder_args(&f.dirs, &lib, a, folder, SessionKind::Helper), chat);
-                assert!(chat.audience.is_empty() && chat.hidden.is_empty() && chat.excluded.is_empty());
+                let chat = folder_args(&f.dirs, &lib, a, folder, Role::Chat);
+                for role in [Role::Lead, Role::Helper] {
+                    assert_eq!(folder_args(&f.dirs, &lib, a, folder, role), chat);
+                }
+                assert!(chat.audience.is_empty() && chat.hidden.is_empty() && chat.excluded.is_empty() && chat.role_entries.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn instructions_for_some_roles_are_given_per_session_in_name_order() {
+        let f = Fixture::new("audience-per-session");
+        f.instructions("main", "Everyone.\n");
+        f.instructions("b-lead", "Split the work.\n");
+        f.instructions("a-lead", "Check what they report.\n");
+        f.instructions("helper", "Be brief.\n");
+        f.instructions("blank", "");
+        let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
+        for (n, reach) in [("b-lead", all()), ("a-lead", vec!["claude".to_string()]), ("helper", all()), ("blank", all())] {
+            lib.instructions.insert(n.into(), reach);
+        }
+        lib.audience.instructions.extend([
+            ("b-lead".into(), Audience::of(&[Role::Lead])),
+            ("a-lead".into(), Audience::of(&[Role::Lead])),
+            ("helper".into(), Audience::of(&[Role::Helper])),
+            ("blank".into(), Audience::of(&[Role::Lead])),
+        ]);
+        f.run(&lib, &mut Ledger::default(), true);
+        assert_eq!(f.read(0, "CLAUDE.md"), "Everyone.\n", "the account's file is every session's");
+        let elsewhere = f.base.join("elsewhere").to_string_lossy().into_owned();
+        let entries = |lib: &LibrarySettings, i: usize, role| folder_args(&f.dirs, lib, &f.accounts[i], &elsewhere, role).role_entries;
+        let pair = |n: &str, t: &str| (n.to_string(), t.to_string());
+        assert_eq!(entries(&lib, 0, Role::Lead), [pair("a-lead", "Check what they report.\n"), pair("b-lead", "Split the work.\n")]);
+        assert_eq!(entries(&lib, 1, Role::Lead), [pair("b-lead", "Split the work.\n")], "a-lead's reach is Claude Code's");
+        assert_eq!(entries(&lib, 1, Role::Helper), [pair("helper", "Be brief.\n")]);
+        assert!(entries(&lib, 0, Role::Chat).is_empty());
+        let lead = folder_args(&f.dirs, &lib, &f.accounts[0], &elsewhere, Role::Lead);
+        assert!(lead.excluded.is_empty(), "the account's own is every session's: read as ever");
+        assert_eq!(
+            lead.audience,
+            [
+                "instructions a-lead (leads only): given to this session alone",
+                "instructions b-lead (leads only): given to this session alone"
+            ]
+        );
+        // An account whose own file holds none still gets its roles'.
+        lib.no_instructions = vec!["claude/work".into()];
+        assert_eq!(entries(&lib, 0, Role::Lead).len(), 2);
+        // And giving one of them an account takes it from no other.
+        give_instructions(&mut lib, Some("helper"), vec!["claude/work".into()]);
+        assert_eq!(lib.instructions["b-lead"], all(), "per session, they do not compete");
+        assert_eq!(lib.instructions["main"], all());
+        assert_eq!(lib.no_instructions, ["claude/work".to_string()]);
     }
 
     #[test]
@@ -333,12 +508,12 @@ mod tests {
         let f = Fixture::new("audience-folder-instructions");
         let (mut lib, repo, _) = audiences(&f);
         f.instructions("terse", "Say less.\n");
-        lib.audience.instructions = BTreeMap::from([("terse".into(), Audience::Chats)]);
+        lib.audience.instructions = BTreeMap::from([("terse".into(), Audience::CHATS)]);
         lib.folders[0].instructions = BTreeMap::from([("claude".into(), Some("terse".into()))]);
         let a = &f.accounts[0];
-        let chat = folder_args(&f.dirs, &lib, a, &repo, SessionKind::Chat);
+        let chat = folder_args(&f.dirs, &lib, a, &repo, Role::Chat);
         assert_eq!(chat.instructions, Some(f.dirs.instructions_file("terse")));
-        let helper = folder_args(&f.dirs, &lib, a, &repo, SessionKind::Helper);
+        let helper = folder_args(&f.dirs, &lib, a, &repo, Role::Helper);
         assert_eq!(helper.instructions, None);
         assert_eq!(helper.excluded, chat.excluded, "the account's left out all the same");
         assert_eq!(helper.audience[0], "instructions terse (chats only)");

@@ -19,14 +19,15 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | --- | --- |
 | `library/mod.rs` | the library's folders, the ledger, the pass lock |
 | `library/reach.rs` | whom a skill or instructions file is for |
-| `library/audience.rs` | whose sessions one is for (chats, helpers, both); the wording of a copy for one kind |
+| `library/audience.rs` | whose sessions one is for (every session, or some of chat, lead, helper); where each goes; the wording of a copy laid out for the chats |
+| `library/role.rs` | what a session is told of its role: its role's system texts, the layers composed, Codex's `developer_instructions`, the notes served |
 | `library/skills.rs` | the library's own files, read and checked |
 | `library/files.rs` | copies on disk, blobs, backups |
 | `library/folders.rs` | what waits for a named folder's sessions; `session_args` |
 | `library/pass.rs` | one pass over every copy |
 | `library/overview.rs` | what the window is shown |
 | `library/commands.rs` | the window's commands |
-| `library/system.rs` | the system skills: the handoff's instructions resolved, Luna's own or the override in `system/` ([handoff](handoff.md#the-instructions)); the override read, written, compared, sent to the backups or made from a library skill of the name; the reserved name |
+| `library/system.rs` | the system texts (the handoff's skill, the roles' defaults and notes): each resolved, Luna's own or the override in `system/` ([handoff](handoff.md#the-instructions)); the override read, written, compared, sent to the backups or made from a library skill of the name; the reserved name |
 | `src/features/library/` | the Skills & instructions window, grids, `ReachPicker`, `AudiencePicker`, `FolderCell`, `LibraryEditor`, `SystemSkills`, `diff.ts` |
 
 ## Reaches
@@ -71,41 +72,60 @@ resolved.
 
 ## Audiences
 
-Each instructions file and skill has an **audience** in `settings.json`
-(`library.audience.instructions` / `.skills`, by name; absent is `both`):
-`chats` (the person's own, run in a pane), `helpers` (run headless by
-`background/`), or `both` (`library/audience.rs`). Renaming or deleting an entry
-carries its audience along. `session_args` takes the start's `SessionKind`
-(`Chat` from `pty/start.rs`, `Helper` from `background/command.rs`) and keeps
-from it what is not for its kind, in `folder_args`:
+Luna starts sessions in three roles (`settings::Role`): `chat` (the person's,
+run in a pane: `pty/start.rs`), `lead` (a background helper spawned with
+`tools`, which may spawn its own: `background/command.rs` `role_of`) and
+`helper` (spawned without them). Each instructions file and skill has an
+**audience** in `settings.json` (`library.audience.instructions` / `.skills`,
+by name; absent is every session): `"every"` or a list of roles. What earlier
+Lunas wrote still reads: `both` is every session, `chats` is `["chat"]`,
+`helpers` is `["lead", "helper"]` (`AudienceField`); only the new form is
+written, and the ledger's `worded` reads the same way. Renaming or deleting an
+entry carries its audience along. `session_args` takes the start's `Role` and,
+in `folder_args`, keeps from it what is not for its role and gives it what is:
 
-- **Claude Code:** the instructions a session would read — a folder's
-  (`folder_instructions`), else the account's own (`chosen`) — if not for its
-  kind, are none: the account's `CLAUDE.md` goes in `claudeMdExcludes` and
-  nothing replaces it. A skill not for its kind is hidden wherever it would
-  come from (the account's copy, a folder's) in `skillOverrides`
-  (`hidden_here`). No per-launch helper variant of the account's file is
-  written: it would be a second copy to keep current, and an account gets one
-  instructions file, so a chats-only file leaves a Claude Code helper with no
-  library instructions rather than other ones. The account's file is left out
-  by its path taken literally (`glob_literal`), and only where that pattern
-  cannot also match one of the session's own instruction files in Claude
-  Code's matcher (`pty::claude_account_excludes`, through #30's
-  `keep_own_memory`): one that could is read after all and said as the
-  Workaround `library.account-instructions-kept`.
+- **Where instructions go** (`audience.rs` `laid_into_accounts`): an entry for
+  every session is laid into accounts, one per account (`reach.rs` `chosen`,
+  which considers only these). An entry for some roles is never laid into an
+  account: it reaches each session of its roles as one of its role layers
+  (`SessionSkills::role_entries`, every such entry whose reach takes the
+  account, in name order; `no_instructions` is about an account's own file and
+  does not hold them back), so `give_instructions` makes reaches exclusive only
+  among entries laid into accounts. The exception is
+  `LibrarySettings::laid_out`: entries an earlier Luna laid out for the
+  person's chats (seeded from `"chats"` when the settings are read) stay in the
+  accounts with a line before them (`banner_of`, `worded`), so chats started
+  outside Luna keep them. Setting such an entry's audience to anything else
+  takes it out of `laid_out`, and the next pass takes its copies out as no
+  longer wanted (or keeps a copy changed there, as ever). An old helpers-only
+  entry leaves the accounts the same way; `chosen` may then give an account
+  another file, which the pass reports.
+- **Claude Code:** the instructions a session would read from its account or
+  a folder — a folder's (`folder_instructions`), else the account's own — if
+  not for its role, are none: the account's `CLAUDE.md` goes in
+  `claudeMdExcludes`. A folder's instructions for its role go first in its role
+  layers, in the account's place. A skill not for its role is hidden wherever it
+  would come from (the account's copy, a folder's) in `skillOverrides`
+  (`hidden_here`). The account's file is left out by its path taken literally
+  (`glob_literal`), and only where that pattern cannot also match one of the
+  session's own instruction files in Claude Code's matcher
+  (`pty::claude_account_excludes`, through #30's `keep_own_memory`): one that
+  could is read after all and said as the Workaround
+  `library.account-instructions-kept`.
 - **Codex:** skills as above, in the one `-c skills.config`. Its account's
-  `AGENTS.md` cannot be left out of one session (0.167.0: the user-instructions
-  provider in `codex-rs/codex-home/src/instructions/mod.rs` reads
-  `AGENTS.override.md` or `AGENTS.md` from `CODEX_HOME`, and
-  `codex-rs/cli/src/main.rs` installs it with no config switch;
-  `developer_instructions` only adds, `model_instructions_file` replaces the base
-  prompt). So `units` lays instructions for one kind out `worded`: a line before
-  them saying whose they are. Claude Code copies get the same line, for the
-  sessions Luna does not start. The ledger notes which line Luna wrote at each
-  destination (`Ledger::worded`); `library_resolve` taking a copy in strips
-  that line alone, while it and the blank line after it are still there word
-  for word with either line ending (`unworded`), so the same words in a copy
-  Luna wrote no line into stay the person's.
+  `AGENTS.md` cannot be left out of one session (0.167.2: the app-server
+  installs `CodexHomeUserInstructionsProvider` unconditionally, which reads
+  `AGENTS.override.md` or `AGENTS.md` from `CODEX_HOME`, an empty override
+  skipped; `model_instructions_file` replaces the base prompt). So an entry
+  still laid out for the chats goes `worded`: a line before it saying whose it
+  is, `FOR_CHATS`. Claude Code copies get the same line, for the sessions Luna
+  does not start. The ledger notes which line Luna wrote at each destination
+  (`Ledger::worded`); `library_resolve` taking a copy in strips that line alone
+  (this Luna's or an earlier one's, `wordings`), while it and the blank line
+  after it are still there word for word with either line ending
+  (`unworded`), so the same words in a copy Luna wrote no line into stay the
+  person's. A copy still opening on an earlier Luna's line is Luna's own,
+  behind, and the next pass rewrites it.
 - What the audience decided goes in `SessionSkills::audience` and is applied
   as `library.audience` (a UserAction, ADR-0016) beside the mechanism's own
   items (`library.hidden-skills`, `library.account-instructions-off`). A Codex
@@ -115,6 +135,39 @@ from it what is not for its kind, in `folder_args`:
 - Nothing is written into an account per launch: the wording is part of the
   copy, written by the pass like any other change of the library.
 
+## Role layers
+
+What a session is told of its role (ADR-0025, `library/role.rs`), after its
+account's file, in this order: Luna's default for its role (the system texts
+`role-chat`, empty, `role-lead`, `role-helper`), the library's entries for its
+role (`role_entries`; a Claude Code folder's instructions first, in the
+account's place), then its constraints (agents/spawn `Constraint`), each under
+a heading of its own (`compose_layers`). Nothing at all is none: a chat with
+no override and no entries for chats is started as before.
+
+- **Claude Code:** written at every start and every helper turn to
+  `hooks/<id>/CLAUDE.md` (owner-only, `secret::write_private`) and passed as
+  `--add-dir` with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`
+  (`pty::claude_instructions_dir`); the other added folders' memory is left out
+  (`claude_memory_off`). Memory is read again on resume, unlike
+  `--append-system-prompt`, which Luna no longer passes.
+- **Codex:** `-c developer_instructions=<value>` (`pty::codex_role_args`), the
+  value being what the config stack sets (`codex/config.rs`
+  `developer_instructions_in`: `/etc/codex/config.toml` on Unix, the account's
+  `config.toml`, a trusted project's layers, the selected profile's) and then
+  the layers. A `-c` replaces the stack's string, so Luna puts it first. A
+  managed layer, which comes above the `-c`, that sets the key, or a layer Luna
+  cannot read, is said as `role.layers-unsure`; the session starts all the
+  same. The value is held to 24 KB (`CODEX_ROLE_MAX`): over it a helper's turn
+  is refused, a chat starts without its layers (`role.layers-off`). Codex sends
+  the value at a thread's start and after a compaction; `exec resume` and
+  `codex resume` rebuild the context from the rollout, so a changed value
+  reaches a running thread only then.
+- The system texts are read before the background lock (`background/run.rs`
+  `spawn_turn`, `role_texts`): reading an override waits on the system lock
+  while an adoption swaps one in.
+- What was given is applied as `role.layers` (whose texts, the entries) and
+  `constraints` (their words).
 ## Folders
 
 A folder the user names gets nothing written into it: a copy there would reach
@@ -150,12 +203,12 @@ it lies in.
   `off`) read as reaches: a tick is `all`, or the skill's reach for one that was
   folders only (and then none as a whole); off is none.
 - **Instructions per folder**, Claude Code only (`folder_instructions`): the
-  account's `CLAUDE.md` in `claudeMdExcludes`, the other file copied at every
-  start to `hooks/<id>/CLAUDE.md` and passed as `--add-dir` with
-  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` (`pty::claude_instructions_dir`):
-  memory is read again on resume, unlike `--append-system-prompt-file`. Codex
-  reads its account's `AGENTS.override.md` or `AGENTS.md` with no way to turn it
-  off, so Codex columns are disabled.
+  account's `CLAUDE.md` in `claudeMdExcludes`, the other file first in the
+  session's [role layers](#role-layers), written at every start to
+  `hooks/<id>/CLAUDE.md`: memory is read again on resume, unlike
+  `--append-system-prompt-file`. Codex reads its account's
+  `AGENTS.override.md` or `AGENTS.md` with no way to turn it off, so Codex
+  columns are disabled.
 
 ## The pass
 
@@ -267,7 +320,7 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
   changed there) and hidden from no session (`hidden_here` skips it), so its
   name reaches no account, folder or start. `library_new_skill` refuses the
   name. Laid out, it would tell every session of the handoff.
-- The window's System skills section reaches only `system/<name>` for a name
+- The window's System texts section reaches only `system/<name>` for a name
   `luna_text` knows, and Luna's backups: the editor through `library_read` and
   `library_write` with `{"system": name}` (Luna's own text where there is no
   override; a save over 64 KB refused, a draft that will not do saved and

@@ -497,11 +497,6 @@ pub(crate) fn claude_read_deny(dir: &str, windows: bool) -> String {
     format!("Read(//{path}/**)")
 }
 
-/// `helper_line` for Claude Code, added to its system prompt.
-pub(crate) fn claude_helper_args(parent: &str) -> Vec<String> {
-    vec!["--append-system-prompt".into(), crate::pty::helper_line(parent)]
-}
-
 /// What `readOnly` takes away from Claude Code. Bash stays, and can still
 /// write: it is a checker's tool, and no flag tells its reads from its writes.
 pub(crate) const CLAUDE_EDIT_TOOLS: [&str; 3] = ["Edit", "Write", "NotebookEdit"];

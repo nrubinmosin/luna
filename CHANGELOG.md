@@ -8,6 +8,36 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- Sessions have a role: your **chats**, **leads** (helpers started with Luna's
+  tools) and **helpers**. Each is told of its role at the level of an
+  instructions file, which outweighs a prompt note and survives a compaction:
+  Claude Code reads it as a `CLAUDE.md` of Luna's, Codex in
+  `developer_instructions` after its config's own value (ADR-0025).
+- The library's **For** column takes any of the three roles. Instructions for
+  some roles only reach each such session as Luna starts it, never through an
+  account; several for one role all go, in name order.
+- **System texts** in the library: what a lead and a helper are told of their
+  role, the note after their tasks, and what a chat is told (nothing by
+  default), each with Luna's own text and one override of yours, beside the
+  handoff's instructions.
+- `constraints` on `luna_session_spawn`: text the helper and every session
+  under it are told last among their instructions, at every start and resume.
+  A spawn adds to what its caller carries; nothing removes any. Shown in
+  `luna_session_get`.
+
+### Changed
+
+- The note after a task from another agent names nobody: it opens
+  `[A note, not part of the task: …]`, no longer speaks of an operator, Luna or
+  other sessions, and older notes still come off what a session was asked.
+  Helpers are no longer started with `--append-system-prompt`.
+- Library audiences of earlier versions read as roles: **Both** is every
+  session, **Chats** your chats, **Helpers** leads and helpers. Instructions
+  for your chats stay in the accounts with a neutral line saying whose they
+  are; instructions for helpers leave the accounts and go per session.
+
 ## [0.17.0] - 2026-11-13
 
 A chat can hand off to a fresh conversation whenever you ask: **Hand off now**

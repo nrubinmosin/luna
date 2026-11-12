@@ -128,6 +128,18 @@ hooks run unasked.
   setting on asks again in a system dialog; turning it off does not.
 - A Codex helper never asks a person: its approval is `never` or `auto-review`,
   and one that asks (`on-request` and the like) is refused, as nobody is there.
+- `constraints` is text the helper and every session
+  it starts in turn are told, last among their instructions, at every start,
+  resume and handoff. A spawn adds its own to the ones its caller carries, word
+  for word; none is ever taken off (4 KB a spawn, 16 KB in all). They show in
+  the helper's settings (`luna_session_get`) and its **What Luna applied**.
+  They are instructions, not permissions: what a helper may do is still its
+  mode's. A helper you open as your own chat leaves them behind.
+- A helper started with Luna's tools is a **lead**, one without them a
+  **helper**: each is told of its role as described in
+  [the library](library.md#what-a-session-is-told-of-its-role), and the
+  library's **For** column can give instructions and skills to leads or
+  helpers alone.
 
 ## Talking to sessions
 

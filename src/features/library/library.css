@@ -63,7 +63,7 @@
 [data-app] .library-audience .seg {
   flex-wrap: nowrap;
 }
-[data-app] .library-audience .seg > [role="radio"] {
+[data-app] .library-audience .seg > [role="checkbox"] {
   font-size: var(--fs-2);
   padding: 0 6px;
 }
