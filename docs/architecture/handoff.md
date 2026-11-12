@@ -9,7 +9,9 @@ next one from the file and the facts Luna knows. User-facing behavior:
 [ADR-0022](../adr/0022-content-luna-serves-at-its-own-trigger.md) (the
 instructions, served to that chat alone) and
 [ADR-0024](../adr/0024-handoff-on-request.md) (listed to every chat with Luna
-tools, answered only when asked).
+tools, answered only when asked). A lead, a helper spawned with Luna's tools,
+hands off too, at its turn's end with no terminal: [Leads](#leads),
+[ADR-0027](../adr/0027-auto-handoff-for-leads.md).
 
 ## Key modules
 
@@ -25,13 +27,17 @@ tools, answered only when asked).
 | `library/system.rs` | the instructions resolved: Luna's own or the library's override (`handoff_instructions`) |
 | `resources/skills/session-handoff/SKILL.md` | Luna's own instructions, compiled in (`LUNA_HANDOFF`) |
 | `src/features/chats/Handoff.tsx` | the panel's box, the divider, the chip's words (`askedWords`, `instructionsWords`) |
+| `agents/handoff/lead.rs` | a lead's handoff: who is listed it (`listed_to`), its threshold at a turn's end (`measure`), the call (`handoff`, `instructions`), the switch started or given up (`lead_turn_ended`, `start`, `gave_up`, `through`), a core's restart (`lead_taken_up`), Luna's document for a lead that writes none (`from_records`), the parent's line (`HandedOff`) |
+| `background/switch.rs` | the lead's switch as the headless runner carries it: `LeadSwitch` saved with the helper, `schedule_switch`, `begin_fresh`, `drop_switch`, `revert_switch`, `clear_switch`, the new conversation named (`lead_named`), Luna's own turn (`send_luna`) |
 | `agents/handoff/moving.rs` | a chat moved to another account: its phases, the commands, the ask and how it ended (`AskEnd`), what blocks one (`ask_blocked`), the new chat's opening |
 | `activity/limit.rs` | whether a usage limit still holds a chat (`limit_in_force`, `LimitFact`), by the readings `claude/limits.rs` and `codex/limits.rs` give |
-| `agents/handoff/document.rs`, `excerpts.rs`, `gitfacts.rs`, `scrub.rs` | the document Luna writes for a move, what it reads (the skills a conversation loaded too, `skills_in`, for the handoff's facts as well), and how it is cleaned |
+| `agents/handoff/document.rs`, `excerpts.rs`, `gitfacts.rs`, `scrub.rs` | the document Luna writes for a move, or for a lead that writes no file (`Inputs::lead`), what it reads (the skills a conversation loaded too, `skills_in`, for the handoff's facts as well), and how it is cleaned |
 | `src/features/chats/MoveChatDialog.tsx`, `moving.ts`, `MoveHint.tsx` | the move's dialog, the window's steps of it, the pane's offer |
 | `src/features/chats/handoffNow.ts`, `features/panes/Pane.tsx` | the pane's Hand off now: when it is offered (`handoffNowRefusal`), the core's refusal shown over the pane, the quick resume |
 
 ## Who knows of it
+
+What follows is a person's chat's; a lead's is under [Leads](#leads).
 
 Every person's chat with Luna tools (`may_list`: tools, no parent, not an
 orphan, a helper or the dev caller), auto-handoff on or not. `handoff` in a
@@ -490,6 +496,100 @@ until they are through.
   `pin_name`).
 - `forget` drops a deleted chat's record and its folder of copies; a chat keeps
   its last 20 on record.
+
+## Leads
+
+[ADR-0027](../adr/0027-auto-handoff-for-leads.md). User-facing behavior:
+[agents](../user-guide/agents.md#leads).
+
+- **Listed.** `may_list` is `chat_listed` (a person's chat, as above) or
+  `lead::listed_to`: `Settings::lead_handoff.on` and a background helper with
+  Luna's tools (`background::is_lead`). A helper without them never is. The
+  setting is read at every call (`lead_settings`, its threshold held to
+  `THRESHOLD_MIN`..`THRESHOLD_MAX`); a lead's CLI starts again every turn, so
+  it lists the tool, or stops listing it, at its next turn with no quick
+  resume. The chat-only paths (the beat's thresholds, Hand off now, a move,
+  `set_auto_handoff`) go by `chat_listed`.
+- **Its folders.** Every turn of a lead listed it makes its drafts folder
+  private before the CLI runs (`drafts_at_start`, background/command.rs
+  `handoff_dir`, off the background lock). Claude Code gets the folder of
+  copies as an `--add-dir`, its memory files excluded as other Luna folders'
+  are: the drafts folder to write in, and the copy its next conversation
+  reads first. Codex gets none: `exec resume`, the turn a lead is asked in,
+  takes no `--add-dir` (0.167.2). A Codex lead is named no drafts folder and
+  writes its handoff in its workspace, which `file.rs` takes as any file
+  outside Luna's folder; its sandboxes read the copy where it is.
+- **Measured.** At each lead turn's end `turn_over` starts `lead_turn_ended` on
+  a thread of its own. At rest (no run, nothing queued, in flight or held,
+  nothing its turns left, `left` and `left_running`, not ending what was left,
+  being opened, handed over or deleted, no switch), `Context::of` its
+  transcript is held to the threshold by `watch` as a chat's
+  (`told_now`, `level`, `due`, `firm_at`). A conversation a handoff began
+  (`Record::fresh`) takes its floor at this first look, its first turn's end.
+  Off, an open threshold's ask closes there.
+- **The ask.** Past the threshold the ask is opened on its record,
+  `AskKind::Auto` bound to its session or thread id, and the notice
+  (`facts::notice` under `NOTICE_TAG`) queued as a turn of Luna's own
+  (`send_luna`, no sender): started at once at rest, past the firm mark ahead
+  of anything queued. No ask goes to a lead that writes no file
+  (`switch::unwritable`: Claude Code `read_only` or plan mode, Codex in a
+  sandbox that writes nothing): past its threshold Luna builds its handoff
+  from its records (`document.rs` with `Inputs::lead`: its helpers its own,
+  no person's dialog, its caller asked before anything that cannot be
+  undone), copies it private as the next number and starts the switch at
+  once (`from_records`).
+- **The call.** `lead::handoff` answers only while the ask holds in the
+  conversation the lead is on (`asked_now`: `Asked::conversation` equal to
+  `background::session_id`), else `lead::NOT_ASKED`. Refused while what its
+  turns left still runs (`left_now`). The file is checked and copied as a
+  chat's (`file::snapshot`, a number reserved first, `next_free`), the ask
+  looked at again under the record's lock, and the switch recorded on the
+  helper (`schedule_switch`: only on the conversation that called, none
+  under way, saved). From then on text sent to it queues (`place`: no
+  joining the turn on stdin; `switch_waits` holds back any turn between).
+- **The switch.** At the end of the turn that called (`switch_now`), given up
+  if that turn was stopped (`STOPPED_BY_STOP`), something its turns left is at
+  work, or `codex exec` interrupted subagents of the turn; else the copy is
+  checked (`copy_holds`) and the opening made (`facts::lead_prompt`:
+  `[Luna handoff N, not typed by the user]`, the copy, the skills to load first
+  or for Luna's own document those its State names, the approvals' bound, the
+  conversation before and `fact_block`; past 6,000 characters the facts in
+  `<n>-facts.md`). `begin_fresh` lets go of the conversation (`Entry::session`
+  to none, kept as `LeadSwitch::before`), takes the run and starts the opening
+  alone as the batch, saved first. `command_with` gives a turn with no
+  conversation in the worktree its first turn made `dir` = that worktree and
+  no `--worktree`, no `--resume` (Claude Code) or `-C <worktree>`, no
+  `--worktree`, no `resume` (Codex). Its role layers and constraints come with
+  it as with every turn, and Claude Code's note after the first prompt of a
+  conversation. The conversation its CLI names (`init`, `thread.started`)
+  other than the one before makes the switch `Done` (`lead_named`); at that
+  turn's end it is recorded as through (`through`: `Past`, the ask closed,
+  `Record::fresh`) and its parent told. Owed answers read on in the new
+  transcript from its start: the old one is looked up before the switch
+  (`transcript_path`), and read.rs `moved_to` takes them over as the
+  transcript changes.
+- **Given up** (`gave_up`), before its start (`drop_switch`) the conversation
+  is as it was and the ask stays open; after a start that named no
+  conversation (`revert_switch`: its CLI could not start, or ended first) it
+  goes back to the conversation it left, the opening dropped and the ask
+  closed, so a start that keeps failing is not asked over and over. Either way
+  it is kept as `Past` with why, the lead hears it as a turn of Luna's
+  (`facts::lead_failed_line`) and what waited goes on.
+- **Saved.** The switch is saved with the helper in `helpers.json`, where its
+  conversation and its queue are, so one write keeps them agreeing:
+  `Scheduled` on the conversation that called, `Fresh` on none (the opening's
+  id kept, `opening_id`), `Done` on the new one. `never_started` and
+  `settle_worktree` leave a lead between conversations alone, and
+  `background_promote` is refused while a switch is on record. A core started
+  again goes on with it in `resume_stopped`, whatever `resumeOnRestart` says
+  (`lead_taken_up`): `Done` recorded, `Scheduled` or `Fresh` started on a
+  new opening with the facts as of then, the old opening dropped from what
+  would go back as undelivered; where nothing says the last core's turn ended
+  (`unsure`), given up rather than run beside it.
+- **The parent** hears it as a line riding its next notice, as a refused place
+  does (`Registry::handed_off`, `HandedOff::line`, notifier `riders_go`,
+  `places_told`): "Lead X handed off (N): it goes on in a fresh conversation;
+  its helpers stay with it", several in one line. In memory only.
 
 ## Moving a chat to another account
 

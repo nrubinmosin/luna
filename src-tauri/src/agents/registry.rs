@@ -146,6 +146,10 @@ pub(super) struct Registry {
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
     pub(super) places_refused: HashMap<String, PlacesRefused>,
+    /// Leads under a session that went on in a fresh conversation since it
+    /// was last told, by that session (handoff/lead.rs `handed_off`): a line
+    /// that rides with its notices.
+    pub(super) handed_off: HashMap<String, crate::agents::handoff::HandedOff>,
     /// What Luna applied to each session's latest start, a helper's latest
     /// turn (applied.rs), with the account and folder it ran on: what the
     /// window's "What Luna applied" shows.
@@ -196,6 +200,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             quota_told: HashMap::new(),
             news: Vec::new(),
             places_refused: HashMap::new(),
+            handed_off: HashMap::new(),
             applied: HashMap::new(),
         })
     });
