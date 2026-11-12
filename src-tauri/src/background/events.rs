@@ -90,6 +90,10 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
             // does not exist reads there too, and the turn fails on it.
         }
         (Some("assistant"), _) if v["parent_tool_use_id"].is_null() => {
+            // At work on a turn again: one the end of a background job started.
+            if let Some(run) = e.run.as_mut() {
+                run.after_result = false;
+            }
             // The model that wrote it: a fallback mid-turn shows here too.
             if let Some(m) = v["message"]["model"].as_str().filter(|m| !m.starts_with('<')) {
                 e.observed.model = Some(m.to_string());
@@ -113,6 +117,7 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
             // closed all along. What it has been given it still runs.
             let earlier_failed = e.run.as_mut().is_some_and(|run| {
                 run.feed = None;
+                run.after_result = true;
                 std::mem::replace(&mut run.result_failed, !ok)
             });
             if ok {

@@ -26,6 +26,8 @@ export interface Draft<S extends object> {
    *  what the origin line names and "back to …" returns to, and shown unless
    *  set by hand. `source` undefined: no file said it. */
   rebase: <K extends keyof S>(key: K, value: S[K], source: string | undefined) => void;
+  /** Whether the user has set this field by hand. */
+  touched: (key: keyof S) => boolean;
   revert: (key: keyof S) => void;
 }
 
@@ -85,6 +87,7 @@ export function useSettingsDraft<S extends object>(
       });
       if (!touched.current[key]) setSettings(s => ({ ...s, [key]: value }));
     },
+    touched: key => !!touched.current[key],
     revert: key => {
       delete touched.current[key];
       setSettings(s => ({ ...s, [key]: resolved[key] }));
