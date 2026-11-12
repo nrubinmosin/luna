@@ -35,7 +35,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   turn as done and said nothing of them.
 - In the new-chat dialog, a model picked now opens on the effort kept for it
   even where the level shown before was one it does not take, rather than on
-  its catalog default.
+  its catalog default, and keeps it when another folder is picked.
 
 ## [0.17.0] - 2026-11-13
 
