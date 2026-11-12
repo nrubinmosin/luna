@@ -148,11 +148,13 @@ pub(super) struct Observed {
     pub(super) answered: bool,
     /// Its CLI said on stderr that it stopped what the turn left in the
     /// background, its wait for it over (`take_stderr`): subagents' work may be
-    /// unfinished and uncommitted, which the caller's notice says. Saved: a
-    /// core that goes before that notice is in must not lose it. Until the
-    /// notice that carries it is settled (`background_stop_told`) or the next
-    /// turn begins.
+    /// unfinished and uncommitted, which its callers' notices say. Saved: a
+    /// core that goes before those notices are in must not lose it. Until
+    /// every caller owed by it has had a notice that carries it settle its
+    /// debt (`background_stop_told`), or the next turn begins.
     pub(super) background_stopped: bool,
+    /// The callers such a notice has gone to, for this turn's stop.
+    pub(super) stop_told: Vec<String>,
 }
 
 impl Observed {
@@ -162,6 +164,7 @@ impl Observed {
         self.rerouted = false;
         self.acted = false;
         self.background_stopped = false;
+        self.stop_told.clear();
     }
 
     /// What the rollout said of a Codex turn once it was over, unless another

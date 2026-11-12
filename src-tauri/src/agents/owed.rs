@@ -63,6 +63,10 @@ pub(super) struct Owed {
     /// The turn count during which the caller was told the turn has gone quiet
     /// (QUIET_TURN_MS): once per turn.
     pub(super) told_quiet: Option<u32>,
+    /// The same for a helper's turn that has answered and only waits on its
+    /// background work (lines.rs `background_wait_line`): told apart, so a
+    /// plain quiet notice earlier in the turn does not stand for it.
+    pub(super) told_background_wait: Option<u32>,
     /// Which debt this is, whatever its numbers: asked again with nothing
     /// moved since, a new one has the same baseline and cursor as the old, and
     /// what was decided about the old is not to touch it.
@@ -94,6 +98,7 @@ impl Owed {
             told_pending: false,
             told_idle: false,
             told_quiet: None,
+            told_background_wait: None,
         }
     }
 

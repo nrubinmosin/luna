@@ -122,6 +122,9 @@ pub(super) enum Settled {
     /// Its turn at this count has gone quiet (QUIET_TURN_MS); told once per
     /// turn, and owed on.
     Quiet(u32),
+    /// Its turn at this count has answered and gone quiet waiting on its
+    /// background work; told once per turn, apart from `Quiet`, and owed on.
+    WaitsOnBackground(u32),
     Exited,
 }
 
@@ -886,7 +889,7 @@ fn deliver_notice(
                 if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now_ms()) {
                     stopped.push(id.clone());
                 }
-                settle_told(&mut r, (caller.to_string(), id), how, &told);
+                settle_delivered(&mut r, caller, id, how, &told, text);
             }
             let told_quota = !quota_lines.is_empty();
             for n in quota_lines {
@@ -911,9 +914,6 @@ fn deliver_notice(
             }
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));
-                // Every line that settles a helper's debt says it, when it is so
-                // (lines.rs `background_stopped`).
-                crate::background::background_stop_told(id);
             }
             if !told_lost.is_empty() || !told_left.is_empty() || told_news || told_spawns || told_budgets {
                 crate::background::save();
@@ -942,6 +942,29 @@ pub(in crate::agents) fn deliver_news_for_test(caller: &str, news_lines: Vec<(St
     tests::run_between(caller, between);
     let text = format!("{NOTICE_TAG} {}", news_lines.iter().map(|(told, _)| told.as_str()).collect::<Vec<_>>().join(" "));
     deliver_notice(crate::pty::manager(), caller, &text, vec![], vec![], vec![], news_lines, vec![]);
+}
+
+/// A notice that went into `caller` (`text`) settles what it told of `id`.
+fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, told: &Owed, text: &str) {
+    let answered = matches!(how, Settled::Answered);
+    settle_told(r, (caller.to_string(), id.clone()), how, told);
+    if answered {
+        ack_background_stop(r, caller, &id, text);
+    }
+}
+
+/// A notice that went in, settling `caller`'s debt on helper `id` as answered
+/// (`r`, its debts as settled): if it said that the helper's CLI stopped its
+/// background work (lines.rs `BACKGROUND_STOPPED`, in every such line while it
+/// is so), `caller` has had it. The helper is done with saying so once every
+/// caller it still owes has; a line that does not carry it (a helper that
+/// exited) acknowledges nothing. The helper's lock after the registry's.
+fn ack_background_stop(r: &Registry, caller: &str, id: &str, text: &str) {
+    if !text.contains(lines::BACKGROUND_STOPPED) {
+        return;
+    }
+    let owed: Vec<String> = r.owed.keys().filter(|(_, s)| s == id).map(|(c, _)| c.clone()).collect();
+    crate::background::background_stop_told(id, caller, &owed);
 }
 
 /// What a notice that went in does to the debt it told of (`told`). Only to
@@ -982,6 +1005,11 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
         Settled::Quiet(ended) => {
             if let Some(o) = r.owed.get_mut(&key) {
                 o.told_quiet = Some(ended);
+            }
+        }
+        Settled::WaitsOnBackground(ended) => {
+            if let Some(o) = r.owed.get_mut(&key) {
+                o.told_background_wait = Some(ended);
             }
         }
         Settled::Hold(_) | Settled::Unhold | Settled::Skip(_) => {}
@@ -1384,5 +1412,34 @@ mod tests {
         crate::background::gone_for_test(id);
         forget(id);
         forget(a);
+    }
+
+    /// A helper whose CLI cut its background work off, owed by two callers:
+    /// each is to hear of it, and a line that does not say so (an exited
+    /// helper's) acknowledges nothing.
+    #[test]
+    fn a_cut_off_is_told_to_every_caller_owed_and_only_by_a_line_that_says_so() {
+        let id = "ack-s";
+        let (a, b) = ("ack-a", "ack-b");
+        crate::background::idle_for_test(id, Provider::Claude, 3, false);
+        crate::background::background_stopped_for_test(id);
+        let key = |c: &str| (c.to_string(), id.to_string());
+        let (oa, ob) = (Owed::from(2, 0), Owed::from(2, 0));
+        reg().lock().unwrap().owed.insert(key(a), oa);
+        reg().lock().unwrap().owed.insert(key(b), ob);
+        let says = format!("Your helper finished its turn.{}", lines::BACKGROUND_STOPPED);
+        let settle = |caller: &str, how: Settled, told: &Owed, text: &str| {
+            settle_delivered(&mut reg().lock().unwrap(), caller, id.to_string(), how, told, text);
+        };
+        settle(a, Settled::Exited, &oa, "Your helper has exited.");
+        assert!(crate::background::background_stopped_for(id, a), "an exited line did not say it");
+        let oa = Owed::from(2, 0);
+        reg().lock().unwrap().owed.insert(key(a), oa);
+        settle(a, Settled::Answered, &oa, &says);
+        assert!(!crate::background::background_stopped_for(id, a), "the first has had it");
+        assert!(crate::background::background_stopped_for(id, b), "the other, still owed, has not");
+        settle(b, Settled::Answered, &ob, &says);
+        assert!(!crate::background::background_stopped(id), "everyone owed has had it");
+        crate::background::gone_for_test(id);
     }
 }

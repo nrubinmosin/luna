@@ -123,10 +123,19 @@ pub fn turn_quiet_ms(id: &str, now: u64) -> Option<u64> {
     Some(now.saturating_sub(e.observed.event_ms.max(run.started_ms)))
 }
 
+/// Whether a helper's turn has answered and is up only for what it left in the
+/// background (`Run::after_result`), without reading its job.
+pub fn turn_answered(id: &str) -> bool {
+    lock().entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.after_result)
+}
+
 /// Whether a helper's turn is only waiting on what it left in the background:
 /// its CLI has written the turn's result and is still up (`Run::after_result`).
 /// Some with the processes in its job besides the CLI, by name, each once.
 pub fn waits_on_background(id: &str) -> Option<Vec<String>> {
+    if !turn_answered(id) {
+        return None;
+    }
     let (job, cli) = {
         let r = lock();
         let e = r.entries.get(id)?;

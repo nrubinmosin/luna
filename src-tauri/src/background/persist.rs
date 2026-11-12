@@ -465,16 +465,31 @@ pub fn cut_short(id: &str) -> bool {
 }
 
 /// Whether its CLI stopped what its last turn left in the background, its time
-/// for it up (run.rs `stops_background`).
+/// for it up (run.rs `stops_background`), whoever has been told: what the tests
+/// look at; a notice asks `background_stopped_for` its caller.
+#[cfg(test)]
 pub fn background_stopped(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.observed.background_stopped)
 }
 
-/// A notice saying so has gone in and settled its debt: not to be said again,
-/// by this core or the next (the caller saves).
-pub fn background_stop_told(id: &str) {
-    if let Some(e) = lock().entries.get_mut(id) {
-        e.observed.background_stopped = false;
+/// Whether `caller`'s notice of it is to say that its CLI stopped its
+/// background work: so, and not yet said to `caller`.
+pub fn background_stopped_for(id: &str, caller: &str) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.observed.background_stopped && !e.observed.stop_told.iter().any(|c| c == caller))
+}
+
+/// A notice saying so has settled `caller`'s debt: not to be said to it again,
+/// by this core or the next (the notifier saves). Once every caller still owed
+/// by it (`owed`) has had it too, it is done with.
+pub fn background_stop_told(id: &str, caller: &str, owed: &[String]) {
+    let mut r = lock();
+    let Some(o) = r.entries.get_mut(id).map(|e| &mut e.observed).filter(|o| o.background_stopped) else { return };
+    if !o.stop_told.iter().any(|c| c == caller) {
+        o.stop_told.push(caller.to_string());
+    }
+    if owed.iter().all(|c| o.stop_told.contains(c)) {
+        o.background_stopped = false;
+        o.stop_told.clear();
     }
 }
 
