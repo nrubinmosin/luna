@@ -3201,6 +3201,9 @@ Ship it.
         let other = "Your helper h1 answered.";
         for (chat, by_ask) in [("mvret-shown", false), ("mvret-asked", true)] {
             let _ = store::remove(chat);
+            // Auto-handoff on: a threshold notice goes in only while it is.
+            let settings = serde_json::json!({ "handoff": 70 });
+            crate::agents::registry::register(chat, Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, true, settings);
             let asked = store::Asked { conversation: Some("c".into()), ..store::Asked::new(store::AskKind::Auto, 1, None) };
             store::change(chat, |r| r.asked = Some(asked.clone())).unwrap();
             reg().lock().unwrap().news.push((chat.to_string(), notice.clone()));
@@ -3216,6 +3219,7 @@ Ship it.
             assert!(!super::super::withheld(chat, other));
             reg().lock().unwrap().news.retain(|(c, _)| c != chat);
             let _ = store::remove(chat);
+            crate::agents::teardown::forget(chat);
         }
         // The person's ask, its request not typed yet: withdrawn with it,
         // and nothing of it typed while the move is under way.

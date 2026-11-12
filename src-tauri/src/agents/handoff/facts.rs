@@ -220,7 +220,13 @@ pub(super) fn manual_undelivered(minutes: u64) -> String {
 /// handoff is scheduled is dropped, the new conversation having nothing to
 /// hand off.
 pub(super) fn is_notice(line: &str) -> bool {
-    line.starts_with("This chat's context is at ") || line.starts_with(MANUAL_LEAD)
+    is_threshold_notice(line) || line.starts_with(MANUAL_LEAD)
+}
+
+/// Whether a queued line is the threshold's notice (`notice`), bound to the
+/// ask it was queued with (mod.rs `withheld`).
+pub(super) fn is_threshold_notice(line: &str) -> bool {
+    line.starts_with("This chat's context is at ")
 }
 
 /// One helper of the chat's, as the fact block names it.
@@ -390,7 +396,7 @@ fn skills_line(skills: Option<&Skills>) -> String {
     let cut =
         if s.cut { format!(", as far as Luna read it (its first {} MB)", super::excerpts::SKILLS_READ_MAX >> 20) } else { String::new() };
     if s.names.is_empty() {
-        return format!("- Skills the conversation before loaded: none in its transcript{cut}.");
+        return format!("- Skills the conversation before loaded: none seen in its transcript{cut}.");
     }
     let names: Vec<String> = s.names.iter().map(|n| quoted(n)).collect();
     format!("- Skills the conversation before loaded, in order of first use{cut}: {}.", names.join(", "))
@@ -682,7 +688,7 @@ mod tests {
         }
         // None in the transcript, one read only in part, one not read at all.
         let line = |skills| fact_block(&Facts { skills, ..facts.clone() });
-        assert!(line(Some(Skills::default())).contains("- Skills the conversation before loaded: none in its transcript.\n"));
+        assert!(line(Some(Skills::default())).contains("- Skills the conversation before loaded: none seen in its transcript.\n"));
         let cut = Skills { names: vec!["a".into()], cut: true };
         assert!(line(Some(cut)).contains("in order of first use, as far as Luna read it (its first 256 MB): \"a\"."));
         assert!(line(None).contains("- Skills the conversation before loaded: not known (Luna could not read its transcript)."));

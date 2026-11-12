@@ -1036,7 +1036,35 @@ pub(in crate::agents) fn bound_to_conversation(line: &str) -> bool {
 /// it opened, but one already put together, or queued as the move began, would
 /// still ask the chat for a handoff that resets it in the middle of the move.
 pub(in crate::agents) fn withheld(chat: &str, line: &str) -> bool {
-    facts::is_notice(line) && moving::under_way(chat)
+    facts::is_notice(line) && (moving::under_way(chat) || (facts::is_threshold_notice(line) && !threshold_ask_of(chat, line)))
+}
+
+/// Whether threshold notice `line` still has the ask it was queued with open
+/// on `chat`: the threshold's, bound to that very notice (`Asked::notice`;
+/// one from before that was kept is taken as its own), with auto-handoff
+/// still on. The notifier puts a notice together from its queue and types it
+/// seconds later: auto-handoff turned off meanwhile closes the ask and
+/// unqueues the notice, a later ask replaces it, and a copy already put
+/// together must not ask for what the tool would refuse. Gone for good, so
+/// the notifier drops it.
+fn threshold_ask_of(chat: &str, line: &str) -> bool {
+    let asked = store::records().get(chat).and_then(|r| r.asked.clone());
+    let Some(a) = asked.filter(|a| a.kind == store::AskKind::Auto) else { return false };
+    a.notice.as_deref().is_none_or(|n| n == sha256_of(line)) && threshold_now(chat).is_some()
+}
+
+/// Whether line `line` of the notifier's queue for `chat` goes in now, with
+/// the person's keys held, right before the paste: a threshold notice only
+/// while its ask stands (`withheld`) and the chat is on the conversation it
+/// asks, both known (`Asked::conversation`), as the tool would answer only
+/// there. Any other line, as far as this goes. Not now is not never: one on
+/// another conversation is closed by the beat (`drifted`) and then dropped.
+pub(in crate::agents) fn notice_here(chat: &str, line: &str) -> bool {
+    if !facts::is_threshold_notice(line) {
+        return true;
+    }
+    let asked = store::records().get(chat).and_then(|r| r.asked.as_ref().and_then(|a| a.conversation.clone()));
+    !withheld(chat, line) && asked.is_some() && asked == conversation_now(chat)
 }
 
 /// What the switches' beat keeps between looks.
@@ -1189,8 +1217,12 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         // Read only for a record a handoff left fresh, which its first look
         // clears: once per conversation a handoff began.
         let fresh = store::records().get(&chat).is_some_and(|r| r.fresh);
-        let first_turn = fresh && excerpts::at_handoffs_first_turn(&path, provider);
-        let reading = Reading { live, conversation, pct: context.pct, tokens: context.tokens, first_turn };
+        // A turn over since: the floor is where it ended, not where the
+        // context stands at a look a queued prompt, a notice or a core's
+        // restart put off; one with no reading of it goes by now's.
+        let floor_at =
+            if fresh { excerpts::handoffs_first_turn(&path, provider).map(|t| t.ended_pct.unwrap_or(context.pct)) } else { None };
+        let reading = Reading { live, conversation, pct: context.pct, tokens: context.tokens, floor_at };
         look_at(&chat, threshold, &reading, turns_ended, mark);
     }
 }
@@ -1215,15 +1247,15 @@ fn to_look(b: &mut Beat, chat: &str, ts: Option<crate::activity::TurnState>) -> 
 
 /// What a look at a chat's context read: the conversation its CLI is on
 /// (`live`), which its transcript was checked to be (`transcript_is`), that
-/// transcript's name, how full the context is, and whether the conversation
-/// is still at the turn Luna's handoff prompt opened
-/// (`excerpts::at_handoffs_first_turn`).
+/// transcript's name, how full the context is, and for a conversation Luna's
+/// handoff prompt opened, the share its first turn ended at, or stands at
+/// while that turn is the last (`excerpts::handoffs_first_turn`).
 struct Reading {
     live: String,
     conversation: String,
     pct: u64,
     tokens: u64,
-    first_turn: bool,
+    floor_at: Option<u64>,
 }
 
 /// `chat`'s context as `reading` found it at `turns_ended`, held to its
@@ -1236,14 +1268,14 @@ fn look_at(chat: &str, threshold: u8, reading: &Reading, turns_ended: u32, mark:
         unmark(chat, mark);
     }
     // The floor a handoff gives the conversation it began (`Record::fresh`)
-    // is for that conversation's start: one that begins above the threshold
-    // is not to be sent straight into the next handoff. Looked at first only
-    // later, after turns of its own (auto-handoff turned on since, a core
-    // started again), or a conversation the person opened since, it has no
-    // floor, and is asked if it is past the threshold.
+    // is where its first turn ended: one that begins above the threshold is
+    // not to be sent straight into the next handoff, however late it is first
+    // looked at (auto-handoff turned on since, a notice or a queued prompt
+    // first, a core started again). A conversation the person opened since
+    // has none.
     let (told, fresh) = store::records().get(chat).map(|r| (r.told.clone(), r.fresh)).unwrap_or_default();
-    let fresh = fresh && reading.first_turn;
-    let now = watch::told_now(told.as_ref(), &reading.conversation, reading.pct, reading.tokens, fresh, threshold);
+    let floor_at = reading.floor_at.filter(|_| fresh);
+    let now = watch::told_now(told.as_ref(), &reading.conversation, reading.pct, reading.tokens, floor_at, threshold);
     if let Some(t) = told.as_ref().filter(|t| t.conversation == now.conversation && t.level > now.level) {
         let why = if now.compacted > t.compacted {
             "its CLI compacted the conversation".to_string()
@@ -1322,7 +1354,9 @@ fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told,
     }
     told_of(r, told, inline);
     r.ask_closed = None;
-    r.asked = Some(asked);
+    // The notice bound to this ask: a copy the notifier holds goes in only
+    // while it is the one open (`withheld`).
+    r.asked = Some(store::Asked { notice: Some(sha256_of(&line)), ..asked });
     reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), line));
     true
 }
