@@ -59,6 +59,13 @@ pub fn last_context(path: &Path) -> Option<(f64, f64)> {
     ending(path).context.map(|c| (c.tokens, c.window))
 }
 
+/// `last_context` of a text: the last usage in it, as (tokens, window).
+/// What a reading of the context at a point of a transcript goes by
+/// (agents/handoff `handoffs_first_turn`).
+pub fn context_in_text(text: &str) -> Option<(f64, f64)> {
+    context_in(text).map(|c| (c.tokens, c.window))
+}
+
 /// See `last_model`: the CLI's own stand-in for a message no model wrote
 /// reads `<synthetic>`.
 pub(super) fn model_in(text: &str) -> Option<String> {

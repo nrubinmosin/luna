@@ -14,18 +14,21 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   next conversation loads before its first reply, and why. The prompt that
   opens it says to load them first, and Luna's facts name the skills the
   conversation before loaded, read off its transcript (Claude Code's `Skill`
-  calls and the skills a person started with `/name`, Codex's `<skill>`
-  blocks). A move's document carries the same line, and the moved chat is
-  told to load what it lists before its first reply.
+  calls that went through, the skills a person started with `/name`, and a
+  `SKILL.md` read; Codex's `<skill>` blocks and a `SKILL.md` a command it ran
+  printed). A move's document carries the same line, the move's own ask left
+  out, and the moved chat is told to load what it lists before its first
+  reply.
 
 ### Changed
 
 - Auto-handoff ticked on a chat already past its threshold, or set lower than
   where it stands, asks as soon as the chat is at rest rather than at its
   next turn's end. Turned off before Luna typed its notice, the notice is
-  not typed, even one Luna was about to type. A conversation a handoff began is spared at its start only while
-  it is still at its first turn: one handed off with Auto-handoff off and
-  gone on since is asked once Auto-handoff is turned on.
+  not typed, even one Luna was about to type. A conversation a handoff began
+  is spared until it has grown 5 points past where its first turn ended,
+  however late it is first looked at: one handed off with Auto-handoff off
+  and gone on since is asked once it is turned on, if it has grown so.
 
 ## [0.17.0] - 2026-11-13
 

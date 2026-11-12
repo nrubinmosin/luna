@@ -243,6 +243,14 @@ pub fn read_tail(path: &Path) -> Tail {
     tail(path, 128 * 1024).map(|text| tail_in(&text)).unwrap_or_default()
 }
 
+/// The context the last `token_count` in `text` states, as (tokens, window),
+/// as `read_tail` reads it: what a reading of the context at a point of a
+/// rollout goes by (agents/handoff `handoffs_first_turn`).
+pub(crate) fn context_in_text(text: &str) -> Option<(f64, f64)> {
+    let t = tail_in(text);
+    Some((t.context_tokens?, t.context_window?))
+}
+
 /// See `read_tail`, of the tail's text.
 pub(super) fn tail_in(text: &str) -> Tail {
     let mut out = Tail::default();

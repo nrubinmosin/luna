@@ -205,9 +205,8 @@ menu, so words injected into the chat cannot hand it off on their own.
   ends, skills to load first) for a chat short of context. Ticked on a chat
   already past the threshold, Auto-handoff asks as soon as the chat is at
   rest, not at its next turn's end. A conversation a handoff began is asked
-  only once it has grown 5 points past where it began, if Auto-handoff looks
-  at it as its first turn ends; turned on after it has gone further, it asks
-  as for any conversation. Nothing switches unless the chat asks.
+  only once it has grown 5 points past where its first turn ended, however
+  late Auto-handoff first looks at it. Nothing switches unless the chat asks.
 - If the CLI compacts the conversation before a handoff, or the chat goes on
   with a model of a larger context window, the threshold's ask closes, and the
   chat is asked again once it is past the threshold again. The chip then reads
@@ -243,7 +242,8 @@ menu, so words injected into the chat cannot hand it off on their own.
   effort, state, task, branches and worktrees and transcripts, the answers they
   owe, text not yet delivered, accounts and their use, the chat's settings, and
   the names of the skills the conversation before loaded (read off its
-  transcript). The prompt tells the new conversation to load the skills the
+  transcript: those it called or read the file of, and those you started
+  with `/name`; one loaded some other way may be missed). The prompt tells the new conversation to load the skills the
   handoff lists under "Skills to load first" before its first reply, and says
   that approvals the handoff quotes hold as far as your quoted words go and no
   further. Its helpers, their answers and notices carry on

@@ -523,12 +523,14 @@ fn the_facts_name_the_chats_helpers_and_what_they_owe() {
     );
     reg().lock().unwrap().owed.insert(("hogf-me".into(), "hogf-kid".into()), crate::agents::owed::Owed::from(0, 0));
     // The conversation before loaded a skill, as Claude Code 2.1.322 records
-    // its call.
+    // its call and the result that says it did.
     let (dir, _) = scratch_file("gf");
     let previous = dir.join("old.jsonl");
     let call = json!({ "type": "assistant", "message": { "content": [
         { "type": "tool_use", "id": "toolu_1", "name": "Skill", "input": { "skill": "release" }, "caller": { "type": "direct" } }] } });
-    std::fs::write(&previous, format!("{call}\n")).unwrap();
+    let result = json!({ "type": "user", "message": { "role": "user", "content": [
+        { "type": "tool_result", "tool_use_id": "toolu_1", "content": "Launching skill: release" }] } });
+    std::fs::write(&previous, format!("{call}\n{result}\n")).unwrap();
     let f = gather("hogf-me", Some(&previous.to_string_lossy()), Provider::Claude);
     assert_eq!(f.helpers.len(), 1);
     assert_eq!((f.helpers[0].id.as_str(), f.helpers[0].owes, f.helpers[0].account.as_str()), ("hogf-kid", true, "codex/two"));
@@ -1415,37 +1417,50 @@ fn turn(idle: bool, turns_ended: u32) -> Option<crate::activity::TurnState> {
 
 /// A look's reading of conversation `live` at `pct` of its context.
 fn reading(live: &str, pct: u64) -> Reading {
-    Reading { live: live.into(), conversation: live.into(), pct, tokens: pct * 2_000, first_turn: false }
+    Reading { live: live.into(), conversation: live.into(), pct, tokens: pct * 2_000, floor_at: None }
 }
 
-/// A conversation a handoff began keeps its first reading as a floor only
-/// while it is still at the turn the handoff's prompt opened: at that turn's
-/// end, one that began above the threshold is not asked straight away, with
-/// auto-handoff on all along or turned on then. Looked at first only after
-/// turns of its own (auto-handoff off through the handoff, turned on later),
-/// it is asked once at rest if it is past the threshold.
+/// A conversation a handoff began keeps as its floor where its first turn
+/// ended, however late it is first looked at: at that turn's end; after a
+/// notice from a helper, or a draft the person sent, went in before the
+/// beat's look; after auto-handoff turned on later. One that began above the
+/// threshold is not asked again for that alone; one grown past it since is.
+/// A conversation the person opened has no floor.
 #[test]
-fn a_conversation_a_handoff_began_keeps_its_floor_only_at_its_first_turn() {
+fn a_conversation_a_handoff_began_keeps_the_floor_its_first_turn_ended_at() {
     chat("hofloor-me", None);
     listed("hofloor-me");
     let fresh = || store::change("hofloor-me", |r| (r.fresh, r.told, r.asked) = (true, None, None)).unwrap();
-    let at = |first_turn| Reading { first_turn, ..reading("next", 12) };
-    // Its first turn just ended, started at 12% under a threshold of 10:
-    // not asked, the floor kept for the turns to come.
+    let at = |pct, floor_at| Reading { floor_at, ..reading("next", pct) };
+    let asked = || store::records()["hofloor-me"].asked.as_ref().map(|a| a.kind);
+    let floor = || store::records()["hofloor-me"].told.as_ref().map(|t| t.floor);
+    set_auto_handoff("hofloor-me".into(), Some(10)).unwrap();
+    // Looked at as its first turn ends, at 12% under a threshold of 10.
+    fresh();
+    look_at("hofloor-me", 10, &at(12, Some(12)), 3, check_due("hofloor-me"));
+    assert_eq!((asked(), floor()), (None, Some(12)));
+    // A notice, or the person's draft sent, went in first: looked at at 14%,
+    // its first turn having ended at 12%. Not asked; at 17% it is.
+    fresh();
+    look_at("hofloor-me", 10, &at(14, Some(12)), 4, None);
+    assert_eq!((asked(), floor()), (None, Some(12)), "the floor is where its first turn ended");
+    look_at("hofloor-me", 10, &at(17, Some(12)), 5, None);
+    assert_eq!(asked(), Some(store::AskKind::Auto), "grown past it");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hofloor-me");
+    // Handed off by the person with auto-handoff off, its first turn ended at
+    // 20%, turns of its own since: auto-handoff turned on at 50% with the
+    // chat at 60% asks at once.
+    fresh();
+    set_auto_handoff("hofloor-me".into(), Some(50)).unwrap();
+    look_at("hofloor-me", 50, &at(60, Some(20)), 9, check_due("hofloor-me"));
+    assert_eq!((asked(), floor()), (Some(store::AskKind::Auto), Some(20)));
+    assert_eq!(queued("hofloor-me"), [facts::notice(60, 50, false, true)]);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hofloor-me");
+    // A conversation Luna's prompt did not open: no floor.
     fresh();
     set_auto_handoff("hofloor-me".into(), Some(10)).unwrap();
-    look_at("hofloor-me", 10, &at(true), 3, check_due("hofloor-me"));
-    let r = store::records()["hofloor-me"].clone();
-    assert_eq!((r.asked.is_none(), r.fresh, r.told.as_ref().map(|t| t.floor)), (true, false, Some(12)));
-    assert!(queued("hofloor-me").is_empty());
-    // Handed off by the person with auto-handoff off, then turns of its own,
-    // then auto-handoff turned on: past the threshold, asked at once.
-    fresh();
-    set_auto_handoff("hofloor-me".into(), Some(10)).unwrap();
-    look_at("hofloor-me", 10, &at(false), 9, check_due("hofloor-me"));
-    let r = store::records()["hofloor-me"].clone();
-    assert_eq!((r.asked.map(|a| a.kind), r.told.as_ref().map(|t| t.floor)), (Some(store::AskKind::Auto), Some(0)));
-    assert_eq!(queued("hofloor-me"), [facts::notice(12, 10, false, true)]);
+    look_at("hofloor-me", 10, &at(12, None), 9, check_due("hofloor-me"));
+    assert_eq!((asked(), floor()), (Some(store::AskKind::Auto), Some(0)));
     reg().lock().unwrap().news.retain(|(c, _)| c != "hofloor-me");
     let _ = store::remove("hofloor-me");
     forget_session("hofloor-me");

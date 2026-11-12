@@ -57,12 +57,12 @@ pub(super) fn level(pct: u64, threshold: u8, floor: u64) -> u8 {
 
 /// What `conversation`, at `pct` of its context and `tokens` now, has been
 /// told: what was kept for it, or for one not looked at before nothing yet,
-/// and its floor where a handoff began it (`fresh`). One told of `threshold`
+/// and its floor where a handoff began it, at `floor_at`. One told of `threshold`
 /// and now well under it is told nothing from here on, its floor gone, what it
 /// was asked kept for the window; counted as compacted where it has fewer
 /// tokens than at its last notice (`compacted`), not where only its window
 /// grew, nor where that count is not known (a record from before it was kept).
-pub(super) fn told_now(told: Option<&Told>, conversation: &str, pct: u64, tokens: u64, fresh: bool, threshold: u8) -> Told {
+pub(super) fn told_now(told: Option<&Told>, conversation: &str, pct: u64, tokens: u64, floor_at: Option<u64>, threshold: u8) -> Told {
     match told.filter(|t| t.conversation == conversation) {
         Some(t) if t.level > 0 && pct < rearm_below(threshold) => {
             let compacted = t.compacted.saturating_add(u32::from(compacted(t, tokens)));
@@ -72,7 +72,7 @@ pub(super) fn told_now(told: Option<&Told>, conversation: &str, pct: u64, tokens
         None => Told {
             conversation: conversation.to_string(),
             level: 0,
-            floor: if fresh { pct.max(1) } else { 0 },
+            floor: floor_at.map_or(0, |p| p.max(1)),
             shares: Vec::new(),
             compacted: 0,
             tokens: 0,
@@ -105,7 +105,7 @@ mod tests {
     fn a_chat_hears_once_at_its_threshold_and_once_near_the_limit_per_conversation() {
         assert_eq!((firm_at(70), firm_at(30), firm_at(90), firm_at(1)), (85, 85, 95, 85));
         assert_eq!((level(69, 70, 0), level(70, 70, 0), level(84, 70, 0), level(85, 70, 0), level(100, 70, 0)), (0, 1, 1, 2, 2));
-        let now = |kept: Option<&Told>, conversation| told_now(kept, conversation, 72, 144_000, false, 70);
+        let now = |kept: Option<&Told>, conversation| told_now(kept, conversation, 72, 144_000, None, 70);
         assert!(!due(&now(None, "a"), 0));
         assert!(due(&now(None, "a"), 1));
         assert!(!due(&now(Some(&told("a", 1)), "a"), 1), "once");
@@ -119,16 +119,16 @@ mod tests {
     #[test]
     fn a_conversation_a_handoff_began_is_asked_only_once_it_has_grown() {
         // Begun at 12% under a threshold of 10: not asked at its first turn's end.
-        let fresh = told_now(None, "next", 12, 24_000, true, 10);
+        let fresh = told_now(None, "next", 12, 24_000, Some(12), 10);
         assert_eq!(fresh.floor, 12);
         assert_eq!(level(12, 10, fresh.floor), 0);
         assert_eq!(level(16, 10, fresh.floor), 0);
         assert_eq!(level(17, 10, fresh.floor), 1, "grown past where it began");
         assert_eq!(level(90, 10, fresh.floor), 2);
         // Kept for that conversation from then on; a person's own new one has none.
-        assert_eq!(told_now(Some(&fresh), "next", 30, 60_000, false, 10).floor, 12);
-        assert_eq!(told_now(Some(&fresh), "theirs", 30, 60_000, false, 10).floor, 0);
-        assert_eq!(level(11, 10, told_now(None, "theirs", 11, 22_000, false, 10).floor), 1);
+        assert_eq!(told_now(Some(&fresh), "next", 30, 60_000, None, 10).floor, 12);
+        assert_eq!(told_now(Some(&fresh), "theirs", 30, 60_000, None, 10).floor, 0);
+        assert_eq!(level(11, 10, told_now(None, "theirs", 11, 22_000, None, 10).floor), 1);
     }
 
     #[test]
@@ -138,20 +138,20 @@ mod tests {
         // then the CLI compacts it to 18% (36K) within the same conversation
         // id: told nothing from here on, the asks kept, a compaction counted.
         let asked = Told { shares: vec![71, 86], floor: 0, tokens: 172_000, ..told("a", 2) };
-        let after = told_now(Some(&asked), "a", 18, 36_000, false, 70);
+        let after = told_now(Some(&asked), "a", 18, 36_000, None, 70);
         assert_eq!((after.level, after.compacted, after.shares.clone()), (0, 1, vec![71, 86]));
         assert!(!due(&after, level(18, 70, after.floor)));
         assert!(due(&after, level(72, 70, after.floor)), "past the threshold again: asked again");
         // Not yet well under: still the conversation told of it.
-        assert_eq!(told_now(Some(&asked), "a", 60, 120_000, false, 70), asked);
+        assert_eq!(told_now(Some(&asked), "a", 60, 120_000, None, 70), asked);
         // Never asked: a drop is nothing to re-arm.
         let quiet = told("a", 0);
-        assert_eq!(told_now(Some(&quiet), "a", 5, 10_000, false, 70), quiet);
+        assert_eq!(told_now(Some(&quiet), "a", 5, 10_000, None, 70), quiet);
         // A floor the handoff gave it goes with the compaction.
         let high = Told { floor: 40, ..told("a", 1) };
-        assert_eq!(told_now(Some(&high), "a", 4, 8_000, false, 10).floor, 0);
+        assert_eq!(told_now(Some(&high), "a", 4, 8_000, None, 10).floor, 0);
         // A CLI that named the compacted conversation anew: a new one, asked again too.
-        let renamed = told_now(Some(&asked), "b", 18, 36_000, false, 70);
+        let renamed = told_now(Some(&asked), "b", 18, 36_000, None, 70);
         assert!(renamed.shares.is_empty() && due(&renamed, level(72, 70, renamed.floor)));
     }
 
@@ -160,13 +160,13 @@ mod tests {
         // Asked at 71% of a 200K window (142K tokens); the chat goes on on a
         // model with a 1M window: 15%, the same tokens and more.
         let asked = Told { shares: vec![71], tokens: 142_000, ..told("a", 1) };
-        let wider = told_now(Some(&asked), "a", 15, 150_000, false, 70);
+        let wider = told_now(Some(&asked), "a", 15, 150_000, None, 70);
         assert_eq!((wider.level, wider.compacted, wider.shares.clone()), (0, 0, vec![71]), "asked again, nothing compacted");
         assert!(due(&wider, level(70, 70, wider.floor)), "asked again at the threshold of the new window");
         // A reading a little lower is no compaction either; a tenth and more is.
         assert!(!compacted(&asked, 135_000) && compacted(&asked, 120_000));
         // From before the count was kept: the cause is not known, and not counted.
         let old = Told { shares: vec![71], ..told("a", 1) };
-        assert_eq!(told_now(Some(&old), "a", 15, 30_000, false, 70).compacted, 0);
+        assert_eq!(told_now(Some(&old), "a", 15, 30_000, None, 70).compacted, 0);
     }
 }
