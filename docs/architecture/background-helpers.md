@@ -55,9 +55,22 @@ owed by the person's chats, outlive a core restart.
 - `send` with `interrupt` puts the text behind the queue, kills the turn's
   process tree, and the reader's end of turn starts the next (`background::interrupt`);
   a turn that will not stop within 3 s leaves the result `queued`.
-- A `claude -p` with a `run_in_background` task open waits for it and takes its
-  end up in the same run, so the helper reads `working` and its caller gets one
-  notice.
+- A `claude -p` with a `run_in_background` task or a background subagent open
+  waits for it and takes its end up in the same run, so the helper reads
+  `working` and its caller gets one notice. With its stdin closed (from the
+  turn's first result on) it waits only `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
+  (10 min by default, 2.1.319+) and then stops that work, subagents' unfinished
+  and uncommitted edits with it; a helper's turn sets it to `0`
+  (`background/command.rs`, "What Luna applied": `helper.background-wait`), so
+  it waits as long as they take. One that hangs is told to the caller as a turn
+  gone quiet, and ends with `luna_session_stop`. Should the CLI still stop
+  them, its stderr line ("Background tasks still running … stopping them") is
+  caught (`run.rs` `stops_background`, kept in `Observed` until the next turn)
+  and the caller's notice says so rather than "it has said nothing".
+- A Codex helper's `exec` has no such ceiling: it reads its prompt from stdin
+  once and runs one turn, and 0.167.2 has no variable or config key for how
+  long it holds on after it, so Luna sets none. Whether a subagent the turn
+  did not wait for outlives it is not settled (docs/cli-compatibility.md).
 
 ## Asks
 

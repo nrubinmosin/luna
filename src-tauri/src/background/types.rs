@@ -146,6 +146,11 @@ pub(super) struct Observed {
     /// model it was asked for is no model it ran on, whatever its error says
     /// (a next turn's start clears that, a restore drops it).
     pub(super) answered: bool,
+    /// Its CLI said on stderr that it stopped what the turn left in the
+    /// background, its wait for it over (`take_stderr`): subagents' work may be
+    /// unfinished and uncommitted, which the caller's notice says.
+    #[serde(skip)]
+    pub(super) background_stopped: bool,
 }
 
 impl Observed {
@@ -154,6 +159,7 @@ impl Observed {
         self.generation += 1;
         self.rerouted = false;
         self.acted = false;
+        self.background_stopped = false;
     }
 
     /// What the rollout said of a Codex turn once it was over, unless another

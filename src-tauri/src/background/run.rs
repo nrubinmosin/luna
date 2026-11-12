@@ -243,9 +243,20 @@ fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
     }
     if let Some(e) = r.entries.get_mut(id) {
         e.observed.event_ms = crate::throttle::now_ms();
+        e.observed.background_stopped |= stops_background(line);
         note(e, &format!("stderr: {}", one_line(line)));
     }
     true
+}
+
+/// Whether a line of `claude -p`'s stderr is its word that it stops what the
+/// last turn left in the background, its stdin closed and its wait for that
+/// over (2.1.319+: "Background tasks still running 10m after the last turn
+/// (…); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait
+/// indefinitely."). A helper's turn sets that to `0` (command.rs); one that
+/// still says this has had it overridden or ignored.
+fn stops_background(line: &str) -> bool {
+    line.starts_with("Background tasks still running") && line.contains("; stopping them.")
 }
 
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
@@ -572,6 +583,29 @@ mod tests {
         let started = std::time::Instant::now();
         reader.await_last_words(&read_out, std::time::Duration::from_secs(9), std::time::Duration::from_secs(9));
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    /// 2.1.322's own words, the wait in any unit it writes.
+    #[test]
+    fn the_clis_word_that_it_stopped_background_work_is_kept_until_the_next_turn() {
+        let said = "Background tasks still running 10m after the last turn (2 agents: \"refactor\", \"tests\"); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.";
+        assert!(stops_background(said));
+        assert!(stops_background(&said.replace("10m", "1h 30m")));
+        assert!(!stops_background("Background tasks still running"), "not without what it does about them");
+        assert!(!stops_background("Error: Background tasks still running; stopping them."), "only the CLI's own line");
+        let id = "bg-stopped";
+        lock().entries.insert(id.into(), entry(Provider::Claude));
+        let reader = OutReader::default();
+        assert!(take_stderr(id, &reader, b"some warning"));
+        assert!(!background_stopped(id));
+        assert!(take_stderr(id, &reader, said.as_bytes()));
+        assert!(background_stopped(id), "what the caller hears of the turn says so");
+        lock().entries.get_mut(id).unwrap().observed.begin_turn();
+        assert!(!background_stopped(id), "a new turn has its own background");
+        reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(take_stderr(id, &reader, said.as_bytes()));
+        assert!(!background_stopped(id), "said after its turn is over: not this helper's");
+        lock().entries.remove(id);
     }
 
     #[test]

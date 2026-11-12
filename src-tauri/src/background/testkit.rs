@@ -168,6 +168,13 @@ pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
         .collect();
 }
 
+/// A test helper whose CLI said it stopped what its last turn left in the
+/// background (`stops_background`).
+#[cfg(test)]
+pub(crate) fn background_stopped_for_test(id: &str) {
+    lock().entries.get_mut(id).expect("a test helper").observed.background_stopped = true;
+}
+
 #[cfg(test)]
 pub(crate) fn gone_for_test(id: &str) {
     lock().entries.remove(id);
