@@ -67,7 +67,10 @@ owed by the person's chats, outlive a core restart.
   turn, and every message to the helper, for good. Until then the turn is
   busy; once its result is in (`Run::after_result`) and both its stream and
   every process in its job (`Run::watched`, sampled with the activity) have
-  been quiet for 30 min, the caller is told it waits on its background work,
+  been quiet for 30 min, the caller is told it waits on its background work
+  (the job at work holds that back only until the stream has been quiet 90
+  min, notifier `JOB_HOLDS_MS`: a polling watcher, a growing `tail -f` or a
+  chatty dev server keeps a job busy for good),
   by the calls its transcript has open (`claude::session::background_calls`)
   and the processes in its job (`waits_on_background`), and `luna_session_stop`
   ends it; with a subagent among them the line does not call it a hang. The
