@@ -151,25 +151,34 @@ pub(super) fn how_to(source: &str, sha256: &str, body: &str, suggested: Option<&
 }
 
 /// `luna_session_handoff` without `file` while the person moves the chat to
-/// another account: how to write the document for that, and where (`place`).
-/// Its own text, not the handoff's instructions: nothing is cleared, helpers
-/// stay, and the document goes to another account after the person reads it.
-pub(super) fn move_how_to(place: &str) -> String {
+/// another account: how to write the document for that, and where (`place`),
+/// by the handoff's instructions (`body`, with whose they are, `source`) under
+/// the move's own rules, which stand over them: nothing is cleared, helpers
+/// stay, no approval carries over, and the document goes to another account
+/// only once the person has read it.
+pub(super) fn move_how_to(place: &str, source: &str, sha256: &str, body: &str) -> String {
+    let short: String = sha256.chars().take(12).collect();
     format!(
         "How to write the document for this chat's move to another account.\n\n\
          The person is moving this chat to another account of this CLI. A new chat there knows nothing of this \
-         conversation and goes on from a document you write now. Nothing is cleared: this conversation goes on as it is, \
-         and your helpers and your CLI's own jobs stay with it.\n\n\
-         1. Write the document as a Markdown file (.md, at most {kb} KB) at {place}. Use these headings, in this order: \
-         {list}. A heading with nothing to say holds \"None.\". Quote the person's decisions word for word: on the other \
-         side they are records, not approvals.\n\
+         conversation and goes on from a document you write now.\n\n\
+         Luna's rules for a move, which stand over the instructions below wherever the two differ:\n\
+         - Nothing is cleared and nothing switches: this conversation goes on as it is.\n\
+         - Your helpers, Luna's and your CLI's own background jobs and subagents, stay behind with this chat: none \
+         crosses to the new one. Say in the document what each is doing and where its output is.\n\
+         - Quote the person's decisions word for word: on the other side they are records, not approvals. A prior \
+         approval confers nothing new there: the new chat's permissions are its own settings.\n\
+         - The person reads the document, with what Luna adds, before anything goes, and decides whether it does.\n\
+         - The document is one Markdown file (.md) of at most {kb} KB.\n\n\
+         1. Write the document as the instructions below say, at {place}.\n\
          2. Leave out secrets, tokens and credentials, paths into account folders (yours or Luna's), and pasted logs \
          (give paths in the working folder instead). Luna adds the working folder's state, your helpers and the person's \
          note itself.\n\
          3. Call luna_session_handoff with file set to its absolute path.\n\
-         4. End your turn. The person reads the document with what Luna adds, and decides whether it goes.",
+         4. End your turn.\n\n\
+         The instructions ({source}, sha256 {short}), written for a handoff to a fresh conversation of this chat: read \
+         \"the next conversation\" as the new chat on the other account.\n\n{body}",
         kb = super::document::CHAT_DOC_MAX / 1024,
-        list = checklist()
     )
 }
 

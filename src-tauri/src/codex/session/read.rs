@@ -160,31 +160,40 @@ fn message_of(v: &Value) -> Option<crate::agents::Message> {
 pub(crate) fn said_line(line: &str) -> Option<crate::agents::Message> {
     message_of(&serde_json::from_str::<Value>(line).ok()?)
 }
+/// `limit_at_in` without its time.
+#[cfg(test)]
+pub(crate) fn limit_in(text: &str) -> Option<&'static str> {
+    limit_at_in(text).map(|(kind, _)| kind)
+}
+
 /// The limit a rollout's last turn was stopped by, in Luna's words
 /// (`usage_limit`, `rate_limit`, `credits_depleted`), from the tail of its
 /// text: an `error` event's `codex_error_info`, or the last `token_count`'s
 /// `rate_limits.rate_limit_reached_type` (seen in 0.167.1's binary, docs/
 /// cli-compatibility.md). Only what follows the last turn's start counts: a
-/// limit an earlier turn met is over once a turn has run since.
-pub(crate) fn limit_in(text: &str) -> Option<&'static str> {
-    let mut reached: Option<Option<&'static str>> = None;
+/// limit an earlier turn met is over once a turn has run since. With it, the
+/// timestamp of the line that says it: when the turn was stopped, as far as
+/// the rollout tells.
+pub(crate) fn limit_at_in(text: &str) -> Option<(&'static str, Option<String>)> {
+    let mut reached: Option<Option<(&'static str, Option<String>)>> = None;
     for line in text.lines().rev() {
         if !line.contains("\"event_msg\"") {
             continue;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         let p = &v["payload"];
+        let at = || v["timestamp"].as_str().map(str::to_owned);
         match p["type"].as_str() {
             Some("task_started" | "turn_started") => break,
             Some("error" | "stream_error") => {
                 let info = &p["codex_error_info"];
                 let kind = info.as_str().or_else(|| info.as_object().and_then(|o| o.keys().next()).map(String::as_str));
                 if let Some(k) = kind.and_then(limit_word) {
-                    return Some(k);
+                    return Some((k, at()));
                 }
             }
             Some("token_count") if reached.is_none() && p["rate_limits"].is_object() => {
-                reached = Some(p["rate_limits"]["rate_limit_reached_type"].as_str().and_then(limit_word));
+                reached = Some(p["rate_limits"]["rate_limit_reached_type"].as_str().and_then(limit_word).map(|k| (k, at())));
             }
             _ => {}
         }

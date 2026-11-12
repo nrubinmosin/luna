@@ -64,6 +64,20 @@ pub(in crate::agents) enum Source {
     Chat,
 }
 
+/// How an ask for the chat's document ended without one, where the
+/// reason says whether asking again makes sense; none on record is any
+/// other (a restart, the ask not typed).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::agents) enum AskEnd {
+    /// The chat stopped on a usage limit.
+    Limit,
+    /// Its CLI was not running.
+    Exited,
+    /// It did not come to rest, or wrote nothing, in time.
+    Timeout,
+}
+
 /// Where a move stands.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "phase", rename_all = "camelCase")]
@@ -204,12 +218,25 @@ pub(in crate::agents) struct Move {
     /// screen check could read, but one they see.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub forced: bool,
+    /// When Luna typed its ask into the chat: the turn under way since is the
+    /// ask's, not the chat's own work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_at: Option<u64>,
+    /// How its ask ended without the chat's document, where it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_end: Option<AskEnd>,
 }
 
 impl Move {
     /// The chat is being asked for its document.
     pub(super) fn asking(&self) -> bool {
         matches!(self.phase, MovePhase::Asking { .. } | MovePhase::Asked { .. })
+    }
+
+    /// The chat was asked for its document, and the move failed before one
+    /// came: the person may have Luna build it from records, or ask again.
+    pub(super) fn ask_failed(&self) -> bool {
+        matches!(self.phase, MovePhase::Failed { .. }) && self.source == Source::Chat && self.preview.is_none() && self.binding.is_none()
     }
 }
 
@@ -328,9 +355,28 @@ pub struct MoveStatus {
     /// now" may be offered.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub composer_seen: bool,
+    /// The chat was asked for its document and the move failed before it
+    /// came (`why` says how): Luna may build it from records instead.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ask_failed: bool,
+    /// After such a failure, asking the chat again may go through: it did
+    /// not stop on a usage limit or exit, and nothing stands in the way now.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ask_again: bool,
+    /// When Luna typed its ask into the chat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asked_at: Option<u64>,
+    /// The usage limit that still holds the old chat, for a move whose
+    /// document is still to be had.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<crate::activity::LimitFact>,
 }
 
+/// What the window is shown of move `m` of `chat`. Not under the records'
+/// lock: what it asks of the chat (`ask_blocked`) reads them.
 fn status_of(chat: &str, m: &Move) -> MoveStatus {
+    let ask_failed = m.ask_failed();
+    let open = m.phase.rank() == 0 || ask_failed;
     MoveStatus {
         move_id: m.id.clone(),
         chat_id: chat.to_string(),
@@ -352,7 +398,19 @@ fn status_of(chat: &str, m: &Move) -> MoveStatus {
         waiting: waiting_of(m).map(|(why, _)| why),
         waiting_since: waiting_of(m).map(|(_, since)| since),
         composer_seen: waiting_of(m).is_some() && seen_of(m),
+        ask_failed,
+        ask_again: ask_failed && old_of(chat).is_ok_and(|old| may_ask_again(m, ask_blocked(chat, &old.settings, old.provider).as_deref())),
+        asked_at: m.asked_at,
+        limit: open.then(|| crate::activity::limit_in_force(chat, m.provider)).flatten(),
     }
+}
+
+/// Whether asking the chat again makes sense after move `m`'s ask failed,
+/// with what blocks an ask now: not after a usage limit or its CLI exiting,
+/// which the person sees to first; after a timeout or the like, once
+/// nothing blocks it.
+pub(super) fn may_ask_again(m: &Move, blocked: Option<&str>) -> bool {
+    m.ask_failed() && !matches!(m.ask_end, Some(AskEnd::Limit | AskEnd::Exited)) && blocked.is_none()
 }
 
 /// The preview the window shows, whole: the line Luna will type, fixed, and
@@ -559,6 +617,8 @@ fn new_move(
         preview: None,
         cleaned: [0; 3],
         forced: false,
+        asked_at: None,
+        ask_end: None,
     }
 }
 
@@ -674,8 +734,9 @@ fn build_within(mut inputs: Inputs, transcript: Option<PathBuf>, wait: Duration)
     std::thread::Builder::new()
         .name("luna-move-build".into())
         .spawn(move || {
+            // A turn a move's ask opened is the handoff attempt, not the work.
             inputs.transcript = match &transcript {
-                Some(p) => excerpts::read(p, inputs.provider),
+                Some(p) => excerpts::read(p, inputs.provider, Some(is_ask_line)),
                 None => Err("Luna does not know where this chat's transcript is".into()),
             };
             let since = inputs
@@ -1055,12 +1116,12 @@ pub fn move_cancel(chat_id: String, move_id: String) -> Result<MoveStatus, Strin
 /// lately.
 pub fn move_list() -> Vec<MoveStatus> {
     let now = now_ms();
-    store::records()
+    let moves: Vec<(String, Move)> = store::records()
         .iter()
-        .filter_map(|(chat, r)| Some((chat, r.moving.as_ref()?)))
+        .filter_map(|(chat, r)| Some((chat.clone(), r.moving.clone()?)))
         .filter(|(_, m)| !m.phase.ended() || now.saturating_sub(m.phase.at()) < ENDED_KEPT_MS)
-        .map(|(chat, m)| status_of(chat, m))
-        .collect()
+        .collect();
+    moves.iter().map(|(chat, m)| status_of(chat, m)).collect()
 }
 
 /// `chat`'s move `id` ended as `to`, whatever it stood at: a record that will
@@ -1169,28 +1230,53 @@ pub(super) struct Turn {
 /// its late answer, refused rather than handed off.
 pub(super) const ASK_LATE_MS: u64 = 60 * 60_000;
 
+/// How the tag of a move's ask closes.
+const ASK_TAG_END: &str = " request, not typed by the user]";
+
+/// Whether a prompt in a transcript is a move's ask Luna typed (`ask_line`).
+pub(super) fn is_ask_line(text: &str) -> bool {
+    let Some(rest) = text.trim_start().strip_prefix(MOVE_TAG) else { return false };
+    rest.split_once(']').is_some_and(|(tag, _)| format!("{tag}]").ends_with(ASK_TAG_END))
+}
+
 /// What Luna types into a chat asked for its move's document: fixed words.
 pub(super) fn ask_line(id: &str) -> String {
     format!(
-        "{MOVE_TAG} {id} request, not typed by the user] The person is moving this chat to another account of this CLI, \
+        "{MOVE_TAG} {id}{ASK_TAG_END} The person is moving this chat to another account of this CLI, \
          where a new chat goes on from a document you write now. Call luna_session_handoff without arguments for how, \
          write the document, call luna_session_handoff with file set to its absolute path, and end your turn. Nothing is \
          cleared: this conversation goes on as it is."
     )
 }
 
+/// Why a chat is not to be asked for its document now.
+enum Unaskable {
+    NotRunning,
+    /// A usage limit, by its kind, that still holds it.
+    Limit(String),
+    Question,
+}
+
+impl Unaskable {
+    fn words(&self) -> String {
+        match self {
+            Unaskable::NotRunning => "its CLI is not running".into(),
+            Unaskable::Limit(kind) => format!("it stopped on a usage limit ({kind}) and cannot write now"),
+            Unaskable::Question => "it is waiting on a question of its CLI's".into(),
+        }
+    }
+}
+
 /// Why `chat` is not to be asked for its document now: its CLI not running,
-/// stopped on a usage limit, or waiting on a question.
-fn ask_refusal(chat: &str, provider: Provider) -> Option<String> {
+/// stopped on a usage limit still in force, or waiting on a question.
+fn ask_refusal(chat: &str, provider: Provider) -> Option<Unaskable> {
     if !crate::pty::manager().alive(chat) {
-        return Some("its CLI is not running".into());
+        return Some(Unaskable::NotRunning);
     }
-    if let Some(kind) = crate::activity::limit_of(chat, provider) {
-        return Some(format!("it stopped on a usage limit ({kind}) and cannot write now"));
+    if let Some(limit) = crate::activity::limit_in_force(chat, provider) {
+        return Some(Unaskable::Limit(limit.kind));
     }
-    crate::activity::turn_state(chat)
-        .filter(|t| t.turn == crate::activity::Turn::Waiting)
-        .map(|_| "it is waiting on a question of its CLI's".into())
+    crate::activity::turn_state(chat).filter(|t| t.turn == crate::activity::Turn::Waiting).map(|_| Unaskable::Question)
 }
 
 /// Whether `id`'s CLI stands at its prompt, strictly: the composer drawn and
@@ -1263,7 +1349,7 @@ fn ask_blocked(chat: &str, settings: &Value, provider: Provider) -> Option<Strin
         return Some(format!("the chat writes no file: {why}"));
     }
     if let Some(why) = ask_refusal(chat, provider) {
-        return Some(format!("the chat is not to be asked now: {why}; ask again once that is past"));
+        return Some(format!("the chat is not to be asked now: {}; ask again once that is past", why.words()));
     }
     None
 }
@@ -1327,6 +1413,105 @@ pub fn move_preview(chat_id: String, move_id: String) -> Result<MovePreview, Str
     }
     let text = String::from_utf8(bytes).map_err(|_| "the preview is not text")?;
     Ok(preview_of(&m, text, m.cleaned, warnings_of(chat, m.worktree)))
+}
+
+/// The window's "Build from records instead", for a move whose chat is
+/// being asked for its document, or whose ask failed: the ask is closed as
+/// Cancel closes it, so a document the chat sends late is refused, never
+/// shown, and Luna builds its own from the chat's records into the same
+/// preview, the move's destination and the person's note kept. The ask's own
+/// turn is no part of it: neither in the excerpts nor in how the chat stood.
+pub fn move_build_from_records(chat_id: String, move_id: String, session_id: Option<String>) -> Result<MovePreview, String> {
+    let chat = chat_id.as_str();
+    let m = current(chat, &move_id)?;
+    if !m.asking() && !m.ask_failed() {
+        return Err(format!("the chat is not being asked for this move's document ({})", m.phase.word()));
+    }
+    let (old, to_account, _, warnings) = checked(chat, &m.new_id, &m.to_account_path)?;
+    built_from_records(chat, &m, &old, &to_account, session_id, warnings)
+}
+
+/// `move_build_from_records` for move `m` of `chat`, the old chat `old`, once
+/// held to what every move is.
+fn built_from_records(
+    chat: &str,
+    m: &Move,
+    old: &Old,
+    to_account: &str,
+    session_id: Option<String>,
+    warnings: Vec<String>,
+) -> Result<MovePreview, String> {
+    let session_id = session_id.filter(|s| !s.trim().is_empty());
+    let mut inputs = inputs_of(chat, old, to_account, m.note.clone());
+    if inputs.stopped == Stopped::MidTurn && in_ask_turn(m, crate::activity::turn_started_ms(chat)) {
+        inputs.stopped = Stopped::Finished;
+    }
+    inputs.last_handoff = last_handoff(chat);
+    let transcript = transcript_of(chat, old.provider, &old.account_path, session_id.as_deref());
+    let built = build_within(inputs, transcript, BUILD_WAIT)?;
+    let sha256 = sha256_hex(built.text.as_bytes());
+    let payload = super::dir_of(&m.new_id).map(|d| d.join(format!("{PAYLOAD_N}.md"))).unwrap_or_default();
+    let line = prompt_line_with(&m.id, Source::Luna, chat, chat_name(chat).as_deref(), &payload.to_string_lossy(), &m.note);
+    let shown = store::change(chat, |r| {
+        let x = r.moving.as_mut().filter(|x| x.id == m.id && (x.asking() || x.ask_failed()))?;
+        // Typed into the chat and not answered: what it sends in that turn
+        // is the ask's late answer (`asked_file`). One closed as it failed
+        // keeps when that was; one a restart gave up was not closed; one
+        // never typed asked nothing.
+        let closed = r.ask_closed.as_ref().is_some_and(|(id, _)| *id == x.id);
+        let typed = matches!(x.phase, MovePhase::Asked { .. }) || (x.asked_at.is_some() && !closed);
+        x.source = Source::Luna;
+        x.line = line.clone();
+        x.phase = MovePhase::Shown { at: now_ms() };
+        x.shown_sha256 = sha256.clone();
+        x.preview = None;
+        x.cleaned = [0; 3];
+        let x = x.clone();
+        if typed {
+            r.ask_closed = Some((x.id.clone(), now_ms()));
+            r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
+        }
+        Some(x)
+    })
+    .map_err(|e| format!("the move could not be saved: {e}"))?;
+    let m = shown.ok_or("the move changed meanwhile (the chat's document came in, or the move was given up): look at it again")?;
+    crate::log::info(
+        "move",
+        &format!("{} has its move {} built from records instead of asked ({} bytes)", label(chat), m.id, built.text.len()),
+    );
+    Ok(preview_of(&m, built.text, [built.redacted, built.paths_cut, built.invisible], warnings))
+}
+
+/// Whether the turn under way, begun at `started`, is the one answering
+/// move `m`'s ask: begun once the ask was typed, or, where no start is
+/// known, the ask still open (it is typed only between turns).
+pub(super) fn in_ask_turn(m: &Move, started: Option<u64>) -> bool {
+    let Some(asked) = m.asked_at else { return false };
+    match started {
+        Some(s) => s >= asked,
+        None => matches!(m.phase, MovePhase::Asked { .. }),
+    }
+}
+
+/// What the move window looks at before a move of `chat` begins: the usage
+/// limit that still holds the chat, which has it offer Luna's document from
+/// records first, and what keeps the chat from being asked for its own.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveFacts {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<crate::activity::LimitFact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask_blocked: Option<String>,
+}
+
+pub fn move_facts(chat_id: String) -> Result<MoveFacts, String> {
+    let chat = chat_id.as_str();
+    let old = old_of(chat)?;
+    Ok(MoveFacts {
+        limit: crate::activity::limit_in_force(chat, old.provider),
+        ask_blocked: ask_blocked(chat, &old.settings, old.provider),
+    })
 }
 
 /// `luna_session_handoff` with `file` from a chat asked for its move's
@@ -1410,7 +1595,9 @@ fn collect(caller: &str, m: &Move, file: &str) -> Result<Value, String> {
 }
 
 /// `luna_session_handoff` without `file` while the chat is asked for its
-/// move's document: how to write that one, and where. None otherwise.
+/// move's document: how to write that one, and where, by the handoff's
+/// instructions in effect under the move's own rules (served.rs
+/// `move_instructions`). None otherwise.
 pub(super) fn ask_instructions(caller: &str) -> Result<Option<String>, String> {
     let Some(m) = store::records().get(caller).and_then(|r| r.moving.clone()).filter(Move::asking) else { return Ok(None) };
     let place = match super::drafts_refused(caller) {
@@ -1421,7 +1608,7 @@ pub(super) fn ask_instructions(caller: &str) -> Result<Option<String>, String> {
             format!("{}, in a folder Luna keeps for this chat alone", at.display())
         }
     };
-    Ok(Some(super::facts::move_how_to(&place)))
+    Ok(Some(super::served::move_instructions(caller, &place)))
 }
 
 /// The moves whose chat is being asked, a step on: the ask typed at a strict
@@ -1436,22 +1623,37 @@ fn asks() {
         }
         let now = now_ms();
         // A question of its CLI's (a permission to write the file, say) is the person's to answer: it holds the ask, it fails nothing.
-        let refused = ask_refusal(&chat, m.provider).filter(|w| !w.contains("question"));
+        let refused = ask_refusal(&chat, m.provider).filter(|w| !matches!(w, Unaskable::Question));
         match (m.phase.clone(), refused) {
-            (_, Some(why)) => failed(&chat, &m, format!("the chat cannot write its document: {why}")),
+            (_, Some(why)) => {
+                let end = if matches!(why, Unaskable::NotRunning) { AskEnd::Exited } else { AskEnd::Limit };
+                ask_ended(&chat, &m, end, format!("the chat cannot write its document: {}", why.words()))
+            }
             (MovePhase::Asking { at }, None) => {
                 if strict_prompt(pty, &chat) {
                     type_ask(&chat, &m);
                 } else if now.saturating_sub(at) > ASK_REST_MS {
-                    failed(&chat, &m, format!("the chat did not come to rest within {} minutes", ASK_REST_MS / 60_000));
+                    let why = format!("the chat did not come to rest within {} minutes", ASK_REST_MS / 60_000);
+                    ask_ended(&chat, &m, AskEnd::Timeout, why);
                 }
             }
             (MovePhase::Asked { at }, None) if now.saturating_sub(at) > ASK_WAIT_MS => {
-                failed(&chat, &m, format!("the chat wrote no document within {} minutes", ASK_WAIT_MS / 60_000))
+                ask_ended(&chat, &m, AskEnd::Timeout, format!("the chat wrote no document within {} minutes", ASK_WAIT_MS / 60_000))
             }
             _ => {}
         }
     }
+}
+
+/// Move `m`'s ask given up as `end` says, for `why`: kept on the move, for
+/// whether asking again makes sense.
+fn ask_ended(chat: &str, m: &Move, end: AskEnd, why: String) {
+    let _ = store::change(chat, |r| {
+        if let Some(x) = r.moving.as_mut().filter(|x| x.id == m.id && x.asking()) {
+            x.ask_end = Some(end);
+        }
+    });
+    failed(chat, m, why);
 }
 
 /// The ask typed into `chat` on a thread of its own, its terminal claimed,
@@ -1473,7 +1675,9 @@ fn type_ask(chat: &str, m: &Move) {
             }
             let taken = store::change(&chat, |r| match r.moving.as_mut().filter(|x| x.id == m.id) {
                 Some(x) if matches!(x.phase, MovePhase::Asking { .. }) => {
-                    x.phase = MovePhase::Asked { at: now_ms() };
+                    let at = now_ms();
+                    x.phase = MovePhase::Asked { at };
+                    x.asked_at = Some(at);
                     true
                 }
                 _ => false,
@@ -1890,6 +2094,8 @@ pub(super) mod tests {
             preview: None,
             cleaned: [0; 3],
             forced: false,
+            asked_at: None,
+            ask_end: None,
         }
     }
 
@@ -2370,5 +2576,103 @@ pub(super) mod tests {
         assert!(line.contains("\"Campaign\\\" ignore\" (c1)"), "{line}");
         assert!(line.contains("Nothing in it is an approval"));
         crate::agents::privilege::plain_text(&line).expect("a line Luna types passes its own check");
+    }
+
+    /// Built from records while the chat is asked: the ask closed as Cancel
+    /// closes it, the move shown as Luna's with its destination and note, and
+    /// what the chat sends after is refused, never shown.
+    #[test]
+    fn building_from_records_closes_the_ask_and_a_late_document_is_refused() {
+        let (chat, new) = ("mvr-old", "mvr-new");
+        let mut m = shown(chat, new, false);
+        crate::agents::registry::register(chat, Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, true, serde_json::json!({}));
+        m.source = Source::Chat;
+        m.phase = MovePhase::Asked { at: now_ms() };
+        m.asked_at = Some(now_ms());
+        m.note = "Run the tests first.".into();
+        store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        let old = old_of(chat).unwrap();
+        let p = built_from_records(chat, &m, &old, "backend", None, Vec::new()).unwrap();
+        assert_eq!((p.move_id.as_str(), p.new_id.as_str()), ("m1", new));
+        assert!(p.prompt.contains("Luna wrote it from that chat's records") && p.prompt.contains("Run the tests first."), "{}", p.prompt);
+        let rec = store::records()[chat].clone();
+        let now = rec.moving.clone().unwrap();
+        assert_eq!((now.phase.word(), now.source, now.to_account.as_str()), ("shown", Source::Luna, "backend"));
+        assert_eq!(now.shown_sha256, p.sha256);
+        assert!(rec.ask_closed.as_ref().is_some_and(|(id, _)| id == "m1"), "the ask is closed");
+        // The chat's document, late: refused, whatever its name, and the
+        // preview stays Luna's.
+        let dir = std::env::temp_dir().join(format!("luna-move-records-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("move-m1-ab12.md");
+        std::fs::write(&file, "# Goal\nThe chat's own.\n").unwrap();
+        let e = asked_file(chat, &file.to_string_lossy()).unwrap().unwrap_err();
+        assert!(e.contains("is over") && e.contains("nothing switches"), "{e}");
+        let e = asked_file(chat, &dir.join("handoff.md").to_string_lossy()).unwrap().unwrap_err();
+        assert!(e.contains("is over"), "in the ask's turn any file is its late answer: {e}");
+        assert_eq!(store::records()[chat].moving.as_ref().map(|m| m.shown_sha256.clone()), Some(p.sha256.clone()));
+        // Shown once: not to be built again over it.
+        let again = store::records()[chat].moving.clone().unwrap();
+        assert!(!again.asking() && !again.ask_failed());
+        // A move whose ask failed is rebuilt the same way, and a restart's
+        // failure, never closed, is closed now.
+        let mut failed = m.clone();
+        failed.phase = MovePhase::Failed { at: 1, why: "Luna restarted while the chat was asked for its document".into() };
+        store::change(chat, |r| {
+            r.moving = Some(failed.clone());
+            r.ask_closed = None;
+        })
+        .unwrap();
+        assert!(failed.ask_failed());
+        assert_eq!(built_from_records(chat, &failed, &old, "backend", None, Vec::new()).unwrap().move_id, "m1");
+        assert!(store::records()[chat].ask_closed.is_some());
+        crate::agents::teardown::forget(chat);
+        let _ = store::remove(chat);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_ask_line_is_told_from_every_other_line_and_its_turn_from_the_chats_own() {
+        assert!(is_ask_line(&ask_line("3fa9c2")));
+        assert!(is_ask_line(&format!("  {}", ask_line("m1"))));
+        assert!(!is_ask_line(&prompt_line("m1", Source::Luna, "c1", None, "p")), "the moved chat's line is no ask");
+        assert!(!is_ask_line("Please write the request, not typed by the user] part"));
+        let mut m = a_move(MovePhase::Asked { at: 1_000 });
+        assert!(!in_ask_turn(&m, Some(2_000)), "never typed: no turn is the ask's");
+        m.asked_at = Some(1_000);
+        assert!(in_ask_turn(&m, Some(1_000)) && in_ask_turn(&m, None));
+        assert!(!in_ask_turn(&m, Some(999)), "begun before the ask: the chat's own");
+        m.phase = MovePhase::Failed { at: 5_000, why: "x".into() };
+        assert!(!in_ask_turn(&m, None), "the ask over and no start known: the chat's own");
+    }
+
+    #[test]
+    fn asking_again_makes_sense_after_a_timeout_not_after_a_limit_or_an_exit() {
+        let mut m = a_move(MovePhase::Failed { at: 1, why: "the chat wrote no document within 10 minutes".into() });
+        m.source = Source::Chat;
+        m.preview = None;
+        m.binding = None;
+        assert!(m.ask_failed());
+        for (end, blocked, again) in [
+            (Some(AskEnd::Timeout), None, true),
+            (None, None, true),
+            (Some(AskEnd::Timeout), Some("the chat is not to be asked now: its CLI is not running"), false),
+            (Some(AskEnd::Limit), None, false),
+            (Some(AskEnd::Exited), None, false),
+        ] {
+            m.ask_end = end;
+            assert_eq!(may_ask_again(&m, blocked), again, "{end:?} {blocked:?}");
+        }
+        // Not an ask that failed: Luna's own document, or one shown.
+        m.ask_end = None;
+        m.source = Source::Luna;
+        assert!(!m.ask_failed() && !may_ask_again(&m, None));
+        m.source = Source::Chat;
+        m.preview = Some("p".into());
+        assert!(!m.ask_failed());
+        // Kept on the window's status after the dialog closed.
+        m.preview = None;
+        let s = status_of("mvx-nobody", &m);
+        assert!(s.ask_failed && !s.ask_again && s.why.as_deref().is_some_and(|w| w.contains("no document")), "{s:?}");
     }
 }

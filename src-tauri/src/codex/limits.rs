@@ -268,6 +268,21 @@ fn from_newest_known(out: &mut CodexLimits, account_path: &str) {
     }
 }
 
+/// The account's usage as last known, asking nothing of the network: what a
+/// usage limit's hold on a chat is judged on (activity `limit_in_force`).
+pub(crate) fn known_reading(account_path: &str) -> Option<crate::activity::UsageReading> {
+    let mut out = CodexLimits::default();
+    from_newest_known(&mut out, account_path);
+    out.have_usage.then(|| crate::activity::UsageReading {
+        at: out.fetched_at_ms.map(|at| at as u64),
+        windows: out
+            .windows
+            .iter()
+            .map(|w| crate::activity::UsageWindow { label: w.label.clone(), used: w.used, resets_at: w.resets_at.clone() })
+            .collect(),
+    })
+}
+
 /// A `wham/usage` answer, taken at `at`, into the DTO. One that carries its
 /// `rate_limit` is the whole picture even with no window in it: the windows
 /// it lacks are gone, so it is usage known (none), not a round that brought
