@@ -238,6 +238,38 @@ fn a_handoff_given_up_before_its_reset_tells_the_old_conversation() {
     done_with(&["hogu-me"], &dir);
 }
 
+/// The notifier types a failure line later than it is made: one with the
+/// continuation in it goes in whole only while the chat is on the
+/// conversation Luna's reset opened, and anywhere else, or where Luna cannot
+/// tell, as the line naming only the copy.
+#[test]
+fn a_failure_line_with_the_continuation_goes_only_into_the_conversation_the_reset_opened() {
+    chat("hocont-me", Some(70));
+    let (dir, file) = scratch_file("cont");
+    schedule("hocont-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    store::change("hocont-me", |r| r.switch.as_mut().unwrap().opened = Some("new".into())).unwrap();
+    let why = "the new conversation did not take Luna's prompt within 60 s";
+    finish("hocont-me", 1, Ended::Failed { why: why.into(), reset: true }, &|| "PROMPT".into());
+    let news: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hocont-me").map(|(_, l)| l.clone()).collect();
+    let line = &news[0];
+    assert!(line.ends_with("PROMPT"), "{line}");
+    set_conversation_for_test("hocont-me", Some("new"));
+    assert_eq!(as_told("hocont-me", line), *line, "on the conversation it was made for: whole");
+    let copy = dir_of("hocont-me").unwrap().join("1.md").to_string_lossy().into_owned();
+    for elsewhere in [Some("theirs"), None] {
+        set_conversation_for_test("hocont-me", elsewhere);
+        let short = as_told("hocont-me", line);
+        assert!(!short.contains("PROMPT") && short.contains(&copy) && short.contains("Handoff 1") && short.contains(why), "{short}");
+    }
+    // A line Luna has no record of is told without its prompt; any other as it is.
+    let unbound = facts::failed_line(9, "x", "/c/9.md", true, false, "PROMPT");
+    set_conversation_for_test("hocont-me", Some("new"));
+    assert!(!as_told("hocont-me", &unbound).contains("PROMPT"));
+    assert_eq!(as_told("hocont-me", "Your helper h1 answered."), "Your helper h1 answered.");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hocont-me");
+    done_with(&["hocont-me"], &dir);
+}
+
 #[test]
 fn turning_it_off_closes_the_thresholds_ask_and_gives_up_its_scheduled_handoff() {
     chat("hots-me", None);

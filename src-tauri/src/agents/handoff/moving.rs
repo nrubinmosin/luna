@@ -1567,7 +1567,9 @@ pub fn move_facts(chat_id: String) -> Result<MoveFacts, String> {
 
 /// What a chat being asked for its move's document hears, calling the tool
 /// from a conversation that ask was not typed into, or before it was typed.
-const NOT_ASKED_HERE: &str = "this conversation was not asked for the move's document: Luna has not typed its request      yet, or typed it into another conversation of this chat. Nothing is done with this call and nothing switches; go on      as you were.";
+const NOT_ASKED_HERE: &str = "this conversation was not asked for the move's document: Luna has not typed its request \
+     yet, or typed it into another conversation of this chat. Nothing is done with this call and nothing switches; go on \
+     as you were.";
 
 /// Whether move `m`'s ask answers a call from the chat on `conversation`:
 /// only once typed, and only in the conversation it was typed into, both
@@ -1584,26 +1586,33 @@ pub(super) fn ask_here(m: &Move, conversation: Option<&str>) -> bool {
 /// named for a move (`move-…`) when none is asking is refused, so a late
 /// answer never becomes a handoff. None: an ordinary handoff.
 pub(super) fn asked_file(caller: &str, file: &str) -> Option<Result<Value, String>> {
-    let (m, closed) = {
-        let r = store::records();
-        let rec = r.get(caller);
-        (
-            rec.and_then(|r| r.moving.clone()).filter(Move::asking),
-            rec.and_then(|r| r.ask_closed.as_ref().map(|(_, at)| (*at, r.ask_closed_turns))),
-        )
-    };
+    let m = store::records().get(caller).and_then(|r| r.moving.clone()).filter(Move::asking);
     let name = Path::new(file.trim()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let turn =
-        Turn { started: crate::activity::turn_started_ms(caller), ended: crate::activity::turn_state(caller).map(|t| t.turns_ended) };
-    let late = late_answer(&name, closed, now_ms(), turn);
     match m {
         Some(m) if !ask_here(&m, super::conversation_now(caller).as_deref()) => Some(Err(NOT_ASKED_HERE.into())),
         Some(m) => Some(collect(caller, &m, file)),
-        None if late => Some(Err("the move this document was for is over (sent, given up or canceled): nothing is \
-                                        done with it and nothing switches. Go on as you were."
-            .into())),
+        None if answers_closed_ask(caller, &name) => Some(Err(MOVE_OVER.into())),
         None => None,
     }
+}
+
+/// What a chat hears answering a move's ask that Luna has closed, with its
+/// document or a call for how to write it: the move was the person's, and
+/// they decided it otherwise. Not the refusal of a chat nobody asked (mod.rs
+/// `NOT_ASKED`), which would have it tell the person its call failed.
+pub(super) const MOVE_OVER: &str = "the move that asked this chat for its document is over: the person had Luna write \
+     the document from the chat's records, gave the move up or canceled it, or it was sent. There is nothing to do: \
+     nothing is done with this call and nothing switches. Go on as you were.";
+
+/// Whether a call from `caller` now, with a file named `name` (empty: a call
+/// without one), is taken for the late answer of a move's ask that closed
+/// (`late_answer`): a file named for a move, or any call in the turn the ask
+/// was answered in, within ASK_LATE_MS of its close.
+pub(super) fn answers_closed_ask(caller: &str, name: &str) -> bool {
+    let closed = store::records().get(caller).and_then(|r| r.ask_closed.as_ref().map(|(_, at)| (*at, r.ask_closed_turns)));
+    let turn =
+        Turn { started: crate::activity::turn_started_ms(caller), ended: crate::activity::turn_state(caller).map(|t| t.turns_ended) };
+    late_answer(name, closed, now_ms(), turn)
 }
 
 /// The chat's document copied and checked as a handoff's is (file.rs), Luna's
@@ -1758,13 +1767,21 @@ fn type_ask(chat: &str, m: &Move) {
                 _ => false,
             });
             match taken {
-                Ok(true) => Ok(()),
+                // Logged here, as it opens: the chat may answer it before the
+                // paste below returns.
+                Ok(true) => {
+                    crate::log::info(
+                        "move",
+                        &format!("{}: asked for move {}'s document: on record as typed; its line goes in", label(&chat), m.id),
+                    );
+                    Ok(())
+                }
                 Ok(false) => Err(Refused::Gone),
                 Err(e) => Err(Refused::Unsaved(e)),
             }
         };
         match super::type_line(&chat, &ask_line(&m.id), &commit) {
-            Ok(Typed::In) => crate::log::info("move", &format!("{}: asked for move {}'s document", label(&chat), m.id)),
+            Ok(Typed::In) => crate::log::info("move", &format!("{}: move {}'s ask went in; the CLI took it", label(&chat), m.id)),
             Ok(Typed::NotClear | Typed::NotCommitted(Refused::Gone)) => {}
             // Only while still asked: the person may have had Luna's document
             // built meanwhile.
@@ -2801,6 +2818,14 @@ Ship it.
         assert!(e.contains("is over") && e.contains("nothing switches"), "{e}");
         let e = asked_file(chat, &dir.join("handoff.md").to_string_lossy()).unwrap().unwrap_err();
         assert!(e.contains("is over"), "in the ask's turn any file is its late answer: {e}");
+        // Its call for how to write it hears the move is over, not that
+        // nobody asked it for a handoff; past the late window, it is unasked.
+        let e = super::super::served::instructions(chat).unwrap_err();
+        assert!(e.starts_with("the move that asked this chat for its document is over") && !e.contains("Hand off now"), "{e}");
+        let closed = store::records()[chat].ask_closed.clone();
+        store::change(chat, |r| r.ask_closed = Some(("m1".into(), now_ms() - ASK_LATE_MS - 1))).unwrap();
+        assert_eq!(super::super::served::instructions(chat).unwrap_err(), super::super::NOT_ASKED);
+        store::change(chat, |r| r.ask_closed = closed).unwrap();
         assert_eq!(store::records()[chat].moving.as_ref().map(|m| m.shown_sha256.clone()), Some(p.sha256.clone()));
         // Shown once: not to be built again over it.
         let again = store::records()[chat].moving.clone().unwrap();

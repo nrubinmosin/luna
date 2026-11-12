@@ -407,7 +407,7 @@ pub(super) fn failed_line(n: u32, why: &str, snapshot: &str, reset: bool, asked:
         // No prompt to give: it would point at a copy Luna cannot vouch for.
         format!("Handoff {n} cleared the conversation, but Luna gives the new one no handoff ({why}). Ask the person how to go on.")
     } else if reset {
-        format!("Handoff {n} cleared the conversation, but Luna's prompt for the new one did not go in ({why}). It was:\n{prompt}")
+        format!("Handoff {n} {CONTINUED} ({why}). It was:\n{prompt}")
     } else {
         let next = if asked {
             "Call luna_session_handoff again once what stood in the way is done."
@@ -416,6 +416,26 @@ pub(super) fn failed_line(n: u32, why: &str, snapshot: &str, reset: bool, asked:
         };
         format!("Handoff {n} did not go through: {why}. This conversation goes on as it was; your handoff's copy is at {snapshot}. {next}")
     }
+}
+
+/// What a failure line carrying the continuation says of itself: how the
+/// notifier knows such a line from any other (mod.rs `as_told`).
+pub(super) const CONTINUED: &str = "cleared the conversation, but Luna's prompt for the new one did not go in";
+
+/// What takes the place of a failure line carrying the continuation where the
+/// chat is not on the conversation Luna's reset opened, or Luna cannot tell
+/// (mod.rs `as_told`): what became of the handoff and where its copy is, and
+/// no prompt. None of them where the line's record is gone: then only that
+/// a prompt was held back.
+pub(super) fn continued_short(n: Option<u32>, why: Option<&str>, snapshot: Option<&str>) -> String {
+    let which = n.map(|n| format!("Handoff {n}")).unwrap_or_else(|| "A handoff".into());
+    let why = why.map(|w| format!(" ({w})")).unwrap_or_default();
+    let copy = snapshot.map(|s| format!(" Its copy is at {s}.")).unwrap_or_default();
+    format!(
+        "{which} of this chat cleared the conversation that wrote it, but Luna's prompt for the new one did not go in{why}, \
+         and this chat may be on another conversation since, so that prompt is not typed here.{copy} Nobody asks this \
+         conversation for a handoff: go on as you were, or ask the person."
+    )
 }
 
 /// `text` past the wrapper Claude Code keeps a pasted prompt in, in its

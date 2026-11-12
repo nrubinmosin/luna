@@ -214,7 +214,11 @@ pub(super) fn open_ask(id: &str) -> Option<store::AskKind> {
 /// another conversation asked), or Luna cannot yet tell which conversation
 /// was asked or which it is on.
 pub(super) fn asked_now(id: &str) -> Result<(), &'static str> {
-    let Some(a) = store::records().get(id).and_then(|r| r.asked.clone()) else { return Err(NOT_ASKED) };
+    let asked = store::records().get(id).and_then(|r| r.asked.clone());
+    // Unasked, a call in the turn a move's closed ask was answered in is that
+    // ask's late answer: the move was decided otherwise, which is no failure
+    // of the chat's.
+    let Some(a) = asked else { return Err(if moving::answers_closed_ask(id, "") { moving::MOVE_OVER } else { NOT_ASKED }) };
     let now = conversation_now(id);
     if ask_holds(&a, now.as_deref()) {
         return Ok(());
@@ -949,11 +953,61 @@ fn ended_with(
                 Some(line) => line(s.n, &s.snapshot),
                 None => facts::failed_line(s.n, &why, &s.snapshot, reset, asked, &prompt),
             };
+            // The notifier types it later, maybe after the person went on in
+            // another conversation: one with the continuation in it is bound
+            // to the conversation the reset opened (`as_told`).
+            if left.is_none() && reset && !prompt.is_empty() {
+                bind_continued(chat, &line, s.opened.clone(), facts::continued_short(Some(s.n), Some(&why), Some(&s.snapshot)));
+            }
             reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), line));
             crate::agents::save_chats();
             let name = chat_name(chat).unwrap_or_else(|| chat.to_string());
             crate::power::notify_chat(chat, "A handoff did not go through", &format!("\"{name}\": {why}"));
         }
+    }
+}
+
+/// Failure line `line` of `chat`, which carries the continuation, kept bound
+/// to `conversation`, with `short` to take its place elsewhere. The last few
+/// are kept: a line waits in the notifier's queue only until it is told. A
+/// record that will not save keeps it in memory, as `finish` does its end.
+fn bind_continued(chat: &str, line: &str, conversation: Option<String>, short: String) {
+    let bound = store::Continued { line_sha256: sha256_of(line), conversation, short };
+    let add = |r: &mut store::Record| {
+        r.continued.push(bound.clone());
+        let over = r.continued.len().saturating_sub(store::KEPT);
+        r.continued.drain(..over);
+    };
+    if let Err(e) = store::change(chat, add) {
+        crate::log::warn("handoff", &format!("{}: which conversation a failure line is for could not be saved: {e}", label(chat)));
+        if let Some(r) = store::records().get_mut(chat) {
+            add(r);
+        }
+    }
+}
+
+fn sha256_of(text: &str) -> String {
+    Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Line `line` of the notifier's queue for `chat` as it is to be typed now. A
+/// handoff's failure line carrying the continuation goes in whole only while
+/// the chat is on the conversation it was made for, the one Luna's reset
+/// opened, both known and the same (`Record::continued`); anywhere else, or
+/// where Luna cannot tell, its short line, which names only the copy, takes
+/// its place: a prompt typed into a conversation the person started since
+/// would hand that one a handoff it never asked for. Any other line as it is.
+pub(in crate::agents) fn as_told(chat: &str, line: &str) -> String {
+    if !line.contains(facts::CONTINUED) {
+        return line.to_string();
+    }
+    let sha = sha256_of(line);
+    let bound = store::records().get(chat).and_then(|r| r.continued.iter().find(|c| c.line_sha256 == sha).cloned());
+    let now = conversation_now(chat);
+    match bound {
+        Some(b) if b.conversation.is_some() && b.conversation == now => line.to_string(),
+        Some(b) => b.short,
+        None => facts::continued_short(None, None, None),
     }
 }
 
@@ -1374,13 +1428,23 @@ fn type_manual(chat: &str, at: u64) {
             // started meanwhile. Not known now, it is typed at a later beat.
             let Some(conversation) = conversation_now(&id) else { return Err(Refused::Gone) };
             match store::change(&id, |r| manual_typed(r, at, now_ms(), Some(conversation))) {
-                Ok(true) => Ok(()),
+                // Logged here, as it opens: the chat may answer it before the
+                // paste below returns.
+                Ok(true) => {
+                    crate::log::info(
+                        "handoff",
+                        &format!("{}: the person's ask for a handoff is on record as typed; its line goes in", label(&id)),
+                    );
+                    Ok(())
+                }
                 Ok(false) => Err(Refused::Gone),
                 Err(e) => Err(Refused::Unsaved(e)),
             }
         };
         match type_line(&id, &facts::manual_notice(), &commit) {
-            Ok(Typed::In) => crate::log::info("handoff", &format!("{}: the person's ask for a handoff is typed", label(&id))),
+            Ok(Typed::In) => {
+                crate::log::info("handoff", &format!("{}: the person's ask for a handoff went in; the CLI took it", label(&id)))
+            }
             Ok(Typed::NotClear | Typed::NotCommitted(Refused::Gone)) => {}
             Ok(Typed::NotCommitted(Refused::Unsaved(e))) => {
                 crate::log::warn("handoff", &format!("{}: the person's ask could not be saved as typed: {e}", label(&id)))

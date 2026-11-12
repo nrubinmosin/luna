@@ -37,7 +37,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Luna's reset opened: if you start one of your own as Luna resets, or
   Luna's core stopped mid-switch, and Luna cannot tell the conversation the
   chat is on is the one its reset opened, the handoff is given up with only
-  its copy's path said there.
+  its copy's path said there. A failure's line that carries the
+  continuation is typed only while the chat is still on that conversation,
+  else as a line naming the copy. A chat answering a move's ask that was
+  since decided otherwise hears that the move is over, not that nobody
+  asked it.
   Every such chat gets its private drafts folder at its start.
 - Auto-handoff now only asks at its threshold; turning it off closes only its
   own ask. Its ask closes when the threshold re-arms.

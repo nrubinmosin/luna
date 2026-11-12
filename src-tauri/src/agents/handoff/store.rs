@@ -163,6 +163,22 @@ pub(super) struct Record {
     /// person's: closed as a handoff goes through, or as it lapses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked: Option<Asked>,
+    /// The failure lines queued with a handoff's continuation in them, each
+    /// with the conversation it was made for: the notifier types one only
+    /// while the chat is still on that conversation (mod.rs `as_told`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continued: Vec<Continued>,
+}
+
+/// A failure line carrying the continuation (facts.rs `failed_line`), by its
+/// hash: the conversation Luna's reset opened, the only one it may go into,
+/// and the short line that takes its place anywhere else.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Continued {
+    pub line_sha256: String,
+    pub conversation: Option<String>,
+    pub short: String,
 }
 
 pub(super) type Records = BTreeMap<String, Record>;
