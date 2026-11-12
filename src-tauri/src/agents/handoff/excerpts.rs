@@ -835,9 +835,15 @@ fn segments(text: &str) -> Vec<Vec<String>> {
 }
 
 /// The skill whose file `path` is, by its folder's name: `…/<name>/SKILL.md`,
-/// either slash. None for any other file.
+/// either slash, doubled too: a Windows path as a JSON string or a script's
+/// literal escapes it (`'C:\\…\\windows-ssh\\SKILL.md'`, seen in Codex 0.167.2's
+/// code mode). None for any other file.
 fn skill_folder(path: &str) -> Option<String> {
-    let folder = path.trim().strip_suffix(SKILL_FILE)?.strip_suffix(['/', '\\'])?;
+    let file = path.trim().strip_suffix(SKILL_FILE)?;
+    let folder = file.trim_end_matches(['/', '\\']);
+    if folder.len() == file.len() {
+        return None;
+    }
     let name = folder.rsplit(['/', '\\']).next()?;
     let plain = !name.is_empty() && name != "." && name != ".." && name.chars().all(|c| c.is_alphanumeric() || "-_.:".contains(c));
     plain.then(|| name.to_string())
@@ -1396,6 +1402,19 @@ pub(super) mod tests {
             skills_read_by(&segments("gc \"C:\\a b\\one\\SKILL.md\" && type two/SKILL.md")),
             [("one".to_string(), "C:\\a b\\one\\SKILL.md".to_string()), ("two".to_string(), "two/SKILL.md".to_string())]
         );
+        // A Windows path escaped as a JSON string or a script's literal has its
+        // backslashes doubled: still its folder's skill.
+        let escaped = r"C:\\Users\\x\\.claude\\skills\\windows-ssh\\SKILL.md";
+        assert_eq!(skill_folder(escaped).as_deref(), Some("windows-ssh"));
+        assert_eq!(skill_folder(&format!("{escaped}\n")).as_deref(), Some("windows-ssh"));
+        assert_eq!(
+            skills_read_by(&segments(&format!("Get-Content -LiteralPath '{escaped}'"))),
+            [("windows-ssh".to_string(), escaped.to_string())]
+        );
+        // A script's literal inside a JSON string: escaped twice.
+        assert_eq!(skill_folder(r"C:\\\\Users\\\\windows-ssh\\\\SKILL.md").as_deref(), Some("windows-ssh"));
+        assert_eq!(skill_folder("SKILL.md"), None, "no folder");
+        assert_eq!(skill_folder(r"x\\..\\SKILL.md"), None);
         // An argv is a program and its arguments, as they are: a `;` in one
         // parts nothing. Only a shell given a script has it parsed.
         let read = |argv: Value| skills_read_by(&command_segments(&argv)).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
