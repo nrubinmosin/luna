@@ -815,6 +815,9 @@ fn gather(chat: &str, previous: Option<&str>, provider: Provider) -> facts::Fact
     let accounts = accounts.into_iter().filter_map(|a| Some((a.clone(), usage_words(usage.get(&a)?)?))).collect();
     let mut held_for = held;
     held_for.dedup();
+    // The turn an ask opened is the handoff being written, not the work: left
+    // out of the skills, as a move leaves out its own.
+    let ask_turns = excerpts::Skip { opens: facts::is_ask_prompt, ask: None };
     facts::Facts {
         provider: known.as_ref().map(|k| k.provider),
         account: known.as_ref().map(|k| k.account.clone()).unwrap_or_default(),
@@ -825,7 +828,7 @@ fn gather(chat: &str, previous: Option<&str>, provider: Provider) -> facts::Fact
         owed_by_others,
         held_for,
         accounts,
-        skills: previous.and_then(|p| match excerpts::skills_in(Path::new(p), provider) {
+        skills: previous.and_then(|p| match excerpts::skills_in(Path::new(p), provider, Some(ask_turns)) {
             Ok(skills) => Some(skills),
             Err(e) => {
                 crate::log::warn("handoff", &format!("{}: the skills its conversation loaded are not known: {e}", label(chat)));

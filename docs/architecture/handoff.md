@@ -197,8 +197,9 @@ that beat is skipped and the turn looked at again at the next.
   not sent straight into the next handoff. The floor is where its first turn
   ended (`handoffs_first_turn`: Luna's prompt the first thing said in its
   transcript; the last usage before the next thing said, a helper's notice
-  or a draft the person sent included), or where it stands while that turn
-  is the last: so however late it is first looked at (auto-handoff turned on
+  or a draft the person sent included, the transcript read from its start
+  up to that and no further, nor past 32 MB), or where it stands while that
+  turn is the last or runs past 32 MB: so however late it is first looked at (auto-handoff turned on
   since, a notice before the beat's look, a core started again). A
   conversation Luna's prompt did not open has none.
 - **Re-arm.** A conversation told of its threshold whose context is then well
@@ -389,13 +390,22 @@ worktree, branch and SHA and transcript; the skills seen loaded or read in
 the conversation before, off its transcript, `excerpts::skills_in`: Claude
 Code's `Skill` calls and `Read`s of a `SKILL.md` whose result was no error, a
 person's `/name` of a skill; Codex's `<skill>` blocks and a `SKILL.md` printed
-by a command of a tool that runs commands (code mode's `exec`, its `cmd`
-strings; `shell` and its kin) whose output came back clean (`ran_clean`: no
-"Script failed", every exit code 0), as an argument, in either quote, of
-`Get-Content`, `cat`, `sed` and the like opening its segment
-(`skills_read_by`); not a `SKILL.md` in the session's own folder that the
+by the command line of a shell tool's call (`shell`, `shell_command`,
+`exec_command`, `local_shell`; `CODEX_SHELLS`; an argv as one line,
+`command_lines`) whose own result states exit
+status 0 in its header, the lines before `Output:` (`exit_status`: `Exit
+code: N`, `Process exited with code N`; never the command's output), as an
+argument, in either quote, of `Get-Content`, `cat`, `sed` and the like
+opening its segment (`skills_read_by`). Code mode's script (`exec`) is not
+read for the commands it runs, so a skill read only from one is missed: a
+command it holds may be data it only passes on or in a branch never taken,
+and its cell may yield before the command ends, the rest coming under
+another call. Not a `SKILL.md` in the session's own folder that the
 same conversation also edited or wrote (an edit tool, a patch, `Set-Content`
-and the like), which is work on the skill; names only (a file's by its
+and the like), which is work on the skill, nor what the turns Luna's ask
+opened loaded (`facts::is_ask_prompt`: the notifier's tag, then the
+threshold's notice or the person's request), which wrote the handoff, as a
+move leaves out its own; names only (a file's by its
 folder), each once in order of first use, from its first 256 MB, "none"
 where none is seen, or "not known" where it cannot be read; names, tasks
 and skills fenced in double

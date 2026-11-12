@@ -16,8 +16,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   conversation before was seen loading or reading, off its transcript
   (Claude Code's `Skill` calls that went through, the skills a person
   started with `/name`, and a `SKILL.md` read; Codex's `<skill>` blocks and a
-  `SKILL.md` a shell command it ran printed without failing; not a skill's
-  file the conversation also edited in its own folder). A move's document
+  `SKILL.md` printed by a command its shell tool ran, the tool's result
+  stating exit status 0, not one read inside a code-mode script; not a
+  skill's file the conversation also edited in its own folder, nor the skills
+  of the turn Luna's ask opened, which wrote the handoff). A move's document
   carries the same line, the move's own ask left out, and the moved chat is
   told to load what it lists before its first reply.
 

@@ -244,8 +244,9 @@ menu, so words injected into the chat cannot hand it off on their own.
   the names of the skills the conversation before loaded (read off its
   transcript: those it called or read the file of, and those you started
   with `/name`; a skill's file the conversation also edited in its own
-  folder is work on that skill, not counted; one loaded some other way may
-  be missed). The prompt tells the new conversation to load the skills the
+  folder is work on that skill, not counted, nor is a skill loaded in the
+  turn Luna's ask opened, which wrote the handoff; one loaded some other
+  way, such as a file Codex read inside a code-mode script, may be missed). The prompt tells the new conversation to load the skills the
   handoff lists under "Skills to load first" before its first reply, and says
   that approvals the handoff quotes hold as far as your quoted words go and no
   further. Its helpers, their answers and notices carry on
