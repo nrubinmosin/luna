@@ -246,7 +246,9 @@ one of your own chats an agent may answer only a question its model asked
 
 `luna_session_list` shows per helper its state, the first line of its task and when it last
 did anything; `luna_session_get` adds its transcript and the CLI's own conversation id, its
-branch and commit, when its turn began, the model it
+branch and commit (for a helper in a worktree also its last commit's subject
+and up to 20 lines of `git status --short`, which its parent may not be able to
+open itself), when its turn began, the model it
 ran on (none until a model has answered), how full its context is after its last turn and
 the version of the CLI its process last started from (`cliVersion`).
 `luna_account_list` names the accounts agents may use (the account alone is enough: it brings

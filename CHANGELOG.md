@@ -8,6 +8,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- `luna_session_get` on a helper in a worktree gives its last commit's
+  subject and up to 20 lines of `git status --short`, for a parent its CLI
+  keeps out of that worktree.
+
 ### Fixed
 
 - Helpers spawned side by side with `worktree: true` in one repository no
