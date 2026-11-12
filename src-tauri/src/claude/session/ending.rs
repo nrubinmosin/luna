@@ -260,9 +260,12 @@ pub(super) fn pending_tool_in(text: &str) -> Option<(String, serde_json::Value)>
 /// says it got, from the line that made it. One in the foreground is waited on
 /// until its result. One with `run_in_background`, and a `Monitor`, come back at
 /// once and run on until a task notification with a status names them (a
-/// Monitor's events have none): `claude -p` holds its turn for them. A
-/// background job with no `timeout` of its own runs as long as the CLI's flags
-/// say, which is no deadline to read.
+/// Monitor's events have none). `claude -p`, its stdin closed, holds on for
+/// them, as for background subagents, only up to
+/// `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` (10 min by default, 2.1.319+) and
+/// then stops them; a helper's turn sets it to `0`, no ceiling
+/// (background/command.rs). A background job with no `timeout` of its own runs
+/// as long as the CLI's flags say, which is no deadline to read.
 pub fn due_ms(path: &Path) -> Option<u64> {
     due_in(&crate::pty::tail(path, DUE_TAIL)?)
 }

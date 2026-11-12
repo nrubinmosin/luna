@@ -8,6 +8,25 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- A new Claude Code chat or helper opens on the effort Claude Code itself
+  would use for its model. Claude Code keeps effort per model (`/effort`
+  saves it under `modelSettings`), and the account's top-level `effortLevel`
+  counts only for older models; Luna read only that one key, for every
+  model. Each model now gets the level the settings files keep for it, else
+  its own default, the dialog naming the file and key, and moves to it when
+  another model is picked; `luna_account_get` gives `effortByModel`.
+
+- A Claude Code helper's background subagents are no longer stopped 10
+  minutes after its turn: Claude Code 2.1.319+ stops what a `-p` run left in
+  the background that long after its input closed, unfinished and uncommitted
+  work with it, and Luna closes a helper's input with each turn. Its turns now
+  run with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (in "What Luna applied"),
+  so they wait for that work; one that hangs is still told to its caller as a
+  quiet turn and stopped with `luna_session_stop`. Should the CLI stop that
+  work anyway, the caller's notice says so instead of "it has said nothing".
+
 ## [0.17.0] - 2026-11-13
 
 A chat can hand off to a fresh conversation whenever you ask: **Hand off now**

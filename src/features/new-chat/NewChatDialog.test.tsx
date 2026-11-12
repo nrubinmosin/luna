@@ -322,6 +322,27 @@ describe('NewChatDialog: Claude models from the account’s own list', () => {
     expect(screen.getByRole('radio', { name: 'low' })).toHaveAttribute('aria-checked', 'true');
   });
 
+  it('moves the effort to the level Claude Code keeps for the model picked, and names where it is kept', async () => {
+    const perModel = { value: 'low', source: 'account' as const, key: 'modelSettings.mythos.effortLevel' };
+    mocked.claudeDefaults.mockResolvedValue({
+      model: fromAccount('opus'),
+      effort: fromAccount('xhigh'),
+      permissionMode: null,
+      effortByModel: { opus: fromAccount('xhigh'), mythos: perModel }
+    });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('radio', { name: 'xhigh' })).toHaveAttribute('aria-checked', 'true');
+    await user.selectOptions(screen.getByRole('combobox'), 'Mythos');
+    expect(screen.getByRole('radio', { name: 'low' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText("from the account's settings.json, modelSettings.mythos.effortLevel")).toBeInTheDocument();
+    // Picked by hand, a level stays whatever the next model keeps.
+    await user.click(screen.getByRole('radio', { name: 'high' }));
+    await user.selectOptions(screen.getByRole('combobox'), 'Opus');
+    expect(screen.getByRole('radio', { name: 'high' })).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('opens on a full id the settings file names, as that model', async () => {
     mocked.claudeDefaults.mockResolvedValue({
       model: fromAccount('claude-opus-4-7'),

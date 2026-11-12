@@ -11,7 +11,7 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | --- | --- | --- |
 | Launch args | `launch.rs` | `launch.rs` |
 | Binary source | `cli.rs`: downloads.claude.ai, `latest` + `manifest.json`, bare exe | `cli.rs`: GitHub Releases `openai/codex`, tag `rust-v<ver>`, package tarball + `SHA256SUMS` |
-| Defaults | `defaults.rs`: `model`, `effortLevel`, `permissions.defaultMode` | `defaults.rs`: `model`, `model_reasoning_effort`, `approval_policy`, `sandbox_mode` |
+| Defaults | `defaults.rs`: `model`, effort per model (`modelSettings.<model>.effortLevel`, `effortLevel`, the model's catalog default), `permissions.defaultMode` | `defaults.rs`: `model`, `model_reasoning_effort`, `approval_policy`, `sandbox_mode` |
 | Models | `models.rs`: the account's own list with per-model levels; `context.rs`: context windows from the Models API | `models.rs`: catalog with per-level descriptions |
 | Limits | `limits.rs`: OAuth usage + CLI cache | `limits.rs`: `wham/usage` + rollout fallback |
 | Auth | `oauth.rs`: refresh like the CLI | none: Codex refreshes itself |
