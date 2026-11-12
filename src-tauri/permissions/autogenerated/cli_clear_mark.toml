@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cli-clear-mark"
+description = "Enables the cli_clear_mark command without any pre-configured scope."
+commands.allow = ["cli_clear_mark"]
+
+[[permission]]
+identifier = "deny-cli-clear-mark"
+description = "Denies the cli_clear_mark command without any pre-configured scope."
+commands.deny = ["cli_clear_mark"]

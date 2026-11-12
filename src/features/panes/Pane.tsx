@@ -98,8 +98,8 @@ function ColorPicker({ chat, anchor, onClose }: { chat: Chat; anchor: HTMLElemen
   );
 }
 
-/** What the "…" button of a narrow pane's title bar holds: the window buttons
- *  a narrow bar has no room for, as a menu. */
+/** What the "…" button of a pane's title bar holds: what a chat is set up
+ *  with or done to now and then, kept off the bar. */
 interface MenuItem {
   label: string;
   title: string;
@@ -107,7 +107,7 @@ interface MenuItem {
 }
 
 /**
- * The narrow bar's menu of its rarer window buttons. Portaled and placed by
+ * The title bar's menu of its rarer actions. Portaled and placed by
  * its button, like the color picker; closes on a pick, Escape in it, focus
  * leaving it, a press elsewhere, or a scroll or resize that moves the button.
  */
@@ -356,17 +356,16 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             style={{ ['--c' as string]: colorTheme?.swatch ?? 'var(--luna-blue)' }}
           >
             {/* Controls first: the hand reaches the left of a bar before its
-                right, and the name reads as well from either end. A narrow
-                bar folds the rarer four into the "…" menu (panes.css). */}
+                right, and the name reads as well from either end. The bar
+                keeps what a pane is used for often; the rest is in "…". */}
             <span className="title-bar-controls">
               <button
-                className="pane-more"
                 data-glyph="more"
                 data-nodrag=""
                 aria-label="More"
                 aria-haspopup="menu"
                 aria-expanded={!!menu}
-                title="Chat color, rename, What Luna applied, move to another account, delete"
+                title="Rename, chat color, What Luna applied, move to another account"
                 onClick={e => {
                   e.stopPropagation();
                   const at = e.currentTarget;
@@ -374,40 +373,6 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 }}
               />
               <button
-                className="pane-rare"
-                data-glyph="swatch"
-                aria-label="Chat color"
-                title="Chat color — tints this title bar and the chat's row in the list"
-                onClick={e => {
-                  e.stopPropagation();
-                  const at = e.currentTarget;
-                  setPicking(p => (p ? null : at));
-                }}
-                style={{ ['--swatch' as string]: colorTheme?.swatch }}
-              />
-              <button
-                className="pane-rare"
-                data-glyph="pencil"
-                aria-label="Rename"
-                title="Rename chat"
-                onClick={e => {
-                  e.stopPropagation();
-                  setDraft(chat.name);
-                  setEditing(true);
-                }}
-              />
-              <button
-                className="pane-rare"
-                data-glyph="info"
-                aria-label="What Luna applied"
-                title="What Luna applied — everything Luna added to this chat's CLI, and why"
-                onClick={e => {
-                  e.stopPropagation();
-                  setShowApplied(true);
-                }}
-              />
-              <button
-                className="pane-rare"
                 data-glyph="trash"
                 aria-label="Delete chat"
                 title="Delete chat — asks first"
@@ -453,17 +418,17 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 onClose={() => setMenu(null)}
                 items={[
                   {
-                    label: 'Chat color…',
-                    title: "Tints this title bar and the chat's row in the list",
-                    run: at => setPicking(at)
-                  },
-                  {
                     label: 'Rename',
-                    title: 'Rename chat',
+                    title: 'Rename chat — or double-click its name',
                     run: () => {
                       setDraft(chat.name);
                       setEditing(true);
                     }
+                  },
+                  {
+                    label: 'Chat color…',
+                    title: "Tints this title bar and the chat's row in the list",
+                    run: at => setPicking(at)
                   },
                   {
                     label: 'What Luna applied',
@@ -474,8 +439,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                     label: 'Move to another account…',
                     title: 'Goes on as a new chat on another account of its CLI, from a document you read first',
                     run: () => setMoving(true)
-                  },
-                  { label: 'Delete chat…', title: 'Asks first', run: () => setConfirming(true) }
+                  }
                 ]}
               />
             )}
@@ -503,7 +467,15 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   style={{ flex: '1 1 auto', minWidth: 60, height: 'calc(var(--ui) * 1.6)' }}
                 />
               ) : (
-                <span title={chat.name} className="title-bar-text">
+                <span
+                  title={chat.name}
+                  className="title-bar-text"
+                  onDoubleClick={e => {
+                    e.stopPropagation();
+                    setDraft(chat.name);
+                    setEditing(true);
+                  }}
+                >
                   {chat.name}
                 </span>
               )}

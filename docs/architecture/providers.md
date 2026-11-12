@@ -153,11 +153,24 @@ writes `<root>/pinned`, which the pass leaves be until a channel is chosen
 again. It holds every file to the sha256 its record kept first; below the
 floor every file must have one, and nothing below `minSafe` is taken. "Mark
 bad" (`cli_mark_bad`) writes `<root>/bad.json`, which no pass installs or
-makes current. The canary counts the first three sessions on a new version
+makes current; "Mark good" (`cli_mark_good`, an installed version off the
+shipped list, not below `minSafe`) writes `<root>/good.json`, whose versions
+the known-good channel picks from beside the shipped list (`known_good::pick`)
+as `chosen` ones: fetched by their own version, and gone back to below the
+floor only while installed. A version is in one file at most: each mark takes
+it out of the other, under `marks.lock`; read back, a good one is held to the
+`minSafe` of the Luna reading it and loses to a bad one (`choice::good_in`).
+"Clear bad" and "Unmark good" (`cli_clear_mark`) take a version out of both,
+installed or not. The canary counts the first three sessions on a new version
 in `<root>/canary.json` (the core counts, the window resets it on a flip,
 both under `canary.lock`): two whose CLI exits with an error within half a
 minute raise a desktop notice and `cli://canary`, which the status bar and
-Settings → CLIs show. Nothing rolls back on its own. In the test build a
+Settings → CLIs show. A watched session past that half minute with no
+failure (ended well, stopped, or still running when a timer of the core's
+looks) adds to `settled`; three settled with no failure is a version through
+its first sessions, which the log says once and Settings tags. A core that
+went away meanwhile leaves those still inside their half minute unsettled,
+so the count stays short rather than claim more than was seen. Nothing rolls back on its own. In the test build a
 file `canary-fail` at the provider's root fails each watched session.
 An exit that says nothing of the version does not count and gives its watch
 to the next session: one whose last words (a pane's last screen, drawn from

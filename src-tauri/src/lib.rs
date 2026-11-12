@@ -215,6 +215,8 @@ macro_rules! app_handler {
             cli::cli_use_version,
             cli::cli_set_channel,
             cli::cli_mark_bad,
+            cli::cli_mark_good,
+            cli::cli_clear_mark,
             cli::cli_canary_dismiss,
             claude::defaults::claude_defaults,
             claude::models::claude_models,
