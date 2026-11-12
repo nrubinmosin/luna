@@ -256,6 +256,30 @@ fn newest_known(cfg: Option<&Value>, account_path: &str) -> Option<(u64, Value, 
     }
 }
 
+/// The account's usage as last known, asking nothing of the network: what a
+/// usage limit's hold on a chat is judged on (activity `limit_in_force`).
+pub(crate) fn known_reading(account_path: &str) -> Option<crate::activity::UsageReading> {
+    use crate::activity::UsageWindow;
+    let cfg = read_json(&Path::new(account_path).join(".claude.json"));
+    let (at, limits, _, _) = newest_known(cfg.as_ref(), account_path)?;
+    let mut out = AccountLimits::default();
+    apply_limits(&mut out, &limits);
+    let mut windows = Vec::new();
+    if let Some(used) = out.h5 {
+        windows.push(UsageWindow { label: "5 hours".into(), used, resets_at: out.reset_h5.clone() });
+    }
+    if let Some(used) = out.week {
+        windows.push(UsageWindow { label: "week".into(), used, resets_at: out.reset_week.clone() });
+    }
+    for s in &out.scoped {
+        windows.push(UsageWindow { label: format!("week, {}", s.label), used: s.used, resets_at: s.resets_at.clone() });
+    }
+    for o in &out.other {
+        windows.push(UsageWindow { label: o.label.clone(), used: o.used, resets_at: o.resets_at.clone() });
+    }
+    Some(crate::activity::UsageReading { at: Some(at), windows })
+}
+
 fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String> {
     let mut out = AccountLimits { signed_in: signed_in(account_path), ..Default::default() };
 

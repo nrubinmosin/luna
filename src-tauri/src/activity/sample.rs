@@ -44,17 +44,31 @@ fn disk_api_error(p: &crate::pty::ActivityProbe) -> Option<&'static str> {
 /// Codex's rollout (`limit_in`), which ends such a turn like any other, so
 /// it never sits waiting on one. None for a chat not running.
 pub fn limit_of(chat_id: &str, provider: Provider) -> Option<&'static str> {
+    limit_at(chat_id, provider).map(|(kind, _)| kind)
+}
+
+/// `limit_of`, with when the turn stopped on it where its source says: the
+/// hook's arrival, or the rollout line's time. A transcript's API error says
+/// no time Luna reads.
+pub(super) fn limit_at(chat_id: &str, provider: Provider) -> Option<(&'static str, Option<u64>)> {
     let p = crate::pty::manager().probe(chat_id)?;
     match provider {
-        Provider::Claude => failed_of(chat_id)
-            .or_else(|| crate::claude::session::last_api_error(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path))
-            .filter(|e| *e == "rate_limit"),
+        Provider::Claude => failed_at(chat_id)
+            .map(|(kind, at)| (kind, Some(at)))
+            .or_else(|| {
+                crate::claude::session::last_api_error(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path)
+                    .map(|kind| (kind, None))
+            })
+            .filter(|(e, _)| *e == "rate_limit"),
         Provider::Codex => {
             let path = crate::codex::session::rollout_for(&codex_live(&p))?;
-            crate::codex::session::limit_in(&crate::pty::tail(&path, 256 * 1024)?)
+            let (kind, at) = crate::codex::session::limit_at_in(&crate::pty::tail(&path, 256 * 1024)?)?;
+            let at = at.and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok()).map(|t| t.timestamp_millis().max(0) as u64);
+            Some((kind, at))
         }
     }
 }
+
 /// Turns the CLI's own record says this process has finished, where it
 /// keeps one.
 fn disk_turns_ended(p: &crate::pty::ActivityProbe) -> Option<u32> {

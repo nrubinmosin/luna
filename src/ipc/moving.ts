@@ -70,6 +70,20 @@ export interface MoveLaunch {
   worktree?: false;
 }
 
+/** A usage limit that still holds a chat (activity/limit.rs `LimitFact`):
+ *  its kind, since when, and the window that is full with its reset, by the
+ *  reading it was judged on and how old that was. */
+export interface LimitFact {
+  kind: string;
+  since: number;
+  window?: string | null;
+  /** 0..1 */
+  used?: number | null;
+  resetsAt?: string | null;
+  readingAt?: number | null;
+  readingAgeMs?: number | null;
+}
+
 export interface MoveStatusDto {
   moveId: string;
   chatId: string;
@@ -87,6 +101,24 @@ export interface MoveStatusDto {
   waitingSince?: number | null;
   /** Its screen shows an empty composer: `Type it now` may be offered. */
   composerSeen?: boolean;
+  /** The chat was asked for its document and the move failed before it came
+   *  (`why` says how): Luna may build it from records instead. */
+  askFailed?: boolean;
+  /** After such a failure, asking the chat again may go through. */
+  askAgain?: boolean;
+  /** When Luna typed its ask into the chat. */
+  askedAt?: number | null;
+  /** The usage limit that still holds the old chat, while its document is
+   *  still to be had. */
+  limit?: LimitFact | null;
+}
+
+/** What the window looks at before a move begins: a usage limit still in
+ *  force, which has it offer Luna's document from records first, and what
+ *  keeps the chat from being asked for its own. */
+export interface MoveFactsDto {
+  limit?: LimitFact | null;
+  askBlocked?: string | null;
 }
 
 /** Builds the document and keeps the move as shown; nothing goes anywhere. */
@@ -109,13 +141,22 @@ export const moveStep = (chatId: string, moveId: string, step: 'stopOld' | 'oldS
 
 export const moveCancel = (chatId: string, moveId: string) => call<MoveStatusDto>('move_cancel', { chatId, moveId });
 
-/** Asks a chat with auto-handoff on to write its own document; it is
- *  collected through its handoff tool, nothing reset. */
+/** Asks a chat with Luna's tools to write its own document; it is collected
+ *  through its handoff tool, nothing reset. */
 export const moveAsk = (chatId: string, newId: string, toAccountPath: string, note: string) =>
   call<MoveStatusDto>('move_ask', { chatId, newId, toAccountPath, note });
 
 /** The preview of a document the chat wrote, once collected. */
 export const movePreview = (chatId: string, moveId: string) => call<MovePreviewDto>('move_preview', { chatId, moveId });
+
+/** Closes the chat's ask for a move being asked, or whose ask failed, and
+ *  builds the document from records into the same preview, the destination
+ *  and the note kept. */
+export const moveBuildFromRecords = (chatId: string, moveId: string, sessionId: string | null) =>
+  call<MovePreviewDto>('move_build_from_records', { chatId, moveId, sessionId });
+
+/** A chat's usage limit still in force, and what keeps it from being asked. */
+export const moveFacts = (chatId: string) => call<MoveFactsDto>('move_facts', { chatId });
 
 /** Every move under way, and those ended lately. */
 export const moveList = () => call<MoveStatusDto[]>('move_list', {}, []);
