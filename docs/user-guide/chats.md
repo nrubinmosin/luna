@@ -45,7 +45,7 @@ These boxes add something to the CLI only when you ask for it:
   box shows off and cannot be ticked, whatever the start says, and the chat
   starts without the guard.
 - **Auto-handoff at N% of its context**, off, only with Luna tools: see
-  [Auto-handoff](#auto-handoff).
+  [Handoff](#handoff).
 
 **Ctrl+Shift+N** opens the dialog instead when the folder is not trusted in the
 account, since whether to trust it is yours to say.
@@ -151,7 +151,7 @@ there:
 Each item shows its value and the reason. Tokens and Luna's local addresses are
 never shown, and files appear by their path. The panel also has the chat's own
 **Wait guard for this chat** box (from the CLI's next start) and the chat's
-**Auto-handoff** box ([below](#auto-handoff)). If Luna could not
+**Auto-handoff** box ([below](#handoff)). If Luna could not
 note a write into the account, or its note of them will not read, the panel
 says **Accounting incomplete** and why. A folder whose memory Luna could not
 leave out without risking this project's own instructions is listed under
@@ -162,37 +162,59 @@ are named once in a notice across the board until you dismiss it. Below those co
 into the account outside a start: the folder's trust when you ticked it, and
 the library's copies. See [ADR-0016](../adr/0016-luna-is-a-runtime.md).
 
-## Auto-handoff
+## Handoff
 
-A chat with Luna tools can go on in a fresh conversation of its own when its
-context fills, written up by itself, its helpers carrying on. Tick
-**Auto-handoff at N% of its context** in the new-chat dialog (70% unless you
-change it, from 10 to 90), or later in the chat's **What Luna applied** panel.
-A chat without Luna tools cannot have it: their server is what offers it.
+A chat with Luna tools can go on in a fresh conversation of its own, written
+up by itself, its helpers carrying on. It does so only when it is asked:
+
+- **Hand off now** in the pane's "…" menu asks at any time. The chat writes
+  the handoff at the next point where its work can pause. The item is grayed,
+  its tooltip saying why, where the chat could not answer: no Luna tools,
+  Claude Code's plan mode or Codex's read-only sandbox, a handoff or a move's
+  ask under way, or an ask of yours already open. The core may still refuse
+  (the CLI's own jobs running, its CLI not running); its reason then shows in
+  a strip over the pane, × to dismiss. Luna types the request only once the
+  chat stands at its prompt, with nothing in its composer. The chip on the
+  title bar reads **handoff asked** (or **· asked** beside a threshold). Your
+  ask lapses 10 minutes after Luna typed it if no handoff came; the chat is
+  told, and the desktop says so.
+- **Auto-handoff at N% of its context** asks by itself once the context passes
+  a threshold. Tick it in the new-chat dialog (70% unless you change it, from
+  10 to 90), or later in the chat's **What Luna applied** panel. A chat
+  without Luna tools cannot have either: their server is what offers the
+  handoff.
+
+Unasked, the chat's `luna_session_handoff` tool refuses and names the pane's
+menu, so words injected into the chat cannot hand it off on their own.
 
 - Once a turn ends past the threshold, Luna types one notice into the chat
-  asking for a handoff. The chat calls `luna_session_handoff` without arguments
-  and gets the steps and the instructions for the file: Luna's own, or yours
-  from the library ([System skills](library.md#system-skills)). A firmer notice
-  follows near where the CLI would compact the conversation by itself, carrying
-  the file's headings itself (goal, next action, the user's words, state,
-  pending, decisions and dead ends) for a chat short of context. A conversation
-  a handoff began is asked only once it has grown 5 points past where it began.
-  Nothing switches unless the chat asks.
+  asking for a handoff. A firmer notice follows near where the CLI would
+  compact the conversation by itself, carrying the file's headings itself
+  (goal, next action, the user's words, state, pending, decisions and dead
+  ends) for a chat short of context. A conversation a handoff began is asked
+  only once it has grown 5 points past where it began. Nothing switches
+  unless the chat asks.
 - If the CLI compacts the conversation before a handoff, or the chat goes on
-  with a model of a larger context window, it is asked again once it is past
-  the threshold again. The chip on the title bar then reads
+  with a model of a larger context window, the threshold's ask closes, and the
+  chat is asked again once it is past the threshold again. The chip then reads
   **handoff N% · asked**, ringed, its tooltip saying at what share of the
   context it was asked and how often the CLI compacted it since (a larger
   window is no compaction); it goes once a handoff is under way or through.
+- An ask holds only for the conversation it was typed into. Start a new one
+  yourself (`/clear`, `/new`) and that one is asked nothing.
+- Asked, the chat calls `luna_session_handoff` without arguments and gets the
+  steps and the instructions for the file: Luna's own, or yours from the
+  library ([System skills](library.md#system-skills)).
 - The chat writes the file in a folder of its own that Luna keeps, private,
   in its data folder (`handoffs/<chat>/drafts`); a Codex chat is given it as
-  a folder its sandbox writes into. Where Luna could not make that folder
-  private as the chat started, it gives and names none, and the chat writes
-  the file outside Luna's folder, in its own workspace; the **Auto-handoff**
-  line of What Luna applied says why. Under Codex's read-only sandbox, or in
-  Claude Code's plan mode, it can write no file at all, and the tool's answer
-  tells it so: you write the file, or give the chat a sandbox that writes.
+  a folder its sandbox writes into. Every chat with Luna tools gets that
+  folder at its start, whether it hands off or not. Where Luna could not make
+  that folder private as the chat started, it gives and names none, and the
+  chat writes the file outside Luna's folder, in its own workspace; the
+  `handoff-tool` line of What Luna applied says why. Under Codex's read-only
+  sandbox, or in Claude Code's plan mode, it can write no file at all, and the
+  tool's answer tells it so: you write the file, or give the chat a sandbox
+  that writes.
 - The chat calls `luna_session_handoff` with the file. Luna copies
   it into its data folder (written to Luna's own instructions, it names the
   headings the file lacks, and goes on) and, once the chat is at rest, types
@@ -215,24 +237,28 @@ A chat without Luna tools cannot have it: their server is what offers it.
   (Luna's copy of the file) and **previous conversation** (the one it left,
   read-only); from there **‹ before handoff N-1** steps further back. A chip on
   the title bar shows the threshold.
-- Turned on while the chat runs, it takes effect at a quick resume of the chat
-  on the same conversation once it is idle: a CLI lists Luna's tools as it
-  starts. Turned off, the tool refuses from then on, and a handoff only
-  scheduled is dropped.
-- With it on, the chat's **What Luna applied** panel says whose instructions it
-  would be given now: **Luna's** (with Luna's version and the text's hash),
-  **yours** (the library's file and its hash), or **yours is broken** (why, and
-  that Luna's is used). It warns when the chat's folder or account has a skill
-  named `session-handoff` of its own, which the CLI may show the model and Luna
-  never uses for the handoff.
-- Only this chat is told of any of it: helpers, chats without the tick and
-  chats without Luna tools are not offered the tool, find nothing of it in
-  Luna's guide or in this chat's settings as they read them, and get nothing of
-  it in their account or command line. A session that reads this chat's
-  conversation (Luna tools let any read any other's) sees the notices in it.
+- A chat whose CLI started before this Luna listed the tool to it gets it at a
+  quick resume of the chat on the same conversation once it is idle: on the
+  first Hand off now, or when you tick Auto-handoff. A CLI lists Luna's tools
+  as it starts.
+- Turning Auto-handoff off closes only the threshold's ask, and drops a
+  handoff it only scheduled. Your own Hand off now stands.
+- The chat's **What Luna applied** panel lists the tool as `handoff-tool`
+  (on request) and the threshold apart, as `auto-handoff`. With Auto-handoff on, it says whose
+  instructions the chat would be given now: **Luna's** (with Luna's version
+  and the text's hash), **yours** (the library's file and its hash), or
+  **yours is broken** (why, and that Luna's is used). It warns when the
+  chat's folder or account has a skill named `session-handoff` of its own,
+  which the CLI may show the model and Luna never uses for the handoff.
+- Only your chats with Luna tools are told of any of it: helpers and sessions
+  without Luna tools are not offered the tool, find nothing of it in Luna's
+  guide or in a chat's settings as they read them, and get nothing of it in
+  their account or command line. A session that reads a chat's conversation
+  (Luna tools let any read any other's) sees the notices in it.
 
-See [ADR-0020](../adr/0020-session-self-handoff.md) and
-[ADR-0022](../adr/0022-content-luna-serves-at-its-own-trigger.md).
+See [ADR-0020](../adr/0020-session-self-handoff.md),
+[ADR-0022](../adr/0022-content-luna-serves-at-its-own-trigger.md) and
+[ADR-0024](../adr/0024-handoff-on-request.md).
 
 ## Moving a chat to another account
 
@@ -246,24 +272,50 @@ The conversation does not move: neither CLI resumes another account's. A new
 chat opens there, named `<name> (moved)`, in the same folder, group and color,
 with the same Luna tools, guard, auto-handoff and permissions, and the model and
 effort the chat had where the other account lists them (else that account's
-defaults). It goes on from a document:
+defaults). It goes on from a document, chosen under **The document**:
 
-- **Luna writes it** from the chat's records, with no model asked: how to go
+- **The chat writes it**, the default for a chat with Luna tools: Luna asks it
+  through its handoff tool, once it is at its prompt, with the handoff's
+  instructions in effect (yours from the library, if you have them) under the
+  move's own rules. Nothing is cleared in it. Claude Code in its default mode
+  asks you in its pane before it creates the file. Not offered, and why said
+  beside it, for a chat without Luna tools, in plan mode or a read-only
+  sandbox, not running, or stopped on a usage limit; a chat whose CLI started
+  before it was listed the tool is to be resumed first.
+- **Luna builds it from the chat's records**, with no model asked: how to go
   on, your note, the folder's state from git, how the chat stopped, its task
   (its last handoff, or its first prompt), the plan it last proposed, the
   latest turns of the conversation, its helpers, the first steps. Tool output
-  is never in it.
-- **Ask the chat** (a chat with auto-handoff on, running, not in plan mode or a
-  read-only sandbox, not stopped on a limit): the chat writes it through its
-  handoff tool, once it is at its prompt. Nothing is cleared in it. Claude Code
-  in its default mode asks you in its pane before it creates the file.
+  is never in it, nor the turns Luna's ask opened in the chat. Luna picks it
+  for you only while a usage limit holds the chat, since the chat cannot
+  write then: the dialog says when the chat stopped, and what is known of the
+  window (which, how full, when it resets, how old the usage reading is). The
+  limit holds until a usage reading taken after the stop shows the windows
+  that count for the chat's model not full, or until their resets have
+  passed; with no reading it holds. You can pick either one yourself.
 
-Either way you see everything that goes before it goes: the line Luna types
-into the new chat, and the document, which you may edit. Luna has cut out the
-folders of accounts and its own, taken out what looks like a key or a
-password, and says how many; long random-looking strings are listed for you to
-look at. That is no guarantee: something secret you pasted into the chat
-yourself is what to look for. **Send** sends exactly the text shown.
+**Ask the chat** opens the ask. The dialog then shrinks to a banner, so you
+can answer the chat's CLI in its pane: waiting for its turn to end, writing
+its document, or its CLI asking you something. **Use Luna's document now**
+closes the ask and builds Luna's document instead; **Cancel the move** ends
+it. A document the chat sends after its ask closed is refused and replaces
+nothing.
+
+If the ask fails (the chat did not come to rest within 10 minutes, wrote
+nothing within 10 more, stopped on a limit, or its CLI exited), the dialog
+says why and offers **Build from records** (your instruction and choices
+kept), **Ask again** where another ask may go through (not after a limit or
+an exit), and **Cancel**. Luna never switches to its own document unseen.
+Opened again, the dialog says why the last ask failed.
+
+Either way you see everything that goes before it goes: who wrote the
+document (**Written by the chat**, or **Built by Luna from the chat's
+records** and why), the line Luna types into the new chat, and the document,
+which you may edit. Luna has cut out the folders of accounts and its own,
+taken out what looks like a key or a password, and says how many; long
+random-looking strings are listed for you to look at. That is no guarantee:
+something secret you pasted into the chat yourself is what to look for.
+**Send** sends exactly the text shown.
 
 The old chat can be kept or stopped. Kept, both chats work in one folder. A
 Claude Code chat in a worktree is always stopped first, and the new chat goes

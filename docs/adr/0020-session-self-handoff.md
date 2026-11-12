@@ -1,7 +1,8 @@
 # ADR-0020: Hand a chat over to a fresh conversation in place, on its own word
 
 - **Status:** Accepted; how the chat is told to write its handoff, and that
-  only it is told, is [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md)
+  only it is told, is [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md);
+  the opt-in amended by [ADR-0024](0024-handoff-on-request.md)
 - **Date:** 2026-11-09
 
 ## Context
@@ -37,7 +38,11 @@ Reset in place, opt-in per chat, on the session's own call (`agents/handoff/`):
   every start (`handoff` in its registry settings). Only such a chat is offered
   `luna_session_handoff` in `tools/list`; the tool refuses any other caller.
   Turned on while the chat runs, the window resumes its CLI on the same
-  conversation once it is idle, so the CLI lists the tool.
+  conversation once it is idle, so the CLI lists the tool. (Amended
+  2026-11-12 by [ADR-0024](0024-handoff-on-request.md): every person's chat
+  with Luna tools is listed the tool, and a call is answered only under an
+  open ask, the threshold's, the person's Hand off now or a move's; the
+  threshold is one trigger of three.)
 - **Trigger.** At each turn's end Luna reads the chat's context (`Context::of`);
   past the threshold one notice, and a firmer one near where the CLI would
   compact; once each per conversation, or again after the CLI compacted it
@@ -79,7 +84,9 @@ Reset in place, opt-in per chat, on the session's own call (`agents/handoff/`):
 - The handoff is still a summary a model writes. Luna makes it deliberate and
   adds the facts that go stale in a file, but cannot make it complete.
 - Turning auto-handoff on for a running chat restarts its CLI once (same
-  conversation): a few seconds, at a moment the chat is idle.
+  conversation): a few seconds, at a moment the chat is idle. (Since
+  [ADR-0024](0024-handoff-on-request.md) only a CLI started before the tool
+  was listed to it needs that resume.)
 - New attack surface, kept to the caller's own chat: a tool with no target, a
   file copied from a path the session names (checked against Luna's folder and
   links), and fixed text typed into the person's terminal (threat model §5).

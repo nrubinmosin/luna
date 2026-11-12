@@ -22,7 +22,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | --- | --- |
 | `hub.rs` | loopback HTTP: `/hook/<chat>/<secret>`, `/guard/<chat>/<secret>`, `/mcp` (bearer); a thread per request in bounded lanes (`admit.rs`) |
 | `mcp/mod.rs` | JSON-RPC: `initialize` (with `instructions`), `tools/list`, `tools/call`; `mcp::Call` per call in flight |
-| `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list); `luna_session_handoff` only for a chat with auto-handoff on (`handoff_tool`), refused to any other as a tool there is not (`dispatch.rs`); `luna_permission` only for a background Claude Code helper's CLI |
+| `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list); `luna_session_handoff` only for a person's chat with Luna tools (`handoff_tool`, agents/handoff `may_list`), refused to any other as a tool there is not (`dispatch.rs`); `luna_permission` only for a background Claude Code helper's CLI |
 | `mcp/args.rs`, `mcp/dispatch.rs`, `mcp/guide.rs` | strict arguments (`arguments_fit`); each call to the agent layer and its log line; the guide by topic (`TOPICS`) |
 | `agents/registry.rs` | the `Registry` behind one lock (`reg()`): tokens (by SHA-256), `Known` sessions, lineage, spawns under way, debts, waits, receipts, names, groups, helpers taken over |
 | `agents/owed.rs` | answers owed (`Owed`), `hand_over` and its undo |
@@ -105,7 +105,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `luna_session_answer` to a model's question | its descendants; with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`) |
 | `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, at the caller's privilege |
 | `luna_session_spawn` | a background helper at no more privilege than the caller, never in or above the data dir; a Codex one never with an approval that asks a person |
-| `luna_session_handoff` | the caller's own chat only (no target argument); offered and taken only from a person's chat with Luna tools and auto-handoff on; to any other, a tool there is not |
+| `luna_session_handoff` | the caller's own chat only (no target argument); offered only to a person's chat with Luna tools, and answered only while that chat has an open ask (the threshold's, the person's Hand off now, a move's); to any other, a tool there is not |
 
 Every descendant is a background helper: a chat the window runs has no parent,
 so no agent interrupts, stops, deletes or approves for it.
@@ -404,11 +404,13 @@ turn, stopped on a prompt (once per stop) or exited.
   every Windows sandbox still read it, the latter through the data folder's
   private DACL), swept after a week.
 
-## Auto-handoff
+## Handoff
 
-A person's chat with auto-handoff on is offered `luna_session_handoff`, asked
-for a handoff past its threshold and switched to a fresh conversation in place
-on its word; no other session hears of any of it. How: [auto-handoff](handoff.md).
+A person's chat with Luna tools is offered `luna_session_handoff`, which
+answers only once it is asked for a handoff: by the person's Hand off now, by
+auto-handoff past its threshold, or by a move. On its word it is switched to a
+fresh conversation in place; no other session hears of any of it. How:
+[handoff](handoff.md).
 
 ## Failed turns
 
