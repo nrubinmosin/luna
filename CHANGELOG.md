@@ -77,8 +77,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   and once it is turned on again, rather than leaving a chat past its
   threshold unasked.
 - A failure's line carrying the continuation is looked at again with your
-  keys held, right before it goes in: a `/clear` or `/new` of yours just
-  before no longer lets it into the conversation you started.
+  keys held, right before it goes in, and waits while a key of yours since
+  Luna's look may not have reached the CLI yet: a `/clear` or `/new` of
+  yours just before no longer lets it into the conversation you started.
+- A move of a chat you began withdraws your Hand off now still open, saying
+  so in the pane and on the desktop, instead of leaving it to reset the chat
+  mid-move; a move is refused while a handoff of the chat is under way, and
+  no handoff is scheduled while a move is.
 - A move's ask fails at once, saying why, when the chat goes on in another
   conversation, instead of waiting out its ten minutes; Ask again is offered.
 - Two refusals and a desktop notice about the person's handoff ask no longer

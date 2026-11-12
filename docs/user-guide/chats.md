@@ -185,7 +185,10 @@ up by itself, its helpers carrying on. It does so only when it is asked:
   desktop, and you may ask again. With the chat's CLI not running, the chip
   and the menu still follow what the core holds. Your ask takes the place of
   the threshold's; if it lapses or is withdrawn with no handoff, a chat still
-  past its threshold is asked again at its next turn's end.
+  past its threshold is asked again at its next turn's end. A move of the
+  chat to another account that you begin takes the place of your ask: it is
+  withdrawn, and the pane and the desktop say so. A move cannot begin, or be
+  sent, while a handoff of the chat is already under way.
 - **Auto-handoff at N% of its context** asks by itself once the context passes
   a threshold. Tick it in the new-chat dialog (70% unless you change it, from
   10 to 90), or later in the chat's **What Luna applied** panel. A chat
@@ -317,7 +320,9 @@ defaults). It goes on from a document, chosen under **The document**:
 
 **Ask the chat** opens the ask, in place of an auto-handoff ask the chat had
 open (so does a document built from records), which asks again once the
-move ends with the chat still running, if it is still past its threshold. Only
+move ends with the chat still running, if it is still past its threshold.
+Your own Hand off now still open is withdrawn the same way, and you are told.
+Only
 the conversation Luna typed the ask into may answer it: start another one
 (`/clear`, `/new`) and the ask fails at once, saying the chat went on in
 another conversation, with **Ask again** offered.

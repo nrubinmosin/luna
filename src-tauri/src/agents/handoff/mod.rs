@@ -203,7 +203,7 @@ pub(super) fn auto_on(id: &str) -> bool {
 }
 
 /// Who has `id` asked for a handoff now, if anyone: the threshold or the
-/// person. A move's ask is moving.rs's own (`moving::asking`).
+/// person. A move's ask is moving.rs's own (`moving::Move::asking`).
 pub(super) fn open_ask(id: &str) -> Option<store::AskKind> {
     store::records().get(id).and_then(|r| r.asked.as_ref()).map(|a| a.kind)
 }
@@ -452,6 +452,11 @@ fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Res
             );
         }
         rec.reserved = None;
+        // A move begun since the call took the chat (moving.rs `taken`): its
+        // reset would come in the middle of the move.
+        if rec.moving.as_ref().is_some_and(moving::Move::under_way) {
+            return Err("a move of this chat to another account began while the file was copied; nothing will switch");
+        }
         if !rec.asked.as_ref().is_some_and(|a| ask_holds(a, conversation.as_deref())) || !may_list(caller) {
             return Err("the ask for this handoff closed while the file was copied (auto-handoff turned off, the person's ask \
                         lapsed, or the chat started again without Luna's tools), or it asks another conversation than this \
@@ -997,7 +1002,7 @@ fn sha256_of(text: &str) -> String {
 /// its place: a prompt typed into a conversation the person started since
 /// would hand that one a handoff it never asked for. Any other line as it is.
 pub(in crate::agents) fn as_told(chat: &str, line: &str) -> String {
-    if !line.contains(facts::CONTINUED) {
+    if !bound_to_conversation(line) {
         return line.to_string();
     }
     let sha = sha256_of(line);
@@ -1008,6 +1013,13 @@ pub(in crate::agents) fn as_told(chat: &str, line: &str) -> String {
         Some(b) => b.short,
         None => facts::continued_short(None, None, None),
     }
+}
+
+/// Whether line `line` of the notifier's queue goes in whole only on the
+/// conversation it was made for (`as_told`): a handoff's failure line
+/// carrying the continuation.
+pub(in crate::agents) fn bound_to_conversation(line: &str) -> bool {
+    line.contains(facts::CONTINUED)
 }
 
 /// Whether line `line` of the notifier's queue for `chat` is to be dropped
@@ -1288,11 +1300,14 @@ fn manual_asks(now: u64) {
 /// person just began would steer that turn. Closed MANUAL_ASK_MS after it
 /// went in, or MANUAL_DELIVER_MS after it was opened if it never could, the
 /// chat and the person told, unless a handoff answering it is under way.
+/// Nothing is done while a move of the chat is under way (`moving::under_way`),
+/// whose start withdraws the ask (moving.rs `taken`): a request typed then
+/// would ask for a handoff that resets the chat in the middle of the move.
 fn manual_ask_of(chat: &str, now: u64) {
     let Some(a) = store::records().get(chat).and_then(|r| r.asked.clone()).filter(|a| a.kind == store::AskKind::Manual) else {
         return;
     };
-    if holds_text(chat) || moving::asking(chat) {
+    if holds_text(chat) || moving::under_way(chat) {
         return;
     }
     match a.typed {

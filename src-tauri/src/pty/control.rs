@@ -100,6 +100,8 @@ impl Drop for KeyHold {
 struct FakeTerminal {
     holds: u32,
     typed: Vec<u8>,
+    /// When the person last typed into it (`typed_at_ms`), 0 if never.
+    typed_ms: u64,
 }
 
 #[cfg(test)]
@@ -116,6 +118,15 @@ pub(crate) fn fake_terminal_for_test(id: &str, on: bool) {
         fakes.insert(id.to_string(), FakeTerminal::default());
     } else {
         fakes.remove(id);
+    }
+}
+
+/// The person's keys into the test's terminal `id`, taken as `take_keys`
+/// takes them: stamped, and on their way to a CLI that has not acted on them.
+#[cfg(test)]
+pub(crate) fn fake_person_keys(id: &str) {
+    if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get_mut(id) {
+        t.typed_ms = now_ms();
     }
 }
 
@@ -383,13 +394,16 @@ impl PtyManager {
     /// any key has come since.
     pub fn typed_at_ms(&self, id: &str) -> u64 {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get(id).filter(|_| !sessions.contains_key(id)) {
+            return t.typed_ms;
+        }
         sessions.get(id).map_or(0, |s| s.typed_ms.load(Ordering::Relaxed))
     }
 
     /// How long ago a person last typed into the session, None if never.
     pub fn typed_ago_ms(&self, id: &str) -> Option<u64> {
-        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let at = sessions.get(id)?.typed_ms.load(Ordering::Relaxed);
+        let at = self.typed_at_ms(id);
         (at > 0).then(|| now_ms().saturating_sub(at))
     }
 

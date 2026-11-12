@@ -481,8 +481,11 @@ pub(super) const NO_LONGER_STANDS: &str = "what it was put together for changed 
 /// a draft is in the way, and nothing was typed. `stands` is asked once the
 /// person's keys are held, before anything goes in: text bound to the
 /// conversation the chat is on (a handoff's continuation) is looked at there,
-/// where a `/clear` or `/new` of theirs can no longer come between the look
-/// and the paste. False: nothing typed, Err(NO_LONGER_STANDS).
+/// where no key of theirs gets in before the paste. A `/clear` or `/new` sent
+/// just before the hold may still be on its way to the CLI, the conversation
+/// not changed yet: the caller's `stands` also asks that no key of theirs
+/// came since its look (notifier `deliver_notice`). False: nothing typed,
+/// Err(NO_LONGER_STANDS).
 pub(super) fn type_text(
     pty: &crate::pty::PtyManager,
     id: &str,
