@@ -12,6 +12,11 @@ pub(super) fn end_leftovers(id: &str, job: Option<&crate::procs::Job>) {
     }
 }
 
+/// What a turn stopped by `luna_session_stop` or the window ends on: its caller
+/// hears it was stopped, and a lead's handoff it scheduled does not go on
+/// (switch.rs `LeadView::stopped`).
+pub(crate) const STOPPED_BY_STOP: &str = "it was stopped, by luna_session_stop or from the window";
+
 /// Stops the turn in progress; the conversation stays for the next one. Between
 /// turns there is no turn to stop, and what its turns left running is what is
 /// left of it to stop: that is ended, and what went is returned by name.
@@ -21,7 +26,7 @@ pub fn kill(id: &str) -> Vec<String> {
         let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
         // Whoever is owed the turn hears it was stopped, not an exit code.
         if e.run.is_some() {
-            e.error = Some("it was stopped, by luna_session_stop or from the window".into());
+            e.error = Some(STOPPED_BY_STOP.into());
         }
         let job = e.job.clone().filter(|_| e.run.is_none() && e.left_running && !e.ending_left);
         // Only the Stop that takes the ending on sets the mark, and only it

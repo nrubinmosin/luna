@@ -80,6 +80,7 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
     match (v["type"].as_str(), v["subtype"].as_str()) {
         (Some("system"), Some("init")) => {
             e.session = v["session_id"].as_str().map(str::to_owned).or(e.session.take());
+            lead_named(e);
             // Where its first turn started, or the worktree it made: the init of a
             // turn the CLI takes up by itself (a background task's end) says where
             // its shell has since gone with `cd`, which is not where it works.
@@ -153,6 +154,7 @@ pub(super) fn on_codex_event(e: &mut Entry, v: &Value) {
     match v["type"].as_str() {
         Some("thread.started") => {
             e.session = v["thread_id"].as_str().map(str::to_owned).or(e.session.take());
+            lead_named(e);
             mark_by_thread(e);
         }
         Some("item.completed") => match item["type"].as_str() {
@@ -257,7 +259,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     let cut_off = codex
         .filter(|(account, thread, since)| crate::codex::session::subagents_cut_at_turn_end(account, thread, *since) > 0)
         .map(|_| crate::agents::callers_owed(id));
-    let (next, thread, generation, rerouted, acted, retried, count) = {
+    let (next, thread, generation, rerouted, acted, retried, count, lead) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
         e.run = None;
@@ -298,13 +300,16 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
                 Vec::new()
             }
         };
-        let next = (!e.queue.is_empty()).then(|| {
+        // A lead's handoff scheduled in this turn, or a fresh start that named
+        // no conversation, goes first: lead.rs, below, starts or gives it up.
+        let next = (!e.queue.is_empty() && !e.switch_waits()).then(|| {
             claim(e);
             reserve(e)
         });
+        let lead = e.spec.tools;
         let thread = e.session.clone().filter(|_| e.spec.provider == Provider::Codex).map(|t| (e.spec.account_path.clone(), t));
         e.observed.answered |= e.observed.acted;
-        (next, thread, e.observed.generation, std::mem::take(&mut e.observed.rerouted), e.observed.acted, retried, e.turns_ended)
+        (next, thread, e.observed.generation, std::mem::take(&mut e.observed.rerouted), e.observed.acted, retried, e.turns_ended, lead)
     };
     // Ahead of anything that could be read as the answer: the helper reads as
     // busy from the claim above until this has moved what its senders wait on.
@@ -338,6 +343,21 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         }
     }
     changed();
+    // A lead's handoff (agents/handoff/lead.rs): a switch this turn scheduled
+    // started or given up, one through recorded, and its context measured.
+    // Off this thread and every lock: it reads the transcript, and may build
+    // Luna's own document for a lead that writes none.
+    #[cfg(not(test))]
+    if lead {
+        let id = id.to_string();
+        let started =
+            std::thread::Builder::new().name("luna-lead-handoff".into()).spawn(move || crate::agents::handoff::lead_turn_ended(&id));
+        if let Err(e) = started {
+            crate::log::warn("handoff", &format!("could not look at a lead's handoff: {e}"));
+        }
+    }
+    #[cfg(test)]
+    let _ = lead;
 }
 
 pub(super) fn note(e: &mut Entry, line: &str) {

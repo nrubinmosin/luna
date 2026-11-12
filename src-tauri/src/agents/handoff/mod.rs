@@ -34,6 +34,7 @@ mod excerpts;
 mod facts;
 mod file;
 mod gitfacts;
+mod lead;
 mod moving;
 mod phase;
 mod scrub;
@@ -41,10 +42,15 @@ mod served;
 mod store;
 mod watch;
 
+pub use lead::lead_taken_up;
 pub use moving::{
     move_ask, move_build_from_records, move_cancel, move_confirm, move_facts, move_list, move_prepare, move_preview, move_step, moved_dir,
     opening_refusal, stopping_for_move, MOVE_TAG,
 };
+// Called off a lead's turn's thread, which tests do not start (background/events.rs).
+#[cfg_attr(test, allow(unused_imports))]
+pub use lead::lead_turn_ended;
+pub(in crate::agents) use lead::HandedOff;
 pub use served::{applied_of, HandoffApplied};
 
 use crate::agents::delivery::{type_in, TypingInto, POLL, SEND_TYPING_MS, TYPING_WAIT};
@@ -184,11 +190,19 @@ pub(super) fn threshold_in(settings: &Value) -> Option<u8> {
     settings["handoff"].as_u64().and_then(|t| u8::try_from(t).ok()).filter(|t| (THRESHOLD_MIN..=THRESHOLD_MAX).contains(t))
 }
 
-/// Whether `id` is listed `luna_session_handoff`: a person's own chat (no
-/// parent, no background helper, not the dev caller, which has no terminal)
-/// with Luna's tools, auto-handoff on or not. Helpers are their orchestrator's
-/// to rotate. Listed is not answered: a call needs an ask (`open_ask`).
+/// Whether `id` is listed `luna_session_handoff`: a person's own chat with
+/// Luna's tools (`chat_listed`), or a lead while auto-handoff for leads is on
+/// (lead.rs `listed_to`). A helper without Luna's tools never is: it is its
+/// orchestrator's to rotate. Listed is not answered: a call needs an ask
+/// (`open_ask`).
 pub fn may_list(id: &str) -> bool {
+    chat_listed(id) || lead::listed_to(id)
+}
+
+/// Whether `id` is a person's own chat (no parent, no background helper, not
+/// the dev caller, which has no terminal) with Luna's tools, auto-handoff on or
+/// not: what the threshold's beat, Hand off now and a move go by.
+pub(super) fn chat_listed(id: &str) -> bool {
     if id == DEV_CALLER || crate::background::has(id) {
         return false;
     }
@@ -196,10 +210,36 @@ pub fn may_list(id: &str) -> bool {
     r.known.get(id).is_some_and(|k| k.tools && k.parent.is_none() && !k.orphan)
 }
 
+/// Auto-handoff for leads as the settings have it, its threshold held to the
+/// range a chat's is.
+pub fn lead_settings() -> crate::settings::LeadHandoff {
+    #[cfg(test)]
+    if let Some(l) = LEAD_FOR_TEST.with(std::cell::Cell::get) {
+        let mut l = l;
+        l.threshold = l.threshold.clamp(THRESHOLD_MIN, THRESHOLD_MAX);
+        return l;
+    }
+    let mut l = crate::settings::get().lead_handoff;
+    l.threshold = l.threshold.clamp(THRESHOLD_MIN, THRESHOLD_MAX);
+    l
+}
+
+// A test's own word for the setting, on its thread: tests share the data
+// dir's settings.json.
+#[cfg(test)]
+thread_local! {
+    static LEAD_FOR_TEST: std::cell::Cell<Option<crate::settings::LeadHandoff>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn lead_settings_for_test(l: Option<crate::settings::LeadHandoff>) {
+    LEAD_FOR_TEST.with(|c| c.set(l));
+}
+
 /// Whether auto-handoff's threshold is set on `id`, a chat that may be listed
 /// the tool: the trigger that asks it at its threshold.
 pub(super) fn auto_on(id: &str) -> bool {
-    may_list(id) && reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| threshold_in(&k.settings).is_some())
+    chat_listed(id) && reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| threshold_in(&k.settings).is_some())
 }
 
 /// Who has `id` asked for a handoff now, if anyone: the threshold or the
@@ -338,6 +378,10 @@ pub(super) const NOT_OFFERED: &str = "luna_session_handoff is not one of this se
 /// `luna_session_handoff` without `file`: how the caller's own chat hands off,
 /// with the instructions Luna serves for it now (served.rs).
 pub fn instructions(caller: &str) -> Result<String, String> {
+    // A lead's: its switch is a turn's end, not a terminal's (lead.rs).
+    if crate::background::has(caller) {
+        return lead::instructions(caller);
+    }
     served::instructions(caller)
 }
 
@@ -348,6 +392,9 @@ pub fn instructions(caller: &str) -> Result<String, String> {
 pub fn handoff(caller: &str, file: &str) -> Result<Value, String> {
     if !may_list(caller) {
         return Err(NOT_OFFERED.into());
+    }
+    if crate::background::has(caller) {
+        return lead::handoff(caller, file);
     }
     // Asked for a move's document: collected, nothing reset, so the CLI's
     // own jobs may go on (moving.rs). A move's late answer is refused there.
@@ -1172,7 +1219,7 @@ fn opted_in() -> Vec<(String, u8, Provider)> {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         r.known.iter().filter_map(|(id, k)| Some((id.clone(), threshold_in(&k.settings)?, k.provider))).collect()
     };
-    set.into_iter().filter(|(id, ..)| may_list(id)).collect()
+    set.into_iter().filter(|(id, ..)| chat_listed(id)).collect()
 }
 
 /// The chats whose threshold is to be looked at as soon as they are at rest,
@@ -1378,7 +1425,7 @@ fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told,
 /// The threshold auto-handoff is set at on `id` now, a chat that may be
 /// listed the tool.
 fn threshold_now(id: &str) -> Option<u8> {
-    if !may_list(id) {
+    if !chat_listed(id) {
         return None;
     }
     reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).and_then(|k| threshold_in(&k.settings))
@@ -1449,7 +1496,7 @@ fn manual_ask_of(chat: &str, now: u64) {
         // would otherwise refuse the person's next ask for good.
         None if now.saturating_sub(a.at) > MANUAL_DELIVER_MS => undelivered(chat, &a),
         None => {
-            if is_listed(chat) && may_list(chat) && moving::prompt_verdict(crate::pty::manager(), chat).is_ok() {
+            if is_listed(chat) && chat_listed(chat) && moving::prompt_verdict(crate::pty::manager(), chat).is_ok() {
                 type_manual(chat, a.at);
             }
         }
@@ -1751,7 +1798,7 @@ pub fn handoff_now(chat_id: String) -> Result<HandoffNow, String> {
 /// Why `chat` is not to be asked for a handoff now, what takes a terminal
 /// aside.
 fn now_refusal(chat: &str) -> Option<String> {
-    if !may_list(chat) {
+    if !chat_listed(chat) {
         return Some(
             "only a person's chat started with Luna's tools hands off: this one has none (start a chat with the Luna tools box \
              ticked)"

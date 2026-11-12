@@ -482,6 +482,19 @@ pub(super) fn notifier() {
         for caller in places.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
+        // Leads under a session that went on in a fresh conversation: a line
+        // that rides as well (handoff/lead.rs `handed_off`).
+        let mut handed: HashMap<String, crate::agents::handoff::HandedOff> = {
+            let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            r.handed_off
+                .iter()
+                .filter(|(caller, _)| r.known.get(*caller).is_some_and(|k| !k.waiting))
+                .map(|(caller, h)| (caller.clone(), h.clone()))
+                .collect()
+        };
+        for caller in handed.keys() {
+            by_caller.entry(caller.clone()).or_default();
+        }
         idle_looks.retain(|c, _| by_caller.contains_key(c));
         drafts.retain(|c, _| by_caller.contains_key(c));
         company_since.retain(|c, _| by_caller.contains_key(c));
@@ -578,12 +591,14 @@ pub(super) fn notifier() {
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
             let breaches = budget.remove(&caller).unwrap_or_default();
             let refused = places.remove(&caller);
+            let handed_off = handed.remove(&caller);
             let mut budget_lines = Vec::new();
             if let Some(oldest) = riders
                 .iter()
                 .filter_map(|(_, _, how, _)| rides_since(how))
                 .chain(breaches.iter().map(|n| n.since))
                 .chain(refused.as_ref().map(|p| p.since))
+                .chain(handed_off.as_ref().map(|h| h.since))
                 .min()
             {
                 if riders_go(!lines.is_empty(), riders.len() == items.len(), oldest, now_ms(), crate::activity::summary().busy) {
@@ -595,6 +610,10 @@ pub(super) fn notifier() {
                     budget_lines = breaches;
                     // Told once it is in, as a queued line is (`deliver_notice`).
                     if let Some(line) = refused.map(|p| p.line()) {
+                        lines.push(line.clone());
+                        news_lines.push((line.clone(), line));
+                    }
+                    if let Some(line) = handed_off.map(|h| h.line()) {
                         lines.push(line.clone());
                         news_lines.push((line.clone(), line));
                     }
@@ -981,8 +1000,10 @@ pub(in crate::agents) fn placed_now(news: &mut HashMap<String, Vec<String>>) {
 /// The refusals for want of places a notice that went into `caller` told it of
 /// (`news_lines`, as typed and as queued), gone with it. A refusal since the
 /// line was put together makes another line, told next.
+/// So too the leads it was told went on in a fresh conversation.
 fn places_told(r: &mut Registry, caller: &str, news_lines: &[(String, String)]) {
     r.places_refused.retain(|c, p| !(c == caller && news_lines.iter().any(|(_, queued)| *queued == p.line())));
+    r.handed_off.retain(|c, h| !(c == caller && news_lines.iter().any(|(_, queued)| *queued == h.line())));
 }
 
 /// A notice of the queued lines `news_lines` (as typed, as queued) typed into

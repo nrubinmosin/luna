@@ -38,6 +38,7 @@ mod persist;
 mod queue;
 mod rows;
 mod run;
+mod switch;
 #[cfg(test)]
 mod testkit;
 mod types;
@@ -52,6 +53,7 @@ pub(crate) use persist::*;
 pub(crate) use queue::*;
 pub(crate) use rows::*;
 pub(crate) use run::*;
+pub(crate) use switch::*;
 #[cfg(test)]
 pub(crate) use testkit::*;
 pub(crate) use types::*;
@@ -160,12 +162,24 @@ struct Entry {
     /// lost, hands nothing over again.
     handing: bool,
     observed: Observed,
+    /// A lead handing off to a fresh conversation of its own
+    /// (agents/handoff/lead.rs), until that conversation has its id. Text sent
+    /// meanwhile queues for the turn after the switch, never joining the turn
+    /// that wrote the handoff (`place`).
+    switch: Option<LeadSwitch>,
 }
 
 impl Entry {
     /// Something has it held between turns: no turn starts until it lets go.
     fn held_back(&self) -> bool {
-        self.promoting || self.deleting
+        self.promoting || self.deleting || self.switch_waits()
+    }
+
+    /// Between turns with its handoff not yet through: the switch is the next
+    /// thing to start, by lead.rs (`begin_fresh`), and nothing else does until
+    /// it has or it is given up.
+    fn switch_waits(&self) -> bool {
+        self.run.is_none() && self.switch.as_ref().is_some_and(|s| s.phase != LeadPhase::Done)
     }
 }
 
