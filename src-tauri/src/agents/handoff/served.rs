@@ -89,9 +89,7 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
     if let Some(text) = super::moving::ask_instructions(caller)? {
         return Ok(text);
     }
-    if !super::asked_now(caller) {
-        return Err(super::NOT_ASKED.into());
-    }
+    super::asked_now(caller)?;
     let r = resolved_for(caller, "handoff's");
     // Its drafts folder, its own: made private at the chat's start, the
     // grant its CLI's sandbox gave itself there since kept (`drafts_of`).

@@ -3,12 +3,14 @@
 //! (agents/handoff/moving.rs), since a chat stopped on a limit cannot write
 //! its own.
 //!
-//! The limit holds from the stop until a reading of the account's usage
-//! taken after it shows no window full, or until every window a reading
-//! showed full has passed its reset. A reading is what Luna knows without a
-//! request (the CLI's cache or Luna's last answer for Claude Code, the newest
-//! rollout or Luna's last answer for Codex): the window's own polls keep it
-//! fresh. With no reading, or no reset to go by, it holds.
+//! The limit holds from the stop until every window that counts against the
+//! chat was read after it and none is full, or until every window a reading
+//! showed full has passed its reset. A window the reading lacks is not known
+//! to have lifted: one with no window that counts says nothing. A reading is
+//! what Luna knows without a request (the CLI's cache or Luna's last answer
+//! for Claude Code; Luna's last answer and each limit's newest rollout
+//! snapshot for Codex, each window as of its own): the window's own polls
+//! keep it fresh. With no reading, or no reset to go by, it holds.
 //!
 //! When the stop was is taken from its source where that says (Claude Code's
 //! `StopFailure` hook, the Codex rollout line), else from when Luna first saw
@@ -33,6 +35,9 @@ pub struct UsageWindow {
     /// Code's "Opus", a Codex limit's model): None for one every model on
     /// the account counts against.
     pub model: Option<String>,
+    /// When it was read, where that is not the reading's own `at`: a Codex
+    /// limit whose newest snapshot is older than another's.
+    pub at: Option<u64>,
 }
 
 /// An account's usage as last known, and when it was taken.
@@ -136,8 +141,11 @@ fn ms_of(at: &str) -> Option<u64> {
 pub(crate) fn in_force(kind: &str, since: u64, reading: Option<&UsageReading>, now: u64) -> Option<LimitFact> {
     let full: Vec<&UsageWindow> = reading.map(|r| r.windows.iter().filter(|w| w.used >= FULL).collect()).unwrap_or_default();
     if let Some(r) = reading {
-        // Read after the stop with nothing full: the limit has lifted.
-        if r.at.is_some_and(|at| at > since) && full.is_empty() {
+        // Every window read after the stop, nothing full: the limit has
+        // lifted. One read before it, of a limit no newer reading has, may be
+        // the one that stopped the chat.
+        let after = |w: &UsageWindow| w.at.or(r.at).is_some_and(|at| at > since);
+        if !r.windows.is_empty() && full.is_empty() && r.windows.iter().all(after) {
             return None;
         }
         // Every full window past its reset, by its own clock.
@@ -168,7 +176,37 @@ mod tests {
     use super::*;
 
     fn window(label: &str, used: f64, resets_at: Option<&str>) -> UsageWindow {
-        UsageWindow { label: label.into(), used, resets_at: resets_at.map(str::to_owned), model: None }
+        UsageWindow { label: label.into(), used, resets_at: resets_at.map(str::to_owned), model: None, at: None }
+    }
+
+    /// A limit is lifted only by a reading of the windows that count: one
+    /// with none of them (a Spark chat's snapshot, for a chat on another
+    /// model) says nothing, and a window read before the stop, beside one
+    /// read after, may be the one that stopped it.
+    #[test]
+    fn a_window_not_read_since_the_stop_is_not_taken_for_lifted() {
+        let spark =
+            |used, at| UsageWindow { model: Some("GPT-5 Codex Spark".into()), at: Some(at), ..window("Spark · 5 hours", used, None) };
+        let general = |used, at| UsageWindow { at: Some(at), ..window("5 hours", used, None) };
+        let reading = |windows: Vec<UsageWindow>| UsageReading { at: windows.iter().filter_map(|w| w.at).max(), windows };
+        let judged = |r: &UsageReading, model| in_force("usage_limit", STOP, Some(&r.for_model(model)), STOP + 61_000);
+        // Only another model's limit read since: nothing counts, it holds.
+        let only_spark = reading(vec![spark(0.1, STOP + 60_000)]);
+        assert!(judged(&only_spark, Some("gpt-5-codex")).is_some());
+        // The general limit full before the stop, Spark read after: holds.
+        let both = reading(vec![general(1.0, STOP - 1_000), spark(0.1, STOP + 60_000)]);
+        assert!(judged(&both, Some("gpt-5-codex")).is_some() && judged(&both, Some("gpt-5-codex-spark")).is_some());
+        // A full Spark window from before, the general one read after: a Spark chat stays held.
+        let spark_full = reading(vec![spark(1.0, STOP - 1_000), general(0.1, STOP + 60_000)]);
+        assert!(judged(&spark_full, Some("gpt-5-codex-spark")).is_some());
+        assert!(judged(&spark_full, Some("gpt-5-codex")).is_none(), "its own limit read since, not full");
+        // Spark read before the stop and not full: no word on it for a Spark chat.
+        let spark_old = reading(vec![spark(0.5, STOP - 1_000), general(0.1, STOP + 60_000)]);
+        assert!(judged(&spark_old, Some("gpt-5-codex-spark")).is_some());
+        // Both read since, neither full: lifted.
+        let fresh = reading(vec![spark(0.5, STOP + 50_000), general(0.1, STOP + 60_000)]);
+        assert!(judged(&fresh, Some("gpt-5-codex-spark")).is_none());
+        assert!(in_force("usage_limit", STOP, Some(&UsageReading { at: Some(STOP + 1), windows: vec![] }), STOP + 2).is_some());
     }
 
     /// A Sonnet chat stopped by the session window, which has reset: an

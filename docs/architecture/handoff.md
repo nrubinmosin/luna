@@ -203,14 +203,22 @@ Unasked, it refuses naming the pane's menu (`NOT_ASKED`), and nothing is kept.
   claimed, the turn state looked at again under the held keys, and taken as
   typed (`Asked::typed`, with the conversation it went into) only then
   (`type_manual`, `manual_typed`), as a move's ask is: not through the
-  notifier, which could paste it into a Codex turn just begun.
+  notifier, which could paste it into a Codex turn just begun. Where Luna
+  cannot name the conversation then, it is not typed, and tried at a later
+  beat. Until it is typed the person's ask authorizes nothing: the person may
+  start another conversation while it waits, and text there must not find
+  the tool open.
 - **Bound to a conversation.** Each ask holds only in the conversation it
-  asks (`Asked::conversation`, `ask_holds`), or where one of the two is not
-  known. The beat binds an ask opened before its conversation was known, and
-  closes one whose chat is found on another conversation the person started
-  (`/clear`, `/new`: `drifted`); Luna's own switch, which changes the
+  asks (`Asked::conversation`, `ask_holds`), both known and the same; where
+  either is not known the call is refused (`NOT_YET`, "call again in a few
+  seconds"), not accepted. The threshold's ask is bound as it opens to the
+  conversation whose context passed it; one opened before that was known is
+  bound by the beat only while the chat's transcript is still the one the
+  threshold read (`Told::conversation`), and closed where it is another. The
+  beat closes an ask whose chat is found on another conversation the person
+  started (`/clear`, `/new`: `drifted`); Luna's own switch, which changes the
   conversation on purpose, closes its ask as it ends. A call from another
-  conversation schedules nothing.
+  conversation, or from one Luna cannot name, schedules nothing.
 - **Lapse.** The person's ask closes `MANUAL_ASK_MS` (10 minutes) after its
   request was typed, the chat told (`facts::manual_lapsed`) and the desktop
   notified, unless a handoff answering it was scheduled since the look
@@ -262,7 +270,20 @@ auto-handoff off gives up only a switch still `Scheduled` that the threshold's
 ask scheduled, under the same lock, so it never strands a reset; one the
 person asked for goes on. A switch through closes the ask it answered, as
 does one given up past its reset (`close`, `finish`); one given up before its
-reset leaves the ask open, so the chat may call again while it holds.
+reset leaves the ask open, so the chat may call again while it holds, but for
+one whose chat went on in another conversation (below), whose ask is gone
+with that conversation.
+
+The reset clears only the conversation that called (`Before::conversation`).
+A chat at rest found on another one, the person's own `/clear` or `/new`
+while the switch waited, is given up (`Step::Left`, `Ended::Left`, `LEFT`):
+nothing reset, nothing typed, the copy kept, the ask closed, and the
+conversation the person went on in told what became of the call
+(`facts::left_line`) as the desktop is. The conversation is read again with
+the person's keys held, right before `/clear` or `/new` goes in
+(`Term::conversation`), so one they sent after the look is caught there too;
+one Luna cannot name then types nothing, and the switch waits for it (30
+minutes at most).
 
 `Scheduled` (from the call: `notice_waits` holds the notifier, `deliver_held`
 and `send` hold text for the chat) → the chat at rest on two looks
@@ -305,9 +326,14 @@ until they are through.
 ## The window
 
 - `session_meta` carries the latest `HandoffMark` (under way, done, failed) for
-  the pane's divider, and `HandoffAsked` (the asks of the conversation and its
+  the pane's divider, `HandoffAsked` (the asks of the conversation and its
   compactions since, while no handoff is under way or through) for the pane's
-  `handoff N%` chip, which then reads `· asked` and says when in its tooltip.
+  `handoff N%` chip, which then reads `· asked` and says when in its tooltip,
+  and `HandoffAsk` (`handoff_ask_of`: the ask open, its kind, when it was
+  opened and, for the person's, when its request was typed and when it
+  lapses). The menu's Hand off now and the `handoff asked` chip go by it
+  alone, with no clock of the window's: a reload, or the person's `/clear`
+  closing the ask, shows what the core holds.
 - `applied_by_luna` carries `HandoffApplied` for a chat with it on: the
   instructions it would be served now (`SystemSkillState`: Luna's with its
   version and hash, the override with its path, or the override broken and
@@ -412,9 +438,16 @@ strings listed, never taken out.
 **Which document.** The window has the chat write it by default; it
 preselects Luna's only while `limit_in_force` holds. A limit holds from the
 stop (its source's time: Claude Code's `StopFailure` hook, the Codex rollout
-line; else when Luna first saw it) until a usage reading taken after it shows
-no window full for the chat's model, or until every window a reading showed
-full has passed its reset; with no reading, or no reset to go by, it holds. A
+line; else when Luna first saw it) until every window that counts for the
+chat's model was read after it and none is full, or until every window a
+reading showed full has passed its reset; with no reading, no window that
+counts, or no reset to go by, it holds. A window the reading lacks is not
+known to have lifted. Each Codex limit stands by its own newest reading
+(`codex::limits::known_limits`): Luna's last answer from the endpoint, the
+whole picture as of its time, and after it each limit's newest rollout
+snapshot (`latest_rate_limits_by_id`, the newest 32 rollouts of two days),
+since a snapshot holds one limit alone: a Spark chat's newer snapshot takes
+nothing of the general limit's, nor a general one a full Spark window. A
 window scoped to one model (Claude Code's Opus week, a Codex model's own
 limit) holds only a chat on that model; with the model unknown, every window
 counts (`UsageReading::for_model`). No usage percentage picks a source.
@@ -431,8 +464,10 @@ person's override included, under the move's own rules (helpers stay behind,
 prior approvals confer nothing, the person previews first, the size limit),
 recorded and logged as the handoff's are; with
 `file` it is collected (`asked_file`): copied and checked as a handoff's file
-is, Luna's facts added, kept private as `move-<id>.md` in the chat's folder of
-copies, nothing scheduled or reset, the CLI's own jobs no matter. A file named
+is, Luna's facts added, kept private as `move-<id>-<random>.md` in the chat's
+folder of copies, nothing scheduled or reset, the CLI's own jobs no matter.
+Each call writes a file of its own: of two overlapping in one ask, the one
+that takes `Shown` keeps its preview, and the other removes only its own. A file named
 `move-…` when no move is asking is refused, so a late answer never becomes a
 handoff. No threshold notice goes in while it is asked. Ten minutes to come to
 rest and ten more to answer; a question of its CLI's (a permission to write)

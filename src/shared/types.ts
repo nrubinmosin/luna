@@ -112,6 +112,8 @@ interface ChatBase {
   handoff?: HandoffMark | null;
   /** A handoff it was asked for and has not made, as the core last said. */
   handoffAsked?: HandoffAsked | null;
+  /** The ask for a handoff open on it, as the core last said. */
+  handoffAsk?: HandoffAsk | null;
   /** Moved to another account (agents/handoff/moving.rs): the chat that goes
    *  on there. */
   movedTo?: string | null;
@@ -125,6 +127,16 @@ interface ChatBase {
 export interface HandoffAsked {
   at: number[];
   compacted: number;
+}
+
+/** The ask for a handoff open on a chat (agents/handoff `HandoffAsk`): the
+ *  threshold's or the person's; the person's waits to be typed until `typed`,
+ *  and lapses at `lapsesAt`. */
+export interface HandoffAsk {
+  kind: 'auto' | 'manual';
+  at: number;
+  typed?: number;
+  lapsesAt?: number;
 }
 
 /** Where a chat's latest handoff stands (agents/handoff `HandoffMark`). */

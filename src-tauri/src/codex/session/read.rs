@@ -508,6 +508,35 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
     best.map(|(_, hit)| hit)
 }
 
+/// How many of the newest rollouts `latest_rate_limits_by_id` reads: what a
+/// usage limit's hold is judged on, not a walk of every file of two days.
+const LIMIT_FILES: usize = 32;
+
+/// The newest `rate_limits` snapshot of each limit (`limit_id`, `codex` where
+/// it names none) among the account's newest rollouts of the last two days,
+/// with the timestamp of its line. Each snapshot holds one limit alone: a chat
+/// on a model with a limit of its own writes that one, the others the general
+/// one, so the newest snapshot of all is not the account's whole picture.
+pub fn latest_rate_limits_by_id(account_path: &str) -> Vec<(Value, String)> {
+    let today = Local::now().date_naive();
+    let ms = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let mut files: Vec<(i64, PathBuf)> = rollouts_on(account_path, days_back(today, 2))
+        .into_iter()
+        .map(|(_, _, p)| (std::fs::metadata(&p).and_then(|m| m.modified()).map_or(0, ms), p))
+        .collect();
+    files.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut best: HashMap<String, (i64, (Value, String))> = HashMap::new();
+    for (_, path) in files.into_iter().take(LIMIT_FILES) {
+        let Some(hit) = read_tail(&path).rate_limits else { continue };
+        let id = hit.0["limit_id"].as_str().filter(|id| !id.is_empty()).unwrap_or("codex").to_string();
+        let at = chrono::DateTime::parse_from_rfc3339(&hit.1).map_or(i64::MIN, |t| t.timestamp_millis());
+        if best.get(&id).is_none_or(|(b, _)| at > *b) {
+            best.insert(id, (at, hit));
+        }
+    }
+    best.into_values().map(|(_, hit)| hit).collect()
+}
+
 /// The conversation as another agent reads it: user and assistant messages
 /// from byte offset `from` on. Returns the messages and the offset to
 /// continue from: the end of the last complete line, so a line Codex is

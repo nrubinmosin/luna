@@ -4,6 +4,7 @@ import type {
   CodexEffort,
   CodexSandbox,
   Effort,
+  HandoffAsk,
   HandoffAsked,
   HandoffMark,
   ModelLabel,
@@ -154,6 +155,8 @@ export interface SessionMetaDto {
   handoff: HandoffMark | null;
   /** A handoff it was asked for and has not made (agents/handoff). */
   handoffAsked: HandoffAsked | null;
+  /** The ask for a handoff open on it (agents/handoff `handoff_ask_of`). */
+  handoffAsk?: HandoffAsk | null;
   /** The usage limit its last turn stopped on (activity `limit_of`), if any. */
   limit?: string | null;
 }

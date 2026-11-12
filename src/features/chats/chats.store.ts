@@ -1,6 +1,15 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Chat, Folder, FolderStart, GroupId, HandoffAsked, HandoffMark, NameSource } from '../../shared/types';
+import type {
+  Chat,
+  Folder,
+  FolderStart,
+  GroupId,
+  HandoffAsk,
+  HandoffAsked,
+  HandoffMark,
+  NameSource
+} from '../../shared/types';
 import { useNewChat } from '../new-chat/newchat.store';
 import { usePanes } from '../panes/panes.store';
 import { forget } from '../panes/terminals';
@@ -28,6 +37,7 @@ interface ChatsState {
   setHandoffMark: (chatId: string, mark: HandoffMark | null) => void;
   /** A handoff it was asked for and has not made, as the core said. */
   setHandoffAsked: (chatId: string, asked: HandoffAsked | null) => void;
+  setHandoffAsk: (chatId: string, ask: HandoffAsk | null) => void;
   /** Where a move to another account left the chat: gone on as `movedTo`,
    *  or opened from `movedFrom`. */
   setMoved: (chatId: string, moved: { movedTo?: string; movedFrom?: string }) => void;
@@ -300,6 +310,17 @@ export const useChats = create<ChatsState>()(
           folders: s.folders.map(f => ({
             ...f,
             chats: f.chats.map(x => (x.id === chatId ? { ...x, handoffAsked: asked } : x))
+          }))
+        }));
+      },
+
+      setHandoffAsk: (chatId, ask) => {
+        const c = get().findChat(chatId);
+        if (!c || JSON.stringify(c.handoffAsk ?? null) === JSON.stringify(ask)) return;
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(x => (x.id === chatId ? { ...x, handoffAsk: ask } : x))
           }))
         }));
       },

@@ -410,6 +410,29 @@ pub(super) fn failed_line(n: u32, why: &str, snapshot: &str, reset: bool, asked:
     }
 }
 
+/// `text` past the wrapper Claude Code keeps a pasted prompt in, in its
+/// transcript (`<pasted_content id="…">` … , docs/cli-compatibility.md) and
+/// the whitespace around it: what a check for a line of Luna's own, typed as
+/// a paste, looks at the start of. Text with no wrapper, trimmed at its start.
+pub(super) fn unwrapped(text: &str) -> &str {
+    let text = text.trim_start();
+    match text.strip_prefix("<pasted_content").filter(|r| r.starts_with([' ', '>'])).and_then(|r| r.split_once('>')) {
+        Some((_, inner)) => inner.trim_start(),
+        None => text,
+    }
+}
+
+/// What a chat hears when its handoff was given up because the person went
+/// on in another conversation before Luna's reset (phase.rs `LEFT`): heard in
+/// that conversation, which asked for nothing.
+pub(super) fn left_line(n: u32, snapshot: &str) -> String {
+    format!(
+        "Handoff {n} of this chat did not go through: this conversation was started (a /clear or /new) before Luna cleared \
+         the one that wrote it, so Luna cleared nothing and typed no handoff here. Its copy is at {snapshot}. Nobody asks \
+         this conversation for a handoff: go on as you were."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

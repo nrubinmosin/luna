@@ -1255,9 +1255,11 @@ pub(super) const ASK_LATE_MS: u64 = 60 * 60_000;
 /// How the tag of a move's ask closes.
 const ASK_TAG_END: &str = " request, not typed by the user]";
 
-/// Whether a prompt in a transcript is a move's ask Luna typed (`ask_line`).
+/// Whether a prompt in a transcript is a move's ask Luna typed (`ask_line`):
+/// as typed, or as Claude Code keeps a paste, inside its `<pasted_content …>`
+/// wrapper (`facts::unwrapped`).
 pub(super) fn is_ask_line(text: &str) -> bool {
-    let Some(rest) = text.trim_start().strip_prefix(MOVE_TAG) else { return false };
+    let Some(rest) = super::facts::unwrapped(text).strip_prefix(MOVE_TAG) else { return false };
     rest.split_once(']').is_some_and(|(tag, _)| format!("{tag}]").ends_with(ASK_TAG_END))
 }
 
@@ -1611,7 +1613,10 @@ fn collect(caller: &str, m: &Move, file: &str) -> Result<Value, String> {
     }
     inputs.chat_text = Some(text);
     let built = build_within(inputs, None, None, BUILD_WAIT)?;
-    let preview = dir.join(format!("move-{}.md", m.id));
+    // A name of this call's own: two calls overlapping in one ask each write
+    // theirs, the one that takes Shown keeps it, and the other's going takes
+    // nothing of the winner's.
+    let preview = dir.join(format!("move-{}-{}.md", m.id, crate::secret::random_hex(8)));
     crate::secret::write_private(&preview, built.text.as_bytes()).map_err(|e| format!("the document could not be kept: {e}"))?;
     let sha = sha256_hex(built.text.as_bytes());
     let path = preview.to_string_lossy().into_owned();
@@ -2537,6 +2542,48 @@ pub(super) mod tests {
         crate::agents::teardown::forget(chat);
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// Two calls with a file overlapping in one ask: the first shows its
+    /// document, and the second, finding the move shown, takes nothing of it
+    /// as it gives up: the preview is still there, as shown.
+    #[test]
+    fn a_second_document_in_the_same_ask_leaves_the_first_ones_preview() {
+        let (chat, new) = ("mvd-old", "mvd-new");
+        let mut m = shown(chat, new, false);
+        crate::agents::registry::register(
+            chat,
+            Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            None,
+            true,
+            serde_json::json!({ "permissionMode": "acceptEdits" }),
+        );
+        m.source = Source::Chat;
+        m.phase = MovePhase::Asked { at: now_ms() };
+        store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        super::super::drafts_at_start(chat).unwrap();
+        let dir = std::env::temp_dir().join(format!("luna-move-twice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (one, two) = (dir.join("one.md"), dir.join("two.md"));
+        std::fs::write(&one, "# Goal\nThe first.\n").unwrap();
+        std::fs::write(&two, "# Goal\nThe second.\n").unwrap();
+        // Both read the move while it was asking; the first commits first.
+        assert_eq!(collect(chat, &m, &one.to_string_lossy()).unwrap()["collected"], true);
+        let e = collect(chat, &m, &two.to_string_lossy()).unwrap_err();
+        assert!(e.contains("given up meanwhile"), "{e}");
+        let p = move_preview(chat.into(), m.id.clone()).expect("the first one's preview stands");
+        assert!(p.text.contains("The first.") && !p.text.contains("The second."), "{}", p.text);
+        let kept = store::records()[chat].moving.as_ref().and_then(|x| x.preview.clone()).unwrap();
+        let left: Vec<_> = std::fs::read_dir(Path::new(&kept).parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&format!("move-{}-", m.id)))
+            .collect();
+        assert_eq!(left.len(), 1, "the second's own file went with it");
+        crate::agents::teardown::forget(chat);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The move's ask goes to a person's chat with Luna's tools, threshold or
     /// none, whose CLI has listed the tool; each refusal says what stands in
     /// the way and how to clear it, and the person's own ask for a handoff
@@ -2684,6 +2731,11 @@ pub(super) mod tests {
         assert!(is_ask_line(&format!("  {}", ask_line("m1"))));
         assert!(!is_ask_line(&prompt_line("m1", Source::Luna, "c1", None, "p")), "the moved chat's line is no ask");
         assert!(!is_ask_line("Please write the request, not typed by the user] part"));
+        // As Claude Code 2.1.319 keeps a pasted prompt in its transcript.
+        let wrapped = format!("<pasted_content id=\"p1\">{}</pasted_content id=\"p1\">", ask_line("m1"));
+        assert!(is_ask_line(&wrapped) && is_ask_line(&format!(" <pasted_content id=\"p2\">\n{}", ask_line("m1"))));
+        assert!(!is_ask_line(&format!("<pasted_content id=\"p3\">see {}", ask_line("m1"))), "quoted, not opening");
+        assert!(!is_ask_line("<pasted_content id=\"p4\""), "an unclosed tag opens nothing");
         let at = |started| Turn { started, ended: Some(4) };
         let mut m = a_move(MovePhase::Asked { at: 1_000 });
         assert!(!in_ask_turn(&m, at(Some(2_000)), None), "never typed: no turn is the ask's");
