@@ -28,6 +28,8 @@ mod start;
 pub(crate) use control::{
     delete_session, kill_session, kill_tree, orphan_sessions, resize_session, stop_all_sessions, write_session, KeyHold, GRACE,
 };
+#[cfg(test)]
+pub(crate) use control::{fake_terminal_for_test, fake_terminal_of};
 pub(crate) use folder::folder_refusal;
 pub(crate) use probe::{
     complete_lines, complete_lines_in, live_cwds, lossy_lines, prune_session_files_periodically, read_lossy_lines, session_meta, tail,

@@ -275,8 +275,7 @@ mod tests {
     /// A Codex chat switched to Spark whose first Spark turn hit Spark's full
     /// limit is judged by Spark, the model of the turn that stopped, not by
     /// the general model that answered last: a fresh general reading does
-    /// not lift it. A Claude Code chat's failed request names no model, so
-    /// its settings' model is taken, and with none every window counts.
+    /// not lift it.
     #[test]
     fn a_limit_is_judged_by_the_model_of_the_turn_it_stopped() {
         let path = std::env::temp_dir().join(format!("luna-limit-model-{}.jsonl", std::process::id()));
@@ -302,9 +301,43 @@ mod tests {
         // No turn named in the rollout: the settings' model, else none.
         assert_eq!(crate::agents::stopped_model(Provider::Codex, None, Some("m".into())).as_deref(), Some("m"));
         assert_eq!(crate::agents::stopped_model(Provider::Codex, None, None), None);
-        // Claude Code: its transcript is not asked.
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A Claude Code chat launched on one model and switched with `/model`
+    /// to another is judged by the one that answered last, not by its
+    /// settings: the failed request's `<synthetic>` line names none. With no
+    /// answer in its transcript, its settings' model; with neither, none,
+    /// and every window counts.
+    #[test]
+    fn a_claude_code_limit_is_judged_by_the_model_that_answered_last() {
+        let path = std::env::temp_dir().join(format!("luna-limit-claude-model-{}.jsonl", std::process::id()));
+        let answered = |model: &str| {
+            format!(
+                r#"{{"type":"assistant","isSidechain":false,"message":{{"model":"{model}","role":"assistant","content":[{{"type":"text","text":"ok"}}]}}}}"#
+            )
+        };
+        let lines = [
+            answered("claude-sonnet-4-5"),
+            answered("claude-opus-4-1"),
+            r#"{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Opus weekly limit reached"}]}}"#.to_string(),
+        ];
+        std::fs::write(
+            &path,
+            lines.join(
+                "
+",
+            ) + "
+",
+        )
+        .unwrap();
+        // Launched on Sonnet, switched to Opus: Opus's limit is not lifted by Sonnet's reading.
+        let model = crate::agents::stopped_model(Provider::Claude, Some(&path), Some("sonnet".into()));
+        assert_eq!(model.as_deref(), Some("claude-opus-4-1"));
+        std::fs::write(&path, "").unwrap();
         assert_eq!(crate::agents::stopped_model(Provider::Claude, Some(&path), Some("opus".into())).as_deref(), Some("opus"));
         assert_eq!(crate::agents::stopped_model(Provider::Claude, Some(&path), None), None);
+        assert_eq!(crate::agents::stopped_model(Provider::Claude, None, None), None);
         let _ = std::fs::remove_file(&path);
     }
 

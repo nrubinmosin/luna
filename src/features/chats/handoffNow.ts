@@ -39,6 +39,10 @@ export function askStands(chat: Chat): boolean {
   return chat.handoffAsk?.kind === 'manual';
 }
 
+/** The phases a move has ended in: before them it is under way, and the chat
+ *  is asked for no handoff (agents/handoff `now_refusal`). */
+const MOVE_OVER: MoveStatusDto['phase'][] = ['done', 'failed', 'canceled'];
+
 /** Why the window does not offer "Hand off now" for `chat`, with what would
  *  clear the way, or null where it does. `moves` are the moves the window
  *  knows of. */
@@ -50,8 +54,8 @@ export function handoffNowRefusal(chat: Chat, moves: MoveStatusDto[]): string | 
   if (chat.provider === 'codex' && (chat.sandbox === 'read-only' || chat.sandbox === 'read-only-net'))
     return "Codex's read-only sandbox writes no file, its handoff included: start the chat with workspace-write.";
   if (chat.handoff?.state === 'underWay') return `Handoff ${chat.handoff.n} of this chat is under way already.`;
-  if (moves.some(m => m.chatId === chat.id && (m.phase === 'asking' || m.phase === 'asked')))
-    return "The chat is being asked for its move's document: let that move go on or cancel it first.";
+  if (moves.some(m => m.chatId === chat.id && !MOVE_OVER.includes(m.phase)))
+    return 'A move of this chat to another account is under way, and no handoff is asked while it is: let it finish or cancel it first.';
   if (askStands(chat)) {
     const lapses = chat.handoffAsk?.lapsesAt;
     return lapses

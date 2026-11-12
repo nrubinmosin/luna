@@ -124,17 +124,19 @@ pub fn stopped_model_of(id: &str, provider: Provider) -> Option<String> {
 
 /// The model of a chat's last turn, the one a limit stopped, by its
 /// transcript at `transcript`, else `configured`, the model its settings
-/// start it on. Not the model that answered last: a chat switched to another
-/// model whose first turn there hit that model's own limit would be judged by
-/// the one before, and that model's limit lifting would lift the stop. Codex
-/// names a turn's model in its `turn_context` before asking it, so its latest
-/// is the stopped turn's, answered or not. Claude Code writes the failed
-/// request's line as `<synthetic>`, naming no model, and records no `/model`
-/// switch, so only its settings say. None: not known, and every window
-/// counts (`UsageReading::for_model`).
+/// start it on. Codex names a turn's model in its `turn_context` before
+/// asking it, so its latest is the stopped turn's, answered or not: a chat
+/// switched to Spark whose first Spark turn hit Spark's limit is judged by
+/// Spark. Claude Code writes the failed request's line as `<synthetic>`,
+/// naming no model, and records no `/model` switch, so the last model that
+/// answered (`last_model`, which skips those lines) is the nearest it says: a
+/// `/model` switch is followed once the new model has answered, where the
+/// settings would name the model the chat was launched on whatever it runs
+/// now. None: not known, and every window counts
+/// (`UsageReading::for_model`).
 pub(crate) fn stopped_model(provider: Provider, transcript: Option<&std::path::Path>, configured: Option<String>) -> Option<String> {
     let asked = match provider {
-        Provider::Claude => None,
+        Provider::Claude => transcript.and_then(crate::claude::session::last_model),
         Provider::Codex => transcript.and_then(crate::codex::session::last_model),
     };
     asked.or(configured)

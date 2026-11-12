@@ -148,8 +148,10 @@ describe('Hand off now', () => {
     expect(handoffNowRefusal(chat({ handoff: { n: 3, at: 1, state: 'underWay', previous: false } }), [])).toMatch(
       /Handoff 3 .* under way/
     );
-    expect(handoffNowRefusal(chat({}), [move('asked')])).toMatch(/move's document/);
-    expect(handoffNowRefusal(chat({}), [move('done')])).toBeNull();
+    for (const phase of ['asking', 'asked', 'shown', 'confirmed', 'rowCreated', 'prompting'] as const)
+      expect(handoffNowRefusal(chat({}), [move(phase)])).toMatch(/move of this chat .* under way/);
+    for (const phase of ['done', 'failed', 'canceled'] as const)
+      expect(handoffNowRefusal(chat({}), [move(phase)])).toBeNull();
     // Asked already, as the core says: waiting to be typed, or typed and
     // open until it lapses; the threshold's ask is no reason not to.
     expect(handoffNowRefusal(chat({ handoffAsk: { kind: 'manual', at: 1000 } }), [])).toMatch(/Asked already.*at rest/);
