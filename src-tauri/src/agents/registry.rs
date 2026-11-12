@@ -4,9 +4,9 @@
 
 use crate::agents::handover::taken_over_error;
 use crate::agents::held::Held;
-use crate::agents::notifier::lines::NoticeTurn;
+use crate::agents::notifier::lines::{NoticeTurn, Woken};
 use crate::agents::notifier::usage::QuotaTold;
-use crate::agents::owed::{Owed, Receipt};
+use crate::agents::owed::{Owed, Receipt, Requests};
 use crate::agents::persist::CHATS_FROZEN;
 use crate::agents::spawn::{free_first, max_descendants, refused_a_place, under_cap, PlacesRefused, SpawnTaken};
 use crate::agents::teardown::{forget, Auto};
@@ -104,6 +104,9 @@ pub(super) struct Registry {
     /// typed into it, and has not been shown a turn past `baseline` since.
     /// The notifier tells the caller when the answer comes.
     pub(super) owed: HashMap<(String, String), Owed>,
+    /// Each caller's requests to each session, by (caller, session) (owed.rs
+    /// `Requests`): which one an answer is to.
+    pub(super) requests: HashMap<(String, String), Requests>,
     /// `wait` calls in flight, by (caller, session).
     pub(super) waits: HashMap<(String, String), u32>,
     /// Sessions a `wait_many` in flight will answer for, by (caller, session):
@@ -131,6 +134,11 @@ pub(super) struct Registry {
     pub(super) notices_held: HashMap<String, usize>,
     /// The turns Luna's notices started, by the session they went into.
     pub(super) notice_turns: HashMap<String, Vec<NoticeTurn>>,
+    /// Leads Luna has told their delegates finished (lines.rs `wake_lead`), by id.
+    pub(super) woken: HashMap<String, Woken>,
+    /// What each lead was last seen waiting on (lines.rs `note_delegates`):
+    /// what its wake names.
+    pub(super) delegates: HashMap<String, Vec<String>>,
     /// The share of its context window each helper past its level was last
     /// read at (notifier usage.rs `budget_news`): the rider on its notices.
     pub(super) context_seen: HashMap<String, u64>,
@@ -183,6 +191,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             groups: HashMap::new(),
             answered: HashMap::new(),
             owed: HashMap::new(),
+            requests: HashMap::new(),
             waits: HashMap::new(),
             reserved: HashMap::new(),
             receipts: HashMap::new(),
@@ -193,6 +202,8 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             held: Vec::new(),
             notices_held: HashMap::new(),
             notice_turns: HashMap::new(),
+            woken: HashMap::new(),
+            delegates: HashMap::new(),
             context_seen: HashMap::new(),
             notice_times: HashMap::new(),
             stopped: HashMap::new(),

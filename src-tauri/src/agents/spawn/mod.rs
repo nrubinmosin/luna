@@ -70,6 +70,10 @@ pub struct SpawnParams {
     /// (`Settings::helper_context_pct`). Kept in the settings it runs with.
     #[serde(skip_serializing)]
     pub budget_pct: Option<u32>,
+    /// The `requestKey` the spawn came with, which notices name its answer by
+    /// (said.rs `Request`); the retry itself is the dispatcher's.
+    #[serde(skip_serializing)]
+    pub request_key: Option<String>,
     /// Without the edit tools (Claude Code); in a read-only sandbox (Codex).
     pub read_only: Option<bool>,
     /// The agent it runs as: Claude Code's `--agent`.

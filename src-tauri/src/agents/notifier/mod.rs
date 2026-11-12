@@ -10,7 +10,7 @@ use crate::agents::delivery::{still_starting, type_text, TypingInto, NO_LONGER_S
 use crate::agents::held::DRAFT_ALERT_MS;
 use crate::agents::lost::{take_undelivered, worktrees_left_line};
 use crate::agents::notifier::lines::{
-    count_notice, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
+    count_notice, is_wake, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
     BREAKER_WINDOW_MS,
 };
 use crate::agents::notifier::usage::{
@@ -126,6 +126,10 @@ pub(super) enum Settled {
     /// Its turn at this count has answered and gone quiet waiting on its
     /// background work; told once per turn, apart from `Quiet`, and owed on.
     WaitsOnBackground(u32),
+    /// A turn answered sends that asked for no reply (`Owed::no_reply`) with
+    /// nothing worth a turn of the caller's in it: settled with no notice, its
+    /// answer left in the report.
+    Unasked,
     Exited,
 }
 
@@ -555,11 +559,28 @@ pub(super) fn notifier() {
                             o.held = None;
                         }
                     }
+                    // Owed on from this turn, what it said included: a turn a
+                    // lead ended with its delegates at work counts as told it
+                    // is not done, with nothing said (lines.rs `worth_waking`).
                     Some((None, Settled::Skip(ended))) => {
                         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
                         if let Some(o) = r.owed.get_mut(&(caller.clone(), id.clone())).filter(|now| now.rev == o.rev) {
                             o.baseline = ended;
                             o.held = None;
+                            o.told_pending = true;
+                        }
+                    }
+                    Some((None, Settled::Unasked)) => {
+                        let key = (caller.clone(), id.clone());
+                        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+                        if r.owed.get(&key).is_some_and(|now| now.rev == o.rev) {
+                            r.owed.remove(&key);
+                            drop(r);
+                            crate::background::save();
+                            crate::log::info(
+                                "agents",
+                                &format!("{} answered {} with no reply asked: no notice", label(id), label(&caller)),
+                            );
                         }
                     }
                     _ => {}
@@ -810,6 +831,7 @@ fn kind_of(how: &Settled) -> &'static str {
         Settled::NoNews(_) => "no-news",
         Settled::Quiet(_) => "quiet",
         Settled::WaitsOnBackground(_) => "waits-on-background",
+        Settled::Unasked => "unasked",
         Settled::Exited => "exited",
     }
 }
@@ -945,7 +967,8 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             // of a turn once too often, never misses one.
             if started {
                 let told_of: Vec<String> = settled.iter().map(|(id, _, _)| id.clone()).collect();
-                notice_turn(&mut r, caller, turn, &told_of);
+                let wake = news_lines.iter().any(|(_, line)| is_wake(line));
+                notice_turn(&mut r, caller, turn, &told_of, wake);
             }
             for (id, how, told) in settled {
                 if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now_ms()) {
@@ -1032,6 +1055,10 @@ pub(in crate::agents) fn deliver_news_for_test(caller: &str, news_lines: Vec<(St
 /// A notice that went into `caller` (`text`) settles what it told of `id`.
 fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, told: &Owed, text: &str) {
     let answered = matches!(how, Settled::Answered);
+    // Told of its end: a wake before it is behind it (lines.rs `woken_before`).
+    if matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited) {
+        r.woken.remove(&id);
+    }
     settle_told(r, (caller.to_string(), id.clone()), how, told);
     if answered {
         ack_background_stop(r, caller, &id, text);
@@ -1060,7 +1087,7 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
         return;
     }
     match how {
-        Settled::Answered | Settled::NoNews(_) | Settled::Exited => {
+        Settled::Answered | Settled::NoNews(_) | Settled::Exited | Settled::Unasked => {
             r.owed.remove(&key);
         }
         Settled::Waiting => {

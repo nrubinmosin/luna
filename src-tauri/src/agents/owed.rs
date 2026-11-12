@@ -5,6 +5,7 @@
 use crate::agents::lost::{put_undelivered_back, take_undelivered};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{parent_of, reg, waits_on_helpers_in, Registry, DEV_CALLER};
+use crate::agents::said::{request_head, Request};
 use crate::throttle::now_ms;
 
 /// Text typed into a chat's terminal mid-turn is the CLI's to place: into
@@ -67,6 +68,10 @@ pub(super) struct Owed {
     /// background work (lines.rs `background_wait_line`): told apart, so a
     /// plain quiet notice earlier in the turn does not stand for it.
     pub(super) told_background_wait: Option<u32>,
+    /// Every send it stands for asked for no reply (`expectReply: false`): a turn
+    /// that answers them wakes the caller only with a status word or a report
+    /// (lines.rs `worth_waking`), and the answer is left in the report.
+    pub(super) no_reply: bool,
     /// Which debt this is, whatever its numbers: asked again with nothing
     /// moved since, a new one has the same baseline and cursor as the old, and
     /// what was decided about the old is not to touch it.
@@ -99,6 +104,7 @@ impl Owed {
             told_idle: false,
             told_quiet: None,
             told_background_wait: None,
+            no_reply: false,
         }
     }
 
@@ -312,18 +318,52 @@ pub(super) fn looked(id: &str) {
 /// answer reached it, the caller is owed that one too: the cursor stays the
 /// earlier one. The dev caller has no terminal to be told in.
 pub(super) fn owe_from(caller: &str, id: &str, baseline: u32, cursor: u64) {
-    owe(caller, id, baseline, cursor, None);
+    owe(caller, id, baseline, cursor, None, None);
 }
 
-/// `owe_from` for text a send put into a helper's queue, `handovers` being the
+/// What a caller asked, for the debt it makes: the text (to tell later which
+/// turn it started), the `requestKey` it came with, and whether it wants a reply.
+pub(super) struct Asked<'a> {
+    pub(super) text: &'a str,
+    pub(super) key: Option<&'a str>,
+    pub(super) reply: bool,
+}
+
+/// `owe_from` for a spawn's prompt or a send's text, `asked`: numbered among the
+/// caller's requests to `id` (`Requests`).
+pub(super) fn owe_asked(caller: &str, id: &str, baseline: u32, cursor: u64, asked: &Asked) {
+    owe(caller, id, baseline, cursor, None, Some(asked));
+}
+
+/// `owe_asked` for text a send put into a helper's queue, `handovers` being the
 /// count (handover.rs `handovers_of`) taken before it went in: none if the person
 /// has taken the helper over since, which took that text back out and told its
 /// sender, so nothing of the chat it is now is owed. False then.
-pub(super) fn owe_from_at(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: u64) -> bool {
-    owe(caller, id, baseline, cursor, Some(handovers))
+pub(super) fn owe_from_at(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: u64, asked: &Asked) -> bool {
+    owe(caller, id, baseline, cursor, Some(handovers), Some(asked))
 }
 
-fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64>) -> bool {
+/// A caller's requests to one session, by (caller, session): how many it has
+/// made, a spawn being the first, and those the debt that stands now covers,
+/// oldest first. What answers which is read off them (said.rs `Said::asked`).
+/// Kept in memory only: after a core restart an answer names no request.
+#[derive(Default)]
+pub(super) struct Requests {
+    made: u32,
+    pub(super) open: Vec<Request>,
+}
+
+/// The requests the debt of `caller` on `id` covers now, when one stands.
+pub(super) fn requests_of(caller: &str, id: &str) -> Vec<Request> {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let key = (caller.to_string(), id.to_string());
+    if !r.owed.contains_key(&key) {
+        return Vec::new();
+    }
+    r.requests.get(&key).map(|q| q.open.clone()).unwrap_or_default()
+}
+
+fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64>, asked: Option<&Asked>) -> bool {
     if caller == DEV_CALLER {
         return true;
     }
@@ -332,12 +372,24 @@ fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64
         return false;
     }
     let key = (caller.to_string(), id.to_string());
+    let before = r.owed.get(&key).copied();
     // A new turn answers this one; that the last was cut short has yet to be
     // said all the same.
-    let (cursor, resumed) = r.owed.get(&key).map_or((cursor, false), |o| (o.cursor.min(cursor), o.resumed || o.cut_short));
+    let (cursor, resumed) = before.map_or((cursor, false), |o| (o.cursor.min(cursor), o.resumed || o.cut_short));
+    // Asked for a reply once, a debt wants one.
+    let no_reply = asked.is_some_and(|a| !a.reply) && before.is_none_or(|o| o.no_reply);
     // Text can miss its turn before the send that placed it gets here (`retried`).
     let floor = r.delivery_floors.get(&key).copied().unwrap_or(0);
-    r.owed.insert(key, Owed { resumed, ..Owed::from(baseline.max(floor), cursor) });
+    r.owed.insert(key.clone(), Owed { resumed, no_reply, ..Owed::from(baseline.max(floor), cursor) });
+    let requests = r.requests.entry(key).or_default();
+    // A debt of its own: what earlier ones covered has been answered.
+    if before.is_none() {
+        requests.open.clear();
+    }
+    if let Some(a) = asked {
+        requests.made += 1;
+        requests.open.push(Request { n: requests.made, key: a.key.map(str::to_owned), head: request_head(a.text) });
+    }
     drop(r);
     // A spawn's or a question's: a core killed now must not forget either.
     crate::background::save();
@@ -415,6 +467,24 @@ mod tests {
     use crate::agents::test_support::notice_for;
     use crate::agents::wait::wait;
     use crate::provider::Provider;
+
+    #[test]
+    fn requests_are_numbered_per_caller_and_a_debt_covers_those_since_the_last_was_answered() {
+        let (c, s) = ("rn-c", "rn-s");
+        let ask = |text, key| Asked { text, key, reply: true };
+        let open = || requests_of(c, s).iter().map(|q| (q.n, q.key.clone())).collect::<Vec<_>>();
+        owe_asked(c, s, 0, 0, &ask("the spawn's prompt", None));
+        owe_asked(c, s, 1, 10, &ask("and this", Some("k")));
+        assert_eq!(open(), [(1, None), (2, Some("k".to_string()))]);
+        reg().lock().unwrap().owed.remove(&(c.to_string(), s.to_string()));
+        assert!(open().is_empty(), "answered: none open");
+        owe_asked(c, s, 2, 20, &ask("a third", None));
+        assert_eq!(open(), [(3, None)], "numbered on");
+        owe_from(c, s, 3, 30);
+        assert_eq!(open(), [(3, None)], "text that is no request of the caller's adds none");
+        forget(s);
+        assert!(!reg().lock().unwrap().requests.contains_key(&(c.to_string(), s.to_string())));
+    }
 
     #[test]
     fn an_answer_is_owed_until_the_caller_sees_a_later_turn() {

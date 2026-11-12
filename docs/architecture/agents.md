@@ -440,9 +440,42 @@ turn, stopped on a prompt (once per stop) or exited.
   have; one that carries a question or a permission prompt (`Settled::Waiting`,
   `Settled::Asked`) never waits.
 - A helper with its own helpers out (`waits_on_helpers`) reads `background`; a
-  turn on a notice from them counts once it has all their answers. Meanwhile
-  its parent hears of turns that wrote a message of 400 characters or more
-  (`news_for_parent`), once each, only ever upward.
+  turn on a notice from them counts once it has all their answers.
+- **Leads.** A lead (`is_lead`: spawned with tools) whose delegates still work
+  (its own helpers out, or what its CLI left in the background) is not done as
+  a matter of course: a turn it ends then settles as `Settled::Skip` (no
+  notice, `told_pending` set, the debt's offset kept), so what it wrote rides
+  in its report with the next notice, never "NOT done yet". A message whose
+  first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`
+  (`said::says_status`, case-sensitive, alone or before `:` or a space,
+  markdown marks aside) goes at once (`worth_waking`), and so does a turn on
+  its helpers' notices that wrote one (`news_for_parent`, only ever upward).
+  Prompts, questions, errors, exits and the quiet-turn notices go as ever.
+  The lead's role text says so (`resources/system/role-lead.md`).
+  Once all its delegates are done (`Verdict::JobOver`) with nothing said since,
+  Luna wakes the lead instead of telling its parent (`wake_lead`): a queued
+  line opening `Your delegates have finished` (`WAKE_HEAD`), naming what it
+  was last seen waiting on (`note_delegates`), once per end (`Registry::woken`,
+  by the count it was seen at), counted by the breaker as the pair (lead,
+  lead). The turn it starts is marked `NoticeTurn::wake` and counts as the
+  lead's own; if it ends with nothing said since the wake, the parent hears
+  the lead "seems stuck" (once: it settles the debt). A wake not taken up
+  within `WAKE_WAIT_MS` (10 min), or one the breaker stops, leaves the parent
+  told as before.
+- **Requests.** Each (caller, session) numbers the caller's requests (owed.rs
+  `Requests`: a spawn 1, each send one more, with its `requestKey`), and a
+  debt covers those made since the last one settled. With more than one,
+  `Said::asked` puts each message down to the latest request whose text (its
+  first 60 characters, `request_head`) opened a prompt at or before it; the
+  notice says it answers several and which the quoted report is for
+  (`answering`, `begins_re`), and `answer_text` sets each request's part apart
+  under `Re request N`, the latest first, as do `luna_report_get` and
+  `luna_session_wait` (`report_text`). Kept in memory only: after a core
+  restart an answer names no request.
+- **No reply asked.** A send with `expectReply: false` sets `Owed::no_reply`
+  (a later send that asks for one clears it). A turn that answers it wakes the
+  caller only with a status word or a message of 400 characters or more;
+  otherwise the debt settles with no notice (`Settled::Unasked`).
 - **The breaker.** Past 12 turn-end notices in 15 minutes for one (caller,
   session) pair (`BREAKER_NOTICES`), that pair's turn and job news stops: the
   last notice says so, the log warns, the desktop is told once, and a person

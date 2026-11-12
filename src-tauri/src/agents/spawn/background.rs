@@ -2,7 +2,7 @@
 //! the call that waits for its first turn.
 
 use crate::agents::delivery::POLL;
-use crate::agents::owed::{owe_from, shown};
+use crate::agents::owed::{owe_asked, shown, Asked};
 use crate::agents::registry::{chat_name, issue_token, reg, register, set_name};
 use crate::agents::spawn::worktree::{helper_worktree_name, neighbors_in, worktree_of, worktree_queue, Worktree};
 use crate::agents::spawn::{spawn_is, SpawnParams, Spawned};
@@ -312,7 +312,7 @@ pub(in crate::agents) fn spawn_background(
     });
     let same_folder = if own_worktree { Vec::new() } else { neighbors_in(&run_in, caller, &[caller, &id]) };
     shown(caller, &id, 0);
-    owe_from(caller, &id, 0, 0);
+    owe_asked(caller, &id, 0, 0, &Asked { text: &params.prompt, key: params.request_key.as_deref(), reply: true });
     // The CLI makes its worktree as the first turn starts: worth a few
     // seconds, so the caller need not go looking for it.
     let pty = crate::pty::manager();
