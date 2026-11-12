@@ -62,7 +62,8 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
  *  helper list, opened from its pane's title bar),
  *  `?demo=delete-helpers` (deleting a chat whose helpers are at work),
  *  `?demo=handoff` / `handoff-dark` (a chat gone on past a handoff, its divider and copy),
- *  `?demo=hand-off-now` (a pane's … menu with Hand off now, and the core's refusal of it shown in the pane),
+ *  `?demo=hand-off-now` (a pane's … menu with Hand off now), `hand-off-now-refused` (the core's refusal of it shown in
+ *  the pane, the menu closed as the click left it),
  *  `?demo=move` / `move-dark` (a chat a usage limit stopped, its offer of a move and the move's dialog, Luna's
  *  document picked), `move-preview` / `move-preview-dark` (the whole of what a move sends, before Send),
  *  `move-asking` (the banner while the chat writes its document), `move-failed` (the chat asked and no document),
@@ -99,6 +100,7 @@ export type Scene =
   | 'handoff'
   | 'handoff-dark'
   | 'hand-off-now'
+  | 'hand-off-now-refused'
   | 'move'
   | 'move-dark'
   | 'move-preview'
@@ -140,6 +142,7 @@ export const SCENES: Scene[] = [
   'handoff',
   'handoff-dark',
   'hand-off-now',
+  'hand-off-now-refused',
   'move',
   'move-dark',
   'move-preview',
@@ -326,17 +329,22 @@ export function seedDemo(scene: Scene) {
       }, 200);
     }, 300);
   }
-  // The first chat's … menu, Hand off now in it, and why the core refused
-  // the ask before, over its terminal.
-  if (scene === 'hand-off-now') {
+  // The first chat's … menu, Hand off now in it; or, as a person sees it
+  // after the click closed the menu, why the core refused the ask, over its
+  // terminal.
+  if (scene === 'hand-off-now' || scene === 'hand-off-now-refused') {
     useHandoffNow.setState({
       asked: {},
-      refused: {
-        'demo-1':
-          "the chat's CLI has its own jobs running (Bash: pnpm dev), which cannot cross to a new conversation: let them finish or stop them, then ask again"
-      }
+      refused:
+        scene === 'hand-off-now-refused'
+          ? {
+              'demo-1':
+                "the chat's CLI has its own jobs running (Bash: pnpm dev), which cannot cross to a new conversation: let them finish or stop them, then ask again"
+            }
+          : {}
     });
-    setTimeout(() => document.querySelector<HTMLElement>('.pane button[data-glyph="more"]')?.click(), 300);
+    if (scene === 'hand-off-now')
+      setTimeout(() => document.querySelector<HTMLElement>('.pane button[data-glyph="more"]')?.click(), 300);
   }
   // The first chat's Delete, with its helpers listed and their boxes ticked.
   if (scene === 'delete-helpers') {
