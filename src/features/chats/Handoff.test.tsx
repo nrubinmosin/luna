@@ -171,6 +171,14 @@ describe('HandoffBox', () => {
     expect(screen.getByLabelText('Auto-handoff at')).toBeDisabled();
   });
 
+  it('says it only sets when Luna asks, Hand off now asking at any time', () => {
+    seat({ tools: true });
+    render(<HandoffBox chat={{ ...base, tools: true }} />);
+    expect(screen.getByText(/Auto-handoff only asks at that share/)).toHaveTextContent(
+      `"Hand off now" in the pane's … menu asks at any time, for any chat with Luna tools`
+    );
+  });
+
   it('tells the core at once, and keeps it on the chat', async () => {
     seat({ tools: true });
     const user = userEvent.setup();

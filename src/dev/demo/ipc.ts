@@ -25,6 +25,7 @@ import {
   MOVE_PREVIEW,
   ORPHANS
 } from './fixtures';
+import type { MoveFactsDto, MoveStatusDto } from '../../ipc/moving';
 
 /** What the stand-in answers with, set when a scene is seeded: until then it
  *  hands every caller its own fallback. */
@@ -40,7 +41,12 @@ export const demoState = {
   library: LIBRARY,
   /** What the Claude settings files say: `newchat-more` names an older model. */
   claudeDefaults: DEFAULTS,
-  power: POWER
+  power: POWER,
+  /** What `move_facts` says of the chat being moved. */
+  moveFacts: {} as MoveFactsDto,
+  /** The move `move_list` gives once the chat has been asked, if any. */
+  moveAsked: null as MoveStatusDto | null,
+  asked: false
 };
 
 /**
@@ -80,7 +86,13 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   }
   if (cmd === 'applied_by_luna') return APPLIED as unknown as T;
   if (cmd === 'handoff_file') return HANDOFF_FILE as unknown as T;
-  if (cmd === 'move_prepare') return MOVE_PREVIEW as unknown as T;
+  if (cmd === 'move_prepare' || cmd === 'move_build_from_records') return MOVE_PREVIEW as unknown as T;
+  if (cmd === 'move_facts') return demoState.moveFacts as unknown as T;
+  if (cmd === 'move_ask' && demoState.moveAsked) {
+    demoState.asked = true;
+    return { ...demoState.moveAsked, phase: 'asking' } as unknown as T;
+  }
+  if (cmd === 'move_list') return (demoState.asked && demoState.moveAsked ? [demoState.moveAsked] : []) as unknown as T;
   if (cmd === 'handoff_transcript') {
     const first = args.since == null;
     return { ...HELPER_TRANSCRIPT, running: false, messages: first ? HELPER_TRANSCRIPT.messages : [] } as unknown as T;
