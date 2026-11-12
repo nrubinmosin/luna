@@ -13,19 +13,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A handoff has a seventh section, **Skills to load first**: the skills the
   next conversation loads before its first reply, and why. The prompt that
   opens it says to load them first, and Luna's facts name the skills the
-  conversation before loaded, read off its transcript (Claude Code's `Skill`
-  calls that went through, the skills a person started with `/name`, and a
-  `SKILL.md` read; Codex's `<skill>` blocks and a `SKILL.md` a command it ran
-  printed). A move's document carries the same line, the move's own ask left
-  out, and the moved chat is told to load what it lists before its first
-  reply.
+  conversation before was seen loading or reading, off its transcript
+  (Claude Code's `Skill` calls that went through, the skills a person
+  started with `/name`, and a `SKILL.md` read; Codex's `<skill>` blocks and a
+  `SKILL.md` a shell command it ran printed without failing; not a skill's
+  file the conversation also edited in its own folder). A move's document
+  carries the same line, the move's own ask left out, and the moved chat is
+  told to load what it lists before its first reply.
 
 ### Changed
 
 - Auto-handoff ticked on a chat already past its threshold, or set lower than
   where it stands, asks as soon as the chat is at rest rather than at its
   next turn's end. Turned off before Luna typed its notice, the notice is
-  not typed, even one Luna was about to type. A conversation a handoff began
+  not typed, even one Luna was about to type. Nor does it go in while a
+  `/clear` or `/new` you just sent may still be on its way to the CLI, and
+  one Luna cannot place in the conversation it asks waits without holding
+  up the chat's other notices. A conversation a handoff began
   is spared until it has grown 5 points past where its first turn ended,
   however late it is first looked at: one handed off with Auto-handoff off
   and gone on since is asked once it is turned on, if it has grown so.

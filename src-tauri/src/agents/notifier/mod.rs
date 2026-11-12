@@ -448,7 +448,10 @@ pub(super) fn notifier() {
             .collect();
         if !withheld.is_empty() {
             for (caller, line) in &withheld {
-                crate::log::info("agents", &format!("handoff notice to {} dropped: a move of it is under way", label(caller)));
+                crate::log::info(
+                    "agents",
+                    &format!("handoff notice to {} dropped: a move of it is under way, or the ask it came with is closed", label(caller)),
+                );
                 if let Some(lines) = news.get_mut(caller) {
                     lines.retain(|l| l != line);
                 }
@@ -457,6 +460,7 @@ pub(super) fn notifier() {
             reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|queued| !withheld.contains(queued));
             crate::agents::save_chats();
         }
+        placed_now(&mut news);
         for caller in news.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
@@ -789,11 +793,12 @@ fn deliver_notice(
     // A `/clear` or `/new` the person sent just before their keys were held
     // is on its way to a CLI that has not acted on it yet, and the
     // conversation still reads as the old one. So a line bound to its
-    // conversation also goes in only with no key of theirs since this look,
+    // conversation, a continuation or a threshold notice (handoff
+    // `keyed_to_conversation`), also goes in only with no key of theirs since this look,
     // nor within the quiet the look before it asked for (`ready_for_notice`),
     // which covers the stretch up to here: otherwise nothing goes in, and
     // the next look sees where their keys took the chat.
-    let bound = news_lines.iter().any(|(_, line)| crate::agents::handoff::bound_to_conversation(line));
+    let bound = news_lines.iter().any(|(_, line)| crate::agents::handoff::keyed_to_conversation(line));
     let keys_at = pty.typed_at_ms(caller);
     let no_keys_since = || pty.typed_at_ms(caller) == keys_at && pty.typed_ago_ms(caller).is_none_or(|ms| ms >= TYPING_QUIET_MS);
     let stands_held = || stands() && (!bound || no_keys_since());
@@ -931,6 +936,20 @@ fn deliver_notice(
         ),
         Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(caller))),
     }
+}
+
+/// The queued lines of each caller's notice, `news`, put together now: a
+/// threshold notice its chat cannot be asked in now (the conversation it asks
+/// not known, or another: handoff `notice_here`) is left out of this one and
+/// stays queued, so it holds up nothing else the notice says (a helper's
+/// answer); the beat closes its ask once the chat is found elsewhere, and
+/// the next look takes it once it is placed. Whether one still stands where
+/// it goes in is looked at there again (`deliver_notice`).
+pub(in crate::agents) fn placed_now(news: &mut HashMap<String, Vec<String>>) {
+    for (caller, lines) in news.iter_mut() {
+        lines.retain(|line| crate::agents::handoff::notice_here(caller, line));
+    }
+    news.retain(|_, lines| !lines.is_empty());
 }
 
 /// A notice of the queued lines `news_lines` (as typed, as queued) typed into

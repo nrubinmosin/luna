@@ -1519,6 +1519,65 @@ fn a_threshold_notice_put_together_goes_in_only_while_its_ask_stands() {
     set_conversation_for_test("hooffq-me", None);
 }
 
+/// A threshold notice whose chat Luna cannot place on the conversation it
+/// asks (not known now) is left out of the notice the notifier puts
+/// together, still queued: what else that notice says, a helper's answer,
+/// goes without it. Placed again, it is taken.
+#[test]
+fn a_threshold_notice_that_cannot_be_placed_holds_up_nothing_else() {
+    chat("hoplace-me", None);
+    listed("hoplace-me");
+    set_auto_handoff("hoplace-me".into(), Some(70)).unwrap();
+    look_at("hoplace-me", 70, &reading("old", 75), 2, None);
+    let notice = queued("hoplace-me").pop().unwrap();
+    let answer = "Your helper h1 answered.".to_string();
+    reg().lock().unwrap().news.push(("hoplace-me".into(), answer.clone()));
+    let notice_of = |news: &[String]| HashMap::from([("hoplace-me".to_string(), news.to_vec())]);
+    set_conversation_for_test("hoplace-me", None);
+    let mut news = notice_of(&[notice.clone(), answer.clone()]);
+    crate::agents::notifier::placed_now(&mut news);
+    assert_eq!(news["hoplace-me"], std::slice::from_ref(&answer), "the answer goes without it");
+    assert!(queued("hoplace-me").contains(&notice), "still queued, for a later notice");
+    // Only a threshold notice: nothing at all left for this look.
+    let mut alone = notice_of(std::slice::from_ref(&notice));
+    crate::agents::notifier::placed_now(&mut alone);
+    assert!(alone.is_empty());
+    // Placed again.
+    set_conversation_for_test("hoplace-me", Some("old"));
+    let mut news = notice_of(&[notice.clone(), answer.clone()]);
+    crate::agents::notifier::placed_now(&mut news);
+    assert_eq!(news["hoplace-me"], [notice, answer]);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hoplace-me");
+    let _ = store::remove("hoplace-me");
+    forget_session("hoplace-me");
+    set_conversation_for_test("hoplace-me", None);
+}
+
+/// The person's `/new` sent just before the notifier held their keys has not
+/// reached the CLI yet, which still reads as the conversation the threshold
+/// asked: a key of theirs since the notifier's look keeps the notice back,
+/// still queued, as it does a continuation, without the notice being taken
+/// for one.
+#[test]
+fn a_threshold_notice_waits_for_a_key_the_cli_has_not_acted_on() {
+    chat("hokeyt-me", None);
+    listed("hokeyt-me");
+    set_auto_handoff("hokeyt-me".into(), Some(70)).unwrap();
+    look_at("hokeyt-me", 70, &reading("old", 75), 2, None);
+    let notice = queued("hokeyt-me").pop().unwrap();
+    assert!(keyed_to_conversation(&notice) && !bound_to_conversation(&notice));
+    crate::pty::fake_terminal_for_test("hokeyt-me", true);
+    let keys = Box::new(|| crate::pty::fake_person_keys("hokeyt-me"));
+    crate::agents::notifier::deliver_news_for_test("hokeyt-me", vec![(notice.clone(), notice.clone())], keys);
+    assert_eq!(crate::pty::fake_terminal_of("hokeyt-me"), (String::new(), false), "nothing typed, their keys go on");
+    assert!(queued("hokeyt-me").contains(&notice), "still queued, for the next look");
+    crate::pty::fake_terminal_for_test("hokeyt-me", false);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hokeyt-me");
+    let _ = store::remove("hokeyt-me");
+    forget_session("hokeyt-me");
+    set_conversation_for_test("hokeyt-me", None);
+}
+
 fn queued(id: &str) -> Vec<String> {
     reg().lock().unwrap().news.iter().filter(|(c, _)| c == id).map(|(_, l)| l.clone()).collect()
 }
