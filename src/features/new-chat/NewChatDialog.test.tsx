@@ -375,6 +375,36 @@ describe('NewChatDialog: Claude models from the account’s own list', () => {
     expect(chat).toMatchObject({ model: 'claude-opus-4-7', effort: 'medium' });
   });
 
+  it('keeps the picked model’s level when the account’s defaults land after the pick', async () => {
+    const dto: ClaudeDefaultsDto = {
+      model: fromAccount('opus'),
+      effort: fromAccount('xhigh'),
+      permissionMode: null,
+      effortByModel: {
+        opus: fromAccount('xhigh'),
+        mythos: { value: 'low', source: 'account', key: 'modelSettings.mythos.effortLevel' }
+      }
+    };
+    // The effort list (the fields' own ask, made first) answers at once; the
+    // draft's defaults only once released.
+    let release: () => void = () => {};
+    const late = new Promise<void>(resolve => (release = resolve));
+    let asked = 0;
+    mocked.claudeDefaults.mockImplementation(() => (asked++ === 0 ? Promise.resolve(dto) : late.then(() => dto)));
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    await user.selectOptions(screen.getByRole('combobox'), 'Mythos');
+    expect(screen.getByRole('radio', { name: 'low' })).toHaveAttribute('aria-checked', 'true');
+    release();
+    await settle();
+    expect(screen.getByRole('radio', { name: 'low' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText("from the account's settings.json, modelSettings.mythos.effortLevel")).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ model: 'Mythos', effort: 'low' });
+  });
+
   it('holds a level kept for the next model that it does not take to what it does', async () => {
     mocked.claudeDefaults.mockResolvedValue({
       model: fromAccount('opus'),

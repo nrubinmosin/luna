@@ -4,7 +4,7 @@
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::delivery::screen_of;
 use crate::agents::lost::{lost_count, lost_whole, undelivered_note};
-use crate::agents::owed::{hand_over, hand_over_rev, looked, queue_settled, seen};
+use crate::agents::owed::{background_stopped_note, hand_over, hand_over_rev, looked, queue_settled, seen};
 use crate::agents::registry::{authorize_view, label, reg};
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,9 @@ pub struct Reading {
     /// See `undelivered_note`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undelivered: Option<String>,
+    /// See `background_stopped_note`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_stopped: Option<String>,
     /// See `Waited::transcript_missing`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub transcript_missing: bool,
@@ -294,6 +297,7 @@ pub fn read(
     // Ahead of the hand-over, which takes it off. With an answer still to come
     // it stays for the notice; with none owed this read is all that tells it.
     let undelivered = undelivered_note(caller, id);
+    let background_stopped = background_stopped_note(caller, id);
     if undelivered.is_some() && lost_whole(caller, id) {
         // No answer is to come: this was all of it, and no notice is to say it again.
         // Canceled first, it and the debt are put back together.
@@ -314,6 +318,7 @@ pub fn read(
         turns_ended,
         screen: with_screen.then(|| screen_of(pty, id)).flatten(),
         undelivered,
+        background_stopped,
         report_guessed: false,
         file: None,
         acked: false,
@@ -388,6 +393,7 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -
         turns_ended: crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0),
         screen: None,
         undelivered: None,
+        background_stopped: None,
         report_guessed,
         file,
         acked: false,
@@ -414,6 +420,7 @@ pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &
     // Taken together, before the read: what an ack would collect.
     let before = (debt(), crate::activity::turn_state(id), transcript_end(id));
     let mut reading = report_read(caller, id, known.provider, since);
+    reading.background_stopped = background_stopped_note(caller, id);
     looked(id);
     if !ack {
         return Ok(reading);
