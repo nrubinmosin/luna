@@ -499,6 +499,9 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                 if !gone {
                     continue;
                 }
+                // Timed for the canary here, within the second, not once the
+                // output that a process it left may hold open is read out.
+                crate::cli::session_exited(&id);
                 let pm = manager();
                 let mut sessions = pm.sessions.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(s) = sessions.get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {

@@ -602,6 +602,11 @@ fn use_version(provider: Provider, dir: &str) -> Result<(), String> {
     let root = root(provider);
     let result = use_version_in(&root, src.bin_rel, min_safe(provider), dir).and_then(|v| choice::pin_in(&root, dir).map(|()| v));
     busy.store(false, Ordering::SeqCst);
+    // A pass asked for while this held the CLI (a mark, a channel) runs now:
+    // `update` only left it in `AGAIN`.
+    if AGAIN[provider.index()].load(Ordering::SeqCst) {
+        std::thread::spawn(move || update(provider));
+    }
     match &result {
         Ok(version) => crate::log::info("cli", &format!("{} {version} is now current by hand (versions/{dir})", provider.as_str())),
         Err(e) => crate::log::warn("cli", &format!("{} use {dir}: {e}", provider.as_str())),
