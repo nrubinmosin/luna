@@ -21,7 +21,7 @@ Markdown, with these headings in this order. Under one with nothing to say,
 write "None." so the reader knows you looked.
 
 1. `## Goal`: what the work is for and what done looks like, in two or three
-   lines; name the plan, spec or skill to read first, if any.
+   lines; name the plan or spec to read first, if any.
 2. `## Next action`: the one step to take first, concrete enough to start
    without asking: the command, file or helper, and what to check before it.
    If it waits on the user or a helper, say so and what to do meanwhile.
@@ -43,6 +43,11 @@ write "None." so the reader knows you looked.
    what it blocks; risks not settled.
 6. `## Decisions and dead ends`: your own choices with their reasons, and
    approaches tried and dropped with why, so they are not reopened or retried.
+7. `## Skills to load first`: the skills the next conversation loads before
+   its first reply, each by the name your CLI lists it under, with why it
+   needs it now: the working rules, the process or the review it follows.
+   Luna lists the skills this conversation loaded, but not which still
+   matter: leave out one whose part is done.
 
 ## Leave out
 

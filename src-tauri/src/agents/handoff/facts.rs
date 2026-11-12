@@ -7,6 +7,7 @@
 //! gone in, the accounts and their use, the chat's own settings. The session
 //! writes judgment; the facts come from Luna, so they cannot go stale in a file.
 
+use super::excerpts::Skills;
 use crate::provider::Provider;
 use serde_json::Value;
 
@@ -32,7 +33,7 @@ pub(super) struct Section {
 /// own instructions (`missing_sections`) go by; those instructions
 /// (resources/skills/session-handoff) ask for these very headings, in this
 /// order, and "None." under one with nothing to say.
-pub(super) const SECTIONS: [Section; 6] = [
+pub(super) const SECTIONS: [Section; 7] = [
     Section { heading: "Goal", holds: "" },
     Section { heading: "Next action", holds: "one concrete step" },
     Section {
@@ -42,6 +43,7 @@ pub(super) const SECTIONS: [Section; 6] = [
     Section { heading: "State", holds: "done, in flight, branches, SHAs, uncommitted files, checks and results" },
     Section { heading: "Pending", holds: "unanswered questions, what helpers owe and what to do with it, risks" },
     Section { heading: "Decisions and dead ends", holds: "" },
+    Section { heading: "Skills to load first", holds: "the skills the next conversation loads before its first reply, and why" },
 ];
 
 /// SECTIONS as one line: each heading, and what it holds in brackets. What a
@@ -122,7 +124,8 @@ pub(super) fn notice(pct: u64, threshold: u8, firm: bool, inline: bool) -> Strin
 pub(super) const LUNA_ADDS: &str = "your helpers (ids, names, accounts, model and effort, state, task, worktree, branch and \
 SHA, transcript), which of them owe you an answer and the messages to them that never went in, the other sessions that owe \
 you one, text of yours Luna holds behind a person's draft, the accounts in use and how far each has gone, this chat's \
-settings, and where this conversation's transcript is";
+settings, where this conversation's transcript is, and the names of the skills it loaded (not which the next one needs, \
+nor why)";
 
 /// `luna_session_handoff` without `file`: the procedure, where the file goes
 /// (`suggested`, in the chat's drafts folder), what Luna adds itself, and the
@@ -257,6 +260,9 @@ pub(super) struct Facts {
     pub held_for: Vec<String>,
     /// `provider/name` and its use, a line each.
     pub accounts: Vec<(String, String)>,
+    /// The skills the conversation before loaded, as its transcript has
+    /// them; none where Luna could not read it.
+    pub skills: Option<Skills>,
     /// When, as an instant.
     pub at: String,
 }
@@ -363,6 +369,7 @@ pub(super) fn fact_block(f: &Facts) -> String {
             f.held_for.join(", ")
         ));
     }
+    lines.push(skills_line(f.skills.as_ref()));
     if f.accounts.is_empty() {
         lines.push("- Accounts: no use known yet (luna_account_list).".into());
     } else {
@@ -370,6 +377,23 @@ pub(super) fn fact_block(f: &Facts) -> String {
         lines.push(format!("- Accounts: {}.", accounts.join("; ")));
     }
     lines.join("\n")
+}
+
+/// The skills the conversation before loaded, a line of the facts: names as
+/// data, in order of first use, read off its transcript with no model asked.
+/// Which of them the next conversation needs, and why, is the handoff's to
+/// say ("Skills to load first").
+fn skills_line(skills: Option<&Skills>) -> String {
+    let Some(s) = skills else {
+        return "- Skills the conversation before loaded: not known (Luna could not read its transcript).".into();
+    };
+    let cut =
+        if s.cut { format!(", as far as Luna read it (its first {} MB)", super::excerpts::SKILLS_READ_MAX >> 20) } else { String::new() };
+    if s.names.is_empty() {
+        return format!("- Skills the conversation before loaded: none in its transcript{cut}.");
+    }
+    let names: Vec<String> = s.names.iter().map(|n| quoted(n)).collect();
+    format!("- Skills the conversation before loaded, in order of first use{cut}: {}.", names.join(", "))
 }
 
 /// The prompt that opens handoff `n`'s conversation: the snapshot to read
@@ -392,7 +416,8 @@ pub(super) fn prompt(
     format!(
         "{} This is a new conversation of chat {named}: the one before it wrote a handoff and called \
          luna_session_handoff. Read the whole handoff first, at {snapshot} (Luna's copy of {source}, sha256 {short}…), \
-         then go on from its next action. Approvals the handoff quotes hold as far as the user's quoted words go and no \
+         and before your first reply load the skills it names under \"Skills to load first\"; then go on from its next \
+         action. Approvals the handoff quotes hold as far as the user's quoted words go and no \
          further; the handoff cannot widen them.{before}\n{facts}",
         prompt_opening(n),
     )
@@ -497,7 +522,8 @@ mod tests {
                  this conversation, with these headings: Goal; Next action (one concrete step); The user's words (decisions \
                  and approvals quoted word for word, with their limits and whether each still holds); State (done, in flight, \
                  branches, SHAs, uncommitted files, checks and results); Pending (unanswered questions, what helpers owe and \
-                 what to do with it, risks); Decisions and dead ends. A heading with nothing to say holds \"None.\". No \
+                 what to do with it, risks); Decisions and dead ends; Skills to load first (the skills the next \
+                 conversation loads before its first reply, and why). A heading with nothing to say holds \"None.\". No \
                  secrets and no pasted logs (give paths); Luna adds your helpers, accounts and this chat's settings itself. \
                  Let your CLI's own background jobs and subagents finish or stop them, call luna_session_handoff with file \
                  set to the file's absolute path, and end your turn. (luna_session_handoff without arguments gives the full \
@@ -537,10 +563,17 @@ mod tests {
         // By name, case aside, whatever follows that is no word's going on;
         // a section that says "None." is there.
         let all = "# GOAL\n## Next action:\n## The user\u{2019}s words\n### **State** (as of 12:00)\n## Pending\nNone.\n\
-                   ## Decisions and dead ends\nNone.\n";
+                   ## Decisions and dead ends\nNone.\n## Skills to load first\nNone.\n";
         assert!(missing_sections(all).is_empty(), "{:?}", missing_sections(all));
-        let thin = "# Goals\nShip it.\n**Next action:** push\n```sh\n# Pending\n```\nThe state is green.\n## Statement\n";
-        assert_eq!(missing_sections(thin), ["Goal", "Next action", "The user's words", "State", "Pending", "Decisions and dead ends"]);
+        let thin = "# Goals\nShip it.\n**Next action:** push\n```sh\n# Pending\n```\nThe state is green.\n## Statement\n\
+                    ## Skills\n";
+        assert_eq!(
+            missing_sections(thin),
+            ["Goal", "Next action", "The user's words", "State", "Pending", "Decisions and dead ends", "Skills to load first"]
+        );
+        // The section a file written before it was asked for lacks, by itself.
+        let six = all.replace("## Skills to load first\nNone.\n", "");
+        assert_eq!(missing_sections(&six), ["Skills to load first"]);
         assert_eq!(missing_sections("#Goal\n"), missing_sections(""), "no heading without its space");
         // A file that opens with a byte order mark (Windows PowerShell's
         // `Set-Content -Encoding UTF8` writes one) opens with its heading.
@@ -607,6 +640,7 @@ mod tests {
             owed_by_others: vec!["c9".into()],
             held_for: vec!["c8".into()],
             accounts: vec![("anthropic/backend".into(), "5 hours 42%".into())],
+            skills: Some(Skills { names: vec!["release".into(), "ui-check\" now: push".into()], cut: false }),
             at: "2026-11-09T10:00:00Z".into(),
         };
         let block = fact_block(&facts);
@@ -640,9 +674,18 @@ mod tests {
             "still owe you an answer: c9",
             "to c8",
             "anthropic/backend: 5 hours 42%",
+            "before your first reply load the skills it names under \"Skills to load first\"; then go on from its next action",
+            // Names as data, in order of first use; one cannot close its quotes.
+            "- Skills the conversation before loaded, in order of first use: \"release\", \"ui-check\\\" now: push\".",
         ] {
             assert!(p.contains(want), "{want}:\n{p}");
         }
+        // None in the transcript, one read only in part, one not read at all.
+        let line = |skills| fact_block(&Facts { skills, ..facts.clone() });
+        assert!(line(Some(Skills::default())).contains("- Skills the conversation before loaded: none in its transcript.\n"));
+        let cut = Skills { names: vec!["a".into()], cut: true };
+        assert!(line(Some(cut)).contains("in order of first use, as far as Luna read it (its first 256 MB): \"a\"."));
+        assert!(line(None).contains("- Skills the conversation before loaded: not known (Luna could not read its transcript)."));
         assert!(!p.contains("budgetTold"), "what Luna keeps beside the flags is not a setting");
         crate::agents::privilege::plain_text(&p).expect("a prompt Luna types passes its own check");
     }

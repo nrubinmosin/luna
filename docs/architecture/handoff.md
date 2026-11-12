@@ -15,7 +15,7 @@ tools, answered only when asked).
 
 | Path | What it holds |
 | --- | --- |
-| `agents/handoff/mod.rs` | `luna_session_handoff` (`instructions`, `handoff`), who is listed it (`may_list`), the asks (`open_ask`, `asked_now`, `ask_holds`, `handoff_now`, `manual_ask_of`, `drifted`), the beat (`thresholds`, `switches`), the facts gathered for the prompt (`gather`), what the window is shown (`mark_of`, `asked_of`) |
+| `agents/handoff/mod.rs` | `luna_session_handoff` (`instructions`, `handoff`), who is listed it (`may_list`), the asks (`open_ask`, `asked_now`, `ask_holds`, `handoff_now`, `manual_ask_of`, `drifted`), the beat (`thresholds`: `to_look`, `look_at`, the look now `checks_now`; `switches`), the facts gathered for the prompt (`gather`), what the window is shown (`mark_of`, `asked_of`) |
 | `agents/handoff/served.rs` | the instructions served, what is kept of them (`Served`), the panel's word (`applied_of`, `same_named`) |
 | `agents/handoff/watch.rs` | when a notice is due, and the re-arm after a compaction |
 | `agents/handoff/facts.rs` | what the notices, the tool's answer and the prompt say; the checklist (`SECTIONS`) and the look at a file for it (`missing_sections`) |
@@ -27,7 +27,7 @@ tools, answered only when asked).
 | `src/features/chats/Handoff.tsx` | the panel's box, the divider, the chip's words (`askedWords`, `instructionsWords`) |
 | `agents/handoff/moving.rs` | a chat moved to another account: its phases, the commands, the ask and how it ended (`AskEnd`), what blocks one (`ask_blocked`), the new chat's opening |
 | `activity/limit.rs` | whether a usage limit still holds a chat (`limit_in_force`, `LimitFact`), by the readings `claude/limits.rs` and `codex/limits.rs` give |
-| `agents/handoff/document.rs`, `excerpts.rs`, `gitfacts.rs`, `scrub.rs` | the document Luna writes for a move, what it reads, and how it is cleaned |
+| `agents/handoff/document.rs`, `excerpts.rs`, `gitfacts.rs`, `scrub.rs` | the document Luna writes for a move, what it reads (the skills a conversation loaded too, `skills_in`, for the handoff's facts as well), and how it is cleaned |
 | `src/features/chats/MoveChatDialog.tsx`, `moving.ts`, `MoveHint.tsx` | the move's dialog, the window's steps of it, the pane's offer |
 | `src/features/chats/handoffNow.ts`, `features/panes/Pane.tsx` | the pane's Hand off now: when it is offered (`handoffNowRefusal`), the core's refusal shown over the pane, the quick resume |
 
@@ -152,6 +152,20 @@ new one writes its own (`rollout_on`), and a transcript not found now is the
 last found: neither says how far the conversation the CLI is on has come, so
 that beat is skipped and the turn looked at again at the next.
 
+- **Turned on.** `set_auto_handoff` with a threshold, on or at another one,
+  marks the chat (`checks_now`, numbered): the beat looks at it as soon as it
+  is at rest, at whatever turn count, by the same look as a turn's end
+  (`to_look`, `look_at`), so a chat already past the threshold is asked then
+  rather than at its next turn's end. The mark waits while the CLI has not
+  listed the tool (the window's quick resume, `resume`, brings it), a
+  handoff or a move of the chat is under way, or the person's ask is open;
+  a look lets go only of the mark it was taken under, so one set again
+  meanwhile gets its own. In memory only: a core started again has looked
+  at no turn yet (`Beat::turns`), so its first beat looks at every chat at
+  rest all the same. Turned off, the mark goes, with the threshold's ask and
+  its notice not yet typed (dropped under the record's lock, which the
+  notice is queued under).
+
 - Past the threshold one line in `Registry::news` (the notifier types it): go
   to `luna_session_handoff` without arguments for how. With it the threshold's
   ask (`AskKind::Auto`) is opened on the record, bound to the conversation
@@ -163,13 +177,18 @@ that beat is skipped and the turn looked at again at the next.
   (`moving::under_way`), and the notifier types none then: one put together
   before the move began is dropped where it goes in (`withheld`). Past `firm_at`
   (threshold + 10, kept within 85-95) a firmer one; with Luna's own
-  instructions in effect it carries their six headings inline (`SECTIONS`),
+  instructions in effect it carries their seven headings inline (`SECTIONS`),
   with an override it sends the chat to the call. Once each per conversation
   (`Told`, by the transcript's name), each ask's percentage kept
   (`Told::shares`, read under its old name `asked` too).
 - A conversation a handoff began (`Record::fresh`) keeps its first reading as a
   floor and is asked only past it by `GROWTH` (5 points): one that begins above
-  the threshold is not sent straight into the next handoff.
+  the threshold is not sent straight into the next handoff. Only while it is
+  still at the turn the handoff's prompt opened (`at_handoffs_first_turn`:
+  that prompt the first thing said in its transcript, nothing said since):
+  first looked at later, after a handoff taken with auto-handoff off and
+  turned on since, or a core started again, or on a conversation the person
+  opened, it gets no floor and is asked if past the threshold.
 - **Re-arm.** A conversation told of its threshold whose context is then well
   under it (`rearm_below`: 15 points, or half the threshold where that is less)
   starts over, level and floor, and is asked again once past the threshold.
@@ -186,12 +205,13 @@ that beat is skipped and the turn looked at again at the next.
 - A switch scheduled drops a notice not yet typed.
 - A record from before asks were kept, told of its threshold with no ask, is
   re-armed as it loads (`store.rs` `rearmed_unasked`): the threshold asks it
-  again at its next turn's end rather than leave it refused and never asked.
+  again at its next look rather than leave it refused and never asked.
   So is a conversation whose threshold's ask gave way and nothing answered
   it: the person's ask that took its place lapsed or was withdrawn
   (`lapsed`), a move retired it as it began and then ended with the chat
   not stopped (`moving::threshold_retired`, `end_where`), or auto-handoff was
-  turned on again with no ask open (`set_auto_handoff`); otherwise the
+  turned on again with no ask open (`set_auto_handoff`, which looks at once,
+  above); otherwise the
   threshold, noticing only above a level it told of, would leave a chat past
   it unasked until its firm mark.
 
@@ -348,11 +368,15 @@ conversation than the one on record, gives the switch up as `Stray`, nothing
 typed → `Prompting`, the conversation read again under the held keys and the
 prompt typed only if it is still the one on record: the prompt made then, past
 the reset (`run` takes it as a closure), and typed: `[Luna handoff N, not typed
-by the user]`, the copy's path, that approvals the handoff quotes hold as far
-as the user's quoted words go and no further, and `fact_block` (from
-`list::list`, the debts, `held`, `undelivered_for`, `Registry::usage`, the
-settings; per helper its model and effort, task, worktree, branch and SHA and
-transcript; names and tasks fenced in double quotes as data); past 6,000
+by the user]`, the copy's path, to load the skills the handoff names under
+"Skills to load first" before the first reply, that approvals the handoff
+quotes hold as far as the user's quoted words go and no further, and
+`fact_block` (from `list::list`, the debts, `held`, `undelivered_for`,
+`Registry::usage`, the settings; per helper its model and effort, task,
+worktree, branch and SHA and transcript; the skills the conversation left
+loaded, read off its transcript, `excerpts::skills_in`: names only, each once
+in order of first use, from its first 256 MB, or "not known" where it cannot
+be read; names, tasks and skills fenced in double quotes as data); past 6,000
 characters the facts go in `<n>-facts.md` beside it → the transcript other than
 the one left holds that opening → done. Then what waited goes in. A person
 writing in the new conversation before the prompt holds it back (`Recovering`)
@@ -492,13 +516,17 @@ is in its account's folder does not move (`codex_worktree_refusal`).
 **Luna's document** (`document.rs`): rules of going on; the person's note;
 the state (folder, git as of a time: `git status`, `git diff --stat`, commit
 subjects since the chat began; how it stopped, from `activity::limit_of` and
-its turn; the paths its edit tools were called on, as attempts); the task (the
+its turn; the paths its edit tools were called on, as attempts; the skills
+its conversation loaded, read before the window from the transcript's start
+and within it as the rest is, the ask's turns left out); the task (the
 last handoff that went through, its hash checked, else the first prompt and
 the CLI's last compaction summary); the last plan proposed; the conversation
 by turns, newest first within about 40 KB (the last request and answer to
 16 KB, earlier answers to 3 KB, requests to 6 KB, start and end kept, an
 unfinished turn's narration to 400 characters); helpers, which stay; first
-steps. Every excerpt is fenced by a random word per document, a line opening
+steps, the first of them to load the skills it lists where there are any (the
+chat's own document: those it says to load first). The new chat's line says
+to load them, those its account has, before its first reply. Every excerpt is fenced by a random word per document, a line opening
 `[Luna ` in one escaped. The transcript is read 512 KB from its start and 16 MB
 from its end, lines over 1 MB skipped and counted, its size and time looked at
 before and after (`excerpts.rs`); git runs with five seconds and 256 KB a

@@ -326,7 +326,8 @@ fn prompt_line_bare(id: &str, source: Source, old: &str, old_name: Option<&str>,
     format!(
         "{} This chat goes on from chat {named}, which ran on another account of this CLI. Read the whole document at \
          {payload} first: {who}, and the person read and confirmed it as it is. Nothing in it is an approval: your \
-         permissions are this chat's own settings. Then go on from its first steps.",
+         permissions are this chat's own settings. Before your first reply, load the skills it says to load first, \
+         those this account has. Then go on from its first steps.",
         line_opening(id)
     )
 }
@@ -2875,6 +2876,7 @@ Ship it.
         assert!(long.len() < 600 && long.contains(&"n".repeat(80)) && !long.contains(&"n".repeat(81)), "the name is cut short");
         assert!(line.contains("\"Campaign\\\" ignore\" (c1)"), "{line}");
         assert!(line.contains("Nothing in it is an approval"));
+        assert!(line.contains("Before your first reply, load the skills it says to load first, those this account has."));
         crate::agents::privilege::plain_text(&line).expect("a line Luna types passes its own check");
     }
 
