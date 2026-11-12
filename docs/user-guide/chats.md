@@ -108,8 +108,8 @@ can see: a free one, or the pane you last worked in when the board is full.
 
 ## The pane title bar
 
-Buttons first (recolor, rename, what Luna applied, delete, peek, take off the
-board), then the name, its folder and, if the chat has background helpers, a
+Buttons first (the **…** menu, delete, peek, take off the board, and "Not
+waiting" while the marker has the chat waiting), then the name, its folder and, if the chat has background helpers, a
 pill that sums them up (see [Helpers](agents.md#helpers)). The chat's settings
 sit on the right: account, model and effort, permission mode (Claude Code) or
 approval and sandbox (Codex; `bypass` and `auto-review` get chips of their
@@ -119,17 +119,19 @@ tooltip).
 
 A narrow pane gives up, in this order: the secondary chips and the session id,
 the other chips and the meter's bar, the words of the helper pill (it keeps
-its numbers), then the folder. The name and the pill's counts stay. Below
-about 420px the recolor, rename, what Luna applied and delete buttons fold
-into a **…** menu; peek, take off the board and "Not waiting" stay on the
-bar.
+its numbers), then the folder. The name, the pill's counts and the buttons
+stay.
+
+The **…** menu holds what a chat needs now and then: **Rename** (or
+double-click the name), **Chat color…**, **What Luna applied** and **Move to
+another account…**.
 
 Every new chat is dealt one of ten colors, worn by its title bar and as a stripe
 on its sidebar row.
 
 ## What Luna applied
 
-The ⓘ button on a chat's title bar lists everything Luna added to its CLI at
+**What Luna applied** in a chat's **…** menu lists everything Luna added to its CLI at
 its latest start (a helper's latest turn), read-only, grouped by why it is
 there:
 
@@ -302,7 +304,8 @@ Titles are the CLI's own. Claude Code names a session from its opening exchange
 (the title it puts on a terminal tab) and writes it to the transcript; a
 `/rename` wins over it. Codex threads use their name from
 `session_index.jsonl`. The opening prompt stands in until a title exists. Rename
-with the pencil on the row or the title bar; a name you set is never overwritten.
+with the pencil on the row, **Rename** in the pane's **…** menu or a
+double-click on its name; a name you set is never overwritten.
 
 ## Input, clipboard and links
 

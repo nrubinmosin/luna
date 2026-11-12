@@ -229,9 +229,18 @@ export function seedDemo(scene: Scene) {
       600
     );
   }
-  // A chat's panel, opened from its title bar the way a click would.
+  // A chat's panel, opened from its title bar's menu the way clicks would.
   if (scene.startsWith('applied')) {
-    setTimeout(() => document.querySelector<HTMLElement>('button[aria-label="What Luna applied"]')?.click(), 300);
+    setTimeout(() => {
+      document.querySelector<HTMLElement>('.pane button[data-glyph="more"]')?.click();
+      setTimeout(
+        () =>
+          [...document.querySelectorAll<HTMLElement>('.pane-menu [role="menuitem"]')]
+            .find(b => b.textContent === 'What Luna applied')
+            ?.click(),
+        50
+      );
+    }, 250);
   }
   // A helper of the first chat, watched: its chip, then its Watch, as clicks would.
   if (scene === 'helper' || scene === 'helper-dark') {
@@ -273,7 +282,7 @@ export function seedDemo(scene: Scene) {
   if (scene.startsWith('move')) {
     useMoveHints.setState({ limits: { 'demo-1': 'usage_limit' }, dismissed: {} });
     setTimeout(() => {
-      document.querySelector<HTMLElement>('.pane .pane-more')?.click();
+      document.querySelector<HTMLElement>('.pane button[data-glyph="more"]')?.click();
       setTimeout(() => {
         [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
           .find(m => m.textContent?.startsWith('Move to another account'))

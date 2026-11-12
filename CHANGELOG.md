@@ -8,6 +8,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- A pane's title bar keeps only the "…" menu, delete, peek, take off the
+  board and "Not waiting". Rename, chat color and What Luna applied moved
+  into the "…" menu, which no longer repeats the buttons beside it; a
+  double-click on a chat's name renames it.
+
 ## [0.15.0] - 2026-11-11
 
 A chat can move to another account of its CLI when this one runs out:
