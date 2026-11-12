@@ -405,6 +405,36 @@ describe('NewChatDialog: Claude models from the account’s own list', () => {
     expect(chat).toMatchObject({ model: 'Mythos', effort: 'low' });
   });
 
+  it('keeps the picked model’s level when another folder is picked', async () => {
+    useChats.getState().rememberFolder('/other');
+    mocked.claudeDefaults.mockResolvedValue({
+      model: fromAccount('opus'),
+      effort: fromAccount('xhigh'),
+      permissionMode: null,
+      effortByModel: {
+        opus: fromAccount('xhigh'),
+        mythos: { value: 'low', source: 'account', key: 'modelSettings.mythos.effortLevel' }
+      }
+    });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    await user.selectOptions(screen.getByRole('combobox'), 'Mythos');
+    expect(screen.getByRole('radio', { name: 'low' })).toHaveAttribute('aria-checked', 'true');
+    // The folder's defaults land again, the default model's level with them.
+    await user.click(screen.getByTitle('/other'));
+    await settle();
+    expect(mocked.claudeDefaults).toHaveBeenCalledWith(expect.anything(), '/other');
+    expect(screen.getByRole('radio', { name: 'low' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText("from the account's settings.json, modelSettings.mythos.effortLevel")).toBeInTheDocument();
+    const worktree = screen.getByRole('checkbox', { name: 'Git worktree' });
+    if ((worktree as HTMLInputElement).checked) await user.click(worktree);
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ model: 'Mythos', effort: 'low' });
+    expect(useChats.getState().folderOf(chat!.id)?.path).toBe('/other');
+  });
+
   it('holds a level kept for the next model that it does not take to what it does', async () => {
     mocked.claudeDefaults.mockResolvedValue({
       model: fromAccount('opus'),

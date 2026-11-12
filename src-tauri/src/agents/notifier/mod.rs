@@ -974,15 +974,15 @@ fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, to
 
 /// A notice that went in, settling `caller`'s debt on helper `id` as answered
 /// (`r`, its debts as settled): if it said that the helper's CLI stopped its
-/// background work (lines.rs `BACKGROUND_STOPPED`, in every such line while it
+/// background work (lines.rs `STOPPED_LINES`, in every such line while it
 /// is so), `caller` has had it. The helper is done with saying so once every
-/// caller it still owes has; a line that does not carry it (a helper that
-/// exited) acknowledges nothing. The helper's lock after the registry's.
+/// caller it concerns and still owes has; a line that does not carry it (a
+/// helper that exited) acknowledges nothing. The helper's lock after the registry's.
 fn ack_background_stop(r: &Registry, caller: &str, id: &str, text: &str) {
-    if !text.contains(lines::BACKGROUND_STOPPED) {
+    if !lines::STOPPED_LINES.iter().any(|line| text.contains(line)) {
         return;
     }
-    crate::background::background_stop_told(id, caller, &crate::agents::owed::debts_on(r, id));
+    crate::background::background_stop_told(id, caller, &crate::agents::owed::callers_on(r, id));
 }
 
 /// What a notice that went in does to the debt it told of (`told`). Only to
@@ -1440,7 +1440,7 @@ mod tests {
         let id = "ack-s";
         let (a, b) = ("ack-a", "ack-b");
         crate::background::idle_for_test(id, Provider::Claude, 3, false);
-        crate::background::background_stopped_for_test(id);
+        crate::background::background_stopped_for_test(id, &[a, b]);
         let key = |c: &str| (c.to_string(), id.to_string());
         let (oa, ob) = (Owed::from(2, 0), Owed::from(2, 0));
         reg().lock().unwrap().owed.insert(key(a), oa);
@@ -1450,12 +1450,12 @@ mod tests {
             settle_delivered(&mut reg().lock().unwrap(), caller, id.to_string(), how, told, text);
         };
         settle(a, Settled::Exited, &oa, "Your helper has exited.");
-        assert!(crate::background::background_stopped_for(id, a, 2), "an exited line did not say it");
+        assert!(crate::background::background_stopped_for(id, a), "an exited line did not say it");
         let oa = Owed::from(2, 0);
         reg().lock().unwrap().owed.insert(key(a), oa);
         settle(a, Settled::Answered, &oa, &says);
-        assert!(!crate::background::background_stopped_for(id, a, 2), "the first has had it");
-        assert!(crate::background::background_stopped_for(id, b, 2), "the other, still owed, has not");
+        assert!(!crate::background::background_stopped_for(id, a), "the first has had it");
+        assert!(crate::background::background_stopped_for(id, b), "the other, still owed, has not");
         settle(b, Settled::Answered, &ob, &says);
         assert!(!crate::background::background_stopped(id), "everyone owed has had it");
         crate::background::gone_for_test(id);

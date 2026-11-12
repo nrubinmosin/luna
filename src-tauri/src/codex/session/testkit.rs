@@ -42,3 +42,19 @@ pub(super) fn append(path: PathBuf, text: String) {
 pub(super) fn spawned_by_json(parent: &str) -> String {
     format!(r#"{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{parent}","depth":1}}}}}}"#)
 }
+
+/// A Codex helper's thread `parent`, its turn begun at `t0` and ended at
+/// `t0 + 4_000`, and a subagent it spawned in that turn whose own turn ended
+/// the same moment: interrupted, as `codex exec` 0.167.2 ends it, or done.
+pub(crate) fn cut_off_pair_for_test(root: &Path, t0: u64, parent: &str, kid: &str, interrupted: bool) {
+    write_rollout(root, t0, parent, Some(r#""exec""#));
+    write_rollout(root, t0 + 1_000, kid, Some(&spawned_by_json(parent)));
+    append(rollout_path(root, parent, t0), turn_event("task_started", t0) + &turn_event("task_complete", t0 + 4_000));
+    let end = if interrupted {
+        let at = chrono::DateTime::from_timestamp_millis((t0 + 4_000) as i64).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"turn_aborted\",\"reason\":\"interrupted\"}}}}\n")
+    } else {
+        turn_event("task_complete", t0 + 4_000)
+    };
+    append(rollout_path(root, kid, t0 + 1_000), turn_event("task_started", t0 + 2_000) + &end);
+}

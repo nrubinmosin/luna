@@ -102,17 +102,6 @@ impl Owed {
         }
     }
 
-    /// The turn count the caller is owed an answer from the end of a turn
-    /// past: its baseline, but for a debt told it is not done yet, which is
-    /// still owed the end of the turn its baseline counts.
-    pub(super) fn owed_from(&self) -> u32 {
-        if self.told_pending {
-            self.baseline.saturating_sub(1)
-        } else {
-            self.baseline
-        }
-    }
-
     /// What is left of a debt once the caller has heard it is not done yet.
     pub(super) fn pending(baseline: u32, cursor: u64) -> Owed {
         Owed { told_pending: true, ..Owed::from(baseline, cursor) }
@@ -234,9 +223,9 @@ fn hand_over_of(
         }
         let (n, taken) = (receipt.n, receipt.stands_for.map(|(o, _)| o.rev));
         // Said in the reply by the same rule (`background_stopped_note`), before the debt goes.
-        let stop = now.filter(|o| crate::background::background_stopped_for(id, caller, o.owed_from())).is_some();
+        let stop = now.is_some() && crate::background::background_stopped_for(id, caller);
         let goes_on = take_debt(&mut r, &key, turns_ended, job_debt);
-        let stop = stop.then(|| debts_on(&r, id));
+        let stop = stop.then(|| callers_on(&r, id));
         (taken, seen_before, n, goes_on, stop)
     };
     owed_on_for(key.clone(), turns_ended, goes_on, taken);
@@ -245,12 +234,14 @@ fn hand_over_of(
     // longer finds it, so the receipt below says nothing of it.
     let parent = parent_of(id).as_deref() == Some(caller);
     let taken = take_undelivered(id, caller, parent);
-    let stop_before = stop.and_then(|debts| crate::background::background_stop_told(id, caller, &debts));
+    let stop_told = stop.and_then(|owed| crate::background::background_stop_told(id, caller, &owed));
     let id = id.to_string();
     Some(move || {
         put_undelivered_back(&id, taken);
-        if let Some(before) = stop_before {
-            crate::background::background_stop_restore(&id, before);
+        // Whatever the receipt below says: a later reply found the caller told
+        // and did not say it again.
+        if let Some(turn) = stop_told {
+            crate::background::background_stop_untold(&id, &key.0, turn);
         }
         crate::background::save();
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -279,20 +270,24 @@ fn hand_over_of(
     })
 }
 
-/// The callers `id` still owes an answer, each with the turn count it is owed
-/// from: who is yet to hear that its CLI stopped its background work.
-pub(super) fn debts_on(r: &Registry, id: &str) -> Vec<(String, u32)> {
-    r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.owed_from())).collect()
+/// The callers `id` owes an answer, whatever turn each is owed.
+pub(super) fn callers_on(r: &Registry, id: &str) -> Vec<String> {
+    r.owed.keys().filter(|(_, s)| s == id).map(|(c, _)| c.clone()).collect()
+}
+
+/// `callers_on`, for the moment helper `id`'s CLI says it stopped its
+/// background work: who is to hear of that (background `stop_owed_to`).
+pub fn callers_owed(id: &str) -> Vec<String> {
+    callers_on(&reg().lock().unwrap_or_else(|e| e.into_inner()), id)
 }
 
 /// What a reply handed over to `caller` (a wait, read or report) says of
-/// helper `id`'s CLI having stopped its background work, while that holds for
-/// its debt (notifier lines.rs `BACKGROUND_STOPPED`); `hand_over` acknowledges
-/// it by the same rule.
+/// helper `id`'s CLI having stopped its background work, while it owes
+/// `caller` an answer and that is still to be said to it (notifier lines.rs
+/// `background_stopped_line`); `hand_over` acknowledges it by the same rule.
 pub(super) fn background_stopped_note(caller: &str, id: &str) -> Option<String> {
-    let baseline = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string()))?.owed_from();
-    crate::background::background_stopped_for(id, caller, baseline)
-        .then(|| crate::agents::notifier::lines::BACKGROUND_STOPPED.trim().to_string())
+    reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string()))?;
+    crate::agents::notifier::lines::background_stopped_line(id, caller).map(|line| line.trim().to_string())
 }
 
 /// Records the turn count a tool answer showed `caller` of `id`, settling
@@ -499,25 +494,70 @@ mod tests {
 
     /// A wait, read or report that hands an answer over says that the helper's
     /// CLI stopped its background work, and has said it to that caller alone;
-    /// a reply that never reached it has not.
+    /// a reply that never reached it has not, whatever came of the others' and
+    /// of a stop since.
     #[test]
     fn a_reply_handed_over_carries_a_cut_off_and_a_cancel_takes_that_back() {
-        let id = "hb-child";
+        use crate::background::{background_stopped, background_stopped_for};
+        let (id, a, b) = ("hb-child", "hb-parent", "hb-peer");
         crate::background::idle_for_test(id, Provider::Claude, 3, false);
-        crate::background::background_stopped_for_test(id);
-        owe_from("hb-parent", id, 2, 0);
-        owe_from("hb-peer", id, 2, 0);
-        let note = background_stopped_note("hb-parent", id).expect("said while it holds");
+        crate::background::background_stopped_for_test(id, &[a, b]);
+        owe_from(a, id, 2, 0);
+        owe_from(b, id, 2, 0);
+        let note = background_stopped_note(a, id).expect("said while it holds");
         assert!(note.starts_with("Its CLI stopped the subagents") && note.contains("uncommitted"), "{note}");
-        let undo = hand_over("hb-parent", id, 3, None);
-        assert_eq!(background_stopped_note("hb-parent", id), None, "said to the parent");
-        assert!(crate::background::background_stopped_for(id, "hb-peer", 2), "not yet to the other caller");
-        undo();
-        assert!(crate::background::background_stopped_for(id, "hb-parent", 2), "the reply never reached it");
-        drop(hand_over("hb-parent", id, 3, None));
-        drop(hand_over("hb-peer", id, 3, None));
-        assert!(!crate::background::background_stopped(id), "both have had it");
+        let undo_a = hand_over(a, id, 3, None);
+        assert_eq!(background_stopped_note(a, id), None, "said to the parent");
+        assert!(background_stopped_for(id, b), "not yet to the other caller");
+        let undo_b = hand_over(b, id, 3, None);
+        assert!(!background_stopped(id), "both have had it");
+        // Both replies dropped, the parent's first: each undo takes back its
+        // own caller alone, never the other's as it stood then.
+        undo_a();
+        assert!(background_stopped_for(id, a) && !background_stopped_for(id, b), "the peer's reply still stands");
+        undo_b();
+        assert!(background_stopped_for(id, a), "the peer's undo leaves the parent untold");
+        assert!(background_stopped_for(id, b));
+        // Told to both again; the parent's reply is dropped only after a stop
+        // at the end of a later turn has been told to it: that one stands.
+        let undo_a = hand_over(a, id, 3, None);
+        drop(hand_over(b, id, 3, None));
+        assert!(!background_stopped(id));
+        crate::background::idle_for_test(id, Provider::Claude, 4, false);
+        crate::background::background_stopped_for_test(id, &[a, b]);
+        owe_from(a, id, 3, 0);
+        owe_from(b, id, 3, 0);
+        drop(hand_over(a, id, 4, None));
+        undo_a();
+        assert!(!background_stopped_for(id, a), "told of the later stop, which the undo leaves alone");
+        assert!(background_stopped_for(id, b), "and the later stop is still to be told to the peer");
         crate::background::gone_for_test(id);
+        reg().lock().unwrap().owed.retain(|(_, s), _| s != id);
+    }
+
+    /// `codex exec` 0.167.2 interrupted the subagent a Codex helper's turn
+    /// spawned as that turn ended, and exited 0. Its parent hears so in the
+    /// words for that, with the answer; a caller who asked after it does not.
+    #[test]
+    fn a_codex_helpers_subagent_cut_off_at_its_turn_end_is_told() {
+        let (id, parent, later) = ("cx-child", "cx-parent", "cx-later");
+        let root = std::env::temp_dir().join(format!("luna-cx-cut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let t0 = now_ms() - 60_000;
+        let (thread, kid) = (format!("cxp{t0}"), format!("cxk{t0}"));
+        crate::codex::session::cut_off_pair_for_test(&root, t0, &thread, &kid, true);
+        crate::background::codex_in_turn_for_test(id, &root.to_string_lossy(), &thread, t0);
+        owe_from(parent, id, 0, 0);
+        crate::background::turn_over_for_test(id, Some(0));
+        let note = background_stopped_note(parent, id).expect("the parent is told");
+        assert!(note.starts_with("Its CLI interrupted the subagents it had spawned as its turn ended"), "{note}");
+        owe_from(later, id, 1, 0);
+        assert_eq!(background_stopped_note(later, id), None, "it asked after that turn");
+        drop(hand_over(parent, id, 1, None));
+        assert!(!crate::background::background_stopped(id), "everyone it concerned has had it");
+        crate::background::gone_for_test(id);
+        reg().lock().unwrap().owed.retain(|(_, s), _| s != id);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
