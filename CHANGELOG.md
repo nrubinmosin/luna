@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-13
+
+A chat can hand off to a fresh conversation whenever you ask: **Hand off now**
+in its "…" menu has the chat write its own handoff and go on from it, and
+auto-handoff only asks for the same at its threshold. Moving a chat to another
+account has the chat write its document too; Luna's own is used only when you
+pick it or a usage limit stops the chat.
+
 ### Added
 
 - **Hand off now** in a pane's "…" menu: any chat with Luna tools writes a
@@ -982,7 +990,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/nrubinmosin/luna/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/nrubinmosin/luna/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/nrubinmosin/luna/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/nrubinmosin/luna/compare/v0.13.0...v0.14.0
