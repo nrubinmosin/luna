@@ -377,7 +377,8 @@ mod tests {
     use super::*;
 
     /// `--help` of every command, as the versions on the known-good list
-    /// print it: Claude Code 2.1.319 prints 2.1.318's line for line.
+    /// print it: Claude Code 2.1.319 and 2.1.322 print 2.1.318's line for
+    /// line, Codex 0.167.2 0.167.0's.
     const CLAUDE_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.318-help.txt"))];
     const CODEX_HELP: &[(&str, &str)] = &[
         ("", include_str!("testdata/codex-0.167.0-help.txt")),
