@@ -113,6 +113,17 @@ fn chat_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> cra
     crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running }
 }
 
+/// The model `id` runs on as far as Luna knows: the one its transcript says
+/// answered last (a `/model` switch included), else its settings' `model`.
+/// None: its CLI's default, not known here.
+pub fn model_of(id: &str, provider: Provider) -> Option<String> {
+    let answered = transcript_path(crate::pty::manager(), id).and_then(|path| match provider {
+        Provider::Claude => crate::claude::session::last_model(&path),
+        Provider::Codex => crate::codex::session::answered_model(&path),
+    });
+    answered.or_else(|| crate::agents::registry::settings_of(id)["model"].as_str().filter(|m| !m.is_empty()).map(str::to_owned))
+}
+
 /// The caller's own, or the sessions `ids` names, which may be any: what a row
 /// says is what `sessions` and `read` already show of them. Of a session not
 /// the caller's, what it was asked and is asking (`task`, `ask`) only with
