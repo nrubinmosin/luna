@@ -311,7 +311,15 @@ keys within 5 s: not now), the phase taken, then the paste and the Enter. →
 `Resetting`: `/clear` or `/new` typed → the CLI on another conversation: the
 registry's `sessionId` (Claude Code, `claude::session::session_id`) or the
 title's thread (Codex, `codex_thread`), recorded as the one the reset opened
-(`Switch::opened`, saved before anything goes into it) → `Prompting`: the prompt made then, past
+(`Switch::opened`, saved before anything goes into it): once, never written
+over, and only where no key of the person's came since the reset was typed
+(`Look::keys`, the pty's `typed_at_ms` read after the conversation and
+against its value under the reset's held keys). The reset's typing waits
+seconds for a turn `/clear` never starts, and a `/new` of the person's in
+that time would otherwise be taken for the reset's; any key, or another
+conversation than the one on record, gives the switch up as `Stray`, nothing
+typed → `Prompting`, the conversation read again under the held keys and the
+prompt typed only if it is still the one on record: the prompt made then, past
 the reset (`run` takes it as a closure), and typed: `[Luna handoff N, not typed
 by the user]`, the copy's path, that approvals the handoff quotes hold as far
 as the user's quoted words go and no further, and `fact_block` (from
@@ -332,15 +340,22 @@ until they are through.
   it was, and may call again only while its ask still holds; after: what it is,
   the prompt again, its facts as of then) and the desktop by a notification. A
   draft holds it as long as it stands, told to the desktop after a minute.
+  The prompt goes into a failure's line only with the chat on the
+  conversation its reset opened (`phase::failed`): past the reset on any
+  other, or on none Luna can name once the prompt was typed, the switch ends
+  as `Ended::Stray` with the failure's why, and the line names only the copy.
 - A core restart: `from_bytes` makes a switch in `Resetting` or `Prompting`
-  `Recovering`. Once the chat is back and at rest: on the conversation it left,
-  `Scheduled` again (two resets at most); on the one its reset opened
-  (`Switch::opened`), done if its transcript holds the prompt, else the prompt
-  is typed. On any other, or with none on record (the core gone between
-  saving `Resetting` and the reset reaching the CLI, while the person opened a
-  conversation of their own), it is given up with nothing typed
-  (`Step::Stray`, `Ended::Stray`, `STRAY`): the copy kept, the ask closed, the
-  chat told (`facts::stray_line`) and the desktop notified.
+  `Recovering`. On another conversation than the one it left and not the one
+  its reset opened (`Switch::opened`), or with none on record (the core gone
+  between saving `Resetting` and the reset reaching the CLI, while the person
+  opened a conversation of their own), it is given up at once with nothing
+  typed, before any wait for rest (`Step::Stray`, `Ended::Stray`, `STRAY`): a
+  turn of the person's there outlasting the wait would otherwise fail it with
+  the prompt in its line. The copy is kept, the ask closed, the chat told
+  (`facts::stray_line`) and the desktop notified. Otherwise, once the chat is
+  back and at rest: on the conversation it left, `Scheduled` again (two
+  resets at most); on the one its reset opened, done if its transcript holds
+  the prompt, else the prompt is typed.
 
 ## The window
 
@@ -472,7 +487,9 @@ reading since. Each Codex limit stands by its own newest reading
 whole picture as of its time, and after it each limit's newest rollout
 snapshot (`latest_rate_limits_by_id`: every limit a tail holds,
 `rate_limits_in`, of the newest 32 rollouts of two days and the chat's own
-wherever it falls, kept by the core for two days once read), since a
+wherever it falls, kept by the core once read, however old: a Spark week
+full days before its reset is not dropped for a newer general reading to
+stand in for), since a
 snapshot holds one limit alone: a Spark chat's newer snapshot takes nothing
 of the general limit's, nor a general one a full Spark window. A
 window scoped to one model (Claude Code's Opus week, a Codex model's own

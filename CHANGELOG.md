@@ -33,15 +33,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   threshold, or by a move. Unasked, it refuses. An ask holds only for the
   conversation it was typed into, a move's ask too, and a handoff called for
   there is given up, nothing cleared, if you start another conversation
-  before Luna switches, or if Luna's core stopped mid-switch and cannot tell
-  the conversation the chat is on is the one its reset opened.
+  before Luna switches. The continuation goes only into the conversation
+  Luna's reset opened: if you start one of your own as Luna resets, or
+  Luna's core stopped mid-switch, and Luna cannot tell the conversation the
+  chat is on is the one its reset opened, the handoff is given up with only
+  its copy's path said there.
   Every such chat gets its private drafts folder at its start.
 - Auto-handoff now only asks at its threshold; turning it off closes only its
   own ask. Its ask closes when the threshold re-arms.
 - A usage limit counts as holding a chat only until every window of its
   model is read after the stop and not full, or their resets pass. A Codex
   limit is judged by its own newest reading, not by another model's, and a
-  model's own limit with no reading since the stop keeps the chat held.
+  model's own limit with no reading since the stop keeps the chat held; its
+  reading is kept however old, a full one days from its reset included.
 
 ### Fixed
 

@@ -441,13 +441,14 @@ pub(super) fn left_line(n: u32, snapshot: &str) -> String {
     )
 }
 
-/// What the conversation a chat is on hears where a core, taking up a switch
-/// it stopped in the middle of, cannot tell that conversation is the one its
-/// reset opened (phase.rs `STRAY`): nothing was typed here, and where the
-/// handoff's copy is.
+/// What the conversation a chat is on hears where Luna, past its reset,
+/// cannot tell that conversation is the one the reset opened (phase.rs
+/// `STRAY`): nothing was typed here, and where the handoff's copy is.
 pub(super) fn stray_line(n: u32, snapshot: &str) -> String {
     format!(
-        "Handoff {n} of this chat did not go through: Luna stopped while it cleared the conversation that wrote it, and          cannot tell that this conversation is the one its reset opened, so it typed no handoff here. Its copy is at          {snapshot}. Nobody asks this conversation for a handoff: go on as you were."
+        "Handoff {n} of this chat did not go through: Luna was clearing the conversation that wrote it, and cannot tell \
+         that this conversation is the one its reset opened (another may have been started as it went in), so it typed no \
+         handoff here. Its copy is at {snapshot}. Nobody asks this conversation for a handoff: go on as you were."
     )
 }
 
