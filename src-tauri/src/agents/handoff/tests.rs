@@ -1414,7 +1414,41 @@ fn turn(idle: bool, turns_ended: u32) -> Option<crate::activity::TurnState> {
 
 /// A look's reading of conversation `live` at `pct` of its context.
 fn reading(live: &str, pct: u64) -> Reading {
-    Reading { live: live.into(), conversation: live.into(), pct, tokens: pct * 2_000 }
+    Reading { live: live.into(), conversation: live.into(), pct, tokens: pct * 2_000, first_turn: false }
+}
+
+/// A conversation a handoff began keeps its first reading as a floor only
+/// while it is still at the turn the handoff's prompt opened: at that turn's
+/// end, one that began above the threshold is not asked straight away, with
+/// auto-handoff on all along or turned on then. Looked at first only after
+/// turns of its own (auto-handoff off through the handoff, turned on later),
+/// it is asked once at rest if it is past the threshold.
+#[test]
+fn a_conversation_a_handoff_began_keeps_its_floor_only_at_its_first_turn() {
+    chat("hofloor-me", None);
+    listed("hofloor-me");
+    let fresh = || store::change("hofloor-me", |r| (r.fresh, r.told, r.asked) = (true, None, None)).unwrap();
+    let at = |first_turn| Reading { first_turn, ..reading("next", 12) };
+    // Its first turn just ended, started at 12% under a threshold of 10:
+    // not asked, the floor kept for the turns to come.
+    fresh();
+    set_auto_handoff("hofloor-me".into(), Some(10)).unwrap();
+    look_at("hofloor-me", 10, &at(true), 3, check_due("hofloor-me"));
+    let r = store::records()["hofloor-me"].clone();
+    assert_eq!((r.asked.is_none(), r.fresh, r.told.as_ref().map(|t| t.floor)), (true, false, Some(12)));
+    assert!(queued("hofloor-me").is_empty());
+    // Handed off by the person with auto-handoff off, then turns of its own,
+    // then auto-handoff turned on: past the threshold, asked at once.
+    fresh();
+    set_auto_handoff("hofloor-me".into(), Some(10)).unwrap();
+    look_at("hofloor-me", 10, &at(false), 9, check_due("hofloor-me"));
+    let r = store::records()["hofloor-me"].clone();
+    assert_eq!((r.asked.map(|a| a.kind), r.told.as_ref().map(|t| t.floor)), (Some(store::AskKind::Auto), Some(0)));
+    assert_eq!(queued("hofloor-me"), [facts::notice(12, 10, false, true)]);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hofloor-me");
+    let _ = store::remove("hofloor-me");
+    forget_session("hofloor-me");
+    set_conversation_for_test("hofloor-me", None);
 }
 
 fn queued(id: &str) -> Vec<String> {
