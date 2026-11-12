@@ -57,6 +57,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Luna's document without a word.
 - A move's instructions follow the person's handoff override in the library,
   under the move's own rules.
+- A usage limit scoped to one model is judged by the model of the turn it
+  stopped, not the one that answered last: a Codex chat switched to Spark
+  stays held by Spark's full limit.
+- A Codex chat watching a subagent (`/subagents`) no longer has its handoff
+  ask closed as if it had left its conversation.
+- Auto-handoff asks again once the person's ask that took its place lapses
+  or is withdrawn, once a move's ask takes it, and once it is turned on
+  again, rather than leaving a chat past its threshold unasked.
+- A move's ask fails at once, saying why, when the chat goes on in another
+  conversation, instead of waiting out its ten minutes; Ask again is offered.
+- Two refusals and a desktop notice about the person's handoff ask no longer
+  carry a run of stray spaces.
 - Luna's document from records leaves out the turns its own ask opened in the
   chat.
 

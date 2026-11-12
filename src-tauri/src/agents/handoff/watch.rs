@@ -73,7 +73,7 @@ pub(super) fn told_now(told: Option<&Told>, conversation: &str, pct: u64, tokens
             conversation: conversation.to_string(),
             level: 0,
             floor: if fresh { pct.max(1) } else { 0 },
-            asked: Vec::new(),
+            shares: Vec::new(),
             compacted: 0,
             tokens: 0,
         },
@@ -98,7 +98,7 @@ mod tests {
     use super::*;
 
     fn told(conversation: &str, level: u8) -> Told {
-        Told { conversation: conversation.into(), level, floor: 0, asked: Vec::new(), compacted: 0, tokens: 0 }
+        Told { conversation: conversation.into(), level, floor: 0, shares: Vec::new(), compacted: 0, tokens: 0 }
     }
 
     #[test]
@@ -137,9 +137,9 @@ mod tests {
         // Asked at 71% and 86% of a 200K window, 172K tokens at the last ask;
         // then the CLI compacts it to 18% (36K) within the same conversation
         // id: told nothing from here on, the asks kept, a compaction counted.
-        let asked = Told { asked: vec![71, 86], floor: 0, tokens: 172_000, ..told("a", 2) };
+        let asked = Told { shares: vec![71, 86], floor: 0, tokens: 172_000, ..told("a", 2) };
         let after = told_now(Some(&asked), "a", 18, 36_000, false, 70);
-        assert_eq!((after.level, after.compacted, after.asked.clone()), (0, 1, vec![71, 86]));
+        assert_eq!((after.level, after.compacted, after.shares.clone()), (0, 1, vec![71, 86]));
         assert!(!due(&after, level(18, 70, after.floor)));
         assert!(due(&after, level(72, 70, after.floor)), "past the threshold again: asked again");
         // Not yet well under: still the conversation told of it.
@@ -152,21 +152,21 @@ mod tests {
         assert_eq!(told_now(Some(&high), "a", 4, 8_000, false, 10).floor, 0);
         // A CLI that named the compacted conversation anew: a new one, asked again too.
         let renamed = told_now(Some(&asked), "b", 18, 36_000, false, 70);
-        assert!(renamed.asked.is_empty() && due(&renamed, level(72, 70, renamed.floor)));
+        assert!(renamed.shares.is_empty() && due(&renamed, level(72, 70, renamed.floor)));
     }
 
     #[test]
     fn a_larger_window_is_asked_again_but_is_no_compaction() {
         // Asked at 71% of a 200K window (142K tokens); the chat goes on on a
         // model with a 1M window: 15%, the same tokens and more.
-        let asked = Told { asked: vec![71], tokens: 142_000, ..told("a", 1) };
+        let asked = Told { shares: vec![71], tokens: 142_000, ..told("a", 1) };
         let wider = told_now(Some(&asked), "a", 15, 150_000, false, 70);
-        assert_eq!((wider.level, wider.compacted, wider.asked.clone()), (0, 0, vec![71]), "asked again, nothing compacted");
+        assert_eq!((wider.level, wider.compacted, wider.shares.clone()), (0, 0, vec![71]), "asked again, nothing compacted");
         assert!(due(&wider, level(70, 70, wider.floor)), "asked again at the threshold of the new window");
         // A reading a little lower is no compaction either; a tenth and more is.
         assert!(!compacted(&asked, 135_000) && compacted(&asked, 120_000));
         // From before the count was kept: the cause is not known, and not counted.
-        let old = Told { asked: vec![71], ..told("a", 1) };
+        let old = Told { shares: vec![71], ..told("a", 1) };
         assert_eq!(told_now(Some(&old), "a", 15, 30_000, false, 70).compacted, 0);
     }
 }

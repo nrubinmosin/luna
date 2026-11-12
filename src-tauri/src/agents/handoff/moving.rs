@@ -76,6 +76,8 @@ pub(in crate::agents) enum AskEnd {
     Exited,
     /// It did not come to rest, or wrote nothing, in time.
     Timeout,
+    /// It went on in another conversation than the one asked.
+    Left,
 }
 
 /// Where a move stands.
@@ -1309,21 +1311,17 @@ fn ask_refusal(chat: &str, provider: Provider) -> Option<Unaskable> {
     crate::activity::turn_state(chat).filter(|t| t.turn == crate::activity::Turn::Waiting).map(|_| Unaskable::Question)
 }
 
-/// Whether `id`'s CLI stands at its prompt, strictly: the composer drawn and
-/// empty, no turn under way, nobody typing. A dialog or a first-run screen is
-/// not one, and a Codex line typed mid-turn would steer the turn.
-fn strict_prompt(pty: &crate::pty::PtyManager, id: &str) -> bool {
-    prompt_verdict(pty, id).is_ok()
-}
-
-/// What `prompt_verdict` says of a screen whose layout shows no prompt.
 /// What `prompt_verdict` says of a composer holding a person's text.
 pub(super) const HOLDS_TEXT: &str = "the composer holds text typed or pasted there: send or clear it (Esc), then Luna types its line";
 
+/// What `prompt_verdict` says of a screen whose layout shows no prompt.
 const NO_PROMPT: &str = "its screen shows no empty prompt (a dialog, a first-run screen, text in the composer)";
 
-/// `strict_prompt` with why not, for the log and the window: a stall shows
-/// what it waits on. Only a turn at work keeps the line out: a CLI that says
+/// Whether `id`'s CLI stands at its prompt, strictly, with why not, for the
+/// log and the window: the composer drawn and empty, no turn under way,
+/// nobody typing. A dialog or a first-run screen is not one, and a Codex line
+/// typed mid-turn would steer the turn. A stall shows what it waits on. Only
+/// a turn at work keeps the line out: a CLI that says
 /// it waits while its screen shows an empty composer (a notice after its
 /// first-run screens, an idle reminder) asks nothing of anyone, and a real
 /// question draws a dialog, which is no prompt.
@@ -1388,7 +1386,12 @@ fn ask_blocked(chat: &str, settings: &Value, provider: Provider) -> Option<Strin
 /// has listed Luna's handoff tool, asked to write its own document for the
 /// move through that tool, collected without a reset. Only where it can write
 /// a file and is running, not stopped on a limit, and not asked for a handoff
-/// by the person meanwhile; typed only at a strict prompt.
+/// by the person meanwhile; typed only at a strict prompt. The threshold's ask
+/// open gives way: a file the chat sends goes to the move while it asks
+/// (`asked_file`), never to a handoff, so the threshold's ask closes, its
+/// notice not typed yet dropped, and the threshold is re-armed
+/// (`store::rearmed_unasked`) to ask again once the move no longer asks. The
+/// person asked for the move; the threshold asked on its own, and asks again.
 pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: String) -> Result<MoveStatus, String> {
     let chat = chat_id.as_str();
     let (old, to_account, worktree, _) = checked(chat, &new_id, &to_account_path)?;
@@ -1400,26 +1403,34 @@ pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: 
     let line = prompt_line_with(&id, Source::Chat, chat, chat_name(chat).as_deref(), &payload.to_string_lossy(), &note);
     let mut m = new_move(&id, &new_id, &old, to_account, to_account_path, line, Source::Chat, worktree);
     m.note = note;
-    let taken = store::change(chat, |r| {
-        // The person's ask or a handoff begun since the look before keeps the
-        // chat: two asks would race for one file.
-        if r.switch.is_some() || r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Manual) {
-            return false;
-        }
-        // An ask this move takes the place of: its answer is late from now.
-        if let Some(old) = r.moving.as_ref().filter(|o| matches!(o.phase, MovePhase::Asked { .. })) {
-            r.ask_closed = Some((old.id.clone(), now_ms()));
-            r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
-        }
-        r.moving = Some(m.clone());
-        true
-    })
-    .map_err(|e| format!("the move could not be saved: {e}"))?;
+    let taken = store::change(chat, |r| ask_taken(chat, r, &m)).map_err(|e| format!("the move could not be saved: {e}"))?;
     if !taken {
         return Err("a handoff of this chat began meanwhile: ask once it is through or has lapsed".into());
     }
+    reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(c == chat && super::facts::is_notice(line)));
+    crate::agents::save_chats();
     crate::log::info("move", &format!("{} is to be asked for its move's document ({id})", label(chat)));
     Ok(status_of(chat, &m))
+}
+
+/// Move `m`, its ask opening, taken on `chat`'s record `r` if nothing keeps
+/// the chat: the person's ask or a handoff begun since the look before, or
+/// one being copied, which would race the move's ask for one file. The
+/// threshold's ask gives way (`move_ask`). Whether it was.
+fn ask_taken(chat: &str, r: &mut store::Record, m: &Move) -> bool {
+    if r.switch.is_some() || r.reserved.is_some() || r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Manual) {
+        return false;
+    }
+    if r.asked.take().is_some() {
+        store::rearmed_unasked(r);
+    }
+    // An ask this move takes the place of: its answer is late from now.
+    if let Some(old) = r.moving.as_ref().filter(|o| matches!(o.phase, MovePhase::Asked { .. })) {
+        r.ask_closed = Some((old.id.clone(), now_ms()));
+        r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
+    }
+    r.moving = Some(m.clone());
+    true
 }
 
 /// The preview of a document the chat wrote, once collected: read back as
@@ -1714,12 +1725,15 @@ fn asks() {
                 ask_ended(&chat, &m, end, format!("the chat cannot write its document: {}", why.words()))
             }
             (MovePhase::Asking { at }, None) => {
-                if strict_prompt(pty, &chat) {
+                if prompt_verdict(pty, &chat).is_ok() {
                     type_ask(&chat, &m);
                 } else if now.saturating_sub(at) > ASK_REST_MS {
                     let why = format!("the chat did not come to rest within {} minutes", ASK_REST_MS / 60_000);
                     ask_ended(&chat, &m, AskEnd::Timeout, why);
                 }
+            }
+            (MovePhase::Asked { .. }, None) if left_asked(&m, super::conversation_now(&chat).as_deref()) => {
+                ask_ended(&chat, &m, AskEnd::Left, LEFT_ASKED.into())
             }
             (MovePhase::Asked { at }, None) if now.saturating_sub(at) > ASK_WAIT_MS => {
                 ask_ended(&chat, &m, AskEnd::Timeout, format!("the chat wrote no document within {} minutes", ASK_WAIT_MS / 60_000))
@@ -1727,6 +1741,19 @@ fn asks() {
             _ => {}
         }
     }
+}
+
+/// Why a move's ask failed whose chat went on in another conversation.
+pub(super) const LEFT_ASKED: &str = "the chat went on in another conversation, which was not asked for the document";
+
+/// Whether move `m`'s ask, typed, was left by its chat, now on `now`: the
+/// conversation it was typed into and the one the chat is on both known and
+/// not the same. The person's `/clear` or `/new` started one nobody asked
+/// (`ask_here` refuses its call), so waiting out ASK_WAIT_MS would only keep
+/// the window saying the chat writes. Not while Luna is typing into it
+/// (`asks` looks only then).
+pub(super) fn left_asked(m: &Move, now: Option<&str>) -> bool {
+    matches!(m.phase, MovePhase::Asked { .. }) && matches!((m.asked_conversation.as_deref(), now), (Some(asked), Some(now)) if asked != now)
 }
 
 /// Move `m`'s ask given up as `end` says, for `why`: kept on the move, for
@@ -2924,6 +2951,7 @@ Ship it.
             (Some(AskEnd::Timeout), Some("the chat is not to be asked now: its CLI is not running"), false),
             (Some(AskEnd::Limit), None, false),
             (Some(AskEnd::Exited), None, false),
+            (Some(AskEnd::Left), None, true),
         ] {
             m.ask_end = end;
             assert_eq!(may_ask_again(&m, blocked), again, "{end:?} {blocked:?}");
@@ -2939,5 +2967,49 @@ Ship it.
         m.preview = None;
         let s = status_of("mvx-nobody", &m);
         assert!(s.ask_failed && !s.ask_again && s.why.as_deref().is_some_and(|w| w.contains("no document")), "{s:?}");
+    }
+
+    /// A typed ask whose chat went on in another conversation (the person's
+    /// `/clear`) fails at once, saying so, and may be asked again; one not
+    /// typed yet, or where either conversation is not known, waits.
+    #[test]
+    fn an_ask_its_chat_left_fails_saying_so_and_may_be_asked_again() {
+        let chat = "mvleft-old";
+        let mut m = a_move(MovePhase::Asked { at: now_ms() });
+        m.source = Source::Chat;
+        m.preview = None;
+        m.binding = None;
+        m.asked_conversation = Some("old".into());
+        assert!(left_asked(&m, Some("theirs")));
+        assert!(!left_asked(&m, Some("old")) && !left_asked(&m, None), "still there, or not known");
+        let asking = Move { phase: MovePhase::Asking { at: 1 }, ..m.clone() };
+        assert!(!left_asked(&asking, Some("theirs")), "not typed: asks nothing yet");
+        store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        ask_ended(chat, &m, AskEnd::Left, LEFT_ASKED.into());
+        let after = store::records()[chat].moving.clone().unwrap();
+        assert!(matches!(&after.phase, MovePhase::Failed { why, .. } if why == LEFT_ASKED), "{after:?}");
+        assert!(may_ask_again(&after, None), "asked again in the conversation it is on");
+        assert!(store::records()[chat].ask_closed.as_ref().is_some_and(|(id, _)| *id == m.id), "a late answer is refused");
+        store::remove(chat).unwrap();
+    }
+
+    /// A move's ask takes the chat from the threshold's ask, which closes and
+    /// re-arms the threshold; never from the person's, a handoff under way, or
+    /// one whose file is being copied.
+    #[test]
+    fn a_moves_ask_takes_the_place_of_the_thresholds_only() {
+        let chat = "mvtake-old";
+        let m = a_move(MovePhase::Asking { at: 1 });
+        let told = store::Told { conversation: "c".into(), level: 1, floor: 0, shares: vec![72], compacted: 0, tokens: 1 };
+        let auto = store::Asked::new(store::AskKind::Auto, 1, None);
+        let mut r = store::Record { told: Some(told.clone()), asked: Some(auto.clone()), ..Default::default() };
+        assert!(ask_taken(chat, &mut r, &m));
+        assert_eq!((r.asked.as_ref(), r.told.as_ref().map(|t| t.level)), (None, Some(0)), "closed and re-armed");
+        assert!(r.moving.as_ref().is_some_and(Move::asking));
+        let manual = store::Asked::new(store::AskKind::Manual, 1, None);
+        let mut r = store::Record { told: Some(told.clone()), asked: Some(manual), ..Default::default() };
+        assert!(!ask_taken(chat, &mut r, &m) && r.moving.is_none(), "the person's ask keeps it");
+        let mut r = store::Record { asked: Some(auto), reserved: Some(3), ..Default::default() };
+        assert!(!ask_taken(chat, &mut r, &m) && r.asked.is_some(), "a handoff's file being copied keeps it");
     }
 }

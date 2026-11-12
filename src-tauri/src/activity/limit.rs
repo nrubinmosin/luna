@@ -136,7 +136,7 @@ pub fn limit_in_force(chat: &str, provider: Provider) -> Option<LimitFact> {
             crate::codex::limits::known_reading(&account, own.as_deref())
         }
     };
-    let model = crate::agents::model_of(chat, provider);
+    let model = crate::agents::stopped_model_of(chat, provider);
     in_force(kind, since, reading.map(|r| r.for_model(model.as_deref())).as_ref(), now)
 }
 
@@ -270,6 +270,42 @@ mod tests {
         let codex = UsageReading { at: Some(STOP + 60_000), windows: vec![window("5 hours", 0.1, None), spark] };
         assert!(in_force("usage_limit", STOP, Some(&codex.for_model(Some("gpt-5-codex"))), STOP + 61_000).is_none());
         assert!(in_force("usage_limit", STOP, Some(&codex.for_model(Some("gpt-5-codex-spark"))), STOP + 61_000).is_some());
+    }
+
+    /// A Codex chat switched to Spark whose first Spark turn hit Spark's full
+    /// limit is judged by Spark, the model of the turn that stopped, not by
+    /// the general model that answered last: a fresh general reading does
+    /// not lift it. A Claude Code chat's failed request names no model, so
+    /// its settings' model is taken, and with none every window counts.
+    #[test]
+    fn a_limit_is_judged_by_the_model_of_the_turn_it_stopped() {
+        let path = std::env::temp_dir().join(format!("luna-limit-model-{}.jsonl", std::process::id()));
+        let lines = [
+            r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-5-codex","effort":"low"}}"#,
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"output_tokens":5}}}}"#,
+            r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-5-codex-spark","effort":"low"}}"#,
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"error","codex_error_info":"usage_limit_exceeded"}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert_eq!(crate::codex::session::answered_model(&path).as_deref(), Some("gpt-5-codex"), "the one that answered last");
+        let model = crate::agents::stopped_model(Provider::Codex, Some(&path), Some("gpt-5-codex".into()));
+        assert_eq!(model.as_deref(), Some("gpt-5-codex-spark"));
+        let spark = UsageWindow {
+            model: Some("GPT-5 Codex Spark".into()),
+            at: Some(STOP - 1_000),
+            ..window("Spark · 5 hours", 1.0, Some("2027-03-01T00:00:00Z"))
+        };
+        let general = UsageWindow { at: Some(STOP + 60_000), ..window("5 hours", 0.1, None) };
+        let reading = UsageReading { at: Some(STOP + 60_000), windows: vec![spark, general] };
+        assert!(in_force("usage_limit", STOP, Some(&reading.for_model(model.as_deref())), STOP + 61_000).is_some());
+        assert!(in_force("usage_limit", STOP, Some(&reading.for_model(Some("gpt-5-codex"))), STOP + 61_000).is_none());
+        // No turn named in the rollout: the settings' model, else none.
+        assert_eq!(crate::agents::stopped_model(Provider::Codex, None, Some("m".into())).as_deref(), Some("m"));
+        assert_eq!(crate::agents::stopped_model(Provider::Codex, None, None), None);
+        // Claude Code: its transcript is not asked.
+        assert_eq!(crate::agents::stopped_model(Provider::Claude, Some(&path), Some("opus".into())).as_deref(), Some("opus"));
+        assert_eq!(crate::agents::stopped_model(Provider::Claude, Some(&path), None), None);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// 2027-01-15T08:00:00Z.

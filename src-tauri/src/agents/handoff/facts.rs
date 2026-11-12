@@ -208,7 +208,7 @@ pub(super) fn manual_lapsed(minutes: u64) -> String {
 /// in time and was withdrawn: it was never asked, and the tool refuses.
 pub(super) fn manual_undelivered(minutes: u64) -> String {
     format!(
-        "The person asked for a handoff of this chat, but Luna could not deliver the request within {minutes} minutes, so          it is withdrawn. luna_session_handoff refuses until Luna asks for one; go on as you were."
+        "The person asked for a handoff of this chat, but Luna could not deliver the request within {minutes} minutes, so it is withdrawn. luna_session_handoff refuses until Luna asks for one; go on as you were."
     )
 }
 

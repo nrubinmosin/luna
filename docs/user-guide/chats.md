@@ -183,7 +183,9 @@ up by itself, its helpers carrying on. It does so only when it is asked:
   could not type within 10 minutes of your ask (the chat never at its prompt,
   or its CLI not running) is withdrawn, with its own word to the chat and the
   desktop, and you may ask again. With the chat's CLI not running, the chip
-  and the menu still follow what the core holds.
+  and the menu still follow what the core holds. Your ask takes the place of
+  the threshold's; if it lapses or is withdrawn with no handoff, a chat still
+  past its threshold is asked again at its next turn's end.
 - **Auto-handoff at N% of its context** asks by itself once the context passes
   a threshold. Tick it in the new-chat dialog (70% unless you change it, from
   10 to 90), or later in the chat's **What Luna applied** panel. A chat
@@ -253,7 +255,10 @@ menu, so words injected into the chat cannot hand it off on their own.
   first Hand off now, or when you tick Auto-handoff. A CLI lists Luna's tools
   as it starts.
 - Turning Auto-handoff off closes only the threshold's ask, and drops a
-  handoff it only scheduled. Your own Hand off now stands.
+  handoff it only scheduled. Your own Hand off now stands. Turned on again, a
+  chat past its threshold is asked again at its next turn's end.
+- A Codex chat watching one of its subagents (`/subagents`) is still on its
+  own conversation: its ask stays open.
 - The chat's **What Luna applied** panel lists the tool as `handoff-tool`
   (on request) and the threshold apart, as `auto-handoff`. With Auto-handoff on, it says whose
   instructions the chat would be given now: **Luna's** (with Luna's version
@@ -305,10 +310,15 @@ defaults). It goes on from a document, chosen under **The document**:
   that count for the chat's model not full, or until their resets have
   passed; with no reading it holds, and so it does while a limit of the
   chat's model's own (Codex's Spark, say) has had no reading since the stop.
-  You can pick either one yourself.
+  The chat's model is the one its stopped turn ran on (a Codex chat switched
+  to Spark is judged by Spark's limit; a Claude Code chat by the model it was
+  started with). You can pick either one yourself.
 
-**Ask the chat** opens the ask. Only the conversation Luna typed the ask
-into may answer it: one you start meanwhile (`/clear`, `/new`) is refused.
+**Ask the chat** opens the ask, in place of an auto-handoff ask the chat had
+open, which asks again later if the chat is still past its threshold. Only
+the conversation Luna typed the ask into may answer it: start another one
+(`/clear`, `/new`) and the ask fails at once, saying the chat went on in
+another conversation, with **Ask again** offered.
 The dialog then shrinks to a banner, so you
 can answer the chat's CLI in its pane: waiting for its turn to end, writing
 its document, or its CLI asking you something. **Use Luna's document now**
@@ -317,7 +327,8 @@ it. A document the chat sends after its ask closed is refused and replaces
 nothing.
 
 If the ask fails (the chat did not come to rest within 10 minutes, wrote
-nothing within 10 more, stopped on a limit, or its CLI exited), the dialog
+nothing within 10 more, went on in another conversation, stopped on a limit,
+or its CLI exited), the dialog
 says why and offers **Build from records** (your instruction and choices
 kept), **Ask again** where another ask may go through (not after a limit or
 an exit), and **Cancel**. Luna never switches to its own document unseen.
