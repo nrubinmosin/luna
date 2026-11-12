@@ -453,6 +453,7 @@ pub fn forget(id: &str) {
     r.places_refused.remove(id);
     r.hook_asks.remove(id);
     r.notice_turns.remove(id);
+    r.context_seen.remove(id);
     r.notice_times.retain(|(who, chat), _| who != id && chat != id);
     r.stopped.retain(|(who, chat), _| who != id && chat != id);
     r.exits.remove(id);

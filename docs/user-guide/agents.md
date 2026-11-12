@@ -25,8 +25,11 @@ does a background helper spawned without tools.
 - `luna_power_set`, for when you ask for it, arms the same "when done" shutdown,
   restart, hibernate or sleep as the power chip, which shows and cancels it; the
   action `cancel` disarms it too.
-- A spawn may set `budgetTokens`: once that helper's context passes it, its
-  parent hears so, once; nothing is stopped.
+- Past a share of its context window (**Tell me when a helper's context
+  passes** in Settings → Agents & trust → Helpers, 50% unless changed; a spawn's
+  `budgetPct` sets one helper's), every notice about a helper ends "(context
+  N%)"; past 85% its parent hears so once on its own. Nothing is stopped.
+  `budgetTokens` still works, read as the share of the window it is.
 - An agent reads, waits on, sends text to and answers its own helpers. One of
   your own chats reaches your other chats and other chats' helpers only by
   saying so (`scope: "all"`), and what it sends them, an answer typed in as a

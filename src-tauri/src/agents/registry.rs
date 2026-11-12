@@ -131,6 +131,9 @@ pub(super) struct Registry {
     pub(super) notices_held: HashMap<String, usize>,
     /// The turns Luna's notices started, by the session they went into.
     pub(super) notice_turns: HashMap<String, Vec<NoticeTurn>>,
+    /// The share of its context window each helper past its level was last
+    /// read at (notifier usage.rs `budget_news`): the rider on its notices.
+    pub(super) context_seen: HashMap<String, u64>,
     /// When each turn-end notice went, by (caller, session), within
     /// BREAKER_WINDOW_MS.
     pub(super) notice_times: HashMap<(String, String), Vec<u64>>,
@@ -190,6 +193,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             held: Vec::new(),
             notices_held: HashMap::new(),
             notice_turns: HashMap::new(),
+            context_seen: HashMap::new(),
             notice_times: HashMap::new(),
             stopped: HashMap::new(),
             exits: HashMap::new(),
@@ -397,7 +401,8 @@ pub fn settings_of(id: &str) -> serde_json::Value {
 /// them across every start, and ties across cores. `resumeOnRestart`, a budget with
 /// where it stands (`budget_news`), `connectors` (`Spec::connectors`) and
 /// `constraints` (agents/spawn `Constraint`), which a spawn of its own passes on.
-const CORE_SETTINGS: [&str; 6] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "connectors", "constraints"];
+const CORE_SETTINGS: [&str; 7] =
+    ["resumeOnRestart", "budgetTokens", "budgetPct", "budgetBreach", "budgetTold", "connectors", "constraints"];
 
 /// Whether a helper was spawned with `resumeOnRestart`.
 pub fn resumes_on_restart(id: &str) -> bool {

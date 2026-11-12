@@ -66,6 +66,7 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "tools",
         "autoDelete",
         "budgetTokens",
+        "budgetPct",
         "connectors",
         "name",
         "until",

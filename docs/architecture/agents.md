@@ -37,7 +37,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/teardown.rs` | kill, delete, the person's guarded delete (`delete_by_user`, `at_stake`), `reap` (autoDelete), `forget` |
 | `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
 | `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
-| `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and budget news |
+| `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and context news |
 | `agents/handoff/` | auto-handoff ([its own page](handoff.md)): `luna_session_handoff`, the instructions served (`served.rs`), the threshold notices (`watch.rs`), the file check and copy (`file.rs`), the switch's machine (`phase.rs`), its saved state (`store.rs`, `<data>/handoffs/handoffs.json`) and what the prompt and notices say (`facts.rs`) |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
 | `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic its opening and the topics; every session with tools reads it, so it has nothing of auto-handoff |
@@ -422,9 +422,12 @@ turn, stopped on a prompt (once per stop) or exited.
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
   `chat-ties.json` until told.
 - **Riders.** A job's end with nothing said (`Settled::NoNews`), the idle line,
-  quota news and budget news are no reason to wake a caller: they ride with the
-  next notice (`riders_go`), and go alone only once they are all it is owed,
-  nothing in Luna is busy, or after `RIDE_MAX_MS`.
+  a context line (`budget_news`) and a refusal for want of places are no reason
+  to wake a caller: they ride with the next notice (`riders_go`), and go alone
+  only once they are all it is owed, nothing in Luna is busy, or after
+  `RIDE_MAX_MS`. Quota news does not ride: its lines go into the notice's lines
+  as they are put together (mod.rs, before `riders_go` is asked), like a turn's
+  end, so a window at 90% wakes the caller and brings the riders with it.
 - **Company.** A notice ready for an idle caller that is owed an answer by
   another session still mid-turn (`Turn::Busy`) waits for it up to
   `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
@@ -445,9 +448,16 @@ turn, stopped on a prompt (once per stop) or exited.
 - **Quota news.** An account a caller's live helpers run on reaching 90%, then
   95%, of a window, once per level per window, kept in
   `<data>/quota-told.json`.
-- **Budget.** `budgetTokens` on a spawn: `budget_news`, every fifth look, reads
-  `Context::of`; the first reading past it stays as `budgetBreach` and rides to
-  the parent once. Nothing is stopped.
+- **Context.** Every fifth look `budget_news` reads each helper's context
+  (`Context::of`) against its level (`level_of`): its spawn's `budgetPct` (0:
+  never), else its deprecated `budgetTokens` as the share of the window they
+  are, else the person's setting (`Settings::helper_context_pct`, 50 by
+  default, 0 off). Past it, `Registry::context_seen` holds the reading and
+  every notice line about the helper ends ` (context N%)` (`context_rider`).
+  Past 85% (`ALARM_PCT`), or its level if higher, the first reading stays as
+  `budgetBreach` and a line of its own rides to the parent once, advising a
+  fresh helper unless it hands off by itself (`hands_off_by_itself`, the hook
+  auto-handoff for leads is to answer). Nothing is stopped.
 
 ## Typing into terminals
 

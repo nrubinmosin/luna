@@ -211,6 +211,7 @@ macro_rules! app_handler {
             agents::privilege::set_helpers_above_caller,
             agents::spawn::helper_settings,
             agents::spawn::set_max_helpers,
+            agents::spawn::set_helper_context_pct,
             agents::spawn::set_helper_mode,
             cli::cli_status,
             cli::cli_update_now,
