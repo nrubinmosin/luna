@@ -170,8 +170,8 @@ up by itself, its helpers carrying on. It does so only when it is asked:
 - **Hand off now** in the pane's "…" menu asks at any time. The chat writes
   the handoff at the next point where its work can pause. The item is grayed,
   its tooltip saying why, where the chat could not answer: no Luna tools,
-  Claude Code's plan mode or Codex's read-only sandbox, a handoff or a move's
-  ask under way, or an ask of yours already open. The core may still refuse
+  Claude Code's plan mode or Codex's read-only sandbox, a handoff or a move
+  of the chat under way, or an ask of yours already open. The core may still refuse
   (the CLI's own jobs running, its CLI not running); its reason then shows in
   a strip over the pane, × to dismiss. Luna types the request only once the
   chat stands at its prompt, with nothing in its composer. The chip on the
@@ -311,11 +311,13 @@ defaults). It goes on from a document, chosen under **The document**:
   passed; with no reading it holds, and so it does while a limit of the
   chat's model's own (Codex's Spark, say) has had no reading since the stop.
   The chat's model is the one its stopped turn ran on (a Codex chat switched
-  to Spark is judged by Spark's limit; a Claude Code chat by the model it was
-  started with). You can pick either one yourself.
+  to Spark is judged by Spark's limit; a Claude Code chat by the model that
+  answered it last, a `/model` switch included, else the one it was started
+  with). You can pick either one yourself.
 
 **Ask the chat** opens the ask, in place of an auto-handoff ask the chat had
-open, which asks again later if the chat is still past its threshold. Only
+open (so does a document built from records), which asks again once the
+move ends with the chat still running, if it is still past its threshold. Only
 the conversation Luna typed the ask into may answer it: start another one
 (`/clear`, `/new`) and the ask fails at once, saying the chat went on in
 another conversation, with **Ask again** offered.

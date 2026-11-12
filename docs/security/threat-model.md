@@ -152,6 +152,17 @@ in section 6.
   recorded once, and only with no key of the person's since the reset went
   in; read again under the held keys before the prompt), else gives up
   (`Step::Stray`), a switch a core takes up again before it waits for rest.
+  A failure's line the notifier types later carries the continuation only
+  while the chat is on that same conversation: the line is bound to it by its
+  SHA-256 (`Record::continued`), and looked at as the notice is put
+  together, again before typing, and a last time with the person's keys held
+  right before the paste (`as_told`; `agents/delivery.rs` `type_text`'s
+  `stands`), so a `/clear` or `/new` of theirs in between finds nothing typed;
+  elsewhere, or where Luna cannot tell, it names only the copy. Text injected
+  into a conversation the person started thus never receives Luna's prompt
+  to carry on a handoff it never asked for. Nor is a threshold notice typed
+  while a move of the chat is under way (`withheld`): a move retires the
+  threshold's ask as it begins (`moving::threshold_retired`).
   An injected prompt in a tooled chat can thus call the
   tool, but unasked it is refused, and under an ask it can at most hand off
   the conversation that was asked, which resets it with Luna's fixed text and

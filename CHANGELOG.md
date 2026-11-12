@@ -47,9 +47,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   asked it.
   Every such chat gets its private drafts folder at its start.
 - Auto-handoff now only asks at its threshold; turning it off closes only its
-  own ask. Its ask closes when the threshold re-arms. It asks nothing while
-  a move of the chat is under way, preview and all, and asks again once a
-  move ends with the chat not stopped, if it is still past its threshold.
+  own ask. Its ask closes when the threshold re-arms. A move of the chat,
+  asked of it or built from records, closes its ask and drops its notice not
+  yet typed; it asks nothing while the move is under way, preview and all,
+  and asks again once the move ends with the chat not stopped (before its
+  stop step, or in a move that keeps it running), if it is still past its
+  threshold. Hand off now is refused for the whole move too.
 - A usage limit counts as holding a chat only until every window of its
   model is read after the stop and not full, or their resets pass. A Codex
   limit is judged by its own newest reading, not by another model's, and a
@@ -64,12 +67,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   under the move's own rules.
 - A usage limit scoped to one model is judged by the model of the turn it
   stopped, not the one that answered last: a Codex chat switched to Spark
-  stays held by Spark's full limit.
+  stays held by Spark's full limit. A Claude Code chat, whose failed request
+  names no model, is judged by the model that answered last, a `/model`
+  switch included, before the model it was started on.
 - A Codex chat watching a subagent (`/subagents`) no longer has its handoff
   ask closed as if it had left its conversation.
 - Auto-handoff asks again once the person's ask that took its place lapses
-  or is withdrawn, once a move's ask takes it, and once it is turned on
-  again, rather than leaving a chat past its threshold unasked.
+  or is withdrawn, once a move that took it ends with the chat not stopped,
+  and once it is turned on again, rather than leaving a chat past its
+  threshold unasked.
+- A failure's line carrying the continuation is looked at again with your
+  keys held, right before it goes in: a `/clear` or `/new` of yours just
+  before no longer lets it into the conversation you started.
 - A move's ask fails at once, saying why, when the chat goes on in another
   conversation, instead of waiting out its ten minutes; Ask again is offered.
 - Two refusals and a desktop notice about the person's handoff ask no longer

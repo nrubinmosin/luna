@@ -79,12 +79,52 @@ impl Drop for KeyHold {
         // Under the session map, which every key takes on its way in: none
         // can overtake the ones held.
         let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(s) = sessions.get(&self.id) else { return };
+        let Some(s) = sessions.get(&self.id) else {
+            #[cfg(test)]
+            if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get_mut(&self.id) {
+                t.holds -= 1;
+            }
+            return;
+        };
         let held = s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
         for data in held {
             let _ = take_keys(s, data);
         }
     }
+}
+
+/// A terminal a test stands in for, with no CLI behind it: the person's keys
+/// held on it counted, and what Luna types kept rather than sent.
+#[cfg(test)]
+#[derive(Default)]
+struct FakeTerminal {
+    holds: u32,
+    typed: Vec<u8>,
+}
+
+#[cfg(test)]
+fn fake_terminals() -> &'static std::sync::Mutex<std::collections::HashMap<String, FakeTerminal>> {
+    static F: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, FakeTerminal>>> = std::sync::OnceLock::new();
+    F.get_or_init(Default::default)
+}
+
+/// `id` as a terminal of the test's (`FakeTerminal`), or no longer one.
+#[cfg(test)]
+pub(crate) fn fake_terminal_for_test(id: &str, on: bool) {
+    let mut fakes = fake_terminals().lock().unwrap_or_else(|e| e.into_inner());
+    if on {
+        fakes.insert(id.to_string(), FakeTerminal::default());
+    } else {
+        fakes.remove(id);
+    }
+}
+
+/// What Luna has typed into the test's terminal `id`, and whether the
+/// person's keys are held there now.
+#[cfg(test)]
+pub(crate) fn fake_terminal_of(id: &str) -> (String, bool) {
+    let fakes = fake_terminals().lock().unwrap_or_else(|e| e.into_inner());
+    fakes.get(id).map(|t| (String::from_utf8_lossy(&t.typed).into_owned(), t.holds > 0)).unwrap_or_default()
 }
 
 /// Queued behind the keystrokes that preceded it and applied on the writer
@@ -359,6 +399,13 @@ impl PtyManager {
     /// Luna's text or into the stash. None if the session is not there.
     pub fn hold_keys(&self, id: &str) -> Option<KeyHold> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        if !sessions.contains_key(id) {
+            let mut fakes = fake_terminals().lock().unwrap_or_else(|e| e.into_inner());
+            let t = fakes.get_mut(id)?;
+            t.holds += 1;
+            return Some(KeyHold { id: id.to_string() });
+        }
         let s = sessions.get(id)?;
         s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Vec::new);
         Some(KeyHold { id: id.to_string() })
@@ -367,6 +414,11 @@ impl PtyManager {
     /// Queues bytes for the session's writer thread.
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).filter(|_| !sessions.contains_key(id)) {
+            t.typed.extend_from_slice(data);
+            return Ok(());
+        }
         let s = sessions.get(id).ok_or("no such session")?;
         s.input_tx.send(Input::Bytes(data.to_vec())).map_err(|_| "session writer is gone".to_string())
     }
@@ -381,6 +433,11 @@ impl PtyManager {
     pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
         let bracketed = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            #[cfg(test)]
+            if !sessions.contains_key(id) && fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).contains_key(id) {
+                drop(sessions);
+                return self.write(id, text.as_bytes());
+            }
             let s = sessions.get(id).ok_or("no such session")?;
             let keys = cfg!(windows) && s.provider == Provider::Codex;
             !keys && s.modes.lock().unwrap_or_else(|e| e.into_inner()).on.get(&2004) == Some(&true)

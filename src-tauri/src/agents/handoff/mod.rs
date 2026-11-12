@@ -1010,6 +1010,15 @@ pub(in crate::agents) fn as_told(chat: &str, line: &str) -> String {
     }
 }
 
+/// Whether line `line` of the notifier's queue for `chat` is to be dropped
+/// rather than typed: a handoff's notice while a move of the chat is under way
+/// (`moving::under_way`). A move's start drops one queued and retires the ask
+/// it opened, but one already put together, or queued as the move began, would
+/// still ask the chat for a handoff that resets it in the middle of the move.
+pub(in crate::agents) fn withheld(chat: &str, line: &str) -> bool {
+    facts::is_notice(line) && moving::under_way(chat)
+}
+
 /// What the switches' beat keeps between looks.
 #[derive(Default)]
 struct Beat {
@@ -1172,7 +1181,8 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         // A fresh handoff request, the ask the tool answers while it is open,
         // of the conversation whose context passed the threshold.
         let asked = store::Asked { conversation: Some(live), ..store::Asked::new(store::AskKind::Auto, now_ms(), Some(ts.turns_ended)) };
-        match store::change(&chat, |r| ask_auto(&chat, r, threshold, told, inline, asked)) {
+        let line = facts::notice(context.pct, threshold, firm, inline);
+        match store::change(&chat, |r| ask_auto(&chat, r, threshold, told, inline, asked, line)) {
             Ok(true) => {}
             Ok(false) => {
                 crate::log::info(
@@ -1186,8 +1196,6 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
             }
             Err(e) => crate::log::warn("handoff", &format!("{}: the notice it was told could not be saved: {e}", label(&chat))),
         }
-        let line = facts::notice(context.pct, threshold, firm, inline);
-        reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.clone(), line));
         crate::agents::save_chats();
         crate::log::info(
             "handoff",
@@ -1203,9 +1211,12 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
 /// lock) or set to another threshold, the person asked, a move begun, or a
 /// handoff been scheduled. Opening it then would undo the one or
 /// take the place of the other. From it on, what the chat sends is its own,
-/// not an earlier ask's late answer (moving.rs `late_answer`). Whether it
-/// opened.
-fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told, inline: bool, asked: store::Asked) -> bool {
+/// not an earlier ask's late answer (moving.rs `late_answer`). Its notice
+/// `line` is queued under the same lock: a move or the person's ask begun
+/// right after drops it as it opens (moving.rs `threshold_retired`,
+/// `open_manual`), where one queued after them would ask the chat anyway.
+/// Whether it opened.
+fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told, inline: bool, asked: store::Asked, line: String) -> bool {
     let manual = r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Manual);
     let moving = r.moving.as_ref().is_some_and(moving::Move::under_way);
     if manual || moving || r.switch.is_some() || r.reserved.is_some() || threshold_now(chat) != Some(threshold) {
@@ -1214,6 +1225,7 @@ fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told,
     told_of(r, told, inline);
     r.ask_closed = None;
     r.asked = Some(asked);
+    reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), line));
     true
 }
 
@@ -1589,8 +1601,11 @@ fn now_refusal(chat: &str) -> Option<String> {
     if let Some(n) = store::records().get(chat).and_then(|r| r.switch.as_ref().map(|s| s.n)) {
         return Some(format!("handoff {n} of this chat is under way already"));
     }
-    if moving::asking(chat) {
-        return Some("the chat is being asked for its move's document: let that move go on or cancel it first".into());
+    if moving::under_way(chat) {
+        return Some(
+            "a move of this chat to another account is under way, and no handoff is asked while it is: let it finish or cancel it first"
+                .into(),
+        );
     }
     if open_ask(chat) == Some(store::AskKind::Manual) {
         return Some(format!(
@@ -1614,22 +1629,24 @@ fn now_refusal(chat: &str) -> Option<String> {
 /// left open: the request asks for the handoff now.
 fn open_manual(chat: &str) -> Result<HandoffNow, String> {
     let turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
-    // Looked at again under the record's lock: a handoff or a move's ask
-    // begun since the look before takes the chat.
+    // Looked at again under the record's lock: a handoff or a move begun
+    // since the look before takes the chat. A threshold notice not yet typed
+    // would ask a second time: dropped under the same lock, which the
+    // threshold queues its notice under (`ask_auto`).
     let opened = store::change(chat, |r| {
-        if r.switch.is_some() || r.moving.as_ref().is_some_and(moving::Move::asking) {
+        if r.switch.is_some() || r.moving.as_ref().is_some_and(moving::Move::under_way) {
             return false;
         }
         r.ask_closed = None;
         r.asked = Some(store::Asked::new(store::AskKind::Manual, now_ms(), turns));
+        reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(c == chat && facts::is_notice(line)));
         true
     })
     .map_err(|e| format!("the ask could not be saved: {e}"))?;
     if !opened {
         return Err("a handoff or a move of this chat began meanwhile".into());
     }
-    // A threshold notice not yet typed would ask a second time.
-    reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(c == chat && facts::is_notice(line)));
+    crate::agents::save_chats();
     crate::log::info("handoff", &format!("{}: the person asks for a handoff", label(chat)));
     Ok(HandoffNow { resume: !is_listed(chat) })
 }

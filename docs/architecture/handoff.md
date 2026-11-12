@@ -156,9 +156,12 @@ that beat is skipped and the turn looked at again at the next.
   to `luna_session_handoff` without arguments for how. With it the threshold's
   ask (`AskKind::Auto`) is opened on the record, bound to the conversation
   whose context passed it, and only if, under the record's lock, auto-handoff
-  is still on at that threshold and no person's ask, move's ask or handoff
-  took the chat while its context was read (`ask_auto`). None is opened while
-  a move asks the chat. Past `firm_at`
+  is still on at that threshold and no person's ask, move or handoff
+  took the chat while its context was read (`ask_auto`); the notice is queued
+  under the same lock, so a move or the person's ask begun right after drops
+  it as it opens. None is opened while a move of the chat is under way
+  (`moving::under_way`), and the notifier types none then: one put together
+  before the move began is dropped where it goes in (`withheld`). Past `firm_at`
   (threshold + 10, kept within 85-95) a firmer one; with Luna's own
   instructions in effect it carries their six headings inline (`SECTIONS`),
   with an override it sends the chat to the call. Once each per conversation
@@ -186,7 +189,8 @@ that beat is skipped and the turn looked at again at the next.
   again at its next turn's end rather than leave it refused and never asked.
   So is a conversation whose threshold's ask gave way and nothing answered
   it: the person's ask that took its place lapsed or was withdrawn
-  (`lapsed`), a move's ask took it (`moving::ask_taken`), or auto-handoff was
+  (`lapsed`), a move retired it as it began and then ended with the chat
+  not stopped (`moving::threshold_retired`, `end_where`), or auto-handoff was
   turned on again with no ask open (`set_auto_handoff`); otherwise the
   threshold, noticing only above a level it told of, would leave a chat past
   it unasked until its firm mark.
@@ -205,8 +209,9 @@ the move is over instead (`moving::MOVE_OVER`), not that nobody asked it.
   command); or a move's ask (`MovePhase::Asking`, `Asked`). No tool opens one.
 - **Hand off now** is refused, with what stands in the way (`now_refusal`):
   not a person's chat with Luna tools, a sandbox or mode that writes no file
-  (`served::unwritable`), a handoff under way, a move's ask, an ask of the
-  person's open, the CLI's own jobs at work, its CLI not running. Otherwise
+  (`served::unwritable`), a handoff under way, a move of the chat under way
+  (asking it, its preview under review or its steps after confirmation:
+  `moving::under_way`), an ask of the person's open, the CLI's own jobs at work, its CLI not running. Otherwise
   the ask is opened in place of one the threshold left open, a threshold
   notice not yet typed is dropped, and the answer says whether the window is
   to resume the CLI on the same conversation first (`HandoffNow::resume`, for
@@ -356,9 +361,13 @@ until they are through.
 - The notifier types a failure's line later than it is made. One that carries
   the prompt is bound to the conversation its reset opened (`Record::continued`,
   by the line's SHA-256): it goes in whole only while the chat is still on
-  that one, looked at as the notice is put together and again where it goes
-  in (`as_told`); on any other, or where Luna cannot tell, a short line
-  (`facts::continued_short`) naming the copy takes its place.
+  that one, looked at as the notice is put together, again where it goes
+  in, and a last time once the person's keys are held, right before the
+  paste (`as_told`; delivery.rs `type_text`'s `stands`): a `/clear` or `/new`
+  of theirs between the looks finds nothing typed (`NO_LONGER_STANDS`), and
+  the next look puts the line in other words. On any other conversation, or
+  where Luna cannot tell, a short line (`facts::continued_short`) naming the
+  copy takes its place.
 - A core restart: `from_bytes` makes a switch in `Resetting` or `Prompting`
   `Recovering`. On another conversation than the one it left and not the one
   its reset opened (`Switch::opened`), or with none on record (the core gone
@@ -511,9 +520,11 @@ window scoped to one model (Claude Code's Opus week, a Codex model's own
 limit) holds only a chat on that model, the model of the turn that stopped
 (`agents::stopped_model`): Codex's latest `turn_context`, answered or not, so
 a chat switched to Spark whose first Spark turn hit Spark's limit is judged
-by Spark; Claude Code's failed request names no model (`<synthetic>`), so
-its settings' model. Not the model that answered last. With the model
-unknown, every window counts (`UsageReading::for_model`). No usage percentage picks a source.
+by Spark; Claude Code's failed request names no model (`<synthetic>`) and
+its transcript records no `/model` switch, so the model that answered last
+(`last_model`, past those lines), which follows a switch once the new model
+has answered, else its settings' model, the one it was started on. With the
+model unknown, every window counts (`UsageReading::for_model`). No usage percentage picks a source.
 
 **The ask** (a person's chat with Luna tools whose CLI has listed
 `luna_session_handoff`, no ask of the person's open, not in plan mode or a
@@ -529,15 +540,20 @@ The chat found on another conversation once it is typed fails the ask at
 once (`left_asked`, `LEFT_ASKED`, `AskEnd::Left`), Ask again offered, rather
 than the dialog saying it writes until the wait runs out. Opening the ask
 takes the chat from the threshold's ask, which closes, its notice not yet
-typed dropped (`ask_taken`): while the move asks, any file the chat sends is
-the move's (`asked_file`), never a handoff, so the threshold's ask could only
-refuse; the person asked for the move. The threshold stays quiet for the
+typed dropped (`ask_taken`, `threshold_retired`): while the move asks, any
+file the chat sends is the move's (`asked_file`), never a handoff, so the
+threshold's ask could only refuse; the person asked for the move. A move
+built from records retires it the same way as its preview is kept
+(`move_prepare`, `shown_taken`): a handoff the threshold asked for would
+reset the chat in the middle of the move. The threshold stays quiet for the
 whole move, any move, its preview under review and the steps after
-confirmation included (`moving::under_way`), and is re-armed as the move ends
-before the old chat was stopped (`end_where`, `store::rearmed_unasked`): the
-chat goes on where it is and is asked again if it is still past it. Not
-while the person's ask is open, a handoff is under way or its file is being
-copied. The tool without `file` then serves
+confirmation included (`moving::under_way`): it opens no ask, the notifier
+types none of its notices (`withheld`), and the person's Hand off now is
+refused. It is re-armed as the move ends with the old chat not stopped,
+before its stop or in a move that keeps it running (`stop_old` false;
+`end_where`, `store::rearmed_unasked`): the chat goes on where it is and is
+asked again if it is still past it. Not while the person's ask is open, a
+handoff is under way or its file is being copied. The tool without `file` then serves
 the move's text (`served::move_instructions`, `facts::move_how_to`, a drafts
 name `move-<id>-<random>.md`): the handoff's instructions in effect, the
 person's override included, under the move's own rules (helpers stay behind,

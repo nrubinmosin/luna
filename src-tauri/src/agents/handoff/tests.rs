@@ -270,6 +270,44 @@ fn a_failure_line_with_the_continuation_goes_only_into_the_conversation_the_rese
     done_with(&["hocont-me"], &dir);
 }
 
+/// The person's `/clear` or `/new` lands between the notifier's look at a
+/// failure line with the continuation and its text going in: looked at
+/// again once their keys are held, right before the paste, nothing is typed,
+/// and the next look tells the conversation they started only of the copy.
+/// A threshold notice already put together as a move began is not typed
+/// either.
+#[test]
+fn a_queued_line_is_looked_at_again_under_the_held_keys_before_it_goes_in() {
+    chat("hokey-me", Some(70));
+    let (dir, file) = scratch_file("keys");
+    schedule("hokey-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    store::change("hokey-me", |r| r.switch.as_mut().unwrap().opened = Some("new".into())).unwrap();
+    finish("hokey-me", 1, Ended::Failed { why: "x".into(), reset: true }, &|| "PROMPT".into());
+    let line = reg().lock().unwrap().news.iter().find(|(c, _)| c == "hokey-me").map(|(_, l)| l.clone()).unwrap();
+    set_conversation_for_test("hokey-me", Some("new"));
+    crate::pty::fake_terminal_for_test("hokey-me", true);
+    let told = as_told("hokey-me", &line);
+    assert_eq!(told, line, "as the notifier's look puts it: whole");
+    let clear = Box::new(|| set_conversation_for_test("hokey-me", Some("theirs")));
+    crate::agents::notifier::deliver_news_for_test("hokey-me", vec![(told, line.clone())], clear);
+    let (typed, held) = crate::pty::fake_terminal_of("hokey-me");
+    assert_eq!(typed, "", "nothing typed into the conversation the person started");
+    assert!(!held, "their keys go on");
+    assert!(reg().lock().unwrap().news.iter().any(|(c, l)| c == "hokey-me" && *l == line), "still queued, for the next look");
+    assert!(!as_told("hokey-me", &line).contains("PROMPT"), "which names only the copy");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hokey-me");
+    // A threshold notice put together before a move began.
+    set_conversation_for_test("hokey-me", Some("new"));
+    let notice = facts::notice(72, 70, false, true);
+    let shown = moving::tests::a_move(moving::MovePhase::Shown { at: 1 });
+    let begin = Box::new(move || store::change("hokey-me", |r| r.moving = Some(shown)).unwrap());
+    crate::agents::notifier::deliver_news_for_test("hokey-me", vec![(notice.clone(), notice)], begin);
+    assert_eq!(crate::pty::fake_terminal_of("hokey-me"), (String::new(), false), "no handoff asked in the middle of a move");
+    crate::pty::fake_terminal_for_test("hokey-me", false);
+    let _ = store::remove("hokey-me");
+    done_with(&["hokey-me"], &dir);
+}
+
 #[test]
 fn turning_it_off_closes_the_thresholds_ask_and_gives_up_its_scheduled_handoff() {
     chat("hots-me", None);
@@ -376,11 +414,20 @@ fn hand_off_now_is_refused_where_the_chat_cannot_answer_saying_why() {
     assert_eq!(now_refusal("honow-me"), None);
     assert!(handoff_now("honow-me".into()).unwrap_err().contains("not running"));
     assert_eq!(open_ask("honow-me"), None, "nothing opened");
-    // A move asking the chat for its document.
-    let asking = moving::tests::a_move(moving::MovePhase::Asking { at: 1 });
-    store::change("honow-me", |r| r.moving = Some(asking)).unwrap();
-    assert!(refused("honow-me").contains("move's document"), "{}", refused("honow-me"));
-    assert!(open_manual("honow-me").is_err(), "looked at again where it is opened");
+    // A move under way, asking the chat or not: quiet for the whole move.
+    for phase in [
+        moving::MovePhase::Asking { at: 1 },
+        moving::MovePhase::Shown { at: 1 },
+        moving::MovePhase::Confirmed { at: 1 },
+        moving::MovePhase::RowCreated { at: 1 },
+    ] {
+        let m = moving::tests::a_move(phase);
+        store::change("honow-me", |r| r.moving = Some(m)).unwrap();
+        assert!(refused("honow-me").contains("move of this chat to another account is under way"), "{}", refused("honow-me"));
+        assert!(open_manual("honow-me").is_err(), "looked at again where it is opened");
+    }
+    store::change("honow-me", |r| r.moving = Some(moving::tests::a_move(moving::MovePhase::Done { at: 2 }))).unwrap();
+    assert_eq!(now_refusal("honow-me"), None, "a move over is no bar");
     store::change("honow-me", |r| r.moving = None).unwrap();
     // A handoff under way.
     ask("honow-me", store::AskKind::Auto);
@@ -1007,7 +1054,11 @@ fn the_thresholds_ask_is_not_opened_over_what_changed_as_its_context_was_read() 
     let (dir, file) = scratch_file("aa");
     let told = store::Told { conversation: "c".into(), level: 1, floor: 0, shares: vec![72], compacted: 0, tokens: 1 };
     let asked = store::Asked { conversation: Some("conv".into()), ..store::Asked::new(store::AskKind::Auto, 5, Some(1)) };
-    let open = |threshold| store::change("hoaa-me", |r| ask_auto("hoaa-me", r, threshold, told.clone(), false, asked.clone())).unwrap();
+    let line = facts::notice(72, 70, false, true);
+    let open = |threshold| {
+        store::change("hoaa-me", |r| ask_auto("hoaa-me", r, threshold, told.clone(), false, asked.clone(), line.clone())).unwrap()
+    };
+    let queued = || reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hoaa-me").count();
     // Off as it was read: its closing stands.
     set_auto_handoff("hoaa-me".into(), Some(70)).unwrap();
     set_auto_handoff("hoaa-me".into(), None).unwrap();
@@ -1026,10 +1077,17 @@ fn the_thresholds_ask_is_not_opened_over_what_changed_as_its_context_was_read() 
     store::change("hoaa-me", |r| r.asked = None).unwrap();
     assert!(!open(70));
     finish("hoaa-me", 1, Ended::Done, &String::new);
-    // Nothing changed: opened, of the conversation read.
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hoaa-me");
+    // Nothing changed: opened, of the conversation read, its notice queued
+    // with it under the record's lock.
     assert!(open(70));
     assert_eq!(store::records()["hoaa-me"].asked, Some(asked.clone()));
     assert_eq!(store::records()["hoaa-me"].told.as_ref().map(|t| t.level), Some(1));
+    assert_eq!(queued(), 1);
+    // The person's ask opened after it drops that notice, under the same lock.
+    open_manual("hoaa-me").unwrap();
+    assert_eq!(queued(), 0, "no second request");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hoaa-me");
     done_with(&["hoaa-me"], &dir);
 }
 
