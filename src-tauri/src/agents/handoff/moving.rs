@@ -587,23 +587,61 @@ pub fn move_prepare(
     let mut m = new_move(&id, &new_id, &old, to_account, to_account_path, prompt, Source::Luna, worktree);
     m.phase = MovePhase::Shown { at: now_ms() };
     m.shown_sha256 = sha256.clone();
-    store::change(chat, |r| shown_taken(chat, r, &m)).map_err(|e| format!("the move could not be saved: {e}"))?;
+    let withdrawn = store::change(chat, |r| taken(chat, r, &m)).map_err(|e| format!("the move could not be saved: {e}"))??;
     crate::agents::save_chats();
+    if withdrawn {
+        ask_withdrawn(chat);
+    }
     crate::log::info("move", &format!("{} has a move to another account built ({id}, {} bytes)", label(chat), built.text.len()));
     Ok(preview_of(&m, built.text, [built.redacted, built.paths_cut, built.invisible], warnings))
 }
 
-/// Move `m`, built from records and shown, taken on `chat`'s record `r`: an
-/// ask of a move before it closed, its answer late from now, and the
-/// threshold's ask retired (`threshold_retired`).
-fn shown_taken(chat: &str, r: &mut store::Record, m: &Move) {
+/// What starting a move is refused with while a handoff of the chat is
+/// scheduled, or its file is being copied: the reset it brings would come in
+/// the middle of the move.
+const HANDOFF_UNDER_WAY: &str = "a handoff of this chat is under way; move it once that is through";
+
+/// Move `m`, as it begins by its ask or from records, taken on `chat`'s
+/// record `r`, unless a handoff of the chat is scheduled or its file is being
+/// copied (`HANDOFF_UNDER_WAY`), looked at again here under the record's lock.
+/// An ask of a move before it closed has its answer late from now, and the
+/// threshold's ask is retired (`threshold_retired`). The person's own ask for
+/// a handoff still open, which no handoff answers yet (that one would be
+/// scheduled), is withdrawn: the move is their later word, and a handoff
+/// answering the ask would reset the chat in the middle of it. Its request not
+/// typed yet is dropped with the threshold's notice, and one being typed now
+/// finds it gone (mod.rs `manual_typed`). Whether it withdrew one, for the
+/// person to be told (`ask_withdrawn`).
+fn taken(chat: &str, r: &mut store::Record, m: &Move) -> Result<bool, &'static str> {
+    if r.switch.is_some() || r.reserved.is_some() {
+        return Err(HANDOFF_UNDER_WAY);
+    }
+    let withdrawn = r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Manual);
+    if withdrawn {
+        r.asked = None;
+    }
+    threshold_retired(chat, r);
     // An ask this move takes the place of: its answer is late from now.
     if let Some(old) = r.moving.as_ref().filter(|o| matches!(o.phase, MovePhase::Asked { .. })) {
         r.ask_closed = Some((old.id.clone(), now_ms()));
         r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
     }
-    threshold_retired(chat, r);
     r.moving = Some(m.clone());
+    Ok(withdrawn)
+}
+
+/// The person told, in the chat's pane and on the desktop, that the move they
+/// began took the place of the handoff they had asked `chat` for (`taken`).
+fn ask_withdrawn(chat: &str) {
+    crate::log::info("move", &format!("{}: the person's ask for a handoff is withdrawn; the move takes its place", label(chat)));
+    let name = chat_name(chat).unwrap_or_else(|| chat.to_string());
+    crate::power::notify_chat(
+        chat,
+        "A move took the place of a handoff",
+        &format!(
+            "Your request for a handoff of \"{name}\" is withdrawn: the move to another account you began takes its place. Ask again from its pane's menu once the move is through."
+        ),
+    );
 }
 
 /// The threshold's ask on `chat`'s record `r` retired as a move of the chat
@@ -982,7 +1020,10 @@ fn confirm_with(
         return Err(format!("the move could not be saved: {e}"));
     }
     let payload_s = payload.to_string_lossy().into_owned();
+    // A handoff scheduled since the move began (mod.rs `schedule` refuses
+    // one while a move is under way) would reset the chat as it moves.
     let committed = store::change(chat, |r| match r.moving.as_mut().filter(|x| x.id == move_id && x.phase.rank() == 0) {
+        Some(_) if r.switch.is_some() => Err(HANDOFF_UNDER_WAY),
         Some(x) => {
             x.phase = MovePhase::Confirmed { at: now_ms() };
             // Kept or stopped as the person chose, in what Send is bound to;
@@ -1381,15 +1422,12 @@ pub(super) fn prompt_verdict(pty: &crate::pty::PtyManager, id: &str) -> Result<(
     Ok(())
 }
 
-/// Whether `chat` is being asked for a move's document.
-pub(super) fn asking(chat: &str) -> bool {
-    store::records().get(chat).and_then(|r| r.moving.as_ref()).is_some_and(Move::asking)
-}
-
 /// Whether `chat` has a move under way, from its ask or preview until it is
 /// done, failed or canceled: the threshold opens no ask (mod.rs `ask_auto`),
-/// the notifier types no handoff notice (mod.rs `withheld`) and the person's
-/// Hand off now is refused (mod.rs `now_refusal`) until it ends. A handoff
+/// the notifier types no handoff notice (mod.rs `withheld`), the person's
+/// Hand off now is refused (mod.rs `now_refusal`), the person's ask is not
+/// typed (mod.rs `manual_ask_of`) and no handoff is scheduled (mod.rs
+/// `schedule`) until it ends. A handoff
 /// asked of a chat the person is moving would race the move for what the
 /// chat writes, or reset it in the middle of the move, and the move carries
 /// it on anyway.
@@ -1399,8 +1437,9 @@ pub(super) fn under_way(chat: &str) -> bool {
 
 /// Why `chat`, run with `settings`, is not to be asked for its move's
 /// document now, with what would clear the way: no handoff tool to send it
-/// with, one its CLI has not listed, the person's ask for a handoff open, no
-/// file it can write, or its CLI not in a state to answer.
+/// with, one its CLI has not listed, no file it can write, or its CLI not in
+/// a state to answer. The person's ask for a handoff open is no bar: the move
+/// takes its place (`taken`).
 fn ask_blocked(chat: &str, settings: &Value, provider: Provider) -> Option<String> {
     if !super::may_list(chat) {
         return Some(
@@ -1416,9 +1455,6 @@ fn ask_blocked(chat: &str, settings: &Value, provider: Provider) -> Option<Strin
                 .into(),
         );
     }
-    if super::open_ask(chat) == Some(store::AskKind::Manual) {
-        return Some("you asked this chat for a handoff, which is still open: let it go through or lapse, then ask".into());
-    }
     if let Some(why) = super::served::unwritable(settings) {
         return Some(format!("the chat writes no file: {why}"));
     }
@@ -1431,8 +1467,9 @@ fn ask_blocked(chat: &str, settings: &Value, provider: Provider) -> Option<Strin
 /// The window's "Ask the chat": a person's chat with Luna's tools, whose CLI
 /// has listed Luna's handoff tool, asked to write its own document for the
 /// move through that tool, collected without a reset. Only where it can write
-/// a file and is running, not stopped on a limit, and not asked for a handoff
-/// by the person meanwhile; typed only at a strict prompt. The threshold's ask
+/// a file and is running, not stopped on a limit, and with no handoff
+/// scheduled; typed only at a strict prompt. The person's own ask for a
+/// handoff open is withdrawn, the person told (`taken`). The threshold's ask
 /// open gives way: a file the chat sends goes to the move while it asks
 /// (`asked_file`), never to a handoff, so the threshold's ask closes, its
 /// notice not typed yet dropped (`threshold_retired`, as for a move from
@@ -1451,32 +1488,13 @@ pub fn move_ask(chat_id: String, new_id: String, to_account_path: String, note: 
     let line = prompt_line_with(&id, Source::Chat, chat, chat_name(chat).as_deref(), &payload.to_string_lossy(), &note);
     let mut m = new_move(&id, &new_id, &old, to_account, to_account_path, line, Source::Chat, worktree);
     m.note = note;
-    let taken = store::change(chat, |r| ask_taken(chat, r, &m)).map_err(|e| format!("the move could not be saved: {e}"))?;
-    if !taken {
-        return Err("a handoff of this chat began meanwhile: ask once it is through or has lapsed".into());
-    }
+    let withdrawn = store::change(chat, |r| taken(chat, r, &m)).map_err(|e| format!("the move could not be saved: {e}"))??;
     crate::agents::save_chats();
+    if withdrawn {
+        ask_withdrawn(chat);
+    }
     crate::log::info("move", &format!("{} is to be asked for its move's document ({id})", label(chat)));
     Ok(status_of(chat, &m))
-}
-
-/// Move `m`, its ask opening, taken on `chat`'s record `r` if nothing keeps
-/// the chat: the person's ask or a handoff begun since the look before, or
-/// one being copied, which would race the move's ask for one file. The
-/// threshold's ask gives way (`threshold_retired`), re-armed only as the
-/// move ends. Whether it was.
-fn ask_taken(chat: &str, r: &mut store::Record, m: &Move) -> bool {
-    if r.switch.is_some() || r.reserved.is_some() || r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Manual) {
-        return false;
-    }
-    threshold_retired(chat, r);
-    // An ask this move takes the place of: its answer is late from now.
-    if let Some(old) = r.moving.as_ref().filter(|o| matches!(o.phase, MovePhase::Asked { .. })) {
-        r.ask_closed = Some((old.id.clone(), now_ms()));
-        r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
-    }
-    r.moving = Some(m.clone());
-    true
 }
 
 /// The preview of a document the chat wrote, once collected: read back as
@@ -2627,7 +2645,7 @@ pub(super) mod tests {
         m.note = "Keep going.".into();
         store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
         super::super::set_conversation_for_test(chat, Some("old"));
-        assert!(asking(chat), "no threshold notice meanwhile");
+        assert!(store::records()[chat].moving.as_ref().is_some_and(Move::asking), "no threshold notice meanwhile");
         // Served the move's own text, with a drafts name for it.
         super::super::drafts_at_start(chat).unwrap();
         let how = ask_instructions(chat).unwrap().unwrap();
@@ -2773,10 +2791,10 @@ Ship it.
 
     /// The move's ask goes to a person's chat with Luna's tools, threshold or
     /// none, whose CLI has listed the tool; each refusal says what stands in
-    /// the way and how to clear it, and the person's own ask for a handoff
-    /// keeps the chat until it goes through or lapses.
+    /// the way and how to clear it. The person's own ask for a handoff is
+    /// none of them: the move takes its place.
     #[test]
-    fn a_move_asks_a_chat_with_the_tool_listed_and_not_while_the_person_asked_for_a_handoff() {
+    fn a_move_asks_a_chat_with_the_tool_listed_whatever_the_person_asked() {
         use crate::agents::registry::register;
         let acc = "C:/acc/anthropic/one";
         register("mvb-plain", Provider::Claude, "C:/p", acc, None, false, serde_json::json!({}));
@@ -2789,9 +2807,10 @@ Ship it.
         super::super::listed("mvb-me");
         // Past the tool: what is left is that no CLI runs here.
         assert!(blocked("mvb-me").contains("its CLI is not running"), "{}", blocked("mvb-me"));
+        // The person's ask for a handoff is no bar: the move takes its place (`taken`).
         store::change("mvb-me", |r| r.asked = Some(store::Asked::new(store::AskKind::Manual, 1, None))).unwrap();
-        let e = blocked("mvb-me");
-        assert!(e.contains("you asked this chat for a handoff") && e.contains("lapse"), "{e}");
+        assert!(blocked("mvb-me").contains("its CLI is not running"), "{}", blocked("mvb-me"));
+        let _ = store::remove("mvb-me");
         for e in [blocked("mvb-plain"), blocked("mvb-me")] {
             assert!(!e.contains("let Luna build"), "{e}");
         }
@@ -3039,24 +3058,64 @@ Ship it.
         store::remove(chat).unwrap();
     }
 
-    /// A move's ask takes the chat from the threshold's ask, which closes,
-    /// the threshold re-armed only as the move ends; never from the person's,
-    /// a handoff under way, or one whose file is being copied.
+    /// A move, by its ask or from records, takes the chat from the
+    /// threshold's ask, which closes, the threshold re-armed only as the move
+    /// ends, and from the person's, which is withdrawn for them to be told;
+    /// never from a handoff scheduled or one whose file is being copied.
     #[test]
-    fn a_moves_ask_takes_the_place_of_the_thresholds_only() {
+    fn a_move_takes_the_place_of_an_ask_never_of_a_handoff() {
         let chat = "mvtake-old";
-        let m = a_move(MovePhase::Asking { at: 1 });
         let told = store::Told { conversation: "c".into(), level: 1, floor: 0, shares: vec![72], compacted: 0, tokens: 1 };
-        let auto = store::Asked::new(store::AskKind::Auto, 1, None);
-        let mut r = store::Record { told: Some(told.clone()), asked: Some(auto.clone()), ..Default::default() };
-        assert!(ask_taken(chat, &mut r, &m));
-        assert_eq!((r.asked.as_ref(), r.told.as_ref().map(|t| t.level)), (None, Some(1)), "closed, not re-armed yet");
-        assert!(r.moving.as_ref().is_some_and(Move::asking));
-        let manual = store::Asked::new(store::AskKind::Manual, 1, None);
-        let mut r = store::Record { told: Some(told.clone()), asked: Some(manual), ..Default::default() };
-        assert!(!ask_taken(chat, &mut r, &m) && r.moving.is_none(), "the person's ask keeps it");
-        let mut r = store::Record { asked: Some(auto), reserved: Some(3), ..Default::default() };
-        assert!(!ask_taken(chat, &mut r, &m) && r.asked.is_some(), "a handoff's file being copied keeps it");
+        for m in [a_move(MovePhase::Asking { at: 1 }), a_move(MovePhase::Shown { at: 1 })] {
+            let word = m.phase.word();
+            let auto = store::Asked::new(store::AskKind::Auto, 1, None);
+            let mut r = store::Record { told: Some(told.clone()), asked: Some(auto.clone()), ..Default::default() };
+            assert_eq!(taken(chat, &mut r, &m), Ok(false), "{word}");
+            assert_eq!((r.asked.as_ref(), r.told.as_ref().map(|t| t.level)), (None, Some(1)), "{word}: closed, not re-armed yet");
+            assert_eq!(r.moving.as_ref().map(|x| x.phase.clone()), Some(m.phase.clone()));
+            // The person's ask, typed or not: withdrawn, and said so.
+            let typed =
+                store::Asked { typed: Some(2), conversation: Some("c".into()), ..store::Asked::new(store::AskKind::Manual, 1, None) };
+            for manual in [store::Asked::new(store::AskKind::Manual, 1, None), typed] {
+                let mut r = store::Record { told: Some(told.clone()), asked: Some(manual), ..Default::default() };
+                assert_eq!(taken(chat, &mut r, &m), Ok(true), "{word}: the move is the person's later word");
+                assert!(r.asked.is_none() && r.moving.is_some(), "{word}");
+            }
+            // A handoff scheduled answers the ask, and would reset the chat
+            // mid-move; one being copied would race it for the chat.
+            let manual = store::Asked::new(store::AskKind::Manual, 1, None);
+            let switched = store::Record {
+                asked: Some(manual),
+                switch: Some(super::super::phase::tests::switch(Provider::Claude)),
+                ..Default::default()
+            };
+            let copying = store::Record { asked: Some(auto), reserved: Some(3), ..Default::default() };
+            for mut r in [switched, copying] {
+                let before = r.asked.clone();
+                assert_eq!(taken(chat, &mut r, &m), Err(HANDOFF_UNDER_WAY), "{word}");
+                assert!(r.moving.is_none() && r.asked == before, "{word}: nothing changed");
+            }
+        }
+    }
+
+    /// A move's Send is refused while a handoff of its chat is scheduled:
+    /// its reset would come in the middle of the move.
+    #[test]
+    fn a_move_is_not_sent_while_a_handoff_of_its_chat_is_scheduled() {
+        let (chat, new) = ("mvsw-old", "mvsw-new");
+        let m = shown(chat, new, false);
+        store::change(chat, |r| r.switch = Some(super::super::phase::tests::switch(Provider::Claude))).unwrap();
+        let roots = scrub::Roots::of(&[("C:\\Luna", scrub::LUNA_FOLDER)]);
+        let text = "# Moved chat\nGo on.\n";
+        let e = confirm_with(chat, "m1", text, &sha256_hex(text.as_bytes()), &m.launch.clone().unwrap(), &roots, &|_| Ok(())).unwrap_err();
+        assert_eq!(e, HANDOFF_UNDER_WAY);
+        assert!(matches!(store::records()[chat].moving.as_ref().map(|x| &x.phase), Some(MovePhase::Shown { .. })), "not confirmed");
+        assert!(store::records().get(new).is_none_or(|r| r.moved_from.is_none()), "the new chat's side undone");
+        assert!(!super::super::dir_of(new).unwrap().join("1.md").exists());
+        for c in [chat, new] {
+            let _ = store::remove(c);
+        }
+        let _ = std::fs::remove_dir_all(super::super::dir_of(new).unwrap());
     }
 
     /// The threshold asks nothing while a move is under way, its preview
@@ -3146,11 +3205,7 @@ Ship it.
             reg().lock().unwrap().news.push((chat.to_string(), other.to_string()));
             assert!(!super::super::withheld(chat, &notice), "no move yet");
             let m = a_move(if by_ask { MovePhase::Asking { at: 1 } } else { MovePhase::Shown { at: 1 } });
-            if by_ask {
-                assert!(store::change(chat, |r| ask_taken(chat, r, &m)).unwrap());
-            } else {
-                store::change(chat, |r| shown_taken(chat, r, &m)).unwrap();
-            }
+            assert_eq!(store::change(chat, |r| taken(chat, r, &m)).unwrap(), Ok(false));
             let r = store::records().get(chat).cloned().unwrap();
             assert_eq!((r.asked, r.moving.map(|m| m.id)), (None, Some("m1".to_string())), "{chat}");
             let queued: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == chat).map(|(_, l)| l.clone()).collect();
@@ -3160,12 +3215,18 @@ Ship it.
             reg().lock().unwrap().news.retain(|(c, _)| c != chat);
             let _ = store::remove(chat);
         }
-        // The person's ask is theirs: a move from records leaves it.
+        // The person's ask, its request not typed yet: withdrawn with it,
+        // and nothing of it typed while the move is under way.
         let chat = "mvret-manual";
         let _ = store::remove(chat);
+        let request = super::super::facts::manual_notice();
         store::change(chat, |r| r.asked = Some(store::Asked::new(store::AskKind::Manual, 1, None))).unwrap();
-        store::change(chat, |r| shown_taken(chat, r, &a_move(MovePhase::Shown { at: 1 }))).unwrap();
-        assert_eq!(store::records()[chat].asked.as_ref().map(|a| a.kind), Some(store::AskKind::Manual));
+        reg().lock().unwrap().news.push((chat.to_string(), request.clone()));
+        let withdrawn = store::change(chat, |r| taken(chat, r, &a_move(MovePhase::Shown { at: 1 }))).unwrap();
+        assert_eq!(withdrawn, Ok(true));
+        assert!(store::records()[chat].asked.is_none());
+        assert!(!reg().lock().unwrap().news.iter().any(|(c, _)| c == chat), "its request dropped");
+        assert!(super::super::withheld(chat, &request), "nor typed if already on its way");
         let _ = store::remove(chat);
     }
 }

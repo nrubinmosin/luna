@@ -251,6 +251,18 @@ the move is over instead (`moving::MOVE_OVER`), not that nobody asked it.
   saved): that same ask only, never one typed since, with its own word to the
   chat (`facts::manual_undelivered`) and the desktop (`undelivered`). Turning auto-handoff off closes only the threshold's ask and a
   switch it only scheduled; the person's is theirs.
+- **A move takes its place.** A move of the chat the person begins, by its
+  ask or from records, withdraws their ask still open, typed or not, as long
+  as no handoff answers it yet (`moving::taken`, under the record's lock):
+  the move is their later word, and the handoff the ask would bring resets
+  the chat in the middle of the move. Its request not yet typed is dropped
+  with the threshold's notice, one being typed finds it gone
+  (`manual_typed`), and the pane and the desktop say the move took its place
+  (`moving::ask_withdrawn`); a call the chat makes for it then is refused as
+  unasked. A move is refused to begin while a handoff of the chat is
+  scheduled or its file is being copied. While a move is under way the
+  person's ask is neither typed nor closed (`manual_ask_of`); Hand off now
+  refuses to open one then.
 
 ## The call with a file
 
@@ -276,8 +288,9 @@ the move is over instead (`moving::MOVE_OVER`), not that nobody asked it.
 - **Recording it.** The switch is recorded on disk (`write_private_synced`; a
   save that fails is undone and refuses the call), only while the reservation
   is still the call's, the chat is still listed the tool and its ask still
-  holds in the conversation the call came from (`schedule`, `ask_holds`), all
-  looked at under the record's lock (turning auto-handoff off under the
+  holds in the conversation the call came from (`schedule`, `ask_holds`), and
+  no move of the chat began meanwhile (`moving::under_way`: its reset would
+  come in the middle of the move), all looked at under the record's lock (turning auto-handoff off under the
   threshold's ask takes that lock, clears the reservation and changes the
   registry inside it), under the notifier's
   exclusion for the chat (`hand_off`): whatever is going into the chat then (a
@@ -363,9 +376,14 @@ until they are through.
   by the line's SHA-256): it goes in whole only while the chat is still on
   that one, looked at as the notice is put together, again where it goes
   in, and a last time once the person's keys are held, right before the
-  paste (`as_told`; delivery.rs `type_text`'s `stands`): a `/clear` or `/new`
-  of theirs between the looks finds nothing typed (`NO_LONGER_STANDS`), and
-  the next look puts the line in other words. On any other conversation, or
+  paste (`as_told`; delivery.rs `type_text`'s `stands`). A `/clear` or `/new`
+  of theirs sent just before the hold may not have reached the CLI yet, which
+  still reads as the old conversation: so the line also waits on any key of
+  theirs since the notifier's look, or within the quiet that look asked for
+  (`TYPING_QUIET_MS`; notifier `deliver_notice`, by `typed_at_ms`, which
+  stamps a key as it is queued for the CLI). Either way nothing is typed
+  (`NO_LONGER_STANDS`), the line stays queued, and the next look sees the
+  conversation their keys took the chat to. On any other conversation, or
   where Luna cannot tell, a short line (`facts::continued_short`) naming the
   copy takes its place.
 - A core restart: `from_bytes` makes a switch in `Resetting` or `Prompting`
@@ -429,7 +447,7 @@ transcript lacks it (`taken_up`).
 limit that still holds the chat (`activity::limit_in_force`, a `LimitFact`:
 its kind, since when, the full window with its share and reset, the reading's
 time and age) and what keeps the chat from being asked (`ask_blocked`: no
-Luna tools, a CLI that has not listed the tool, the person's ask open, a
+Luna tools, a CLI that has not listed the tool, a
 sandbox or mode that writes no file, its CLI not running, stopped on a limit
 in force, a question of its CLI's), each with what clears it. `move_prepare`
 builds Luna's document (bounded, within 30 s) and keeps the move as shown;
@@ -438,7 +456,8 @@ builds Luna's document (bounded, within 30 s) and keeps the move as shown;
 Luna's document: it closes the ask as Cancel does (`ask_closed`), so a
 document the chat sends late is refused and never replaces the preview, and
 builds into the same preview with the move's destination and note;
-`move_confirm` is Send; `move_step` is the window's word that it
+`move_confirm` is Send, refused while a handoff of the chat is scheduled
+(`Record::switch`, looked at under the record's lock); `move_step` is the window's word that it
 stopped the old chat (`oldStopped`, looked at: its CLI no longer runs) or made
 the row (`rowCreated`); `move_cancel`; `move_list`. The window's part is
 `features/chats/moving.ts` (`carryOut`, and `useMoves`, which goes on with a
@@ -523,11 +542,14 @@ a chat switched to Spark whose first Spark turn hit Spark's limit is judged
 by Spark; Claude Code's failed request names no model (`<synthetic>`) and
 its transcript records no `/model` switch, so the model that answered last
 (`last_model`, past those lines), which follows a switch once the new model
-has answered, else its settings' model, the one it was started on. With the
+has answered, else its settings' model, the one it was started on. So a
+chat switched with `/model` whose first turn on the new model stops on a
+limit before that model has answered anything is judged by the model before
+the switch, the one that answered last. With the
 model unknown, every window counts (`UsageReading::for_model`). No usage percentage picks a source.
 
 **The ask** (a person's chat with Luna tools whose CLI has listed
-`luna_session_handoff`, no ask of the person's open, not in plan mode or a
+`luna_session_handoff`, not in plan mode or a
 read-only sandbox, running, not stopped on a limit: `ask_blocked`; no
 auto-handoff needed): `Asking` until the chat stands at a strict prompt, then
 the fixed line `[Luna move <id> request, not typed by the user]` typed under
@@ -540,11 +562,11 @@ The chat found on another conversation once it is typed fails the ask at
 once (`left_asked`, `LEFT_ASKED`, `AskEnd::Left`), Ask again offered, rather
 than the dialog saying it writes until the wait runs out. Opening the ask
 takes the chat from the threshold's ask, which closes, its notice not yet
-typed dropped (`ask_taken`, `threshold_retired`): while the move asks, any
+typed dropped (`taken`, `threshold_retired`): while the move asks, any
 file the chat sends is the move's (`asked_file`), never a handoff, so the
 threshold's ask could only refuse; the person asked for the move. A move
 built from records retires it the same way as its preview is kept
-(`move_prepare`, `shown_taken`): a handoff the threshold asked for would
+(`move_prepare`, `taken`): a handoff the threshold asked for would
 reset the chat in the middle of the move. The threshold stays quiet for the
 whole move, any move, its preview under review and the steps after
 confirmation included (`moving::under_way`): it opens no ask, the notifier
@@ -552,7 +574,8 @@ types none of its notices (`withheld`), and the person's Hand off now is
 refused. It is re-armed as the move ends with the old chat not stopped,
 before its stop or in a move that keeps it running (`stop_old` false;
 `end_where`, `store::rearmed_unasked`): the chat goes on where it is and is
-asked again if it is still past it. Not while the person's ask is open, a
+asked again if it is still past it. The person's own ask open is
+withdrawn the same way, the person told ([The ask](#the-ask)). Not while a
 handoff is under way or its file is being copied. The tool without `file` then serves
 the move's text (`served::move_instructions`, `facts::move_how_to`, a drafts
 name `move-<id>-<random>.md`): the handoff's instructions in effect, the

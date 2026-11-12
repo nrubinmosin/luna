@@ -779,6 +779,17 @@ fn deliver_notice(
             .iter()
             .all(|(told, line)| !crate::agents::handoff::withheld(caller, line) && crate::agents::handoff::as_told(caller, line) == *told)
     };
+    // A `/clear` or `/new` the person sent just before their keys were held
+    // is on its way to a CLI that has not acted on it yet, and the
+    // conversation still reads as the old one. So a line bound to its
+    // conversation also goes in only with no key of theirs since this look,
+    // nor within the quiet the look before it asked for (`ready_for_notice`),
+    // which covers the stretch up to here: otherwise nothing goes in, and
+    // the next look sees where their keys took the chat.
+    let bound = news_lines.iter().any(|(_, line)| crate::agents::handoff::bound_to_conversation(line));
+    let keys_at = pty.typed_at_ms(caller);
+    let no_keys_since = || pty.typed_at_ms(caller) == keys_at && pty.typed_ago_ms(caller).is_none_or(|ms| ms >= TYPING_QUIET_MS);
+    let stands_held = || stands() && (!bound || no_keys_since());
     if !stands() {
         crate::log::info(
             "agents",
@@ -799,7 +810,7 @@ fn deliver_notice(
             Err(e) => (Err(e), 0),
         }
     } else {
-        (type_text(pty, caller, text, before.map(|t| t.turn), baseline, &stands), baseline + 1)
+        (type_text(pty, caller, text, before.map(|t| t.turn), baseline, &stands_held), baseline + 1)
     };
     // In, or not to be: a handover waiting on it goes ahead.
     drop(telling);
@@ -906,7 +917,10 @@ fn deliver_notice(
         }
         Err(e) if e == NO_LONGER_STANDS => crate::log::info(
             "agents",
-            &format!("notice to {} not typed: a queued line's conversation or move changed as the person's keys were held", label(caller)),
+            &format!(
+                "notice to {} not typed: a queued line's conversation or move changed, or the person typed, as their keys were held",
+                label(caller)
+            ),
         ),
         Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(caller))),
     }

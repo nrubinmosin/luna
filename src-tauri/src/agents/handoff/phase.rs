@@ -492,7 +492,7 @@ pub(super) mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    fn switch(provider: Provider) -> Switch {
+    pub(in crate::agents::handoff) fn switch(provider: Provider) -> Switch {
         Switch {
             n: 3,
             provider,

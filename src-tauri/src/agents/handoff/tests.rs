@@ -270,6 +270,35 @@ fn a_failure_line_with_the_continuation_goes_only_into_the_conversation_the_rese
     done_with(&["hocont-me"], &dir);
 }
 
+/// A move under way keeps the chat from a handoff: a call whose file was
+/// being copied as the move began schedules nothing, and the person's ask
+/// is neither typed nor closed until the move ends, then looked at again.
+#[test]
+fn no_handoff_is_scheduled_or_asked_while_a_move_is_under_way() {
+    chat("homove-me", None);
+    ask("homove-me", store::AskKind::Manual);
+    let (dir, file) = scratch_file("homove");
+    let shown = moving::tests::a_move(moving::MovePhase::Shown { at: 1 });
+    store::change("homove-me", |r| r.moving = Some(shown)).unwrap();
+    let e = schedule("homove-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap_err();
+    assert!(e.contains("a move of this chat") && e.contains("nothing will switch"), "{e}");
+    let r = store::records()["homove-me"].clone();
+    assert!(r.switch.is_none() && r.reserved.is_none(), "nothing scheduled, nothing held");
+    assert!(!dir_of("homove-me").unwrap().join(format!("{}.md", r.last)).exists(), "its copy gone");
+    // Not typed in time, long ago: left as it is while the move is under way.
+    store::change("homove-me", |r| r.asked = Some(store::Asked::new(store::AskKind::Manual, 1, None))).unwrap();
+    manual_ask_of("homove-me", now_ms());
+    assert_eq!(store::records()["homove-me"].asked.as_ref().map(|a| a.kind), Some(store::AskKind::Manual));
+    assert!(!reg().lock().unwrap().news.iter().any(|(c, _)| c == "homove-me"), "nothing said to the chat");
+    // The move over: looked at again, and withdrawn as undelivered.
+    store::change("homove-me", |r| r.moving = Some(moving::tests::a_move(moving::MovePhase::Canceled { at: 2 }))).unwrap();
+    manual_ask_of("homove-me", now_ms());
+    assert!(store::records()["homove-me"].asked.is_none());
+    reg().lock().unwrap().news.retain(|(c, _)| c != "homove-me");
+    let _ = store::remove("homove-me");
+    done_with(&["homove-me"], &dir);
+}
+
 /// The person's `/clear` or `/new` lands between the notifier's look at a
 /// failure line with the continuation and its text going in: looked at
 /// again once their keys are held, right before the paste, nothing is typed,
@@ -306,6 +335,34 @@ fn a_queued_line_is_looked_at_again_under_the_held_keys_before_it_goes_in() {
     crate::pty::fake_terminal_for_test("hokey-me", false);
     let _ = store::remove("hokey-me");
     done_with(&["hokey-me"], &dir);
+}
+
+/// The person's `/new` sent just before the notifier held their keys is
+/// still on its way to the CLI, which reads as the conversation the
+/// continuation was made for: a key of theirs since the notifier's look keeps
+/// the line back all the same, still queued, and a line bound to no
+/// conversation goes in.
+#[test]
+fn a_continuation_waits_for_a_key_the_cli_has_not_acted_on() {
+    chat("hokeyq-me", Some(70));
+    let (dir, file) = scratch_file("keyq");
+    schedule("hokeyq-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    store::change("hokeyq-me", |r| r.switch.as_mut().unwrap().opened = Some("new".into())).unwrap();
+    finish("hokeyq-me", 1, Ended::Failed { why: "x".into(), reset: true }, &|| "PROMPT".into());
+    let line = reg().lock().unwrap().news.iter().find(|(c, _)| c == "hokeyq-me").map(|(_, l)| l.clone()).unwrap();
+    set_conversation_for_test("hokeyq-me", Some("new"));
+    crate::pty::fake_terminal_for_test("hokeyq-me", true);
+    let told = as_told("hokeyq-me", &line);
+    assert_eq!(told, line);
+    // Their keys queued, the conversation not changed yet.
+    let keys = Box::new(|| crate::pty::fake_person_keys("hokeyq-me"));
+    crate::agents::notifier::deliver_news_for_test("hokeyq-me", vec![(told, line.clone())], keys);
+    assert_eq!(crate::pty::fake_terminal_of("hokeyq-me"), (String::new(), false), "nothing typed, their keys go on");
+    assert!(reg().lock().unwrap().news.iter().any(|(c, l)| c == "hokeyq-me" && *l == line), "still queued, for the next look");
+    crate::pty::fake_terminal_for_test("hokeyq-me", false);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hokeyq-me");
+    let _ = store::remove("hokeyq-me");
+    done_with(&["hokeyq-me"], &dir);
 }
 
 #[test]
