@@ -21,6 +21,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A helper turn's log line no longer holds the chat's hook and guard secret
   (a Codex start passes its guard URL in a `-c` argument), nor the helper's
   identity line whole, which made up most of the log.
+- The data folder's privacy check at start no longer takes what WebView2's
+  Chromium adds to its own files (denies, and a grant to its network
+  sandbox's capability) for a folder open to others, so a start no longer
+  warns of them and takes them away for Chromium to add back.
 
 ## [0.15.0] - 2026-11-11
 
