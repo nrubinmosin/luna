@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- A handoff has a seventh section, **Skills to load first**: the skills the
+  next conversation loads before its first reply, and why. The prompt that
+  opens it says to load them first, and Luna's facts name the skills the
+  conversation before loaded, read off its transcript (Claude Code's `Skill`
+  calls, Codex's `<skill>` blocks). A move's document carries the same line,
+  and the moved chat is told to load what it lists before its first reply.
+
 ### Changed
 
 - Auto-handoff ticked on a chat already past its threshold, or set lower than

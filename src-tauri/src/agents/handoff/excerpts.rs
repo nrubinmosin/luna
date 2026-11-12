@@ -68,7 +68,28 @@ pub(super) struct Excerpted {
     pub plan: Option<String>,
     pub summary: Option<String>,
     pub edits: Vec<String>,
+    /// The skills the conversation loaded, the ask's turns left out.
+    pub skills: Skills,
 }
+
+/// The skills a conversation loaded, as its transcript records them: Claude
+/// Code's `Skill` tool calls, the blocks Codex puts a skill's text in
+/// (`<skill>`, docs/cli-compatibility.md). Names only, as the CLI wrote them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Skills {
+    /// In order of first use, each once, at most SKILLS_MAX.
+    pub names: Vec<String>,
+    /// The transcript runs past what was read for them (SKILLS_READ_MAX).
+    pub cut: bool,
+}
+
+/// The most of a transcript read, from its start, for the skills it loaded:
+/// only lines that may name one are parsed, and a skill loaded past it is
+/// said to be possible (`Skills::cut`).
+pub(super) const SKILLS_READ_MAX: u64 = 256 * 1024 * 1024;
+/// The most skill names kept, and the longest name.
+const SKILLS_MAX: usize = 50;
+const SKILL_NAME_MAX: usize = 128;
 
 /// The turns a reading leaves out: those a prompt `opens` picks, and, for a
 /// window that starts mid-turn, the move's last ask as (typed, closed) in ms.
@@ -154,8 +175,12 @@ pub(super) fn read_bounded(path: &Path, provider: Provider, head_max: u64, tail_
         let tail = lines_of(&tail, false, true, &mut skipped);
         (head, tail, true)
     };
+    // The skills loaded before the window, read from the file's start; the
+    // window's own come with its lines below, the ask's turns left out as the
+    // rest of them are.
+    let early = if cut_front { skills_within(&mut f, len - tail_max, provider).map_err(|e| e.to_string())? } else { Skills::default() };
     let after = stamp(path);
-    let mut out = Excerpted { cut_front, skipped, changed: after != Some(before), ..Default::default() };
+    let mut out = Excerpted { cut_front, skipped, changed: after != Some(before), skills: early, ..Default::default() };
     let said = |line: &str| match provider {
         Provider::Claude => crate::claude::session::said_line(line),
         Provider::Codex => crate::codex::session::said_line(line),
@@ -195,12 +220,121 @@ pub(super) fn read_bounded(path: &Path, provider: Provider, head_max: u64, tail_
             Provider::Claude => claude_artifacts(&v, &mut out, &mut edits),
             Provider::Codex => codex_artifacts(&v, &mut out, &mut edits),
         }
+        note_skills(&v, provider, &mut out.skills.names);
         if let Some(m) = m {
             out.said.push(Said { role: m.role, text: m.text, final_answer: m.final_answer, at });
         }
     }
     out.edits = edits;
     Ok(out)
+}
+
+/// The skills the conversation in the transcript at `path` loaded, read from
+/// its start (`skills_within`): what the next conversation of a handoff is
+/// told it had (facts.rs `fact_block`).
+pub(super) fn skills_in(path: &Path, provider: Provider) -> Result<Skills, String> {
+    let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let len = f.metadata().map_err(|e| format!("{}: {e}", path.display()))?.len();
+    skills_within(&mut f, len, provider).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The skills named in the first `end` bytes of transcript `f`, read no
+/// further than SKILLS_READ_MAX, a line at a time, each no longer than
+/// LINE_MAX (a longer one passed over as it streams by, never held whole).
+/// Only a line that may name a skill is parsed: a transcript is mostly lines
+/// that cannot.
+fn skills_within(f: &mut std::fs::File, end: u64, provider: Provider) -> std::io::Result<Skills> {
+    use std::io::BufRead;
+    f.seek(SeekFrom::Start(0))?;
+    let mut out = Skills { cut: end > SKILLS_READ_MAX, ..Default::default() };
+    let mut r = std::io::BufReader::with_capacity(64 * 1024, (&*f).take(end.min(SKILLS_READ_MAX)));
+    let mark = match provider {
+        Provider::Claude => "\"Skill\"",
+        Provider::Codex => "<skill",
+    };
+    let mut line: Vec<u8> = Vec::new();
+    let mut over = false;
+    let scan = |line: &[u8], names: &mut Vec<String>| {
+        let Ok(text) = std::str::from_utf8(line) else { return };
+        if text.contains(mark) {
+            if let Ok(v) = serde_json::from_str::<Value>(text) {
+                note_skills(&v, provider, names);
+            }
+        }
+    };
+    loop {
+        let buf = r.fill_buf()?;
+        if buf.is_empty() {
+            break;
+        }
+        let (part, ends) = match buf.iter().position(|b| *b == b'\n') {
+            Some(i) => (&buf[..i], true),
+            None => (buf, false),
+        };
+        if !over && line.len() + part.len() <= LINE_MAX {
+            line.extend_from_slice(part);
+        } else {
+            over = true;
+            line.clear();
+        }
+        let used = part.len() + usize::from(ends);
+        r.consume(used);
+        if ends {
+            if !over {
+                scan(&line, &mut out.names);
+            }
+            line.clear();
+            over = false;
+        }
+    }
+    if !over && !line.is_empty() {
+        scan(&line, &mut out.names);
+    }
+    Ok(out)
+}
+
+/// The skills transcript line `v` says were loaded, added to `names` as the
+/// CLI wrote them, each once. Claude Code: an assistant line's `Skill` tool
+/// call, `input.skill` its name (not a subagent's, `isSidechain`). Codex: a
+/// skill's text as it puts it in a message of the user's or the developer's,
+/// `<skill>` `<name>…</name>` … `</skill>`, in a message of either role:
+/// 0.167.0 recognizes it among the user's, and 0.167.1's binary names it
+/// beside the developer's role (docs/cli-compatibility.md).
+fn note_skills(v: &Value, provider: Provider, names: &mut Vec<String>) {
+    let mut add = |name: &str| {
+        let name: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        let name = name.trim();
+        if !name.is_empty() && names.len() < SKILLS_MAX && !names.iter().any(|n| n == name) {
+            names.push(clip(name, SKILL_NAME_MAX).to_string());
+        }
+    };
+    match provider {
+        Provider::Claude => {
+            if v["type"] != "assistant" || v["isSidechain"] == true {
+                return;
+            }
+            let Some(blocks) = v["message"]["content"].as_array() else { return };
+            for b in blocks.iter().filter(|b| b["type"] == "tool_use" && b["name"] == "Skill") {
+                if let Some(name) = b["input"]["skill"].as_str() {
+                    add(name);
+                }
+            }
+        }
+        Provider::Codex => {
+            let p = &v["payload"];
+            if v["type"] != "response_item" || p["type"] != "message" || !matches!(p["role"].as_str(), Some("user" | "developer")) {
+                return;
+            }
+            let Some(blocks) = p["content"].as_array() else { return };
+            for text in blocks.iter().filter_map(|b| b["text"].as_str()).map(str::trim) {
+                let wrapped = text.strip_prefix("<skill").is_some_and(|r| r.starts_with(['>', ' '])) && text.ends_with("</skill>");
+                let name = text.split_once("<name>").and_then(|(_, r)| r.split_once("</name>")).map(|(n, _)| n);
+                if let Some(name) = name.filter(|_| wrapped) {
+                    add(name);
+                }
+            }
+        }
+    }
 }
 
 /// `text` cut to `max` bytes at a character's edge.
@@ -450,6 +584,109 @@ pub(super) mod tests {
         assert!(!r.said.is_empty() && r.edits == ["drafts/move-m1-ab.md"]);
         // No ask on record: read as ever.
         assert_eq!(read_with(None).edits, ["drafts/move-m1-ab.md"]);
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// A Claude Code assistant line calling `Skill`, as 2.1.322 writes one.
+    fn skill_call(names: &[&str], sidechain: bool) -> String {
+        let blocks: Vec<Value> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| serde_json::json!({ "type": "tool_use", "id": format!("toolu_{i}"), "name": "Skill", "input": { "skill": n }, "caller": { "type": "direct" } }))
+            .collect();
+        serde_json::json!({ "type": "assistant", "isSidechain": sidechain, "timestamp": "2026-11-10T10:00:05Z",
+            "message": { "model": "m", "stop_reason": "tool_use", "content": blocks } })
+        .to_string()
+    }
+
+    /// A Codex message carrying a skill's text, as its `<skill>` block is
+    /// spelled (0.167.1 `ext/skills/src/fragments.rs`).
+    fn skill_block(role: &str, name: &str) -> String {
+        let text = format!("<skill>\n<name>{name}</name>\n<path>C:\\acc\\skills\\{name}\\SKILL.md</path>\n# {name}\nsteps\n</skill>");
+        serde_json::json!({ "timestamp": "2026-11-10T10:00:00Z", "type": "response_item",
+            "payload": { "type": "message", "role": role, "content": [{ "type": "input_text", "text": text }] } })
+        .to_string()
+    }
+
+    #[test]
+    fn the_skills_a_claude_code_conversation_loaded_come_from_its_skill_calls() {
+        let lines = [
+            claude_line("user", "Release it, and mind the Skill tool.", "2026-11-10T10:00:00Z", false),
+            skill_call(&["release"], false),
+            // The same call as Claude Code also logs it: no assistant line.
+            serde_json::json!({ "type": "api-request-blob", "message": { "content": [
+                { "type": "tool_use", "name": "Skill", "input": { "skill": "blob-only" } }] } })
+            .to_string(),
+            skill_call(&["ui-check", "release"], false),
+            // A subagent's own, not the conversation's.
+            skill_call(&["sidechain-only"], true),
+            serde_json::json!({ "type": "assistant", "message": { "content": [
+                { "type": "tool_use", "name": "Read", "input": { "skill": "not-a-skill-call" } }] } })
+            .to_string(),
+            claude_line("assistant", "Released.", "2026-11-10T10:01:00Z", true),
+        ];
+        let p = file("skills-claude", &(lines.join("\n") + "\n"));
+        let s = skills_in(&p, Provider::Claude).unwrap();
+        assert_eq!(s, Skills { names: vec!["release".into(), "ui-check".into()], cut: false }, "in order of first use, each once");
+        assert_eq!(read(&p, Provider::Claude, None).unwrap().skills, s, "the move's reading finds the same");
+        assert!(skills_in(&p.with_extension("gone"), Provider::Claude).is_err());
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn the_skills_a_codex_conversation_loaded_come_from_its_skill_blocks() {
+        let msg = |role: &str, text: &str| {
+            serde_json::json!({ "type": "response_item", "payload": { "type": "message", "role": role,
+                "content": [{ "type": "input_text", "text": text }] } })
+            .to_string()
+        };
+        let lines = [
+            // The list of skills it may load is no skill loaded.
+            msg("developer", "<skills_instructions>\n## Skills\n- review: (file: C:\\s\\SKILL.md)\n</skills_instructions>"),
+            msg("user", "Use $review, then <skill>s are done."),
+            skill_block("developer", "review"),
+            skill_block("user", "release"),
+            skill_block("developer", "review"),
+            msg("assistant", "<skill>\n<name>said-not-loaded</name>\n</skill>"),
+            // What a tool printed is no message.
+            serde_json::json!({ "type": "response_item", "payload": { "type": "function_call_output",
+                "output": "<skill>\n<name>printed</name>\n</skill>" } })
+            .to_string(),
+        ];
+        let p = file("skills-codex", &(lines.join("\n") + "\n"));
+        let s = skills_in(&p, Provider::Codex).unwrap();
+        assert_eq!(s.names, ["review", "release"]);
+        assert_eq!(read(&p, Provider::Codex, None).unwrap().skills.names, ["review", "release"]);
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// Read a line at a time, an over-long one passed over; before the move's
+    /// window from the file's start, within it as the rest of it is read, the
+    /// ask's turn left out.
+    #[test]
+    fn the_skills_are_read_bounded_and_the_asks_turn_is_left_out() {
+        let ask = "[Luna move m1 request, not typed by the user] The person is moving this chat.";
+        let mut text = claude_line("user", "Fix the build.", "2026-11-10T10:00:00Z", false) + "\n";
+        text.push_str(&(skill_call(&["early"], false) + "\n"));
+        // Longer than a line may be: its skill is not read.
+        let zs = "z".repeat(LINE_MAX);
+        text.push_str(&(skill_call(&[zs.as_str()], false) + "\n"));
+        for i in 0..400 {
+            text.push_str(&(claude_line("assistant", &format!("work {i} {}", "x".repeat(200)), "2026-11-10T10:01:00Z", true) + "\n"));
+        }
+        text.push_str(&(skill_call(&["late"], false) + "\n"));
+        text.push_str(&(claude_line("user", ask, "2026-11-10T10:02:00Z", false) + "\n"));
+        text.push_str(&(skill_call(&["for-the-ask"], false) + "\n"));
+        let p = file("skills-bounded", &text);
+        assert_eq!(skills_in(&p, Provider::Claude).unwrap().names, ["early", "late", "for-the-ask"]);
+        let opens: fn(&str) -> bool = |t| t.starts_with("[Luna move m1 request");
+        let r = read_bounded(&p, Provider::Claude, 4 * 1024, 32 * 1024, Some(Skip { opens, ask: None })).unwrap();
+        assert!(r.cut_front);
+        assert_eq!(r.skills.names, ["early", "late"], "before the window and in it, the ask's turn left out");
+        // A transcript past what is read for them says so.
+        let mut f = std::fs::File::open(&p).unwrap();
+        let past = skills_within(&mut f, SKILLS_READ_MAX + 1, Provider::Claude).unwrap();
+        assert!(past.cut && past.names.len() == 3);
         let _ = std::fs::remove_file(p);
     }
 }

@@ -202,9 +202,9 @@ menu, so words injected into the chat cannot hand it off on their own.
   asking for a handoff. A firmer notice follows near where the CLI would
   compact the conversation by itself, carrying the file's headings itself
   (goal, next action, the user's words, state, pending, decisions and dead
-  ends) for a chat short of context. Ticked on a chat already past the
-  threshold, Auto-handoff asks as soon as the chat is at rest, not at its
-  next turn's end. A conversation a handoff began is asked
+  ends, skills to load first) for a chat short of context. Ticked on a chat
+  already past the threshold, Auto-handoff asks as soon as the chat is at
+  rest, not at its next turn's end. A conversation a handoff began is asked
   only once it has grown 5 points past where it began. Nothing switches
   unless the chat asks.
 - If the CLI compacts the conversation before a handoff, or the chat goes on
@@ -240,9 +240,12 @@ menu, so words injected into the chat cannot hand it off on their own.
   `[Luna handoff N` that points the new conversation at the copy and states what
   Luna knows itself, as of that moment: the chat's helpers with their model and
   effort, state, task, branches and worktrees and transcripts, the answers they
-  owe, text not yet delivered, accounts and their use, the chat's settings. The
-  prompt says that approvals the handoff quotes hold as far as your quoted
-  words go and no further. Its helpers, their answers and notices carry on
+  owe, text not yet delivered, accounts and their use, the chat's settings, and
+  the names of the skills the conversation before loaded (read off its
+  transcript). The prompt tells the new conversation to load the skills the
+  handoff lists under "Skills to load first" before its first reply, and says
+  that approvals the handoff quotes hold as far as your quoted words go and no
+  further. Its helpers, their answers and notices carry on
   untouched; the chat keeps its row, name and id.
 - Your draft in the chat holds the switch until you send or clear it; after a
   minute the desktop says so. Notices and messages for the chat wait meanwhile
@@ -307,9 +310,10 @@ defaults). It goes on from a document, chosen under **The document**:
   sandbox, not running, or stopped on a usage limit; a chat whose CLI started
   before it was listed the tool is to be resumed first.
 - **Luna builds it from the chat's records**, with no model asked: how to go
-  on, your note, the folder's state from git, how the chat stopped, its task
-  (its last handoff, or its first prompt), the plan it last proposed, the
-  latest turns of the conversation, its helpers, the first steps. Tool output
+  on, your note, the folder's state from git, how the chat stopped, the
+  skills its conversation loaded, its task (its last handoff, or its first
+  prompt), the plan it last proposed, the latest turns of the conversation,
+  its helpers, the first steps. Tool output
   is never in it, nor the turns Luna's ask opened in the chat. Luna picks it
   for you only while a usage limit holds the chat, since the chat cannot
   write then: the dialog says when the chat stopped, and what is known of the
