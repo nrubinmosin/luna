@@ -81,6 +81,7 @@ pub(super) fn tools() -> Value {
                 "resumeOnRestart": flag,
                 "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" },
                 "connectors": { "type": "boolean", "description": "its account's MCP servers and connectors too" },
+                "constraints": { "type": "string", "description": "rules it and every session under it keep to, after yours; none removed" },
                 "requestKey": key
             }), &["prompt"]),
             "annotations": acts

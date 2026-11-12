@@ -761,6 +761,7 @@ mod tests {
         claude.spec.read_only = true;
         claude.spec.agent = Some("checker".into());
         claude.spec.parent = Some("p-1".into());
+        claude.spec.constraints = vec![crate::agents::Constraint { from: "p-1".into(), text: "No network.".into() }];
         let mut codex = entry(Provider::Codex);
         codex.spec.mode = crate::codex::launch::READ_ONLY_NET.into();
         codex.spec.parent = Some("p-1".into());
@@ -771,7 +772,8 @@ mod tests {
             assert_eq!(value_of(&args, "--agent"), Some("checker"));
             assert_eq!(value_of(&args, "--disallowedTools"), Some("Edit,Write,NotebookEdit"));
             assert_eq!(value_of(&args, "--resume"), session);
-            assert!(value_of(&args, "--append-system-prompt").unwrap().contains("by session p-1"));
+            assert!(args.windows(2).any(|w| w[0] == "--add-dir" && w[1].contains("hooks")), "its role layers: {args:?}");
+            assert_eq!(e.spec.constraints, claude.spec.constraints, "kept as spawned");
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
 
             let e = through_a_core(entry_like(&codex), session);
@@ -782,7 +784,7 @@ mod tests {
             // The caller gets back what it asked, the note going on as that turn starts.
             if session.is_none() {
                 assert_eq!(e.undelivered, ["the prompt"]);
-                assert_eq!(stdin_text(&e, &e.undelivered[0].text).matches("A note from Luna").count(), 1);
+                assert_eq!(stdin_text(&e, &e.undelivered[0].text).matches("[A note, not part of the task: ").count(), 1);
             }
         }
     }

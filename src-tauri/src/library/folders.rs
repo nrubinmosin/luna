@@ -360,7 +360,7 @@ pub struct SessionSkills {
     pub hidden: Vec<String>,
     /// Claude Code: the account's instructions file, where a folder the
     /// session lies in gives it other instructions or none, or they are not
-    /// for its kind — `claudeMdExcludes` in the same settings, once the
+    /// for its role — `claudeMdExcludes` in the same settings, once the
     /// session's start has kept only what takes nothing of the project's own
     /// (pty/start.rs `claude_account_excludes`). Codex has no way to leave its
     /// account's `AGENTS.md` out of one session, so a folder says nothing to
@@ -378,14 +378,19 @@ pub struct SessionSkills {
     /// not, their patterns colliding with the session's own instruction paths
     /// (claude/launch.rs `keep_own_memory`), said as what Luna applied.
     pub memory_kept: Vec<String>,
-    /// Claude Code: the library's file of the other instructions, which its
-    /// caller gives the session as a `CLAUDE.md` of its own
-    /// (pty/start.rs `claude_instructions_dir`).
+    /// Claude Code: the library's file of the instructions a folder gives in
+    /// place of the account's, which its caller gives the session among its
+    /// role layers (role.rs `role_layers`).
     pub instructions: Option<PathBuf>,
+    /// The library's instructions for some roles that this session's role
+    /// takes and its account's reach does, by name and in name order, with
+    /// their text: given to it alone, in its role layers (role.rs), never laid
+    /// into an account (audience.rs).
+    pub role_entries: Vec<(String, String)>,
     /// What of the above the entries' audience decided (library/audience.rs),
     /// said as what Luna applied (`audience_applied`).
     pub audience: Vec<String>,
-    /// Codex: instructions not meant for this kind of session that it reads
+    /// Codex: instructions not meant for this session's role that it reads
     /// all the same, its account's copy not saying whose they are.
     pub unkept: Vec<String>,
 }
@@ -400,14 +405,14 @@ pub struct SessionSkills {
 /// conversation, and none of them answers. Its caller lays the library out
 /// first (`lay_out`), so the session reads its copies as the library has
 /// them now — off any lock of the caller's, as a pass reads and writes every
-/// account's copies. `kind`: whose session it is, for the entries meant for
-/// the person's chats or for helpers alone (library/audience.rs).
-pub fn session_args(provider: Provider, account_path: &str, folder: &str, kind: SessionKind) -> SessionSkills {
+/// account's copies. `role`: whose session it is, for the entries meant for
+/// some roles alone (library/audience.rs).
+pub fn session_args(provider: Provider, account_path: &str, folder: &str, role: Role) -> SessionSkills {
     // A library a test holds, for the accounts it made (testkit
     // `GoldenLibrary`), in place of Luna's own settings and accounts.
     #[cfg(test)]
     if let Some((dirs, lib, a)) = held(provider, account_path) {
-        return folder_args(&dirs, &lib, &a, folder, kind);
+        return folder_args(&dirs, &lib, &a, folder, role);
     }
     let lib = crate::settings::get().library;
     if lib.folders.is_empty() && lib.audience.is_empty() {
@@ -418,7 +423,7 @@ pub fn session_args(provider: Provider, account_path: &str, folder: &str, kind: 
         .into_iter()
         .find(|a| a.provider == provider && crate::pty::same_dir(&a.path, account_path));
     match account {
-        Some(a) => folder_args(&Dirs::current(), &lib, &a, folder, kind),
+        Some(a) => folder_args(&Dirs::current(), &lib, &a, folder, role),
         None => SessionSkills::default(),
     }
 }
@@ -433,7 +438,7 @@ fn folders_of<'a>(lib: &'a LibrarySettings, folder: &str) -> Vec<(&'a LibraryFol
     folder_slugs(&lib.folders).into_iter().filter(|(f, _)| within(&work, Path::new(&f.path))).collect()
 }
 
-pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, folder: &str, kind: SessionKind) -> SessionSkills {
+pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, folder: &str, role: Role) -> SessionSkills {
     let lies_in = folders_of(lib, folder);
     let mut out = SessionSkills::default();
     for (f, slug) in &lies_in {
@@ -458,11 +463,11 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
     // The instructions the library lays out in the account's own file: what a
     // session gets where no folder decides.
     let account_has = chosen(lib, |n| dirs.instructions_file(n).is_file(), a);
-    let fits = |n: &str| instructions_audience(lib, n).takes(kind);
+    let fits = |n: &str| instructions_audience(lib, n).takes(role);
     match a.provider {
         Provider::Claude => {
             let folder_choice = folder_instructions(lies_in.iter().map(|(f, _)| *f), a);
-            // Instructions not meant for this kind of session are none for
+            // Instructions not meant for this session's role are none for
             // it: a folder's, or else the account's own.
             let unfit = folder_choice.unwrap_or(account_has).filter(|&n| !fits(n));
             if let Some(n) = unfit {
@@ -477,7 +482,7 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
                 // lays it out there (`worded`); anything else — none at all,
                 // or a copy of the account's changed there — leaves out
                 // whatever it holds, the library's or not.
-                let laid_out = |n: &str, t: &[u8]| worded(t, instructions_audience(lib, n));
+                let laid_out = |n: &str, t: &[u8]| worded(t, banner_of(lib, n));
                 let there =
                     choice.zip(text.as_ref()).is_some_and(|(n, t)| std::fs::read(&own).is_ok_and(|o| o == laid_out(n, t.as_slice())));
                 if !there {
@@ -491,7 +496,7 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
         Provider::Codex => {
             if let Some(n) = account_has.filter(|&n| !fits(n)) {
                 let audience = instructions_audience(lib, n);
-                if carries_banner(&Path::new(&a.path).join(instructions_name(a.provider)), audience) {
+                if carries_banner(&Path::new(&a.path).join(instructions_name(a.provider)), banner_of(lib, n)) {
                     out.audience.push(worded_note(n, audience));
                 } else {
                     out.unkept.push(unworded_note(n, audience));
@@ -499,7 +504,26 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
             }
         }
     }
-    let (hidden, by_audience) = hidden_here(dirs, lib, a, &lies_in, kind);
+    // The library's instructions for some roles, this one among them, whose
+    // reach takes the account: each given to this session alone, all of them
+    // in name order (audience.rs). Not one a folder gives in the account's
+    // place, which is given as that. Blank or gone is none.
+    let given = out.instructions.clone();
+    for (name, reach) in &lib.instructions {
+        let audience = instructions_audience(lib, name);
+        if laid_into_accounts(lib, name) || !audience.takes(role) || !reaches(reach, a) {
+            continue;
+        }
+        let file = dirs.instructions_file(name);
+        if given.as_ref() == Some(&file) {
+            continue;
+        }
+        if let Some(text) = std::fs::read_to_string(&file).ok().filter(|t| !t.trim().is_empty()) {
+            out.audience.push(given_note(name, audience));
+            out.role_entries.push((name.clone(), text));
+        }
+    }
+    let (hidden, by_audience) = hidden_here(dirs, lib, a, &lies_in, role);
     out.audience.extend(by_audience);
     match a.provider {
         Provider::Claude => out.hidden = hidden,
@@ -521,7 +545,7 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
 /// keeps it from this account, by its Claude Code name (`luna-<name>` where
 /// it was renamed) or as Codex's `<folder>:<name>`. Both CLIs hide a skill by
 /// name, so one of the same name the repository has goes too. A skill not
-/// meant for this kind of session (`kind`) is hidden wherever it comes from,
+/// meant for this session's role (`role`) is hidden wherever it comes from,
 /// and said in the second list. One of a system skill's name is laid out
 /// nowhere (system.rs `reserved`), so there is none of it to hide, and its
 /// name goes into no session's start.
@@ -530,7 +554,7 @@ fn hidden_here(
     lib: &LibrarySettings,
     a: &AccountInfo,
     lies_in: &[(&LibraryFolder, String)],
-    kind: SessionKind,
+    role: Role,
 ) -> (Vec<String>, Vec<String>) {
     let named: BTreeSet<&String> =
         lib.skills.keys().chain(lies_in.iter().flat_map(|(f, _)| f.skills.keys())).filter(|n| !reserved(n)).collect();
@@ -541,7 +565,7 @@ fn hidden_here(
     let mut ledger = None;
     for name in named {
         let audience = skill_audience(lib, name);
-        let not_for_it = !audience.takes(kind);
+        let not_for_it = !audience.takes(role);
         if !not_for_it && gets_in(lib, lies_in.iter().map(|(f, _)| *f), name, a) {
             continue;
         }
@@ -580,9 +604,9 @@ mod tests {
     use super::*;
 
     /// What a chat of the person's started there gets: these tests are of
-    /// folders, the same for either kind where no audience is set.
+    /// folders, the same for every role where no audience is set.
     fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, folder: &str) -> SessionSkills {
-        super::folder_args(dirs, lib, a, folder, SessionKind::Chat)
+        super::folder_args(dirs, lib, a, folder, Role::Chat)
     }
 
     #[test]

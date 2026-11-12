@@ -183,8 +183,32 @@ export function InstructionsGrid({
       </td>
       {cols.map(a => {
         const key = accountKey(a);
-        const gets = o.instructionsFor[key] === i.name;
         const way = how(i.accounts, a);
+        // For some roles only: no account's file, so no radio among the
+        // others; a box for whether its sessions on the account get it.
+        if (i.perSession) {
+          const named = i.accounts.includes(key);
+          return (
+            <td key={key} className="cell">
+              <Tick
+                id={`lib-ins-${i.name}-${key}`}
+                checked={!!way}
+                disabled={busy || (!!way && !named)}
+                title={
+                  way
+                    ? `Its sessions on ${a.name} get ${i.name} as Luna starts them, ${way}${named ? '\nClick to keep it from them' : '\nThe reach picker takes it back'}`
+                    : `Give its sessions on ${a.name} ${i.name} as Luna starts them`
+                }
+                onChange={on =>
+                  void act(
+                    librarySetInstructions(i.name, on ? [...i.accounts, key] : i.accounts.filter(r => r !== key))
+                  )
+                }
+              />
+            </td>
+          );
+        }
+        const gets = o.instructionsFor[key] === i.name;
         return (
           <td key={key} className="cell">
             <Tick

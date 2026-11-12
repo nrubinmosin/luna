@@ -402,7 +402,7 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
               </Section>
 
               {o.system.length > 0 && (
-                <Section label="System skills">
+                <Section label="System texts">
                   <SystemSkills o={o} act={act} edit={setEditing} />
                 </Section>
               )}

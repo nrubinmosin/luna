@@ -92,6 +92,7 @@ describe('AppliedPanel', () => {
         handoff: {
           instructions: {
             name: 'session-handoff',
+            kind: 'skill',
             state: 'luna',
             version: '0.12.0',
             sha256: '3054a9e14c774f592c9c2fed08da4ff7eb38befdb00321184f3d1b324c8aedd9',

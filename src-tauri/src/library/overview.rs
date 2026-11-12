@@ -117,7 +117,7 @@ pub struct Overview {
     /// Copies no longer wanted but changed where they lie, left there: each
     /// on every overview until it is settled.
     pub kept: Vec<KeptCopy>,
-    /// The system skills, each as it is served now (system.rs): Luna's own
+    /// The system texts, each as it is served now (system.rs): Luna's own
     /// text, the library's override of it, or one that will not do.
     pub system: Vec<SystemSkillState>,
     /// Folders set aside in `system/`, read by nothing (system.rs
@@ -252,7 +252,7 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         found_instructions,
         overridden,
         kept,
-        system: vec![resolve_in(&dirs).state()],
+        system: SYSTEM_TEXTS.iter().filter_map(|t| resolve_text(&dirs, t.name)).map(|r| r.state()).collect(),
         system_aside: set_aside(&dirs),
         unsettled: Vec::new(),
     })

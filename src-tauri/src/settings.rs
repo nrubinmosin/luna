@@ -56,7 +56,7 @@ pub struct Settings {
 pub type Reach = Vec<String>;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase", from = "LibrarySettingsFile")]
+#[serde(rename_all = "camelCase", try_from = "LibrarySettingsFile")]
 pub struct LibrarySettings {
     /// Absolute path of the library's folder; None means `<data>/library`.
     pub source: Option<String>,
@@ -78,21 +78,132 @@ pub struct LibrarySettings {
     /// not every session's (library/audience.rs).
     #[serde(skip_serializing_if = "Audiences::is_empty")]
     pub audience: Audiences,
+    /// Instructions for the person's chats alone that are still laid into
+    /// accounts, with a line saying whose they are (library/audience.rs
+    /// `worded`): those an earlier Luna laid out so, which chats started
+    /// outside Luna read there too. Every other entry for some roles only
+    /// reaches its sessions one session at a time, never through an account.
+    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub laid_out: std::collections::BTreeSet<String>,
 }
 
-/// Whose sessions a library entry is for: the person's own chats, the
-/// helpers other sessions start, or both.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The three kinds of session Luna starts, by who gave it its task: the
+/// person's own chat in a pane; a helper another session started with Luna's
+/// tools, able to start helpers of its own (a lead); and one started without
+/// them (a helper).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
-pub enum Audience {
-    #[default]
-    Both,
-    Chats,
-    Helpers,
+pub enum Role {
+    Chat,
+    Lead,
+    Helper,
 }
 
-/// The library's entries whose audience is not both, by kind and name: an
-/// instructions file and a skill may share a name.
+impl Role {
+    pub const ALL: [Role; 3] = [Role::Chat, Role::Lead, Role::Helper];
+}
+
+/// Whose sessions a library entry is for: every session (the default, so
+/// nothing changes until the person chooses), or the roles named. Written as
+/// `"every"` or a list of roles; read from what earlier Lunas wrote too:
+/// `"both"` is every session, `"chats"` the person's chats, `"helpers"` every
+/// session another started, a lead as much as a helper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Audience {
+    pub chat: bool,
+    pub lead: bool,
+    pub helper: bool,
+}
+
+impl Default for Audience {
+    fn default() -> Self {
+        Audience::EVERY
+    }
+}
+
+impl Audience {
+    pub const EVERY: Audience = Audience { chat: true, lead: true, helper: true };
+    pub const CHATS: Audience = Audience { chat: true, lead: false, helper: false };
+
+    pub fn of(roles: &[Role]) -> Audience {
+        let has = |r| roles.contains(&r);
+        let a = Audience { chat: has(Role::Chat), lead: has(Role::Lead), helper: has(Role::Helper) };
+        // None at all would be an entry nobody gets: every session's, as an
+        // audience never chosen is.
+        if a.roles().is_empty() {
+            Audience::EVERY
+        } else {
+            a
+        }
+    }
+
+    pub fn is_every(self) -> bool {
+        self == Audience::EVERY
+    }
+
+    /// Whether a session of this role is meant to see the entry.
+    pub fn takes(self, role: Role) -> bool {
+        match role {
+            Role::Chat => self.chat,
+            Role::Lead => self.lead,
+            Role::Helper => self.helper,
+        }
+    }
+
+    pub fn roles(self) -> Vec<Role> {
+        Role::ALL.into_iter().filter(|r| self.takes(*r)).collect()
+    }
+}
+
+/// An audience as the file may hold it: a word, or a list of roles.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AudienceField {
+    Word(String),
+    Roles(Vec<Role>),
+}
+
+impl AudienceField {
+    /// Written by a Luna before roles, for the person's chats alone.
+    fn was_chats(&self) -> bool {
+        matches!(self, AudienceField::Word(w) if w == "chats")
+    }
+}
+
+impl TryFrom<AudienceField> for Audience {
+    type Error = String;
+
+    fn try_from(f: AudienceField) -> Result<Self, String> {
+        match f {
+            AudienceField::Roles(roles) => Ok(Audience::of(&roles)),
+            AudienceField::Word(w) => match w.as_str() {
+                "every" | "both" => Ok(Audience::EVERY),
+                "chats" => Ok(Audience::CHATS),
+                "helpers" => Ok(Audience::of(&[Role::Lead, Role::Helper])),
+                other => Err(format!("unknown audience {other:?}")),
+            },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Audience {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Audience::try_from(AudienceField::deserialize(d)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for Audience {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if self.is_every() {
+            s.serialize_str("every")
+        } else {
+            self.roles().serialize(s)
+        }
+    }
+}
+
+/// The library's entries whose audience is not every session's, by kind and
+/// name: an instructions file and a skill may share a name.
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Audiences {
@@ -106,6 +217,14 @@ impl Audiences {
     pub fn is_empty(&self) -> bool {
         self.instructions.is_empty() && self.skills.is_empty()
     }
+}
+
+/// `Audiences` as the file holds them, each value as written.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AudiencesFile {
+    instructions: std::collections::BTreeMap<String, AudienceField>,
+    skills: std::collections::BTreeMap<String, AudienceField>,
 }
 
 /// The library's settings as the file may hold them: before a reach, the
@@ -126,7 +245,8 @@ struct LibrarySettingsFile {
     folders: Vec<LibraryFolderFile>,
     folders_only: Vec<String>,
     skipped: Vec<String>,
-    audience: Audiences,
+    audience: AudiencesFile,
+    laid_out: std::collections::BTreeSet<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -158,8 +278,10 @@ enum InstructionsField {
 /// (library/skills.rs moves the file to match).
 pub const FIRST_INSTRUCTIONS: &str = "main";
 
-impl From<LibrarySettingsFile> for LibrarySettings {
-    fn from(f: LibrarySettingsFile) -> Self {
+impl TryFrom<LibrarySettingsFile> for LibrarySettings {
+    type Error = String;
+
+    fn try_from(f: LibrarySettingsFile) -> Result<Self, String> {
         let mut skills = f.skills;
         for name in f.everywhere {
             skills.entry(name).or_insert_with(|| vec!["all".into()]);
@@ -194,7 +316,16 @@ impl From<LibrarySettingsFile> for LibrarySettings {
         for name in &f.folders_only {
             skills.remove(name);
         }
-        LibrarySettings {
+        // Instructions an earlier Luna laid into accounts for the person's
+        // chats stay there, still said to be theirs (`laid_out`).
+        let mut laid_out = f.laid_out;
+        laid_out.extend(f.audience.instructions.iter().filter(|(_, a)| a.was_chats()).map(|(n, _)| n.clone()));
+        type ByName<T> = std::collections::BTreeMap<String, T>;
+        let read = |m: ByName<AudienceField>| -> Result<ByName<Audience>, String> {
+            m.into_iter().map(|(n, a)| Audience::try_from(a).map(|a| (n, a))).filter(|r| !matches!(r, Ok((_, a)) if a.is_every())).collect()
+        };
+        let audience = Audiences { instructions: read(f.audience.instructions)?, skills: read(f.audience.skills)? };
+        Ok(LibrarySettings {
             source: f.source,
             instructions: match f.instructions {
                 Some(InstructionsField::On(true)) => first(vec!["all".into()]),
@@ -207,8 +338,9 @@ impl From<LibrarySettingsFile> for LibrarySettings {
             skills,
             folders,
             skipped: f.skipped,
-            audience: f.audience,
-        }
+            audience,
+            laid_out,
+        })
     }
 }
 
@@ -411,16 +543,48 @@ mod tests {
     }
 
     #[test]
-    fn an_audience_is_kept_by_kind_and_name_and_both_is_not_written() {
-        let read: Settings =
-            serde_json::from_str(r#"{"library": {"audience": {"skills": {"council": "chats"}, "instructions": {"main": "helpers"}}}}"#)
-                .unwrap();
-        assert_eq!(read.library.audience.skills["council"], Audience::Chats);
-        assert_eq!(read.library.audience.instructions["main"], Audience::Helpers);
+    fn an_audience_is_kept_by_kind_and_name_and_every_is_not_written() {
+        let read: Settings = serde_json::from_str(
+            r#"{"library": {"audience": {"skills": {"council": ["lead"]}, "instructions": {"main": ["chat", "helper"], "all": "every"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(read.library.audience.skills["council"], Audience::of(&[Role::Lead]));
+        assert_eq!(read.library.audience.instructions["main"], Audience::of(&[Role::Chat, Role::Helper]));
+        assert!(!read.library.audience.instructions.contains_key("all"), "every session's is no audience to keep");
         let back: Settings = serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();
         assert_eq!(back.library.audience.skills, read.library.audience.skills);
+        assert_eq!(back.library.audience.instructions, read.library.audience.instructions);
+        let json = serde_json::to_value(&read).unwrap();
+        assert_eq!(json["library"]["audience"]["instructions"]["main"], serde_json::json!(["chat", "helper"]));
         let json = serde_json::to_value(Settings::default()).unwrap();
-        assert!(json["library"].get("audience").is_none(), "nothing set, nothing written: {json}");
+        assert!(json["library"].get("audience").is_none() && json["library"].get("laidOut").is_none(), "nothing set, nothing written");
+        assert!(serde_json::from_str::<Settings>(r#"{"library": {"audience": {"skills": {"x": "people"}}}}"#).is_err(), "no guess");
+        assert_eq!(Audience::of(&[]), Audience::EVERY, "nobody's is everybody's");
+    }
+
+    #[test]
+    fn audiences_of_before_roles_read_as_roles_and_chats_instructions_stay_laid_out() {
+        let old: Settings = serde_json::from_str(
+            r#"{"library": {"audience": {
+                "skills": {"council": "chats", "cleanup": "helpers", "review": "both"},
+                "instructions": {"main": "chats", "terse": "helpers"}
+            }}}"#,
+        )
+        .unwrap();
+        let a = &old.library.audience;
+        assert_eq!(a.skills["council"], Audience::CHATS);
+        assert_eq!(a.skills["cleanup"], Audience::of(&[Role::Lead, Role::Helper]), "a lead was a helper too");
+        assert!(!a.skills.contains_key("review"));
+        assert_eq!(a.instructions["main"], Audience::CHATS);
+        assert_eq!(a.instructions["terse"], Audience::of(&[Role::Lead, Role::Helper]));
+        assert_eq!(old.library.laid_out, ["main".to_string()].into(), "the chats' instructions stay in the accounts");
+        // Written back in the new form, which reads the same.
+        let json = serde_json::to_value(&old).unwrap();
+        assert_eq!(json["library"]["audience"]["instructions"]["main"], serde_json::json!(["chat"]));
+        assert_eq!(json["library"]["laidOut"], serde_json::json!(["main"]));
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(back.library.laid_out, old.library.laid_out);
+        assert_eq!(back.library.audience.instructions, old.library.audience.instructions);
     }
 
     #[test]

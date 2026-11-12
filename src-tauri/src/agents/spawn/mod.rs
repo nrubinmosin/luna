@@ -62,6 +62,54 @@ pub struct SpawnParams {
     /// Codex's apps), which a helper otherwise starts without.
     #[serde(skip_serializing)]
     pub connectors: Option<bool>,
+    /// What the helper and every session under it are to keep to, added word
+    /// for word to what its caller was given (`Constraint`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<String>,
+}
+
+/// One spawn's `constraints`, and the session whose spawn gave them. A
+/// session's are its caller's, then its own spawn's: set once at the spawn,
+/// never changed, and passed down whole to every session it starts. Text,
+/// not enforcement: a session is told them as the last of its role layers
+/// (library/role.rs), at every start, resume and handoff, and its privilege
+/// is what it was (agents/privilege.rs).
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct Constraint {
+    pub from: String,
+    pub text: String,
+}
+
+/// The most one spawn's constraints may hold, and a whole chain's, in bytes:
+/// all of it goes into every turn of every session under it, and on a Codex
+/// command line (library/role.rs `CODEX_ROLE_MAX`).
+pub const CONSTRAINT_MAX: usize = 4 * 1024;
+pub const CONSTRAINTS_MAX: usize = 16 * 1024;
+
+/// The constraints a session carries, as its registry settings keep them
+/// (`"constraints"`); none where it has none or they will not read.
+pub fn constraints_of(settings: &serde_json::Value) -> Vec<Constraint> {
+    serde_json::from_value(settings["constraints"].clone()).unwrap_or_default()
+}
+
+/// The chain a spawn by `caller` gives its helper: the caller's own, then
+/// what the spawn adds, checked and held to the caps.
+pub(super) fn constraints_for(caller: &str, carried: Vec<Constraint>, added: Option<&str>) -> Result<Vec<Constraint>, String> {
+    let mut chain = carried;
+    if let Some(text) = added.map(str::trim).filter(|t| !t.is_empty()) {
+        plain_text(text).map_err(|e| format!("constraints: {e}"))?;
+        if text.len() > CONSTRAINT_MAX {
+            return Err(format!("constraints come to {} bytes, over the {CONSTRAINT_MAX} one spawn may add", text.len()));
+        }
+        chain.push(Constraint { from: caller.to_string(), text: text.to_string() });
+    }
+    let total: usize = chain.iter().map(|c| c.text.len()).sum();
+    if total > CONSTRAINTS_MAX {
+        return Err(format!(
+            "constraints come to {total} bytes with those the caller carries, over the {CONSTRAINTS_MAX} a chain may hold"
+        ));
+    }
+    Ok(chain)
 }
 
 /// `account` in a spawn: a name, or names to choose from (`pick_from_list`).
@@ -285,6 +333,9 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
         }
         me
     };
+    // What the caller carries, then what this spawn adds: nothing a caller
+    // asks takes one off (`Constraint`).
+    let constraints = constraints_for(caller, constraints_of(&me.settings), params.constraints.as_deref())?;
     // Off the registry lock: what follows reads folders and login files,
     // and every Claude Code session's hook waits on this lock with its next
     // step behind it (activity/sample.rs `sample` has the same care).
@@ -378,7 +429,7 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     command_reach(&params.prompt, caller == DEV_CALLER, true, approver)?;
     let account_choice = picked.map(|(_, choice)| choice);
     let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces)?;
-    spawn_background(caller, params, account.path, in_worktree, taken.0).map(|s| Spawned { account_choice, ..s })
+    spawn_background(caller, params, account.path, in_worktree, taken.0, constraints).map(|s| Spawned { account_choice, ..s })
 }
 
 /// The helper a spawn came to, as soon as it is registered and before its CLI is
@@ -526,6 +577,65 @@ mod tests {
         assert_eq!(p.budget_tokens, Some(50000));
         let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "budgetTokens": 0 })).unwrap();
         assert_eq!(spawn("nobody", p).err().unwrap(), "budgetTokens must be above 0");
+    }
+
+    #[test]
+    fn constraints_add_to_the_callers_and_none_is_ever_taken_off() {
+        let one = |from: &str, text: &str| Constraint { from: from.into(), text: text.into() };
+        // A chat of the person's carries none: the first spawn's are the chain.
+        let lead = constraints_for("chat", Vec::new(), Some("  Touch nothing in src/.\n")).unwrap();
+        assert_eq!(lead, [one("chat", "Touch nothing in src/.")]);
+        // Its helper inherits them whole, its own after them.
+        let helper = constraints_for("lead", lead.clone(), Some("No network.")).unwrap();
+        assert_eq!(helper, [one("chat", "Touch nothing in src/."), one("lead", "No network.")]);
+        // A spawn that adds nothing passes them on as they are; none it asks for removes any.
+        assert_eq!(constraints_for("lead", lead.clone(), None).unwrap(), lead);
+        assert_eq!(constraints_for("lead", lead.clone(), Some("  ")).unwrap(), lead);
+        // Kept as the registry keeps them, and read back from there by a spawn of its own.
+        let settings = serde_json::json!({ "model": "x", "constraints": helper });
+        assert_eq!(constraints_of(&settings), helper);
+        assert!(constraints_of(&serde_json::json!({})).is_empty(), "a session without any");
+        assert!(constraints_of(&serde_json::json!({ "constraints": "loose text" })).is_empty(), "none it cannot read");
+    }
+
+    #[test]
+    fn constraints_are_plain_text_within_their_caps() {
+        assert!(constraints_for("c", Vec::new(), Some("ok\x1b[201~")).unwrap_err().contains("control character"));
+        assert!(constraints_for("c", Vec::new(), Some("line one\nline two\ttabbed")).is_ok(), "lines and tabs are text");
+        let big = "a".repeat(CONSTRAINT_MAX + 1);
+        assert!(constraints_for("c", Vec::new(), Some(&big)).unwrap_err().contains("one spawn may add"));
+        let full: Vec<Constraint> = (0..4).map(|i| Constraint { from: format!("s{i}"), text: "a".repeat(CONSTRAINT_MAX) }).collect();
+        assert!(constraints_for("c", full.clone(), None).is_ok(), "16 KB in all is the most");
+        assert!(constraints_for("c", full, Some("one more")).unwrap_err().contains("a chain may hold"));
+    }
+
+    #[test]
+    fn a_callers_constraints_reach_its_helper_and_the_person_taking_it_over_drops_them() {
+        let chain = vec![Constraint { from: "ct-top".into(), text: "No network.".into() }];
+        register("ct-lead", Provider::Claude, "C:\\p", "C:\\acc", Some("ct-top"), true, serde_json::json!({ "constraints": chain }));
+        let carried = constraints_of(&crate::agents::registry::settings_of("ct-lead"));
+        assert_eq!(carried, chain, "what a spawn of its own starts from");
+        // Registered again at its next start, as every turn's does: kept.
+        register("ct-lead", Provider::Claude, "C:\\p", "C:\\acc", Some("ct-top"), true, serde_json::json!({}));
+        assert_eq!(constraints_of(&crate::agents::registry::settings_of("ct-lead")), chain);
+        // The person opens it as their own chat: a chat of the person's carries none.
+        crate::agents::take_over("ct-lead", || None).unwrap();
+        assert!(constraints_of(&crate::agents::registry::settings_of("ct-lead")).is_empty());
+        forget("ct-lead");
+    }
+
+    #[test]
+    fn a_spawn_record_of_before_constraints_still_reads() {
+        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go" })).unwrap();
+        assert_eq!(p.constraints, None);
+        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "constraints": "No network." })).unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap()["constraints"], "No network.", "kept with a spawn under way");
+        let spec: crate::background::Spec = serde_json::from_value(serde_json::json!({
+            "provider": "claude", "accountPath": "a", "folder": "f", "worktree": false, "model": null, "effort": "low",
+            "mode": "default", "autoReview": false, "tools": true, "hooksUnasked": false
+        }))
+        .expect("a helpers.json of before still reads");
+        assert!(spec.constraints.is_empty() && spec.tools, "with none, a lead all the same");
     }
 
     #[test]
