@@ -33,6 +33,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   read, wait on, send to and answer only sessions you spawned and theirs; with it, any session
   but your own, and your text reaches it opened `[From session <your id> via Luna]`. You stop,
   interrupt and delete only your own.
+- `scope: "all"` is a person's chat's only. A helper (a session with a parent) reaches only
+  itself and the sessions under it, in every tool: what is for anyone else goes in its reply.
+  Nor does it notify the person or set the PC's power.
 - `luna_session_stop` ends a helper's turn (no autoDelete after; a send goes on); between turns
   it ends what its turns left running. What outlives a stopped turn (on Windows a Git Bash
   command's processes, a `run_in_background` job's) shows in `leftRunning`, for a second stop.
@@ -42,9 +45,11 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   unmerged commits (`force: true` overrides); what stays comes back as `worktreeLeft`.
 - A deleted parent's helper passes to its parent; with none, only the user can stop or delete
   it, and it goes once idle for 30 min.
-- At most eight helpers under one chat, counting its helpers' own; an autoDelete helper whose
-  answer reached you does not count. A refusal names the ones that do. A helper given
-  `tools: true` gets these tools too; its own helpers get none.
+- A line (a person's chat and every session under it) has a number of places the user sets
+  (8 unless changed); an autoDelete helper whose answer reached you takes none. `places` in a
+  spawn's result and in `luna_session_list`: `inUse` of `of` on your line, `underYou` of them. A
+  refusal names the ones you can delete; below the top, the top chat is told, as only it can
+  free the rest. A helper given `tools: true` gets these tools too; its own helpers get none.
 - `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper is told it
   is one, not the chat of the person its instructions name (operator, user): Claude Code in its
   system prompt and after its first prompt, Codex in Luna's note on its prompts.
@@ -69,10 +74,14 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - A safe spawn: a prompt that stands alone (the helper sees nothing of your conversation), the
   least mode that does the job (`readOnly`, `plan`, a read-only sandbox), a worktree for edits
   beside other work; then end your turn and let the notice come.
-- A helper's mode (exact spelling; else the account's default) may not exceed yours: plan /
-  read-only < default, dontAsk / read-only asking < acceptEdits < workspace-write < auto-review <
-  bypassPermissions / danger-full-access; network apart. Allow rules and config are not weighed.
-  Higher: refused unless the user allows it. No helper works in or above Luna's own folder.
+- A helper's mode (exact spelling) may not exceed yours: plan / read-only < default, dontAsk /
+  read-only asking < acceptEdits < workspace-write < auto, auto-review < bypassPermissions /
+  danger-full-access; network apart. Allow rules and config are not weighed. Higher: refused
+  unless the user allows it. No helper works in or above Luna's own folder.
+- No mode given (no `permissionMode`; for Codex neither `sandbox` nor `approval`): yours on the
+  same CLI, else the highest of its modes on or below your rung (a Codex `approval` that asks
+  a person becomes `never`), or the account's default if the user set so. `settings.modeFrom`
+  says which: `caller`, `callerNearest`, `account`.
 - Codex's `approval`: `never` (the default), or `auto-review`, a reviewer model answering what
   Codex would ask (workspace-write only). A helper has nobody to ask, so policies that ask a
   person are refused; the sandbox is what holds it. Running the project's hooks past Codex's trust

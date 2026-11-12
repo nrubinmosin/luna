@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-helper-mode"
+description = "Enables the set_helper_mode command without any pre-configured scope."
+commands.allow = ["set_helper_mode"]
+
+[[permission]]
+identifier = "deny-set-helper-mode"
+description = "Denies the set_helper_mode command without any pre-configured scope."
+commands.deny = ["set_helper_mode"]

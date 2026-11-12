@@ -24,6 +24,12 @@ pub struct Settings {
     /// Helpers may run with more privilege than the session spawning them
     /// (agents/privilege.rs `cap`). Off: a helper is held to its caller's.
     pub helpers_above_caller: bool,
+    /// The most sessions one chat may have under it, every generation counted
+    /// (agents/spawn `max_descendants`, held to its range there).
+    pub max_helpers: u32,
+    /// The mode a helper starts in when its spawn names none
+    /// (agents/privilege.rs `settle_mode`).
+    pub helper_mode: HelperMode,
     /// Per provider, the account whose settings file the others copy
     /// (account_settings/sync.rs), by name.
     pub settings_parents: SettingsParents,
@@ -49,6 +55,17 @@ pub struct Settings {
     pub waiting_marker: String,
     /// Recommendations (checks.rs) left off on purpose: no chip for these.
     pub recommendations_dismissed: Vec<String>,
+}
+
+/// A helper's mode when its spawn names none: the caller's own, as far as the
+/// helper's CLI has it (`Inherit`), or the account's and project's default
+/// (`Account`), held to the caller's either way.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HelperMode {
+    #[default]
+    Inherit,
+    Account,
 }
 
 /// Which accounts something goes into: `all`, a provider's every account
@@ -252,6 +269,8 @@ impl Default for Settings {
             power_action: "shutdown".into(),
             agent_blocked_accounts: Vec::new(),
             helpers_above_caller: false,
+            max_helpers: crate::agents::spawn::HELPERS_DEFAULT,
+            helper_mode: HelperMode::Inherit,
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
             fetch_before_worktree: true,

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-max-helpers"
+description = "Enables the set_max_helpers command without any pre-configured scope."
+commands.allow = ["set_max_helpers"]
+
+[[permission]]
+identifier = "deny-set-max-helpers"
+description = "Denies the set_max_helpers command without any pre-configured scope."
+commands.deny = ["set_max_helpers"]

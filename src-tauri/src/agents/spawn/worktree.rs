@@ -198,6 +198,7 @@ mod tests {
                 worktree,
                 worktree_pending,
                 mcp_left_on: Vec::new(),
+                places: Default::default(),
             })
             .unwrap()
         };

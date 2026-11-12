@@ -10,9 +10,30 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Added
 
+- Settings → Agents & trust → Helpers: **Helpers per chat**, the places a
+  chat's line of helpers shares, its helpers' helpers included (1 to 32,
+  8 as before), and **Helpers' mode when not given**: the spawning chat's
+  (the default) or the account's.
+- `luna_session_spawn` and `luna_session_list` say how many places are in use
+  on the caller's line, of how many, and how many under the caller
+  (`places`). A helper refused a place hears only the sessions it can delete,
+  and the chat at the top of its line is told with its next notice.
 - `luna_session_get` on a helper in a worktree gives its last commit's
   subject and up to 20 lines of `git status --short`, for a parent its CLI
   keeps out of that worktree.
+- A Claude Code helper may run in `auto` or `dontAsk`.
+
+### Changed
+
+- A helper reaches only the sessions under it, one with Luna's tools
+  included: `scope: "all"` is refused to it in every tool, as is any session
+  outside its subtree (the person's chats, its parent, another chat's
+  helpers), and it no longer sends desktop notifications or sets the PC's
+  power. The person's own chats keep that reach
+  ([ADR-0025](docs/adr/0025-a-helper-reaches-only-its-own-subtree.md)).
+- A spawn that names no mode takes the spawning chat's own, or across CLIs
+  the highest mode the chat's privilege covers, instead of the account's
+  default; `settings.modeFrom` says which.
 
 ### Fixed
 
