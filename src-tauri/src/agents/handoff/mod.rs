@@ -1036,7 +1036,35 @@ pub(in crate::agents) fn bound_to_conversation(line: &str) -> bool {
 /// it opened, but one already put together, or queued as the move began, would
 /// still ask the chat for a handoff that resets it in the middle of the move.
 pub(in crate::agents) fn withheld(chat: &str, line: &str) -> bool {
-    facts::is_notice(line) && moving::under_way(chat)
+    facts::is_notice(line) && (moving::under_way(chat) || (facts::is_threshold_notice(line) && !threshold_ask_of(chat, line)))
+}
+
+/// Whether threshold notice `line` still has the ask it was queued with open
+/// on `chat`: the threshold's, bound to that very notice (`Asked::notice`;
+/// one from before that was kept is taken as its own), with auto-handoff
+/// still on. The notifier puts a notice together from its queue and types it
+/// seconds later: auto-handoff turned off meanwhile closes the ask and
+/// unqueues the notice, a later ask replaces it, and a copy already put
+/// together must not ask for what the tool would refuse. Gone for good, so
+/// the notifier drops it.
+fn threshold_ask_of(chat: &str, line: &str) -> bool {
+    let asked = store::records().get(chat).and_then(|r| r.asked.clone());
+    let Some(a) = asked.filter(|a| a.kind == store::AskKind::Auto) else { return false };
+    a.notice.as_deref().is_none_or(|n| n == sha256_of(line)) && threshold_now(chat).is_some()
+}
+
+/// Whether line `line` of the notifier's queue for `chat` goes in now, with
+/// the person's keys held, right before the paste: a threshold notice only
+/// while its ask stands (`withheld`) and the chat is on the conversation it
+/// asks, both known (`Asked::conversation`), as the tool would answer only
+/// there. Any other line, as far as this goes. Not now is not never: one on
+/// another conversation is closed by the beat (`drifted`) and then dropped.
+pub(in crate::agents) fn notice_here(chat: &str, line: &str) -> bool {
+    if !facts::is_threshold_notice(line) {
+        return true;
+    }
+    let asked = store::records().get(chat).and_then(|r| r.asked.as_ref().and_then(|a| a.conversation.clone()));
+    !withheld(chat, line) && asked.is_some() && asked == conversation_now(chat)
 }
 
 /// What the switches' beat keeps between looks.
@@ -1322,7 +1350,9 @@ fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told,
     }
     told_of(r, told, inline);
     r.ask_closed = None;
-    r.asked = Some(asked);
+    // The notice bound to this ask: a copy the notifier holds goes in only
+    // while it is the one open (`withheld`).
+    r.asked = Some(store::Asked { notice: Some(sha256_of(&line)), ..asked });
     reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), line));
     true
 }

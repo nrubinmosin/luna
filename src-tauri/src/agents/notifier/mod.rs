@@ -769,15 +769,19 @@ fn deliver_notice(
     // A queued line says what it was put together to say only while the
     // conversation it is for is still the chat's (a handoff's continuation,
     // handoff `as_told`), and a handoff's notice goes in only with no move of
-    // the chat under way (handoff `withheld`): else the next look puts it in
+    // the chat under way, a threshold notice only while the ask it was queued
+    // with is open, auto-handoff on, and the chat on the conversation it asks
+    // (handoff `withheld`, `notice_here`): else the next look puts it in
     // other words, or drops it. Looked at here and again once the person's
     // keys are held (`type_text`), right before the text goes in: a `/clear`
     // or `/new` of theirs between the two would otherwise take the
     // continuation into a conversation that never asked for it.
     let stands = || {
-        news_lines
-            .iter()
-            .all(|(told, line)| !crate::agents::handoff::withheld(caller, line) && crate::agents::handoff::as_told(caller, line) == *told)
+        news_lines.iter().all(|(told, line)| {
+            !crate::agents::handoff::withheld(caller, line)
+                && crate::agents::handoff::notice_here(caller, line)
+                && crate::agents::handoff::as_told(caller, line) == *told
+        })
     };
     // A `/clear` or `/new` the person sent just before their keys were held
     // is on its way to a CLI that has not acted on it yet, and the
