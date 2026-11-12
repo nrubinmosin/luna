@@ -148,12 +148,15 @@ pub(super) struct Observed {
     pub(super) answered: bool,
     /// Its CLI said on stderr that it stopped what the turn left in the
     /// background, its wait for it over (`take_stderr`): subagents' work may be
-    /// unfinished and uncommitted, which its callers' notices say. Saved: a
-    /// core that goes before those notices are in must not lose it. Until
-    /// every caller owed by it has had a notice that carries it settle its
-    /// debt (`background_stop_told`), or the next turn begins.
+    /// unfinished and uncommitted, which its callers' notices and replies say.
+    /// Saved: a core that goes before they are in must not lose it. Kept past
+    /// later turns (a queued message starts one at once) until every caller
+    /// owed an answer from that turn has had it (`background_stop_told`).
     pub(super) background_stopped: bool,
-    /// The callers such a notice has gone to, for this turn's stop.
+    /// The turn count that stop came at the end of: callers owed from before
+    /// it are to hear of it, those who asked after it are not.
+    pub(super) stopped_turn: u32,
+    /// The callers it has been said to.
     pub(super) stop_told: Vec<String>,
 }
 
@@ -163,8 +166,6 @@ impl Observed {
         self.generation += 1;
         self.rerouted = false;
         self.acted = false;
-        self.background_stopped = false;
-        self.stop_told.clear();
     }
 
     /// What the rollout said of a Codex turn once it was over, unless another
@@ -195,6 +196,10 @@ pub(super) struct Run {
     /// nothing since: the process is up only for what the turn left in the
     /// background (`waits_on_background`).
     pub(super) after_result: bool,
+    /// The processes in its job, as sampled while it waits so (rows.rs
+    /// `activity`): what tells a subagent's long command at work from a
+    /// watcher that does nothing, where its stream says nothing of either.
+    pub(super) watched: Vec<Leftover>,
     /// Which claim this is, of all this core has made: a batch reserved on it
     /// (`Reservation`) tells the claim it holds from one made after it.
     pub(super) claim: u64,
@@ -204,7 +209,17 @@ impl Run {
     pub(super) fn claimed(pid: Option<u32>, started_ms: u64) -> Run {
         static CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let claim = CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Run { pid, started_ms, stopped: false, feed: None, line: None, result_failed: false, after_result: false, claim }
+        Run {
+            pid,
+            started_ms,
+            stopped: false,
+            feed: None,
+            line: None,
+            result_failed: false,
+            after_result: false,
+            watched: Vec::new(),
+            claim,
+        }
     }
 }
 

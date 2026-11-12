@@ -129,27 +129,51 @@ pub fn turn_answered(id: &str) -> bool {
     lock().entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.after_result)
 }
 
+/// What a helper's turn that has answered waits on, as its job shows it.
+pub struct Waiting {
+    /// The processes in its job besides the CLI, by name, each once.
+    pub procs: Vec<String>,
+    /// How long all of its job, the CLI with it, has done nothing (`quiet_ms`):
+    /// a subagent's command at work is no quiet turn, though it writes
+    /// nothing. None until it has been sampled.
+    pub job_quiet_ms: Option<u64>,
+}
+
 /// Whether a helper's turn is only waiting on what it left in the background:
 /// its CLI has written the turn's result and is still up (`Run::after_result`).
-/// Some with the processes in its job besides the CLI, by name, each once.
-pub fn waits_on_background(id: &str) -> Option<Vec<String>> {
-    if !turn_answered(id) {
-        return None;
-    }
-    let (job, cli) = {
-        let r = lock();
-        let e = r.entries.get(id)?;
-        let run = e.run.as_ref().filter(|run| run.after_result)?;
-        (e.job.clone(), run.pid)
-    };
-    // The job is read with no lock held: it takes a snapshot of every process.
-    let mut names: Vec<String> = Vec::new();
-    for (p, name) in job.map(|job| crate::procs::left_in(&job)).unwrap_or_default() {
-        if Some(p.pid) != cli && !names.contains(&name) {
-            names.push(name);
+/// Its job as last sampled (`activity`).
+pub fn waits_on_background(id: &str) -> Option<Waiting> {
+    let r = lock();
+    let run = r.entries.get(id)?.run.as_ref().filter(|run| run.after_result)?;
+    let mut procs: Vec<String> = Vec::new();
+    for l in run.watched.iter().filter(|l| Some(l.pid) != run.pid) {
+        if !procs.contains(&l.exe) {
+            procs.push(l.exe.clone());
         }
     }
-    Some(names)
+    Some(Waiting { procs, job_quiet_ms: crate::procs::quiet_ms(&run.watched, crate::throttle::now_ms()) })
+}
+
+/// Samples the jobs of the turns that have answered and wait on their
+/// background work (`Run::watched`), the CLI's own process with them.
+fn watch_waiting() {
+    let waiting: Vec<(String, std::sync::Arc<crate::procs::Job>)> = lock()
+        .entries
+        .iter()
+        .filter(|(_, e)| e.run.as_ref().is_some_and(|run| run.after_result))
+        .filter_map(|(id, e)| Some((id.clone(), e.job.clone()?)))
+        .collect();
+    for (id, job) in waiting {
+        // Read with no lock held: it takes a snapshot of every process.
+        let read = crate::procs::left_in(&job);
+        let now = crate::throttle::now_ms();
+        let mut r = lock();
+        let Some(e) = r.entries.get_mut(&id) else { continue };
+        let since = e.observed.event_ms;
+        if let Some(run) = e.run.as_mut().filter(|run| run.after_result) {
+            run.watched = leftovers(&run.watched, read, now, since);
+        }
+    }
 }
 
 /// What the window needs to make a helper a chat of the person's own. No parent:
@@ -488,6 +512,7 @@ pub(super) fn turn_holds(t: &crate::activity::TurnState) -> bool {
 /// which is what tells its caller and `reap` that a job still runs, however idle.
 pub fn activity() -> Vec<crate::activity::SessionActivity> {
     lapse_openings(crate::throttle::now_ms());
+    watch_waiting();
     let ids: Vec<(String, Option<std::sync::Arc<crate::procs::Job>>)> =
         lock().entries.iter().map(|(id, e)| (id.clone(), e.job.clone().filter(|_| e.run.is_none()))).collect();
     let mut moved = false;

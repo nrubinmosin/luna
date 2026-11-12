@@ -243,7 +243,12 @@ fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
     }
     if let Some(e) = r.entries.get_mut(id) {
         e.observed.event_ms = crate::throttle::now_ms();
-        e.observed.background_stopped |= stops_background(line);
+        if stops_background(line) {
+            // Of this turn, which ends when the process does.
+            e.observed.background_stopped = true;
+            e.observed.stopped_turn = e.turns_ended + 1;
+            e.observed.stop_told.clear();
+        }
         note(e, &format!("stderr: {}", one_line(line)));
     }
     true
@@ -587,7 +592,7 @@ mod tests {
 
     /// 2.1.322's own words, the wait in any unit it writes.
     #[test]
-    fn the_clis_word_that_it_stopped_background_work_is_kept_until_the_next_turn() {
+    fn the_clis_word_that_it_stopped_background_work_outlives_the_turn_a_queued_message_starts() {
         let said = "Background tasks still running 10m after the last turn (2 agents: \"refactor\", \"tests\"); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.";
         assert!(stops_background(said));
         assert!(stops_background(&said.replace("10m", "1h 30m")));
@@ -600,8 +605,23 @@ mod tests {
         assert!(!background_stopped(id));
         assert!(take_stderr(id, &reader, said.as_bytes()));
         assert!(background_stopped(id), "what the caller hears of the turn says so");
-        lock().entries.get_mut(id).unwrap().observed.begin_turn();
-        assert!(!background_stopped(id), "a new turn has its own background");
+        // The turn (the first) ends, and a message queued while it waited starts
+        // the next at once: nobody has been told yet, so it stands.
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut(id).unwrap();
+            e.turns_ended = 1;
+            e.observed.begin_turn();
+        }
+        assert!(background_stopped_for(id, "parent", 0), "owed from before: to be told");
+        assert!(background_stopped_for(id, "queued", 0), "the queued message's sender too");
+        assert!(!background_stopped_for(id, "later", 1), "one who asked after that turn ended is not");
+        // Told to the parent, still owed to the sender of the queued message.
+        let owed = [("parent".to_string(), 0), ("queued".to_string(), 0), ("later".to_string(), 1)];
+        background_stop_told(id, "parent", &owed);
+        assert!(background_stopped(id) && !background_stopped_for(id, "parent", 0));
+        background_stop_told(id, "queued", &owed[1..]);
+        assert!(!background_stopped(id), "everyone it concerns has had it; the later caller is not waited for");
         reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(take_stderr(id, &reader, said.as_bytes()));
         assert!(!background_stopped(id), "said after its turn is over: not this helper's");

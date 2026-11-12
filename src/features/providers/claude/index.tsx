@@ -261,9 +261,12 @@ export function Fields({
       draft.rebase('effort', ownHeld, ownHeld === ownEffort ? sourceOf(own) : SOURCE_LABELS.model);
     }
     draft.force('effort', next);
-    // `draft` is a new object every render; the model, its own level and where it goes are what matter.
+    // `draft` is a new object every render; the model, its own level and where
+    // it goes matter, and what the draft holds now: the account's defaults may
+    // land after a model was picked and put the default model's effort and
+    // origin in, which this puts right.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listed?.slug, ownHeld, own?.source, own?.key, next]);
+  }, [listed?.slug, ownHeld, own?.source, own?.key, next, settings.effort, draft.resolved.effort, draft.from.effort]);
 
   // Main models first, the rest under "More…"; a model a settings file names
   // that the list does not know still gets an entry of its own, chosen.
