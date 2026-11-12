@@ -8,6 +8,10 @@ use crate::applied::{Applied, Item};
 /// in, its environment, and what Luna applied in them (applied.rs).
 pub(super) type Command = (Vec<String>, String, Vec<(&'static str, String)>, Vec<Applied>);
 
+/// How long `claude -p`, its stdin closed, waits for what its turn left in the
+/// background before it stops it, in ms; `0` waits as long as that takes.
+const BG_WAIT_CEILING_ENV: &str = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS";
+
 /// The arguments and working directory of the next turn. Err when a Claude
 /// Code turn's mandatory settings — its core-folder deny (threat model F3) —
 /// cannot be written: the turn refuses rather than run without the deny.
@@ -162,6 +166,16 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             applied.push(Item::NoAutoUpdate.with("DISABLE_AUTOUPDATER=1"));
             // Never inherited: a `0` there turns auto-memory on (`HelperSettings`).
             envs.push((crate::claude::launch::NO_AUTO_MEMORY_ENV, "1".into()));
+            // Its stdin closes with each turn's result (events.rs), and from then
+            // `claude -p` waits only so long for what the turn left in the
+            // background before it stops it, subagents and their uncommitted
+            // work included (2.1.319+, 10 min by default). `0` waits for them;
+            // the turn is the helper's until then, and one that hangs is told to
+            // the parent as a turn gone quiet (agents/notifier `QUIET_TURN_MS`),
+            // or as idle processes once it is over (`left_quiet`), and ends with
+            // `luna_session_stop`. Set always, over anything inherited.
+            envs.push((BG_WAIT_CEILING_ENV, "0".into()));
+            applied.push(Item::HelperBackgroundWait.with(format!("{BG_WAIT_CEILING_ENV}=0")));
         }
         Provider::Codex => {
             args.push("exec".into());
@@ -738,6 +752,7 @@ mod tests {
             ("CLAUDE_CONFIG_DIR", "C:\\acc"),
             ("DISABLE_AUTOUPDATER", "1"),
             ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+            ("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0"),
             ("LUNA_SESSION_ID", id),
         ])
     }
@@ -777,6 +792,7 @@ mod tests {
         assert_eq!(t.args, with_settings(strict(claude_turn("acceptEdits"))));
         assert_eq!(t.dir, "C:\\p");
         assert_eq!(t.envs, claude_turn_envs(ID));
+        assert_eq!(t.value("helper.background-wait"), Some("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0"), "said where it is set");
         let settings = golden::claude_helper_settings(golden::claude_settings_alone());
         assert_eq!((t.settings, t.mcp), (Some(settings), None), "no hooks: its stream says it all");
     }
@@ -1212,6 +1228,7 @@ mod tests {
                 ("CLAUDE_CONFIG_DIR", "<acc>"),
                 ("DISABLE_AUTOUPDATER", "1"),
                 ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+                ("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0"),
                 ("LUNA_SESSION_ID", ID),
             ])
         );

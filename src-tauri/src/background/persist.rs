@@ -464,6 +464,12 @@ pub fn cut_short(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short)
 }
 
+/// Whether its CLI stopped what its last turn left in the background, its time
+/// for it up (run.rs `stops_background`).
+pub fn background_stopped(id: &str) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.observed.background_stopped)
+}
+
 /// Whether a core's going stopped it before any turn named its conversation:
 /// nothing it did can be carried on from.
 pub fn never_started(id: &str) -> bool {

@@ -8,6 +8,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- A Claude Code helper's background subagents are no longer stopped 10
+  minutes after its turn: Claude Code 2.1.319+ stops what a `-p` run left in
+  the background that long after its input closed, unfinished and uncommitted
+  work with it, and Luna closes a helper's input with each turn. Its turns now
+  run with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (in "What Luna applied"),
+  so they wait for that work; one that hangs is still told to its caller as a
+  quiet turn and stopped with `luna_session_stop`. Should the CLI stop that
+  work anyway, the caller's notice says so instead of "it has said nothing".
+
 ## [0.17.0] - 2026-11-13
 
 A chat can hand off to a fresh conversation whenever you ask: **Hand off now**
