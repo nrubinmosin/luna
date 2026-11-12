@@ -182,6 +182,19 @@ export function effortMovedTo(listed: ClaudeModelDto | undefined, current: Effor
   return listed?.defaultEffort ?? (own.includes('high') ? 'high' : (own[0] ?? 'high'));
 }
 
+/** The effort a chat on `listed` is to run at, from `current`: the level the
+ *  settings files keep for the model (`own`) unless the effort was picked by
+ *  hand, then held to what the model takes (`effortMovedTo`). */
+export function nextEffort(
+  listed: ClaudeModelDto | undefined,
+  current: Effort,
+  own: Effort | null,
+  touched: boolean
+): Effort {
+  const start = own !== null && !touched ? own : current;
+  return effortMovedTo(listed, start) ?? start;
+}
+
 export function Fields({
   draft,
   origin,
@@ -232,23 +245,19 @@ export function Fields({
   }, [accountPath, folder]);
   const own = listed ? byModel[listed.slug] : undefined;
   const ownEffort = own ? effortFromSetting(own.value) : null;
+
+  // The next effort in one step: the model's own level from the settings
+  // files unless one was picked by hand (`nextEffort`), then, where the model
+  // does not take that level, its catalog default, a hand-picked one
+  // included: a chat cannot run at a level its model lacks. A model that
+  // takes no effort runs with none.
+  const next = nextEffort(listed, settings.effort, ownEffort, draft.touched('effort'));
   useEffect(() => {
     if (own && ownEffort) draft.rebase('effort', ownEffort, sourceOf(own));
-    // `draft.rebase` is a new function every render; the model's own level is what matters.
+    if (next !== settings.effort) draft.force('effort', next);
+    // `draft` is a new object every render; the model, its own level and where it goes are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listed?.slug, ownEffort, own?.source, own?.key]);
-
-  // A model that does not take the level shown moves it to its own default
-  // level, a hand-picked one included: a chat cannot run at a level its
-  // model lacks. One that takes it keeps it, whether a settings file named
-  // it, Luna's stock chose it or it was picked by hand. A model that takes
-  // no effort runs with none.
-  const moveTo = effortMovedTo(listed, settings.effort);
-  useEffect(() => {
-    if (moveTo !== null) draft.force('effort', moveTo);
-    // `draft.force` is a new function every render; the model is what matters.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listed?.slug, moveTo]);
+  }, [listed?.slug, ownEffort, own?.source, own?.key, next]);
 
   // Main models first, the rest under "More…"; a model a settings file names
   // that the list does not know still gets an entry of its own, chosen.

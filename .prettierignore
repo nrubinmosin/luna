@@ -9,6 +9,10 @@ pnpm-lock.yaml
 dist/
 test-build/
 
+# Worktrees made inside the repo (Luna's helpers, Claude Code's --worktree):
+# checkouts of their own, checked in their own right.
+.claude/worktrees/
+
 # Brand assets are exported as they are from the design tools.
 docs/brand/
 
