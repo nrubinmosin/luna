@@ -71,9 +71,14 @@ owed by the person's chats, outlive a core restart.
   in its job (`waits_on_background`), and `luna_session_stop` ends it. When the
   CLI stops that work, its stderr line ("Background tasks still running …
   stopping them") is caught (`run.rs` `stops_background`) and kept in
-  `Observed`, saved across cores, until a notice that settles the caller's debt
-  says so (every such line does, rather than "it has said nothing") or the
-  next turn begins.
+  `Observed`, saved across cores with the callers told so far: every line that
+  settles a debt on it says so to a caller not yet told (rather than "it has
+  said nothing"), a delivered one marks that caller (notifier
+  `ack_background_stop`, never a line without it such as an exited helper's),
+  and it is done once every caller still owed has been told, or the next turn
+  begins. The quiet notice of a turn that has answered and waits on its
+  background work is told once per turn apart from the plain quiet one
+  (`Owed::told_background_wait`).
 - A Codex helper's `exec` has no such ceiling: it reads its prompt from stdin
   once and runs one turn, and 0.167.2 has no variable or config key for how
   long it holds on after it, so Luna sets none. Whether a subagent the turn
