@@ -15,11 +15,21 @@ use std::path::{Path, PathBuf};
 /// `Cargo.lock`, relative to the crate: build.rs itself, and the files an
 /// `include_str!` or `include_bytes!` outside a test reaches outside `src/` —
 /// the CLI policy, whose `minSafe` a release may raise alone (cli/known_good.rs),
-/// and the handoff's instructions Luna serves (library/system.rs).
+/// and the system texts Luna serves: the handoff's instructions, its roles'
+/// defaults and notes (library/system.rs).
 /// What `tauri::generate_context!` compiles in (`tauri.conf.json`,
 /// `capabilities/`, `permissions/`, `icons/`, the frontend) is the window's: the
 /// core never builds a Tauri app (lib.rs `run`, coreproc.rs).
-pub const INPUTS: &[&str] = &["build.rs", "cli-known-good.json", "resources/skills/session-handoff/SKILL.md"];
+pub const INPUTS: &[&str] = &[
+    "build.rs",
+    "cli-known-good.json",
+    "resources/skills/session-handoff/SKILL.md",
+    "resources/system/role-chat.md",
+    "resources/system/role-lead.md",
+    "resources/system/role-helper.md",
+    "resources/system/note-lead.md",
+    "resources/system/note-helper.md",
+];
 
 /// The fingerprint of the crate at `root`, its `LUNA_FLAVOR` being `flavor`.
 /// Line endings are hashed as LF so a Windows checkout and the Docker mount of

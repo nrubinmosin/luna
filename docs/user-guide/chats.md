@@ -228,7 +228,7 @@ menu, so words injected into the chat cannot hand it off on their own.
   opened, it is given up the same way: nothing typed there.
 - Asked, the chat calls `luna_session_handoff` without arguments and gets the
   steps and the instructions for the file: Luna's own, or yours from the
-  library ([System skills](library.md#system-skills)).
+  library ([System texts](library.md#system-texts)).
 - The chat writes the file in a folder of its own that Luna keeps, private,
   in its data folder (`handoffs/<chat>/drafts`); a Codex chat is given it as
   a folder its sandbox writes into. Every chat with Luna tools gets that

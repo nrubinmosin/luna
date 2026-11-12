@@ -240,7 +240,7 @@ fn take_unclaimed(dirs: &Dirs, ledger: &mut Ledger, dest: &str, a: &AccountInfo)
     let name = new_instructions_name(dirs, &a.name);
     write_at(&dirs.instructions_file(&name), true, &there)?;
     keep_blobs(dirs, &there);
-    ledger.wrote(dest, hashes(&there), Audience::Both);
+    ledger.wrote(dest, hashes(&there), Audience::EVERY);
     ledger.save(dirs)?;
     let key = format!("{}/{}", a.provider.as_str(), a.name);
     crate::settings::update(|s| give_instructions(&mut s.library, Some(&name), vec![key]))?;
@@ -282,7 +282,7 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
             _ => there.clone(),
         };
         // What stays there still has the line, unless it came off nothing.
-        let still = if skill.is_none() && taken != there { wrote } else { Audience::Both };
+        let still = if skill.is_none() && taken != there { wrote } else { Audience::EVERY };
         if let Some(name) = &skill {
             let text = taken.get(SKILL_FILE).ok_or("There is no SKILL.md there")?;
             check_skill(name, &String::from_utf8_lossy(text))?;

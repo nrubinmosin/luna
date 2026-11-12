@@ -101,7 +101,15 @@ items! {
     NotesDir = "notes-dir", Runtime,
         "Long prompts, messages and helpers' answers from Luna arrive as files there, readable without asking.";
     HelperIdentity = "helper.identity", Runtime,
-        "Tells a helper it answers to the chat that started it, not to a person.";
+        "A task from another agent carries a note after it: the session answers to that agent, not to a person. Its text is a system text, yours to change in the Library window.";
+    RoleLayers = "role.layers", Runtime,
+        "What the session is told of its role, at memory level: Luna's default for its role (a system text in the Library window), the library's instructions for its role, and its constraints, in that order. Claude Code reads them as the CLAUDE.md of a folder of Luna's; Codex in developer_instructions, after its config's own value.";
+    RoleLayersUnsure = "role.layers-unsure", Runtime,
+        "What Luna gives Codex in developer_instructions may not be all the session gets: a config layer Luna could not read, or one that comes above the command line.";
+    RoleLayersOff = "role.layers-off", UserAction,
+        "This chat starts without its role layers: with its config's own developer_instructions they do not fit on Codex's command line. Shorten the library's instructions for its role, or its role's text.";
+    Constraints = "constraints", UserAction,
+        "What the agents that started this session asked it, and every session under it, to keep to, word for word: the last of its role layers. Text it is told, not a permission it lacks.";
     HelperHeadless = "helper.headless", Runtime,
         "A helper runs without a terminal: its CLI's headless mode, its output read as a stream.";
     HelperPermissionPrompt = "helper.permission-prompt", Runtime,
@@ -151,11 +159,11 @@ items! {
     LibraryAccountInstructionsKept = "library.account-instructions-kept", Workaround,
         "The account's instructions are read after all: the only pattern that leaves them out would also match this project's own instructions in Claude Code's matcher.";
     LibraryAudienceUnkept = "library.audience-unkept", UserAction,
-        "In the Library window you set these for the other kind of session, but this one reads them all the same: Codex has no way to leave its account's AGENTS.md out, and the copy there does not say whose it is.";
+        "In the Library window you set these for the person's own chats alone, but this session reads them all the same: Codex has no way to leave its account's AGENTS.md out, and the copy there does not say whose it is.";
     LibraryAudience = "library.audience", UserAction,
-        "In the Library window you set these for the person's own chats or for helpers only, and this session is the other kind.";
+        "In the Library window you set these for some roles only: given to this session alone, or kept from it, by its role.";
     LibraryInstructions = "library.instructions", UserAction,
-        "The library's instructions for this folder, read as memory from a folder of Luna's.";
+        "The session's role layers — the library's instructions for this folder or its role, its role's text, its constraints — read as memory from a folder of Luna's.";
     MemoryNarrowed = "library.memory-narrowed", Runtime,
         "Reading the library's instructions as memory would read the other folders added to the session too: their CLAUDE.md files are left out.";
     MemoryNotNarrowed = "library.memory-not-narrowed", Workaround,

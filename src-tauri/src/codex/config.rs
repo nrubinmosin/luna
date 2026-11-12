@@ -69,22 +69,11 @@ pub fn helper_mcp_servers(account_path: &str) -> Result<Vec<(String, Vec<String>
 /// they hold skills only (library/folders.rs).
 pub fn servers_left_on(account_path: &str, folder: &str) -> Vec<String> {
     let mut left = Vec::new();
-    let folder = Path::new(folder);
-    let root = folder.ancestors().find(|d| d.join(".git").exists());
-    let layers: Vec<&Path> = match root {
-        Some(root) => folder.ancestors().take_while(|d| *d != root).chain([root]).collect(),
-        None => vec![folder],
-    };
     let account = Path::new(account_path);
     // Lowest first, as Codex merges them: the account, then the project's
     // layers from its root down to the folder.
     let mut docs = vec![read_or_empty(&account.join("config.toml"))];
-    for dir in layers.into_iter().rev() {
-        let codex = dir.join(".codex");
-        if crate::pty::same_dir(&codex.to_string_lossy(), &account.to_string_lossy()) {
-            continue;
-        }
-        let file = codex.join("config.toml");
+    for file in project_layers(account_path, folder) {
         let doc = read_or_empty(&file);
         if let Some(servers) = doc.get("mcp_servers").and_then(|t| t.as_table_like()) {
             left.extend(servers.iter().map(|(name, _)| format!("server {name:?} of {}", file.display())));
@@ -99,6 +88,112 @@ pub fn servers_left_on(account_path: &str, folder: &str) -> Vec<String> {
             .map(|name| format!("plugin {name:?}: the servers it brings, if any")),
     );
     left
+}
+
+/// The `.codex/config.toml` of each folder Codex reads a project layer from
+/// for a session in `folder`, lowest first: the project root's (the folder
+/// holding `.git`) down to the folder's own, or the folder's alone outside a
+/// repository. Not the account's own folder, should it be one of them.
+fn project_layers(account_path: &str, folder: &str) -> Vec<PathBuf> {
+    let folder = Path::new(folder);
+    let root = folder.ancestors().find(|d| d.join(".git").exists());
+    let dirs: Vec<&Path> = match root {
+        Some(root) => folder.ancestors().take_while(|d| *d != root).chain([root]).collect(),
+        None => vec![folder],
+    };
+    dirs.into_iter()
+        .rev()
+        .map(|d| d.join(".codex"))
+        .filter(|codex| !crate::pty::same_dir(&codex.to_string_lossy(), account_path))
+        .map(|codex| codex.join("config.toml"))
+        .collect()
+}
+
+/// What Codex's own config stack sets `developer_instructions` to for a
+/// session on `account_path` in `folder`, and what Luna could not be sure of.
+#[derive(Debug, Default, PartialEq)]
+pub struct StackInstructions {
+    pub value: Option<String>,
+    /// Layers Luna could not read, or that come above its `-c`: what it
+    /// gives may not be what the session gets, said in what Luna applied.
+    pub unsure: Vec<String>,
+}
+
+/// The managed layers Codex reads above the command line's `-c` (0.167.2:
+/// `managed_config.toml` in `CODEX_HOME`, and in `/etc/codex` on Unix).
+fn managed_layers(account_path: &str) -> Vec<PathBuf> {
+    let mut out = vec![Path::new(account_path).join("managed_config.toml")];
+    if cfg!(unix) {
+        out.push(PathBuf::from("/etc/codex/managed_config.toml"));
+    }
+    out
+}
+
+/// `developer_instructions` as Codex's config stack sets it, which a `-c` of
+/// Luna's replaces whole (a higher layer's string takes a lower one's place,
+/// codex-rs/config): the system layer (`/etc/codex/config.toml`, Unix), the
+/// account's `config.toml`, the project's layers where the run trusts the
+/// project (`project_trusted`), each later one's value over the earlier; then
+/// the profile the stack selects (`profile`, `[profiles.<name>]`), whose
+/// value goes over them all. A managed layer comes above the `-c` itself:
+/// one that sets the key, or one Luna cannot read, is said in `unsure`, and
+/// the session is started all the same (ADR-0026).
+pub fn developer_instructions_in(account_path: &str, folder: &str, project_trusted: bool) -> StackInstructions {
+    let mut out = StackInstructions::default();
+    let mut files: Vec<PathBuf> = Vec::new();
+    if cfg!(unix) {
+        files.push(PathBuf::from("/etc/codex/config.toml"));
+    }
+    files.push(Path::new(account_path).join("config.toml"));
+    if project_trusted {
+        files.extend(project_layers(account_path, folder));
+    }
+    let mut profile: Option<String> = None;
+    let mut docs = Vec::new();
+    for file in files {
+        match std::fs::read_to_string(&file) {
+            Ok(text) => match text.parse::<DocumentMut>() {
+                Ok(doc) => {
+                    if let Some(v) = string_at(&doc, "developer_instructions") {
+                        out.value = Some(v);
+                    }
+                    if let Some(p) = string_at(&doc, "profile") {
+                        profile = Some(p);
+                    }
+                    docs.push(doc);
+                }
+                Err(e) => out.unsure.push(format!("{} does not parse ({e}): its developer_instructions not read", file.display())),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => out.unsure.push(format!("{}: {e}: its developer_instructions not read", file.display())),
+        }
+    }
+    if let Some(profile) = profile {
+        for doc in &docs {
+            if let Some(v) = doc.get("profiles").and_then(|p| p.get(&profile)).and_then(|p| p.get("developer_instructions")) {
+                if let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    out.value = Some(s.to_string());
+                }
+            }
+        }
+    }
+    for file in managed_layers(account_path) {
+        match std::fs::read_to_string(&file) {
+            Ok(text) => match text.parse::<DocumentMut>() {
+                Ok(doc) if doc.get("developer_instructions").is_some() => out.unsure.push(format!(
+                    "{} sets developer_instructions, above the command line's: what Luna gives may not reach the session",
+                    file.display()
+                )),
+                Ok(_) => {}
+                Err(e) => {
+                    out.unsure.push(format!("{} does not parse ({e}): it may set developer_instructions over Luna's", file.display()))
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => out.unsure.push(format!("{}: {e}: it may set developer_instructions over Luna's", file.display())),
+        }
+    }
+    out
 }
 
 /// The plugins on in `layers` merged lowest first, as Codex 0.167.0 merges
@@ -280,6 +375,41 @@ mod tests {
         assert!(!windows_sandbox_set(&a), "the project's is the repository's say, not the user's");
         std::fs::write(account.join("config.toml"), "windows.sandbox = \"elevated\"\n").unwrap();
         assert!(windows_sandbox_set(&a), "the account's, dotted");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_stack_s_developer_instructions_are_the_highest_layer_s_and_a_trusted_project_s() {
+        let root = std::env::temp_dir().join(format!("luna-codex-devinstr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (account, repo) = (root.join("acc"), root.join("repo"));
+        let sub = repo.join("app");
+        for d in [&account, &repo.join(".git"), &repo.join(".codex"), &sub.join(".codex")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (a, s) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
+        let value = |trusted| developer_instructions_in(&a, &s, trusted);
+        assert_eq!(value(true), StackInstructions::default(), "nothing set anywhere");
+        std::fs::write(account.join("config.toml"), "developer_instructions = \"The account's.\"\n").unwrap();
+        assert_eq!(value(true).value.as_deref(), Some("The account's."));
+        std::fs::write(repo.join(".codex").join("config.toml"), "developer_instructions = \"The repository's.\"\n").unwrap();
+        assert_eq!(value(true).value.as_deref(), Some("The repository's."));
+        std::fs::write(sub.join(".codex").join("config.toml"), "developer_instructions = '''The folder's.'''\n").unwrap();
+        assert_eq!(value(true).value.as_deref(), Some("The folder's."), "the deepest layer last");
+        assert_eq!(value(false).value.as_deref(), Some("The account's."), "an untrusted project's layers are not read");
+        // A profile the stack selects goes over every layer.
+        std::fs::write(
+            account.join("config.toml"),
+            "profile = \"work\"\ndeveloper_instructions = \"The account's.\"\n[profiles.work]\ndeveloper_instructions = \"Work's.\"\n",
+        )
+        .unwrap();
+        assert_eq!(value(true).value.as_deref(), Some("Work's."));
+        // One that will not parse, and a managed layer over the `-c`: said, not refused.
+        std::fs::write(sub.join(".codex").join("config.toml"), "developer_instructions = [broken\n").unwrap();
+        let v = value(true);
+        assert!(v.unsure.len() == 1 && v.unsure[0].contains("does not parse"), "{:?}", v.unsure);
+        std::fs::write(account.join("managed_config.toml"), "developer_instructions = \"IT's.\"\n").unwrap();
+        assert!(value(false).unsure.iter().any(|u| u.contains("above the command line's")));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

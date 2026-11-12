@@ -125,6 +125,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 agent: params.agent.clone(),
                 parent: None,
                 connectors: params.connectors.unwrap_or(false),
+                constraints: Vec::new(),
                 token: None,
             })
         }
@@ -192,6 +193,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 agent: None,
                 parent: None,
                 connectors: params.connectors.unwrap_or(false),
+                constraints: Vec::new(),
                 token: None,
             })
         }
@@ -206,6 +208,7 @@ pub(in crate::agents) fn spawn_background(
     account_path: String,
     in_worktree: Option<String>,
     request: u64,
+    constraints: Vec<crate::agents::Constraint>,
 ) -> Result<Spawned, String> {
     let provider = if params.provider.as_deref() == Some("codex") { Provider::Codex } else { Provider::Claude };
     let project = params.folder.clone().unwrap_or_default();
@@ -246,6 +249,12 @@ pub(in crate::agents) fn spawn_background(
     if let Some(from) = params.mode_from {
         settings["modeFrom"] = serde_json::json!(from);
     }
+    // Kept in the registry too, where `luna_session_get` shows them and every
+    // spawn of its own reads them to pass on (`constraints_for`).
+    if !constraints.is_empty() {
+        settings["constraints"] = serde_json::json!(constraints);
+    }
+    spec.constraints = constraints;
     let tools = spec.tools;
     let auto_delete = params.auto_delete.unwrap_or(true);
     let token = register(&id, provider, &run_in, &account_path, Some(caller), tools, settings.clone());

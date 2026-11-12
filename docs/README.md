@@ -65,10 +65,11 @@
 | [0019](adr/0019-cli-channels-and-rollback.md) | CLI channels and rollback: a known-good list per release, an offline probe, a canary that asks | Accepted |
 | [0020](adr/0020-session-self-handoff.md) | Hand a chat over to a fresh conversation in place, on its own word | Accepted, amended by 0024 |
 | [0021](adr/0021-core-endpoint-by-os-identity.md) | The core lets in whom the OS vouches for, and keeps no credential | Accepted |
-| [0022](adr/0022-content-luna-serves-at-its-own-trigger.md) | Serve the handoff's instructions through Luna's own tool, to the chat that opted in alone | Accepted, amended by 0024 |
+| [0022](adr/0022-content-luna-serves-at-its-own-trigger.md) | Serve the handoff's instructions through Luna's own tool, to the chat that opted in alone | Accepted, amended by 0024 and 0026 |
 | [0023](adr/0023-moving-a-chat-to-another-account.md) | Move a chat to another account of its CLI by a document the person confirms | Accepted, amended by 0024 |
 | [0024](adr/0024-handoff-on-request.md) | List the handoff to every chat with Luna's tools, and answer it only when asked | Accepted |
 | [0025](adr/0025-a-helper-reaches-only-its-own-subtree.md) | A helper reaches only its own subtree | Accepted |
+| [0026](adr/0026-session-roles-at-memory-level.md) | Give sessions a role, chat, lead or helper, each instructed at memory level | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 

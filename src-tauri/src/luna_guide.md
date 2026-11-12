@@ -99,6 +99,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   `read-only-net` if given) holds. Refused with `acceptEdits`, `auto-review` or a sandbox that
   writes.
 - `agent`: an unknown name stops the CLI. Codex refuses it: its roles are for subagents only.
+- `constraints`: text the helper and every session it starts are told, last among their
+  instructions, at every start and resume. A spawn adds to what you carry, word for word; none
+  is ever removed (4 KB a spawn, 16 KB in all). `settings.constraints` shows them. They are
+  instructions, not permissions: what a helper may do is its mode's.
 - `worktree: true` gives the helper a checkout of its own: its files and branch are apart from
   the folder's, but the repository's objects, refs and config are shared, so a branch it pushes
   or deletes is gone for all. The result names the worktree and branch, or `worktreePending` until

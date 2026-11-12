@@ -74,7 +74,7 @@ pub use registry::{
 };
 pub use spawn::account::account_usage;
 pub use spawn::worktree::{name_to_go_on, report_codex_worktrees};
-pub use spawn::{spawn, SpawnParams};
+pub use spawn::{spawn, Constraint, SpawnParams};
 #[cfg(test)]
 pub use teardown::news_for;
 pub use teardown::{at_stake, delete, delete_by_user, forget, kill, queued_refused, AtStake, UserDeleted};

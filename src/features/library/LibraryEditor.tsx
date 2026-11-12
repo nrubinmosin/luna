@@ -15,21 +15,36 @@ import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
 import { look } from '../accounts/ConfigEditor';
 import { useLibrary } from './library.store';
+import { systemKind } from './SystemSkills';
+
+/** Where a system text goes, and when a saved one takes effect. */
+const SERVED = {
+  skill: 'Served to chats with Auto-handoff on, never laid out',
+  role: 'Read by every session of its role as Luna starts it, never laid out',
+  note: 'One line after every task of its role from another agent, never laid out'
+} as const;
+const SAVED = {
+  skill: 'Saved. Chats with Auto-handoff on are served it from their next handoff.',
+  role: 'Saved. Claude Code sessions read it at their next turn, Codex ones once their conversation starts afresh or is compacted.',
+  note: 'Saved. Tasks from now on carry it.'
+} as const;
 
 /**
  * One of the library's instructions files, or one skill's SKILL.md, edited in
  * Luna. Saving lays it out at once. A SKILL.md is checked as it is typed the
  * way a pass checks it — front matter with this name and a description — and
  * saved even when it does not do yet: a draft, laid out nowhere until it does.
- * A system skill's override opens on Luna's own text where there is none yet,
- * and is checked as Luna checks it before serving it; one that does not do is
- * saved too, and Luna serves its own until it does.
+ * A system text's override (the handoff's skill, a role's text, a note) opens
+ * on Luna's own text where there is none yet, and is checked as Luna checks it
+ * before serving it; one that does not do is saved too, and Luna serves its
+ * own until it does.
  * Ctrl+S saves; Esc asks once before throwing edits away.
  */
 export function LibraryEditor({ entry, onClose }: { entry: EditorEntry; onClose: () => void }) {
   const skill = 'skill' in entry ? entry.skill : null;
   const system = 'system' in entry ? entry.system : null;
   const name = 'skill' in entry ? entry.skill : 'system' in entry ? entry.system : entry.instructions;
+  const kind = system ? systemKind(system) : null;
   const host = useDialogHost();
   const [file, setFile] = useState<LibraryFileDto | null>(null);
   const [text, setText] = useState('');
@@ -42,7 +57,9 @@ export function LibraryEditor({ entry, onClose }: { entry: EditorEntry; onClose:
   const view = useRef<EditorView | null>(null);
   const dirty = !!file && text !== file.text;
   const title = system
-    ? `SKILL.md — ${system}, system skill`
+    ? kind === 'skill'
+      ? `SKILL.md — ${system}, system skill`
+      : `TEXT.md — ${system}, system text`
     : skill
       ? `SKILL.md — ${skill}`
       : `Instructions — ${name}`;
@@ -184,8 +201,8 @@ export function LibraryEditor({ entry, onClose }: { entry: EditorEntry; onClose:
                 : 'Reading…'}
             </span>
             <span>
-              {system
-                ? 'Served to chats with Auto-handoff on, never laid out'
+              {kind
+                ? SERVED[kind]
                 : skill
                   ? 'The description is what the model sees until it opens the skill'
                   : 'CLAUDE.md and AGENTS.md in the accounts that get it'}
@@ -206,10 +223,7 @@ export function LibraryEditor({ entry, onClose }: { entry: EditorEntry; onClose:
               </span>
             ) : saved && !dirty ? (
               <span style={{ color: 'var(--dim)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <Icon name="check" size={13} />{' '}
-                {system
-                  ? 'Saved. Chats with Auto-handoff on are served it from their next handoff.'
-                  : 'Saved and laid out. New sessions start with it.'}
+                <Icon name="check" size={13} /> {kind ? SAVED[kind] : 'Saved and laid out. New sessions start with it.'}
               </span>
             ) : null}
           </div>

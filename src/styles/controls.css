@@ -343,7 +343,7 @@
   border-radius: 6px;
   background: var(--field);
 }
-[data-app] .seg > [role="radio"] {
+[data-app] .seg > :is([role="radio"], [role="checkbox"]) {
   flex: 1 1 0;
   min-width: max-content;
   padding: 0 8px;
@@ -360,11 +360,11 @@
     color 0.14s,
     box-shadow 0.14s;
 }
-[data-app] .seg > [role="radio"]:hover {
+[data-app] .seg > :is([role="radio"], [role="checkbox"]):hover {
   background: var(--hover);
   color: var(--fg);
 }
-[data-app] .seg > [role="radio"][aria-checked="true"] {
+[data-app] .seg > :is([role="radio"], [role="checkbox"])[aria-checked="true"] {
   background: var(--btn-face);
   color: var(--fg);
   box-shadow:

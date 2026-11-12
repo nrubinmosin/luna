@@ -17,6 +17,8 @@ export interface Applied {
  *  that will not do and Luna's own served in its place. */
 export interface SystemSkillState {
   name: string;
+  /** A skill's SKILL.md, a role's default text, or a note's one line (library/system.rs `TextKind`). */
+  kind: 'skill' | 'role' | 'note';
   state: 'luna' | 'library' | 'broken';
   /** Luna's version: whose own text it is, where it is Luna's. */
   version: string;
