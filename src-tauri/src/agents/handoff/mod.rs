@@ -754,7 +754,7 @@ fn copy_holds(chat: &str, s: &Switch) -> Result<(), String> {
 /// their own beside the snapshot, in the chat's folder of copies as checked
 /// (`copies_of`), and the prompt names it.
 fn continuation(chat: &str, s: &Switch) -> String {
-    let facts = facts::fact_block(&gather(chat));
+    let facts = facts::fact_block(&gather(chat, s.before.transcript.as_deref(), s.provider));
     let name = chat_name(chat);
     let previous = s.before.transcript.as_deref();
     let whole = facts::prompt(s.n, chat, name.as_deref(), &s.snapshot, &s.sha256, &s.source, previous, &facts);
@@ -774,8 +774,9 @@ fn continuation(chat: &str, s: &Switch) -> String {
     facts::prompt(s.n, chat, name.as_deref(), &s.snapshot, &s.sha256, &s.source, previous, &pointer)
 }
 
-/// What Luna knows of `chat` now, for the prompt.
-fn gather(chat: &str) -> facts::Facts {
+/// What Luna knows of `chat` now, for the prompt: the skills loaded in the
+/// conversation before, too, read off its transcript at `previous`.
+fn gather(chat: &str, previous: Option<&str>, provider: Provider) -> facts::Facts {
     let listing = crate::agents::list::list(chat, None, false);
     let (known, owed, held, usage) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -814,6 +815,10 @@ fn gather(chat: &str) -> facts::Facts {
     let accounts = accounts.into_iter().filter_map(|a| Some((a.clone(), usage_words(usage.get(&a)?)?))).collect();
     let mut held_for = held;
     held_for.dedup();
+    // From its handoff call on, a turn an ask opened is the handoff being
+    // written, not the work: left out of the skills. Before it is work the
+    // ask let the chat finish ("at the next point where your work can pause").
+    let ask_turns = excerpts::Skip { opens: facts::is_ask_prompt, ask: None, from_call: true };
     facts::Facts {
         provider: known.as_ref().map(|k| k.provider),
         account: known.as_ref().map(|k| k.account.clone()).unwrap_or_default(),
@@ -824,6 +829,13 @@ fn gather(chat: &str) -> facts::Facts {
         owed_by_others,
         held_for,
         accounts,
+        skills: previous.and_then(|p| match excerpts::skills_in(Path::new(p), provider, Some(ask_turns)) {
+            Ok(skills) => Some(skills),
+            Err(e) => {
+                crate::log::warn("handoff", &format!("{}: the skills its conversation loaded are not known: {e}", label(chat)));
+                None
+            }
+        }),
         at: crate::background::iso(now_ms()).unwrap_or_default(),
     }
 }
@@ -1022,13 +1034,51 @@ pub(in crate::agents) fn bound_to_conversation(line: &str) -> bool {
     line.contains(facts::CONTINUED)
 }
 
+/// Whether line `line` of the notifier's queue is for one conversation of
+/// the chat's alone, a continuation (`bound_to_conversation`) or a
+/// threshold notice (its ask's, `notice_here`): either goes in only with no
+/// key of the person's since the notifier's look (notifier
+/// `deliver_notice`), as a `/clear` or `/new` they just sent may not have
+/// reached the CLI yet, which still reads as the conversation asked.
+pub(in crate::agents) fn keyed_to_conversation(line: &str) -> bool {
+    bound_to_conversation(line) || facts::is_threshold_notice(line)
+}
+
 /// Whether line `line` of the notifier's queue for `chat` is to be dropped
 /// rather than typed: a handoff's notice while a move of the chat is under way
 /// (`moving::under_way`). A move's start drops one queued and retires the ask
 /// it opened, but one already put together, or queued as the move began, would
 /// still ask the chat for a handoff that resets it in the middle of the move.
 pub(in crate::agents) fn withheld(chat: &str, line: &str) -> bool {
-    facts::is_notice(line) && moving::under_way(chat)
+    facts::is_notice(line) && (moving::under_way(chat) || (facts::is_threshold_notice(line) && !threshold_ask_of(chat, line)))
+}
+
+/// Whether threshold notice `line` still has the ask it was queued with open
+/// on `chat`: the threshold's, bound to that very notice (`Asked::notice`;
+/// one from before that was kept is taken as its own), with auto-handoff
+/// still on. The notifier puts a notice together from its queue and types it
+/// seconds later: auto-handoff turned off meanwhile closes the ask and
+/// unqueues the notice, a later ask replaces it, and a copy already put
+/// together must not ask for what the tool would refuse. Gone for good, so
+/// the notifier drops it.
+fn threshold_ask_of(chat: &str, line: &str) -> bool {
+    let asked = store::records().get(chat).and_then(|r| r.asked.clone());
+    let Some(a) = asked.filter(|a| a.kind == store::AskKind::Auto) else { return false };
+    a.notice.as_deref().is_none_or(|n| n == sha256_of(line)) && threshold_now(chat).is_some()
+}
+
+/// Whether line `line` of the notifier's queue for `chat` goes in now, with
+/// the person's keys held, right before the paste: a threshold notice only
+/// while its ask stands (`withheld`) and the chat is on the conversation it
+/// asks, both known (`Asked::conversation`), as the tool would answer only
+/// there. Any other line, as far as this goes. Not now is not never: one on
+/// another conversation is closed by the beat (`drifted`) and then dropped.
+pub(in crate::agents) fn notice_here(chat: &str, line: &str) -> bool {
+    if !facts::is_threshold_notice(line) {
+        return true;
+    }
+    let asked = store::records().get(chat).and_then(|r| r.asked.as_ref().and_then(|a| a.conversation.clone()));
+    !withheld(chat, line) && asked.is_some() && asked == conversation_now(chat)
 }
 
 /// What the switches' beat keeps between looks.
@@ -1045,7 +1095,8 @@ struct Beat {
 
 /// Runs for the life of the core: every few seconds, an ask whose chat went on
 /// in another conversation is closed, each chat with auto-handoff on is
-/// looked at for its threshold once a turn has ended, each person's ask is
+/// looked at for its threshold once a turn has ended, or once it is at rest
+/// after auto-handoff was turned on (`checks_now`), each person's ask is
 /// typed or lapses, and each handoff under way is taken a step on.
 pub(super) fn beat() {
     let mut b = Beat::default();
@@ -1124,21 +1175,48 @@ fn opted_in() -> Vec<(String, u8, Provider)> {
     set.into_iter().filter(|(id, ..)| may_list(id)).collect()
 }
 
+/// The chats whose threshold is to be looked at as soon as they are at rest,
+/// whatever turn they are at: auto-handoff turned on, or set at another
+/// threshold (`set_auto_handoff`). The look at a turn's end goes by the turns
+/// ended, so a chat already past its new threshold would otherwise hear
+/// nothing until its next turn ends, which may be long in coming. Each mark is
+/// numbered, and a look lets go only of the mark it was taken under
+/// (`look_at`): one set again meanwhile, at another threshold, gets a look of
+/// its own. Kept in memory only: a core started again looks at every chat at
+/// rest at its first beat (`Beat::turns` starts empty), which is the same look.
+fn checks_now() -> &'static Mutex<HashMap<String, u64>> {
+    static C: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// `id`'s threshold is to be looked at once it is at rest (`checks_now`).
+fn check_now(id: &str) {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let mark = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    checks_now().lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), mark);
+}
+
+/// The mark `id`'s threshold is to be looked at under, if it has one.
+fn check_due(id: &str) -> Option<u64> {
+    checks_now().lock().unwrap_or_else(|e| e.into_inner()).get(id).copied()
+}
+
+/// `id`'s mark let go: `mark` alone where it is given (its look is over), any
+/// where it is not (auto-handoff off, the chat gone).
+fn unmark(id: &str, mark: Option<u64>) {
+    let mut c = checks_now().lock().unwrap_or_else(|e| e.into_inner());
+    if mark.is_none_or(|m| c.get(id) == Some(&m)) {
+        c.remove(id);
+    }
+}
+
 /// The threshold notices due, each queued for the notifier (`Registry::news`),
 /// which types it in once the chat is at rest, a draft respected.
 fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
     let chats = opted_in();
     b.turns.retain(|id, _| chats.iter().any(|(c, ..)| c == id));
     for (chat, threshold, provider) in chats {
-        // A person's ask open is the chat's request already: no second one.
-        // Nor while a move is under way (`moving::under_way`).
-        if holds_text(&chat) || moving::under_way(&chat) || !is_listed(&chat) || open_ask(&chat) == Some(store::AskKind::Manual) {
-            continue;
-        }
-        let Some(ts) = crate::activity::turn_state(&chat).filter(|t| t.turn == crate::activity::Turn::Idle) else { continue };
-        if b.turns.insert(chat.clone(), ts.turns_ended) == Some(ts.turns_ended) {
-            continue;
-        }
+        let Some((turns_ended, mark)) = to_look(b, &chat, crate::activity::turn_state(&chat)) else { continue };
         let Some(path) = transcript_path(pty, &chat) else { continue };
         // Only a transcript that is positively the conversation the CLI is
         // on says how far that conversation has come, and which the ask is
@@ -1150,70 +1228,124 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         };
         let Some(context) = crate::background::Context::of(&path, provider) else { continue };
         let conversation = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let (told, fresh) = store::records().get(&chat).map(|r| (r.told.clone(), r.fresh)).unwrap_or_default();
-        let now = watch::told_now(told.as_ref(), &conversation, context.pct, context.tokens, fresh, threshold);
-        if let Some(t) = told.as_ref().filter(|t| t.conversation == now.conversation && t.level > now.level) {
-            let why = if now.compacted > t.compacted {
-                "its CLI compacted the conversation".to_string()
-            } else {
-                format!("its context fell with no fewer tokens ({}, a larger window?)", context.tokens)
-            };
-            crate::log::info(
-                "handoff",
-                &format!(
-                    "{}: {why}, now at {}%, before a handoff (asked at {:?}); it will be asked again",
-                    label(&chat),
-                    context.pct,
-                    now.shares
-                ),
-            );
-        }
-        let level = watch::level(context.pct, threshold, now.floor);
-        if !watch::due(&now, level) {
-            // A conversation looked at for the first time keeps its floor, and
-            // one whose context fell is to be asked again.
-            if told.as_ref() != Some(&now) {
-                match store::change(&chat, |r| kept_told(r, now)) {
-                    Ok(true) => crate::log::info("handoff", &format!("{}: the threshold's ask closed with its notice", label(&chat))),
-                    Ok(false) => {}
-                    Err(e) => crate::log::warn("handoff", &format!("{}: where its context stands could not be saved: {e}", label(&chat))),
-                }
-            }
-            continue;
-        }
-        // The firm notice carries the checklist where Luna's own instructions
-        // are what the chat would be served.
-        let firm = level == 2;
-        let inline = firm && crate::library::handoff_instructions().source == crate::library::Source::Luna;
-        // Told once it is on disk: a notice a later core would repeat is the
-        // smaller harm than none, so a save that fails still lets it go.
-        let mut shares = now.shares.clone();
-        shares.push(context.pct);
-        let told = store::Told { level, shares, tokens: context.tokens, ..now };
-        // A fresh handoff request, the ask the tool answers while it is open,
-        // of the conversation whose context passed the threshold.
-        let asked = store::Asked { conversation: Some(live), ..store::Asked::new(store::AskKind::Auto, now_ms(), Some(ts.turns_ended)) };
-        let line = facts::notice(context.pct, threshold, firm, inline);
-        match store::change(&chat, |r| ask_auto(&chat, r, threshold, told, inline, asked, line)) {
-            Ok(true) => {}
-            Ok(false) => {
-                crate::log::info(
-                    "handoff",
-                    &format!(
-                        "{}: not asked at its threshold: auto-handoff, an ask or a handoff changed as its context was read",
-                        label(&chat)
-                    ),
-                );
-                continue;
-            }
-            Err(e) => crate::log::warn("handoff", &format!("{}: the notice it was told could not be saved: {e}", label(&chat))),
-        }
-        crate::agents::save_chats();
+        // Read only for a record a handoff left fresh, which its first look
+        // clears: once per conversation a handoff began.
+        let fresh = store::records().get(&chat).is_some_and(|r| r.fresh);
+        // A turn over since: the floor is where it ended, not where the
+        // context stands at a look a queued prompt, a notice or a core's
+        // restart put off; one with no reading of it goes by now's.
+        let floor_at =
+            if fresh { excerpts::handoffs_first_turn(&path, provider).map(|t| t.ended_pct.unwrap_or(context.pct)) } else { None };
+        let reading = Reading { live, conversation, pct: context.pct, tokens: context.tokens, floor_at };
+        look_at(&chat, threshold, &reading, turns_ended, mark);
+    }
+}
+
+/// Whether `chat`'s context is to be read for its threshold now, at turn
+/// state `ts`, and if so the turn count and the mark it is read under: at
+/// rest (`Turn::Idle`) at a turn count not looked at yet, or at any while it
+/// is marked to be looked at now (`checks_now`). Not while a person's ask is
+/// open, which is the chat's request already, nor while a handoff or a move
+/// of it is under way (`moving::under_way`), nor while its CLI has not listed
+/// the tool, which a quick resume brings (`set_auto_handoff`'s `resume`): a
+/// mark waits for each of them to pass.
+fn to_look(b: &mut Beat, chat: &str, ts: Option<crate::activity::TurnState>) -> Option<(u32, Option<u64>)> {
+    if holds_text(chat) || moving::under_way(chat) || !is_listed(chat) || open_ask(chat) == Some(store::AskKind::Manual) {
+        return None;
+    }
+    let ts = ts.filter(|t| t.turn == crate::activity::Turn::Idle)?;
+    let mark = check_due(chat);
+    let seen = b.turns.insert(chat.to_string(), ts.turns_ended) == Some(ts.turns_ended);
+    (!seen || mark.is_some()).then_some((ts.turns_ended, mark))
+}
+
+/// What a look at a chat's context read: the conversation its CLI is on
+/// (`live`), which its transcript was checked to be (`transcript_is`), that
+/// transcript's name, how full the context is, and for a conversation Luna's
+/// handoff prompt opened, the share its first turn ended at, or stands at
+/// while that turn is the last (`excerpts::handoffs_first_turn`).
+struct Reading {
+    live: String,
+    conversation: String,
+    pct: u64,
+    tokens: u64,
+    floor_at: Option<u64>,
+}
+
+/// `chat`'s context as `reading` found it at `turns_ended`, held to its
+/// `threshold`: what the conversation was told kept, and where a notice is
+/// due, the threshold's ask opened, bound to the conversation read, its
+/// notice queued with it (`ask_auto`). The one look both a turn's end and a
+/// mark (`checks_now`) take; the mark it was taken under is let go.
+fn look_at(chat: &str, threshold: u8, reading: &Reading, turns_ended: u32, mark: Option<u64>) {
+    if mark.is_some() {
+        unmark(chat, mark);
+    }
+    // The floor a handoff gives the conversation it began (`Record::fresh`)
+    // is where its first turn ended: one that begins above the threshold is
+    // not to be sent straight into the next handoff, however late it is first
+    // looked at (auto-handoff turned on since, a notice or a queued prompt
+    // first, a core started again). A conversation the person opened since
+    // has none.
+    let (told, fresh) = store::records().get(chat).map(|r| (r.told.clone(), r.fresh)).unwrap_or_default();
+    let floor_at = reading.floor_at.filter(|_| fresh);
+    let now = watch::told_now(told.as_ref(), &reading.conversation, reading.pct, reading.tokens, floor_at, threshold);
+    if let Some(t) = told.as_ref().filter(|t| t.conversation == now.conversation && t.level > now.level) {
+        let why = if now.compacted > t.compacted {
+            "its CLI compacted the conversation".to_string()
+        } else {
+            format!("its context fell with no fewer tokens ({}, a larger window?)", reading.tokens)
+        };
         crate::log::info(
             "handoff",
-            &format!("{} is at {}% of its context: asked for a handoff (level {level})", label(&chat), context.pct),
+            &format!(
+                "{}: {why}, now at {}%, before a handoff (asked at {:?}); it will be asked again",
+                label(chat),
+                reading.pct,
+                now.shares
+            ),
         );
     }
+    let level = watch::level(reading.pct, threshold, now.floor);
+    if !watch::due(&now, level) {
+        // A conversation looked at for the first time keeps its floor, and
+        // one whose context fell is to be asked again.
+        if told.as_ref() != Some(&now) {
+            match store::change(chat, |r| kept_told(r, now)) {
+                Ok(true) => crate::log::info("handoff", &format!("{}: the threshold's ask closed with its notice", label(chat))),
+                Ok(false) => {}
+                Err(e) => crate::log::warn("handoff", &format!("{}: where its context stands could not be saved: {e}", label(chat))),
+            }
+        }
+        return;
+    }
+    // The firm notice carries the checklist where Luna's own instructions
+    // are what the chat would be served.
+    let firm = level == 2;
+    let inline = firm && crate::library::handoff_instructions().source == crate::library::Source::Luna;
+    // Told once it is on disk: a notice a later core would repeat is the
+    // smaller harm than none, so a save that fails still lets it go.
+    let mut shares = now.shares.clone();
+    shares.push(reading.pct);
+    let told = store::Told { level, shares, tokens: reading.tokens, ..now };
+    // A fresh handoff request, the ask the tool answers while it is open,
+    // of the conversation whose context passed the threshold.
+    let asked =
+        store::Asked { conversation: Some(reading.live.clone()), ..store::Asked::new(store::AskKind::Auto, now_ms(), Some(turns_ended)) };
+    let line = facts::notice(reading.pct, threshold, firm, inline);
+    match store::change(chat, |r| ask_auto(chat, r, threshold, told, inline, asked, line)) {
+        Ok(true) => {}
+        Ok(false) => {
+            crate::log::info(
+                "handoff",
+                &format!("{}: not asked at its threshold: auto-handoff, an ask or a handoff changed as its context was read", label(chat)),
+            );
+            return;
+        }
+        Err(e) => crate::log::warn("handoff", &format!("{}: the notice it was told could not be saved: {e}", label(chat))),
+    }
+    crate::agents::save_chats();
+    crate::log::info("handoff", &format!("{} is at {}% of its context: asked for a handoff (level {level})", label(chat), reading.pct));
 }
 
 /// The threshold's ask opened on `chat`'s record `r`, with what the chat was
@@ -1236,7 +1368,9 @@ fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told,
     }
     told_of(r, told, inline);
     r.ask_closed = None;
-    r.asked = Some(asked);
+    // The notice bound to this ask: a copy the notifier holds goes in only
+    // while it is the one open (`withheld`).
+    r.asked = Some(store::Asked { notice: Some(sha256_of(&line)), ..asked });
     reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), line));
     true
 }
@@ -1523,12 +1657,15 @@ pub struct AutoHandoff {
 }
 
 /// The window's toggle: auto-handoff on at `threshold`, or off. Takes effect
-/// in the registry now, so the threshold follows at once. The tool reaches a
-/// CLI only as it lists its tools, at its start: one that started before Luna
-/// listed it to every chat with its tools is to be resumed (`resume`) for the
-/// threshold to ask it. Off closes the threshold's ask, and a handoff only
-/// scheduled from it is given up; one in the middle of its switch goes on. A
-/// person's ask, and a handoff answering it, are theirs: off leaves them be.
+/// in the registry now, and on, the chat's threshold is looked at as soon as
+/// it is at rest (`check_now`), not at its next turn's end: a chat already
+/// past it is asked then. The tool reaches a CLI only as it lists its tools,
+/// at its start: one that started before Luna listed it to every chat with
+/// its tools is to be resumed (`resume`) for the threshold to ask it, and the
+/// look waits for that. Off closes the threshold's ask, drops its notice not
+/// yet typed, and a handoff only scheduled from it is given up; one in the
+/// middle of its switch goes on. A person's ask, and a handoff answering it,
+/// are theirs: off leaves them be.
 pub fn set_auto_handoff(id: String, threshold: Option<u8>) -> Result<AutoHandoff, String> {
     if let Some(t) = threshold.filter(|t| !(THRESHOLD_MIN..=THRESHOLD_MAX).contains(t)) {
         return Err(format!("a threshold of {t}% is not one: from {THRESHOLD_MIN} to {THRESHOLD_MAX}"));
@@ -1554,6 +1691,10 @@ pub fn set_auto_handoff(id: String, threshold: Option<u8>) -> Result<AutoHandoff
         }
         r.asked = None;
         r.reserved = None;
+        // Its notice not yet typed would ask for what nobody asks any more,
+        // and the tool would refuse it: dropped under the lock it was queued
+        // under (`ask_auto`).
+        reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(c == &id && facts::is_notice(line)));
         (tools, close(r, None, false, Some(why.clone()), only_scheduled))
     };
     let (tools, closed) = match store::change(&id, apply) {
@@ -1566,6 +1707,14 @@ pub fn set_auto_handoff(id: String, threshold: Option<u8>) -> Result<AutoHandoff
     };
     if let Some((s, gone)) = closed {
         ended_with(&id, &s, gone, Some(why), false, None, &String::new);
+    }
+    // After the registry has it: the look reads the threshold from there.
+    match threshold {
+        Some(_) => check_now(&id),
+        None => {
+            unmark(&id, None);
+            crate::agents::save_chats();
+        }
     }
     crate::log::info("handoff", &format!("{}: auto-handoff {}", label(&id), threshold.map_or("off".into(), |t| format!("at {t}%"))));
     // Off needs nothing listed; on, only a CLI that has not listed the tool.
@@ -1826,6 +1975,7 @@ pub fn handoff_transcript(chat_id: String, n: u32, since: Option<u64>) -> Result
 /// `id` is gone for good: its record and its snapshots with it.
 pub fn forget(id: &str) {
     unlisted(id);
+    unmark(id, None);
     refused_drafts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if let Err(e) = store::remove(id) {
         crate::log::warn("handoff", &format!("{id}'s handoffs could not be forgotten on disk: {e}"));

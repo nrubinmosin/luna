@@ -168,6 +168,64 @@ pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
         .collect();
 }
 
+/// A test helper whose CLI said it stopped what its last turn left in the
+/// background (`stops_background`), with `owed` owed an answer then.
+#[cfg(test)]
+pub(crate) fn background_stopped_for_test(id: &str, owed: &[&str]) {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    e.observed.background_stopped = true;
+    e.observed.stopped_turn = e.turns_ended;
+    e.observed.stop_owed = owed.iter().map(|c| c.to_string()).collect();
+    e.observed.stop_told.clear();
+}
+
+/// A line on a test helper's turn's stderr, as its reader takes it.
+#[cfg(test)]
+pub(crate) fn stderr_for_test(id: &str, line: &str) {
+    take_stderr(id, &OutReader::default(), line.as_bytes());
+}
+
+/// A test helper as the next core takes it up from what this one saves: through
+/// `helpers.json`'s JSON and back.
+#[cfg(test)]
+pub(crate) fn restart_for_test(id: &str) {
+    let saved = snapshot().into_iter().find(|s| s.id == id).expect("a test helper");
+    let saved: Saved = serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+    let e = taken_up(saved);
+    lock().entries.insert(id.to_string(), e);
+}
+
+/// What a test helper's job shows while its answered turn waits: each process
+/// by name and pid, quiet for so many ms (`Run::watched`).
+#[cfg(test)]
+pub(crate) fn watched_for_test(id: &str, watched: &[(&str, u32, u64)]) {
+    let now = crate::throttle::now_ms();
+    let mut r = lock();
+    let run = r.entries.get_mut(id).and_then(|e| e.run.as_mut()).expect("a test helper in a turn");
+    run.watched = watched
+        .iter()
+        .map(|(exe, pid, quiet)| Leftover {
+            pid: *pid,
+            exe: exe.to_string(),
+            started_ms: 0,
+            cpu_ms: 0,
+            io_bytes: 0,
+            read_ms: now,
+            seen_ms: now,
+            moved_ms: now - quiet,
+        })
+        .collect();
+}
+
+/// A test helper in a turn whose CLI has written its result (`waits_on_background`).
+#[cfg(test)]
+pub(crate) fn after_result_for_test(id: &str) {
+    if let Some(run) = lock().entries.get_mut(id).and_then(|e| e.run.as_mut()) {
+        run.after_result = true;
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn gone_for_test(id: &str) {
     lock().entries.remove(id);
@@ -415,4 +473,21 @@ impl Write for Stalled {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// A Codex test helper in a turn on thread `thread`, begun at `started_ms`,
+/// its rollouts under the account folder `account`.
+#[cfg(test)]
+pub(crate) fn codex_in_turn_for_test(id: &str, account: &str, thread: &str, started_ms: u64) {
+    let mut e = entry(Provider::Codex);
+    e.spec.account_path = account.into();
+    e.session = Some(thread.into());
+    e.run = Some(Run::claimed(None, started_ms));
+    lock().entries.insert(id.to_string(), e);
+}
+
+/// A test helper's turn's process exits with `code`.
+#[cfg(test)]
+pub(crate) fn turn_over_for_test(id: &str, code: Option<i32>) {
+    turn_over(id, code);
 }

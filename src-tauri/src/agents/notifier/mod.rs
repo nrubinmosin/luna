@@ -122,6 +122,9 @@ pub(super) enum Settled {
     /// Its turn at this count has gone quiet (QUIET_TURN_MS); told once per
     /// turn, and owed on.
     Quiet(u32),
+    /// Its turn at this count has answered and gone quiet waiting on its
+    /// background work; told once per turn, apart from `Quiet`, and owed on.
+    WaitsOnBackground(u32),
     Exited,
 }
 
@@ -445,7 +448,10 @@ pub(super) fn notifier() {
             .collect();
         if !withheld.is_empty() {
             for (caller, line) in &withheld {
-                crate::log::info("agents", &format!("handoff notice to {} dropped: a move of it is under way", label(caller)));
+                crate::log::info(
+                    "agents",
+                    &format!("handoff notice to {} dropped: a move of it is under way, or the ask it came with is closed", label(caller)),
+                );
                 if let Some(lines) = news.get_mut(caller) {
                     lines.retain(|l| l != line);
                 }
@@ -454,6 +460,7 @@ pub(super) fn notifier() {
             reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|queued| !withheld.contains(queued));
             crate::agents::save_chats();
         }
+        placed_now(&mut news);
         for caller in news.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
@@ -769,24 +776,29 @@ fn deliver_notice(
     // A queued line says what it was put together to say only while the
     // conversation it is for is still the chat's (a handoff's continuation,
     // handoff `as_told`), and a handoff's notice goes in only with no move of
-    // the chat under way (handoff `withheld`): else the next look puts it in
+    // the chat under way, a threshold notice only while the ask it was queued
+    // with is open, auto-handoff on, and the chat on the conversation it asks
+    // (handoff `withheld`, `notice_here`): else the next look puts it in
     // other words, or drops it. Looked at here and again once the person's
     // keys are held (`type_text`), right before the text goes in: a `/clear`
     // or `/new` of theirs between the two would otherwise take the
     // continuation into a conversation that never asked for it.
     let stands = || {
-        news_lines
-            .iter()
-            .all(|(told, line)| !crate::agents::handoff::withheld(caller, line) && crate::agents::handoff::as_told(caller, line) == *told)
+        news_lines.iter().all(|(told, line)| {
+            !crate::agents::handoff::withheld(caller, line)
+                && crate::agents::handoff::notice_here(caller, line)
+                && crate::agents::handoff::as_told(caller, line) == *told
+        })
     };
     // A `/clear` or `/new` the person sent just before their keys were held
     // is on its way to a CLI that has not acted on it yet, and the
     // conversation still reads as the old one. So a line bound to its
-    // conversation also goes in only with no key of theirs since this look,
+    // conversation, a continuation or a threshold notice (handoff
+    // `keyed_to_conversation`), also goes in only with no key of theirs since this look,
     // nor within the quiet the look before it asked for (`ready_for_notice`),
     // which covers the stretch up to here: otherwise nothing goes in, and
     // the next look sees where their keys took the chat.
-    let bound = news_lines.iter().any(|(_, line)| crate::agents::handoff::bound_to_conversation(line));
+    let bound = news_lines.iter().any(|(_, line)| crate::agents::handoff::keyed_to_conversation(line));
     let keys_at = pty.typed_at_ms(caller);
     let no_keys_since = || pty.typed_at_ms(caller) == keys_at && pty.typed_ago_ms(caller).is_none_or(|ms| ms >= TYPING_QUIET_MS);
     let stands_held = || stands() && (!bound || no_keys_since());
@@ -882,7 +894,7 @@ fn deliver_notice(
                 if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now_ms()) {
                     stopped.push(id.clone());
                 }
-                settle_told(&mut r, (caller.to_string(), id), how, &told);
+                settle_delivered(&mut r, caller, id, how, &told, text);
             }
             let told_quota = !quota_lines.is_empty();
             for n in quota_lines {
@@ -926,6 +938,20 @@ fn deliver_notice(
     }
 }
 
+/// The queued lines of each caller's notice, `news`, put together now: a
+/// threshold notice its chat cannot be asked in now (the conversation it asks
+/// not known, or another: handoff `notice_here`) is left out of this one and
+/// stays queued, so it holds up nothing else the notice says (a helper's
+/// answer); the beat closes its ask once the chat is found elsewhere, and
+/// the next look takes it once it is placed. Whether one still stands where
+/// it goes in is looked at there again (`deliver_notice`).
+pub(in crate::agents) fn placed_now(news: &mut HashMap<String, Vec<String>>) {
+    for (caller, lines) in news.iter_mut() {
+        lines.retain(|line| crate::agents::handoff::notice_here(caller, line));
+    }
+    news.retain(|_, lines| !lines.is_empty());
+}
+
 /// A notice of the queued lines `news_lines` (as typed, as queued) typed into
 /// `caller` as the notifier would, `between` run after its first look and
 /// before its text goes in (`tests::between_check_and_typing`): for the tests
@@ -935,6 +961,28 @@ pub(in crate::agents) fn deliver_news_for_test(caller: &str, news_lines: Vec<(St
     tests::run_between(caller, between);
     let text = format!("{NOTICE_TAG} {}", news_lines.iter().map(|(told, _)| told.as_str()).collect::<Vec<_>>().join(" "));
     deliver_notice(crate::pty::manager(), caller, &text, vec![], vec![], vec![], news_lines, vec![]);
+}
+
+/// A notice that went into `caller` (`text`) settles what it told of `id`.
+fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, told: &Owed, text: &str) {
+    let answered = matches!(how, Settled::Answered);
+    settle_told(r, (caller.to_string(), id.clone()), how, told);
+    if answered {
+        ack_background_stop(r, caller, &id, text);
+    }
+}
+
+/// A notice that went in, settling `caller`'s debt on helper `id` as answered
+/// (`r`, its debts as settled): if it said that the helper's CLI stopped its
+/// background work (lines.rs `STOPPED_LINES`, in every such line while it
+/// is so), `caller` has had it. The helper is done with saying so once every
+/// caller it concerns and still owes has; a line that does not carry it (a
+/// helper that exited) acknowledges nothing. The helper's lock after the registry's.
+fn ack_background_stop(r: &Registry, caller: &str, id: &str, text: &str) {
+    if !lines::STOPPED_LINES.iter().any(|line| text.contains(line)) {
+        return;
+    }
+    crate::background::background_stop_told(id, caller, &crate::agents::owed::callers_on(r, id));
 }
 
 /// What a notice that went in does to the debt it told of (`told`). Only to
@@ -975,6 +1023,11 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
         Settled::Quiet(ended) => {
             if let Some(o) = r.owed.get_mut(&key) {
                 o.told_quiet = Some(ended);
+            }
+        }
+        Settled::WaitsOnBackground(ended) => {
+            if let Some(o) = r.owed.get_mut(&key) {
+                o.told_background_wait = Some(ended);
             }
         }
         Settled::Hold(_) | Settled::Unhold | Settled::Skip(_) => {}
@@ -1377,5 +1430,34 @@ mod tests {
         crate::background::gone_for_test(id);
         forget(id);
         forget(a);
+    }
+
+    /// A helper whose CLI cut its background work off, owed by two callers:
+    /// each is to hear of it, and a line that does not say so (an exited
+    /// helper's) acknowledges nothing.
+    #[test]
+    fn a_cut_off_is_told_to_every_caller_owed_and_only_by_a_line_that_says_so() {
+        let id = "ack-s";
+        let (a, b) = ("ack-a", "ack-b");
+        crate::background::idle_for_test(id, Provider::Claude, 3, false);
+        crate::background::background_stopped_for_test(id, &[a, b]);
+        let key = |c: &str| (c.to_string(), id.to_string());
+        let (oa, ob) = (Owed::from(2, 0), Owed::from(2, 0));
+        reg().lock().unwrap().owed.insert(key(a), oa);
+        reg().lock().unwrap().owed.insert(key(b), ob);
+        let says = format!("Your helper finished its turn.{}", lines::BACKGROUND_STOPPED);
+        let settle = |caller: &str, how: Settled, told: &Owed, text: &str| {
+            settle_delivered(&mut reg().lock().unwrap(), caller, id.to_string(), how, told, text);
+        };
+        settle(a, Settled::Exited, &oa, "Your helper has exited.");
+        assert!(crate::background::background_stopped_for(id, a), "an exited line did not say it");
+        let oa = Owed::from(2, 0);
+        reg().lock().unwrap().owed.insert(key(a), oa);
+        settle(a, Settled::Answered, &oa, &says);
+        assert!(!crate::background::background_stopped_for(id, a), "the first has had it");
+        assert!(crate::background::background_stopped_for(id, b), "the other, still owed, has not");
+        settle(b, Settled::Answered, &ob, &says);
+        assert!(!crate::background::background_stopped(id), "everyone owed has had it");
+        crate::background::gone_for_test(id);
     }
 }

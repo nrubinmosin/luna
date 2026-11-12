@@ -146,6 +146,36 @@ pub(super) struct Observed {
     /// model it was asked for is no model it ran on, whatever its error says
     /// (a next turn's start clears that, a restore drops it).
     pub(super) answered: bool,
+    /// Its CLI said on stderr that it stopped what the turn left in the
+    /// background, its wait for it over (`take_stderr`): subagents' work may be
+    /// unfinished and uncommitted, which its callers' notices and replies say.
+    /// Saved: a core that goes before they are in must not lose it. Kept past
+    /// later turns (a queued message starts one at once) until every caller
+    /// it concerns (`stop_owed`) has had it (`background_stop_told`).
+    pub(super) background_stopped: bool,
+    /// The turn count that stop came at the end of: which stop it is, so an
+    /// undo of a reply that told of one leaves a later one alone.
+    pub(super) stopped_turn: u32,
+    /// The callers owed an answer when it came (`stop_owed_to`), who are to
+    /// hear of it: taken then, as the turn each is owed moves on with a
+    /// message queued behind that turn, a retry or a resume.
+    pub(super) stop_owed: Vec<String>,
+    /// Those of them it has been said to.
+    pub(super) stop_told: Vec<String>,
+    /// What stopped that work, for what its callers are told.
+    pub(super) stop_cause: StopCause,
+}
+
+/// What stopped a helper's background work before it was done.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StopCause {
+    /// Claude Code's wait for it ran out (background/run.rs `stops_background`).
+    #[default]
+    Ceiling,
+    /// `codex exec` interrupted the subagents its turn spawned as the turn
+    /// ended (codex::session `subagents_cut_at_turn_end`).
+    TurnEnd,
 }
 
 impl Observed {
@@ -180,6 +210,14 @@ pub(super) struct Run {
     /// A `result` of this process's said it failed: a later one that succeeds
     /// clears what that one left in `Entry::error`.
     pub(super) result_failed: bool,
+    /// Its CLI has written the turn's `result` and the main loop has said
+    /// nothing since: the process is up only for what the turn left in the
+    /// background (`waits_on_background`).
+    pub(super) after_result: bool,
+    /// The processes in its job, as sampled while it waits so (rows.rs
+    /// `activity`): what tells a subagent's long command at work from a
+    /// watcher that does nothing, where its stream says nothing of either.
+    pub(super) watched: Vec<Leftover>,
     /// Which claim this is, of all this core has made: a batch reserved on it
     /// (`Reservation`) tells the claim it holds from one made after it.
     pub(super) claim: u64,
@@ -189,7 +227,17 @@ impl Run {
     pub(super) fn claimed(pid: Option<u32>, started_ms: u64) -> Run {
         static CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let claim = CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Run { pid, started_ms, stopped: false, feed: None, line: None, result_failed: false, claim }
+        Run {
+            pid,
+            started_ms,
+            stopped: false,
+            feed: None,
+            line: None,
+            result_failed: false,
+            after_result: false,
+            watched: Vec::new(),
+            claim,
+        }
     }
 }
 

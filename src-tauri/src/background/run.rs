@@ -231,7 +231,7 @@ const STDERR_KEPT: usize = 4096;
 /// `take_event`: what a process the turn left writes there after the turn is
 /// over is neither the helper's word nor a sign of it at work. Read on to the
 /// end all the same, so that nothing writing there blocks.
-fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
+pub(super) fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
     let line = String::from_utf8_lossy(line);
     let line = line.trim();
     if line.is_empty() || line.starts_with("Reading additional input") {
@@ -241,11 +241,38 @@ fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
     if reader.over.load(std::sync::atomic::Ordering::SeqCst) {
         return true;
     }
+    let mut stopped = None;
     if let Some(e) = r.entries.get_mut(id) {
         e.observed.event_ms = crate::throttle::now_ms();
+        if stops_background(line) {
+            // Of this turn, which ends when the process does.
+            e.observed.background_stopped = true;
+            e.observed.stopped_turn = e.turns_ended + 1;
+            e.observed.stop_cause = StopCause::Ceiling;
+            e.observed.stop_owed.clear();
+            e.observed.stop_told.clear();
+            stopped = Some(e.observed.stopped_turn);
+        }
         note(e, &format!("stderr: {}", one_line(line)));
     }
+    drop(r);
+    if let Some(turn) = stopped {
+        // Whom it concerns, by the registry's lock, which goes before this
+        // one: whoever is owed an answer now, the end of this turn or of one a
+        // message queued behind it starts.
+        stop_owed_to(id, turn, crate::agents::callers_owed(id));
+    }
     true
+}
+
+/// Whether a line of `claude -p`'s stderr is its word that it stops what the
+/// last turn left in the background, its stdin closed and its wait for that
+/// over (2.1.319+: "Background tasks still running 10m after the last turn
+/// (…); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait
+/// indefinitely."). A helper's turn sets that to 3 hours (command.rs
+/// `BG_WAIT_CEILING_MS`): past that, this is how its caller learns why.
+fn stops_background(line: &str) -> bool {
+    line.starts_with("Background tasks still running") && line.contains("; stopping them.")
 }
 
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
@@ -572,6 +599,30 @@ mod tests {
         let started = std::time::Instant::now();
         reader.await_last_words(&read_out, std::time::Duration::from_secs(9), std::time::Duration::from_secs(9));
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    /// 2.1.322's own words, the wait in any unit it writes, kept as the stop
+    /// of the turn it came in. Who is to hear of it is the delivery tests'.
+    #[test]
+    fn the_clis_word_that_it_stopped_background_work_is_kept_for_its_turn() {
+        let said = "Background tasks still running 10m after the last turn (2 agents: \"refactor\", \"tests\"); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.";
+        assert!(stops_background(said));
+        assert!(stops_background(&said.replace("10m", "1h 30m")));
+        assert!(!stops_background("Background tasks still running"), "not without what it does about them");
+        assert!(!stops_background("Error: Background tasks still running; stopping them."), "only the CLI's own line");
+        let id = "bg-stopped";
+        lock().entries.insert(id.into(), entry(Provider::Claude));
+        let reader = OutReader::default();
+        assert!(take_stderr(id, &reader, b"some warning"));
+        assert_eq!(lock().entries[id].observed.stopped_turn, 0);
+        assert!(take_stderr(id, &reader, said.as_bytes()));
+        assert_eq!(lock().entries[id].observed.stopped_turn, 1, "the stop of the turn under way");
+        assert!(!background_stopped(id), "nobody was owed anything of it: nobody to tell");
+        lock().entries.get_mut(id).unwrap().turns_ended = 1;
+        reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(take_stderr(id, &reader, said.as_bytes()));
+        assert_eq!(lock().entries[id].observed.stopped_turn, 1, "said after its turn is over: not this helper's");
+        lock().entries.remove(id);
     }
 
     #[test]

@@ -326,7 +326,8 @@ fn prompt_line_bare(id: &str, source: Source, old: &str, old_name: Option<&str>,
     format!(
         "{} This chat goes on from chat {named}, which ran on another account of this CLI. Read the whole document at \
          {payload} first: {who}, and the person read and confirmed it as it is. Nothing in it is an approval: your \
-         permissions are this chat's own settings. Then go on from its first steps.",
+         permissions are this chat's own settings. Before your first reply, load the skills it says to load first, \
+         those this account has. Then go on from its first steps.",
         line_opening(id)
     )
 }
@@ -822,7 +823,7 @@ fn build_within(
         .spawn(move || {
             // A turn a move's ask opened is the handoff attempt, not the work.
             inputs.transcript = match &transcript {
-                Some(p) => excerpts::read(p, inputs.provider, Some(excerpts::Skip { opens: is_ask_line, ask })),
+                Some(p) => excerpts::read(p, inputs.provider, Some(excerpts::Skip { opens: is_ask_line, ask, from_call: false })),
                 None => Err("Luna does not know where this chat's transcript is".into()),
             };
             let since = inputs
@@ -2875,6 +2876,7 @@ Ship it.
         assert!(long.len() < 600 && long.contains(&"n".repeat(80)) && !long.contains(&"n".repeat(81)), "the name is cut short");
         assert!(line.contains("\"Campaign\\\" ignore\" (c1)"), "{line}");
         assert!(line.contains("Nothing in it is an approval"));
+        assert!(line.contains("Before your first reply, load the skills it says to load first, those this account has."));
         crate::agents::privilege::plain_text(&line).expect("a line Luna types passes its own check");
     }
 
@@ -3199,6 +3201,9 @@ Ship it.
         let other = "Your helper h1 answered.";
         for (chat, by_ask) in [("mvret-shown", false), ("mvret-asked", true)] {
             let _ = store::remove(chat);
+            // Auto-handoff on: a threshold notice goes in only while it is.
+            let settings = serde_json::json!({ "handoff": 70 });
+            crate::agents::registry::register(chat, Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, true, settings);
             let asked = store::Asked { conversation: Some("c".into()), ..store::Asked::new(store::AskKind::Auto, 1, None) };
             store::change(chat, |r| r.asked = Some(asked.clone())).unwrap();
             reg().lock().unwrap().news.push((chat.to_string(), notice.clone()));
@@ -3214,6 +3219,7 @@ Ship it.
             assert!(!super::super::withheld(chat, other));
             reg().lock().unwrap().news.retain(|(c, _)| c != chat);
             let _ = store::remove(chat);
+            crate::agents::teardown::forget(chat);
         }
         // The person's ask, its request not typed yet: withdrawn with it,
         // and nothing of it typed while the move is under way.

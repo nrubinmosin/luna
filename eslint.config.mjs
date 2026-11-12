@@ -9,8 +9,10 @@ export default defineConfig(
   // A disable that no longer silences anything goes, rather than hiding the
   // next finding on its line.
   { linterOptions: { reportUnusedDisableDirectives: 'error' } },
-  // The Rust crate and build output are not linted here.
-  globalIgnores(['dist/', 'src-tauri/', 'test-build/', 'docs/']),
+  // The Rust crate and build output are not linted here, nor the worktrees
+  // Luna's helpers and Claude Code make inside the repo (.claude/worktrees/):
+  // checkouts of their own, each with its own config.
+  globalIgnores(['dist/', 'src-tauri/', 'test-build/', 'docs/', '.claude/worktrees/']),
   {
     files: ['src/**/*.{ts,tsx}'],
     extends: [js.configs.recommended, tseslint.configs.recommendedTypeChecked, reactHooks.configs.flat.recommended],
@@ -27,6 +29,8 @@ export default defineConfig(
   {
     files: ['*.{js,mjs,ts}', 'scripts/**/*.mjs'],
     extends: [js.configs.recommended, tseslint.configs.recommended],
-    languageOptions: { globals: globals.node }
+    // Named, not guessed: typescript-eslint refuses to pick between candidate
+    // roots once another config file (a nested worktree's) has been loaded.
+    languageOptions: { globals: globals.node, parserOptions: { tsconfigRootDir: import.meta.dirname } }
   }
 );

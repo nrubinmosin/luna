@@ -8,6 +8,64 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- A handoff has a seventh section, **Skills to load first**: the skills the
+  next conversation loads before its first reply, and why. The prompt that
+  opens it says to load them first, and Luna's facts name the skills the
+  conversation before was seen loading or reading, off its transcript
+  (Claude Code's `Skill` calls that went through, the skills a person
+  started with `/name`, and a `SKILL.md` read; Codex's `<skill>` blocks and a
+  `SKILL.md` printed by a command its shell tool ran, the tool's result
+  stating exit status 0, not one read inside a code-mode script, which the
+  line says where it has none; not a skill's file the conversation also
+  edited in its own folder, nor a skill loaded once the chat Luna asked
+  called to hand off). A move's document
+  carries the same line, the move's own ask left out, and the moved chat is
+  told to load what it lists before its first reply.
+
+### Changed
+
+- Auto-handoff ticked on a chat already past its threshold, or set lower than
+  where it stands, asks as soon as the chat is at rest rather than at its
+  next turn's end. Turned off before Luna typed its notice, the notice is
+  not typed, even one Luna was about to type. Nor does it go in while a
+  `/clear` or `/new` you just sent may still be on its way to the CLI, and
+  one Luna cannot place in the conversation it asks waits without holding
+  up the chat's other notices. A conversation a handoff began
+  is spared until it has grown 5 points past where its first turn ended,
+  however late it is first looked at: one handed off with Auto-handoff off
+  and gone on since is asked once it is turned on, if it has grown so.
+
+### Fixed
+
+- A new Claude Code chat or helper opens on the effort Claude Code itself
+  would use for its model. Claude Code keeps effort per model (`/effort`
+  saves it under `modelSettings`), and the account's top-level `effortLevel`
+  counts only for older models; Luna read only that one key, for every
+  model. Each model now gets the level the settings files keep for it, else
+  its own default, the dialog naming the file and key, and moves to it when
+  another model is picked; `luna_account_get` gives `effortByModel`.
+
+- A Claude Code helper's background subagents are no longer stopped 10
+  minutes after its turn: Claude Code 2.1.319+ stops what a `-p` run left in
+  the background that long after its input closed, unfinished and uncommitted
+  work with it, and Luna closes a helper's input with each turn. Its turns now
+  wait up to 3 hours for that work (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, in
+  "What Luna applied"), not forever, so a forgotten watcher cannot hold a
+  helper for good. A helper that has answered but still waits on its
+  background work is told to its caller after 30 quiet minutes, naming the
+  commands, Monitors and subagents it waits on and the processes in its job.
+  When the CLI stops that work, the caller's notice says so instead of "it
+  has said nothing", across a restart of Luna's core too.
+- A Codex helper's caller hears when `codex exec` interrupted the subagents
+  the helper's turn spawned as that turn ended: Codex 0.167.2 stops them
+  there, their work unfinished, and exits as if all went well. Luna read the
+  turn as done and said nothing of them.
+- In the new-chat dialog, a model picked now opens on the effort kept for it
+  even where the level shown before was one it does not take, rather than on
+  its catalog default, and keeps it when another folder is picked.
+
 ## [0.17.0] - 2026-11-13
 
 A chat can hand off to a fresh conversation whenever you ask: **Hand off now**

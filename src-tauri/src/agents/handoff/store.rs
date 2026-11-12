@@ -81,11 +81,16 @@ pub(in crate::agents) struct Asked {
     /// None until that conversation is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// The threshold's: the SHA-256 of the notice it was queued with, which
+    /// goes in only while this ask is the one open (mod.rs `withheld`). None
+    /// on a record from before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 impl Asked {
     pub fn new(kind: AskKind, at: u64, turns: Option<u32>) -> Asked {
-        Asked { kind, at, turns, typed: None, conversation: None }
+        Asked { kind, at, turns, typed: None, conversation: None, notice: None }
     }
 }
 
@@ -247,10 +252,11 @@ pub(super) fn from_bytes(bytes: &[u8], now: u64) -> Records {
 
 /// A conversation told of its threshold with no ask open and no handoff
 /// under way is told nothing yet, so the threshold asks it again at its next
-/// turn's end if it is still past it: once the person's ask that took the
+/// look if it is still past it: once the person's ask that took the
 /// threshold's place closes with no handoff (mod.rs `lapsed`), a move ends
 /// with the chat not stopped (moving.rs `end_where`), or auto-handoff is turned on again
-/// (mod.rs `set_auto_handoff`), the threshold not noticing again at a level
+/// (mod.rs `set_auto_handoff`, which looks as soon as the chat is at rest),
+/// the threshold not noticing again at a level
 /// it told of. A record from before asks were kept
 /// (the notice itself let the chat call) has none, and would otherwise be
 /// refused and never noticed again at that level. Not migrated into an open

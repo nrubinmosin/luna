@@ -7,7 +7,7 @@ use crate::agents::held::is_held;
 use crate::agents::lost::undelivered_note;
 use crate::agents::notifier::job_end_stood;
 use crate::agents::notifier::lines::{news_for_parent, real_turn_past, verdict, Verdict};
-use crate::agents::owed::{hand_over, last_shown, looked, Owed, QUEUED_GRACE_MS};
+use crate::agents::owed::{background_stopped_note, hand_over, last_shown, looked, Owed, QUEUED_GRACE_MS};
 use crate::agents::read::{failure_of, transcript_found, transcript_path, MAX_TEXT};
 use crate::agents::registry::{authorize_view, in_scope, reg, waits_on_helpers, DEV_CALLER};
 use crate::agents::said::{answer_file, answer_text, replies_since, said_since, Said};
@@ -118,6 +118,9 @@ pub struct Waited {
     /// See `undelivered_note`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undelivered: Option<String>,
+    /// See `background_stopped_note`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_stopped: Option<String>,
     /// On `job_done`, the debt that end settles (`take_debt`), for whichever
     /// hands it over: this `wait`, or a `wait_many` once it has its response.
     #[serde(skip)]
@@ -144,6 +147,7 @@ impl Waited {
             transcript_missing: false,
             screen: None,
             undelivered: None,
+            background_stopped: None,
             job_debt: None,
         }
     }
@@ -241,6 +245,7 @@ fn wait_for(
                     transcript_missing: false,
                     screen,
                     undelivered: None,
+                    background_stopped: None,
                     job_debt: None,
                 },
                 false,
@@ -398,6 +403,7 @@ fn wait_for(
             let screen = (outcome == "waiting" || bare).then(|| screen_of(pty, id)).flatten();
             // Ahead of the hand-over, which takes it off.
             let undelivered = if answers { undelivered_note(caller, id) } else { None };
+            let background_stopped = if answers { background_stopped_note(caller, id) } else { None };
             let job_debt = told_debt.filter(|_| outcome == "job_done");
             if !answers {
                 // Nothing was handed over: whatever is owed stays owed.
@@ -419,6 +425,7 @@ fn wait_for(
                     transcript_missing,
                     screen,
                     undelivered,
+                    background_stopped,
                     job_debt,
                 },
                 answers,
@@ -442,6 +449,7 @@ fn wait_for(
                     transcript_missing: false,
                     screen,
                     undelivered: None,
+                    background_stopped: None,
                     job_debt: None,
                 },
                 false,
@@ -605,6 +613,7 @@ pub fn wait_many(
                         transcript_missing: false,
                         screen: None,
                         undelivered: None,
+                        background_stopped: None,
                         job_debt: None,
                     }
                 }
@@ -1006,6 +1015,7 @@ mod tests {
             transcript_missing: false,
             screen: None,
             undelivered: None,
+            background_stopped: None,
             job_debt: None,
         };
         // One report past the limit: cut, and the cut names a file with all of it.
@@ -1054,6 +1064,7 @@ mod tests {
                 transcript_missing: false,
                 screen: None,
                 undelivered: None,
+                background_stopped: None,
                 job_debt: None,
             },
         };

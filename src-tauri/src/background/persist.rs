@@ -464,6 +464,72 @@ pub fn cut_short(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short)
 }
 
+/// Whether its CLI stopped what its last turn left in the background, its time
+/// for it up (run.rs `stops_background`), whoever has been told: what the tests
+/// look at; a notice asks `background_stopped_for` its caller.
+#[cfg(test)]
+pub fn background_stopped(id: &str) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.observed.background_stopped)
+}
+
+/// Whether what `caller` is told of it is to say that its CLI stopped its
+/// background work: a caller it owed an answer when that came (`stop_owed`),
+/// not yet told.
+pub fn background_stopped_for(id: &str, caller: &str) -> bool {
+    lock().entries.get(id).is_some_and(|e| {
+        let o = &e.observed;
+        o.background_stopped && o.stop_owed.iter().any(|c| c == caller) && !o.stop_told.iter().any(|c| c == caller)
+    })
+}
+
+/// What stopped its background work, as last recorded.
+pub fn background_stop_cause(id: &str) -> StopCause {
+    lock().entries.get(id).map(|e| e.observed.stop_cause).unwrap_or_default()
+}
+
+/// Whom the stop at the end of turn `turn` concerns: `callers`, those `id`
+/// owed an answer as its CLI said it (agents `callers_owed`). A stop since,
+/// or one already done with, is left as it is; with nobody owed there is
+/// nobody to tell.
+pub fn stop_owed_to(id: &str, turn: u32, callers: Vec<String>) {
+    let mut r = lock();
+    let Some(o) = r.entries.get_mut(id).map(|e| &mut e.observed).filter(|o| o.background_stopped && o.stopped_turn == turn) else {
+        return;
+    };
+    o.background_stopped = !callers.is_empty();
+    o.stop_owed = callers;
+}
+
+/// It has been said to `caller`, whose debt it settled: not again, by this core
+/// or the next (the notifier saves). Once each caller it concerns that is
+/// still owed (`owed`) has had it, it is done with. The turn of the stop when
+/// this is what marked `caller` told, for `background_stop_untold`.
+pub fn background_stop_told(id: &str, caller: &str, owed: &[String]) -> Option<u32> {
+    let mut r = lock();
+    let o = &mut r.entries.get_mut(id)?.observed;
+    if !o.stop_owed.iter().any(|c| c == caller) || o.stop_told.iter().any(|c| c == caller) {
+        return None;
+    }
+    o.stop_told.push(caller.to_string());
+    if o.stop_owed.iter().filter(|c| owed.contains(c)).all(|c| o.stop_told.contains(c)) {
+        o.background_stopped = false;
+    }
+    Some(o.stopped_turn)
+}
+
+/// Takes back what `background_stop_told` marked: the reply that said it to
+/// `caller` never reached it. That caller alone, and of that stop (`turn`)
+/// alone: another caller told meanwhile stays told, and a stop since is
+/// another matter.
+pub fn background_stop_untold(id: &str, caller: &str, turn: u32) {
+    let mut r = lock();
+    let Some(o) = r.entries.get_mut(id).map(|e| &mut e.observed).filter(|o| o.stopped_turn == turn) else { return };
+    if let Some(at) = o.stop_told.iter().position(|c| c == caller) {
+        o.stop_told.remove(at);
+        o.background_stopped = true;
+    }
+}
+
 /// Whether a core's going stopped it before any turn named its conversation:
 /// nothing it did can be carried on from.
 pub fn never_started(id: &str) -> bool {
@@ -521,6 +587,7 @@ mod tests {
             (e.turns_ended, e.observed.model.as_deref(), e.observed.turn_ended_ms, e.observed.answered),
             (3, Some("claude-haiku-5-5"), 7, true)
         );
+        assert!(!e.observed.background_stopped, "saved before it was kept: nothing stopped");
         let json = serde_json::to_value(&e.observed).unwrap();
         assert!(json.get("spend").is_none() && json.get("unreported").is_none(), "and is written without them");
     }

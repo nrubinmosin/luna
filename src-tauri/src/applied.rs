@@ -116,6 +116,8 @@ items! {
         "What a Codex helper keeps although spawned without connectors: Codex has no switch to turn off for one run the servers of the project's .codex/config.toml, which the run trusts, or those a plugin brings.";
     HelperNoMemory = "helper.no-auto-memory", Boundary,
         "What a helper saved to the account's auto-memory would reach every later session of the account unseen: its auto-memory is off.";
+    HelperBackgroundWait = "helper.background-wait", Runtime,
+        "A helper's turn ends with its CLI's stdin closed, and Claude Code would then stop the subagents and jobs it put in the background after 10 minutes, their work unfinished: it waits for them up to 3 hours, so a forgotten watcher cannot hold the helper for good. Until then the turn goes on; one that waits half an hour without a word is told to the chat that started it, with what it waits on, and luna_session_stop ends it.";
     HelperTrust = "helper.trust", Runtime,
         "A helper has nobody to answer Codex's trust screen: the folder it was sent to is trusted for this run only, nothing written.";
     SkipGitRepoCheck = "helper.skip-git-repo-check", Runtime,
