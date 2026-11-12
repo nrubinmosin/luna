@@ -180,10 +180,11 @@ fn canonical(models: &[crate::claude::models::ClaudeModel], raw: &str) -> String
 
 /// Whether the account's top-level `effortLevel` speaks for a model: one of the
 /// CLI's older models, or a name it cannot read as `claude-<family>-<version>`.
-/// Not a bare alias (`opus`), left so where the account's list has not named
-/// its id yet: the CLI reads it as the family's current model, never an older one.
+/// Not an alias, bare (`opus`) or compound (`opusplan`), left so where the
+/// account's list has not named its id yet: the CLI reads it as the family's
+/// current model, never an older one.
 fn legacy_model(canonical: &str) -> bool {
-    if crate::claude::models::ALIASES.contains(&canonical) {
+    if !canonical.contains('-') && crate::claude::models::ALIASES.iter().any(|a| canonical.contains(a)) {
         return false;
     }
     let mut parts = canonical.split('-');
@@ -526,6 +527,7 @@ mod tests {
         }
         assert!(legacy_model("claude-opus-4-7") && legacy_model("my-proxy-model") && !legacy_model("claude-opus-5-5"));
         assert!(!legacy_model("opus"), "a bare alias is the family's current model");
+        assert!(!legacy_model("opusplan"), "and so is a compound one");
     }
 
     /// No catalog yet, only the aliases: the account's top-level level is not
@@ -538,6 +540,7 @@ mod tests {
         let files = vec![EffortFile::read("account", &serde_json::from_str(body).unwrap(), &models)];
         let e = Efforts { files, pinned: vec![], models };
         assert_eq!(e.of("opus"), Setting::new(STOCK_EFFORT, "stock"));
+        assert_eq!(e.of("opusplan"), Setting::new(STOCK_EFFORT, "stock"), "a compound alias alike");
         assert_eq!(e.of("claude-opus-4-7"), Setting::new("medium", "account"), "an older model named by id still takes it");
     }
 
