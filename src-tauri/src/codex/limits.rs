@@ -27,6 +27,11 @@ pub struct LimitWindow {
     pub window_minutes: Option<i64>,
     /// ISO instant.
     pub resets_at: Option<String>,
+    /// The model it counts alone: an additional limit's, or a rollout
+    /// snapshot's other than the general `codex` one. What a usage limit's
+    /// hold on a chat goes by, not shown.
+    #[serde(skip)]
+    pub model: Option<String>,
 }
 
 #[derive(Serialize, Default)]
@@ -161,6 +166,7 @@ fn window_from_api(id: &str, label: Option<&str>, w: &Value) -> Option<LimitWind
         used,
         window_minutes: minutes,
         resets_at: iso(w["reset_at"].as_i64()),
+        model: None,
     })
 }
 
@@ -175,14 +181,18 @@ pub fn windows_from_api(body: &Value) -> (Vec<LimitWindow>, Option<String>) {
             let feature = lim["metered_feature"].as_str().unwrap_or("extra");
             let name = lim["limit_name"].as_str().or_else(|| lim["normal_model_slug"].as_str()).unwrap_or(feature);
             let r = &lim["rate_limit"];
+            // Its model by slug where the answer gives one, else by name.
+            let model = lim["normal_model_slug"].as_str().filter(|s| !s.is_empty()).unwrap_or(name).to_string();
             if let Some(mut w) = window_from_api(feature, Some(name), &r["primary_window"]) {
                 let wl = window_label(w.window_minutes);
                 w.label = format!("{name} · {wl}");
+                w.model = Some(model.clone());
                 out.push(w);
             }
             if let Some(mut w) = window_from_api(&format!("{feature}:secondary"), Some(name), &r["secondary_window"]) {
                 let wl = window_label(w.window_minutes);
                 w.label = format!("{name} · {wl}");
+                w.model = Some(model);
                 out.push(w);
             }
         }
@@ -193,6 +203,12 @@ pub fn windows_from_api(body: &Value) -> (Vec<LimitWindow>, Option<String>) {
 /// Windows and plan out of a rollout's `rate_limits` snapshot.
 pub fn windows_from_rollout(snapshot: &Value) -> (Vec<LimitWindow>, Option<String>) {
     let mut out = vec![];
+    // `limit_id` is `codex` for the limit every model counts against (seen
+    // on 0.167.1); any other is a model's own, by its name where it has one.
+    let model = snapshot["limit_id"]
+        .as_str()
+        .filter(|id| !id.is_empty() && *id != "codex")
+        .map(|id| snapshot["limit_name"].as_str().filter(|n| !n.is_empty()).unwrap_or(id).to_string());
     for (id, key) in [("primary", "primary"), ("secondary", "secondary")] {
         let w = &snapshot[key];
         let Some(used) = w["used_percent"].as_f64() else { continue };
@@ -204,6 +220,7 @@ pub fn windows_from_rollout(snapshot: &Value) -> (Vec<LimitWindow>, Option<Strin
             used: used / 100.0,
             window_minutes: minutes,
             resets_at: iso(w["resets_at"].as_i64()),
+            model: model.clone(),
         });
     }
     (out, snapshot["plan_type"].as_str().and_then(plan_label))
@@ -278,7 +295,12 @@ pub(crate) fn known_reading(account_path: &str) -> Option<crate::activity::Usage
         windows: out
             .windows
             .iter()
-            .map(|w| crate::activity::UsageWindow { label: w.label.clone(), used: w.used, resets_at: w.resets_at.clone() })
+            .map(|w| crate::activity::UsageWindow {
+                label: w.label.clone(),
+                used: w.used,
+                resets_at: w.resets_at.clone(),
+                model: w.model.clone(),
+            })
             .collect(),
     })
 }
@@ -463,6 +485,31 @@ mod tests {
         );
         let snap = serde_json::json!({ "primary": { "used_percent": 3, "window_minutes": 1440, "resets_at": 1789000000 } });
         assert_eq!(windows_from_rollout(&snap).0[0].label, "1 day");
+    }
+
+    /// Each window says which model it counts alone, if one: what a usage
+    /// limit's hold on a chat on another model leaves aside.
+    #[test]
+    fn a_window_names_the_model_it_counts_alone() {
+        let body = serde_json::json!({
+            "rate_limit": { "primary_window": { "used_percent": 12, "limit_window_seconds": 18000, "reset_at": 1789000000 } },
+            "additional_rate_limits": [
+                { "limit_name": "GPT-5 Codex Spark", "metered_feature": "codex_spark",
+                  "rate_limit": { "primary_window": { "used_percent": 100, "limit_window_seconds": 18000, "reset_at": 1789001000 } } },
+                { "limit_name": "Other", "normal_model_slug": "gpt-other", "metered_feature": "other",
+                  "rate_limit": { "primary_window": { "used_percent": 1, "limit_window_seconds": 18000, "reset_at": 1789001000 } } },
+            ]
+        });
+        let models: Vec<Option<String>> = windows_from_api(&body).0.into_iter().map(|w| w.model).collect();
+        assert_eq!(models, [None, Some("GPT-5 Codex Spark".into()), Some("gpt-other".into())]);
+        assert!(serde_json::to_value(windows_from_api(&body).0[1].clone()).unwrap().get("model").is_none(), "not shown");
+        // A rollout's snapshot: the general `codex` limit, as 0.167.1 wrote it, is every model's.
+        let general =
+            serde_json::json!({ "limit_id": "codex", "limit_name": null, "primary": { "used_percent": 22, "window_minutes": 10080 } });
+        assert_eq!(windows_from_rollout(&general).0[0].model, None);
+        let spark =
+            serde_json::json!({ "limit_id": "codex_spark", "limit_name": null, "primary": { "used_percent": 100, "window_minutes": 300 } });
+        assert_eq!(windows_from_rollout(&spark).0[0].model.as_deref(), Some("codex_spark"));
     }
 
     /// An answer whose rate limits hold no window is usage known, none of it:

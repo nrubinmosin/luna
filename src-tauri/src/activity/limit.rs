@@ -29,6 +29,10 @@ pub struct UsageWindow {
     pub used: f64,
     /// ISO instant.
     pub resets_at: Option<String>,
+    /// The model the window counts alone, as its source names it (Claude
+    /// Code's "Opus", a Codex limit's model): None for one every model on
+    /// the account counts against.
+    pub model: Option<String>,
 }
 
 /// An account's usage as last known, and when it was taken.
@@ -36,6 +40,30 @@ pub struct UsageWindow {
 pub struct UsageReading {
     pub at: Option<u64>,
     pub windows: Vec<UsageWindow>,
+}
+
+impl UsageReading {
+    /// The windows that hold a chat on `model`: every unscoped one, and a
+    /// scoped one whose model is `model`'s. A full Opus week does not keep a
+    /// Sonnet chat. Where Luna cannot tell (the chat's model unknown, its
+    /// CLI's default), every window counts, as a limit wrongly lifted would
+    /// have the chat asked for nothing.
+    pub fn for_model(&self, model: Option<&str>) -> UsageReading {
+        let windows = self.windows.iter().filter(|w| applies(w.model.as_deref(), model)).cloned().collect();
+        UsageReading { at: self.at, windows }
+    }
+}
+
+/// Whether a window scoped to `scope` counts against a chat on `model`:
+/// the scope's name, letters and digits alone and in any case, within the
+/// model's ("Opus" in "claude-opus-4-1", "GPT-5 Codex Spark" in
+/// "gpt-5-codex-spark").
+fn applies(scope: Option<&str>, model: Option<&str>) -> bool {
+    let bare = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    match (scope.map(bare).filter(|s| !s.is_empty()), model.map(bare).filter(|m| !m.is_empty())) {
+        (Some(scope), Some(model)) => model.contains(&scope),
+        _ => true,
+    }
 }
 
 /// A usage limit that still holds a chat, as the window shows it: its kind,
@@ -64,13 +92,17 @@ fn stops() -> &'static Mutex<HashMap<String, (&'static str, u64)>> {
     S.get_or_init(Default::default)
 }
 
-/// When `chat`'s limit `kind` stopped it: what its source says (`told`), or
-/// when it was first seen, the earlier of the two once both are known.
+/// When `chat`'s limit `kind` stopped it: what its source says (`told`), or,
+/// where it says nothing, when it was first seen. The source's word always
+/// stands: one earlier than the first sight is that stop's own, one later is
+/// a new stop of the same kind after a recovery no look saw, which must not
+/// keep the older stop's time.
 fn stop_of(chat: &str, kind: &'static str, told: Option<u64>, now: u64) -> u64 {
     let mut s = stops().lock().unwrap_or_else(|e| e.into_inner());
-    let since = match s.get(chat) {
-        Some((k, seen)) if *k == kind => told.map_or(*seen, |t| t.min(*seen)),
-        _ => told.unwrap_or(now),
+    let since = match (told, s.get(chat)) {
+        (Some(t), _) => t,
+        (None, Some((k, seen))) if *k == kind => *seen,
+        (None, _) => now,
     };
     s.insert(chat.to_string(), (kind, since));
     since
@@ -90,7 +122,8 @@ pub fn limit_in_force(chat: &str, provider: Provider) -> Option<LimitFact> {
         Provider::Claude => crate::claude::limits::known_reading(&account),
         Provider::Codex => crate::codex::limits::known_reading(&account),
     };
-    in_force(kind, since, reading.as_ref(), now)
+    let model = crate::agents::model_of(chat, provider);
+    in_force(kind, since, reading.map(|r| r.for_model(model.as_deref())).as_ref(), now)
 }
 
 /// The ISO instant `at`, in ms.
@@ -135,7 +168,27 @@ mod tests {
     use super::*;
 
     fn window(label: &str, used: f64, resets_at: Option<&str>) -> UsageWindow {
-        UsageWindow { label: label.into(), used, resets_at: resets_at.map(str::to_owned) }
+        UsageWindow { label: label.into(), used, resets_at: resets_at.map(str::to_owned), model: None }
+    }
+
+    /// A Sonnet chat stopped by the session window, which has reset: an
+    /// Opus-only week still full does not keep it, but keeps an Opus chat,
+    /// and one on a model Luna does not know.
+    #[test]
+    fn a_window_scoped_to_another_model_does_not_hold_a_chat() {
+        let opus_week = UsageWindow { model: Some("Opus".into()), ..window("week, Opus", 1.0, Some("2027-03-05T00:00:00Z")) };
+        let reading = UsageReading { at: Some(STOP + 60_000), windows: vec![window("5 hours", 0.03, None), opus_week] };
+        let judged = |model| in_force("rate_limit", STOP, Some(&reading.for_model(model)), STOP + 61_000);
+        assert_eq!(judged(Some("claude-sonnet-4-5")), None, "the window it stopped on has reset");
+        assert_eq!(judged(Some("sonnet")), None, "an alias names it too");
+        assert_eq!(judged(Some("claude-opus-4-1")).and_then(|f| f.window).as_deref(), Some("week, Opus"));
+        assert_eq!(judged(Some("opus")).and_then(|f| f.window).as_deref(), Some("week, Opus"));
+        assert!(judged(None).is_some(), "no model known: every window counts");
+        // A Codex limit of its own model, by its display name.
+        let spark = UsageWindow { model: Some("GPT-5 Codex Spark".into()), ..window("GPT-5 Codex Spark · 5 hours", 1.0, None) };
+        let codex = UsageReading { at: Some(STOP + 60_000), windows: vec![window("5 hours", 0.1, None), spark] };
+        assert!(in_force("usage_limit", STOP, Some(&codex.for_model(Some("gpt-5-codex"))), STOP + 61_000).is_none());
+        assert!(in_force("usage_limit", STOP, Some(&codex.for_model(Some("gpt-5-codex-spark"))), STOP + 61_000).is_some());
     }
 
     /// 2027-01-15T08:00:00Z.
@@ -180,10 +233,22 @@ mod tests {
     }
 
     #[test]
-    fn the_stop_is_the_earliest_word_of_it_and_a_new_kind_starts_over() {
+    fn the_stop_is_its_sources_word_and_a_new_kind_starts_over() {
         assert_eq!(stop_of("lim-a", "rate_limit", None, 5_000), 5_000, "first seen");
         assert_eq!(stop_of("lim-a", "rate_limit", None, 9_000), 5_000, "kept");
         assert_eq!(stop_of("lim-a", "rate_limit", Some(3_000), 9_000), 3_000, "its source says earlier");
+        assert_eq!(stop_of("lim-a", "rate_limit", None, 9_500), 3_000, "kept as the source said");
         assert_eq!(stop_of("lim-a", "usage_limit", None, 9_000), 9_000, "another limit");
+    }
+
+    /// Limit A, a recovery no look saw, then limit B of the same kind: B's
+    /// stop is its own, so a reading taken between the two lifts nothing.
+    #[test]
+    fn a_second_stop_of_the_same_kind_does_not_keep_the_firsts_time() {
+        assert_eq!(stop_of("lim-b", "rate_limit", Some(3_000), 4_000), 3_000, "limit A");
+        assert_eq!(stop_of("lim-b", "rate_limit", Some(10_000), 11_000), 10_000, "limit B, by its own source");
+        let between = UsageReading { at: Some(6_000), windows: vec![window("5 hours", 0.4, None)] };
+        assert!(in_force("rate_limit", 10_000, Some(&between), 11_000).is_some(), "a reading from before B is no word on it");
+        assert!(in_force("rate_limit", 3_000, Some(&between), 11_000).is_none(), "as A's stop it would have lifted");
     }
 }

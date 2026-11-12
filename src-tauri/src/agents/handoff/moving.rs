@@ -222,6 +222,10 @@ pub(in crate::agents) struct Move {
     /// ask's, not the chat's own work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked_at: Option<u64>,
+    /// The chat's turns ended as the ask was typed, between turns: the ask's
+    /// turn is the one under way while no more have ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_turns: Option<u32>,
     /// How its ask ended without the chat's document, where it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_end: Option<AskEnd>,
@@ -562,7 +566,7 @@ pub fn move_prepare(
     let mut inputs = inputs_of(chat, &old, &to_account, note);
     inputs.last_handoff = last_handoff(chat);
     let transcript = transcript_of(chat, old.provider, &old.account_path, session_id.as_deref());
-    let built = build_within(inputs, transcript, BUILD_WAIT)?;
+    let built = build_within(inputs, transcript, ask_span(chat), BUILD_WAIT)?;
     let id = crate::secret::random_hex(6);
     let sha256 = sha256_hex(built.text.as_bytes());
     let payload = super::dir_of(&new_id).map(|d| d.join(format!("{PAYLOAD_N}.md"))).unwrap_or_default();
@@ -618,6 +622,7 @@ fn new_move(
         cleaned: [0; 3],
         forced: false,
         asked_at: None,
+        asked_turns: None,
         ask_end: None,
     }
 }
@@ -728,7 +733,14 @@ fn warnings_of(chat: &str, worktree: bool) -> Vec<String> {
 /// The document built on a thread of its own and given `wait`: its transcript
 /// read and git asked (both bounded on their own) off the caller's thread. A
 /// build given up on ends by itself, its result dropped.
-fn build_within(mut inputs: Inputs, transcript: Option<PathBuf>, wait: Duration) -> Result<document::Built, String> {
+/// `ask` is the move's last ask (`ask_span`), for a transcript window that
+/// starts inside its turn.
+fn build_within(
+    mut inputs: Inputs,
+    transcript: Option<PathBuf>,
+    ask: Option<(u64, Option<u64>)>,
+    wait: Duration,
+) -> Result<document::Built, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let roots = scrub::Roots::of_this_machine();
     std::thread::Builder::new()
@@ -736,7 +748,7 @@ fn build_within(mut inputs: Inputs, transcript: Option<PathBuf>, wait: Duration)
         .spawn(move || {
             // A turn a move's ask opened is the handoff attempt, not the work.
             inputs.transcript = match &transcript {
-                Some(p) => excerpts::read(p, inputs.provider, Some(is_ask_line)),
+                Some(p) => excerpts::read(p, inputs.provider, Some(excerpts::Skip { opens: is_ask_line, ask })),
                 None => Err("Luna does not know where this chat's transcript is".into()),
             };
             let since = inputs
@@ -1127,14 +1139,24 @@ pub fn move_list() -> Vec<MoveStatus> {
 /// `chat`'s move `id` ended as `to`, whatever it stood at: a record that will
 /// not save ends it in memory all the same.
 fn end(chat: &str, id: &str, to: MovePhase) -> Result<Move, String> {
+    end_where(chat, id, to, |_| true, |_| {}).map(|(m, _)| m)
+}
+
+/// `end`, only where the move as it stands then is one `may` takes, `also`
+/// done to it in the same change; with whether it was ended here. What looked
+/// at the move before (an ask's timeout, say) may find it gone on meanwhile:
+/// its preview built from records, or confirmed.
+fn end_where(chat: &str, id: &str, to: MovePhase, may: impl Fn(&Move) -> bool, also: impl Fn(&mut Move)) -> Result<(Move, bool), String> {
     let set = |r: &mut store::Record| {
         let m = r.moving.as_mut().filter(|m| m.id == id)?;
+        let taken = !m.phase.ended() && may(m);
         // An ask ended before its document came: what the chat sends in the
         // same turn is that ask's late answer. One collected already is not.
         // Only one typed into the chat: a move canceled while still Asking
         // asked nothing.
-        let unanswered = matches!(m.phase, MovePhase::Asked { .. });
-        if !m.phase.ended() {
+        let unanswered = taken && matches!(m.phase, MovePhase::Asked { .. });
+        if taken {
+            also(m);
             m.phase = to.clone();
         }
         let m = m.clone();
@@ -1142,7 +1164,7 @@ fn end(chat: &str, id: &str, to: MovePhase) -> Result<Move, String> {
             r.ask_closed = Some((m.id.clone(), now_ms()));
             r.ask_closed_turns = crate::activity::turn_state(chat).map(|t| t.turns_ended);
         }
-        Some(m)
+        Some((m, taken))
     };
     let ended = match store::change(chat, set) {
         Ok(m) => m.ok_or_else(|| "no such move of this chat".to_string()),
@@ -1153,7 +1175,7 @@ fn end(chat: &str, id: &str, to: MovePhase) -> Result<Move, String> {
     };
     // A document the chat wrote goes with its move's end: the new chat has its
     // own copy of what was sent.
-    if let Some(p) = ended.as_ref().ok().filter(|m| m.phase.ended()).and_then(|m| m.preview.clone()) {
+    if let Some(p) = ended.as_ref().ok().filter(|(m, taken)| *taken && m.phase.ended()).and_then(|(m, _)| m.preview.clone()) {
         if copies_of(chat).is_ok_and(|dir| Path::new(&p).parent() == Some(dir.as_path())) {
             let _ = std::fs::remove_file(p);
         }
@@ -1443,12 +1465,14 @@ fn built_from_records(
 ) -> Result<MovePreview, String> {
     let session_id = session_id.filter(|s| !s.trim().is_empty());
     let mut inputs = inputs_of(chat, old, to_account, m.note.clone());
-    if inputs.stopped == Stopped::MidTurn && in_ask_turn(m, crate::activity::turn_started_ms(chat)) {
+    let turn = Turn { started: crate::activity::turn_started_ms(chat), ended: crate::activity::turn_state(chat).map(|t| t.turns_ended) };
+    let span = ask_span(chat);
+    if inputs.stopped == Stopped::MidTurn && span.is_some_and(|(_, closed)| in_ask_turn(m, turn, closed)) {
         inputs.stopped = Stopped::Finished;
     }
     inputs.last_handoff = last_handoff(chat);
     let transcript = transcript_of(chat, old.provider, &old.account_path, session_id.as_deref());
-    let built = build_within(inputs, transcript, BUILD_WAIT)?;
+    let built = build_within(inputs, transcript, span, BUILD_WAIT)?;
     let sha256 = sha256_hex(built.text.as_bytes());
     let payload = super::dir_of(&m.new_id).map(|d| d.join(format!("{PAYLOAD_N}.md"))).unwrap_or_default();
     let line = prompt_line_with(&m.id, Source::Luna, chat, chat_name(chat).as_deref(), &payload.to_string_lossy(), &m.note);
@@ -1482,15 +1506,34 @@ fn built_from_records(
     Ok(preview_of(&m, built.text, [built.redacted, built.paths_cut, built.invisible], warnings))
 }
 
-/// Whether the turn under way, begun at `started`, is the one answering
-/// move `m`'s ask: begun once the ask was typed, or, where no start is
-/// known, the ask still open (it is typed only between turns).
-pub(super) fn in_ask_turn(m: &Move, started: Option<u64>) -> bool {
+/// Whether the turn under way, `turn`, is the one answering move `m`'s ask,
+/// which closed at `closed` if it has: no turn ended since the ask was
+/// typed (it is typed only between turns), and begun once it was typed and
+/// not after it closed; where no start is known, the ask still open. A turn
+/// the person began after an ask timed out is the chat's own work.
+pub(super) fn in_ask_turn(m: &Move, turn: Turn, closed: Option<u64>) -> bool {
     let Some(asked) = m.asked_at else { return false };
-    match started {
-        Some(s) => s >= asked,
+    if let (Some(then), Some(now)) = (m.asked_turns, turn.ended) {
+        if now != then {
+            return false;
+        }
+    }
+    match turn.started {
+        Some(s) => s >= asked && closed.is_none_or(|c| s <= c),
         None => matches!(m.phase, MovePhase::Asked { .. }),
     }
+}
+
+/// `chat`'s move's last ask, as (typed, closed) in ms: when it was typed, and
+/// when Luna closed it, if it has (a move given up at a restart closed it as
+/// it failed).
+fn ask_span(chat: &str) -> Option<(u64, Option<u64>)> {
+    let r = store::records();
+    let rec = r.get(chat)?;
+    let m = rec.moving.as_ref()?;
+    let typed = m.asked_at?;
+    let closed = rec.ask_closed.as_ref().filter(|(id, _)| *id == m.id).map(|(_, at)| *at).or_else(|| (!m.asking()).then(|| m.phase.at()));
+    Some((typed, closed))
 }
 
 /// What the move window looks at before a move of `chat` begins: the usage
@@ -1567,7 +1610,7 @@ fn collect(caller: &str, m: &Move, file: &str) -> Result<Value, String> {
         inputs.stopped = Stopped::Finished;
     }
     inputs.chat_text = Some(text);
-    let built = build_within(inputs, None, BUILD_WAIT)?;
+    let built = build_within(inputs, None, None, BUILD_WAIT)?;
     let preview = dir.join(format!("move-{}.md", m.id));
     crate::secret::write_private(&preview, built.text.as_bytes()).map_err(|e| format!("the document could not be kept: {e}"))?;
     let sha = sha256_hex(built.text.as_bytes());
@@ -1648,12 +1691,7 @@ fn asks() {
 /// Move `m`'s ask given up as `end` says, for `why`: kept on the move, for
 /// whether asking again makes sense.
 fn ask_ended(chat: &str, m: &Move, end: AskEnd, why: String) {
-    let _ = store::change(chat, |r| {
-        if let Some(x) = r.moving.as_mut().filter(|x| x.id == m.id && x.asking()) {
-            x.ask_end = Some(end);
-        }
-    });
-    failed(chat, m, why);
+    failed_where(chat, m, why, Move::asking, move |x| x.ask_end = Some(end));
 }
 
 /// The ask typed into `chat` on a thread of its own, its terminal claimed,
@@ -1678,6 +1716,7 @@ fn type_ask(chat: &str, m: &Move) {
                     let at = now_ms();
                     x.phase = MovePhase::Asked { at };
                     x.asked_at = Some(at);
+                    x.asked_turns = crate::activity::turn_state(&chat).map(|t| t.turns_ended);
                     true
                 }
                 _ => false,
@@ -1691,8 +1730,12 @@ fn type_ask(chat: &str, m: &Move) {
         match super::type_line(&chat, &ask_line(&m.id), &commit) {
             Ok(Typed::In) => crate::log::info("move", &format!("{}: asked for move {}'s document", label(&chat), m.id)),
             Ok(Typed::NotClear | Typed::NotCommitted(Refused::Gone)) => {}
-            Ok(Typed::NotCommitted(Refused::Unsaved(e))) => failed(&chat, &m, format!("its state could not be saved: {e}")),
-            Err(e) => failed(&chat, &m, format!("the ask could not be typed: {e}")),
+            // Only while still asked: the person may have had Luna's document
+            // built meanwhile.
+            Ok(Typed::NotCommitted(Refused::Unsaved(e))) => {
+                failed_where(&chat, &m, format!("its state could not be saved: {e}"), Move::asking, |_| {})
+            }
+            Err(e) => failed_where(&chat, &m, format!("the ask could not be typed: {e}"), Move::asking, |_| {}),
         }
     });
     if let Err(e) = started {
@@ -2017,7 +2060,13 @@ fn done(chat: &str, m: &Move) {
 /// The move given up: the new chat, if made, stays with its document where
 /// it is, the old chat untouched, and the person told.
 fn failed(chat: &str, m: &Move, why: String) {
-    let Ok(ended) = end(chat, &m.id, MovePhase::Failed { at: now_ms(), why: why.clone() }) else { return };
+    failed_where(chat, m, why, |_| true, |_| {})
+}
+
+/// `failed`, only where the move as it stands then is one `may` takes, with
+/// `also` done to it in the same change (`end_where`).
+fn failed_where(chat: &str, m: &Move, why: String, may: impl Fn(&Move) -> bool, also: impl Fn(&mut Move)) {
+    let Ok((ended, true)) = end_where(chat, &m.id, MovePhase::Failed { at: now_ms(), why: why.clone() }, may, also) else { return };
     if !matches!(ended.phase, MovePhase::Failed { .. }) {
         return;
     }
@@ -2095,6 +2144,7 @@ pub(super) mod tests {
             cleaned: [0; 3],
             forced: false,
             asked_at: None,
+            asked_turns: None,
             ask_end: None,
         }
     }
@@ -2634,13 +2684,57 @@ pub(super) mod tests {
         assert!(is_ask_line(&format!("  {}", ask_line("m1"))));
         assert!(!is_ask_line(&prompt_line("m1", Source::Luna, "c1", None, "p")), "the moved chat's line is no ask");
         assert!(!is_ask_line("Please write the request, not typed by the user] part"));
+        let at = |started| Turn { started, ended: Some(4) };
         let mut m = a_move(MovePhase::Asked { at: 1_000 });
-        assert!(!in_ask_turn(&m, Some(2_000)), "never typed: no turn is the ask's");
+        assert!(!in_ask_turn(&m, at(Some(2_000)), None), "never typed: no turn is the ask's");
         m.asked_at = Some(1_000);
-        assert!(in_ask_turn(&m, Some(1_000)) && in_ask_turn(&m, None));
-        assert!(!in_ask_turn(&m, Some(999)), "begun before the ask: the chat's own");
+        assert!(in_ask_turn(&m, at(Some(1_000)), None) && in_ask_turn(&m, at(None), None));
+        assert!(!in_ask_turn(&m, at(Some(999)), None), "begun before the ask: the chat's own");
         m.phase = MovePhase::Failed { at: 5_000, why: "x".into() };
-        assert!(!in_ask_turn(&m, None), "the ask over and no start known: the chat's own");
+        assert!(!in_ask_turn(&m, at(None), Some(5_000)), "the ask over and no start known: the chat's own");
+    }
+
+    /// The ask timed out and the person went on with real work: that turn,
+    /// under way as they pick Luna's document, is unfinished work.
+    #[test]
+    fn a_turn_begun_after_the_ask_timed_out_is_the_chats_own() {
+        let mut m = a_move(MovePhase::Failed { at: 11_000, why: "the chat wrote no document within 10 minutes".into() });
+        (m.asked_at, m.asked_turns) = (Some(1_000), Some(4));
+        let closed = Some(11_000);
+        assert!(in_ask_turn(&m, Turn { started: Some(1_000), ended: Some(4) }, closed), "the ask's own turn, running past the timeout");
+        assert!(!in_ask_turn(&m, Turn { started: Some(12_000), ended: Some(4) }, closed), "begun after the ask closed");
+        assert!(!in_ask_turn(&m, Turn { started: Some(5_000), ended: Some(5) }, closed), "a turn has ended since the ask's began");
+        assert!(!in_ask_turn(&m, Turn { started: Some(5_000), ended: Some(5) }, None), "the ask still open, its turn over");
+        // An ask typed before turns were counted goes by time alone.
+        m.asked_turns = None;
+        assert!(in_ask_turn(&m, Turn { started: Some(5_000), ended: Some(5) }, closed));
+    }
+
+    /// An ask's timeout looked at before the person had Luna's document
+    /// built: it fails nothing once the move is shown, or confirmed.
+    #[test]
+    fn an_asks_failure_takes_only_a_move_still_asking() {
+        let (chat, new) = ("mvf-old", "mvf-new");
+        let mut m = shown(chat, new, false);
+        m.source = Source::Chat;
+        m.phase = MovePhase::Asked { at: 1 };
+        m.asked_at = Some(1);
+        let seen = m.clone();
+        for now in [MovePhase::Shown { at: 2 }, MovePhase::Confirmed { at: 3 }] {
+            let mut x = m.clone();
+            x.phase = now.clone();
+            store::change(chat, |r| r.moving = Some(x.clone())).unwrap();
+            ask_ended(chat, &seen, AskEnd::Timeout, "the chat wrote no document within 10 minutes".into());
+            let after = store::records()[chat].moving.clone().unwrap();
+            assert_eq!((after.phase, after.ask_end), (now, None), "a move gone on is left as it is");
+        }
+        // Still asked: failed, with how its ask ended, in one change.
+        store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        ask_ended(chat, &seen, AskEnd::Timeout, "the chat wrote no document within 10 minutes".into());
+        let after = store::records()[chat].moving.clone().unwrap();
+        assert!(matches!(after.phase, MovePhase::Failed { .. }) && after.ask_end == Some(AskEnd::Timeout), "{after:?}");
+        assert!(store::records()[chat].ask_closed.as_ref().is_some_and(|(id, _)| id == "m1"));
+        let _ = store::remove(chat);
     }
 
     #[test]
