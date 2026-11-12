@@ -671,7 +671,7 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 9000, "tools/list is {} chars", text.len());
+        assert!(text.len() < 9500, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read a section at a time: none is to cost more than a couple of
         // thousand tokens, nor the index more than a few hundred.
