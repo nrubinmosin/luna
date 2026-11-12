@@ -596,6 +596,7 @@ export function NewChatDialog() {
               draft={claudeDraft}
               origin={originOf(claudeDraft, claude.describe)}
               accountPath={accountPath}
+              folder={folder}
             />
           )}
         </div>

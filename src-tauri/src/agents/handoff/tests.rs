@@ -522,14 +522,51 @@ fn the_facts_name_the_chats_helpers_and_what_they_owe() {
         json!({ "background": true, "model": "gpt-big", "effort": "high" }),
     );
     reg().lock().unwrap().owed.insert(("hogf-me".into(), "hogf-kid".into()), crate::agents::owed::Owed::from(0, 0));
-    let f = gather("hogf-me");
+    // The conversation before loaded a skill, as Claude Code 2.1.322 records
+    // its call and the result that says it did.
+    let (dir, _) = scratch_file("gf");
+    let previous = dir.join("old.jsonl");
+    let call = json!({ "type": "assistant", "message": { "content": [
+        { "type": "tool_use", "id": "toolu_1", "name": "Skill", "input": { "skill": "release" }, "caller": { "type": "direct" } }] } });
+    let result = json!({ "type": "user", "message": { "role": "user", "content": [
+        { "type": "tool_result", "tool_use_id": "toolu_1", "content": "Launching skill: release" }] } });
+    // Then the threshold's notice, typed with a helper's line before it: the
+    // work it lets the chat finish first loads a skill, which counts; from
+    // the chat's call to the handoff tool on, the turn is the handoff's.
+    let tag = crate::agents::notifier::NOTICE_TAG;
+    let asked = json!({ "type": "user", "message": { "role": "user",
+        "content": format!("{tag} Your helper h1 answered. {}", facts::notice(71, 70, false, true)) } });
+    let skill = |id: &str, name: &str| {
+        let call = json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": id, "name": "Skill", "input": { "skill": name } }] } });
+        let result = json!({ "type": "user", "message": { "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": id, "content": format!("Launching skill: {name}") }] } });
+        format!("{call}\n{result}")
+    };
+    let handoff = json!({ "type": "assistant", "message": { "content": [
+        { "type": "tool_use", "id": "toolu_3", "name": "mcp__luna__luna_session_handoff", "input": {} }] } });
+    let lines = [
+        call.to_string(),
+        result.to_string(),
+        asked.to_string(),
+        skill("toolu_2", "finishing"),
+        handoff.to_string(),
+        skill("toolu_4", "session-handoff"),
+    ];
+    std::fs::write(&previous, lines.join("\n") + "\n").unwrap();
+    let f = gather("hogf-me", Some(&previous.to_string_lossy()), Provider::Claude);
     assert_eq!(f.helpers.len(), 1);
     assert_eq!((f.helpers[0].id.as_str(), f.helpers[0].owes, f.helpers[0].account.as_str()), ("hogf-kid", true, "codex/two"));
     assert_eq!((f.helpers[0].model.as_deref(), f.helpers[0].effort.as_deref()), (Some("gpt-big"), Some("high")));
     assert_eq!(f.threshold, Some(70));
     assert!(f.owed_by_others.is_empty());
+    assert_eq!(f.skills.map(|s| s.names), Some(vec!["release".to_string(), "finishing".to_string()]));
+    // Where the conversation before is not known, or not to be read: not known.
+    assert_eq!(gather("hogf-me", None, Provider::Claude).skills, None);
+    assert_eq!(gather("hogf-me", Some(&dir.join("gone.jsonl").to_string_lossy()), Provider::Claude).skills, None);
     forget_session("hogf-kid");
     forget_session("hogf-me");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -1017,7 +1054,7 @@ fn a_thin_file_written_to_luna_s_instructions_is_named_not_refused() {
     let v = schedule("hothin-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     assert_eq!(v["scheduled"], true);
     let missing: Vec<&str> = v["missing"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
-    assert_eq!(missing, ["Goal", "Next action", "The user's words", "State", "Pending", "Decisions and dead ends"]);
+    assert_eq!(missing, ["Goal", "Next action", "The user's words", "State", "Pending", "Decisions and dead ends", "Skills to load first"]);
     assert!(v["note"].as_str().unwrap().contains("goes as it is"));
     finish("hothin-me", 1, Ended::Done, &String::new);
     ask("hothin-me", store::AskKind::Auto);
@@ -1138,7 +1175,8 @@ fn the_thresholds_ask_is_not_opened_over_what_changed_as_its_context_was_read() 
     // Nothing changed: opened, of the conversation read, its notice queued
     // with it under the record's lock.
     assert!(open(70));
-    assert_eq!(store::records()["hoaa-me"].asked, Some(asked.clone()));
+    let notice = Some(sha256_of(&line));
+    assert_eq!(store::records()["hoaa-me"].asked, Some(store::Asked { notice, ..asked.clone() }), "bound to its notice");
     assert_eq!(store::records()["hoaa-me"].told.as_ref().map(|t| t.level), Some(1));
     assert_eq!(queued(), 1);
     // The person's ask opened after it drops that notice, under the same lock.
@@ -1392,4 +1430,281 @@ fn the_threshold_asks_again_once_what_took_its_place_closes() {
     reg().lock().unwrap().news.retain(|(c, _)| c != "horearm-me");
     forget_session("horearm-me");
     set_conversation_for_test("horearm-me", None);
+}
+
+/// `turns_ended` turns over, the chat at rest (`Idle`) or not.
+fn turn(idle: bool, turns_ended: u32) -> Option<crate::activity::TurnState> {
+    let turn = if idle { crate::activity::Turn::Idle } else { crate::activity::Turn::Busy };
+    Some(crate::activity::TurnState { turn, busy: !idle, turns_ended, children_busy: false })
+}
+
+/// A look's reading of conversation `live` at `pct` of its context.
+fn reading(live: &str, pct: u64) -> Reading {
+    Reading { live: live.into(), conversation: live.into(), pct, tokens: pct * 2_000, floor_at: None }
+}
+
+/// A conversation a handoff began keeps as its floor where its first turn
+/// ended, however late it is first looked at: at that turn's end; after a
+/// notice from a helper, or a draft the person sent, went in before the
+/// beat's look; after auto-handoff turned on later. One that began above the
+/// threshold is not asked again for that alone; one grown past it since is.
+/// A conversation the person opened has no floor.
+#[test]
+fn a_conversation_a_handoff_began_keeps_the_floor_its_first_turn_ended_at() {
+    chat("hofloor-me", None);
+    listed("hofloor-me");
+    let fresh = || store::change("hofloor-me", |r| (r.fresh, r.told, r.asked) = (true, None, None)).unwrap();
+    let at = |pct, floor_at| Reading { floor_at, ..reading("next", pct) };
+    let asked = || store::records()["hofloor-me"].asked.as_ref().map(|a| a.kind);
+    let floor = || store::records()["hofloor-me"].told.as_ref().map(|t| t.floor);
+    set_auto_handoff("hofloor-me".into(), Some(10)).unwrap();
+    // Looked at as its first turn ends, at 12% under a threshold of 10.
+    fresh();
+    look_at("hofloor-me", 10, &at(12, Some(12)), 3, check_due("hofloor-me"));
+    assert_eq!((asked(), floor()), (None, Some(12)));
+    // A notice, or the person's draft sent, went in first: looked at at 14%,
+    // its first turn having ended at 12%. Not asked; at 17% it is.
+    fresh();
+    look_at("hofloor-me", 10, &at(14, Some(12)), 4, None);
+    assert_eq!((asked(), floor()), (None, Some(12)), "the floor is where its first turn ended");
+    look_at("hofloor-me", 10, &at(17, Some(12)), 5, None);
+    assert_eq!(asked(), Some(store::AskKind::Auto), "grown past it");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hofloor-me");
+    // Handed off by the person with auto-handoff off, its first turn ended at
+    // 20%, turns of its own since: auto-handoff turned on at 50% with the
+    // chat at 60% asks at once.
+    fresh();
+    set_auto_handoff("hofloor-me".into(), Some(50)).unwrap();
+    look_at("hofloor-me", 50, &at(60, Some(20)), 9, check_due("hofloor-me"));
+    assert_eq!((asked(), floor()), (Some(store::AskKind::Auto), Some(20)));
+    assert_eq!(queued("hofloor-me"), [facts::notice(60, 50, false, true)]);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hofloor-me");
+    // A conversation Luna's prompt did not open: no floor.
+    fresh();
+    set_auto_handoff("hofloor-me".into(), Some(10)).unwrap();
+    look_at("hofloor-me", 10, &at(12, None), 9, check_due("hofloor-me"));
+    assert_eq!((asked(), floor()), (Some(store::AskKind::Auto), Some(0)));
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hofloor-me");
+    let _ = store::remove("hofloor-me");
+    forget_session("hofloor-me");
+    set_conversation_for_test("hofloor-me", None);
+}
+
+/// Auto-handoff turned off between the notifier putting a threshold notice
+/// together and typing it: the ask it came with is closed, so it is not
+/// typed, nor is it once the ask is another (a later notice's), auto-handoff
+/// is set again meanwhile, or the chat is on another conversation than the
+/// one asked. Typed only while all of it stands.
+#[test]
+fn a_threshold_notice_put_together_goes_in_only_while_its_ask_stands() {
+    chat("hooffq-me", None);
+    listed("hooffq-me");
+    crate::pty::fake_terminal_for_test("hooffq-me", true);
+    set_auto_handoff("hooffq-me".into(), Some(70)).unwrap();
+    let ask = |pct| {
+        store::change("hooffq-me", |r| (r.told, r.asked) = (None, None)).unwrap();
+        look_at("hooffq-me", 70, &reading("old", pct), 2, None);
+        queued("hooffq-me").pop().unwrap()
+    };
+    let deliver = |line: &str, between: Box<dyn FnOnce() + Send>| {
+        crate::agents::notifier::deliver_news_for_test("hooffq-me", vec![(line.to_string(), line.to_string())], between);
+        let (typed, _) = crate::pty::fake_terminal_of("hooffq-me");
+        crate::pty::fake_terminal_for_test("hooffq-me", true);
+        !typed.is_empty()
+    };
+    // Turned off between: nothing typed, and nothing left to type.
+    let line = ask(75);
+    let off = Box::new(|| {
+        set_auto_handoff("hooffq-me".into(), None).unwrap();
+    });
+    assert!(!deliver(&line, off), "no ask for it to answer");
+    assert!(withheld("hooffq-me", &line) && queued("hooffq-me").is_empty());
+    // Replaced by a later ask's notice: the earlier copy is not typed.
+    set_auto_handoff("hooffq-me".into(), Some(70)).unwrap();
+    let first = ask(75);
+    store::change("hooffq-me", |r| r.asked.as_mut().unwrap().notice = Some("another".into())).unwrap();
+    assert!(withheld("hooffq-me", &first), "not typed, and dropped at the notifier's next look");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hooffq-me");
+    // On another conversation than the one asked: not now, still queued for
+    // the beat to close the ask.
+    let line = ask(76);
+    assert!(!deliver(&line, Box::new(|| set_conversation_for_test("hooffq-me", Some("theirs")))));
+    assert!(!withheld("hooffq-me", &line) && queued("hooffq-me") == [line.clone()]);
+    // Back on it, nothing changed: what the notifier looks at under the held
+    // keys lets it go in.
+    set_conversation_for_test("hooffq-me", Some("old"));
+    assert!(notice_here("hooffq-me", &line) && !withheld("hooffq-me", &line));
+    assert!(notice_here("hooffq-me", "Your helper h1 answered"), "any other line, as far as this goes");
+    crate::pty::fake_terminal_for_test("hooffq-me", false);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hooffq-me");
+    let _ = store::remove("hooffq-me");
+    forget_session("hooffq-me");
+    set_conversation_for_test("hooffq-me", None);
+}
+
+/// A threshold notice whose chat Luna cannot place on the conversation it
+/// asks (not known now) is left out of the notice the notifier puts
+/// together, still queued: what else that notice says, a helper's answer,
+/// goes without it. Placed again, it is taken.
+#[test]
+fn a_threshold_notice_that_cannot_be_placed_holds_up_nothing_else() {
+    chat("hoplace-me", None);
+    listed("hoplace-me");
+    set_auto_handoff("hoplace-me".into(), Some(70)).unwrap();
+    look_at("hoplace-me", 70, &reading("old", 75), 2, None);
+    let notice = queued("hoplace-me").pop().unwrap();
+    let answer = "Your helper h1 answered.".to_string();
+    reg().lock().unwrap().news.push(("hoplace-me".into(), answer.clone()));
+    let notice_of = |news: &[String]| HashMap::from([("hoplace-me".to_string(), news.to_vec())]);
+    set_conversation_for_test("hoplace-me", None);
+    let mut news = notice_of(&[notice.clone(), answer.clone()]);
+    crate::agents::notifier::placed_now(&mut news);
+    assert_eq!(news["hoplace-me"], std::slice::from_ref(&answer), "the answer goes without it");
+    assert!(queued("hoplace-me").contains(&notice), "still queued, for a later notice");
+    // Only a threshold notice: nothing at all left for this look.
+    let mut alone = notice_of(std::slice::from_ref(&notice));
+    crate::agents::notifier::placed_now(&mut alone);
+    assert!(alone.is_empty());
+    // Placed again.
+    set_conversation_for_test("hoplace-me", Some("old"));
+    let mut news = notice_of(&[notice.clone(), answer.clone()]);
+    crate::agents::notifier::placed_now(&mut news);
+    assert_eq!(news["hoplace-me"], [notice, answer]);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hoplace-me");
+    let _ = store::remove("hoplace-me");
+    forget_session("hoplace-me");
+    set_conversation_for_test("hoplace-me", None);
+}
+
+/// The person's `/new` sent just before the notifier held their keys has not
+/// reached the CLI yet, which still reads as the conversation the threshold
+/// asked: a key of theirs since the notifier's look keeps the notice back,
+/// still queued, as it does a continuation, without the notice being taken
+/// for one.
+#[test]
+fn a_threshold_notice_waits_for_a_key_the_cli_has_not_acted_on() {
+    chat("hokeyt-me", None);
+    listed("hokeyt-me");
+    set_auto_handoff("hokeyt-me".into(), Some(70)).unwrap();
+    look_at("hokeyt-me", 70, &reading("old", 75), 2, None);
+    let notice = queued("hokeyt-me").pop().unwrap();
+    assert!(keyed_to_conversation(&notice) && !bound_to_conversation(&notice));
+    crate::pty::fake_terminal_for_test("hokeyt-me", true);
+    let keys = Box::new(|| crate::pty::fake_person_keys("hokeyt-me"));
+    crate::agents::notifier::deliver_news_for_test("hokeyt-me", vec![(notice.clone(), notice.clone())], keys);
+    assert_eq!(crate::pty::fake_terminal_of("hokeyt-me"), (String::new(), false), "nothing typed, their keys go on");
+    assert!(queued("hokeyt-me").contains(&notice), "still queued, for the next look");
+    crate::pty::fake_terminal_for_test("hokeyt-me", false);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hokeyt-me");
+    let _ = store::remove("hokeyt-me");
+    forget_session("hokeyt-me");
+    set_conversation_for_test("hokeyt-me", None);
+}
+
+fn queued(id: &str) -> Vec<String> {
+    reg().lock().unwrap().news.iter().filter(|(c, _)| c == id).map(|(_, l)| l.clone()).collect()
+}
+
+/// Auto-handoff turned on with the chat already past the threshold: its
+/// context is looked at as soon as it is at rest, at the turn count its last
+/// turn's end was looked at, not left until its next turn ends; by the one
+/// look a turn's end takes, the ask bound to the conversation read and its
+/// notice queued for the notifier, which holds it behind a draft as any.
+#[test]
+fn turning_it_on_past_the_threshold_asks_as_soon_as_the_chat_is_at_rest() {
+    chat("honow-me", None);
+    listed("honow-me");
+    let mut b = Beat::default();
+    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), Some((4, None)), "a turn's end not looked at yet");
+    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), None, "looked at: nothing until the next turn's end");
+    set_auto_handoff("honow-me".into(), Some(70)).unwrap();
+    let mark = check_due("honow-me");
+    assert!(mark.is_some(), "on: to be looked at now");
+    assert_eq!(to_look(&mut b, "honow-me", turn(false, 4)), None, "mid-turn: not at rest yet");
+    assert_eq!(check_due("honow-me"), mark, "the mark waits");
+    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), Some((4, mark)), "at rest: looked at, at the same turn");
+    look_at("honow-me", 70, &reading("conv-live", 75), 4, mark);
+    assert_eq!(check_due("honow-me"), None, "its look over");
+    let asked = store::records()["honow-me"].asked.clone().unwrap();
+    assert_eq!((asked.kind, asked.conversation.as_deref(), asked.turns), (store::AskKind::Auto, Some("conv-live"), Some(4)));
+    assert_eq!(queued("honow-me"), [facts::notice(75, 70, false, true)], "through the notifier, as at a turn's end");
+    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), None, "once");
+    // On again at another threshold while its ask is open: looked at again,
+    // and the conversation, told already, is not asked a second time.
+    set_auto_handoff("honow-me".into(), Some(60)).unwrap();
+    let again = check_due("honow-me");
+    assert!(again.is_some() && again != mark);
+    look_at("honow-me", 60, &reading("conv-live", 75), 4, mark);
+    assert_eq!(check_due("honow-me"), again, "an old look lets go of its own mark only");
+    look_at("honow-me", 60, &reading("conv-live", 75), 4, again);
+    assert_eq!((check_due("honow-me"), queued("honow-me").len()), (None, 1));
+    // Under its threshold: told nothing, the mark let go all the same.
+    store::change("honow-me", |r| (r.asked, r.told) = (None, None)).unwrap();
+    reg().lock().unwrap().news.retain(|(c, _)| c != "honow-me");
+    set_auto_handoff("honow-me".into(), Some(80)).unwrap();
+    let low = check_due("honow-me");
+    look_at("honow-me", 80, &reading("conv-live", 75), 4, low);
+    assert_eq!((check_due("honow-me"), open_ask("honow-me"), queued("honow-me").len()), (None, None, 0));
+    forget_session("honow-me");
+    set_conversation_for_test("honow-me", None);
+}
+
+/// The look turning auto-handoff on asks for waits while the chat cannot be
+/// asked: its CLI has not listed the tool (the window's quick resume brings
+/// it), a move or a handoff of it is under way, or the person's ask is open.
+/// Turned off before the notice went in, the ask, the notice and the mark
+/// go. A core started again in between looks at the chat at its first beat
+/// all the same, its record re-armed as it loads.
+#[test]
+fn a_look_turning_it_on_asks_for_waits_until_the_chat_may_be_asked() {
+    chat("hogate-me", None);
+    let mut b = Beat::default();
+    b.turns.insert("hogate-me".into(), 2);
+    let look = |b: &mut Beat| to_look(b, "hogate-me", turn(true, 2));
+    set_auto_handoff("hogate-me".into(), Some(70)).unwrap();
+    let mark = check_due("hogate-me");
+    assert_eq!(look(&mut b), None, "its CLI has not listed the tool");
+    listed("hogate-me");
+    let shown = moving::tests::a_move(moving::MovePhase::Shown { at: 1 });
+    store::change("hogate-me", |r| r.moving = Some(shown)).unwrap();
+    assert_eq!(look(&mut b), None, "a move under way keeps the threshold quiet");
+    store::change("hogate-me", |r| r.moving = Some(moving::tests::a_move(moving::MovePhase::Canceled { at: 2 }))).unwrap();
+    ask("hogate-me", store::AskKind::Manual);
+    assert_eq!(look(&mut b), None, "the person's ask is the chat's request already");
+    store::change("hogate-me", |r| r.asked = None).unwrap();
+    let (dir, file) = scratch_file("gate");
+    ask("hogate-me", store::AskKind::Auto);
+    schedule("hogate-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    assert_eq!(look(&mut b), None, "a handoff under way");
+    finish("hogate-me", 1, Ended::Done, &String::new);
+    // Read here as the conversation before, not the one the handoff began,
+    // which would keep its first reading as a floor.
+    store::change("hogate-me", |r| r.fresh = false).unwrap();
+    assert_eq!(check_due("hogate-me"), mark, "the mark waited through all of it");
+    assert_eq!(look(&mut b), Some((2, mark)));
+    look_at("hogate-me", 70, &reading("conv", 80), 2, mark);
+    assert_eq!(queued("hogate-me").len(), 1);
+    // Off before the notifier typed it: nothing of it is left to ask.
+    set_auto_handoff("hogate-me".into(), Some(70)).unwrap();
+    set_auto_handoff("hogate-me".into(), None).unwrap();
+    assert_eq!((open_ask("hogate-me"), check_due("hogate-me"), queued("hogate-me").len()), (None, None, 0));
+    let (failed, e) = call("hogate-me", json!({}));
+    assert!(failed && e.contains("nobody asked"), "{e}");
+    // On, and the core gone before the look, the mark with it: the record was
+    // saved re-armed as auto-handoff went on, a new core takes it up so, and
+    // its first beat, which has looked at no turn yet, looks at the chat at
+    // rest all the same.
+    set_auto_handoff("hogate-me".into(), Some(70)).unwrap();
+    unmark("hogate-me", None);
+    let saved = serde_json::to_vec(&*store::records()).unwrap();
+    let back = store::from_bytes(&saved, now_ms());
+    assert_eq!(back["hogate-me"].told.as_ref().map(|t| t.level), Some(0), "re-armed");
+    assert_eq!(back["hogate-me"].asked, None);
+    let mut fresh = Beat::default();
+    assert_eq!(to_look(&mut fresh, "hogate-me", turn(true, 2)), Some((2, None)));
+    look_at("hogate-me", 70, &reading("conv", 80), 2, None);
+    assert_eq!(open_ask("hogate-me"), Some(store::AskKind::Auto), "asked again");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hogate-me");
+    let _ = store::remove("hogate-me");
+    done_with(&["hogate-me"], &dir);
 }

@@ -55,9 +55,55 @@ owed by the person's chats, outlive a core restart.
 - `send` with `interrupt` puts the text behind the queue, kills the turn's
   process tree, and the reader's end of turn starts the next (`background::interrupt`);
   a turn that will not stop within 3 s leaves the result `queued`.
-- A `claude -p` with a `run_in_background` task open waits for it and takes its
-  end up in the same run, so the helper reads `working` and its caller gets one
-  notice.
+- A `claude -p` with a `run_in_background` task or a background subagent open
+  waits for it and takes its end up in the same run, so the helper reads
+  `working` and its caller gets one notice. With its stdin closed (from the
+  turn's first result on) it waits only `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
+  (10 min by default, 2.1.319+) and then stops that work, subagents' unfinished
+  and uncommitted edits with it; a helper's turn sets it to 3 hours
+  (`background/command.rs` `BG_WAIT_CEILING_MS`, "What Luna applied":
+  `helper.background-wait`): subagents and gates run long, but `0` would let a
+  forgotten watcher (a dev server, `tail -f`, a Monitor with no end) hold the
+  turn, and every message to the helper, for good. Until then the turn is
+  busy; once its result is in (`Run::after_result`) and both its stream and
+  every process in its job (`Run::watched`, sampled with the activity) have
+  been quiet for 30 min, the caller is told it waits on its background work
+  (the job at work holds that back only until the stream has been quiet 90
+  min, notifier `JOB_HOLDS_MS`: a polling watcher, a growing `tail -f` or a
+  chatty dev server keeps a job busy for good),
+  by the calls its transcript has open (`claude::session::background_calls`)
+  and the processes in its job (`waits_on_background`), and `luna_session_stop`
+  ends it; with a subagent among them the line does not call it a hang. The
+  stream does show a subagent's steps (2.1.322 writes a `task_progress` event
+  for each tool call of one) but not one long command of its, which the job
+  does. When the CLI stops that work, its stderr line ("Background tasks still
+  running … stopping them") is caught (`run.rs` `stops_background`) and kept in
+  `Observed` with the turn it ended (`stopped_turn`) and the callers owed an
+  answer as it came (`stop_owed`, taken then: a message one of them queues
+  behind that turn moves the turn its debt counts from, not who it is), saved
+  across cores with those told so far and kept across later turns (a queued
+  message starts one at once). Every line that settles the debt of one of
+  them says so to a caller not yet told (rather than "it has said nothing"),
+  as does a wait, read or report that hands the answer over
+  (`backgroundStopped`, owed.rs `background_stopped_note`); a delivered
+  notice marks that caller (notifier `ack_background_stop`, never a line
+  without it such as an exited helper's), as does the hand-over (`hand_over`;
+  a reply that never reached its caller unmarks that caller alone, and only
+  for that stop), and it is done once every one of them still owed has been
+  told. The quiet notice of a turn that has answered and waits on its
+  background work is told once per turn apart from the plain quiet one
+  (`Owed::told_background_wait`).
+- A Codex helper's `exec` has no such ceiling: it reads its prompt from stdin
+  once and runs one turn, and 0.167.2 has no variable or config key for how
+  long it holds on after it, so Luna sets none. It does not wait for the
+  subagents its turn spawned either: it interrupts them as the turn ends.
+  At a Codex helper's turn end, before it counts, Luna reads the rollouts of
+  the subagents begun in the turn, and one whose last turn aborted
+  `interrupted` with the parent's end (codex::session
+  `subagents_cut_at_turn_end`) is recorded as a stop as above
+  (`StopCause::TurnEnd`), with the callers owed an answer then: they hear
+  that its CLI interrupted them, worded for that (lines.rs
+  `SUBAGENTS_INTERRUPTED`).
 
 ## Asks
 

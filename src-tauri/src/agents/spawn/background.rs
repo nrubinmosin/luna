@@ -27,17 +27,18 @@ pub(in crate::agents) fn asked(v: &Option<String>) -> Option<&str> {
 }
 
 /// A Claude helper's model and effort: what the spawn asks for over the
-/// account's and project's defaults (`default_model`, `default_effort`),
-/// held to the account's model list. The effort is checked against the model
-/// the helper will run on, asked for or not; a model that takes no effort
-/// gets none (an empty effort: no `--effort`), and a default level it does
-/// not take moves to its own default.
+/// account's and project's defaults (`default_model`, and `default_effort` of
+/// the model it runs on: Claude Code keeps effort per model), held to the
+/// account's model list. The effort is checked against the model the helper
+/// will run on, asked for or not; a model that takes no effort gets none (an
+/// empty effort: no `--effort`), and a default level it does not take moves
+/// to its own default.
 fn claude_model_and_effort(
     models: &[crate::claude::models::ClaudeModel],
     asked_model: Option<&str>,
     asked_effort: Option<&str>,
     default_model: Option<&str>,
-    default_effort: &str,
+    default_effort: impl Fn(Option<&str>) -> String,
 ) -> Result<(Option<String>, String), String> {
     let find = |m: &str| {
         models.iter().find(|x| x.slug.eq_ignore_ascii_case(m) || x.model_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(m)))
@@ -66,10 +67,15 @@ fn claude_model_and_effort(
         (Some(e), _) if efforts.contains(&e) => e.to_string(),
         (Some(e), Some(l)) => return Err(format!("{} takes effort {}, not \"{e}\"", l.slug, efforts.join(", "))),
         (Some(e), None) => return Err(format!("unknown Claude effort \"{e}\"; use {}", efforts.join(", "))),
-        (None, Some(l)) if !efforts.contains(&default_effort) => {
-            l.default_effort.clone().or_else(|| l.efforts.first().cloned()).unwrap_or_default()
+        (None, _) => {
+            let default_effort = default_effort(model.as_deref());
+            match listed {
+                Some(l) if !efforts.contains(&default_effort.as_str()) => {
+                    l.default_effort.clone().or_else(|| l.efforts.first().cloned()).unwrap_or_default()
+                }
+                _ => default_effort,
+            }
         }
-        (None, _) => default_effort.to_string(),
     };
     Ok((model, effort))
 }
@@ -88,13 +94,11 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
             // The account's own list (claude/models.rs), or the four aliases
             // where Luna knows none yet.
             let models = crate::claude::models::models_known(account_path);
-            let (model, effort) = claude_model_and_effort(
-                &models,
-                asked(&params.model),
-                asked(&params.effort),
-                d["model"].as_str(),
-                d["effort"].as_str().unwrap_or("high"),
-            )?;
+            let (model, effort) =
+                claude_model_and_effort(&models, asked(&params.model), asked(&params.effort), d["model"].as_str(), |m| match m {
+                    Some(m) => crate::claude::defaults::effort_of(account_path, folder, m),
+                    None => d["effort"].as_str().unwrap_or("high").to_owned(),
+                })?;
             let mode = match asked(&params.permission_mode) {
                 Some(p) if CLAUDE_MODES.contains(&p) => p.to_string(),
                 Some(p) => return Err(format!("unknown permission mode \"{p}\"; use {}", CLAUDE_MODES.join(", "))),
@@ -344,7 +348,7 @@ mod tests {
             model("claude-opus-4-7", &["medium", "xhigh"], Some("xhigh")),
             model("claude-haiku-4-5-20251001", &[], None),
         ];
-        let pick = |m, e, dm, de| claude_model_and_effort(&list, m, e, dm, de);
+        let pick = |m, e, dm, de: &str| claude_model_and_effort(&list, m, e, dm, |_| de.to_owned());
         // The model from the account's settings, not asked for: its levels count.
         assert!(pick(None, Some("low"), Some("claude-opus-4-7"), "high").unwrap_err().contains("takes effort medium, xhigh"));
         assert_eq!(pick(None, Some("xhigh"), Some("claude-opus-4-7"), "high").unwrap().1, "xhigh");
@@ -362,5 +366,9 @@ mod tests {
         assert!(pick(Some("gpt-6"), None, None, "high").is_err());
         assert!(pick(Some("opusplan"), Some("turbo"), None, "high").unwrap_err().contains("unknown Claude effort"));
         assert_eq!(pick(Some("opus"), Some("ultracode"), None, "high").unwrap().1, "ultracode");
+        // The default level is the one of the model it runs on, asked for or not.
+        let per_model = |m: Option<&str>| if m == Some("opus") { "low".to_owned() } else { "high".to_owned() };
+        assert_eq!(claude_model_and_effort(&list, Some("opus"), None, Some("claude-opus-4-7"), per_model).unwrap().1, "low");
+        assert_eq!(claude_model_and_effort(&list, None, None, Some("opus"), per_model).unwrap().1, "low");
     }
 }

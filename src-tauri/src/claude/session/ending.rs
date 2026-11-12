@@ -59,6 +59,13 @@ pub fn last_context(path: &Path) -> Option<(f64, f64)> {
     ending(path).context.map(|c| (c.tokens, c.window))
 }
 
+/// `last_context` of a text: the last usage in it, as (tokens, window).
+/// What a reading of the context at a point of a transcript goes by
+/// (agents/handoff `handoffs_first_turn`).
+pub fn context_in_text(text: &str) -> Option<(f64, f64)> {
+    context_in(text).map(|c| (c.tokens, c.window))
+}
+
 /// See `last_model`: the CLI's own stand-in for a message no model wrote
 /// reads `<synthetic>`.
 pub(super) fn model_in(text: &str) -> Option<String> {
@@ -260,9 +267,12 @@ pub(super) fn pending_tool_in(text: &str) -> Option<(String, serde_json::Value)>
 /// says it got, from the line that made it. One in the foreground is waited on
 /// until its result. One with `run_in_background`, and a `Monitor`, come back at
 /// once and run on until a task notification with a status names them (a
-/// Monitor's events have none): `claude -p` holds its turn for them. A
-/// background job with no `timeout` of its own runs as long as the CLI's flags
-/// say, which is no deadline to read.
+/// Monitor's events have none). `claude -p`, its stdin closed, holds on for
+/// them, as for background subagents, only up to
+/// `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` (10 min by default, 2.1.319+) and
+/// then stops them; a helper's turn sets it to 3 hours (background/command.rs).
+/// A background job with no `timeout` of its own runs as long as the CLI's
+/// flags say, which is no deadline to read.
 pub fn due_ms(path: &Path) -> Option<u64> {
     due_in(&crate::pty::tail(path, DUE_TAIL)?)
 }
@@ -273,17 +283,49 @@ pub fn due_ms(path: &Path) -> Option<u64> {
 pub(crate) const DUE_TAIL: u64 = 4 * 1024 * 1024;
 
 pub(super) fn due_in(text: &str) -> Option<u64> {
+    open_calls(text).iter().filter_map(|c| c.due).max()
+}
+
+/// What the conversation left running in the background and has not heard the
+/// end of, as the model asked for it: a shell's command line, a Monitor's
+/// description (else its command), a subagent's description. What a turn that
+/// has answered still waits on.
+pub fn background_calls(path: &Path) -> Vec<String> {
+    crate::pty::tail(path, DUE_TAIL).map(|t| background_calls_in(&t)).unwrap_or_default()
+}
+
+pub(super) fn background_calls_in(text: &str) -> Vec<String> {
+    open_calls(text).into_iter().filter(|c| c.background).map(|c| c.what).collect()
+}
+
+/// A call the conversation has not heard the end of (`open_calls`).
+struct Call {
+    id: String,
+    background: bool,
+    /// The job a background call started, as its notifications name it.
+    task: Option<String>,
+    at: u64,
+    /// None: it has no deadline of its own (a background shell without a
+    /// `timeout`, a persistent Monitor, a subagent).
+    due: Option<u64>,
+    /// What it runs, as `background_calls` names it.
+    what: String,
+}
+
+/// The calls of `text` that are still open: in the foreground until their
+/// result, in the background until a task notification with a status names them.
+fn open_calls(text: &str) -> Vec<Call> {
     // A timeout past any clock (`as` saturates) is a deadline never reached,
     // so the sums with it saturate too rather than wrap round to one long past.
-    struct Call {
-        id: String,
-        background: bool,
-        /// The job a background call started, as its notifications name it.
-        task: Option<String>,
-        at: u64,
-        due: u64,
-    }
     let ms = |v: &serde_json::Value| v.as_f64().filter(|t| *t > 0.0).map(|t| t as u64);
+    let short = |s: &str| {
+        let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if s.chars().count() > 160 {
+            format!("{}…", s.chars().take(160).collect::<String>())
+        } else {
+            s
+        }
+    };
     let mut open: Vec<Call> = Vec::new();
     for line in text.lines() {
         if !line.contains("\"assistant\"") && !line.contains("\"user\"") {
@@ -300,16 +342,25 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
                 let at = at.timestamp_millis().max(0) as u64;
                 for b in content.as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use") {
                     let input = &b["input"];
-                    let (background, timeout) = match b["name"].as_str() {
-                        Some("Bash" | "PowerShell") if input["run_in_background"] == true => (true, ms(&input["timeout"])),
-                        Some("Bash" | "PowerShell") => (false, Some(ms(&input["timeout"]).unwrap_or(120_000))),
-                        Some("Monitor") if input["persistent"] != true => (true, Some(ms(&input["timeout_ms"]).unwrap_or(300_000))),
+                    let name = b["name"].as_str().unwrap_or("");
+                    let text = |key: &str| input[key].as_str().map(short).unwrap_or_default();
+                    let (background, timeout, what) = match name {
+                        "Bash" | "PowerShell" if input["run_in_background"] == true => {
+                            (true, ms(&input["timeout"]), format!("{name} `{}`", text("command")))
+                        }
+                        "Bash" | "PowerShell" => (false, Some(ms(&input["timeout"]).unwrap_or(120_000)), String::new()),
+                        "Monitor" => {
+                            let said = input["description"].as_str().map(short).unwrap_or_else(|| text("command"));
+                            let timeout = (input["persistent"] != true).then(|| ms(&input["timeout_ms"]).unwrap_or(300_000));
+                            (true, timeout, format!("Monitor \"{said}\""))
+                        }
+                        "Agent" | "Task" if input["run_in_background"] == true => {
+                            (true, None, format!("subagent \"{}\"", text("description")))
+                        }
                         _ => continue,
                     };
-                    if let Some(timeout) = timeout {
-                        let id = b["id"].as_str().unwrap_or("").to_string();
-                        open.push(Call { id, background, task: None, at, due: at.saturating_add(timeout) });
-                    }
+                    let id = b["id"].as_str().unwrap_or("").to_string();
+                    open.push(Call { id, background, task: None, at, due: timeout.map(|t| at.saturating_add(t)), what });
                 }
             }
             Some("user") => {
@@ -324,7 +375,8 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
                     // A background call whose result names no job started none. A
                     // Monitor's says the timeout it got, which a session may cap.
                     let made = &v["toolUseResult"];
-                    let task = made["backgroundTaskId"].as_str().or(made["taskId"].as_str());
+                    // A subagent sent to the background is named by its `agentId`.
+                    let task = made["backgroundTaskId"].as_str().or(made["taskId"].as_str()).or(made["agentId"].as_str());
                     open.retain_mut(|c| {
                         if !results.contains(&c.id.as_str()) {
                             return true;
@@ -332,9 +384,12 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
                         // A foreground call moved to the background, by hand or
                         // on its timeout, names its job too, and runs on as one.
                         c.task = task.map(str::to_owned);
-                        c.background |= c.task.is_some();
-                        if let Some(timeout) = ms(&made["timeoutMs"]) {
-                            c.due = c.at.saturating_add(timeout);
+                        if c.task.is_some() && !c.background {
+                            c.background = true;
+                            c.what = format!("a command moved to the background (tool call {})", c.id);
+                        }
+                        if let Some(timeout) = ms(&made["timeoutMs"]).filter(|_| c.due.is_some()) {
+                            c.due = Some(c.at.saturating_add(timeout));
                         }
                         c.task.is_some()
                     });
@@ -357,7 +412,7 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
             _ => {}
         }
     }
-    open.iter().map(|c| c.due).max()
+    open
 }
 
 #[cfg(test)]
@@ -504,6 +559,49 @@ mod tests {
         let over = notice("<task-id>m4</task-id>\n<status>completed</status>");
         assert_eq!(due(&[&watch, &armed, &event, &over]), None);
         assert_eq!(due(&[&call("t3", "Monitor", r#"{"command":"tail -f x","persistent":true}"#)]), None);
+    }
+
+    /// What a turn that has answered still waits on, by what the model asked:
+    /// a watcher with no deadline of its own counts as much as a gate with one,
+    /// a background subagent (2.1.322 `agentId`) until its notification.
+    #[test]
+    fn a_turn_names_what_it_left_in_the_background() {
+        let at = "2026-11-04T15:10:00.000Z";
+        let call = |id: &str, name: &str, input: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"{at}","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}"#
+            )
+        };
+        let result = |id: &str, made: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","content":"…"}}]}},"toolUseResult":{made}}}"#
+            )
+        };
+        let done = |id: &str| {
+            let text = serde_json::to_string(&format!(
+                "<task-notification>\n<tool-use-id>{id}</tool-use-id>\n<status>completed</status>\n</task-notification>"
+            ))
+            .unwrap();
+            format!(r#"{{"type":"user","message":{{"role":"user","content":{text}}}}}"#)
+        };
+        let lines = [
+            call("t1", "Bash", r#"{"command":"npm run dev","run_in_background":true}"#),
+            result("t1", r#"{"backgroundTaskId":"b1"}"#),
+            call("t2", "Monitor", r#"{"command":"tail -f app.log | grep ERROR","description":"errors in app.log","persistent":true}"#),
+            result("t2", r#"{"taskId":"m1"}"#),
+            call("t3", "Agent", r#"{"description":"refactor the parser","prompt":"…","run_in_background":true}"#),
+            result("t3", r#"{"isAsync":true,"status":"async_launched","agentId":"a1"}"#),
+            call("t4", "Bash", r#"{"command":"cargo test","run_in_background":true}"#),
+            result("t4", r#"{"stderr":"refused"}"#),
+        ];
+        let text = lines.join("\n");
+        assert_eq!(
+            background_calls_in(&text),
+            ["Bash `npm run dev`", "Monitor \"errors in app.log\"", "subagent \"refactor the parser\""],
+            "one refused never ran"
+        );
+        assert_eq!(due_in(&text), None, "none of them has a deadline of its own");
+        assert_eq!(background_calls_in(&format!("{text}\n{}", done("t3"))).len(), 2, "the subagent has ended");
     }
 
     #[test]
