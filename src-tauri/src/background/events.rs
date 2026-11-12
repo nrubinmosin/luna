@@ -218,9 +218,17 @@ pub(super) fn sort_out_untaken(e: &mut Entry) -> Vec<Queued> {
 /// The turn's process has exited: count the turn, let any held question go,
 /// and start the turn the queue has waiting.
 pub(super) fn turn_over(id: &str, code: Option<i32>) {
-    let (job, strays) = match lock().entries.get(id) {
-        Some(e) => (e.job.clone(), e.run.as_ref().filter(|_| !e.observed.acted).and_then(|run| Some((run.pid?, run.started_ms)))),
-        None => (None, None),
+    let (job, strays, codex) = match lock().entries.get(id) {
+        Some(e) => (
+            e.job.clone(),
+            e.run.as_ref().filter(|_| !e.observed.acted).and_then(|run| Some((run.pid?, run.started_ms))),
+            e.session
+                .clone()
+                .filter(|_| e.spec.provider == Provider::Codex)
+                .zip(e.run.as_ref())
+                .map(|(thread, run)| (e.spec.account_path.clone(), thread, run.started_ms)),
+        ),
+        None => (None, None, None),
     };
     // A CLI that went before its model did anything (an unknown `--agent`, a
     // model that is not there) leaves what it started of its own, a `git` it
@@ -243,12 +251,27 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     // Before the turn reads as over: whoever is owed its answer must not hear
     // "finished" ahead of the job it left running.
     let left = job.map(|job| crate::procs::left_in(&job)).unwrap_or_default();
+    // So too the subagents `codex exec` interrupted as the turn ended (0.167.2),
+    // their work unfinished, with whoever is owed an answer now to hear of it:
+    // the registry's lock goes before this one.
+    let cut_off = codex
+        .filter(|(account, thread, since)| crate::codex::session::subagents_cut_at_turn_end(account, thread, *since) > 0)
+        .map(|_| crate::agents::callers_owed(id));
     let (next, thread, generation, rerouted, acted, retried, count) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
         e.run = None;
         e.turns_ended += 1;
         e.observed.turn_ended_ms = crate::throttle::now_ms();
+        if let Some(callers) = cut_off {
+            note(e, "codex exec interrupted the subagents of the turn as it ended");
+            let o = &mut e.observed;
+            o.background_stopped = !callers.is_empty();
+            o.stopped_turn = e.turns_ended;
+            o.stop_cause = StopCause::TurnEnd;
+            o.stop_owed = callers;
+            o.stop_told.clear();
+        }
         e.held.clear();
         e.left_running = !left.is_empty();
         // What was already there before the turn keeps its own clock; what is

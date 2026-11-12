@@ -54,6 +54,8 @@ pub use reading::*;
 pub(crate) use rollouts::*;
 pub(crate) use scan::*;
 #[cfg(test)]
+pub(crate) use testkit::cut_off_pair_for_test;
+#[cfg(test)]
 use testkit::*;
 
 /// A turn is in flight but the screen has not changed for this long: Codex

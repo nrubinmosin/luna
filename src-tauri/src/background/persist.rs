@@ -482,6 +482,11 @@ pub fn background_stopped_for(id: &str, caller: &str) -> bool {
     })
 }
 
+/// What stopped its background work, as last recorded.
+pub fn background_stop_cause(id: &str) -> StopCause {
+    lock().entries.get(id).map(|e| e.observed.stop_cause).unwrap_or_default()
+}
+
 /// Whom the stop at the end of turn `turn` concerns: `callers`, those `id`
 /// owed an answer as its CLI said it (agents `callers_owed`). A stop since,
 /// or one already done with, is left as it is; with nobody owed there is

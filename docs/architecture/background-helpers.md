@@ -95,8 +95,15 @@ owed by the person's chats, outlive a core restart.
   (`Owed::told_background_wait`).
 - A Codex helper's `exec` has no such ceiling: it reads its prompt from stdin
   once and runs one turn, and 0.167.2 has no variable or config key for how
-  long it holds on after it, so Luna sets none. Whether a subagent the turn
-  did not wait for outlives it is not settled (docs/cli-compatibility.md).
+  long it holds on after it, so Luna sets none. It does not wait for the
+  subagents its turn spawned either: it interrupts them as the turn ends.
+  At a Codex helper's turn end, before it counts, Luna reads the rollouts of
+  the subagents begun in the turn, and one whose last turn aborted
+  `interrupted` with the parent's end (codex::session
+  `subagents_cut_at_turn_end`) is recorded as a stop as above
+  (`StopCause::TurnEnd`), with the callers owed an answer then: they hear
+  that its CLI interrupted them, worded for that (lines.rs
+  `SUBAGENTS_INTERRUPTED`).
 
 ## Asks
 

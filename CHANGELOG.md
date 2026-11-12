@@ -29,6 +29,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   commands, Monitors and subagents it waits on and the processes in its job.
   When the CLI stops that work, the caller's notice says so instead of "it
   has said nothing", across a restart of Luna's core too.
+- A Codex helper's caller hears when `codex exec` interrupted the subagents
+  the helper's turn spawned as that turn ended: Codex 0.167.2 stops them
+  there, their work unfinished, and exits as if all went well. Luna read the
+  turn as done and said nothing of them.
 - In the new-chat dialog, a model picked now opens on the effort kept for it
   even where the level shown before was one it does not take, rather than on
   its catalog default.
