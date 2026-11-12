@@ -391,8 +391,10 @@ the conversation before, off its transcript, `excerpts::skills_in`: Claude
 Code's `Skill` calls and `Read`s of a `SKILL.md` whose result was no error, a
 person's `/name` of a skill; Codex's `<skill>` blocks and a `SKILL.md` printed
 by the command line of a shell tool's call (`shell`, `shell_command`,
-`exec_command`, `local_shell`; `CODEX_SHELLS`; an argv as one line,
-`command_lines`) whose own result states exit
+`exec_command`, `local_shell`; `CODEX_SHELLS`; `command_segments`: a
+string parsed as a shell's script, an argv taken as a program and its
+arguments, its script parsed only where it is a shell given one, `bash -lc`,
+`pwsh -Command`, `cmd /c`) whose own result states exit
 status 0 in its header, the lines before `Output:` (`exit_status`: `Exit
 code: N`, `Process exited with code N`; never the command's output), as an
 argument, in either quote, of `Get-Content`, `cat`, `sed` and the like
@@ -402,12 +404,18 @@ command it holds may be data it only passes on or in a branch never taken,
 and its cell may yield before the command ends, the rest coming under
 another call. Not a `SKILL.md` in the session's own folder that the
 same conversation also edited or wrote (an edit tool, a patch, `Set-Content`
-and the like), which is work on the skill, nor what the turns Luna's ask
-opened loaded (`facts::is_ask_prompt`: the notifier's tag, then the
-threshold's notice or the person's request), which wrote the handoff, as a
-move leaves out its own; names only (a file's by its
+and the like), which is work on the skill, nor what a turn Luna's ask
+opened (`facts::is_ask_prompt`: the notifier's tag, then the threshold's
+notice or the person's request) loaded from its first `luna_session_handoff`
+call on (`Skip::from_call`, `calls_handoff`: Claude Code's `tool_use` of it,
+Codex's `function_call` of it or a code-mode script calling
+`tools.mcp__luna__luna_session_handoff(`), which is the handoff being
+written; before the call it is work the ask let the chat finish. A move
+leaves its ask's whole turn out. Names only (a file's by its
 folder), each once in order of first use, from its first 256 MB, "none"
-where none is seen, or "not known" where it cannot be read; names, tasks
+where none is seen ("none seen (reads through code mode are not counted)"
+where Codex ran a code-mode script, `Skills::code_mode`), or "not known"
+where it cannot be read; names, tasks
 and skills fenced in double
 quotes as data); past 6,000
 characters the facts go in `<n>-facts.md` beside it → the transcript other than

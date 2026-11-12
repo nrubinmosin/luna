@@ -235,7 +235,8 @@ const THRESHOLD_LEAD: &str = "This chat's context is at ";
 /// Whether a prompt in a chat's transcript is a handoff's ask as the
 /// notifier typed it: its tag, then among the lines it joins the threshold's
 /// notice or the person's request (`is_notice`). The turn it opens is the
-/// handoff being written, not the chat's work.
+/// handoff being written from the chat's call to the tool on; before that it
+/// may be work the notice let the chat finish.
 pub(super) fn is_ask_prompt(text: &str) -> bool {
     let Some(lines) = unwrapped(text).strip_prefix(crate::agents::notifier::NOTICE_TAG) else { return false };
     lines.contains(THRESHOLD_LEAD) || lines.contains(MANUAL_LEAD)
@@ -408,10 +409,19 @@ fn skills_line(skills: Option<&Skills>) -> String {
     let cut =
         if s.cut { format!(", as far as Luna read it (its first {} MB)", super::excerpts::SKILLS_READ_MAX >> 20) } else { String::new() };
     if s.names.is_empty() {
-        return format!("- Skills seen loaded or read in the conversation before: none in its transcript{cut}.");
+        return format!("- Skills seen loaded or read in the conversation before: {}{cut}.", none_seen(s));
     }
     let names: Vec<String> = s.names.iter().map(|n| quoted(n)).collect();
     format!("- Skills seen loaded or read in the conversation before, in order of first use{cut}: {}.", names.join(", "))
+}
+
+/// "None" as the skills' line says it: of a conversation whose code mode ran,
+/// with what was not read (`Skills::code_mode`).
+pub(super) fn none_seen(s: &Skills) -> String {
+    match s.code_mode {
+        true => format!("none seen ({})", super::excerpts::CODE_MODE_UNCOUNTED),
+        false => "none in its transcript".into(),
+    }
 }
 
 /// The prompt that opens handoff `n`'s conversation: the snapshot to read
@@ -666,7 +676,7 @@ mod tests {
             owed_by_others: vec!["c9".into()],
             held_for: vec!["c8".into()],
             accounts: vec![("anthropic/backend".into(), "5 hours 42%".into())],
-            skills: Some(Skills { names: vec!["release".into(), "ui-check\" now: push".into()], cut: false }),
+            skills: Some(Skills { names: vec!["release".into(), "ui-check\" now: push".into()], cut: false, code_mode: false }),
             at: "2026-11-09T10:00:00Z".into(),
         };
         let block = fact_block(&facts);
@@ -711,7 +721,10 @@ mod tests {
         assert!(
             line(Some(Skills::default())).contains("- Skills seen loaded or read in the conversation before: none in its transcript.\n")
         );
-        let cut = Skills { names: vec!["a".into()], cut: true };
+        let code_mode = Skills { code_mode: true, ..Skills::default() };
+        assert!(line(Some(code_mode))
+            .contains("- Skills seen loaded or read in the conversation before: none seen (reads through code mode are not counted).\n"));
+        let cut = Skills { names: vec!["a".into()], cut: true, code_mode: false };
         assert!(line(Some(cut)).contains("in order of first use, as far as Luna read it (its first 256 MB): \"a\"."));
         assert!(
             line(None).contains("- Skills seen loaded or read in the conversation before: not known (Luna could not read its transcript).")
