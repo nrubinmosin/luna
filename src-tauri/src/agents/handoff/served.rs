@@ -1,4 +1,4 @@
-//! What a chat with auto-handoff on is served to write its handoff by
+//! What a person's chat asked for a handoff is served to write it by
 //! (docs/adr/0022-content-luna-serves-at-its-own-trigger.md).
 //! `luna_session_handoff` without `file` answers with the procedure and the
 //! instructions library/system.rs resolves, Luna's own or the library's
@@ -75,10 +75,11 @@ fn source_words(r: &Resolved) -> String {
 
 /// `luna_session_handoff` without `file`, for `caller`'s own chat: how to hand
 /// off, where the file goes, what Luna adds itself, and the instructions now
-/// in effect. Which text it was is kept for the handoff that follows; a record
-/// that will not save costs that note, not the answer.
+/// in effect, while it is asked for one. Which text it was is kept for the
+/// handoff that follows; a record that will not save costs that note, not the
+/// answer.
 pub(super) fn instructions(caller: &str) -> Result<String, String> {
-    if !super::offers_tool(caller) {
+    if !super::may_list(caller) {
         return Err(super::NOT_OFFERED.into());
     }
     if let Some(n) = store::records().get(caller).and_then(|r| r.switch.as_ref().map(|s| s.n)) {
@@ -88,6 +89,9 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
     if let Some(text) = super::moving::ask_instructions(caller)? {
         crate::log::info("handoff", &format!("{} was served the move's instructions", label(caller)));
         return Ok(text);
+    }
+    if super::open_ask(caller).is_none() {
+        return Err(super::NOT_ASKED.into());
     }
     let r = crate::library::handoff_instructions();
     let served = Served::of(&r);
@@ -170,9 +174,9 @@ pub struct HandoffApplied {
 }
 
 /// The panel's word on `chat`'s handoff instructions: none for a chat that is
-/// not offered the tool.
+/// not listed the tool.
 pub fn applied_of(chat: &str) -> Option<HandoffApplied> {
-    if !super::offers_tool(chat) {
+    if !super::may_list(chat) {
         return None;
     }
     let (provider, folder, account) = {

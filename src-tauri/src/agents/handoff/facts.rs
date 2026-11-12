@@ -173,11 +173,34 @@ pub(super) fn move_how_to(place: &str) -> String {
     )
 }
 
-/// Whether a line queued for a chat's notice is a threshold notice: one not
-/// yet typed when a handoff is scheduled is dropped, the new conversation
-/// having nothing to hand off.
+/// How the person's request for a handoff opens.
+const MANUAL_LEAD: &str = "The person asks for a handoff of this chat now";
+
+/// The person's request for a handoff (the pane's Hand off now), the
+/// notifier's tag aside: what to do, as the threshold's first notice says it.
+pub(super) fn manual_notice() -> String {
+    format!(
+        "{MANUAL_LEAD}: hand off to a fresh conversation at the next point where your work can pause. Call \
+         luna_session_handoff without arguments for how to write the handoff, write it, then call luna_session_handoff with \
+         file set to its absolute path and end your turn. Nothing changes until you call it with file."
+    )
+}
+
+/// What the chat hears when the person's request lapsed with no handoff:
+/// the tool refuses again from now.
+pub(super) fn manual_lapsed(minutes: u64) -> String {
+    format!(
+        "The person's request for a handoff of this chat lapsed: no handoff came within {minutes} minutes of it. \
+         luna_session_handoff refuses again until Luna asks for one; go on as you were."
+    )
+}
+
+/// Whether a line queued for a chat's notice asks it for a handoff, the
+/// threshold's notice or the person's request: one not yet typed when a
+/// handoff is scheduled is dropped, the new conversation having nothing to
+/// hand off.
 pub(super) fn is_notice(line: &str) -> bool {
-    line.starts_with("This chat's context is at ")
+    line.starts_with("This chat's context is at ") || line.starts_with(MANUAL_LEAD)
 }
 
 /// One helper of the chat's, as the fact block names it.
@@ -360,19 +383,19 @@ pub(super) fn prompt(
 
 /// The line into the chat when a handoff is given up. Before the reset took,
 /// the conversation it is in is the one that asked: it goes on, and may call
-/// again only where the tool is still its (`offered`). After, it is the new
-/// one, which has to hear what it is and where to start.
-pub(super) fn failed_line(n: u32, why: &str, snapshot: &str, reset: bool, offered: bool, prompt: &str) -> String {
+/// again only while it is still asked (`asked`). After, it is the new one,
+/// which has to hear what it is and where to start.
+pub(super) fn failed_line(n: u32, why: &str, snapshot: &str, reset: bool, asked: bool, prompt: &str) -> String {
     if reset && prompt.is_empty() {
         // No prompt to give: it would point at a copy Luna cannot vouch for.
         format!("Handoff {n} cleared the conversation, but Luna gives the new one no handoff ({why}). Ask the person how to go on.")
     } else if reset {
         format!("Handoff {n} cleared the conversation, but Luna's prompt for the new one did not go in ({why}). It was:\n{prompt}")
     } else {
-        let next = if offered {
+        let next = if asked {
             "Call luna_session_handoff again once what stood in the way is done."
         } else {
-            "Auto-handoff is off for this chat now: luna_session_handoff refuses until the person turns it on again."
+            "Nobody asks this chat for a handoff any more: luna_session_handoff refuses until Luna asks for one again."
         };
         format!("Handoff {n} did not go through: {why}. This conversation goes on as it was; your handoff's copy is at {snapshot}. {next}")
     }
@@ -417,7 +440,21 @@ mod tests {
                  file set to its absolute path and end your turn."
             )
         );
-        for text in [notice(71, 70, false, true), notice(91, 70, true, true), notice(91, 70, true, false)] {
+        assert_eq!(
+            manual_notice(),
+            "The person asks for a handoff of this chat now: hand off to a fresh conversation at the next point where your \
+             work can pause. Call luna_session_handoff without arguments for how to write the handoff, write it, then call \
+             luna_session_handoff with file set to its absolute path and end your turn. Nothing changes until you call it with \
+             file."
+        );
+        assert_eq!(
+            manual_lapsed(10),
+            "The person's request for a handoff of this chat lapsed: no handoff came within 10 minutes of it. \
+             luna_session_handoff refuses again until Luna asks for one; go on as you were."
+        );
+        assert!(!is_notice(&manual_lapsed(10)), "no request: nothing to drop");
+        assert!(manual_lapsed(10).chars().all(|c| !c.is_control()));
+        for text in [notice(71, 70, false, true), notice(91, 70, true, true), notice(91, 70, true, false), manual_notice()] {
             assert!(text.chars().all(|c| !c.is_control()), "one line, as a notice is");
             assert!(is_notice(&text));
         }

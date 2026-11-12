@@ -47,6 +47,36 @@ fn is_none_u64(n: &u64) -> bool {
     *n == 0
 }
 
+/// Who asked a chat for a handoff: `luna_session_handoff` answers only while
+/// one of them (or a move's ask, moving.rs) stands open.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::agents) enum AskKind {
+    /// Auto-handoff's threshold, by its notice.
+    Auto,
+    /// The person, by the pane's Hand off now.
+    Manual,
+}
+
+/// An ask for a handoff standing open on a chat.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::agents) struct Asked {
+    pub kind: AskKind,
+    /// When it was opened.
+    pub at: u64,
+    /// The chat's ended turns then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turns: Option<u32>,
+    /// A person's ask: when Luna queued its request for the notifier, and
+    /// when the request was seen to have gone in (no longer queued), from
+    /// which its time runs (mod.rs `MANUAL_ASK_MS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed: Option<u64>,
+}
+
 /// A handoff through, or given up.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -119,6 +149,10 @@ pub(super) struct Record {
     /// person's or a handoff's, ends the window (moving.rs `late_answer`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_closed_turns: Option<u32>,
+    /// The ask for a handoff open on this chat, the threshold's or the
+    /// person's: closed as a handoff goes through, or as it lapses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<Asked>,
 }
 
 pub(super) type Records = BTreeMap<String, Record>;

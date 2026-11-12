@@ -186,14 +186,15 @@ pub(super) fn names() -> Vec<String> {
     tools().as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect()
 }
 
-/// The tool a person's chat with auto-handoff on is offered besides the rest,
-/// and no other session (agents/handoff `offers_tool`). No target: it acts on
-/// the caller's own chat, the one its token is. Without `file` it only answers
-/// how to write the handoff; with one it hands off.
+/// The tool a person's chat with Luna's tools is offered besides the rest,
+/// and no other session (agents/handoff `may_list`). No target: it acts on
+/// the caller's own chat, the one its token is. It answers only while the
+/// chat is asked for a handoff: without `file` how to write it; with one it
+/// hands off.
 pub(super) fn handoff_tool() -> Value {
     json!({
         "name": "luna_session_handoff",
-        "description": "Go on in a fresh conversation of this chat, from a handoff you wrote. Without file: how to write it, and where. With file (Markdown, absolute path): Luna copies it, waits for your turn to end, clears this conversation and opens the next with the file and the facts it knows (helpers, debts, accounts). Call it when a notice asks, then end your turn.",
+        "description": "Go on in a fresh conversation of this chat, from a handoff you wrote. Without file: how to write it, and where. With file (Markdown, absolute path): Luna copies it, waits for your turn to end, clears this conversation and opens the next with the file and the facts it knows (helpers, debts, accounts). Call it only when a notice from Luna asks this chat for a handoff (the person's request, or auto-handoff at its threshold); unasked it refuses. After a call with file, end your turn.",
         "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } }, "required": [] },
         "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false }
     })
@@ -216,12 +217,12 @@ fn permission_tool() -> Value {
 }
 
 /// The tools a caller is offered: Luna's own when it was given them, the
-/// handoff when it is a chat with auto-handoff on, and the permission handler
+/// handoff when it is a person's chat with them, and the permission handler
 /// when it is a background Claude Code helper. Nothing of Codex calls that
 /// one: a Codex helper's model would only see a tool it must not use.
 pub(super) fn tools_for(caller: &str) -> Value {
     let mut list: Vec<Value> = if agents::has_tools(caller) { tools().as_array().cloned().unwrap_or_default() } else { Vec::new() };
-    if agents::handoff::offers_tool(caller) {
+    if agents::handoff::may_list(caller) {
         list.push(handoff_tool());
         agents::handoff::listed(caller);
     }

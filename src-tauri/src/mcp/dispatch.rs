@@ -163,10 +163,10 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             names().join(", ")
         ));
     }
-    // Auto-handoff's tool is no tool at all to a session it is not offered
-    // to: refused as one there is not, before its arguments are looked at, so
-    // the refusal says nothing of it (agents/handoff `offers_tool`).
-    if name == "luna_session_handoff" && !agents::handoff::offers_tool(caller) {
+    // The handoff's tool is no tool at all to a session it is not listed to:
+    // refused as one there is not, before its arguments are looked at, so the
+    // refusal says nothing of it (agents/handoff `may_list`).
+    if name == "luna_session_handoff" && !agents::handoff::may_list(caller) {
         return failure(unknown_tool(name));
     }
     if let Err(e) = arguments_fit(name, a) {
