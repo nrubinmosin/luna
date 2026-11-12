@@ -252,18 +252,21 @@ its own CLI) with their usage as the Accounts window shows it; `luna_account_get
 settings a helper would get there (read from the account's and the project's settings the way
 the new-chat dialog reads them) and its models.
 
-## Auto-handoff
+## Handoff
 
-A chat of yours with Luna tools and **Auto-handoff** on is offered one more
-tool, `luna_session_handoff`, and asked to use it once its context passes the
-threshold. Called without arguments it answers how: the steps, where the file
+A chat of yours with Luna tools is offered one more tool,
+`luna_session_handoff`, which answers only once Luna asks the chat for a
+handoff: you pressed **Hand off now** in its pane, its context passed its
+**Auto-handoff** threshold, or a move asks it for its document. Unasked, it
+refuses and names the pane's menu. Asked and called without arguments it
+answers how: the steps, where the file
 goes, what Luna adds by itself, and the instructions for the file. Called with
 the file, Luna clears the conversation and opens the next from it. Its helpers
 keep their ids, their answers still come to it, and `luna_session_wait` still
-reaches them. Only that chat has the tool, and it acts on that chat alone: no
-other session is offered it or finds it in `luna_guide_get`, and one that calls
-it all the same is answered as for a tool there is not. See
-[Chats: Auto-handoff](chats.md#auto-handoff).
+reaches them. Only your chats with Luna tools have the tool, and it acts on
+the calling chat alone: no helper or other session is offered it or finds it
+in `luna_guide_get`, and one that calls it all the same is answered as for a
+tool there is not. See [Chats: Handoff](chats.md#handoff).
 
 ## Lifetime
 

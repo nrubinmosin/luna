@@ -1,6 +1,7 @@
 # ADR-0022: Serve the handoff's instructions through Luna's own tool, to the chat that opted in alone
 
-- **Status:** Accepted
+- **Status:** Accepted; who knows amended by
+  [ADR-0024](0024-handoff-on-request.md)
 - **Date:** 2026-11-09
 
 ## Context
@@ -21,7 +22,10 @@ The owner's rules for this text:
   tool, its instructions, the notices) only if it is a person's chat with
   Auto-handoff ticked. Helpers, plain chats and chats with Luna's tools but
   without the tick know nothing: no tool, no guide topic, no skill in any
-  account, folder or launch flag.
+  account, folder or launch flag. (Amended 2026-11-12 by
+  [ADR-0024](0024-handoff-on-request.md): every person's chat with Luna's
+  tools is listed the tool and answered only when asked; helpers, the dev
+  caller and sessions without tools still know nothing.)
 - Auto-handoff is a separate, explicit yes per chat: no default in Settings, no
   "keep for this folder". Not to be proposed again.
 - One override for everyone, with no audience and no per-account or

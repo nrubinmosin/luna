@@ -8,6 +8,42 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- **Hand off now** in a pane's "…" menu: any chat with Luna tools writes a
+  handoff and goes on from it in a fresh conversation, with no threshold set.
+  Grayed with why where the chat could not answer; the core's refusal shows
+  over the pane. The ask lapses 10 minutes after Luna types it.
+- **Move to another account…** has the chat write its own document by
+  default, for any chat with Luna tools. Luna's document from records is
+  taken only when you pick it: before the ask, while it waits (**Use Luna's
+  document now**), or after a failed ask (**Build from records**). It is
+  picked for you only while a usage limit holds the chat, with the window,
+  its reset and how old the usage reading is.
+- A failed move ask says why, and offers **Ask again** where another ask may
+  go through. The preview says who wrote the document.
+
+### Changed
+
+- `luna_session_handoff` is listed to every person's chat with Luna tools,
+  and answers only when the chat is asked: by Hand off now, by auto-handoff's
+  threshold, or by a move. Unasked, it refuses. An ask holds only for the
+  conversation it was typed into. Every such chat gets its private drafts
+  folder at its start.
+- Auto-handoff now only asks at its threshold; turning it off closes only its
+  own ask. Its ask closes when the threshold re-arms.
+- A usage limit counts as holding a chat only until a newer usage reading
+  shows its model's windows not full, or their resets pass.
+
+### Fixed
+
+- A move whose ask for the chat's document failed no longer switches to
+  Luna's document without a word.
+- A move's instructions follow the person's handoff override in the library,
+  under the move's own rules.
+- Luna's document from records leaves out the turns its own ask opened in the
+  chat.
+
 ## [0.16.0] - 2026-11-12
 
 A CLI version can now be marked good as well as bad, and either mark taken
