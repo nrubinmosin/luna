@@ -289,10 +289,11 @@ fn from_newest_known(out: &mut CodexLimits, account_path: &str) {
 /// usage limit's hold on a chat is judged on (activity `limit_in_force`).
 /// Each limit as its newest reading has it, with when that was taken: Luna's
 /// last answer from the endpoint, the whole picture as of then, and each
-/// limit's newest rollout snapshot after it (`known_limits`).
-pub(crate) fn known_reading(account_path: &str) -> Option<crate::activity::UsageReading> {
+/// limit's newest rollout snapshot after it (`known_limits`), `own` (the
+/// chat's rollout) read among them.
+pub(crate) fn known_reading(account_path: &str, own: Option<&Path>) -> Option<crate::activity::UsageReading> {
     let answer = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
-    let snapshots = super::session::latest_rate_limits_by_id(account_path)
+    let snapshots = super::session::latest_rate_limits_by_id(account_path, own)
         .into_iter()
         .map(|(snapshot, ts)| (snapshot, chrono::DateTime::parse_from_rfc3339(&ts).ok().map(|t| t.timestamp_millis().max(0) as u64)))
         .collect();

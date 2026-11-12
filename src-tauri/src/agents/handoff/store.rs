@@ -356,6 +356,7 @@ mod tests {
             before: Before::default(),
             attempts: 1,
             instructions: None,
+            opened: Some("new".into()),
         };
         let mut saved = Records::new();
         for (chat, phase) in [
@@ -374,6 +375,7 @@ mod tests {
         assert_eq!(back["reset"].reserved, None, "a number being copied under is never saved");
         for chat in ["reset", "prompt", "again"] {
             assert_eq!(back[chat].switch.as_ref().unwrap().phase, Phase::Recovering { since: 900 }, "{chat}");
+            assert_eq!(back[chat].switch.as_ref().unwrap().opened.as_deref(), Some("new"), "where the reset went, kept");
         }
         let waiting = back["waiting"].switch.as_ref().unwrap();
         assert_eq!((waiting.phase, waiting.scheduled_at, waiting.attempts), (Phase::Scheduled, 900, 1));

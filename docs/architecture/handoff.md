@@ -144,7 +144,13 @@ it. A chat deleted has its folder removed only where neither it nor
 
 The `luna-handoff` thread, every 2 s: for each chat with a threshold whose CLI has
 listed the tool, at a turn count it has not looked at with the turn over,
-`Context::of` its transcript.
+`Context::of` its transcript, only where that transcript is positively the
+conversation the CLI is on (`transcript_is`: its name's own id, Claude Code's
+`<session id>.jsonl` or Codex's `rollout-<time>-<thread id>.jsonl`, is the
+live one's). After Codex's `/new` the rollout is the old thread's until the
+new one writes its own (`rollout_on`), and a transcript not found now is the
+last found: neither says how far the conversation the CLI is on has come, so
+that beat is skipped and the turn looked at again at the next.
 
 - Past the threshold one line in `Registry::news` (the notifier types it): go
   to `luna_session_handoff` without arguments for how. With it the threshold's
@@ -213,8 +219,10 @@ Unasked, it refuses naming the pane's menu (`NOT_ASKED`), and nothing is kept.
   either is not known the call is refused (`NOT_YET`, "call again in a few
   seconds"), not accepted. The threshold's ask is bound as it opens to the
   conversation whose context passed it; one opened before that was known is
-  bound by the beat only while the chat's transcript is still the one the
-  threshold read (`Told::conversation`), and closed where it is another. The
+  bound by the beat only while the chat's transcript is positively the
+  conversation it is on and still the one the threshold read
+  (`Told::conversation`, `late_bind`), closed where it is another, and left
+  be where the transcript is not known to be the live one's. The
   beat closes an ask whose chat is found on another conversation the person
   started (`/clear`, `/new`: `drifted`); Luna's own switch, which changes the
   conversation on purpose, closes its ask as it ends. A call from another
@@ -222,7 +230,12 @@ Unasked, it refuses naming the pane's menu (`NOT_ASKED`), and nothing is kept.
 - **Lapse.** The person's ask closes `MANUAL_ASK_MS` (10 minutes) after its
   request was typed, the chat told (`facts::manual_lapsed`) and the desktop
   notified, unless a handoff answering it was scheduled since the look
-  (`lapsed`). Turning auto-handoff off closes only the threshold's ask and a
+  (`lapsed`). One whose request Luna could never type (the chat never at its
+  prompt, its conversation not known, a draft that stays, its CLI not
+  running) is withdrawn `MANUAL_DELIVER_MS` (10 minutes) after it was opened,
+  looked at before each try at typing it and across restarts (`Asked::at` is
+  saved): that same ask only, never one typed since, with its own word to the
+  chat (`facts::manual_undelivered`) and the desktop (`undelivered`). Turning auto-handoff off closes only the threshold's ask and a
   switch it only scheduled; the person's is theirs.
 
 ## The call with a file
@@ -297,7 +310,8 @@ keys held (`hold_keys`), the composer looked at again (anything in it, a stash,
 keys within 5 s: not now), the phase taken, then the paste and the Enter. →
 `Resetting`: `/clear` or `/new` typed → the CLI on another conversation: the
 registry's `sessionId` (Claude Code, `claude::session::session_id`) or the
-title's thread (Codex, `codex_thread`) → `Prompting`: the prompt made then, past
+title's thread (Codex, `codex_thread`), recorded as the one the reset opened
+(`Switch::opened`, saved before anything goes into it) → `Prompting`: the prompt made then, past
 the reset (`run` takes it as a closure), and typed: `[Luna handoff N, not typed
 by the user]`, the copy's path, that approvals the handoff quotes hold as far
 as the user's quoted words go and no further, and `fact_block` (from
@@ -320,8 +334,13 @@ until they are through.
   draft holds it as long as it stands, told to the desktop after a minute.
 - A core restart: `from_bytes` makes a switch in `Resetting` or `Prompting`
   `Recovering`. Once the chat is back and at rest: on the conversation it left,
-  `Scheduled` again (two resets at most); on another, done if its transcript
-  holds the prompt, else the prompt is typed.
+  `Scheduled` again (two resets at most); on the one its reset opened
+  (`Switch::opened`), done if its transcript holds the prompt, else the prompt
+  is typed. On any other, or with none on record (the core gone between
+  saving `Resetting` and the reset reaching the CLI, while the person opened a
+  conversation of their own), it is given up with nothing typed
+  (`Step::Stray`, `Ended::Stray`, `STRAY`): the copy kept, the ask closed, the
+  chat told (`facts::stray_line`) and the desktop notified.
 
 ## The window
 
@@ -333,7 +352,10 @@ until they are through.
   opened and, for the person's, when its request was typed and when it
   lapses). The menu's Hand off now and the `handoff asked` chip go by it
   alone, with no clock of the window's: a reload, or the person's `/clear`
-  closing the ask, shows what the core holds.
+  closing the ask, shows what the core holds. With the chat's CLI not
+  running `session_meta` says nothing, and the window asks `handoff_ask`
+  (the same `handoff_ask_of`) instead, so an ask that lapsed meanwhile leaves
+  the chip and the menu.
 - `applied_by_luna` carries `HandoffApplied` for a chat with it on: the
   instructions it would be served now (`SystemSkillState`: Luna's with its
   version and hash, the override with its path, or the override broken and
@@ -439,15 +461,20 @@ strings listed, never taken out.
 preselects Luna's only while `limit_in_force` holds. A limit holds from the
 stop (its source's time: Claude Code's `StopFailure` hook, the Codex rollout
 line; else when Luna first saw it) until every window that counts for the
-chat's model was read after it and none is full, or until every window a
-reading showed full has passed its reset; with no reading, no window that
-counts, or no reset to go by, it holds. A window the reading lacks is not
-known to have lifted. Each Codex limit stands by its own newest reading
+chat's model is known to have lifted, each limit (the windows scoped to one
+model, or to none) by its own windows: read after the stop with none full, or
+with every window it showed full past its reset; with no reading, no window
+that counts, or no reset to go by, it holds. A limit read only before the
+stop and not full, or one the reading lacks, is not known to have lifted: a
+general window's reset does not lift a Spark chat whose own limit has had no
+reading since. Each Codex limit stands by its own newest reading
 (`codex::limits::known_limits`): Luna's last answer from the endpoint, the
 whole picture as of its time, and after it each limit's newest rollout
-snapshot (`latest_rate_limits_by_id`, the newest 32 rollouts of two days),
-since a snapshot holds one limit alone: a Spark chat's newer snapshot takes
-nothing of the general limit's, nor a general one a full Spark window. A
+snapshot (`latest_rate_limits_by_id`: every limit a tail holds,
+`rate_limits_in`, of the newest 32 rollouts of two days and the chat's own
+wherever it falls, kept by the core for two days once read), since a
+snapshot holds one limit alone: a Spark chat's newer snapshot takes nothing
+of the general limit's, nor a general one a full Spark window. A
 window scoped to one model (Claude Code's Opus week, a Codex model's own
 limit) holds only a chat on that model; with the model unknown, every window
 counts (`UsageReading::for_model`). No usage percentage picks a source.
@@ -457,7 +484,11 @@ counts (`UsageReading::for_model`). No usage percentage picks a source.
 read-only sandbox, running, not stopped on a limit: `ask_blocked`; no
 auto-handoff needed): `Asking` until the chat stands at a strict prompt, then
 the fixed line `[Luna move <id> request, not typed by the user]` typed under
-`Asked` (`asked_at`, `asked_turns` kept). The tool without `file` then serves
+`Asked` (`asked_at`, `asked_turns` and the conversation it went into,
+`asked_conversation`, kept; not typed while Luna cannot name that
+conversation). It answers only once typed and only in that conversation
+(`ask_here`): before, or in one the person started since, the tool refuses
+(`NOT_ASKED_HERE`), and collection looks again as it takes the document. The tool without `file` then serves
 the move's text (`served::move_instructions`, `facts::move_how_to`, a drafts
 name `move-<id>-<random>.md`): the handoff's instructions in effect, the
 person's override included, under the move's own rules (helpers stay behind,

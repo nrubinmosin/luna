@@ -286,6 +286,13 @@ pub(super) const NOT_ASKED: &str = "nobody asked this chat for a handoff, so lun
 /// later.
 pub(super) const MANUAL_ASK_MS: u64 = 10 * 60_000;
 
+/// How long a person's ask waits for its request to go in, from when it was
+/// opened: the chat never at its prompt, its conversation not known, a draft
+/// that stays, its CLI not running. Past it the ask closes undelivered, and
+/// the person may ask again, rather than an ask nobody can answer refusing
+/// the next one for ever, across restarts too.
+pub(super) const MANUAL_DELIVER_MS: u64 = MANUAL_ASK_MS;
+
 /// The chats whose CLI has been given the tool in `tools/list` since it
 /// started: one that was not (it started before Luna listed the tool to every
 /// chat with its tools) is asked for no handoff until it starts again and
@@ -424,6 +431,7 @@ fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Res
         before,
         attempts: 0,
         instructions: served,
+        opened: None,
     };
     // Under the record's lock, the registry looked at inside it: the ask this
     // handoff answers closed since the call (auto-handoff turned off under
@@ -491,6 +499,39 @@ fn conversation_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -
         }
         Provider::Codex => pty.codex_thread(id),
     }
+}
+
+/// Whether the transcript at `path` is positively `live`'s, the conversation
+/// the chat's CLI is on (`conversation_of`): its name carries its own id —
+/// Claude Code's `<session id>.jsonl`, Codex's `rollout-<time>-<thread
+/// id>.jsonl` — and that id is `live`'s. The transcript a chat is found on
+/// may be the one before: after Codex's `/new` its rollout is the old
+/// thread's until the new one writes its own (codex/session/rollouts.rs
+/// `rollout_on`), and a transcript not found now is the last one found
+/// (read.rs `transcript_seen`). Neither says anything of the conversation
+/// the CLI is on, so nothing about an ask is decided on it.
+fn transcript_is(path: &Path, provider: Provider, live: &str) -> bool {
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { return false };
+    if live.is_empty() {
+        return false;
+    }
+    match provider {
+        Provider::Claude => name.strip_suffix(".jsonl") == Some(live),
+        Provider::Codex => crate::codex::session::parse_name(&name).is_some_and(|(_, id)| id.starts_with(live)),
+    }
+}
+
+/// Whether the threshold's ask, opened before its conversation was known,
+/// is to be bound to `now`, the conversation the chat's CLI is on, by its
+/// transcript at `path`: Some(true) where that transcript is positively
+/// `now`'s (`transcript_is`) and the one whose context passed the threshold
+/// (`told`); Some(false) where it is `now`'s and another; None where it is
+/// not known to be `now`'s, which says nothing either way.
+fn late_bind(told: Option<&str>, path: &Path, provider: Provider, now: &str) -> Option<bool> {
+    if !transcript_is(path, provider, now) {
+        return None;
+    }
+    Some(path.file_stem().is_some_and(|s| told == Some(&*s.to_string_lossy())))
 }
 
 /// Whether the transcript at `path` holds handoff `n`'s prompt.
@@ -591,6 +632,27 @@ impl Phases for Stored {
             Ok(false) => Err(Refused::Gone),
             Err(e) => {
                 crate::log::warn("handoff", &format!("{}: handoff {n} could not move to {to:?}: {e}", label(chat)));
+                Err(Refused::Unsaved(e))
+            }
+        }
+    }
+
+    fn opened(&self, chat: &str, n: u32, conversation: &str) -> Result<(), Refused> {
+        let set = store::change(chat, |r| match r.switch.as_mut().filter(|s| s.n == n && matches!(s.phase, Phase::Resetting { .. })) {
+            Some(s) => {
+                s.opened = Some(conversation.to_string());
+                true
+            }
+            None => false,
+        });
+        match set {
+            Ok(true) => {
+                crate::log::info("handoff", &format!("{}: handoff {n}'s reset opened {conversation}", label(chat)));
+                Ok(())
+            }
+            Ok(false) => Err(Refused::Gone),
+            Err(e) => {
+                crate::log::warn("handoff", &format!("{}: where handoff {n}'s reset went could not be saved: {e}", label(chat)));
                 Err(Refused::Unsaved(e))
             }
         }
@@ -813,15 +875,16 @@ fn close(
 /// for a disk. One given up past its reset closes its ask too: the
 /// conversation that was asked is gone.
 fn finish(chat: &str, n: u32, ended: Ended, prompt: &dyn Fn() -> String) {
-    let (done, why, reset, left) = match ended {
+    let (done, why, reset, left): (bool, Option<String>, bool, Option<LeftLine>) = match ended {
         Ended::Back => return,
-        Ended::Done => (true, None, true, false),
-        Ended::Failed { why, reset } => (false, Some(why), reset, false),
-        Ended::Left => (false, Some(phase::LEFT.to_string()), false, true),
+        Ended::Done => (true, None, true, None),
+        Ended::Failed { why, reset } => (false, Some(why), reset, None),
+        Ended::Left => (false, Some(phase::LEFT.to_string()), false, Some(facts::left_line)),
+        Ended::Stray => (false, Some(phase::STRAY.to_string()), false, Some(facts::stray_line)),
     };
     let end = |r: &mut store::Record| {
         let closed = close(r, Some(n), done, why.clone(), |_| true);
-        if closed.is_some() && (reset || left) {
+        if closed.is_some() && (reset || left.is_some()) {
             r.asked = None;
         }
         closed
@@ -837,9 +900,22 @@ fn finish(chat: &str, n: u32, ended: Ended, prompt: &dyn Fn() -> String) {
     ended_with(chat, &s, gone, why, reset, left, prompt);
 }
 
+/// What the conversation a chat went on in hears of a handoff given up with
+/// nothing typed there (`Ended::Left`, `Ended::Stray`): its number and copy.
+type LeftLine = fn(u32, &str) -> String;
+
 /// What follows a handoff's end: the copies dropped from the record go, and one
-/// given up is told to the chat and the person.
-fn ended_with(chat: &str, s: &Switch, gone: Vec<store::Past>, why: Option<String>, reset: bool, left: bool, prompt: &dyn Fn() -> String) {
+/// given up is told to the chat and the person; one given up on a conversation
+/// it typed nothing into, by `left`'s line.
+fn ended_with(
+    chat: &str,
+    s: &Switch,
+    gone: Vec<store::Past>,
+    why: Option<String>,
+    reset: bool,
+    left: Option<LeftLine>,
+    prompt: &dyn Fn() -> String,
+) {
     // Only out of the chat's folder of copies as checked: a removal through a
     // link on the way would land wherever it leads.
     if let Ok(dir) = copies_of(chat) {
@@ -860,8 +936,10 @@ fn ended_with(chat: &str, s: &Switch, gone: Vec<store::Past>, why: Option<String
             let asked = may_list(chat) && open_ask(chat).is_some();
             // Told in the conversation the person went on in, which asked
             // nothing: what became of the one before's call, nothing to do.
-            let line =
-                if left { facts::left_line(s.n, &s.snapshot) } else { facts::failed_line(s.n, &why, &s.snapshot, reset, asked, &prompt) };
+            let line = match left {
+                Some(line) => line(s.n, &s.snapshot),
+                None => facts::failed_line(s.n, &why, &s.snapshot, reset, asked, &prompt),
+            };
             reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), line));
             crate::agents::save_chats();
             let name = chat_name(chat).unwrap_or_else(|| chat.to_string());
@@ -904,7 +982,9 @@ pub(super) fn beat() {
 /// that was known, and closed once the chat is found on another. Luna's own
 /// switch is under way while its conversation changes, and closes its ask as
 /// it ends (`finish`). The threshold's ask is bound late only while the chat's
-/// transcript is still the one whose context passed the threshold.
+/// transcript is positively the conversation it is on and still the one whose
+/// context passed the threshold (`late_bind`); a look that cannot tell leaves
+/// it be.
 fn drifted(pty: &crate::pty::PtyManager) {
     let open: Vec<(String, store::Asked, Option<String>)> = store::records()
         .iter()
@@ -922,10 +1002,11 @@ fn drifted(pty: &crate::pty::PtyManager) {
             store::AskKind::Manual => true,
             store::AskKind::Auto if a.conversation.is_some() => true,
             store::AskKind::Auto => {
-                let Some(stem) = transcript_path(pty, &chat).and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())) else {
-                    continue;
-                };
-                told.as_deref() == Some(stem.as_str())
+                let Some(path) = transcript_path(pty, &chat) else { continue };
+                match late_bind(told.as_deref(), &path, provider, &now) {
+                    Some(here) => here,
+                    None => continue,
+                }
             }
         };
         drifted_to(&chat, &a, &now, asked_here);
@@ -1002,6 +1083,14 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
             continue;
         }
         let Some(path) = transcript_path(pty, &chat) else { continue };
+        // Only a transcript that is positively the conversation the CLI is
+        // on says how far that conversation has come, and which the ask is
+        // of: Codex's rollout read after a `/new` is the old thread's until
+        // the new one writes its own. Otherwise looked at again next beat.
+        let Some(live) = conversation_of(pty, &chat, provider).filter(|live| transcript_is(&path, provider, live)) else {
+            b.turns.remove(&chat);
+            continue;
+        };
         let Some(context) = crate::background::Context::of(&path, provider) else { continue };
         let conversation = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let (told, fresh) = store::records().get(&chat).map(|r| (r.told.clone(), r.fresh)).unwrap_or_default();
@@ -1046,10 +1135,7 @@ fn thresholds(pty: &crate::pty::PtyManager, b: &mut Beat) {
         let told = store::Told { level, asked, tokens: context.tokens, ..now };
         // A fresh handoff request, the ask the tool answers while it is open,
         // of the conversation whose context passed the threshold.
-        let asked = store::Asked {
-            conversation: conversation_of(pty, &chat, provider),
-            ..store::Asked::new(store::AskKind::Auto, now_ms(), Some(ts.turns_ended))
-        };
+        let asked = store::Asked { conversation: Some(live), ..store::Asked::new(store::AskKind::Auto, now_ms(), Some(ts.turns_ended)) };
         match store::change(&chat, |r| ask_auto(&chat, r, threshold, told, inline, asked)) {
             Ok(true) => {}
             Ok(false) => {
@@ -1152,8 +1238,8 @@ fn manual_asks(now: u64) {
 /// again under the held keys, as a move's ask is (moving.rs `type_ask`): the
 /// notifier looks before it types, and a Codex line typed into a turn the
 /// person just began would steer that turn. Closed MANUAL_ASK_MS after it
-/// went in, the chat and the person told, unless a handoff answering it is
-/// under way.
+/// went in, or MANUAL_DELIVER_MS after it was opened if it never could, the
+/// chat and the person told, unless a handoff answering it is under way.
 fn manual_ask_of(chat: &str, now: u64) {
     let Some(a) = store::records().get(chat).and_then(|r| r.asked.clone()).filter(|a| a.kind == store::AskKind::Manual) else {
         return;
@@ -1162,6 +1248,9 @@ fn manual_ask_of(chat: &str, now: u64) {
         return;
     }
     match a.typed {
+        // Checked before each try at typing it: one that can never go in
+        // would otherwise refuse the person's next ask for good.
+        None if now.saturating_sub(a.at) > MANUAL_DELIVER_MS => undelivered(chat, &a),
         None => {
             // A request an earlier core queued for the notifier goes this way
             // instead.
@@ -1192,6 +1281,38 @@ fn manual_ask_of(chat: &str, now: u64) {
         }
         _ => {}
     }
+}
+
+/// The person's ask `a`, its request never typed, closed as undelivered
+/// (`lapsed`, so only that same ask and only with no handoff answering it),
+/// the chat and the person told: its own word, not the typed request's lapse.
+fn undelivered(chat: &str, a: &store::Asked) {
+    // Not while its request may be going in right now: the try decides.
+    if running().lock().unwrap_or_else(|e| e.into_inner()).contains(chat) {
+        return;
+    }
+    let closed = store::change(chat, |r| lapsed(r, a)).unwrap_or_else(|e| {
+        crate::log::warn("handoff", &format!("{}: the person's ask could not be saved as undelivered: {e}", label(chat)));
+        false
+    });
+    if !closed {
+        return;
+    }
+    let minutes = MANUAL_DELIVER_MS / 60_000;
+    crate::log::info(
+        "handoff",
+        &format!("{}: the person's ask for a handoff could not be delivered within {minutes} minutes", label(chat)),
+    );
+    reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), facts::manual_undelivered(minutes)));
+    crate::agents::save_chats();
+    let name = chat_name(chat).unwrap_or_else(|| chat.to_string());
+    crate::power::notify_chat(
+        chat,
+        "A handoff request could not be delivered",
+        &format!(
+            "Luna could not type your request into \"{name}\" within {minutes} minutes (it was not at its prompt, or its CLI              not running); the request is withdrawn. Ask again from its pane's menu."
+        ),
+    );
 }
 
 /// The person's ask `a` closed on record `r` as lapsed, if it is still the
@@ -1308,6 +1429,7 @@ fn switches(b: &mut Beat) {
             }
             Step::Done => finish(&chat, s.n, Ended::Done, &String::new),
             Step::Left => finish(&chat, s.n, Ended::Left, &String::new),
+            Step::Stray => finish(&chat, s.n, Ended::Stray, &String::new),
             Step::Fail(why) => {
                 // Still scheduled, nothing was reset: another conversation
                 // the chat is on is the person's, not the one Luna opened.
@@ -1369,7 +1491,7 @@ pub fn set_auto_handoff(id: String, threshold: Option<u8>) -> Result<AutoHandoff
         }
     };
     if let Some((s, gone)) = closed {
-        ended_with(&id, &s, gone, Some(why), false, false, &String::new);
+        ended_with(&id, &s, gone, Some(why), false, None, &String::new);
     }
     crate::log::info("handoff", &format!("{}: auto-handoff {}", label(&id), threshold.map_or("off".into(), |t| format!("at {t}%"))));
     // Off needs nothing listed; on, only a CLI that has not listed the tool.
@@ -1425,8 +1547,9 @@ fn now_refusal(chat: &str) -> Option<String> {
     }
     if open_ask(chat) == Some(store::AskKind::Manual) {
         return Some(format!(
-            "this chat has been asked for a handoff already; it lapses {} minutes after Luna typed the request",
-            MANUAL_ASK_MS / 60_000
+            "this chat has been asked for a handoff already; it lapses {} minutes after Luna typed the request, or is              withdrawn {} minutes after you asked if Luna could not type it",
+            MANUAL_ASK_MS / 60_000,
+            MANUAL_DELIVER_MS / 60_000
         ));
     }
     let jobs = crate::activity::own_jobs(chat);
@@ -1575,6 +1698,14 @@ pub fn handoff_ask_of(id: &str) -> Option<HandoffAsk> {
         typed: a.typed.filter(|_| manual),
         lapses_at: a.typed.filter(|_| manual).map(|t| t + MANUAL_ASK_MS),
     })
+}
+
+/// The window's look at the ask open on a chat (`handoff_ask_of`) where
+/// `session_meta` has nothing to say, its CLI not running: the ask is the
+/// core's whether a CLI runs or not, and one that lapsed meanwhile must not
+/// stay on the chip and in the menu's refusal.
+pub fn handoff_ask(chat_id: String) -> Option<HandoffAsk> {
+    handoff_ask_of(&chat_id)
 }
 
 /// Handoff `n` of `chat` as the record has it.
