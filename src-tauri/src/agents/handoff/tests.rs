@@ -1165,3 +1165,61 @@ fn the_persons_ask_does_not_lapse_under_a_handoff_scheduled_since_the_look() {
     reg().lock().unwrap().news.retain(|(c, _)| c != "holap-me");
     done_with(&["holap-me"], &dir);
 }
+
+/// What a chat is found on is no evidence of its conversation unless the
+/// transcript is that conversation's own: after Codex's `/new` the rollout is
+/// the old thread's until the new one writes its own, and after a `/clear` a
+/// transcript not found now is the last one found. The threshold neither
+/// opens an ask nor binds one on it, and leaves an unbound one be.
+#[test]
+fn an_ask_is_bound_only_by_the_transcript_of_the_conversation_the_chat_is_on() {
+    let (a, b) = ("019a0000-0000-7000-8000-00000000000a", "019a0000-0000-7000-8000-00000000000b");
+    let rollout = |id: &str| PathBuf::from(format!("/s/2026/11/12/rollout-2026-11-12T10-00-00-{id}.jsonl"));
+    assert!(transcript_is(&rollout(a), Provider::Codex, a));
+    assert!(transcript_is(&rollout(a), Provider::Codex, &a[..25]), "the start of it, as Codex's title names it");
+    assert!(!transcript_is(&rollout(a), Provider::Codex, b), "after /new: the thread before's rollout");
+    assert!(!transcript_is(&rollout(a), Provider::Codex, ""));
+    let claude = |id: &str| PathBuf::from(format!("/p/{id}.jsonl"));
+    assert!(transcript_is(&claude("s1"), Provider::Claude, "s1"));
+    assert!(!transcript_is(&claude("s1"), Provider::Claude, "s2"), "after /clear: the transcript found last");
+    // Bound late only by the transcript of the conversation it is on.
+    let told = format!("rollout-2026-11-12T10-00-00-{a}");
+    assert_eq!(late_bind(Some(&told), &rollout(a), Provider::Codex, a), Some(true));
+    assert_eq!(late_bind(Some(&told), &rollout(a), Provider::Codex, b), None, "no word either way: neither bound nor closed");
+    assert_eq!(late_bind(Some("another"), &rollout(a), Provider::Codex, a), Some(false));
+    assert_eq!(late_bind(Some("s1"), &claude("s1"), Provider::Claude, "s1"), Some(true));
+    assert_eq!(late_bind(Some("s1"), &claude("s1"), Provider::Claude, "s2"), None);
+}
+
+/// The person's ask whose request Luna could never type (the chat never at
+/// its prompt, its conversation not known, its CLI not running) is withdrawn
+/// in time, from when it was opened, with its own word to the chat; only
+/// that same ask, never one typed since; and the person may ask again.
+#[test]
+fn the_persons_ask_never_typed_is_withdrawn_in_time_saying_so() {
+    chat("hound-me", None);
+    open_manual("hound-me").unwrap();
+    let a = store::records()["hound-me"].asked.clone().unwrap();
+    assert!(now_refusal("hound-me").is_some_and(|e| e.contains("asked for a handoff already") && e.contains("withdrawn")));
+    manual_ask_of("hound-me", a.at + MANUAL_DELIVER_MS);
+    assert_eq!(open_ask("hound-me"), Some(store::AskKind::Manual), "not before its time");
+    // A core started later goes by when it was opened, not by its own start.
+    let back = store::from_bytes(&serde_json::to_vec(&*store::records()).unwrap(), a.at + MANUAL_DELIVER_MS);
+    assert_eq!(back["hound-me"].asked.as_ref().map(|x| x.at), Some(a.at));
+    manual_ask_of("hound-me", a.at + MANUAL_DELIVER_MS + 1);
+    assert_eq!(open_ask("hound-me"), None, "withdrawn");
+    let news: Vec<String> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == "hound-me").map(|(_, l)| l.clone()).collect();
+    assert_eq!(news, [facts::manual_undelivered(MANUAL_DELIVER_MS / 60_000)]);
+    assert_ne!(news[0], facts::manual_lapsed(MANUAL_ASK_MS / 60_000), "not the typed request's lapse");
+    assert!(now_refusal("hound-me").is_none(), "asked again freely");
+    // Typed since the look: that ask stays.
+    open_manual("hound-me").unwrap();
+    let looked = store::records()["hound-me"].asked.clone().unwrap();
+    store::change("hound-me", |r| assert!(manual_typed(r, looked.at, looked.at + 1, Some("old".into())))).unwrap();
+    undelivered("hound-me", &looked);
+    assert_eq!(store::records()["hound-me"].asked.as_ref().and_then(|x| x.typed), Some(looked.at + 1), "typed: not withdrawn");
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hound-me");
+    store::change("hound-me", |r| r.asked = None).unwrap();
+    forget_session("hound-me");
+    set_conversation_for_test("hound-me", None);
+}

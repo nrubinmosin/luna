@@ -204,6 +204,14 @@ pub(super) fn manual_lapsed(minutes: u64) -> String {
     )
 }
 
+/// What the chat hears when the person's request could not be typed into it
+/// in time and was withdrawn: it was never asked, and the tool refuses.
+pub(super) fn manual_undelivered(minutes: u64) -> String {
+    format!(
+        "The person asked for a handoff of this chat, but Luna could not deliver the request within {minutes} minutes, so          it is withdrawn. luna_session_handoff refuses until Luna asks for one; go on as you were."
+    )
+}
+
 /// Whether a line queued for a chat's notice asks it for a handoff, the
 /// threshold's notice or the person's request: one not yet typed when a
 /// handoff is scheduled is dropped, the new conversation having nothing to
@@ -430,6 +438,16 @@ pub(super) fn left_line(n: u32, snapshot: &str) -> String {
         "Handoff {n} of this chat did not go through: this conversation was started (a /clear or /new) before Luna cleared \
          the one that wrote it, so Luna cleared nothing and typed no handoff here. Its copy is at {snapshot}. Nobody asks \
          this conversation for a handoff: go on as you were."
+    )
+}
+
+/// What the conversation a chat is on hears where a core, taking up a switch
+/// it stopped in the middle of, cannot tell that conversation is the one its
+/// reset opened (phase.rs `STRAY`): nothing was typed here, and where the
+/// handoff's copy is.
+pub(super) fn stray_line(n: u32, snapshot: &str) -> String {
+    format!(
+        "Handoff {n} of this chat did not go through: Luna stopped while it cleared the conversation that wrote it, and          cannot tell that this conversation is the one its reset opened, so it typed no handoff here. Its copy is at          {snapshot}. Nobody asks this conversation for a handoff: go on as you were."
     )
 }
 

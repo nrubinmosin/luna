@@ -70,6 +70,7 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'applied_by_luna',
   'set_auto_handoff',
   'handoff_now',
+  'handoff_ask',
   'handoff_file',
   'handoff_transcript',
   'move_prepare',

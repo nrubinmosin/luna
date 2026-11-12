@@ -229,6 +229,11 @@ pub(in crate::agents) struct Move {
     /// How its ask ended without the chat's document, where it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_end: Option<AskEnd>,
+    /// The conversation the ask was typed into, as `phase::Before::conversation`
+    /// names one: the only one whose call it answers (`ask_here`). The
+    /// person's own `/clear` or `/new` since starts a conversation nobody asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_conversation: Option<String>,
 }
 
 impl Move {
@@ -624,6 +629,7 @@ fn new_move(
         asked_at: None,
         asked_turns: None,
         ask_end: None,
+        asked_conversation: None,
     }
 }
 
@@ -1559,8 +1565,22 @@ pub fn move_facts(chat_id: String) -> Result<MoveFacts, String> {
     })
 }
 
+/// What a chat being asked for its move's document hears, calling the tool
+/// from a conversation that ask was not typed into, or before it was typed.
+const NOT_ASKED_HERE: &str = "this conversation was not asked for the move's document: Luna has not typed its request      yet, or typed it into another conversation of this chat. Nothing is done with this call and nothing switches; go on      as you were.";
+
+/// Whether move `m`'s ask answers a call from the chat on `conversation`:
+/// only once typed, and only in the conversation it was typed into, both
+/// known. Text injected into a conversation the person started since, or
+/// one Luna has not typed the ask into yet, finds nothing open.
+pub(super) fn ask_here(m: &Move, conversation: Option<&str>) -> bool {
+    matches!(m.phase, MovePhase::Asked { .. })
+        && matches!((m.asked_conversation.as_deref(), conversation), (Some(asked), Some(now)) if asked == now)
+}
+
 /// `luna_session_handoff` with `file` from a chat asked for its move's
-/// document: collected, with nothing scheduled and nothing reset. A file
+/// document: collected, with nothing scheduled and nothing reset, where the
+/// ask holds in the conversation called from (`ask_here`), else refused. A file
 /// named for a move (`move-…`) when none is asking is refused, so a late
 /// answer never becomes a handoff. None: an ordinary handoff.
 pub(super) fn asked_file(caller: &str, file: &str) -> Option<Result<Value, String>> {
@@ -1577,6 +1597,7 @@ pub(super) fn asked_file(caller: &str, file: &str) -> Option<Result<Value, Strin
         Turn { started: crate::activity::turn_started_ms(caller), ended: crate::activity::turn_state(caller).map(|t| t.turns_ended) };
     let late = late_answer(&name, closed, now_ms(), turn);
     match m {
+        Some(m) if !ask_here(&m, super::conversation_now(caller).as_deref()) => Some(Err(NOT_ASKED_HERE.into())),
         Some(m) => Some(collect(caller, &m, file)),
         None if late => Some(Err("the move this document was for is over (sent, given up or canceled): nothing is \
                                         done with it and nothing switches. Go on as you were."
@@ -1620,7 +1641,10 @@ fn collect(caller: &str, m: &Move, file: &str) -> Result<Value, String> {
     crate::secret::write_private(&preview, built.text.as_bytes()).map_err(|e| format!("the document could not be kept: {e}"))?;
     let sha = sha256_hex(built.text.as_bytes());
     let path = preview.to_string_lossy().into_owned();
-    let shown = store::change(caller, |r| match r.moving.as_mut().filter(|x| x.id == m.id && x.asking()) {
+    // The ask looked at again as the document is taken: the chat may have
+    // gone on in another conversation while it was copied and built.
+    let conversation = super::conversation_now(caller);
+    let shown = store::change(caller, |r| match r.moving.as_mut().filter(|x| x.id == m.id && ask_here(x, conversation.as_deref())) {
         Some(x) => {
             x.phase = MovePhase::Shown { at: now_ms() };
             x.shown_sha256 = sha.clone();
@@ -1648,6 +1672,9 @@ fn collect(caller: &str, m: &Move, file: &str) -> Result<Value, String> {
 /// `move_instructions`). None otherwise.
 pub(super) fn ask_instructions(caller: &str) -> Result<Option<String>, String> {
     let Some(m) = store::records().get(caller).and_then(|r| r.moving.clone()).filter(Move::asking) else { return Ok(None) };
+    if !ask_here(&m, super::conversation_now(caller).as_deref()) {
+        return Err(NOT_ASKED_HERE.into());
+    }
     let place = match super::drafts_refused(caller) {
         Some(_) => format!("a file of your own outside Luna's folder (in your workspace, say), named move-{}.md", m.id),
         None => {
@@ -1716,10 +1743,14 @@ fn type_ask(chat: &str, m: &Move) {
             if !still_ready(crate::pty::manager(), &chat) {
                 return Err(Refused::Gone);
             }
+            // The ask answers only in the conversation it goes into, one Luna
+            // can name: not known now, it is typed at a later beat.
+            let Some(conversation) = super::conversation_now(&chat) else { return Err(Refused::Gone) };
             let taken = store::change(&chat, |r| match r.moving.as_mut().filter(|x| x.id == m.id) {
                 Some(x) if matches!(x.phase, MovePhase::Asking { .. }) => {
                     let at = now_ms();
                     x.phase = MovePhase::Asked { at };
+                    x.asked_conversation = Some(conversation.clone());
                     x.asked_at = Some(at);
                     x.asked_turns = crate::activity::turn_state(&chat).map(|t| t.turns_ended);
                     true
@@ -2151,6 +2182,7 @@ pub(super) mod tests {
             asked_at: None,
             asked_turns: None,
             ask_end: None,
+            asked_conversation: None,
         }
     }
 
@@ -2501,8 +2533,10 @@ pub(super) mod tests {
         );
         m.source = Source::Chat;
         m.phase = MovePhase::Asked { at: now_ms() };
+        m.asked_conversation = Some("old".into());
         m.note = "Keep going.".into();
         store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        super::super::set_conversation_for_test(chat, Some("old"));
         assert!(asking(chat), "no threshold notice meanwhile");
         // Served the move's own text, with a drafts name for it.
         super::super::drafts_at_start(chat).unwrap();
@@ -2560,7 +2594,9 @@ pub(super) mod tests {
         );
         m.source = Source::Chat;
         m.phase = MovePhase::Asked { at: now_ms() };
+        m.asked_conversation = Some("old".into());
         store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        super::super::set_conversation_for_test(chat, Some("old"));
         super::super::drafts_at_start(chat).unwrap();
         let dir = std::env::temp_dir().join(format!("luna-move-twice-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2580,6 +2616,67 @@ pub(super) mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with(&format!("move-{}-", m.id)))
             .collect();
         assert_eq!(left.len(), 1, "the second's own file went with it");
+        crate::agents::teardown::forget(chat);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A move's ask answers only once typed, and only in the conversation it
+    /// was typed into: before, or after the person's `/clear` or `/new`,
+    /// neither its instructions nor its collection are given, and a
+    /// conversation changed while the document was built takes nothing.
+    #[test]
+    fn a_moves_ask_answers_only_once_typed_and_only_where_it_went() {
+        let (chat, new) = ("mvq-old", "mvq-new");
+        let mut m = shown(chat, new, false);
+        crate::agents::registry::register(
+            chat,
+            Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            None,
+            true,
+            serde_json::json!({ "permissionMode": "acceptEdits" }),
+        );
+        super::super::drafts_at_start(chat).unwrap();
+        let dir = std::env::temp_dir().join(format!("luna-move-here-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("move-doc.md");
+        std::fs::write(
+            &file,
+            "# Goal
+Ship it.
+",
+        )
+        .unwrap();
+        let file = file.to_string_lossy().into_owned();
+        super::super::set_conversation_for_test(chat, Some("old"));
+        // Not typed yet: nothing open.
+        m.source = Source::Chat;
+        m.phase = MovePhase::Asking { at: now_ms() };
+        store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        assert!(!ask_here(&m, Some("old")));
+        assert!(ask_instructions(chat).unwrap_err().contains("not asked for the move's document"));
+        assert!(asked_file(chat, &file).unwrap().unwrap_err().contains("not asked for the move's document"));
+        // Typed into "old": a call from "theirs" (the person's /new) is refused.
+        m.phase = MovePhase::Asked { at: now_ms() };
+        m.asked_conversation = Some("old".into());
+        store::change(chat, |r| r.moving = Some(m.clone())).unwrap();
+        assert!(ask_here(&m, Some("old")) && !ask_here(&m, Some("theirs")) && !ask_here(&m, None));
+        super::super::set_conversation_for_test(chat, Some("theirs"));
+        assert!(ask_instructions(chat).unwrap_err().contains("not asked"));
+        assert!(asked_file(chat, &file).unwrap().unwrap_err().contains("not asked"));
+        assert!(matches!(store::records()[chat].moving.as_ref().unwrap().phase, MovePhase::Asked { .. }), "still asked");
+        // Called where it was typed, the chat goes on elsewhere before the
+        // document is taken: the commit refuses it.
+        super::super::set_conversation_for_test(chat, Some("old"));
+        assert!(ask_instructions(chat).unwrap().is_some());
+        let looked = store::records()[chat].moving.clone().unwrap();
+        super::super::set_conversation_for_test(chat, Some("theirs"));
+        assert!(collect(chat, &looked, &file).is_err());
+        assert!(matches!(store::records()[chat].moving.as_ref().unwrap().phase, MovePhase::Asked { .. }), "nothing shown");
+        super::super::set_conversation_for_test(chat, Some("old"));
+        assert_eq!(asked_file(chat, &file).unwrap().unwrap()["collected"], true);
+        super::super::set_conversation_for_test(chat, None);
         crate::agents::teardown::forget(chat);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -5,7 +5,7 @@
 use super::*;
 
 /// A Codex session as its rollouts are read.
-fn codex_live(p: &crate::pty::ActivityProbe) -> crate::codex::session::Live<'_> {
+pub(super) fn codex_live(p: &crate::pty::ActivityProbe) -> crate::codex::session::Live<'_> {
     crate::codex::session::Live {
         chat_id: &p.id,
         cwd: &p.cwd,

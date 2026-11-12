@@ -179,7 +179,11 @@ up by itself, its helpers carrying on. It does so only when it is asked:
   the menu item's tooltip says when the ask lapses, both as Luna's core holds
   them, so a reload of the window shows the same. Your ask lapses 10 minutes
   after Luna typed it if no handoff came; the chat is told, and the desktop
-  says so. Until Luna has typed it, it asks nothing of the chat.
+  says so. Until Luna has typed it, it asks nothing of the chat. One Luna
+  could not type within 10 minutes of your ask (the chat never at its prompt,
+  or its CLI not running) is withdrawn, with its own word to the chat and the
+  desktop, and you may ask again. With the chat's CLI not running, the chip
+  and the menu still follow what the core holds.
 - **Auto-handoff at N% of its context** asks by itself once the context passes
   a threshold. Tick it in the new-chat dialog (70% unless you change it, from
   10 to 90), or later in the chat's **What Luna applied** panel. A chat
@@ -206,7 +210,9 @@ menu, so words injected into the chat cannot hand it off on their own.
   yourself (`/clear`, `/new`) and that one is asked nothing. A handoff the
   chat already called for and Luna has not yet switched is given up then:
   Luna clears nothing, keeps the file's copy, and tells the new conversation
-  and the desktop.
+  and the desktop. If Luna's core stopped in the middle of clearing it and the
+  chat is then on a conversation Luna cannot tell its own `/clear` or `/new`
+  opened, it is given up the same way: nothing typed there.
 - Asked, the chat calls `luna_session_handoff` without arguments and gets the
   steps and the instructions for the file: Luna's own, or yours from the
   library ([System skills](library.md#system-skills)).
@@ -297,9 +303,13 @@ defaults). It goes on from a document, chosen under **The document**:
   window (which, how full, when it resets, how old the usage reading is). The
   limit holds until a usage reading taken after the stop shows the windows
   that count for the chat's model not full, or until their resets have
-  passed; with no reading it holds. You can pick either one yourself.
+  passed; with no reading it holds, and so it does while a limit of the
+  chat's model's own (Codex's Spark, say) has had no reading since the stop.
+  You can pick either one yourself.
 
-**Ask the chat** opens the ask. The dialog then shrinks to a banner, so you
+**Ask the chat** opens the ask. Only the conversation Luna typed the ask
+into may answer it: one you start meanwhile (`/clear`, `/new`) is refused.
+The dialog then shrinks to a banner, so you
 can answer the chat's CLI in its pane: waiting for its turn to end, writing
 its document, or its CLI asking you something. **Use Luna's document now**
 closes the ask and builds Luna's document instead; **Cancel the move** ends

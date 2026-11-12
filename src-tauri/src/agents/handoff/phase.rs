@@ -6,10 +6,13 @@
 //! Scheduled → (the chat at rest on two looks, no draft, no job of its own)
 //! Resetting: the reset command typed → (the CLI on another conversation)
 //! Prompting: the continuation prompt typed → (the new transcript holds it)
-//! done. A core that stops in Resetting or Prompting leaves the switch
-//! Recovering: once the chat is back and at rest, what it is on says which —
-//! the old conversation (tried again from Scheduled), or the new one with the
-//! prompt in it (done) or without (typed now).
+//! done. The run that typed the reset records the conversation the CLI went
+//! on in as the one it opened (`Switch::opened`). A core that stops in
+//! Resetting or Prompting leaves the switch Recovering: once the chat is back
+//! and at rest, what it is on says which — the old conversation (tried again
+//! from Scheduled), the one the reset opened with the prompt in it (done) or
+//! without (typed now), or one Luna cannot tell its reset opened (given up,
+//! nothing typed).
 
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -76,6 +79,13 @@ pub(in crate::agents) struct Switch {
     /// when it went by the notices alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<super::served::Served>,
+    /// The conversation Luna's reset opened, as `Before::conversation` names
+    /// one: recorded by the run that typed the reset, at its first look that
+    /// finds the CLI on another than the one before. The only conversation a
+    /// switch taken up again types the continuation into: one the person
+    /// opened while a core was gone mid-reset is not it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened: Option<String>,
 }
 
 /// What a look at the chat finds.
@@ -118,11 +128,21 @@ pub(super) enum Step {
     /// typed: a reset now would clear a conversation nobody asked to hand
     /// off, and open it with the one before's continuation.
     Left,
+    /// Taken up again after a core stopped mid-switch, the chat is on another
+    /// conversation than the one before, and not on the one Luna's reset is
+    /// on record as having opened: maybe the person's, opened before the
+    /// reset reached the CLI. Given up, nothing typed: the continuation goes
+    /// only where Luna knows its reset opened.
+    Stray,
 }
 
 /// Why a handoff is given up whose chat went on in another conversation
 /// before its reset (`Step::Left`).
 pub(super) const LEFT: &str = "the chat went on in another conversation (a /clear or /new of the person's) before Luna's reset";
+
+/// Why a handoff is given up whose chat a core taking it up again finds on a
+/// conversation its reset is not on record as having opened (`Step::Stray`).
+pub(super) const STRAY: &str = "Luna's core stopped during the reset, and the chat is on a conversation Luna cannot tell its reset opened";
 
 /// What `look` calls for in switch `s`, the chat found at rest on `rest_looks`
 /// looks in a row.
@@ -206,11 +226,17 @@ pub(super) fn next(s: &Switch, look: &Look, rest_looks: u32) -> Step {
                     Step::Wait
                 };
             }
+            // The conversation the reset opened, and no other: a core gone
+            // between saving Resetting and the reset reaching the CLI leaves
+            // the person free to open one of their own.
+            let opened = moved && s.opened.is_some() && look.conversation == s.opened;
             if look.prompted {
                 Step::Done
+            } else if moved && !opened {
+                Step::Stray
             } else if look.draft || look.typing {
                 Step::Deferred
-            } else if moved {
+            } else if opened {
                 Step::Prompt
             } else if s.attempts >= MAX_ATTEMPTS {
                 Step::Fail(format!("the reset did not hold in {MAX_ATTEMPTS} tries"))
@@ -281,6 +307,9 @@ pub(super) enum Ended {
     /// Given up before its reset: the chat went on in another conversation
     /// (`Step::Left`). Its ask closes with it: the conversation asked is gone.
     Left,
+    /// Given up as taken up again, on a conversation its reset is not on
+    /// record as having opened (`Step::Stray`). Its ask closes with it.
+    Stray,
     /// Handed back to the beat: the chat is not ready for the next step, or
     /// the handoff is no longer this run's.
     Back,
@@ -305,6 +334,18 @@ pub(super) fn run(term: &dyn Term, chat: &str, n: u32, prompt: &dyn Fn() -> Stri
                 && look.conversation != s.before.conversation);
         let unsaved =
             |e: String, reset: bool| Ended::Failed { why: format!("its state could not be saved, so nothing more was typed: {e}"), reset };
+        // This run typed the reset (a switch Resetting with no run is taken
+        // up as Recovering): the conversation the CLI went on in is the one it
+        // opened, on record before anything is typed into it.
+        if let (Phase::Resetting { .. }, Some(now)) = (s.phase, look.conversation.as_deref()) {
+            if s.before.conversation.as_deref() != Some(now) && s.opened.as_deref() != Some(now) {
+                match phases.opened(chat, n, now) {
+                    Ok(()) => continue,
+                    Err(Refused::Gone) => return Ended::Back,
+                    Err(Refused::Unsaved(e)) => return unsaved(e, true),
+                }
+            }
+        }
         match next(&s, &look, REST_LOOKS) {
             Step::Reset => {
                 // Looked at again under the held keys: a `/clear` the person
@@ -359,6 +400,7 @@ pub(super) fn run(term: &dyn Term, chat: &str, n: u32, prompt: &dyn Fn() -> Stri
             }
             Step::Done => return Ended::Done,
             Step::Left => return Ended::Left,
+            Step::Stray => return Ended::Stray,
             Step::Fail(why) => return Ended::Failed { why, reset: reset_done },
         }
     }
@@ -371,6 +413,10 @@ pub(super) trait Phases {
     /// typed so far, saved before it returns; refused when the record holds
     /// another handoff or this one in another phase, or the save fails.
     fn advance(&self, chat: &str, n: u32, from: Phase, to: Phase, attempts: u32) -> Result<(), Refused>;
+    /// Records `conversation` as the one `chat`'s handoff `n` opened, while
+    /// it is Resetting, saved before it returns; refused otherwise, or when
+    /// the save fails.
+    fn opened(&self, chat: &str, n: u32, conversation: &str) -> Result<(), Refused>;
 }
 
 #[cfg(test)]
@@ -391,6 +437,7 @@ pub(super) mod tests {
             before: Before { conversation: Some("old".into()), transcript: Some("/t/old.jsonl".into()) },
             attempts: 0,
             instructions: None,
+            opened: None,
         }
     }
 
@@ -456,10 +503,56 @@ pub(super) mod tests {
         assert_eq!(next(&s, &rest(51_000), 0), Step::Retry);
         s.attempts = MAX_ATTEMPTS;
         assert!(matches!(next(&s, &rest(51_000), 0), Step::Fail(w) if w.contains("did not hold")));
-        // On a new one: the prompt, unless it is in already.
+        // On the one its reset opened: the prompt, unless it is in already.
+        s.opened = Some("new".into());
         let moved = Look { conversation: Some("new".into()), ..rest(51_000) };
         assert_eq!(next(&s, &moved, 0), Step::Prompt);
         assert_eq!(next(&s, &Look { prompted: true, ..moved }, 0), Step::Done);
+    }
+
+    /// A core gone after saving Resetting, before its reset reached the CLI:
+    /// the person may open a conversation of their own meanwhile. Taken up
+    /// again, the continuation goes only into the one the reset is on record
+    /// as having opened; any other, or none on record, gives the switch up
+    /// with nothing typed, a draft there or not.
+    #[test]
+    fn a_switch_taken_up_again_types_only_into_the_conversation_its_reset_opened() {
+        let mut s = switch(Provider::Codex);
+        s.phase = Phase::Recovering { since: 50_000 };
+        s.attempts = 1;
+        let theirs = Look { conversation: Some("theirs".into()), ..rest(51_000) };
+        assert_eq!(next(&s, &theirs, 0), Step::Stray, "no conversation on record as the reset's");
+        assert_eq!(next(&s, &Look { draft: true, ..theirs.clone() }, 0), Step::Stray, "not waited on either");
+        s.opened = Some("luna's".into());
+        assert_eq!(next(&s, &theirs, 0), Step::Stray, "not the one the reset opened");
+        let t = fake(|_, _| {});
+        t.look.borrow_mut().conversation = Some("theirs".into());
+        let phases = kept(s.clone());
+        assert_eq!(run(&t, "c1", 3, &|| "prompt".into(), &phases), Ended::Stray);
+        assert!(t.typed.borrow().is_empty(), "nothing typed into theirs");
+        // The run that typed the reset records where the CLI went on.
+        for provider in [Provider::Claude, Provider::Codex] {
+            let t = fake(move |text, l| {
+                if text == reset_command(provider) {
+                    l.conversation = Some("new".into());
+                }
+            });
+            *t.busy_at_type.borrow_mut() = vec![false, true];
+            let phases = kept(switch(provider));
+            assert_eq!(run(&t, "c1", 3, &|| "prompt".into(), &phases), Ended::Back);
+            let s = phases.switch_of("c1").unwrap();
+            assert_eq!(s.opened.as_deref(), Some("new"), "{provider:?}");
+            assert!(matches!(s.phase, Phase::Recovering { .. }));
+        }
+        // Where it went cannot be saved: nothing more is typed.
+        let t = fake(|_, _| {});
+        t.look.borrow_mut().conversation = Some("new".into());
+        let mut s = switch(Provider::Claude);
+        s.phase = Phase::Resetting { at: 5_000 };
+        let phases = kept(s);
+        *phases.1.borrow_mut() = true;
+        assert!(matches!(run(&t, "c1", 3, &|| "prompt".into(), &phases), Ended::Failed { reset: true, .. }));
+        assert!(t.typed.borrow().is_empty());
     }
 
     /// A chat's terminal as a test has it: what typing does to it is the
@@ -530,6 +623,18 @@ pub(super) mod tests {
                 Some(s) => {
                     s.phase = to;
                     s.attempts = attempts;
+                    Ok(())
+                }
+                None => Err(Refused::Gone),
+            }
+        }
+        fn opened(&self, chat: &str, n: u32, conversation: &str) -> Result<(), Refused> {
+            if *self.1.borrow() {
+                return Err(Refused::Unsaved("the disk is full".into()));
+            }
+            match self.0.borrow_mut().get_mut(chat).filter(|s| s.n == n && matches!(s.phase, Phase::Resetting { .. })) {
+                Some(s) => {
+                    s.opened = Some(conversation.to_string());
                     Ok(())
                 }
                 None => Err(Refused::Gone),
@@ -641,6 +746,7 @@ pub(super) mod tests {
         let mut s = switch(Provider::Claude);
         s.phase = Phase::Recovering { since: 4_000 };
         s.attempts = 1;
+        s.opened = Some("new".into());
         let phases = kept(s);
         assert_eq!(run(&t, "c1", 3, &|| "prompt".into(), &phases), Ended::Done);
         assert_eq!(*t.typed.borrow(), ["prompt"], "no second reset");
@@ -664,6 +770,7 @@ pub(super) mod tests {
         assert_eq!(next(&s, &Look { draft: true, ..moved.clone() }, 0), Step::Deferred);
         assert_eq!(next(&s, &Look { typing: true, ..moved.clone() }, 0), Step::Deferred);
         s.phase = Phase::Recovering { since: 10_000 };
+        s.opened = Some("new".into());
         assert_eq!(next(&s, &Look { draft: true, ..moved }, 0), Step::Deferred, "in recovery too");
         // Their keys land after that look, before the paste: the composer is
         // looked at again with the keys held, and nothing is typed into it.
