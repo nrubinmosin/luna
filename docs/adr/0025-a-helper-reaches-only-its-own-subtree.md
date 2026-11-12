@@ -38,7 +38,8 @@ the background; or the dev caller, which stands in for the person):
 - Without it, `in_scope`, `authorize_view` and `authorize_send` (`beneath`)
   refuse a helper any session not under it, its parent and the person's
   chats among them; `luna_session_list` and `luna_session_get` refuse it ids
-  outside its subtree (`agents/list.rs` `ids_in_reach`). Stop, delete and
+  outside its subtree (`agents/list.rs` `ids_in_reach`), and a spawn's
+  `sameFolder` names none past it (`neighbors_in`). Stop, delete and
   `allow` were already descendants only.
 - `luna_notification_send` and `luna_power_set` go only from a person's chat
   (`mcp/dispatch.rs` `persons_chat_only`).

@@ -2,7 +2,7 @@
 //! and named by Luna, and what is left of one a helper began.
 
 use crate::agents::list::disk_meta;
-use crate::agents::registry::{chat_name, label, reg, Known};
+use crate::agents::registry::{chat_name, is_descendant, label, persons_chat_in, reg, Known};
 use serde::Serialize;
 
 /// Where a session in a worktree works: the path, and the branch and commit
@@ -60,9 +60,14 @@ pub struct Neighbor {
 
 /// Live sessions other than `skip` that run in `dir`, by what the CLI says
 /// its cwd is: the project folder for a chat in it, the worktree for one in
-/// a worktree.
-pub(in crate::agents) fn neighbors_in(dir: &str, skip: &[&str]) -> Vec<Neighbor> {
-    let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).known.keys().cloned().collect();
+/// a worktree. Only those in `caller`'s reach: any for a person's chat, its
+/// own subtree for a helper, which learns of no session past it (ADR-0025).
+pub(in crate::agents) fn neighbors_in(dir: &str, caller: &str, skip: &[&str]) -> Vec<Neighbor> {
+    let ids: Vec<String> = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let all = persons_chat_in(&r, caller);
+        r.known.keys().filter(|id| all || is_descendant(&r, caller, id)).cloned().collect()
+    };
     let pty = crate::pty::manager();
     let mut out = Vec::new();
     for id in ids.into_iter().filter(|id| !skip.contains(&id.as_str())) {
@@ -235,6 +240,39 @@ mod tests {
             made.push(wt);
         }
         Some((root, repo, made))
+    }
+
+    /// `sameFolder` names, for a helper, only the sessions under it; a person's
+    /// chat hears of every session in the folder.
+    #[test]
+    fn a_helper_hears_of_no_neighbor_past_its_own_subtree() {
+        let dir = "C:\\nb-shared\\project";
+        let bg = serde_json::json!({ "background": true });
+        register("nb-top", Provider::Claude, dir, "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        register("nb-lead", Provider::Claude, dir, "C:\\acc\\anthropic\\one", Some("nb-top"), true, bg.clone());
+        register("nb-mine", Provider::Claude, dir, "C:\\acc\\anthropic\\one", Some("nb-lead"), false, bg.clone());
+        register("nb-sib", Provider::Claude, dir, "C:\\acc\\anthropic\\one", Some("nb-top"), false, bg.clone());
+        register("nb-other", Provider::Claude, dir, "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
+        register("nb-theirs", Provider::Claude, dir, "C:\\acc\\anthropic\\one", Some("nb-other"), false, bg);
+        let ids = ["nb-lead", "nb-mine", "nb-sib", "nb-theirs"];
+        for id in ids {
+            crate::background::take_up_for_test(id, dir, 1, &[], None);
+        }
+        let near = |caller: &str| {
+            let mut n: Vec<String> =
+                neighbors_in(dir, caller, &[caller]).into_iter().map(|n| n.id).filter(|i| i.starts_with("nb-")).collect();
+            n.sort();
+            n
+        };
+        assert_eq!(near("nb-lead"), ["nb-mine"], "its own only: not its parent's other helper, not another chat's");
+        assert_eq!(near("nb-mine"), Vec::<String>::new());
+        assert_eq!(near("nb-top"), ["nb-lead", "nb-mine", "nb-sib", "nb-theirs"], "a person's chat hears of every one");
+        for id in ids {
+            crate::background::remove(id);
+        }
+        for id in ["nb-mine", "nb-lead", "nb-sib", "nb-theirs", "nb-other", "nb-top"] {
+            forget(id);
+        }
     }
 
     /// Spawns making worktrees in one repository wait in one line, from its main

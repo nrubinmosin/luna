@@ -294,7 +294,7 @@ pub(in crate::agents) fn spawn_background(
         auto_delete,
         background: true,
     });
-    let same_folder = if own_worktree { Vec::new() } else { neighbors_in(&run_in, &[caller, &id]) };
+    let same_folder = if own_worktree { Vec::new() } else { neighbors_in(&run_in, caller, &[caller, &id]) };
     shown(caller, &id, 0);
     owe_from(caller, &id, 0, 0);
     // The CLI makes its worktree as the first turn starts: worth a few
