@@ -392,8 +392,13 @@
   white-space: nowrap;
 }
 [data-app] .move-banner .window-body > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* The words give way to the buttons: those are what the banner is for. */
+[data-app] .move-banner .window-body > button {
+  flex: none;
 }
 [data-app] .picker-out {
   color: var(--wait);
@@ -416,6 +421,12 @@
 [data-app] .move-dialog .move-label {
   font-size: var(--fs-3);
   color: var(--faint);
+}
+/* Who wrote the document the preview shows: the first thing read of it. */
+[data-app] .move-dialog .move-source {
+  font-size: var(--fs-3);
+  font-weight: 600;
+  color: var(--fg);
 }
 [data-app] .move-dialog .move-line {
   margin: 0;

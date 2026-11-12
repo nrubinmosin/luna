@@ -491,6 +491,40 @@
   box-shadow: none;
   outline: none;
 }
+/* Not now, its title says why: grayed, still hovered so that it shows. */
+[data-app] .pane-menu [role="menuitem"][aria-disabled="true"] {
+  color: var(--faint);
+}
+[data-app] .pane-menu [role="menuitem"][aria-disabled="true"]:hover,
+[data-app] .pane-menu [role="menuitem"][aria-disabled="true"]:focus-visible {
+  background: var(--chip);
+  color: var(--faint);
+}
+
+/* Hand off now refused (chats/handoffNow.ts): drawn as the move's offer is,
+   over the terminal's top rows, until dismissed or asked again. */
+[data-app] .handoff-now-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  font-size: var(--fs-3);
+  color: var(--fg);
+  box-shadow: inset 0 -1px 0 var(--wait);
+  background: var(--surface);
+  min-width: 0;
+}
+/* Wrapped, not cut: the why is the point of it. */
+[data-app] .handoff-now-note > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+[data-app] .handoff-now-note .move-hint-close {
+  margin-left: auto;
+  min-width: 0;
+  padding: 0 6px;
+}
 
 /* ------------------------------------------------------------------------
    The divider over a chat's terminal once it has had a handoff

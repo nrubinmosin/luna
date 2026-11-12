@@ -11,6 +11,7 @@ import type { OrphanSessionDto } from '../../ipc/sessions';
 import type { BrowsersDto } from '../../ipc/browsers';
 import type { WorktreeInfoDto } from '../../ipc/worktrees';
 import type { Group, Layout, Slots } from '../../features/panes/panes.store';
+import type { LimitFact, MoveStatusDto } from '../../ipc/moving';
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -202,6 +203,40 @@ The updater offers a build of its own version again. Find out why and fix it.
   warnings: ['1 helper(s) of this chat are still at work: they stay with this chat, not the new one.'],
   maxBytes: 96 * 1024
 };
+
+/** The usage limit that stopped the first chat, as `move_facts` gives it. */
+export const MOVE_LIMIT: LimitFact = {
+  kind: 'usage_limit',
+  since: Date.now() - 18 * 60_000,
+  window: '5 hours',
+  used: 1,
+  resetsAt: hoursFromNow(1.6),
+  readingAt: Date.now() - 4 * 60_000,
+  readingAgeMs: 4 * 60_000
+};
+
+/** The first chat's move, asked for its document, as `move_list` gives it:
+ *  writing it, or failed with why. */
+const moveOf = (s: Partial<MoveStatusDto>): MoveStatusDto => ({
+  moveId: '5d17e0',
+  chatId: 'demo-1',
+  newId: 'demo-moved',
+  phase: 'asked',
+  at: Date.now() - 40_000,
+  stopOld: false,
+  worktree: false,
+  toAccount: 'work',
+  source: 'chat',
+  askedAt: Date.now() - 40_000,
+  ...s
+});
+export const MOVE_ASKED = moveOf({});
+export const MOVE_ASK_FAILED = moveOf({
+  phase: 'failed',
+  why: 'no document within 10 minutes of the ask',
+  askFailed: true,
+  askAgain: true
+});
 
 export const ACCOUNTS: Account[] = [
   account({ name: 'personal' }),
