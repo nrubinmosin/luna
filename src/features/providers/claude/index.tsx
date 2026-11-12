@@ -16,7 +16,13 @@ import {
   modelLabelOf,
   permFromSetting
 } from '../../../shared/types';
-import { claudeDefaults, claudeModels, type ClaudeDefaultSource, type ClaudeModelDto } from '../../../ipc/defaults';
+import {
+  claudeDefaults,
+  claudeModels,
+  type ClaudeDefaultSource,
+  type ClaudeModelDto,
+  type SettingDto
+} from '../../../ipc/defaults';
 import { ensureClaudeSession } from '../../../ipc/sessions';
 import { claudeFolderTrusted, claudeTrustFolder } from '../../../ipc/trust';
 import { ModelSelect } from '../../../shared/ui/ModelSelect';
@@ -33,8 +39,16 @@ export const SOURCE_LABELS: Record<Exclude<ClaudeDefaultSource, 'stock'>, string
   account: "the account's settings.json",
   project: "the project's .claude/settings.json",
   'project-local': "the project's .claude/settings.local.json",
-  managed: 'the machine-wide managed settings'
+  managed: 'the machine-wide managed settings',
+  model: "the model's own default in Claude Code's catalog"
 };
+
+/** The origin line of a resolved value: its file, and the key in it where
+ *  that is not the plain one (an effort `/effort` kept for one model). */
+function sourceOf(s: SettingDto<ClaudeDefaultSource>): string | undefined {
+  if (s.source === 'stock') return undefined;
+  return s.key ? `${SOURCE_LABELS[s.source]}, ${s.key}` : SOURCE_LABELS[s.source];
+}
 
 export const settingsNote =
   'Opens on this account’s Claude Code settings; anything changed here applies to this chat only';
@@ -62,7 +76,8 @@ export async function settingsDefaults(
   const effort = dto?.effort ? effortFromSetting(dto.effort.value) : null;
   if (effort && dto?.effort) {
     values.effort = effort;
-    if (dto.effort.source !== 'stock') from.effort = SOURCE_LABELS[dto.effort.source];
+    const src = sourceOf(dto.effort);
+    if (src) from.effort = src;
   }
   const perm = dto?.permissionMode ? permFromSetting(dto.permissionMode.value) : null;
   if (perm && dto?.permissionMode) {
@@ -170,11 +185,13 @@ export function effortMovedTo(listed: ClaudeModelDto | undefined, current: Effor
 export function Fields({
   draft,
   origin,
-  accountPath
+  accountPath,
+  folder
 }: {
   draft: Draft<ClaudeSettings>;
   origin: (field: keyof ClaudeSettings) => ReactNode;
   accountPath: string;
+  folder: string;
 }) {
   const { settings, pick } = draft;
   const labelStyle: CSSProperties = { fontSize: 'var(--fs-3)', color: 'var(--dim)', marginBottom: 4, fontWeight: 600 };
@@ -199,6 +216,27 @@ export function Fields({
   const efforts = effortsFor(listed);
   const effortItems =
     efforts.length && settings.effort && !efforts.includes(settings.effort) ? [...efforts, settings.effort] : efforts;
+
+  // Claude Code keeps effort per model: a model picked here starts on the
+  // level the settings files give it (claude/defaults.rs `effort_by_model`),
+  // unless one was picked by hand.
+  const [byModel, setByModel] = useState<Record<string, SettingDto<ClaudeDefaultSource>>>({});
+  useEffect(() => {
+    let stale = false;
+    void claudeDefaults(accountPath, folder)
+      .then(d => !stale && setByModel(d.effortByModel ?? {}))
+      .catch(() => !stale && setByModel({}));
+    return () => {
+      stale = true;
+    };
+  }, [accountPath, folder]);
+  const own = listed ? byModel[listed.slug] : undefined;
+  const ownEffort = own ? effortFromSetting(own.value) : null;
+  useEffect(() => {
+    if (own && ownEffort) draft.rebase('effort', ownEffort, sourceOf(own));
+    // `draft.rebase` is a new function every render; the model's own level is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listed?.slug, ownEffort, own?.source, own?.key]);
 
   // A model that does not take the level shown moves it to its own default
   // level, a hand-picked one included: a chat cannot run at a level its

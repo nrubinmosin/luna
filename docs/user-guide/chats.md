@@ -61,8 +61,14 @@ account, since whether to trust it is yours to say.
   signed in, it lists Fable, Opus, Sonnet and Haiku.
 - Effort: the levels the chosen model takes (`low/medium/high/xhigh/max`
   today), plus `ultracode`. A model that takes no effort, such as Haiku 4.5,
-  shows none. Picking a model that does not take the level shown moves it to
-  that model's own default. Isolation runs
+  shows none. Claude Code keeps effort per model (what `/effort` sets in a
+  chat is saved for that model), so each model opens on its own level, as
+  Claude Code would pick it: the one the settings files keep for it, else
+  the model's own default, and the line under it names the file and key.
+  The account's top-level `effortLevel` counts only for older models, as in
+  Claude Code; a project's or a managed one counts for every model. Picking a
+  model moves to its level unless you picked one by hand; one that does not
+  take the level shown moves it to that model's own default. Isolation runs
 `claude --worktree` in `<folder>/.claude/worktrees/<name>`, on a
 `worktree-<name>` branch. Before Claude Code makes one, Luna fetches origin's
 default branch (10 s at most, never asking for a password; off in Settings);

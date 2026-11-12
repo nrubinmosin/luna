@@ -1,8 +1,9 @@
 import { call } from './core';
 
 /** Where a resolved default came from, for the line under the control;
- *  `stock` is Luna's own choice where no file said anything usable. */
-export type ClaudeDefaultSource = 'account' | 'project' | 'project-local' | 'managed' | 'stock';
+ *  `stock` is Luna's own choice where no file said anything usable, `model`
+ *  an effort that is the model's own default in Claude Code's catalog. */
+export type ClaudeDefaultSource = 'account' | 'project' | 'project-local' | 'managed' | 'model' | 'stock';
 /** `codex`: what Codex itself would pick — the first model of its catalog,
  *  at that model's own reasoning level. */
 export type CodexDefaultSource = 'account' | 'project' | 'codex' | 'stock';
@@ -10,12 +11,19 @@ export type CodexDefaultSource = 'account' | 'project' | 'codex' | 'stock';
 export interface SettingDto<S extends string = string> {
   value: string;
   source: S;
+  /** The key it was read from where that is not the field's plain one: an
+   *  effort's `modelSettings.<model>.effortLevel`. */
+  key?: string;
 }
 
 export interface ClaudeDefaultsDto {
   model: SettingDto<ClaudeDefaultSource> | null;
+  /** The effort of `model`. */
   effort: SettingDto<ClaudeDefaultSource> | null;
   permissionMode: SettingDto<ClaudeDefaultSource> | null;
+  /** The effort each of the account's models starts on, by slug: Claude Code
+   *  keeps it per model. */
+  effortByModel?: Record<string, SettingDto<ClaudeDefaultSource>>;
 }
 
 /**
