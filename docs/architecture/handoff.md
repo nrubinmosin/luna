@@ -163,7 +163,7 @@ that beat is skipped and the turn looked at again at the next.
   instructions in effect it carries their six headings inline (`SECTIONS`),
   with an override it sends the chat to the call. Once each per conversation
   (`Told`, by the transcript's name), each ask's percentage kept
-  (`Told::asked`).
+  (`Told::shares`, read under its old name `asked` too).
 - A conversation a handoff began (`Record::fresh`) keeps its first reading as a
   floor and is asked only past it by `GROWTH` (5 points): one that begins above
   the threshold is not sent straight into the next handoff.
@@ -184,6 +184,12 @@ that beat is skipped and the turn looked at again at the next.
 - A record from before asks were kept, told of its threshold with no ask, is
   re-armed as it loads (`store.rs` `rearmed_unasked`): the threshold asks it
   again at its next turn's end rather than leave it refused and never asked.
+  So is a conversation whose threshold's ask gave way and nothing answered
+  it: the person's ask that took its place lapsed or was withdrawn
+  (`lapsed`), a move's ask took it (`moving::ask_taken`), or auto-handoff was
+  turned on again with no ask open (`set_auto_handoff`); otherwise the
+  threshold, noticing only above a level it told of, would leave a chat past
+  it unasked until its firm mark.
 
 ## The ask
 
@@ -220,13 +226,14 @@ the move is over instead (`moving::MOVE_OVER`), not that nobody asked it.
   asks (`Asked::conversation`, `ask_holds`), both known and the same; where
   either is not known the call is refused (`NOT_YET`, "call again in a few
   seconds"), not accepted. The threshold's ask is bound as it opens to the
-  conversation whose context passed it; one opened before that was known is
-  bound by the beat only while the chat's transcript is positively the
-  conversation it is on and still the one the threshold read
-  (`Told::conversation`, `late_bind`), closed where it is another, and left
-  be where the transcript is not known to be the live one's. The
-  beat closes an ask whose chat is found on another conversation the person
-  started (`/clear`, `/new`: `drifted`); Luna's own switch, which changes the
+  conversation whose context passed it, the person's as its request is typed
+  to the one it went into. The beat closes an ask whose chat is found on
+  another conversation the person started (`/clear`, `/new`: `drifted`), and
+  leaves it be while Luna cannot name the one the chat is on. A Codex chat's
+  conversation is the thread its title names, except one of its subagents'
+  it is watching (`/subagents`): that leaves it on its own thread
+  (`codex/session/rollouts.rs` `own_thread`), so watching a child closes no
+  ask of the parent's. Luna's own switch, which changes the
   conversation on purpose, closes its ask as it ends. A call from another
   conversation, or from one Luna cannot name, schedules nothing.
 - **Lapse.** The person's ask closes `MANUAL_ASK_MS` (10 minutes) after its
@@ -501,8 +508,12 @@ stand in for), since a
 snapshot holds one limit alone: a Spark chat's newer snapshot takes nothing
 of the general limit's, nor a general one a full Spark window. A
 window scoped to one model (Claude Code's Opus week, a Codex model's own
-limit) holds only a chat on that model; with the model unknown, every window
-counts (`UsageReading::for_model`). No usage percentage picks a source.
+limit) holds only a chat on that model, the model of the turn that stopped
+(`agents::stopped_model`): Codex's latest `turn_context`, answered or not, so
+a chat switched to Spark whose first Spark turn hit Spark's limit is judged
+by Spark; Claude Code's failed request names no model (`<synthetic>`), so
+its settings' model. Not the model that answered last. With the model
+unknown, every window counts (`UsageReading::for_model`). No usage percentage picks a source.
 
 **The ask** (a person's chat with Luna tools whose CLI has listed
 `luna_session_handoff`, no ask of the person's open, not in plan mode or a
@@ -513,7 +524,16 @@ the fixed line `[Luna move <id> request, not typed by the user]` typed under
 `asked_conversation`, kept; not typed while Luna cannot name that
 conversation). It answers only once typed and only in that conversation
 (`ask_here`): before, or in one the person started since, the tool refuses
-(`NOT_ASKED_HERE`), and collection looks again as it takes the document. The tool without `file` then serves
+(`NOT_ASKED_HERE`), and collection looks again as it takes the document.
+The chat found on another conversation once it is typed fails the ask at
+once (`left_asked`, `LEFT_ASKED`, `AskEnd::Left`), Ask again offered, rather
+than the dialog saying it writes until the wait runs out. Opening the ask
+takes the chat from the threshold's ask, which closes, its notice not yet
+typed dropped and the threshold re-armed (`ask_taken`): while the move asks,
+any file the chat sends is the move's (`asked_file`), never a handoff, so
+the threshold's ask could only refuse; the person asked for the move. Not
+while the person's ask is open, a handoff is under way or its file is being
+copied. The tool without `file` then serves
 the move's text (`served::move_instructions`, `facts::move_how_to`, a drafts
 name `move-<id>-<random>.md`): the handoff's instructions in effect, the
 person's override included, under the move's own rules (helpers stay behind,

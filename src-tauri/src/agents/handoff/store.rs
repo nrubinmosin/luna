@@ -27,8 +27,10 @@ pub(super) struct Told {
     pub floor: u64,
     /// The share of its context at each notice it was sent, compactions
     /// between them or not: what the window shows while no handoff follows.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub asked: Vec<u64>,
+    /// Saved as `asked` by earlier cores, a name `Record::asked` (the ask open)
+    /// now has.
+    #[serde(default, alias = "asked", skip_serializing_if = "Vec::is_empty")]
+    pub shares: Vec<u64>,
     /// How often its CLI compacted it after a notice, no handoff between
     /// (watch.rs `told_now`).
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -245,7 +247,11 @@ pub(super) fn from_bytes(bytes: &[u8], now: u64) -> Records {
 
 /// A conversation told of its threshold with no ask open and no handoff
 /// under way is told nothing yet, so the threshold asks it again at its next
-/// turn's end if it is still past it. A record from before asks were kept
+/// turn's end if it is still past it: once the person's ask that took the
+/// threshold's place closes with no handoff (mod.rs `lapsed`), a move's ask
+/// takes it (moving.rs `move_ask`), or auto-handoff is turned on again
+/// (mod.rs `set_auto_handoff`), the threshold not noticing again at a level
+/// it told of. A record from before asks were kept
 /// (the notice itself let the chat call) has none, and would otherwise be
 /// refused and never noticed again at that level. Not migrated into an open
 /// ask: such a record cannot be told from one whose ask closed since (the
@@ -254,7 +260,7 @@ pub(super) fn from_bytes(bytes: &[u8], now: u64) -> Records {
 /// which the notice, gone long ago, cannot vouch for. A notice more after a
 /// restart is the smaller harm: it goes only to a chat past its threshold
 /// that nothing asks.
-fn rearmed_unasked(rec: &mut Record) {
+pub(super) fn rearmed_unasked(rec: &mut Record) {
     if rec.asked.is_some() || rec.switch.is_some() {
         return;
     }
@@ -406,7 +412,7 @@ mod tests {
     /// what it was told.
     #[test]
     fn a_conversation_told_with_no_ask_kept_is_asked_again() {
-        let told = |level| Some(Told { conversation: "c".into(), level, floor: 3, asked: vec![71], compacted: 0, tokens: 9 });
+        let told = |level| Some(Told { conversation: "c".into(), level, floor: 3, shares: vec![71], compacted: 0, tokens: 9 });
         let mut saved = Records::new();
         saved.insert("old".into(), Record { told: told(2), ..Default::default() });
         let open = Asked::new(AskKind::Auto, 1, None);
@@ -416,10 +422,19 @@ mod tests {
         bytes["old"].as_object_mut().unwrap().remove("asked");
         let back = from_bytes(&serde_json::to_vec(&bytes).unwrap(), 9);
         let old = back["old"].told.as_ref().unwrap();
-        assert_eq!((old.level, old.floor, old.asked.clone()), (0, 3, vec![71]), "asked again, the rest kept");
+        assert_eq!((old.level, old.floor, old.shares.clone()), (0, 3, vec![71]), "asked again, the rest kept");
         assert!(super::super::watch::due(old, 1), "the threshold's next look notices it");
         assert_eq!(back["asked"].told, told(1), "an ask open: the notice stands");
         assert_eq!(back["asked"].asked.as_ref().map(|a| a.kind), Some(AskKind::Auto));
+    }
+
+    /// What a conversation was asked at, saved under its old name, reads back.
+    #[test]
+    fn told_shares_saved_as_asked_read_back() {
+        let old = r#"{"c":{"told":{"conversation":"c","level":1,"asked":[71,86]}}}"#;
+        let back = from_bytes(old.as_bytes(), 9);
+        assert_eq!(back["c"].told.as_ref().map(|t| t.shares.clone()), Some(vec![71, 86]));
+        assert!(serde_json::to_string(&back).unwrap().contains(r#""shares":[71,86]"#));
     }
 
     /// `handoffs.json` planted as a link, to a folder (a junction on Windows)

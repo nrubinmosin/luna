@@ -113,15 +113,31 @@ fn chat_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> cra
     crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running }
 }
 
-/// The model `id` runs on as far as Luna knows: the one its transcript says
-/// answered last (a `/model` switch included), else its settings' `model`.
-/// None: its CLI's default, not known here.
-pub fn model_of(id: &str, provider: Provider) -> Option<String> {
-    let answered = transcript_path(crate::pty::manager(), id).and_then(|path| match provider {
-        Provider::Claude => crate::claude::session::last_model(&path),
-        Provider::Codex => crate::codex::session::answered_model(&path),
-    });
-    answered.or_else(|| crate::agents::registry::settings_of(id)["model"].as_str().filter(|m| !m.is_empty()).map(str::to_owned))
+/// The model the turn that stopped `id` asked for, as far as Luna knows: what
+/// a limit scoped to one model is judged against (activity/limit.rs
+/// `limit_in_force`). See `stopped_model`.
+pub fn stopped_model_of(id: &str, provider: Provider) -> Option<String> {
+    let path = transcript_path(crate::pty::manager(), id);
+    let configured = crate::agents::registry::settings_of(id)["model"].as_str().filter(|m| !m.is_empty()).map(str::to_owned);
+    stopped_model(provider, path.as_deref(), configured)
+}
+
+/// The model of a chat's last turn, the one a limit stopped, by its
+/// transcript at `transcript`, else `configured`, the model its settings
+/// start it on. Not the model that answered last: a chat switched to another
+/// model whose first turn there hit that model's own limit would be judged by
+/// the one before, and that model's limit lifting would lift the stop. Codex
+/// names a turn's model in its `turn_context` before asking it, so its latest
+/// is the stopped turn's, answered or not. Claude Code writes the failed
+/// request's line as `<synthetic>`, naming no model, and records no `/model`
+/// switch, so only its settings say. None: not known, and every window
+/// counts (`UsageReading::for_model`).
+pub(crate) fn stopped_model(provider: Provider, transcript: Option<&std::path::Path>, configured: Option<String>) -> Option<String> {
+    let asked = match provider {
+        Provider::Claude => None,
+        Provider::Codex => transcript.and_then(crate::codex::session::last_model),
+    };
+    asked.or(configured)
 }
 
 /// The caller's own, or the sessions `ids` names, which may be any: what a row
