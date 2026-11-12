@@ -25,7 +25,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Auto-handoff ticked on a chat already past its threshold, or set lower than
   where it stands, asks as soon as the chat is at rest rather than at its
   next turn's end. Turned off before Luna typed its notice, the notice is
-  not typed, even one Luna was about to type. A conversation a handoff began
+  not typed, even one Luna was about to type. Nor does it go in while a
+  `/clear` or `/new` you just sent may still be on its way to the CLI, and
+  one Luna cannot place in the conversation it asks waits without holding
+  up the chat's other notices. A conversation a handoff began
   is spared until it has grown 5 points past where its first turn ended,
   however late it is first looked at: one handed off with Auto-handoff off
   and gone on since is asked once it is turned on, if it has grown so.
