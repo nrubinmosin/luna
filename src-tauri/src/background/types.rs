@@ -162,6 +162,20 @@ pub(super) struct Observed {
     pub(super) stop_owed: Vec<String>,
     /// Those of them it has been said to.
     pub(super) stop_told: Vec<String>,
+    /// What stopped that work, for what its callers are told.
+    pub(super) stop_cause: StopCause,
+}
+
+/// What stopped a helper's background work before it was done.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StopCause {
+    /// Claude Code's wait for it ran out (background/run.rs `stops_background`).
+    #[default]
+    Ceiling,
+    /// `codex exec` interrupted the subagents its turn spawned as the turn
+    /// ended (codex::session `subagents_cut_at_turn_end`).
+    TurnEnd,
 }
 
 impl Observed {

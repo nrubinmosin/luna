@@ -410,17 +410,31 @@ pub(in crate::agents) fn notice_line(
 /// it yet; nothing for any other. Without it, the end of those subagents reads
 /// as a job that finished and said nothing.
 fn background_stopped(id: &str, caller: &str) -> &'static str {
-    if crate::background::background_stopped_for(id, caller) {
-        BACKGROUND_STOPPED
-    } else {
-        ""
+    background_stopped_line(id, caller).unwrap_or("")
+}
+
+/// See `background_stopped`: the line, by what stopped the work.
+pub(in crate::agents) fn background_stopped_line(id: &str, caller: &str) -> Option<&'static str> {
+    if !crate::background::background_stopped_for(id, caller) {
+        return None;
     }
+    Some(match crate::background::background_stop_cause(id) {
+        crate::background::StopCause::Ceiling => BACKGROUND_STOPPED,
+        crate::background::StopCause::TurnEnd => SUBAGENTS_INTERRUPTED,
+    })
 }
 
 /// See `background_stopped`; a notice that went in with it acknowledges it for
 /// its caller (notifier `ack_background_stop`), as does a reply handed over by
 /// a wait, read or report (owed.rs `hand_over`, `background_stopped_note`).
 pub(in crate::agents) const BACKGROUND_STOPPED: &str = " Its CLI stopped the subagents and jobs it had left in the background, out of time to wait for them, not because they were done: their work may be unfinished and uncommitted. luna_session_send has it check what they left and carry on.";
+
+/// The same for a Codex helper, whose `codex exec` interrupts the subagents
+/// its turn spawned as the turn ends (codex::session `subagents_cut_at_turn_end`).
+pub(in crate::agents) const SUBAGENTS_INTERRUPTED: &str = " Its CLI interrupted the subagents it had spawned as its turn ended, before they were done: their work may be unfinished and uncommitted. luna_session_send has it check what they left and carry on, waiting for any subagent it spawns before it ends its turn.";
+
+/// Each line a notice may say a helper's background work was stopped with.
+pub(in crate::agents) const STOPPED_LINES: [&str; 2] = [BACKGROUND_STOPPED, SUBAGENTS_INTERRUPTED];
 
 /// A turn that has said nothing for this long, its caller hears of once: a
 /// command that hangs looks like this and like nothing else from outside, and

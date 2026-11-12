@@ -474,3 +474,20 @@ impl Write for Stalled {
         Ok(())
     }
 }
+
+/// A Codex test helper in a turn on thread `thread`, begun at `started_ms`,
+/// its rollouts under the account folder `account`.
+#[cfg(test)]
+pub(crate) fn codex_in_turn_for_test(id: &str, account: &str, thread: &str, started_ms: u64) {
+    let mut e = entry(Provider::Codex);
+    e.spec.account_path = account.into();
+    e.session = Some(thread.into());
+    e.run = Some(Run::claimed(None, started_ms));
+    lock().entries.insert(id.to_string(), e);
+}
+
+/// A test helper's turn's process exits with `code`.
+#[cfg(test)]
+pub(crate) fn turn_over_for_test(id: &str, code: Option<i32>) {
+    turn_over(id, code);
+}

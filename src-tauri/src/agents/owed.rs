@@ -284,10 +284,10 @@ pub fn callers_owed(id: &str) -> Vec<String> {
 /// What a reply handed over to `caller` (a wait, read or report) says of
 /// helper `id`'s CLI having stopped its background work, while it owes
 /// `caller` an answer and that is still to be said to it (notifier lines.rs
-/// `BACKGROUND_STOPPED`); `hand_over` acknowledges it by the same rule.
+/// `background_stopped_line`); `hand_over` acknowledges it by the same rule.
 pub(super) fn background_stopped_note(caller: &str, id: &str) -> Option<String> {
     reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string()))?;
-    crate::background::background_stopped_for(id, caller).then(|| crate::agents::notifier::lines::BACKGROUND_STOPPED.trim().to_string())
+    crate::agents::notifier::lines::background_stopped_line(id, caller).map(|line| line.trim().to_string())
 }
 
 /// Records the turn count a tool answer showed `caller` of `id`, settling
@@ -533,6 +533,31 @@ mod tests {
         assert!(background_stopped_for(id, b), "and the later stop is still to be told to the peer");
         crate::background::gone_for_test(id);
         reg().lock().unwrap().owed.retain(|(_, s), _| s != id);
+    }
+
+    /// `codex exec` 0.167.2 interrupted the subagent a Codex helper's turn
+    /// spawned as that turn ended, and exited 0. Its parent hears so in the
+    /// words for that, with the answer; a caller who asked after it does not.
+    #[test]
+    fn a_codex_helpers_subagent_cut_off_at_its_turn_end_is_told() {
+        let (id, parent, later) = ("cx-child", "cx-parent", "cx-later");
+        let root = std::env::temp_dir().join(format!("luna-cx-cut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let t0 = now_ms() - 60_000;
+        let (thread, kid) = (format!("cxp{t0}"), format!("cxk{t0}"));
+        crate::codex::session::cut_off_pair_for_test(&root, t0, &thread, &kid, true);
+        crate::background::codex_in_turn_for_test(id, &root.to_string_lossy(), &thread, t0);
+        owe_from(parent, id, 0, 0);
+        crate::background::turn_over_for_test(id, Some(0));
+        let note = background_stopped_note(parent, id).expect("the parent is told");
+        assert!(note.starts_with("Its CLI interrupted the subagents it had spawned as its turn ended"), "{note}");
+        owe_from(later, id, 1, 0);
+        assert_eq!(background_stopped_note(later, id), None, "it asked after that turn");
+        drop(hand_over(parent, id, 1, None));
+        assert!(!crate::background::background_stopped(id), "everyone it concerned has had it");
+        crate::background::gone_for_test(id);
+        reg().lock().unwrap().owed.retain(|(_, s), _| s != id);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
