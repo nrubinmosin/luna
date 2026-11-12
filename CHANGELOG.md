@@ -10,6 +10,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- A new Claude Code chat or helper opens on the effort Claude Code itself
+  would use for its model. Claude Code keeps effort per model (`/effort`
+  saves it under `modelSettings`), and the account's top-level `effortLevel`
+  counts only for older models; Luna read only that one key, for every
+  model. Each model now gets the level the settings files keep for it, else
+  its own default, the dialog naming the file and key, and moves to it when
+  another model is picked; `luna_account_get` gives `effortByModel`.
+
 - A Claude Code helper's background subagents are no longer stopped 10
   minutes after its turn: Claude Code 2.1.319+ stops what a `-p` run left in
   the background that long after its input closed, unfinished and uncommitted
