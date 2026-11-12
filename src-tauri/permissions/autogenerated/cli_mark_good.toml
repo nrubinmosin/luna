@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cli-mark-good"
+description = "Enables the cli_mark_good command without any pre-configured scope."
+commands.allow = ["cli_mark_good"]
+
+[[permission]]
+identifier = "deny-cli-mark-good"
+description = "Denies the cli_mark_good command without any pre-configured scope."
+commands.deny = ["cli_mark_good"]

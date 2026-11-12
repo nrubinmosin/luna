@@ -36,13 +36,21 @@ nothing depends on a global install.
 - The first three sessions on a new version are watched. If two of them fail
   soon after starting, a notice says so and a chip in the status bar opens
   Settings → CLIs, where **Roll back** goes to the version before and **Keep
-  it** keeps this one. Luna never rolls back on its own. A session you or Luna
+  it** keeps this one. Once each of the three has ended well or got past its
+  first half minute, with none failed, the version is tagged **first 3 sessions ok**: a sign it starts
+  sessions, not that Luna was checked with it. Luna never rolls back on its own. A session you or Luna
   stopped does not count, nor one that ended on something that was not the
   CLI's fault (a worktree asked for outside a git repository); the next
   session is watched in its place.
 - **Use** on any installed version makes it the current one and keeps it
   there until you choose a channel again (**Follow channel**); **Mark bad**
-  keeps a version from being installed or used again by an update. Going back
+  keeps a version from being installed or used again by an update; **Mark
+  good** on an installed version this Luna does not list lets the known-good
+  channel install it as if the list named it, so it becomes current there if
+  it is the newest. **Clear bad** and **Unmark good** take a mark back, also
+  on a version no longer installed, listed under the versions. A version
+  marked good is still held to the oldest safe version, and one no longer
+  installed is not downloaded again below the newest that has run here. Going back
   checks the version's files against their checksums first, and nothing older
   than the oldest safe version a Luna release names ever runs.
 - When a Luna update raises that oldest safe version past the CLI you have,

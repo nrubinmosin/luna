@@ -34,12 +34,16 @@ export interface CliVersionRowDto {
   knownGood: boolean;
   /** Why it was marked bad, if it was. */
   bad: string | null;
+  /** How it was marked good on this machine, if it was. */
+  good: string | null;
 }
 
 /** The watch over a new version's first sessions (cli/canary.rs). */
 export interface CliCanaryDto {
   version: string;
   watched: number;
+  /** Watched sessions past their first half minute with no failure. */
+  settled: number;
   failures: string[];
   warned: boolean;
   dismissed: boolean;
@@ -57,6 +61,8 @@ export interface CliVersionsDto {
   /** The folder "Use" holds the version at, while it does. */
   pinned: string | null;
   bad: Record<string, string>;
+  /** Marked good here and still allowed to run, installed or not. */
+  good: Record<string, string>;
   canary: CliCanaryDto | null;
 }
 
@@ -70,6 +76,11 @@ export const cliSetChannel = (provider: Provider, channel: CliChannel) =>
   call<void>('cli_set_channel', { provider, channel });
 export const cliMarkBad = (provider: Provider, version: string, why?: string) =>
   call<void>('cli_mark_bad', { provider, version, why: why ?? null });
+/** The known-good channel may install this installed version from now on. */
+export const cliMarkGood = (provider: Provider, version: string) => call<void>('cli_mark_good', { provider, version });
+/** Neither bad nor good from now on: "Clear bad" and "Unmark good". */
+export const cliClearMark = (provider: Provider, version: string) =>
+  call<void>('cli_clear_mark', { provider, version });
 /** Keep a version the canary warned about; its badge goes. */
 export const cliCanaryDismiss = (provider: Provider) => call<void>('cli_canary_dismiss', { provider });
 

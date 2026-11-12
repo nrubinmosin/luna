@@ -8,6 +8,36 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- **Mark good** in Settings → CLIs: an installed CLI version this Luna does
+  not list becomes one the known-good channel may install, on this machine.
+  **Clear bad** and **Unmark good** take a mark back, also on a version no
+  longer installed, now listed under the versions: a bad mark could not be
+  undone before.
+- A CLI version whose first three sessions all got past their start is
+  tagged "first 3 sessions ok", and the log says so once.
+
+### Changed
+
+- Claude Code 2.1.322 and Codex 0.167.2 are on the known-good list, so the
+  default channel installs them.
+- A pane's title bar keeps only the "…" menu, delete, peek, take off the
+  board and "Not waiting". Rename, chat color and What Luna applied moved
+  into the "…" menu, which no longer repeats the buttons beside it; a
+  double-click on a chat's name renames it.
+- The awake hold is logged as INFO, not as a warning.
+
+### Fixed
+
+- A helper turn's log line no longer holds the chat's hook and guard secret
+  (a Codex start passes its guard URL in a `-c` argument), nor the helper's
+  identity line whole, which made up most of the log.
+- The data folder's privacy check at start no longer takes what WebView2's
+  Chromium adds to its own files (denies, and a grant to its network
+  sandbox's capability) for a folder open to others, so a start no longer
+  warns of them and takes them away for Chromium to add back.
+
 ## [0.15.0] - 2026-11-11
 
 A chat can move to another account of its CLI when this one runs out:

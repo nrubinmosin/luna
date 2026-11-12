@@ -48,7 +48,7 @@ mod probe;
 
 #[cfg(test)]
 pub(crate) use canary::cause_outside;
-pub use canary::{session_ended, session_stopped, Canary};
+pub use canary::{session_ended, session_exited, session_stopped, Canary};
 pub use choice::Channel;
 pub use in_use::{session_version, InUse};
 #[cfg(test)]
@@ -429,6 +429,8 @@ pub struct VersionRow {
     pub known_good: bool,
     /// Marked bad, and why.
     pub bad: Option<String>,
+    /// Marked good on this machine, and how.
+    pub good: Option<String>,
 }
 
 /// A provider's installed versions and what each is to Luna.
@@ -449,6 +451,9 @@ pub struct CliVersions {
     pub pinned: Option<String>,
     /// Every version marked bad, installed or not, and why.
     pub bad: std::collections::BTreeMap<String, String>,
+    /// Every version marked good here that this Luna lets run, installed or
+    /// not, and how.
+    pub good: std::collections::BTreeMap<String, String>,
     /// The watch over the current version's first sessions, while it is the
     /// current one's.
     pub canary: Option<Canary>,
@@ -479,6 +484,7 @@ fn versions_in(root: &Path, bin_rel: &str, known: &known_good::Entry) -> CliVers
     let current = current.map(|c| c.dir);
     let previous = previous_in(root, bin_rel);
     let bad = choice::bad_in(root);
+    let good = choice::good_in(root, &known.min_safe);
     let versions = installed_all(root, bin_rel)
         .into_iter()
         .map(|(dir, record)| VersionRow {
@@ -487,6 +493,7 @@ fn versions_in(root: &Path, bin_rel: &str, known: &known_good::Entry) -> CliVers
             in_use: in_use::busy(root, &dir),
             known_good: known.known_good.contains(&record.version),
             bad: bad.get(&record.version).cloned(),
+            good: good.get(&record.version).cloned(),
             version: record.version,
             dir,
         })
@@ -500,6 +507,7 @@ fn versions_in(root: &Path, bin_rel: &str, known: &known_good::Entry) -> CliVers
         floor: floor_in(root, &known.min_safe),
         pinned: choice::pinned_in(root),
         bad,
+        good,
         canary,
     }
 }
@@ -539,6 +547,44 @@ pub fn cli_mark_bad(provider: Provider, version: String, why: Option<String>) ->
     Ok(())
 }
 
+/// "Mark good": the known-good channel takes `version` as if this Luna's list
+/// named it, and the pass that runs now may make it current. Only a version
+/// installed here, one the person has had to run, not below this Luna's
+/// minimum and not on its list already. Nothing below the floor that is gone
+/// is fetched again for it (`held_below_floor`), as for a listed one.
+#[tauri::command]
+pub fn cli_mark_good(provider: Provider, version: String) -> Result<(), String> {
+    let root = root(provider);
+    mark_good_checked(&root, source(provider).bin_rel, known_good::entry(provider), &version)?;
+    crate::log::info("cli", &format!("{} {version} marked good by hand", provider.as_str()));
+    std::thread::spawn(move || update(provider));
+    Ok(())
+}
+
+fn mark_good_checked(root: &Path, bin_rel: &str, known: &known_good::Entry, version: &str) -> Result<(), String> {
+    if version_cmp(version, &known.min_safe).is_lt() {
+        return Err(format!("{version} is older than {}, the oldest this Luna lets run", known.min_safe));
+    }
+    if known.known_good.iter().any(|v| v == version) {
+        return Err(format!("{version} is on this Luna's known-good list already"));
+    }
+    if installed_in(root, bin_rel, version).is_none() {
+        return Err(format!("{version} is not installed here"));
+    }
+    choice::mark_good_in(root, version, "marked good by hand")
+}
+
+/// "Clear bad" or "Unmark good": `version` goes back to what its channel
+/// makes of it, and a pass runs at once. Installed or not, so a mark on a
+/// version the sweep has taken can be undone too.
+#[tauri::command]
+pub fn cli_clear_mark(provider: Provider, version: String) -> Result<(), String> {
+    choice::clear_mark_in(&root(provider), &version)?;
+    crate::log::info("cli", &format!("{} {version} unmarked", provider.as_str()));
+    std::thread::spawn(move || update(provider));
+    Ok(())
+}
+
 /// "Use" in Settings: makes the installed directory `dir` current and holds
 /// it there, the update pass leaving it be until a channel is chosen again.
 /// Running sessions keep what they run; new ones start on it.
@@ -556,6 +602,11 @@ fn use_version(provider: Provider, dir: &str) -> Result<(), String> {
     let root = root(provider);
     let result = use_version_in(&root, src.bin_rel, min_safe(provider), dir).and_then(|v| choice::pin_in(&root, dir).map(|()| v));
     busy.store(false, Ordering::SeqCst);
+    // A pass asked for while this held the CLI (a mark, a channel) runs now:
+    // `update` only left it in `AGAIN`.
+    if AGAIN[provider.index()].load(Ordering::SeqCst) {
+        std::thread::spawn(move || update(provider));
+    }
     match &result {
         Ok(version) => crate::log::info("cli", &format!("{} {version} is now current by hand (versions/{dir})", provider.as_str())),
         Err(e) => crate::log::warn("cli", &format!("{} use {dir}: {e}", provider.as_str())),
@@ -743,13 +794,30 @@ pub fn download_to(agent: &ureq::Agent, url: &str, part: &Path, progress: &mut d
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// A pass asked for while one runs (a mark made meanwhile, say), for that
+/// one to run again once it is done rather than be lost.
+static AGAIN: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+
 fn update(provider: Provider) {
     let busy = &BUSY[provider.index()];
+    let again = &AGAIN[provider.index()];
+    again.store(true, Ordering::SeqCst);
     if busy.swap(true, Ordering::SeqCst) {
         return;
     }
+    loop {
+        again.store(false, Ordering::SeqCst);
+        pass(provider);
+        busy.store(false, Ordering::SeqCst);
+        // Asked again meanwhile, and nobody else took the pass up since.
+        if !again.load(Ordering::SeqCst) || busy.swap(true, Ordering::SeqCst) {
+            break;
+        }
+    }
+}
+
+fn pass(provider: Provider) {
     let result = update_inner(provider);
-    busy.store(false, Ordering::SeqCst);
     publish(provider, |s| {
         s.checked_at_ms = Some(now_ms());
         s.got = 0;
@@ -812,9 +880,9 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
     // A current version below the minimum runs no session (`launch_in`):
     // the pass moves off it whatever would otherwise keep it.
     let unsafe_now = current_in(&root, src.bin_rel).is_some_and(|c| version_cmp(&c.version, min).is_lt());
-    let bad = choice::bad_in(&root);
+    let (bad, good) = choice::marks_now(&root, min)?;
     let latest = latest.as_ref().map(String::as_str).map_err(String::as_str);
-    let (version, chosen) = match choice::plan(channel, pinned.as_deref(), known_good::entry(provider), &bad, latest, unsafe_now)? {
+    let (version, chosen) = match choice::plan(channel, pinned.as_deref(), known_good::entry(provider), &good, &bad, latest, unsafe_now)? {
         choice::Plan::Stay(why) => return Ok(Some(why)),
         choice::Plan::Install { version, chosen } => (version, chosen),
     };
@@ -1742,6 +1810,19 @@ mod tests {
         // Below the minimum: refused whatever its files.
         update_in(&root, BIN, pointer("3.0.0"), &mut hashed).unwrap();
         assert!(use_version_in(&root, BIN, "2.5.0", "2.0.0").unwrap_err().contains("older than 2.5.0"));
+        let _ = remove_tree(&root);
+    }
+
+    #[test]
+    fn only_an_installed_version_off_the_list_and_not_below_the_minimum_is_marked_good() {
+        let root = scratch("good");
+        update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        let known = known_good::Entry { min_safe: "1.5.0".into(), known_good: vec!["1.8.0".into()] };
+        assert!(mark_good_checked(&root, BIN, &known, "1.0.0").unwrap_err().contains("older than 1.5.0"));
+        assert!(mark_good_checked(&root, BIN, &known, "1.8.0").unwrap_err().contains("on this Luna's known-good list"));
+        assert!(mark_good_checked(&root, BIN, &known, "2.5.0").unwrap_err().contains("not installed"));
+        mark_good_checked(&root, BIN, &known, "2.0.0").unwrap();
+        assert!(versions_in(&root, BIN, &known).versions.iter().any(|r| r.version == "2.0.0" && r.good.is_some()));
         let _ = remove_tree(&root);
     }
 

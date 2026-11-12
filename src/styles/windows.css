@@ -230,9 +230,7 @@
   --g-restore: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6 5.2V3h7v6.6h-2.2' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.3'/%3E%3Cpath d='M6 3.5h7' stroke='white' stroke-width='1.8'/%3E%3Cpath d='M3 6.4h7.4v6.6H3z' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.3'/%3E%3Cpath d='M3 7h7.4' stroke='white' stroke-width='1.8'/%3E%3C/svg%3E");
   --g-close: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='2.2'/%3E%3C/svg%3E");
   --g-trash: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.4 5.4h7.2l-.7 8H5.1z' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.4'/%3E%3Cpath d='M3 4h10M6.4 4V2.6h3.2V4M7 7.2v4.2M9 7.2v4.2' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.3'/%3E%3C/svg%3E");
-  --g-pencil: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 13l.7-2.9 7-7 2.2 2.2-7 7z' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.4'/%3E%3Cpath d='M9.4 4.3l2.3 2.3' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.2'/%3E%3C/svg%3E");
   --g-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.6 8.4l2.9 2.9 5.9-6.3' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='2'/%3E%3C/svg%3E");
-  --g-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5.6' stroke='white' fill='none' stroke-width='1.3'/%3E%3Cpath d='M8 7.2v4' stroke='white' stroke-linecap='round' stroke-width='1.5'/%3E%3Ccircle cx='8' cy='5' r='.95' fill='white'/%3E%3C/svg%3E");
   --g-more: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='3.6' cy='8' r='1.35' fill='white'/%3E%3Ccircle cx='8' cy='8' r='1.35' fill='white'/%3E%3Ccircle cx='12.4' cy='8' r='1.35' fill='white'/%3E%3C/svg%3E");
 
   --ctl-face: linear-gradient(180deg, #6aa6fc 0%, #2b70f1 45%, #1a5fe6 55%, #3b7cf3 100%);
@@ -289,17 +287,11 @@
 [data-app] .title-bar-controls button[data-glyph="restore"] {
   --glyph: var(--g-restore);
 }
-[data-app] .title-bar-controls button[data-glyph="pencil"] {
-  --glyph: var(--g-pencil);
-}
 [data-app] .title-bar-controls button[data-glyph="check"] {
   --glyph: var(--g-check);
 }
 [data-app] .title-bar-controls button[data-glyph="more"] {
   --glyph: var(--g-more);
-}
-[data-app] .title-bar-controls button[data-glyph="info"] {
-  --glyph: var(--g-info);
 }
 [data-app] .title-bar-controls button[aria-label="Close"] {
   --glyph: var(--g-close);
@@ -308,19 +300,4 @@
 [data-app] .title-bar-controls button[data-glyph="trash"] {
   --glyph: var(--g-trash);
   --face: var(--ctl-red);
-}
-/* The color button wears the chat's color instead of a glyph. */
-[data-app] .title-bar-controls button[data-glyph="swatch"] {
-  background:
-    linear-gradient(var(--swatch, transparent), var(--swatch, transparent)) center / 10px 10px no-repeat,
-    var(--face) !important;
-}
-[data-app] .title-bar-controls button[data-glyph="swatch"]::after {
-  content: "";
-  display: block;
-  width: 12px;
-  height: 12px;
-  margin: auto;
-  border: 1px solid #fff;
-  border-radius: 3px;
 }

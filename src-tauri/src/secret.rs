@@ -140,6 +140,27 @@ pub fn sddl_allows_only(sddl: &str, user: &str) -> bool {
         })
 }
 
+/// Whether `sddl` is what Chromium leaves on the WebView's files once it has
+/// run: unprotected, so it takes the private folder's ACEs from above, with
+/// only these of its own: denies (it keeps its databases' files from being
+/// run), and grants to a named capability (`S-1-15-3-1024-…`) of its
+/// sandboxed network service, which it adds back at every start. Such a
+/// grant lets in only an AppContainer process given that capability, and
+/// then only as far as the rest of the DACL lets its user in too; only a
+/// process holding WRITE_DAC there, this user's, could have added it.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn sddl_is_chromiums(sddl: &str) -> bool {
+    sddl_aces(sddl).is_some_and(|(flags, aces)| {
+        !flags.contains('P')
+            && aces.iter().all(|ace| match ace.as_slice() {
+                [_, inherit, ..] if inherit.contains("ID") => true,
+                ["D", ..] => true,
+                ["A", _, _, _, _, who] => who.starts_with("S-1-15-3-1024-"),
+                _ => false,
+            })
+    })
+}
+
 /// Whether `sddl` takes everything from its parent: not protected, and every
 /// ACE inherited (`ID`). What is not gets reset by `acl::protect_tree`, since
 /// an explicit ACE outlives any change to the folder above it.
@@ -232,7 +253,7 @@ pub mod acl {
         let user = check_root(root, false)?;
         let mut odd = Vec::new();
         if std::fs::symlink_metadata(root)?.is_dir() {
-            reset_below(root, &user, &mut odd)?;
+            reset_below(root, root, &user, &mut odd)?;
         }
         set_dacl(root, &super::private_sddl(&user), PROTECTED_DACL_SECURITY_INFORMATION)?;
         Ok(odd)
@@ -293,9 +314,14 @@ pub mod acl {
         // A chat's handoff drafts folder may hold, beside that, what its
         // CLI's sandbox granted itself there: it is made private at the
         // CLI's every start, and only this user could add to it since
-        // (`super::own_dir`).
+        // (`super::own_dir`). The WebView's files may hold what Chromium
+        // adds to its own at every start (`super::sddl_is_chromiums`).
         let sddl = dacl_sddl(path)?;
-        if !super::sddl_inherits_only(&sddl) && !super::sddl_is_private(&sddl, named) && !handoff_drafts(root, path) {
+        if !super::sddl_inherits_only(&sddl)
+            && !super::sddl_is_private(&sddl, named)
+            && !handoff_drafts(root, path)
+            && !(in_webview(root, path) && super::sddl_is_chromiums(&sddl))
+        {
             problems.push(format!("{}: has access entries of its own", path.display()));
         }
         if meta.is_dir() {
@@ -315,10 +341,23 @@ pub mod acl {
             && (handoffs == root || handoffs == root.join("handoffs"))
     }
 
-    fn reset_below(dir: &Path, user: &str, odd: &mut Vec<String>) -> io::Result<()> {
+    /// Whether `path` is below the WebView's data folder, not that folder
+    /// itself: `webview` right in `root`, the data folder where Luna has it
+    /// whole, or `root` itself where that is the data folder's `webview`
+    /// (paths.rs `webview_dir`) and only Luna's own things are checked
+    /// (paths.rs `scope`). A folder of that name anywhere else is no
+    /// WebView's. Names are compared as Windows does, whatever their case.
+    pub(super) fn in_webview(root: &Path, path: &Path) -> bool {
+        let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+        let webview = if lower(root) == lower(&crate::paths::webview_dir()) { root.to_path_buf() } else { root.join("webview") };
+        let (webview, path) = (lower(&webview), lower(path));
+        path.strip_prefix(&webview).is_some_and(|rest| rest.len() > 1 && rest.starts_with(std::path::MAIN_SEPARATOR))
+    }
+
+    fn reset_below(root: &Path, dir: &Path, user: &str, odd: &mut Vec<String>) -> io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
-            match reset(&path, user, odd) {
+            match reset(root, &path, user, odd) {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 done => done.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?,
             }
@@ -326,7 +365,7 @@ pub mod acl {
         Ok(())
     }
 
-    fn reset(path: &Path, user: &str, odd: &mut Vec<String>) -> io::Result<()> {
+    fn reset(root: &Path, path: &Path, user: &str, odd: &mut Vec<String>) -> io::Result<()> {
         let meta = std::fs::symlink_metadata(path)?;
         if meta.file_type().is_symlink() {
             odd.push(format!("{}: a link or junction, left alone", path.display()));
@@ -337,12 +376,13 @@ pub mod acl {
             set_owner(path, user)?;
             odd.push(format!("{}: was owned by {owner}, taken over", path.display()));
         }
-        if !super::sddl_inherits_only(&dacl_sddl(path)?) {
+        let sddl = dacl_sddl(path)?;
+        if !super::sddl_inherits_only(&sddl) && !(in_webview(root, path) && super::sddl_is_chromiums(&sddl)) {
             // An empty DACL, unprotected: what is left is what it inherits.
             set_dacl(path, "D:", UNPROTECTED_DACL_SECURITY_INFORMATION)?;
         }
         if meta.is_dir() {
-            reset_below(path, user, odd)?;
+            reset_below(root, path, user, odd)?;
         }
         Ok(())
     }
@@ -1593,6 +1633,31 @@ mod tests {
             assert!(sddl_inherits_only(&sddl) && !sddl.contains(";AU)") && !sddl.contains(";BU)"), "{}: {sddl}", p.display());
         }
         assert_eq!(acl::dacl_sddl(&outside).unwrap(), outside_before, "nothing done through the junction");
+        // What Chromium adds to the WebView's files at its every start is
+        // kept and no reason to make the folder private again; the same
+        // anywhere else is not.
+        let cap = "*S-1-15-3-1024-1-2-3-4-5-6-7-8";
+        let state = root.join("webview").join("Default").join("Local State");
+        icacls(&state, &["/grant", &format!("{cap}:M")]);
+        icacls(&state, &["/deny", "*S-1-1-0:(X)"]);
+        icacls(&root.join("agents.jsonl"), &["/grant", &format!("{cap}:M")]);
+        let open = acl::verify(&root).unwrap();
+        assert!(
+            open.len() == 2 && open.iter().any(|o| o.contains("agents.jsonl")) && open.iter().any(|o| o.contains("elsewhere")),
+            "{open:?}"
+        );
+        acl::protect_tree(&root).unwrap();
+        let kept = acl::dacl_sddl(&state).unwrap();
+        assert!(kept.contains("S-1-15-3-1024-1-2-3-4-5-6-7-8") && kept.contains("(D;"), "{kept}");
+        assert!(sddl_inherits_only(&acl::dacl_sddl(&root.join("agents.jsonl")).unwrap()));
+        // Only the WebView's own folder: by its place, whatever the case.
+        assert!(acl::in_webview(&root, &root.join("WebView").join("Default")));
+        assert!(!acl::in_webview(&root, &root.join("webview")), "the folder itself keeps the private DACL");
+        assert!(!acl::in_webview(&root, &root.join("webviews").join("x")));
+        let elsewhere = root.join("hooks").join("webview");
+        assert!(!acl::in_webview(&elsewhere, &elsewhere.join("x")), "a folder of that name that is not the data folder's");
+        let real = crate::paths::webview_dir();
+        assert!(acl::in_webview(&real, &real.join("EBWebView")));
         // The junction is what is still in the way, and nothing else.
         let open = acl::verify(&root).unwrap();
         assert!(open.len() == 1 && open[0].contains("elsewhere"), "{open:?}");
@@ -1683,6 +1748,16 @@ mod tests {
         assert!(!sddl_inherits_only("D:AI(A;;0x1301bf;;;AU)(A;ID;FA;;;SY)"), "an explicit grant");
         assert!(!sddl_inherits_only("D:PAI(A;ID;FA;;;SY)"), "protected");
         assert!(sddl_inherits_only("D:AI"), "nothing but what is inherited, which is nothing");
+
+        // As Chromium leaves the WebView's Network folder and its databases.
+        let cap = "S-1-15-3-1024-3239966617-1410756637-3494353204-65451782-2225605771-3526040376-1730753648-3419555762";
+        assert!(sddl_is_chromiums(&format!("D:AI(A;;0x1301bf;;;{cap})(A;OICIIO;0x1301bf;;;{cap})(A;OICIID;FA;;;SY)")));
+        assert!(sddl_is_chromiums("D:AI(D;;FX;;;WD)(A;ID;FA;;;SY)"));
+        assert!(sddl_is_chromiums("D:AI(A;ID;FA;;;SY)"), "inherited alone");
+        assert!(!sddl_is_chromiums(&format!("D:PAI(A;;0x1301bf;;;{cap})(A;;FA;;;SY)")), "protected: not what it inherits");
+        assert!(!sddl_is_chromiums("D:AI(A;;0x1301bf;;;AU)(A;ID;FA;;;SY)"), "a grant to anyone but a named capability");
+        assert!(!sddl_is_chromiums("D:AI(A;;FA;;;S-1-15-2-1)(A;ID;FA;;;SY)"), "every AppContainer");
+        assert!(!sddl_is_chromiums("D:AI(A;;FA;;;S-1-15-3-1)(A;ID;FA;;;SY)"), "a capability every store app may have");
     }
 
     #[test]

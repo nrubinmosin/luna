@@ -211,8 +211,7 @@
 
 /* A narrow pane gives up its settings chip by chip, then the words of its
    helper pill, then the folder; the name, the pill's counts and the controls
-   stay. Past 420px the four rarer window buttons fold into the "…" menu,
-   which is always there: the move to another account lives only in it. */
+   stay. */
 [data-app] .hpill .hp-short,
 [data-app] .hpill .hp-tiny {
   display: none;
@@ -232,14 +231,6 @@
 @container (max-width: 440px) {
   [data-app] .pane-chips {
     display: none;
-  }
-}
-@container (max-width: 420px) {
-  [data-app] .title-bar-controls .pane-rare {
-    display: none;
-  }
-  [data-app] .title-bar-controls .pane-more {
-    display: block;
   }
 }
 @container (max-width: 400px) {
@@ -476,7 +467,7 @@
   animation: kids-new 1.2s ease-in-out 4;
 }
 
-/* The narrow bar's "…" menu (Pane.tsx `PaneMenu`). */
+/* The title bar's "…" menu (Pane.tsx `PaneMenu`). */
 [data-app] .pane-menu {
   min-width: 180px;
   padding: 4px;

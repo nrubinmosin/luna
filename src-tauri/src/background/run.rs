@@ -353,6 +353,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                     }
                 }
                 let code = child.wait().ok().and_then(|s| s.code());
+                crate::cli::session_exited(&id);
                 reader.await_last_words(&read_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 err_reader.await_last_words(&err_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -462,7 +463,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     }
     crate::log::info(
         "background",
-        &format!("{} turn started, pid {pid:?}: {} {}", crate::agents::label(id), provider.as_str(), args.join(" ")),
+        &format!("{} turn started, pid {pid:?}: {} {}", crate::agents::label(id), provider.as_str(), args_for_log(id, &args)),
     );
     // The reader waits on the other end; should it be gone, the turn still
     // ends here rather than with nobody to say so.
@@ -471,6 +472,28 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         turn_over(id, None);
     }
     Ok(())
+}
+
+/// A turn's arguments as the log keeps them. The chat's hook and guard URLs
+/// carry its secret (a Codex start passes them in `-c` overrides) and go in as
+/// what they are; the helper's identity line, the same for every turn and
+/// most of the line's length, goes in as its length.
+fn args_for_log(id: &str, args: &[String]) -> String {
+    let urls: Vec<(String, &str)> = [(crate::hub::hook_url(id), "<hook-url>"), (crate::hub::guard_url(id), "<guard-url>")]
+        .into_iter()
+        .filter_map(|(url, to)| Some((url?, to)))
+        .collect();
+    let mut shown = Vec::with_capacity(args.len());
+    let mut elide = false;
+    for a in args {
+        if std::mem::take(&mut elide) {
+            shown.push(format!("<{} chars>", a.chars().count()));
+            continue;
+        }
+        elide = a == "--append-system-prompt";
+        shown.push(urls.iter().fold(a.clone(), |s, (url, to)| s.replace(url.as_str(), to)));
+    }
+    shown.join(" ")
 }
 
 /// The turn has what `in_flight` holds: not to be handed back as undelivered, and
@@ -484,6 +507,25 @@ pub(super) fn stdin_took(e: &mut Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_log_gets_no_hub_secret_and_not_the_identity_line() {
+        crate::hub::start();
+        let guard = crate::hub::guard_url("log-1").expect("the hub is listening");
+        let secret = guard.rsplit('/').next().unwrap().to_string();
+        let args: Vec<String> = [
+            "-c".into(),
+            format!("hooks.PreToolUse=[{{command='curl {guard}'}}]"),
+            "--append-system-prompt".into(),
+            "You are a helper".into(),
+            "--model".into(),
+            "opus".into(),
+        ]
+        .into();
+        let shown = args_for_log("log-1", &args);
+        assert!(!shown.contains(&secret), "{shown}");
+        assert_eq!(shown, "-c hooks.PreToolUse=[{command='curl <guard-url>'}] --append-system-prompt <16 chars> --model opus");
+    }
 
     #[test]
     fn a_turn_is_not_started_as_administrator() {

@@ -289,17 +289,37 @@ export const CLI_VERSIONS: Record<Provider, CliVersionsDto> = {
     provider: 'claude',
     channel: 'latest',
     versions: [
-      { dir: '2.1.252', version: '2.1.252', current: true, previous: false, inUse: true, knownGood: false, bad: null },
-      { dir: '2.1.240', version: '2.1.240', current: false, previous: true, inUse: true, knownGood: true, bad: null }
+      {
+        dir: '2.1.252',
+        version: '2.1.252',
+        current: true,
+        previous: false,
+        inUse: true,
+        knownGood: false,
+        bad: null,
+        good: null
+      },
+      {
+        dir: '2.1.240',
+        version: '2.1.240',
+        current: false,
+        previous: true,
+        inUse: true,
+        knownGood: true,
+        bad: null,
+        good: null
+      }
     ],
     knownGood: ['2.1.240'],
     minSafe: '2.1.240',
     floor: '2.1.252',
     pinned: null,
     bad: {},
+    good: {},
     canary: {
       version: '2.1.252',
       watched: 3,
+      settled: 1,
       failures: ['exited with an error 2s after it started', 'exited with an error 3s after it started'],
       warned: true,
       dismissed: false
@@ -309,7 +329,16 @@ export const CLI_VERSIONS: Record<Provider, CliVersionsDto> = {
     provider: 'codex',
     channel: 'knownGood',
     versions: [
-      { dir: '0.154.0', version: '0.154.0', current: true, previous: false, inUse: true, knownGood: true, bad: null },
+      {
+        dir: '0.154.0',
+        version: '0.154.0',
+        current: true,
+        previous: false,
+        inUse: true,
+        knownGood: true,
+        bad: null,
+        good: null
+      },
       {
         dir: '0.153.0',
         version: '0.153.0',
@@ -317,7 +346,8 @@ export const CLI_VERSIONS: Record<Provider, CliVersionsDto> = {
         previous: true,
         inUse: false,
         knownGood: true,
-        bad: 'failed the offline probe: `exec` no longer lists --json'
+        bad: 'failed the offline probe: `exec` no longer lists --json',
+        good: null
       }
     ],
     knownGood: ['0.153.0', '0.154.0'],
@@ -325,6 +355,7 @@ export const CLI_VERSIONS: Record<Provider, CliVersionsDto> = {
     floor: '0.154.0',
     pinned: null,
     bad: { '0.153.0': 'failed the offline probe: `exec` no longer lists --json' },
+    good: {},
     canary: null
   }
 };

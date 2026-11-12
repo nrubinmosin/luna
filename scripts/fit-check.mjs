@@ -133,7 +133,13 @@ const EXTRAS = [
     setup: `document.querySelector('.move-doc').scrollTop = 1e6; ${wait(200)}`,
     opens: has('.move-dialog .move-doc')
   },
-  { name: 'color', scene: 'main', setup: click('[data-glyph="swatch"]'), opens: has('.popover .swatch') },
+  {
+    // The color picker, from the pane's "…" menu.
+    name: 'color',
+    scene: 'main',
+    setup: click('.pane [data-glyph="more"]') + wait(200) + clickText('.pane-menu [role=menuitem]', 'Chat color…'),
+    opens: has('.popover .swatch')
+  },
   {
     name: 'link',
     scene: 'main',
@@ -181,10 +187,10 @@ const EXTRAS = [
     opens: `${has('.helper-panel')}?.textContent.includes('helper 13')`
   },
   {
-    // A pane narrow enough to fold its window buttons, and its "…" menu.
+    // A pane at its narrowest, and its "…" menu.
     name: 'pane-narrow-menu',
     scene: 'main',
-    setup: narrowPane(380) + click('.pane .pane-more'),
+    setup: narrowPane(380) + click('.pane [data-glyph="more"]'),
     opens: has('.pane-menu')
   },
   {
