@@ -66,6 +66,17 @@ at most, never asking for a password); Claude Code branches the worktree off it
 and refetches only once a day itself. Codex checks out the folder's current
 commit, which no fetch moves, and Luna never moves the user's own checkout.
 
+## One helper's worktree at a time per repository
+
+Both CLIs make a worktree with `git worktree add` (Codex with `--detach`) as a
+helper's first turn starts, and two at once in one repository have failed with
+"unable to stat just-written file". A spawn with `worktree: true` holds its
+repository's queue (`agents/spawn/worktree.rs` `worktree_queue`, keyed by
+`repository_key`, the common git folder) from starting its turn until the CLI
+has said where its worktree is, the turn has ended, or 20 s are up. A person's
+chat started with a worktree is not queued (`pty/start.rs`): it starts when
+the person asks, and a race with a spawn is left to its rare chance.
+
 ## Invariants
 
 - Every destructive path is gated on recognizing the worktree as the CLI's.

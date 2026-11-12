@@ -57,6 +57,18 @@ pub fn head_at(root: &str) -> Option<Head> {
     }
 }
 
+/// The repository a folder is in, as one key whichever checkout of it the
+/// folder is in: its common git folder (a linked worktree's `commondir`), off
+/// its files with no git run, resolved and spelled as `path_key` has it. None
+/// for a folder in no repository Luna can read.
+pub fn repository_key(dir: &str) -> Option<String> {
+    let dir = Path::new(dir);
+    let root = dir.ancestors().find(|d| d.join(".git").exists())?;
+    let (_, common) = git_dirs(root)?;
+    let common = std::fs::canonicalize(&common).unwrap_or(common);
+    Some(norm(&common.to_string_lossy()))
+}
+
 /// A checkout's own git folder, where its HEAD is, and the one its refs are in:
 /// where its `commondir` says, as for a linked worktree, the repository's. `.git`
 /// may be that folder or a file naming it.
