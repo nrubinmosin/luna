@@ -959,8 +959,7 @@ fn ack_background_stop(r: &Registry, caller: &str, id: &str, text: &str) {
     if !text.contains(lines::BACKGROUND_STOPPED) {
         return;
     }
-    let owed: Vec<String> = r.owed.keys().filter(|(_, s)| s == id).map(|(c, _)| c.clone()).collect();
-    crate::background::background_stop_told(id, caller, &owed);
+    crate::background::background_stop_told(id, caller, &crate::agents::owed::debts_on(r, id));
 }
 
 /// What a notice that went in does to the debt it told of (`told`). Only to
@@ -1428,12 +1427,12 @@ mod tests {
             settle_delivered(&mut reg().lock().unwrap(), caller, id.to_string(), how, told, text);
         };
         settle(a, Settled::Exited, &oa, "Your helper has exited.");
-        assert!(crate::background::background_stopped_for(id, a), "an exited line did not say it");
+        assert!(crate::background::background_stopped_for(id, a, 2), "an exited line did not say it");
         let oa = Owed::from(2, 0);
         reg().lock().unwrap().owed.insert(key(a), oa);
         settle(a, Settled::Answered, &oa, &says);
-        assert!(!crate::background::background_stopped_for(id, a), "the first has had it");
-        assert!(crate::background::background_stopped_for(id, b), "the other, still owed, has not");
+        assert!(!crate::background::background_stopped_for(id, a, 2), "the first has had it");
+        assert!(crate::background::background_stopped_for(id, b, 2), "the other, still owed, has not");
         settle(b, Settled::Answered, &ob, &says);
         assert!(!crate::background::background_stopped(id), "everyone owed has had it");
         crate::background::gone_for_test(id);

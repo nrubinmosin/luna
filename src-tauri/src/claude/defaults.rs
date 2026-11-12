@@ -180,7 +180,12 @@ fn canonical(models: &[crate::claude::models::ClaudeModel], raw: &str) -> String
 
 /// Whether the account's top-level `effortLevel` speaks for a model: one of the
 /// CLI's older models, or a name it cannot read as `claude-<family>-<version>`.
+/// Not a bare alias (`opus`), left so where the account's list has not named
+/// its id yet: the CLI reads it as the family's current model, never an older one.
 fn legacy_model(canonical: &str) -> bool {
+    if crate::claude::models::ALIASES.contains(&canonical) {
+        return false;
+    }
     let mut parts = canonical.split('-');
     let standard =
         parts.next() == Some("claude") && parts.next().is_some_and(|f| !f.is_empty() && f.chars().all(|c| c.is_ascii_lowercase())) && {
@@ -520,6 +525,20 @@ mod tests {
             assert_eq!(canonical(&models, raw), "claude-opus-5-5", "{raw}");
         }
         assert!(legacy_model("claude-opus-4-7") && legacy_model("my-proxy-model") && !legacy_model("claude-opus-5-5"));
+        assert!(!legacy_model("opus"), "a bare alias is the family's current model");
+    }
+
+    /// No catalog yet, only the aliases: the account's top-level level is not
+    /// the current models' (2.1.322 keeps it for older ones), so an alias runs
+    /// at Luna's stock rather than at it.
+    #[test]
+    fn with_no_catalog_an_alias_is_no_older_model() {
+        let models: Vec<ClaudeModel> = crate::claude::models::ALIASES.iter().map(|a| model(a, None, None)).collect();
+        let body = r#"{ "effortLevel": "medium", "modelSettings": { "claude-opus-5-5": { "effortLevel": "high" } } }"#;
+        let files = vec![EffortFile::read("account", &serde_json::from_str(body).unwrap(), &models)];
+        let e = Efforts { files, pinned: vec![], models };
+        assert_eq!(e.of("opus"), Setting::new(STOCK_EFFORT, "stock"));
+        assert_eq!(e.of("claude-opus-4-7"), Setting::new("medium", "account"), "an older model named by id still takes it");
     }
 
     #[test]

@@ -172,7 +172,10 @@ pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
 /// background (`stops_background`).
 #[cfg(test)]
 pub(crate) fn background_stopped_for_test(id: &str) {
-    lock().entries.get_mut(id).expect("a test helper").observed.background_stopped = true;
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    e.observed.background_stopped = true;
+    e.observed.stopped_turn = e.turns_ended;
 }
 
 /// A test helper as the next core takes it up from what this one saves: through
@@ -183,6 +186,28 @@ pub(crate) fn restart_for_test(id: &str) {
     let saved: Saved = serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
     let e = taken_up(saved);
     lock().entries.insert(id.to_string(), e);
+}
+
+/// What a test helper's job shows while its answered turn waits: each process
+/// by name and pid, quiet for so many ms (`Run::watched`).
+#[cfg(test)]
+pub(crate) fn watched_for_test(id: &str, watched: &[(&str, u32, u64)]) {
+    let now = crate::throttle::now_ms();
+    let mut r = lock();
+    let run = r.entries.get_mut(id).and_then(|e| e.run.as_mut()).expect("a test helper in a turn");
+    run.watched = watched
+        .iter()
+        .map(|(exe, pid, quiet)| Leftover {
+            pid: *pid,
+            exe: exe.to_string(),
+            started_ms: 0,
+            cpu_ms: 0,
+            io_bytes: 0,
+            read_ms: now,
+            seen_ms: now,
+            moved_ms: now - quiet,
+        })
+        .collect();
 }
 
 /// A test helper in a turn whose CLI has written its result (`waits_on_background`).
