@@ -1030,6 +1030,16 @@ pub(in crate::agents) fn bound_to_conversation(line: &str) -> bool {
     line.contains(facts::CONTINUED)
 }
 
+/// Whether line `line` of the notifier's queue is for one conversation of
+/// the chat's alone, a continuation (`bound_to_conversation`) or a
+/// threshold notice (its ask's, `notice_here`): either goes in only with no
+/// key of the person's since the notifier's look (notifier
+/// `deliver_notice`), as a `/clear` or `/new` they just sent may not have
+/// reached the CLI yet, which still reads as the conversation asked.
+pub(in crate::agents) fn keyed_to_conversation(line: &str) -> bool {
+    bound_to_conversation(line) || facts::is_threshold_notice(line)
+}
+
 /// Whether line `line` of the notifier's queue for `chat` is to be dropped
 /// rather than typed: a handoff's notice while a move of the chat is under way
 /// (`moving::under_way`). A move's start drops one queued and retires the ask
