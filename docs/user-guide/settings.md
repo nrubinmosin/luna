@@ -24,7 +24,7 @@ folded into a "How … works" line at the foot of its card.
 | --- | --- | --- |
 | General | Board, Notifications, Waiting for you, Accounts | Auto-tile the board; play a sound; the waiting marker and its text; the accounts folder |
 | Chats | New chats start with, Worktrees | Git worktree, Luna tools, Codex hooks without asking and Wait guard, as the new-chat dialog starts them; fetch origin before Claude Code makes a worktree; delete worktrees by default |
-| Agents & trust | Helpers, Trusted folders | Allow helpers more permissions than their parent chat; the folders whose projects Codex sessions start trusted |
+| Agents & trust | Helpers, Trusted folders | Allow helpers more permissions than their parent chat; helpers per chat (the places a chat's line of helpers shares, 1 to 32, 8 by default); helpers' mode when not given (the spawning chat's, the default, or the account's); the folders whose projects Codex sessions start trusted |
 | Links | Open links in, Browsers | The default browser and the accounts and project folders that take another; the browsers found on this computer and your own |
 | CLIs | Claude Code, Codex | The channel each follows (Known-good or Latest); its version and Check now; each installed version tagged current, previous, known-good, marked good, "first 3 sessions ok", in use or bad, with Use, Mark good, Mark bad, Clear bad and Unmark good, and the marks on versions no longer installed with their own Clear bad or Unmark good; a new version's failed first sessions with Roll back and Keep it ([updates](updates.md#the-clis)) |
 | Updates | — | Luna and the core: each version, its state and its button |

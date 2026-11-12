@@ -46,7 +46,7 @@ pub(super) fn tools() -> Value {
     json!([
         {
             "name": "luna_session_list",
-            "description": "Your sessions as compact rows (state, askId, turnsEnded, task, lastActivityAt); scope all: every one; ids: those (others' task, askId: scope all). Filters: state, provider, account, group (a number, I=1, or \"mine\"), q (name, folder, account, id). limit (50); nextCursor goes in cursor.",
+            "description": "Your sessions as compact rows (state, askId, turnsEnded, task, lastActivityAt); scope all: every one; ids: those (others' task, askId: scope all). Filters: state, provider, account, group (a number, I=1, or \"mine\"), q (name, folder, account, id). limit (50); nextCursor goes in cursor. places.",
             "inputSchema": s(json!({
                 "scope": scope, "ids": strings, "state": strings, "provider": provider, "account": string,
                 "group": { "anyOf": [{ "type": "integer" }, { "type": "string" }] }, "q": string, "limit": count, "cursor": string
@@ -55,20 +55,20 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_get",
-            "description": "One session whole: its row with settings, folder, cwd, transcript, worktree, branch, sha, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask (another's ask: scope all).",
+            "description": "One session whole: its row with settings, folder, cwd, transcript, worktree, branch, sha, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask (another's ask: scope all); a helper's worktree: lastCommit, status.",
             "inputSchema": s(json!({ "id": string, "scope": scope }), &["id"]),
             "annotations": reads
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted settings: the account's defaults (luna_account_get). Returns id, settings, turnsEnded, sameFolder, worktree, accountChoice.",
+            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: your mode or nearest below (modeFrom), else the account's defaults (luna_account_get). Returns id, settings, turnsEnded, sameFolder, worktree, accountChoice, places.",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,
                 "account": { "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }], "description": "default: yours; a list: the first with room" },
                 "model": { "type": "string", "description": "claude also a full id" },
                 "effort": string,
-                "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|bypassPermissions" },
+                "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|auto|dontAsk|bypassPermissions" },
                 "approval": { "type": "string", "description": "codex: never|auto-review" },
                 "sandbox": { "type": "string", "description": "codex: read-only|read-only-net|workspace-write|danger-full-access" },
                 "readOnly": { "type": "boolean", "description": "claude: no edit tools, Bash still writes; codex: read-only sandbox" },
@@ -165,13 +165,13 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_notification_send",
-            "description": "Desktop notification, for a result or blocker the user must see now, not progress. One per 10 s.",
+            "description": "Desktop notification (person's chats only), for a result or blocker the user must see now, not progress. One per 10 s.",
             "inputSchema": s(json!({ "text": string }), &["text"]),
             "annotations": acts
         },
         {
             "name": "luna_power_set",
-            "description": "Only when the user asked: shut down, restart, hibernate or sleep the PC once Luna is quiet for quietSec (default: the user's), CLIs closed first; cancel disarms. drain: till then agents' spawns and sends are refused. Returns busy, waitingForAPerson.",
+            "description": "Person's chats, when the user asked: shut down, restart, hibernate or sleep the PC once Luna is quiet for quietSec (default: the user's), CLIs closed first; cancel disarms. drain: till then agents' spawns and sends are refused. Returns busy, waitingForAPerson.",
             "inputSchema": s(json!({
                 "action": { "type": "string", "enum": ["shutdown", "restart", "hibernate", "sleep", "cancel"] },
                 "quietSec": count, "drain": flag

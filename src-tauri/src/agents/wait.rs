@@ -1219,8 +1219,12 @@ mod tests {
             assert!(e.contains("not one you spawned") || e.contains("no longer yours"), "{caller}: {e}");
         }
         let call = crate::mcp::Call::new();
-        let w = wait("wt-mid", "wt-helper", "turn_done", 5, Some(0), Some("all"), &call).expect("scope all reaches it");
+        // The person's chat at the top reaches it with scope all; a helper never past its own subtree.
+        let w = wait("wt-top", "wt-helper", "turn_done", 5, Some(0), Some("all"), &call).expect("scope all reaches it");
         assert_eq!(w.outcome, "turn_done");
+        let e = wait("wt-mid", "wt-helper", "turn_done", 5, Some(0), Some("all"), &call).err().unwrap();
+        assert!(e.contains("no longer yours"), "{e}");
+        assert!(in_scope("wt-mid", "wt-helper", Some("all"), "wait on").unwrap_err().contains("person's chats"));
         let e = wait("wt-mid", "wt-helper", "turn_done", 5, Some(0), None, &call).err().unwrap();
         assert!(e.contains("no longer yours"), "{e}");
         // A wait on several holds to it the same way: the one out of reach comes

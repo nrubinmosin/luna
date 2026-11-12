@@ -756,8 +756,12 @@ fn nobody_but_a_persons_chat_with_luna_tools_hears_of_it() {
         assert!(r["result"].get("isError").is_none(), "{caller} {name}: {r}");
         r["result"]["content"][0]["text"].as_str().unwrap_or("").to_string()
     };
+    // A helper of its own reads no row above it at all (ADR-0025).
+    let up = json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": { "name": "luna_session_get", "arguments": { "id": "hoaud-me" } } });
+    let r = crate::mcp::handle("hoaud-kid", &up.to_string()).unwrap();
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap_or("").contains("not under you"), "{r}");
     for (caller, name, args) in [
-        ("hoaud-kid", "luna_session_get", json!({ "id": "hoaud-me" })),
         ("hoaud-tools", "luna_session_get", json!({ "id": "hoaud-me", "scope": "all" })),
         ("hoaud-tools", "luna_session_list", json!({ "ids": ["hoaud-me"], "scope": "all" })),
     ] {

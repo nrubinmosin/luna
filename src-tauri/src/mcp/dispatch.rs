@@ -332,7 +332,7 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|q| agents::session_list(caller, &q))
             .map(|p| json!(p)),
-        "luna_session_get" => agents::scope_all(scope).and_then(|all| agents::session_get(caller, &id, all)).map(|s| json!(s)),
+        "luna_session_get" => agents::scope_all(caller, scope).and_then(|all| agents::session_get(caller, &id, all)).map(|s| json!(s)),
         "luna_session_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|p| {
@@ -411,10 +411,12 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
                 Err(e) => failure(e),
             };
         }
-        "luna_notification_send" => agents::notify(caller, a["text"].as_str().unwrap_or("")).map(|()| json!({ "ok": true })),
-        "luna_power_set" => {
+        "luna_notification_send" => persons_chat_only(caller, name)
+            .and_then(|()| agents::notify(caller, a["text"].as_str().unwrap_or("")))
+            .map(|()| json!({ "ok": true })),
+        "luna_power_set" => persons_chat_only(caller, name).and_then(|()| {
             crate::power::arm_for_agent(caller, a["action"].as_str().unwrap_or(""), a["quietSec"].as_u64(), a["drain"].as_bool())
-        }
+        }),
         // The caller's own chat, by its token: there is no other to name.
         "luna_session_handoff" => match a["file"].as_str().map(str::trim).filter(|f| !f.is_empty()) {
             Some(file) => agents::handoff(caller, file),
@@ -432,6 +434,19 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
         Ok(v) => json!({ "content": content(v) }),
         Err(e) => failure(e),
     }
+}
+
+/// The tools that reach the person or the PC itself go only from a person's
+/// chat: a helper's word reaches the person through the chat above it, which
+/// decides what they hear (`agents::is_persons_chat`).
+fn persons_chat_only(caller: &str, tool: &str) -> Result<(), String> {
+    if agents::is_persons_chat(caller) {
+        return Ok(());
+    }
+    Err(format!(
+        "{tool} is for a person's chats: a helper does not notify the person or turn the PC off. Say what they should hear in \
+         your reply to the session that spawned you"
+    ))
 }
 
 /// A list of strings as given, a number among them as its digits.
@@ -566,7 +581,7 @@ fn gone_already(caller: &str, id: &str) -> bool {
 /// `luna_run_list`: past spawns, newest first, as compact rows: a pointer to
 /// each run with the start of its prompt and last reply.
 fn run_list(caller: &str, a: &Value) -> Result<Value, String> {
-    let all = agents::scope_all(a["scope"].as_str())?;
+    let all = agents::scope_all(caller, a["scope"].as_str())?;
     let limit = a["limit"].as_u64().map_or(RUNS, |n| n as usize).clamp(1, RUNS_MAX);
     let runs = crate::agentlog::runs(a["q"].as_str());
     // Whose each spawner was, from every run: `q` may leave a link out.

@@ -12,11 +12,11 @@ lose, and to sweep the ones no chat claims.
 | --- | --- |
 | `mod.rs` | the git command |
 | `paths.rs` | which folder a worktree is of (`is_worktree_of`, `project_of`, `root_of`, `in_checkout`) |
-| `refs.rs` | HEAD read off the files (`head_at`), and the fetch |
+| `refs.rs` | HEAD read off the files (`head_at`), the repository a folder is in (`repository_key`), and the fetch |
 | `remove.rs` | removal with its branches |
 | `orphans.rs` | the unclaimed and their sweep |
 | `named.rs` | a worktree asked for by name (`name_ok`, `worktree_arg`) |
-| `inspect.rs` | what deleting one would lose (`commits_lost`) |
+| `inspect.rs` | what deleting one would lose (`commits_lost`), and where a helper's work stands (`work_in`: last commit's subject, `git status --short` capped) |
 | `src/features/chats/WorktreesDialog.tsx`, `worktrees.store.ts` | the title bar's Worktrees window |
 
 ## Recognizing a worktree
@@ -65,6 +65,17 @@ With `fetchBeforeWorktree` on, Luna fetches origin's default branch first (10 s
 at most, never asking for a password); Claude Code branches the worktree off it
 and refetches only once a day itself. Codex checks out the folder's current
 commit, which no fetch moves, and Luna never moves the user's own checkout.
+
+## One helper's worktree at a time per repository
+
+Both CLIs make a worktree with `git worktree add` (Codex with `--detach`) as a
+helper's first turn starts, and two at once in one repository have failed with
+"unable to stat just-written file". A spawn with `worktree: true` holds its
+repository's queue (`agents/spawn/worktree.rs` `worktree_queue`, keyed by
+`repository_key`, the common git folder) from starting its turn until the CLI
+has said where its worktree is, the turn has ended, or 20 s are up. A person's
+chat started with a worktree is not queued (`pty/start.rs`): it starts when
+the person asks, and a race with a spawn is left to its rare chance.
 
 ## Invariants
 
