@@ -74,9 +74,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A lead's turns no longer wake its parent while its own helpers or its CLI's
   background work are still at it, a long interim report included, and it is
   never told "NOT done yet" of one: what it writes waits in its report for
-  the notice that comes once they are done. A message that opens on `DONE`,
-  `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` goes at once; questions,
-  prompts, errors and exits as ever.
+  the notice that comes once they are done. Its answer to a send of the
+  parent's still goes, and so does a message that opens on `DONE`,
+  `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`; questions, prompts, errors and
+  exits as ever.
 - `budgetTokens` on a spawn is deprecated for `budgetPct`: still taken, and
   read from saved helpers, as the share of the window it is.
 - The notice that a helper has only idle processes left names what its
