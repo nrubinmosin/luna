@@ -52,7 +52,10 @@ nothing depends on a global install.
   marked good is still held to the oldest safe version, and one no longer
   installed is not downloaded again below the newest that has run here. Going back
   checks the version's files against their checksums first, and nothing older
-  than the oldest safe version a Luna release names ever runs.
+  than the oldest safe version a Luna release names ever runs: an installed
+  version below it (kept while a session still runs on it) says **below the
+  minimum safe version** and offers no **Use** or **Mark good**, and
+  **Roll back** is not offered when the version before is one.
 - When a Luna update raises that oldest safe version past the CLI you have,
   no chat or helper starts on it (the start says why) until the next check
   installs a newer one, which it does at once, a version you held by hand

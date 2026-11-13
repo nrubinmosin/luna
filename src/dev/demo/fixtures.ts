@@ -318,7 +318,8 @@ export const CLI: Record<Provider, CliStatusDto> = {
 };
 
 /** Settings → CLIs: Claude Code on latest, its new version's canary warning
- *  (only the CLIs scenes show it), Codex on known-good. */
+ *  (only the CLIs scenes show it) and a version below the minimum a session
+ *  still runs on, Codex on known-good. */
 export const CLI_VERSIONS: Record<Provider, CliVersionsDto> = {
   claude: {
     provider: 'claude',
@@ -331,6 +332,7 @@ export const CLI_VERSIONS: Record<Provider, CliVersionsDto> = {
         previous: false,
         inUse: true,
         knownGood: false,
+        belowMinSafe: false,
         bad: null,
         good: null
       },
@@ -341,6 +343,18 @@ export const CLI_VERSIONS: Record<Provider, CliVersionsDto> = {
         previous: true,
         inUse: true,
         knownGood: true,
+        belowMinSafe: false,
+        bad: null,
+        good: null
+      },
+      {
+        dir: '2.1.231',
+        version: '2.1.231',
+        current: false,
+        previous: false,
+        inUse: true,
+        knownGood: false,
+        belowMinSafe: true,
         bad: null,
         good: null
       }
@@ -371,6 +385,7 @@ export const CLI_VERSIONS: Record<Provider, CliVersionsDto> = {
         previous: false,
         inUse: true,
         knownGood: true,
+        belowMinSafe: false,
         bad: null,
         good: null
       },
@@ -381,6 +396,7 @@ export const CLI_VERSIONS: Record<Provider, CliVersionsDto> = {
         previous: true,
         inUse: false,
         knownGood: true,
+        belowMinSafe: false,
         bad: 'failed the offline probe: `exec` no longer lists --json',
         good: null
       }

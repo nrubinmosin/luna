@@ -378,7 +378,8 @@ mod tests {
     /// `--help` of every command, as the versions on the known-good list
     /// print it: Claude Code 2.1.319 and 2.1.322 print 2.1.318's line for
     /// line, 2.1.323 its own (only `claude rm`'s text differs); Codex 0.167.2
-    /// and 0.168.0 print 0.167.0's.
+    /// and 0.168.0 print 0.167.0's, 0.169.0 too but for `exec` and `exec
+    /// resume`, which list `--trust`.
     const CLAUDE_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.318-help.txt"))];
     const CLAUDE_2_1_323_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.323-help.txt"))];
     const CODEX_HELP: &[(&str, &str)] = &[
@@ -389,10 +390,23 @@ mod tests {
         ("login", include_str!("testdata/codex-0.167.0-login-help.txt")),
         ("debug models", include_str!("testdata/codex-0.167.0-debug-models-help.txt")),
     ];
+    const CODEX_0_169_0_HELP: &[(&str, &str)] = &[
+        ("", include_str!("testdata/codex-0.167.0-help.txt")),
+        ("resume", include_str!("testdata/codex-0.167.0-resume-help.txt")),
+        ("exec", include_str!("testdata/codex-0.169.0-exec-help.txt")),
+        ("exec resume", include_str!("testdata/codex-0.169.0-exec-resume-help.txt")),
+        ("login", include_str!("testdata/codex-0.167.0-login-help.txt")),
+        ("debug models", include_str!("testdata/codex-0.167.0-debug-models-help.txt")),
+    ];
 
     #[test]
     fn the_checked_versions_list_every_flag_luna_passes() {
-        for (provider, helps) in [(Provider::Claude, CLAUDE_HELP), (Provider::Claude, CLAUDE_2_1_323_HELP), (Provider::Codex, CODEX_HELP)] {
+        for (provider, helps) in [
+            (Provider::Claude, CLAUDE_HELP),
+            (Provider::Claude, CLAUDE_2_1_323_HELP),
+            (Provider::Codex, CODEX_HELP),
+            (Provider::Codex, CODEX_0_169_0_HELP),
+        ] {
             for command in commands(provider) {
                 let help = helps.iter().find(|(p, _)| *p == command.path.join(" ")).map(|(_, h)| *h).expect("a fixture per command");
                 assert_eq!(missing(help, command), Vec::<&str>::new(), "{provider:?} {:?}", command.path);
