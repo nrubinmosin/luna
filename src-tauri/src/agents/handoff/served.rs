@@ -165,7 +165,8 @@ pub(super) fn unwritable(settings: &Value) -> Option<&'static str> {
         ),
         (_, Some("plan")) => Some("In plan mode Claude Code writes no file: leave plan mode first, or ask the person to."),
         (_, Some("dontAsk")) => Some(
-            "In don't-ask mode Claude Code refuses any write no allow rule lets through, this file included: ask the person to              switch the chat to a mode that writes, or to start it again in one.",
+            "In don't-ask mode Claude Code refuses any write no allow rule lets through, this file included: ask the person to \
+             switch the chat to a mode that writes, or to start it again in one.",
         ),
         _ => None,
     }
