@@ -156,7 +156,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   helpers alone, chats with one of the two) is for every session, and
   instructions for your chats alone go into the accounts as 0.17 lays them
   out. Once 0.17 has saved the settings, 0.18 reads its words again: those
-  sets come back as every session.
+  sets come back as every session. Narrower sets do not survive a save by
+  0.17; pick them again in 0.18.
 
 ### Fixed
 
