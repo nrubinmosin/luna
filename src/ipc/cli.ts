@@ -32,6 +32,8 @@ export interface CliVersionRowDto {
   /** A process of Luna's runs from it now. */
   inUse: boolean;
   knownGood: boolean;
+  /** Older than `minSafe`: the backend neither makes it current nor marks it good. */
+  belowMinSafe: boolean;
   /** Why it was marked bad, if it was. */
   bad: string | null;
   /** How it was marked good on this machine, if it was. */
