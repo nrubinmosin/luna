@@ -81,7 +81,8 @@ Windows sandbox could not write, and in the checked private folder nothing can
 be put at a name nobody knows yet; or any file outside the data dir), what Luna adds to the next conversation itself (`LUNA_ADDS`, the one
 list of it), and the instructions past their front matter, naming whose they
 are and their SHA-256. A chat that can write no file (Codex's read-only
-sandboxes, Claude Code's plan mode: `unwritable`) is told so.
+sandboxes, Claude Code's plan mode and `dontAsk`, which refuses a write no
+allow rule lets through: `unwritable`) is told so.
 
 `library::handoff_instructions` resolves them at each ask:
 `<library>/system/session-handoff/SKILL.md` when it will do (`check_skill` with
@@ -532,12 +533,18 @@ until they are through.
   (`facts::notice` under `NOTICE_TAG`) queued as a turn of Luna's own
   (`send_luna`, no sender): started at once at rest, past the firm mark ahead
   of anything queued. No ask goes to a lead that writes no file
-  (`switch::unwritable`: Claude Code `read_only` or plan mode, Codex in a
-  sandbox that writes nothing): past its threshold Luna builds its handoff
+  (`switch::unwritable`: Claude Code `read_only`, plan mode or `dontAsk`, which
+  refuses a Write no allow rule lets through and Luna gives none for the
+  drafts folder; Codex in a sandbox that writes nothing): past its threshold
+  Luna builds its handoff
   from its records (`document.rs` with `Inputs::lead`: its helpers its own,
   no person's dialog, its caller asked before anything that cannot be
   undone), copies it private as the next number and starts the switch at
-  once (`from_records`).
+  once (`from_records`). A firm ask left unanswered goes the same way
+  (`unanswered`: the ask Luna's own on this conversation, a turn ended since,
+  no switch scheduled and none given up since): at that turn's end, at rest,
+  the told level kept and the ask closed first, so a document that will not
+  build is not tried again at every turn's end.
 - **The call.** `lead::handoff` answers only while the ask holds in the
   conversation the lead is on (`asked_now`: `Asked::conversation` equal to
   `background::session_id`), else `lead::NOT_ASKED`. Refused while what its
@@ -579,7 +586,9 @@ until they are through.
   goes back to the conversation it left, the opening dropped and the ask
   closed, so a start that keeps failing is not asked over and over. Either way
   it is kept as `Past` with why, the lead hears it as a turn of Luna's
-  (`facts::lead_failed_line`) and what waited goes on.
+  (`facts::lead_failed_line`) and what waited goes on. A fresh start that fails
+  drops nothing queued (`run_turn` keeps the queue while `switch_waits`):
+  what was sent during the switch goes in on the conversation it went back to.
 - **Saved.** The switch is saved with the helper in `helpers.json`, where its
   conversation and its queue are, so one write keeps them agreeing:
   `Scheduled` on the conversation that called, `Fresh` on none (the opening's
@@ -727,7 +736,7 @@ the switch, the one that answered last. With the
 model unknown, every window counts (`UsageReading::for_model`). No usage percentage picks a source.
 
 **The ask** (a person's chat with Luna tools whose CLI has listed
-`luna_session_handoff`, not in plan mode or a
+`luna_session_handoff`, not in plan mode, `dontAsk` or a
 read-only sandbox, running, not stopped on a limit: `ask_blocked`; no
 auto-handoff needed): `Asking` until the chat stands at a strict prompt, then
 the fixed line `[Luna move <id> request, not typed by the user]` typed under

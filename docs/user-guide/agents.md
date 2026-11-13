@@ -331,9 +331,11 @@ were; what is sent to it meanwhile waits for the fresh conversation. Its parent
 hears "lead … handed off (N); its helpers stay with it" with its next notice,
 not as a notice of its own.
 
-- A lead that can write no file (Claude Code without its edit tools or in plan
-  mode, Codex in a read-only sandbox) is not asked: Luna writes its handoff
-  from its records, as for a move, and starts the fresh conversation on it.
+- A lead that can write no file (Claude Code without its edit tools, in plan
+  mode or in don't-ask mode, Codex in a read-only sandbox) is not asked: Luna
+  writes its handoff from its records, as for a move, and starts the fresh
+  conversation on it. Luna does the same for a lead that ends the turn it was
+  asked in near the limit without handing off.
 - The call is refused while what its turns left is still running; the switch
   is given up, the lead going on in the same conversation and told why, if
   something of its own is left at work as the turn ends, the turn was stopped

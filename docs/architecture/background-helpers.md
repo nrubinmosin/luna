@@ -45,7 +45,8 @@ owed by the person's chats, outlive a core restart.
   it free (`claim`), so text arriving before the process is up queues. A stop
   that finds a turn claimed but with no process yet marks it `stopped`. A turn
   that cannot start counts as an ended turn with its error; text queued behind
-  it fails with it.
+  it fails with it, except behind a lead's fresh start (`switch_waits`): that
+  text waits for the conversation the lead goes back to.
 - On Unix each turn's process leads its own process group.
 - `send` mid-turn to a Claude Code helper joins that turn: stdin stays open
   until the turn's first result and the text goes in at the next tool boundary;
