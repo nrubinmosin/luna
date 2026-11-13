@@ -427,6 +427,9 @@ pub struct VersionRow {
     pub in_use: bool,
     /// On this Luna's shipped list.
     pub known_good: bool,
+    /// Older than `min_safe`: nothing makes it current again ("Use") nor
+    /// marks it good, so Settings offers neither.
+    pub below_min_safe: bool,
     /// Marked bad, and why.
     pub bad: Option<String>,
     /// Marked good on this machine, and how.
@@ -492,6 +495,7 @@ fn versions_in(root: &Path, bin_rel: &str, known: &known_good::Entry) -> CliVers
             previous: previous.as_deref() == Some(dir.as_str()),
             in_use: in_use::busy(root, &dir),
             known_good: known.known_good.contains(&record.version),
+            below_min_safe: version_cmp(&record.version, &known.min_safe).is_lt(),
             bad: bad.get(&record.version).cloned(),
             good: good.get(&record.version).cloned(),
             version: record.version,
@@ -1810,6 +1814,23 @@ mod tests {
         // Below the minimum: refused whatever its files.
         update_in(&root, BIN, pointer("3.0.0"), &mut hashed).unwrap();
         assert!(use_version_in(&root, BIN, "2.5.0", "2.0.0").unwrap_err().contains("older than 2.5.0"));
+        let _ = remove_tree(&root);
+    }
+
+    /// A version left installed from before `min_safe` rose says so, for
+    /// Settings to hide the "Use" and "Mark good" this would refuse.
+    #[test]
+    fn a_version_below_the_minimum_is_flagged() {
+        let root = scratch("below");
+        update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        let known = known_good::Entry { min_safe: "1.5.0".into(), known_good: vec![] };
+        let rows = versions_in(&root, BIN, &known).versions;
+        assert_eq!(
+            rows.iter().map(|r| (r.version.as_str(), r.previous, r.below_min_safe)).collect::<Vec<_>>(),
+            [("2.0.0", false, false), ("1.0.0", true, true)]
+        );
+        assert!(use_version_in(&root, BIN, &known.min_safe, "1.0.0").unwrap_err().contains("older than 1.5.0"));
         let _ = remove_tree(&root);
     }
 
