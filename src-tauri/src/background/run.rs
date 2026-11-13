@@ -54,7 +54,9 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
 /// behind it, counts on its end, and `turn_over` never comes for it. Text
 /// queued behind it fails with it, counted as the turn after, so whoever
 /// waits on it hears — rather than starting what would most likely fail the
-/// same way.
+/// same way. Not behind a lead's fresh start (switch.rs): what was sent for
+/// the conversation after it waits on, and goes in on the conversation the
+/// lead goes back to once the switch is given up (`revert_switch`).
 pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     let started = spawn_turn(id, prompt);
     if let Err(err) = &started {
@@ -64,7 +66,7 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                 note(e, &format!("could not start the turn: {err}"));
                 e.error = Some(err.clone());
                 e.turns_ended += 1;
-                if !e.queue.is_empty() {
+                if !e.queue.is_empty() && !e.switch_waits() {
                     e.queue.clear();
                     note(e, "dropped what was queued behind it");
                     e.turns_ended += 1;

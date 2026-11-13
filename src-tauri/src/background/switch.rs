@@ -162,12 +162,17 @@ pub fn begin_fresh(id: &str, n: u32, opening: String, previous: Option<String>) 
 }
 
 /// The turn on `text`, on the run claimed for it. A test starts no CLI: the
-/// claim stays, with the text as its batch, as a turn just begun has it.
+/// claim stays, with the text as its batch, as a turn just begun has it;
+/// unless its folder is not there, where no spawn gets far and the turn fails
+/// as `run_turn` has one fail.
 fn start_turn(id: &str, text: &str) -> Result<(), String> {
     #[cfg(not(test))]
     return run_turn(id, text);
     #[cfg(test)]
     {
+        if lock().entries.get(id).is_some_and(|e| !std::path::Path::new(&e.spec.folder).is_dir()) {
+            return run_turn(id, text);
+        }
         if let Some(e) = lock().entries.get_mut(id).filter(|e| e.in_flight.is_empty()) {
             e.in_flight.push(Queued::new(None, text.to_string(), Vec::new()));
         }
@@ -475,6 +480,50 @@ mod tests {
         assert_eq!(session_id("sw-revert").as_deref(), Some("old"));
         assert!(lock().entries["sw-revert"].undelivered.is_empty(), "the opening is nobody's to be told of");
         lock().entries.remove("sw-revert");
+    }
+
+    /// A fresh start that cannot start keeps what was sent meanwhile: none of
+    /// it dropped with the turn, nor started on no conversation; once the
+    /// switch is given up it goes in on the conversation the lead went back to.
+    #[test]
+    fn a_fresh_start_that_fails_keeps_what_was_sent_meanwhile() {
+        let mut e = entry(Provider::Claude);
+        e.spec.tools = true;
+        // No spawn gets far: the folder is not there (or, run as root in a
+        // container, Luna's guard refuses first), and the start fails as
+        // `run_turn` has one fail.
+        e.spec.folder = "C:\\luna-no-such-folder".into();
+        e.session = Some("old".into());
+        e.switch = Some(a_switch(8, LeadPhase::Scheduled));
+        e.run = Some(Run::claimed(None, 0));
+        assert_eq!(place(&mut e, "from its parent".into(), true), Placed::Queued);
+        e.run = None;
+        let ended = e.turns_ended;
+        lock().entries.insert("sw-fail".into(), e);
+
+        assert!(begin_fresh("sw-fail", 8, "the opening".into(), None).is_err());
+        {
+            let r = lock();
+            let e = &r.entries["sw-fail"];
+            assert_eq!(e.queue, ["from its parent"], "kept for the conversation after the switch");
+            assert!(e.run.is_none() && e.session.is_none(), "nothing started on no conversation");
+            assert_eq!(e.turns_ended, ended + 1, "the start that failed, and no turn after it");
+            assert!(!e.log.iter().any(|l| l.contains("dropped")), "{:?}", e.log);
+        }
+
+        assert_eq!(revert_switch("sw-fail", 8).map(|s| s.n), Some(8));
+        let e = lock().entries.remove("sw-fail").unwrap();
+        assert!(e.queue.is_empty() && e.in_flight.is_empty() && e.undelivered.is_empty());
+        let back = e.log.iter().position(|l| l.contains("back on the conversation it left")).expect("given up");
+        assert!(
+            e.log.iter().skip(back).any(|l| l.starts_with("could not start the turn")),
+            "what waited went in on the old conversation, here to fail as its folder is gone: {:?}",
+            e.log
+        );
+        assert_eq!((e.session.as_deref(), e.turns_ended), (Some("old"), ended + 2));
+        if let Ok(dir) = crate::agents::handoff::dir_of("sw-fail") {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     #[test]

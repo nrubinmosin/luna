@@ -579,7 +579,9 @@ until they are through.
   goes back to the conversation it left, the opening dropped and the ask
   closed, so a start that keeps failing is not asked over and over. Either way
   it is kept as `Past` with why, the lead hears it as a turn of Luna's
-  (`facts::lead_failed_line`) and what waited goes on.
+  (`facts::lead_failed_line`) and what waited goes on. A fresh start that fails
+  drops nothing queued (`run_turn` keeps the queue while `switch_waits`):
+  what was sent during the switch goes in on the conversation it went back to.
 - **Saved.** The switch is saved with the helper in `helpers.json`, where its
   conversation and its queue are, so one write keeps them agreeing:
   `Scheduled` on the conversation that called, `Fresh` on none (the opening's
