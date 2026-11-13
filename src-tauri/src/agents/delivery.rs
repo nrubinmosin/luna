@@ -6,7 +6,7 @@
 use crate::agents::ask::{live, state_of};
 use crate::agents::handover::handovers_of;
 use crate::agents::held::{hold, words};
-use crate::agents::owed::{owe_from, owe_from_at, seen};
+use crate::agents::owed::{owe_from, owe_from_at, seen, Asked};
 use crate::agents::privilege::{command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{authorize_send, is_mine, label, reg};
@@ -298,7 +298,11 @@ pub(super) fn as_sent(caller: &str, id: &str, text: &str) -> String {
 /// first (its process stopped), and the text is the next turn rather than one
 /// queued after it: only in the caller's own helpers, as stopping a turn ends
 /// work and dismisses a question that is someone else's to answer.
-pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent, String> {
+/// `key`: the `requestKey` it came with, which notices name its answer by;
+/// `reply`: whether it asks for one, as one that does not wakes the caller only
+/// for a status word or a report (notifier lines.rs `worth_waking`). Both are
+/// a helper's debt's; a chat's has neither.
+pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&str>, reply: bool) -> Result<Sent, String> {
     authorize_send(caller, id)?;
     let mine = is_mine(caller, id);
     if interrupt && !mine {
@@ -370,7 +374,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
         if placed == Placed::Queued || interrupted {
             baseline += 1;
         }
-        if !owe_from_at(caller, id, baseline, cursor, handovers) {
+        if !owe_from_at(caller, id, baseline, cursor, handovers, &Asked { text, key, reply }) {
             return Err(format!(
                 "the person took {id} over as their own chat as this was sent: the text did not go in, and your next notice \
                  says where it is"
@@ -637,7 +641,7 @@ mod tests {
         crate::background::hold_for_test("ir-theirs");
         register("ir-codex-theirs", Provider::Codex, "C:\\p", codex, Some("ir-codex-chat"), false, background.clone());
         for id in ["ir-chat", "ir-codex-chat", "ir-theirs", "ir-codex-theirs"] {
-            let e = send("ir-me", id, "drop that and do this", true).err().unwrap_or_else(|| panic!("{id} was interrupted"));
+            let e = send("ir-me", id, "drop that and do this", true, None, true).err().unwrap_or_else(|| panic!("{id} was interrupted"));
             assert!(e.contains("interrupt only stops sessions you spawned"), "{id}: {e}");
         }
         // Its turn goes on, and its question still waits for whoever owns it.
@@ -647,7 +651,7 @@ mod tests {
         register("ir-mine", Provider::Claude, "C:\\p", claude, Some("ir-me"), false, background.clone());
         register("ir-mine-codex", Provider::Codex, "C:\\p", codex, Some("ir-mine"), false, background);
         for id in ["ir-mine", "ir-mine-codex"] {
-            let e = send("ir-me", id, "drop that and do this", true).err().unwrap();
+            let e = send("ir-me", id, "drop that and do this", true, None, true).err().unwrap();
             assert!(e.contains("is not running"), "{id}: {e}");
         }
         crate::background::remove("ir-theirs");
@@ -668,12 +672,12 @@ mod tests {
             crate::background::take_up_for_test(id, "C:\\p", 1, &[], None);
             crate::background::set_running_for_test(id);
         }
-        assert!(send("ff-me", "ff-theirs", "the build is green", false).unwrap().queued);
-        assert!(send("ff-me", "ff-mine", "the build is green", false).unwrap().queued);
+        assert!(send("ff-me", "ff-theirs", "the build is green", false, None, true).unwrap().queued);
+        assert!(send("ff-me", "ff-mine", "the build is green", false, None, true).unwrap().queued);
         assert_eq!(crate::background::queued_for_test("ff-theirs"), ["[From session ff-me via Luna] the build is green"]);
         assert_eq!(crate::background::queued_for_test("ff-mine"), ["the build is green"], "its own helper knows its parent");
         // A command the line would hide is refused as written.
-        assert!(send("ff-me", "ff-theirs", "/permissions", false).is_err());
+        assert!(send("ff-me", "ff-theirs", "/permissions", false, None, true).is_err());
         for id in ["ff-theirs", "ff-mine"] {
             crate::background::remove(id);
         }
@@ -697,7 +701,7 @@ mod tests {
         crate::background::test_helper(id, account, Some("sid"), true);
         // Its spawn's answer is the end of its first turn, which waits on a subagent.
         owe_from(me, id, 0, 0);
-        assert!(send(me, id, "and the docs too", false).unwrap().queued);
+        assert!(send(me, id, "and the docs too", false, None, true).unwrap().queued);
         let baseline = || reg().lock().unwrap().owed.get(&(me.to_string(), id.to_string())).map(|o| o.baseline);
         assert_eq!(baseline(), Some(1), "owed from the turn its text starts");
         crate::background::stderr_for_test(
@@ -707,7 +711,7 @@ mod tests {
         // That turn ends, the queued text starts the next, and another caller writes.
         crate::background::test_turn_ended(id);
         crate::background::set_running_for_test(id);
-        assert!(send(later, id, "how is it going?", false).unwrap().queued);
+        assert!(send(later, id, "how is it going?", false, None, true).unwrap().queued);
         assert!(background_stopped_note(me, id).is_some(), "the parent is told");
         assert_eq!(background_stopped_note(later, id), None, "it wrote after the cut");
         // The answer to the parent's text, at the next turn's end, carries it.

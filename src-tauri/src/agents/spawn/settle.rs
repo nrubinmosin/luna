@@ -53,6 +53,7 @@ fn spawn_afresh(s: SpawnTaken) {
     params.auto_delete = s.auto_delete;
     params.resume_on_restart = Some(true);
     params.budget_tokens = s.budget_tokens;
+    params.budget_pct = s.budget_pct;
     params.connectors = Some(s.connectors);
     if let Some(worktree) = &s.in_worktree {
         params.folder = Some(worktree.clone());

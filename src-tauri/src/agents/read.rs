@@ -361,7 +361,7 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -
     if found.is_empty() && since.is_none() && from > 0 {
         found = read_at(0).0.into_iter().last().into_iter().collect();
     }
-    let replies = crate::agents::said::said_of(found);
+    let replies = crate::agents::said::said_of(found).asked(crate::agents::owed::requests_of(caller, id));
     let report_guessed = crate::agents::said::report_guessed(&replies);
     let mut cut = false;
     // The rest it said is a file away, report first, for a caller that wants it.

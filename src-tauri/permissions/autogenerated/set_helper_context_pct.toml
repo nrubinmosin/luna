@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-helper-context-pct"
+description = "Enables the set_helper_context_pct command without any pre-configured scope."
+commands.allow = ["set_helper_context_pct"]
+
+[[permission]]
+identifier = "deny-set-helper-context-pct"
+description = "Denies the set_helper_context_pct command without any pre-configured scope."
+commands.deny = ["set_helper_context_pct"]

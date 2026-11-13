@@ -79,7 +79,8 @@ pub(super) fn tools() -> Value {
                 "tools": { "type": "boolean", "description": "these tools too (one level)" },
                 "autoDelete": { "type": "boolean", "description": "default true: deleted 30 min after its answer reached you" },
                 "resumeOnRestart": flag,
-                "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" },
+                "budgetPct": { "type": "integer", "description": "context % its notices report past (default 50, 0 off)" },
+                "budgetTokens": count,
                 "connectors": { "type": "boolean", "description": "its account's MCP servers and connectors too" },
                 "constraints": { "type": "string", "description": "rules it and every session under it keep to, after yours; none removed" },
                 "requestKey": key
@@ -92,6 +93,7 @@ pub(super) fn tools() -> Value {
             "inputSchema": s(json!({
                 "id": string, "text": string,
                 "interrupt": { "type": "boolean", "description": "stop its turn first (yours only)" },
+                "expectReply": { "type": "boolean", "description": "false: no notice unless a status word or report" },
                 "scope": scope, "requestKey": key
             }), &["id", "text"]),
             "annotations": acts
