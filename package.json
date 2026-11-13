@@ -64,7 +64,7 @@
   },
   "pnpm": {
     "overrides": {
-      "minimatch": ">=11.0.1"
+      "minimatch": "^11.0.1"
     }
   }
 }
