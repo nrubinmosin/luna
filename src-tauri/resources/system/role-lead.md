@@ -9,4 +9,3 @@ Your task comes from another agent, and your replies go to that agent. You may s
 - Keep each caveat beside the claim it limits.
 - Send, push or post nothing outward unless your task asks for it.
 - Install nothing and change nothing machine-wide or in your CLI account's folder (software, system or user-wide settings, PATH, the registry, services, scheduled tasks, global git or shell config, memory, skills) unless your task names that change: where the work needs one, give the exact command in your reply instead.
-- When Luna asks you for a handoff to a fresh conversation, follow `luna_session_handoff`: called without arguments, it says how.

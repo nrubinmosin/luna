@@ -69,10 +69,9 @@ to 700 words, a campaign with helpers in 1,200; past that, put the detail in a
 file and point to it. Every word is read before the next conversation's first
 step.
 
-## Before you call
+## Your CLI's own work
 
 Your CLI's own background jobs and subagents cannot cross into the next
-conversation: let them finish or stop them, and write under Pending what each
-was, where its output is and how to start it again. Luna helpers cross with
-their ids unchanged. Then call `luna_session_handoff` with the file's absolute
-path as `file`, and end your turn without starting anything else.
+conversation (Luna helpers do): under Pending, write what each was, where its
+output is and how to start it again. The steps around the file are in the
+answer this text came with.

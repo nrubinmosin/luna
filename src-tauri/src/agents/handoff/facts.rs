@@ -93,9 +93,7 @@ pub(super) fn notice(pct: u64, threshold: u8, firm: bool, inline: bool) -> Strin
     if !firm {
         return format!(
             "This chat's context is at {pct}% (auto-handoff at {threshold}%): hand off to a fresh conversation at the next point \
-             where your work can pause. Call luna_session_handoff without arguments for how to write the handoff, write it, \
-             then call luna_session_handoff with file set to its absolute path and end your turn. Nothing changes until you \
-             call it with file."
+             where your work can pause. luna_session_handoff without arguments says how."
         );
     }
     let lead = format!(
@@ -103,10 +101,7 @@ pub(super) fn notice(pct: u64, threshold: u8, firm: bool, inline: bool) -> Strin
          handoff: hand off now, before your next step (auto-handoff is set at {threshold}%)."
     );
     if !inline {
-        return format!(
-            "{lead} Call luna_session_handoff without arguments for how to write the handoff, write it, then call it with file \
-             set to its absolute path and end your turn."
-        );
+        return format!("{lead} luna_session_handoff without arguments says how.");
     }
     format!(
         "{lead} Write a Markdown file (.md, under {} KB, outside Luna's folder) for a successor that knows nothing of this \
@@ -209,9 +204,8 @@ const MANUAL_LEAD: &str = "The person asks for a handoff of this chat now";
 /// notifier's tag aside: what to do, as the threshold's first notice says it.
 pub(super) fn manual_notice() -> String {
     format!(
-        "{MANUAL_LEAD}: hand off to a fresh conversation at the next point where your work can pause. Call \
-         luna_session_handoff without arguments for how to write the handoff, write it, then call luna_session_handoff with \
-         file set to its absolute path and end your turn. Nothing changes until you call it with file."
+        "{MANUAL_LEAD}: hand off to a fresh conversation at the next point where your work can pause. luna_session_handoff \
+         without arguments says how."
     )
 }
 
@@ -616,9 +610,7 @@ mod tests {
         assert_eq!(
             notice(71, 70, false, true),
             "This chat's context is at 71% (auto-handoff at 70%): hand off to a fresh conversation at the next point where your \
-             work can pause. Call luna_session_handoff without arguments for how to write the handoff, write it, then call \
-             luna_session_handoff with file set to its absolute path and end your turn. Nothing changes until you call it with \
-             file."
+             work can pause. luna_session_handoff without arguments says how."
         );
         assert_eq!(notice(71, 70, false, false), notice(71, 70, false, true), "the first never carries a checklist");
         let lead = "This chat's context is at 91%, near where its CLI compacts the conversation on its own, which keeps far less \
@@ -638,19 +630,11 @@ mod tests {
                  instructions.)"
             )
         );
-        assert_eq!(
-            notice(91, 70, true, false),
-            format!(
-                "{lead} Call luna_session_handoff without arguments for how to write the handoff, write it, then call it with \
-                 file set to its absolute path and end your turn."
-            )
-        );
+        assert_eq!(notice(91, 70, true, false), format!("{lead} luna_session_handoff without arguments says how."));
         assert_eq!(
             manual_notice(),
             "The person asks for a handoff of this chat now: hand off to a fresh conversation at the next point where your \
-             work can pause. Call luna_session_handoff without arguments for how to write the handoff, write it, then call \
-             luna_session_handoff with file set to its absolute path and end your turn. Nothing changes until you call it with \
-             file."
+             work can pause. luna_session_handoff without arguments says how."
         );
         assert_eq!(
             manual_lapsed(10),
