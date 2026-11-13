@@ -57,9 +57,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   **What Luna applied** says so; a new chat drops them.
 - A lead whose delegates have all finished (its helpers answered, what its
   CLI ran in the background over) and that says nothing of it is woken by
-  Luna, once per such end: "Your delegates have finished: …". Its parent
-  hears of the turn that brings, or that it seems stuck if that turn says
-  nothing.
+  Luna, once per such end: "Your delegates have finished: …", a helper that
+  answered within seconds of the lead's last turn too. Its parent hears of
+  the turn that brings, what the lead wrote before included, or that it
+  seems stuck if that turn says nothing.
 - An answer that covers several requests to one session (a spawn and a send,
   two sends) says which is whose: requests are numbered per caller (the spawn
   1, each send one more, a `requestKey` named), the notice says it answers
@@ -176,6 +177,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   model. Each model now gets the level the settings files keep for it, else
   its own default, the dialog naming the file and key, and moves to it when
   another model is picked; `luna_account_get` gives `effortByModel`.
+- A notice no longer says a helper "finished its turn without a reply" when
+  it wrote something since its caller asked and only its last turn, on a
+  notice of Luna's, wrote nothing: what it wrote comes with the notice.
 - Text sent to a helper while a stop between its turns ended what it left
   running is no longer lost when the turn it was to start cannot start: its
   sender hears of it as undelivered with the next notice.
