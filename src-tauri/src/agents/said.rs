@@ -31,6 +31,14 @@ pub(super) fn said_since(pty: &crate::pty::PtyManager, id: &str, provider: Provi
     own_words(messages_at(&path, provider, moved.unwrap_or(cursor)), false)
 }
 
+/// `said_since` with its words kept when its last turn wrote none (the
+/// transcript ends on a prompt): what it wrote before that turn is still what
+/// the caller has not had.
+pub(super) fn written_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Said {
+    let (Some(path), moved) = transcript_seen(pty, id) else { return Said::default() };
+    own_words(messages_at(&path, provider, moved.unwrap_or(cursor)), true)
+}
+
 pub(super) fn messages_at(path: &std::path::Path, provider: Provider, from: u64) -> Vec<Message> {
     match provider {
         Provider::Claude => crate::claude::session::messages_from(path, from, false).0,

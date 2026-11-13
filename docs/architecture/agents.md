@@ -469,9 +469,14 @@ turn, stopped on a prompt (once per stop) or exited.
   The lead's role text says so (`resources/system/role-lead.md`).
   Once all its delegates are done (`Verdict::JobOver`, or a turn on its own
   helpers' notices once they have all answered, `turns_on_helpers`) with
-  nothing said past `held_to` (`quiet_since_held`: what it wrote while they
+  nothing said of them (`quiet_on_helpers`, `quiet_since_held`: that last
+  turn wrote nothing, or nothing since `held_to`; what it wrote while they
   worked waits for its parent and is no word on their end),
-  Luna wakes the lead instead of telling its parent (`wake_lead`): a queued
+  Luna wakes the lead instead of telling its parent (`wake_lead`). Whether
+  its interim turn was held back first is no matter: a helper that answers
+  within that turn's reply grace ends before the notifier has looked at it.
+  A notice never drops what a session wrote because its last turn wrote
+  nothing (`written_since`, `replies_since` stopped). The wake is a queued
   line opening `Your delegates have finished` (`WAKE_HEAD`), naming what it
   was last seen waiting on (`note_delegates`), once per end (`Registry::woken`,
   by the count it was seen at; a notice of the lead's end to another of its
