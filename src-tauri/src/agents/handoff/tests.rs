@@ -1618,41 +1618,41 @@ fn queued(id: &str) -> Vec<String> {
 /// notice queued for the notifier, which holds it behind a draft as any.
 #[test]
 fn turning_it_on_past_the_threshold_asks_as_soon_as_the_chat_is_at_rest() {
-    chat("honow-me", None);
-    listed("honow-me");
+    chat("hoon-me", None);
+    listed("hoon-me");
     let mut b = Beat::default();
-    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), Some((4, None)), "a turn's end not looked at yet");
-    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), None, "looked at: nothing until the next turn's end");
-    set_auto_handoff("honow-me".into(), Some(70)).unwrap();
-    let mark = check_due("honow-me");
+    assert_eq!(to_look(&mut b, "hoon-me", turn(true, 4)), Some((4, None)), "a turn's end not looked at yet");
+    assert_eq!(to_look(&mut b, "hoon-me", turn(true, 4)), None, "looked at: nothing until the next turn's end");
+    set_auto_handoff("hoon-me".into(), Some(70)).unwrap();
+    let mark = check_due("hoon-me");
     assert!(mark.is_some(), "on: to be looked at now");
-    assert_eq!(to_look(&mut b, "honow-me", turn(false, 4)), None, "mid-turn: not at rest yet");
-    assert_eq!(check_due("honow-me"), mark, "the mark waits");
-    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), Some((4, mark)), "at rest: looked at, at the same turn");
-    look_at("honow-me", 70, &reading("conv-live", 75), 4, mark);
-    assert_eq!(check_due("honow-me"), None, "its look over");
-    let asked = store::records()["honow-me"].asked.clone().unwrap();
+    assert_eq!(to_look(&mut b, "hoon-me", turn(false, 4)), None, "mid-turn: not at rest yet");
+    assert_eq!(check_due("hoon-me"), mark, "the mark waits");
+    assert_eq!(to_look(&mut b, "hoon-me", turn(true, 4)), Some((4, mark)), "at rest: looked at, at the same turn");
+    look_at("hoon-me", 70, &reading("conv-live", 75), 4, mark);
+    assert_eq!(check_due("hoon-me"), None, "its look over");
+    let asked = store::records()["hoon-me"].asked.clone().unwrap();
     assert_eq!((asked.kind, asked.conversation.as_deref(), asked.turns), (store::AskKind::Auto, Some("conv-live"), Some(4)));
-    assert_eq!(queued("honow-me"), [facts::notice(75, 70, false, true)], "through the notifier, as at a turn's end");
-    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), None, "once");
+    assert_eq!(queued("hoon-me"), [facts::notice(75, 70, false, true)], "through the notifier, as at a turn's end");
+    assert_eq!(to_look(&mut b, "hoon-me", turn(true, 4)), None, "once");
     // On again at another threshold while its ask is open: looked at again,
     // and the conversation, told already, is not asked a second time.
-    set_auto_handoff("honow-me".into(), Some(60)).unwrap();
-    let again = check_due("honow-me");
+    set_auto_handoff("hoon-me".into(), Some(60)).unwrap();
+    let again = check_due("hoon-me");
     assert!(again.is_some() && again != mark);
-    look_at("honow-me", 60, &reading("conv-live", 75), 4, mark);
-    assert_eq!(check_due("honow-me"), again, "an old look lets go of its own mark only");
-    look_at("honow-me", 60, &reading("conv-live", 75), 4, again);
-    assert_eq!((check_due("honow-me"), queued("honow-me").len()), (None, 1));
+    look_at("hoon-me", 60, &reading("conv-live", 75), 4, mark);
+    assert_eq!(check_due("hoon-me"), again, "an old look lets go of its own mark only");
+    look_at("hoon-me", 60, &reading("conv-live", 75), 4, again);
+    assert_eq!((check_due("hoon-me"), queued("hoon-me").len()), (None, 1));
     // Under its threshold: told nothing, the mark let go all the same.
-    store::change("honow-me", |r| (r.asked, r.told) = (None, None)).unwrap();
-    reg().lock().unwrap().news.retain(|(c, _)| c != "honow-me");
-    set_auto_handoff("honow-me".into(), Some(80)).unwrap();
-    let low = check_due("honow-me");
-    look_at("honow-me", 80, &reading("conv-live", 75), 4, low);
-    assert_eq!((check_due("honow-me"), open_ask("honow-me"), queued("honow-me").len()), (None, None, 0));
-    forget_session("honow-me");
-    set_conversation_for_test("honow-me", None);
+    store::change("hoon-me", |r| (r.asked, r.told) = (None, None)).unwrap();
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hoon-me");
+    set_auto_handoff("hoon-me".into(), Some(80)).unwrap();
+    let low = check_due("hoon-me");
+    look_at("hoon-me", 80, &reading("conv-live", 75), 4, low);
+    assert_eq!((check_due("hoon-me"), open_ask("hoon-me"), queued("hoon-me").len()), (None, None, 0));
+    forget_session("hoon-me");
+    set_conversation_for_test("hoon-me", None);
 }
 
 /// The look turning auto-handoff on asks for waits while the chat cannot be

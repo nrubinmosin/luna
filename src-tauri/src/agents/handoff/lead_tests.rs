@@ -9,9 +9,13 @@ use super::*;
 use crate::agents::registry::register;
 use crate::settings::LeadHandoff;
 
-const PARENT: &str = "ld-parent";
+/// The parent of lead `id`: one of its own, as what a parent hears and is
+/// owed is kept per parent in the shared registry, and tests run side by side.
+fn parent(id: &str) -> String {
+    format!("{id}-parent")
+}
 
-/// A lead of `provider` under `PARENT`, on conversation "old", with a
+/// A lead of `provider` under `parent(id)`, on conversation "old", with a
 /// transcript at `pct` of its context where `pct` is given (Claude Code's
 /// shape, as both CLIs' are read alike by `Context::of`), in a folder of the
 /// test's own; no copies on disk from a run before.
@@ -23,8 +27,8 @@ fn lead(id: &str, pct: Option<u64>) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let at = dir.to_string_lossy().into_owned();
-    register(PARENT, Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, true, json!({}));
-    register(id, Provider::Claude, &at, &at, Some(PARENT), true, json!({ "model": "sonnet" }));
+    register(&parent(id), Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, true, json!({}));
+    register(id, Provider::Claude, &at, &at, Some(&parent(id)), true, json!({ "model": "sonnet" }));
     crate::background::test_lead(id, Provider::Claude, &at, Some("old"), None);
     if let Some(pct) = pct {
         transcript_at(&at, "old", pct);
@@ -51,6 +55,8 @@ fn on(threshold: u8) {
 
 fn gone(id: &str) {
     crate::background::remove_for_test(id);
+    crate::agents::forget(id);
+    crate::agents::forget(&parent(id));
     let _ = store::remove(id);
     lead_settings_for_test(None);
 }
@@ -104,11 +110,12 @@ fn a_lead_is_listed_the_tool_while_the_setting_is_on_and_a_tool_less_helper_neve
 
     // A helper without Luna's tools, the setting on.
     on(60);
-    register("ld-plain", Provider::Claude, "C:/p", "C:/acc", Some(PARENT), false, json!({}));
+    register("ld-plain", Provider::Claude, "C:/p", "C:/acc", Some(&parent("ld-list")), false, json!({}));
     crate::background::test_helper("ld-plain", "C:/acc", Some("s"), false);
     assert!(!may_list("ld-plain"));
     assert!(!names("ld-plain").iter().any(|n| n == "luna_session_handoff"));
     crate::background::remove_for_test("ld-plain");
+    crate::agents::forget("ld-plain");
     gone("ld-list");
 }
 
@@ -249,9 +256,8 @@ fn the_switch_starts_a_fresh_conversation_at_the_turns_end_and_its_parent_hears(
     // however full it begins.
     let told = rec.told.unwrap();
     assert_eq!((told.conversation.as_str(), told.level, told.floor), ("new", 0, 70));
-    let line = reg().lock().unwrap().handed_off.get(PARENT).map(|h| h.line());
+    let line = reg().lock().unwrap().handed_off.get(&parent("ld-switch")).map(|h| h.line());
     assert_eq!(line.as_deref(), Some("Lead ld-switch handed off (3): it goes on in a fresh conversation; its helpers stay with it."));
-    reg().lock().unwrap().handed_off.remove(PARENT);
     gone("ld-switch");
 }
 
@@ -263,11 +269,12 @@ fn requests_owed_before_a_switch_are_owed_by_the_fresh_conversation_under_their_
     use crate::agents::owed::{owe_asked, requests_of, Asked};
     let id = "ld-requests";
     let dir = lead(id, Some(70)).to_string_lossy().into_owned();
+    let parent = &parent(id);
     on(60);
     let ask = |text| Asked { text, key: None, reply: true };
-    owe_asked(PARENT, id, 0, 0, &ask("the spawn's prompt"));
-    owe_asked(PARENT, id, 1, 10, &ask("Where do you stand?"));
-    let open = || requests_of(PARENT, id).iter().map(|q| q.n).collect::<Vec<_>>();
+    owe_asked(parent, id, 0, 0, &ask("the spawn's prompt"));
+    owe_asked(parent, id, 1, 10, &ask("Where do you stand?"));
+    let open = || requests_of(parent, id).iter().map(|q| q.n).collect::<Vec<_>>();
     assert_eq!(open(), [1, 2]);
     let a = store::Asked { conversation: Some("old".into()), ..store::Asked::new(store::AskKind::Auto, now_ms(), None) };
     store::change(id, |r| r.asked = Some(a)).unwrap();
@@ -279,13 +286,12 @@ fn requests_owed_before_a_switch_are_owed_by_the_fresh_conversation_under_their_
     crate::background::lead_turn_over_for_test(id, &[], None);
     lead_turn_ended(id);
     assert!(crate::background::switch_of(id).is_none(), "through");
-    assert!(reg().lock().unwrap().owed.contains_key(&(PARENT.to_string(), id.to_string())), "still owed");
+    assert!(reg().lock().unwrap().owed.contains_key(&(parent.to_string(), id.to_string())), "still owed");
     assert_eq!(open(), [1, 2], "under their numbers");
-    owe_asked(PARENT, id, 2, 0, &ask("And the third ask"));
+    owe_asked(parent, id, 2, 0, &ask("And the third ask"));
     assert_eq!(open(), [1, 2, 3]);
-    reg().lock().unwrap().owed.remove(&(PARENT.to_string(), id.to_string()));
-    reg().lock().unwrap().requests.remove(&(PARENT.to_string(), id.to_string()));
-    reg().lock().unwrap().handed_off.remove(PARENT);
+    reg().lock().unwrap().owed.remove(&(parent.to_string(), id.to_string()));
+    reg().lock().unwrap().requests.remove(&(parent.to_string(), id.to_string()));
     gone(id);
 }
 
@@ -432,7 +438,7 @@ fn a_lead_that_writes_no_file_goes_on_from_lunas_document() {
 fn codex_lead(id: &str, thread: &str, pct: u64) {
     let dir = lead(id, None);
     let at = dir.to_string_lossy().into_owned();
-    register(id, Provider::Codex, &at, &at, Some(PARENT), true, json!({ "model": "gpt-5.5" }));
+    register(id, Provider::Codex, &at, &at, Some(&parent(id)), true, json!({ "model": "gpt-5.5" }));
     crate::background::test_lead(id, Provider::Codex, &at, Some(thread), None);
     let day = dir.join("sessions").join("2026").join("11").join("13");
     std::fs::create_dir_all(&day).unwrap();
