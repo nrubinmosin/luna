@@ -15,6 +15,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
+- Claude Code below 2.1.323 no longer runs: the list's `minSafe` rises to it,
+  and 2.1.319 and 2.1.322 leave the list. Before 2.1.323 a session started
+  with `--permission-mode auto`, which Luna's helpers are and its sessions
+  inherit, could start in a mode that allows more where auto mode was
+  unavailable, and some `lsof` and `rm` commands skipped their prompts. A
+  version below it already current, held by "Use" or kept for rolling back
+  is not started, the hold is dropped and the next pass installs 2.1.323;
+  Settings refuses going back below it.
 - The `minimatch` npm package, which only the lint tools use, goes to 11 by
   a pnpm override, out of its globparts amplification DoS (vulnerable from
   7.0.0 to before 11.0.1). Nothing Luna ships carries it.

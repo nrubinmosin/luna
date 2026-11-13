@@ -84,6 +84,17 @@ mod tests {
         assert!(parse(r#"{"claude":{"minSafe":"1.0.0","knownGood":[],"feed":"x"},"codex":{"minSafe":"0.1.0","knownGood":[]}}"#).is_err());
     }
 
+    /// Minimums a security fix set; a list may raise them, never lower them.
+    /// Claude Code 2.1.323: before it, `--permission-mode auto` (which Luna
+    /// spawns and inherits) could start in a mode that allows more when auto
+    /// mode was unavailable (docs/cli-compatibility.md).
+    #[test]
+    fn the_shipped_minimums_stay_at_or_above_their_security_fixes() {
+        let shipped = parse(SHIPPED).unwrap();
+        assert!(super::super::version_cmp(&shipped.claude.min_safe, "2.1.323").is_ge(), "{}", shipped.claude.min_safe);
+        assert!(super::super::version_cmp(&shipped.codex.min_safe, "0.167.0").is_ge(), "{}", shipped.codex.min_safe);
+    }
+
     #[test]
     fn the_newest_known_good_version_not_marked_bad_is_picked() {
         let e = Entry { min_safe: "1.0.0".into(), known_good: vec!["1.2.0".into(), "1.10.0".into(), "1.9.0".into()] };
