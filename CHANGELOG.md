@@ -78,8 +78,27 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   before is owed by the fresh conversation under the same request numbers,
   and notices about it give that conversation's context share. Its parent is
   not advised to replace it as its context fills.
+- [What Luna adds to a model's context](docs/user-guide/context.md), linked
+  from the README: every text Luna puts before a model (MCP instructions and
+  tools, role texts and notes, skills, hook answers, notices, handoff and move
+  texts, what Luna types in), who gets it, when, its size in tokens and how to
+  change or turn it off, with totals by role. A unit test checks the page's
+  sizes against the texts.
 
 ### Changed
+
+- Luna adds less to a model's context. The MCP instructions no longer send a
+  conversation to read two guide topics (~2,200 tokens) before its first
+  spawn; they say where the guide is. Tool descriptions drop the lists of what
+  they return (the guide has them), and the tool list is held to 9,000
+  characters again. Notices drop the tails that named `luna_message_list` with
+  `screen: true`, `luna_session_send` or `luna_session_stop` and
+  "(its report picked by length)" (a read still says `reportGuessed`), and the
+  breaker's line is shorter. The guard's refusal is half as long and no longer
+  names a skill Luna does not ship. The handoff's steps are said once, in
+  `luna_session_handoff`'s answer: its description and the asks point there,
+  and Luna's `session-handoff` instructions and `role-lead` text no longer
+  repeat them.
 
 - A lead's turns no longer wake its parent while its own helpers or its CLI's
   background work are still at it, a long interim report included, and it is

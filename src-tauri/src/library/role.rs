@@ -230,6 +230,28 @@ pub fn was_served(note: &str) -> bool {
     cache.as_ref().is_some_and(|(_, served)| served.contains(&sha))
 }
 
+/// Luna's own texts for a session's role as they reach a model, by the name
+/// docs/user-guide/context.md measures them under (context_page.rs): each
+/// role's layer as composed with nothing else in it, the constraints'
+/// heading with no constraint under it, the note as it follows a task, and
+/// the handoff's instructions.
+#[cfg(test)]
+pub(crate) fn context_texts() -> Vec<(String, String)> {
+    let luna = |name: &str| text_of(name).map(|t| t.luna).unwrap_or_default();
+    let layer = |name: &str| compose_layers(None, luna(name), &[], &[]).unwrap_or_default();
+    let heading = compose_layers(None, "", &[], &["x".to_string()]).unwrap_or_default();
+    [
+        ("role-lead", layer(ROLE_LEAD)),
+        ("role-helper", layer(ROLE_HELPER)),
+        ("constraints-heading", heading.trim_end_matches("x\n").to_string()),
+        ("note", crate::pty::helper_prompt(luna(NOTE_HELPER).trim(), "")),
+        ("handoff-skill", LUNA_HANDOFF.to_string()),
+    ]
+    .into_iter()
+    .map(|(name, text)| (name.to_string(), text))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

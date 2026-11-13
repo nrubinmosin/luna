@@ -2045,5 +2045,24 @@ pub fn forget(id: &str) {
     }
 }
 
+/// What a handoff or a move puts in a model's context besides the
+/// instructions themselves, by the name docs/user-guide/context.md measures
+/// it under (context_page.rs): the asks as typed in, the notifier's tag aside,
+/// and the tool's answer around an empty body with no path suggested.
+#[cfg(test)]
+pub(crate) fn context_texts() -> Vec<(String, String)> {
+    let sha = "0".repeat(64);
+    [
+        ("handoff-ask", facts::notice(71, 70, false, true)),
+        ("handoff-ask-firm", facts::notice(91, 70, true, true)),
+        ("handoff-how-to", facts::how_to("Luna's own", &sha, "", None, None)),
+        ("move-ask", moving::ask_line("cmwdb4et66")),
+        ("move-how-to", facts::move_how_to("", "Luna's own", &sha, "")),
+    ]
+    .into_iter()
+    .map(|(name, text)| (name.to_string(), text))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests;

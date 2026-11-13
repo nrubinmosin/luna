@@ -14,6 +14,8 @@ mod checks;
 mod claude;
 mod cli;
 mod codex;
+#[cfg(test)]
+mod context_page;
 mod corecmd;
 mod corelink;
 mod coreproc;
