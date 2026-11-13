@@ -532,12 +532,18 @@ until they are through.
   (`facts::notice` under `NOTICE_TAG`) queued as a turn of Luna's own
   (`send_luna`, no sender): started at once at rest, past the firm mark ahead
   of anything queued. No ask goes to a lead that writes no file
-  (`switch::unwritable`: Claude Code `read_only` or plan mode, Codex in a
-  sandbox that writes nothing): past its threshold Luna builds its handoff
+  (`switch::unwritable`: Claude Code `read_only`, plan mode or `dontAsk`, which
+  refuses a Write no allow rule lets through and Luna gives none for the
+  drafts folder; Codex in a sandbox that writes nothing): past its threshold
+  Luna builds its handoff
   from its records (`document.rs` with `Inputs::lead`: its helpers its own,
   no person's dialog, its caller asked before anything that cannot be
   undone), copies it private as the next number and starts the switch at
-  once (`from_records`).
+  once (`from_records`). A firm ask left unanswered goes the same way
+  (`unanswered`: the ask Luna's own on this conversation, a turn ended since,
+  no switch scheduled and none given up since): at that turn's end, at rest,
+  the told level kept and the ask closed first, so a document that will not
+  build is not tried again at every turn's end.
 - **The call.** `lead::handoff` answers only while the ask holds in the
   conversation the lead is on (`asked_now`: `Asked::conversation` equal to
   `background::session_id`), else `lead::NOT_ASKED`. Refused while what its
