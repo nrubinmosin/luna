@@ -213,6 +213,7 @@ macro_rules! app_handler {
             agents::spawn::set_max_helpers,
             agents::spawn::set_helper_context_pct,
             agents::spawn::set_helper_mode,
+            agents::spawn::set_lead_handoff,
             cli::cli_status,
             cli::cli_update_now,
             cli::cli_versions,

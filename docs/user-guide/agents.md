@@ -316,6 +316,38 @@ the calling chat alone: no helper or other session is offered it or finds it
 in `luna_guide_get`, and one that calls it all the same is answered as for a
 tool there is not. See [Chats: Handoff](chats.md#handoff).
 
+### Leads
+
+A lead, a helper spawned with Luna tools, has the tool too while
+**Auto-handoff for leads** is on (Settings → Agents & trust → Helpers; on, at
+60% of its context, by default). Once a turn of its ends past that share and
+it is at rest, Luna asks it for a handoff as a turn of its own; near the point
+where its CLI would compact by itself, once more, ahead of what waits for it.
+It writes the handoff (a Codex lead in its workspace, a Claude Code lead in the
+folder the tool names), calls the tool with it, and ends its turn. As that
+turn ends Luna starts its next turn in a fresh conversation: the opening names
+Luna's copy of the handoff, the skills to load first and what Luna knows (its
+helpers, what they owe it, its accounts), in the worktree it was working in.
+Its id, its role and constraints, its helpers and their answers stay as they
+were; what is sent to it meanwhile waits for the fresh conversation. Its parent
+hears "lead … handed off (N); its helpers stay with it" with its next notice,
+not as a notice of its own.
+
+- A lead that can write no file (Claude Code without its edit tools or in plan
+  mode, Codex in a read-only sandbox) is not asked: Luna writes its handoff
+  from its records, as for a move, and starts the fresh conversation on it.
+- The call is refused while what its turns left is still running; the switch
+  is given up, the lead going on in the same conversation and told why, if
+  something of its own is left at work as the turn ends, the turn was stopped
+  with `luna_session_stop`, or the fresh conversation cannot start.
+- A fresh conversation is not asked again at once: only once it has grown past
+  where its first turn ended.
+- While a handoff is under way the lead cannot be opened as a chat. A core
+  restart in the middle of one goes on with it, whatever `resumeOnRestart`
+  says.
+- With the setting off, no lead is listed the tool, and an ask still open
+  closes at its next turn's end.
+
 ## Lifetime
 
 - A helper goes by itself (`autoDelete`, on by default) once its answer reached

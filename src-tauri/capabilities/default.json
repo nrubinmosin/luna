@@ -42,6 +42,7 @@
     "allow-set-max-helpers",
     "allow-set-helper-mode",
     "allow-set-helper-context-pct",
+    "allow-set-lead-handoff",
     "allow-cli-status",
     "allow-cli-update-now",
     "allow-cli-versions",

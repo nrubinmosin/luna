@@ -62,7 +62,7 @@ impl Served {
 /// Whose instructions they are, as the answer says it: an override with where
 /// it is, for what it names beside it; Luna's own with why an override there
 /// is not used.
-fn source_words(r: &Resolved) -> String {
+pub(super) fn source_words(r: &Resolved) -> String {
     let luna = format!("Luna's own, {}", env!("CARGO_PKG_VERSION"));
     match (r.source, &r.problem) {
         (Source::Library, _) => {
@@ -108,7 +108,7 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
 /// override, resolved for `caller` and kept on its record as what it was
 /// served, said in the log as the instructions of `what`. A record that will
 /// not save costs that note, not the answer.
-fn resolved_for(caller: &str, what: &str) -> Resolved {
+pub(super) fn resolved_for(caller: &str, what: &str) -> Resolved {
     let r = crate::library::handoff_instructions();
     let served = Served::of(&r);
     if let Err(e) = store::change(caller, |rec| rec.served = Some(served)) {
