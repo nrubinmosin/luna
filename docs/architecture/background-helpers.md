@@ -215,7 +215,9 @@ has read the file, so an empty registry never overwrites it.
   (`owed_stands`).
 - Text queued behind a stopped turn stays, never run; only its sender hears of
   it (`Entry::undelivered`, `undelivered_text`), and `read` / `wait` name it as
-  `undelivered`. `luna_session_stop` drops the queue.
+  `undelivered`. `luna_session_stop` drops the queue. Text that waited
+  through a hold (`go_on`: an open as a chat, a delete, a lead's switch given
+  up) and whose turn then cannot start is kept the same way.
 - A helper stopped before any turn named its conversation keeps its opening
   (`Entry::opening`); the notice says it never started (`never_started`).
 - **`resumeOnRestart`** (in `settings`, so in the ties): `resume_stopped`, once
