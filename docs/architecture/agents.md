@@ -492,7 +492,12 @@ turn, stopped on a prompt (once per stop) or exited.
 - **No reply asked.** A send with `expectReply: false` sets `Owed::no_reply`
   (a later send that asks for one clears it). A turn that answers it wakes the
   caller only with a status word or a message of 400 characters or more;
-  otherwise the debt settles with no notice (`Settled::Unasked`).
+  otherwise the debt settles with no notice (`Settled::Unasked`). A send that
+  takes in a debt a notice may be telling of as it comes keeps what it owes
+  of its own (`Owed::since`): once that notice settles the debt it was put
+  together on, what is left is the send's alone, from where it was asked,
+  with its own `no_reply` and requests (owed.rs `told_before`), so the first
+  answer is not told again.
 - **The breaker.** Past 12 turn-end notices in 15 minutes for one (caller,
   session) pair (`BREAKER_NOTICES`), that pair's turn and job news stops: the
   last notice says so, the log warns, the desktop is told once, and a person

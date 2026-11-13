@@ -1105,6 +1105,10 @@ fn ack_background_stop(r: &Registry, caller: &str, id: &str, text: &str) {
 /// have taken the answer meanwhile, which leaves nothing to carry on.
 pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled, told: &Owed) {
     if r.owed.get(&key).map(|o| o.rev) != Some(told.rev) {
+        // Told as it was before another ask took it in: that ask is what is left.
+        if matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited | Settled::Unasked) {
+            crate::agents::owed::told_before(r, &key, told.rev);
+        }
         return;
     }
     match how {
@@ -1553,6 +1557,55 @@ mod tests {
                 forget(s);
             }
         }
+    }
+
+    /// Live on 13 November: a chat sent `expectReply: false` a second before
+    /// the notice of its helper's last answer had settled that debt. The send
+    /// took the debt in, and the helper's "ok" came back as "answering your
+    /// request 1, request 2", the first answer told again. Once the notice
+    /// settles, what is left is the send's alone, and it asked for no reply.
+    #[test]
+    fn a_no_reply_send_crossing_a_notice_in_flight_wants_no_reply_and_repeats_nothing() {
+        use crate::agents::owed::{owe_asked, requests_of, Asked};
+        let (a, id) = ("nx-caller", "nx-helper");
+        register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, serde_json::json!({ "background": true }));
+        // The caller mid-turn: a notice for it queues, as one going in.
+        crate::background::test_helper(a, "C:\\acc", None, true);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        let prompt = |t: &str| format!("{}\n", serde_json::json!({ "type": "user", "message": { "role": "user", "content": t } }));
+        let said = |t: &str| {
+            format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } }))
+        };
+        let first = format!("{}{}", prompt("Review PR 7719"), said("VERDICT: GO for 7719."));
+        let path = std::env::temp_dir().join(format!("luna-{id}-{}.jsonl", std::process::id()));
+        std::fs::write(&path, &first).unwrap();
+        crate::agents::read::transcripts().lock().unwrap().insert(id.into(), path.clone());
+        owe_asked(a, id, 0, 0, &Asked { text: "Review PR 7719", key: None, reply: true });
+        let key = (a.to_string(), id.to_string());
+        let told = reg().lock().unwrap().owed[&key];
+        let k = reg().lock().unwrap().known.get(id).cloned().unwrap();
+        let pty = crate::pty::manager();
+        let Some((Some(line), Settled::Answered)) = notice_line(pty, a, "Your helper", id, &k, told) else { panic!("answered") };
+        // The send comes in as the notice goes in, before it settles.
+        let end = first.len() as u64;
+        run_between(a, Box::new(move || owe_asked(a, id, 1, end, &Asked { text: "FYI: main moved", key: None, reply: false })));
+        let text = format!("{NOTICE_TAG} {line}");
+        deliver_notice(pty, a, &text, Notice { settled: vec![(id.to_string(), Settled::Answered, told)], ..Notice::default() });
+        assert_eq!(crate::background::queued_for_test(a), [text], "the notice went in");
+        let left = reg().lock().unwrap().owed[&key];
+        assert!(left.no_reply && left.cursor == end && left.baseline == 1, "the send's own debt is what is left");
+        assert_eq!(requests_of(a, id).iter().map(|q| q.n).collect::<Vec<_>>(), [2]);
+        // The helper's "ok" to it: no notice, and the first answer not again.
+        std::fs::write(&path, format!("{first}{}{}", prompt("FYI: main moved"), said("ok."))).unwrap();
+        crate::background::idle_for_test(id, Provider::Claude, 2, false);
+        assert!(matches!(notice_line(pty, a, "Your helper", id, &k, left), Some((None, Settled::Unasked))));
+        reg().lock().unwrap().owed.remove(&key);
+        for s in [id, a] {
+            crate::background::gone_for_test(s);
+            forget(s);
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A look taken before a retry reads the turn that missed as the answer.
