@@ -8,6 +8,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Claude Code 2.1.323 and Codex 0.168.0 are on the known-good list, so the
+  default channel installs them.
+
 ## [0.18.0] - 2026-11-13
 
 Helpers can now lead: one spawned with Luna's tools works as a **lead**, with
