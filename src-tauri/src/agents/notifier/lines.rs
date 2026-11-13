@@ -427,8 +427,7 @@ pub(in crate::agents) fn notice_line(
                 // Short enough, what it said is the notice's, and no file.
                 let said = match (n, inline_answer(&said)) {
                     (0, _) if !stopped.is_empty() => "it has said nothing since your last notice".to_string(),
-                    (0, _) => "it has said nothing since your last notice. It does not take that up by itself; luna_session_send asks it how it went"
-                        .to_string(),
+                    (0, _) => "it has said nothing since your last notice, and takes no turn on that by itself".to_string(),
                     (_, Some(line)) if said.requests().is_empty() => format!("it wrote {messages} since your last notice: \"{line}\""),
                     (_, _) => format!("it wrote {messages} since your last notice{}; {}{quoted}", answering(&said), answer_file(id, &said)),
                 };
@@ -478,11 +477,8 @@ pub(in crate::agents) fn notice_line(
         let file = text.as_deref().filter(|_| inline.is_none()).and_then(|t| note_file(id, t));
         let span = text.as_deref().and_then(|t| report_span(&replies, t));
         let reply = match replies.len() {
-            0 if !transcript_found(pty, id) => {
-                ", but Luna cannot find its transcript, so whether it replied is unknown (luna_message_list with screen: true shows what there is)"
-                    .to_string()
-            }
-            0 => " without a reply (luna_message_list with screen: true shows why, if anything does)".to_string(),
+            0 if !transcript_found(pty, id) => ", but Luna cannot find its transcript, so whether it replied is unknown".to_string(),
+            0 => " without a reply".to_string(),
             n if inline.is_some() => {
                 let messages = if n == 1 { "1 message".to_string() } else { format!("{n} messages") };
                 format!(" with {messages} since you asked: \"{}\"", inline.as_deref().unwrap_or_default())
@@ -562,7 +558,7 @@ pub(in crate::agents) fn notice_line(
             if said_since(pty, id, k.provider, w.cursor).is_empty() {
                 let earlier = if replies.is_empty() { String::new() } else { format!(" Its turns since you asked ended{reply}.") };
                 return Some((
-                    Some(format!("{who} seems stuck: its delegates had finished and Luna told it so, but it ended its turn on that without a word.{earlier}{lost} luna_session_send asks it how it went.")),
+                    Some(format!("{who} seems stuck: its delegates had finished and Luna told it so, but it ended its turn on that without a word.{earlier}{lost}")),
                     Settled::Answered,
                 ));
             }
@@ -663,11 +659,11 @@ fn quiet_line(who: &str, quiet_ms: u64, past_due_ms: Option<u64>) -> String {
     let quiet = quiet_ms / 60_000;
     match past_due_ms {
         Some(past) => format!(
-            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang; luna_message_list with screen: true shows where it is, luna_session_stop stops the turn. Said once per turn; the usual notice comes when it ends.",
+            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang. Said once per turn; the usual notice comes when it ends.",
             past / 60_000
         ),
         None => format!(
-            "{who} is mid-turn and has written nothing for {quiet} min. A command it runs may hang, or simply take long; luna_message_list with screen: true shows where it is, luna_session_stop stops the turn. Said once per turn; the usual notice comes when it ends."
+            "{who} is mid-turn and has written nothing for {quiet} min: a command it runs may hang, or simply take long. Said once per turn; the usual notice comes when it ends."
         ),
     }
 }
@@ -836,9 +832,7 @@ pub(in crate::agents) fn standing_line(
                 Some(ask_id) => format!("{who} {}. Answer with luna_session_answer, askId {ask_id}.", a.line()),
                 None => format!("{who} {}. Answer with luna_session_answer.", a.line()),
             },
-            None => format!(
-                "{who} is stopped on a prompt in its terminal that Luna cannot read; luna_message_list with screen: true shows it, and the person answers it."
-            ),
+            None => format!("{who} is stopped on a prompt in its terminal that Luna cannot read; only the person can answer it."),
         };
         return Some((Some(line), Settled::Waiting));
     }
@@ -1259,7 +1253,7 @@ mod tests {
             let Some((Some(text), Settled::Quiet(3))) = quiet_on(31 * min, true) else {
                 panic!("{id}: a finished command holds nothing back")
             };
-            assert!(text.contains("written nothing for 31 min. A command it runs may hang"), "{text}");
+            assert!(text.contains("written nothing for 31 min: a command it runs may hang"), "{text}");
             crate::background::gone_for_test(&id);
             forget(&id);
         }
@@ -1330,7 +1324,7 @@ mod tests {
         crate::background::quiet_for_test(id, QUIET_TURN_MS + 60_000);
         let pty = crate::pty::manager();
         let Some((Some(text), Settled::Quiet(3))) = notice_line(pty, caller, "Your helper", id, &known, o) else { panic!("quiet") };
-        assert!(text.contains("written nothing for 31 min. A command it runs may hang"), "not answered yet: {text}");
+        assert!(text.contains("written nothing for 31 min: a command it runs may hang"), "not answered yet: {text}");
         // The plain notice told for this turn; then the turn answers and waits
         // on its watcher: that is news of its own.
         let told = Owed { told_quiet: Some(3), ..o };
@@ -1784,7 +1778,7 @@ mod tests {
         notice_turn(&mut reg().lock().unwrap(), id, 2, &[], true);
         crate::background::idle_for_test(id, Provider::Claude, 2, false);
         let Some((Some(stuck), Settled::Answered)) = line(held(told, 2, REPLY_GRACE_MS)) else { panic!("its parent hears") };
-        assert!(stuck.contains("seems stuck") && stuck.contains("luna_session_send asks it how it went"), "{stuck}");
+        assert!(stuck.contains("seems stuck") && stuck.contains("without a word"), "{stuck}");
         // One that takes it up is heard of as any turn of its own.
         std::fs::write(&path, format!("{text}{}", said_line("DONE: gate green, both checks pass."))).unwrap();
         let Some((Some(done), Settled::Answered)) = line(held(told, 2, REPLY_GRACE_MS)) else { panic!("its turn on the wake") };
