@@ -95,11 +95,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   conversation to read two guide topics (~2,200 tokens) before its first
   spawn; they say where the guide is. Tool descriptions drop the lists of what
   they return (the guide has them), and the tool list is held to 9,000
-  characters again. Notices drop the tails that named `luna_message_list` with
-  `screen: true`, `luna_session_send` or `luna_session_stop` and
-  "(its report picked by length)" (a read still says `reportGuessed`), and the
-  breaker's line is shorter. The guard's refusal is shorter, gives one bash and
-  one PowerShell way to a deadline (PowerShell's `timeout` only waits), and no
+  characters again. Notices drop the tails that named `luna_session_send` or
+  `luna_session_stop` and "(its report picked by length)" (a read still says
+  `reportGuessed`), keeping `luna_message_list` with `screen: true` only where
+  a turn is quiet or stopped on a prompt Luna cannot read, and the breaker's
+  line is shorter. The guard's refusal is shorter, gives one bash and one
+  PowerShell way to a deadline (PowerShell's `timeout` only waits), and no
   longer names a skill Luna does not ship. The handoff's steps are said once, in
   `luna_session_handoff`'s answer: its description and the asks point there,
   and Luna's `session-handoff` instructions and `role-lead` text no longer
