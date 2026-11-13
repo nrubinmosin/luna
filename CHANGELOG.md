@@ -42,15 +42,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `developer_instructions` after its config's own value (ADR-0026).
 - The library's **For** column takes any of the three roles. Instructions for
   some roles only reach each such session as Luna starts it, never through an
-  account; several for one role all go, in name order.
+  account; several for one role all go, in name order. One that, with the
+  others for its role, would not fit on a Codex command line is marked so.
 - **System texts** in the library: what a lead and a helper are told of their
   role, the note after their tasks, and what a chat is told (nothing by
   default), each with Luna's own text and one override of yours, beside the
   handoff's instructions.
 - `constraints` on `luna_session_spawn`: text the helper and every session
   under it are told last among their instructions, at every start and resume.
-  A spawn adds to what its caller carries; nothing removes any. Shown in
-  `luna_session_get`.
+  They may only narrow the rest of a session's instructions: where they
+  conflict, the stricter applies. A spawn adds to what its caller carries;
+  nothing removes any. Shown in `luna_session_get`. A Codex helper you open
+  as your own chat keeps them, with its role, in its conversation, and its
+  **What Luna applied** says so; a new chat drops them.
 - A lead whose delegates have all finished (its helpers answered, what its
   CLI ran in the background over) and that says nothing of it is woken by
   Luna, once per such end: "Your delegates have finished: …". Its parent
@@ -120,6 +124,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   session, **Chats** your chats, **Helpers** leads and helpers. Instructions
   for your chats stay in the accounts with a neutral line saying whose they
   are; instructions for helpers leave the accounts and go per session.
+- **Upgrade note:** once Luna 0.18 saves its settings with a library
+  audience other than every session, they are in a form Luna 0.17 cannot
+  read. Rolled back to 0.17, Luna then reads none of its settings file (not
+  only the library's): it runs on the defaults and saves no setting until
+  0.18 is back or the file is restored. To roll back cleanly, set every
+  library entry back to every session first.
 
 ### Fixed
 
