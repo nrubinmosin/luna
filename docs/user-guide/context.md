@@ -37,7 +37,7 @@ your own **chat**; a **lead**, a helper started with Luna's tools; a
 On top of these, every session reads what you put in: your instructions files
 and skills (by role, through the library's **For** column), and a helper's
 **constraints** from the agents above it. Luna adds a heading of a few words to
-each.
+each, and to the constraints a line saying they only narrow the rest (~57 in all).
 
 The same numbers before Luna 0.18, for comparison: a chat with Luna tools
 ~2,655 every request, and a conversation that spawned was told to read two
@@ -73,7 +73,7 @@ they stay in its context all along.
 | `role-lead`: answer the agent in its language and form, split work among helpers, own what they report, status words, constraints pass down, stop leftovers, keep caveats, send and install nothing unasked | leads | layers, as above | 360 | Library → System texts, `role-lead` |
 | `role-helper`: the same, less what is about helpers | helpers | layers, as above | 210 | Library → System texts, `role-helper` |
 | The note after a task (`[A note, not part of the task: …]`): the task comes from an agent; rules for a chat with a person do not apply | leads and helpers | Claude Code: after the first task, once; Codex: after every task, so it adds up in the conversation | 65 | Library → System texts, `note-lead`, `note-helper` (one line; it cannot be empty) |
-| Constraints: a heading, then each constraint word for word | a helper spawned with `constraints`, and every session under it | layers, last | 35 + the constraints | the agent that spawns; nothing removes one |
+| Constraints: a heading, then each constraint word for word | a helper spawned with `constraints`, and every session under it | layers, last | 57 + the constraints | the agent that spawns; nothing removes one |
 | The library's instructions for some roles: a heading `# Instructions: <name>`, then your file | the roles you ticked | layers | ~5 + your file | the library's **For** column |
 | The line before instructions an earlier Luna laid out for chats only ("For chats with a person only: …") | every session of that account (Codex reads the account's `AGENTS.md` in all of them; Claude Code leaves it out of leads and helpers) | every request, with the file | 25 | tick another role for that file: it then goes per session instead |
 
@@ -187,7 +187,7 @@ every request. Checked by `context_page.rs`.
 | `role-lead` | 1,438 | 360 |
 | `role-helper` | 831 | 208 |
 | `note` | 265 | 66 |
-| `constraints-heading` | 141 | 35 |
+| `constraints-heading` | 229 | 57 |
 | `notice-tag` | 37 | 9 |
 | `guard` | 361 | 90 |
 | `handoff-skill` | 4,278 | 1,070 |
