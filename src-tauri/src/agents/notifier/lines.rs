@@ -208,6 +208,12 @@ fn wake_lead(pty: &crate::pty::PtyManager, id: &str, ended: u32) -> Wake {
     if pair_stopped(pty, id, id) {
         return Wake::Missed;
     }
+    // Mid-switch to a fresh conversation of its own (handoff/lead.rs) it is at
+    // work, and the fresh one hears where its delegates stand as it opens:
+    // its callers wait for what that one says.
+    if crate::background::switch_of(id).is_some() {
+        return Wake::Waits;
+    }
     let now = now_ms();
     let cursor = transcript_end(id);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -226,6 +232,27 @@ fn wake_lead(pty: &crate::pty::PtyManager, id: &str, ended: u32) -> Wake {
         crate::log::warn("agents", &format!("stopped waking {}: {BREAKER_NOTICES} wakes within the breaker's window", label(id)));
     }
     Wake::Waits
+}
+
+/// Lead `id` starts a fresh conversation of its own (handoff/lead.rs
+/// `start`): a wake still queued for the one it leaves, or one given there, is
+/// behind it. The fresh one's opening says where its delegates stand, and a
+/// wake's cursor is into the transcript it leaves, so "seems stuck" would read
+/// the fresh one's words from the wrong place. An end of its delegates still
+/// unheard of wakes it again, in the fresh one. So is the share of its context
+/// its notices ride with (usage.rs `context_rider`): the fresh one's comes
+/// with the next reading once it is through.
+pub(in crate::agents) fn lead_goes_fresh(id: &str) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let queued = r.news.len();
+    r.news.retain(|(c, line)| !(c == id && is_wake(line)));
+    let dropped = r.news.len() != queued;
+    r.woken.remove(id);
+    r.context_seen.remove(id);
+    drop(r);
+    if dropped {
+        crate::agents::save_chats();
+    }
 }
 
 /// The wake of `id` before its turn ending at `ended`, if one stands: that
@@ -1777,6 +1804,55 @@ mod tests {
         assert!(matches!(line(over), Some((Some(_), Settled::NoNews(_)))));
         // A turn a wake started counts as the lead's own for every caller.
         assert!(real_turn_past(id, top, 1, 2, true, || false));
+        for s in [id, top] {
+            crate::background::gone_for_test(s);
+            forget(s);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A lead mid-switch to a fresh conversation (handoff/lead.rs) is not
+    /// woken: its callers wait for what the fresh one says. Once it starts, a
+    /// wake queued or given in the one it leaves is dropped, and an end of its
+    /// delegates still unheard of wakes it again.
+    #[test]
+    fn a_lead_switching_to_a_fresh_conversation_is_not_woken_and_leaves_its_wake_behind() {
+        use crate::background::{LeadPhase, LeadSwitch};
+        let (top, id) = ("wks-top", "wks-lead");
+        let text = said_line("Waiting on the gate.");
+        let (known, path) = lead(top, id, 1, false, &text);
+        let pty = crate::pty::manager();
+        let line = |o: Owed| notice_line(pty, top, "Your helper", id, &known, o);
+        let wakes = || reg().lock().unwrap().news.iter().filter(|(c, l)| c == id && is_wake(l)).count();
+        let told = Owed::pending(1, text.len() as u64);
+        reg().lock().unwrap().owed.insert((top.into(), id.into()), told);
+        let over = held(told, 1, BACKGROUND_GRACE_MS);
+        // Its fresh conversation named and not yet recorded as through: it reads
+        // between turns, and still no wake goes.
+        let s = LeadSwitch {
+            n: 1,
+            copy: String::new(),
+            sha256: String::new(),
+            source: String::new(),
+            phase: LeadPhase::Done,
+            before: Some("old".into()),
+            previous: None,
+            opening_id: None,
+            opened: Some("new".into()),
+            from_records: false,
+        };
+        crate::background::set_switch_for_test(id, Some(s));
+        assert!(line(over).is_none(), "its parent waits");
+        assert_eq!(wakes(), 0, "not woken mid-switch");
+        crate::background::set_switch_for_test(id, None);
+        assert!(line(over).is_none());
+        assert_eq!(wakes(), 1, "woken once it is through");
+        // A fresh start leaves that wake behind, queued or given.
+        lead_goes_fresh(id);
+        assert_eq!(wakes(), 0, "dropped");
+        assert!(!reg().lock().unwrap().woken.contains_key(id), "and no seems-stuck from the transcript left");
+        assert!(line(over).is_none());
+        assert_eq!(wakes(), 1, "its delegates' end wakes it again");
         for s in [id, top] {
             crate::background::gone_for_test(s);
             forget(s);

@@ -567,7 +567,12 @@ until they are through.
   `Record::fresh`) and its parent told. Owed answers read on in the new
   transcript from its start: the old one is looked up before the switch
   (`transcript_path`), and read.rs `moved_to` takes them over as the
-  transcript changes.
+  transcript changes. The requests they cover keep their numbers (owed.rs
+  `Requests`): what the fresh conversation says before a request sent since
+  is the newest earlier one's (`Said::asked`). As it starts, a wake queued
+  for the lead or given it and its context rider stay behind
+  (notifier lines.rs `lead_goes_fresh`); none comes while the switch is
+  under way.
 - **Given up** (`gave_up`), before its start (`drop_switch`) the conversation
   is as it was and the ask stays open; after a start that named no
   conversation (`revert_switch`: its CLI could not start, or ended first) it

@@ -286,8 +286,12 @@ pub(in crate::agents) fn budget_news(pty: &crate::pty::PtyManager, read: bool) -
     for w in watched {
         let mut breach = w.breach;
         if read {
-            // Off the registry lock: this reads the session's transcript.
-            let context = transcript_path(pty, &w.id).and_then(|path| crate::background::Context::of(&path, w.provider));
+            // Off the registry lock: this reads the session's transcript. Not
+            // of a lead mid-switch to a fresh conversation (handoff/lead.rs):
+            // the one it leaves says nothing of where the next stands.
+            let switching = crate::background::switch_of(&w.id).is_some();
+            let context =
+                transcript_path(pty, &w.id).filter(|_| !switching).and_then(|path| crate::background::Context::of(&path, w.provider));
             let level = context.as_ref().and_then(|c| level_of(&w.settings, default, c.window));
             let over = context.as_ref().zip(level).filter(|(c, level)| past(c, *level));
             {
@@ -559,6 +563,52 @@ mod tests {
             forget(parent);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A lead that hands off: the rider goes as its fresh conversation starts
+    /// and while the switch is under way, and comes back with the share of
+    /// the conversation it is on then.
+    #[test]
+    fn a_leads_context_rider_is_of_the_conversation_it_is_on_through_a_handoff() {
+        use crate::background::{LeadPhase, LeadSwitch};
+        let _budgets = budgets_to_myself();
+        let pty = crate::pty::manager();
+        let (parent, kid) = ("bh-p", "bh-lead");
+        tooled(parent);
+        let path = std::env::temp_dir().join(format!("luna-budget-{kid}-{}.jsonl", std::process::id()));
+        write_usage(&path, Provider::Claude, 1);
+        let window = crate::background::Context::of(&path, Provider::Claude).unwrap().window;
+        transcripts().lock().unwrap().insert(kid.to_string(), path.clone());
+        register(kid, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(parent), true, serde_json::json!({ "budgetPct": 50 }));
+        crate::background::idle_for_test(kid, Provider::Claude, 1, false);
+        write_usage(&path, Provider::Claude, window * 70 / 100);
+        budget_news(pty, true);
+        assert_eq!(context_rider(kid), " (context 70%)");
+        crate::agents::notifier::lines::lead_goes_fresh(kid);
+        assert_eq!(context_rider(kid), "", "gone as the fresh conversation starts");
+        let s = LeadSwitch {
+            n: 1,
+            copy: String::new(),
+            sha256: String::new(),
+            source: String::new(),
+            phase: LeadPhase::Fresh,
+            before: Some("old".into()),
+            previous: None,
+            opening_id: None,
+            opened: None,
+            from_records: false,
+        };
+        crate::background::set_switch_for_test(kid, Some(s));
+        budget_news(pty, true);
+        assert_eq!(context_rider(kid), "", "not read off the conversation it left");
+        crate::background::set_switch_for_test(kid, None);
+        write_usage(&path, Provider::Claude, window * 55 / 100);
+        budget_news(pty, true);
+        assert_eq!(context_rider(kid), " (context 55%)", "the fresh one's");
+        crate::background::gone_for_test(kid);
+        forget(kid);
+        forget(parent);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
