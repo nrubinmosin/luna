@@ -33,11 +33,13 @@ fn lead(id: &str, pct: Option<u64>) -> std::path::PathBuf {
 }
 
 /// Conversation `session`'s transcript under `dir`, its last answer at `pct`
-/// of a 200k window.
+/// of a 200k window. Its prompt grows with `pct`: a transcript is read again
+/// only once its length or time differs (claude::session `ending`), and on
+/// Windows a rewrite in the same clock tick keeps the time.
 fn transcript_at(dir: &str, session: &str, pct: u64) {
     let path = crate::claude::session::transcript_file(dir, dir, session);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let prompt = r#"{"type":"user","message":{"role":"user","content":"go"}}"#;
+    let prompt = json!({ "type": "user", "message": { "role": "user", "content": "go".repeat(pct as usize) } });
     let answer =
         json!({ "type": "assistant", "message": { "model": "claude-sonnet-4-5", "usage": { "input_tokens": pct * 2000 }, "content": [] } });
     std::fs::write(&path, format!("{prompt}\n{answer}\n")).unwrap();
