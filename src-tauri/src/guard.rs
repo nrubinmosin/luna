@@ -16,13 +16,10 @@
 pub const TOOLS: &str = "Bash|PowerShell|Monitor";
 
 /// What the model is told when a command is refused.
-pub const REFUSAL: &str = "Luna refused this command: it follows a file (`tail -f`, `tail -F`, `Get-Content -Wait`) \
-with no deadline of its own. Such a wait outlives the tool that runs it (on Windows an expired Monitor or a killed \
-shell leaves the pipeline running) and holds the machine awake. Put a deadline in front of it, e.g. \
-`timeout 1800 tail -n +1 -f run.log | grep --line-buffered -E 'DONE|FAIL|Error'`, or poll in a loop that ends by \
-itself (PowerShell: `$end = (Get-Date).AddMinutes(30); while ((Get-Date) -lt $end) { if (Select-String run.log \
--Pattern 'DONE|FAIL' -Quiet) { break }; Start-Sleep 5 }`). The tool's own timeout is no deadline. The \
-background-jobs skill says more.";
+pub const REFUSAL: &str = "Luna refused this command: it follows a file (`tail -f`, `Get-Content -Wait`) with no \
+deadline of its own, and such a wait outlives the tool that runs it and keeps the machine awake. Put `timeout N` in \
+front of it in the same command (`timeout 1800 tail -f run.log | grep -m1 DONE`), or poll in a loop that ends by \
+itself. The tool's own timeout is no deadline.";
 
 /// The hook's answer to a call, from its JSON (`tool_name`, `tool_input.command`):
 /// Some(the decision to print) for one to refuse, None to let it go ahead. The

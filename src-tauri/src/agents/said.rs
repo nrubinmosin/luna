@@ -473,11 +473,11 @@ pub(super) fn first_words(text: &str, most: usize) -> Option<String> {
 
 /// What a notice says of the answer beyond where it is. Not for a turn that
 /// stopped short: the first line of what it got to say is no verdict on it.
+/// Whether the report was picked by length is the reads' to say
+/// (`reportGuessed`); the file holds every message either way.
 pub(super) fn begins(replies: &Said) -> String {
-    // Several messages and no CLI's mark on any: which leads was a guess.
-    let guessed = if replies.len() > 1 && report_guessed(replies) { " (its report picked by length)" } else { "" };
     match replies.get(report_of(replies)).and_then(|r| opening_line(r)) {
-        Some(line) => format!(". It begins: \"{line}\"{guessed}"),
+        Some(line) => format!(". It begins: \"{line}\""),
         None => String::new(),
     }
 }
@@ -619,7 +619,7 @@ mod tests {
         let whole = answer_text(&replies);
         assert!(whole.starts_with("R2 DONE FOURTH\nKIWI\n\n---\n\nEverything else it said, in order:\n\nI’ll run the ping"), "{whole}");
         assert!(!whole.contains("Its last message"), "it leads already");
-        assert_eq!(begins(&replies), ". It begins: \"R2 DONE FOURTH\" (its report picked by length)");
+        assert_eq!(begins(&replies), ". It begins: \"R2 DONE FOURTH\"");
         // One that is not short is the report, wherever it is.
         let mut with_report = replies.texts.clone();
         with_report.insert(1, format!("Findings: {}", "a finding. ".repeat(40)));
@@ -830,7 +830,6 @@ mod tests {
         assert!(begins(&replies).starts_with(". It begins: \"The long one, with what was done."), "a label of a heading is passed over");
         assert_eq!(opening_line("## Done: all tests pass\nDetails"), Some("Done: all tests pass".into()), "a heading that says it");
         assert_eq!(opening_line("# Report"), Some("Report".into()), "a heading alone is what there is");
-        assert!(begins(&replies).ends_with("(its report picked by length)"), "{}", begins(&replies));
         // Short, all of it goes inline; long, none.
         let short = Said::one_turn(vec!["Done.".into(), "Tests\n  pass.".into()]);
         assert_eq!(inline_answer(&short).as_deref(), Some("Done. / Tests pass."));

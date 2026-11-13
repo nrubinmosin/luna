@@ -549,7 +549,7 @@ pub(super) fn notifier() {
                         }
                         if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) {
                             line.push_str(&format!(
-                                " Luna stops telling you of its turns and jobs now: {BREAKER_NOTICES} notices in {} minutes look like chats waking each other. Its prompts and questions still come, luna_session_wait and luna_message_list still reach it, and a person typing into either chat lifts this.",
+                                " Luna stops telling you of its turns and jobs now ({BREAKER_NOTICES} notices in {} minutes); its prompts and questions still come, and a person typing into either chat lifts this.",
                                 BREAKER_WINDOW_MS / 60_000
                             ));
                         }
@@ -1412,10 +1412,7 @@ mod tests {
         // Half an hour of nothing: said once for this turn, and still owed.
         crate::background::quiet_for_test("qt-s", QUIET_TURN_MS + 60_000);
         let Some((Some(text), Settled::Quiet(3))) = line(o) else { panic!("a quiet turn is news") };
-        assert!(
-            text.contains("mid-turn and has written nothing for 31 min") && text.contains("luna_session_stop stops the turn"),
-            "{text}"
-        );
+        assert!(text.contains("mid-turn and has written nothing for 31 min") && text.contains("may hang"), "{text}");
         settle_told(&mut reg().lock().unwrap(), ("qt-c".to_string(), "qt-s".to_string()), Settled::Quiet(3), &o);
         let told = reg().lock().unwrap().owed.get(&("qt-c".to_string(), "qt-s".to_string())).copied().expect("still owed");
         assert_eq!(told.told_quiet, Some(3));
