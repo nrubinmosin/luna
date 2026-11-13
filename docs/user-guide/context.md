@@ -27,6 +27,8 @@ A session has one of three roles ([library](library.md#whose-sessions-chats-lead
 your own **chat**; a **lead**, a helper started with Luna's tools; a
 **helper**, started without them.
 
+With default settings:
+
 | Session | Every request | Once | Per event |
 | --- | --- | --- | --- |
 | Chat without **Luna tools** | 0 | 0 | 0 |
@@ -34,6 +36,10 @@ your own **chat**; a **lead**, a helper started with Luna's tools; a
 | Lead | ~2,825: the chat's, plus its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat; a handoff when its context passes the lead threshold |
 | Helper | ~210: its role text | the note after its task, ~65 (Codex: after every task) | a refused command, ~125 |
 
+Added to these where you turn them on: a chat with **Wait guard** ticked gets
+the guard's refusal, ~125, per refused command ([Hooks](#hooks)), and a
+`role-chat` of yours, or a role text you made longer, goes with every request
+of each session of that role ([System texts](#what-a-session-is-told-of-its-role)).
 On top of these, every session reads what you put in: your instructions files
 and skills (by role, through the library's **For** column), and a helper's
 **constraints** from the agents above it. Luna adds a heading of a few words to
