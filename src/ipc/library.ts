@@ -44,7 +44,8 @@ export interface LibraryInstructionsDto {
   name: string;
   /** Its first heading, `#` or else `##`; empty without one. */
   description: string;
-  /** Why it is laid out nowhere: blank, or a file that will not do. */
+  /** Why it is laid out nowhere: blank, or a file that will not do; or, given per session, why it is too long
+   *  for some Codex sessions' command line. */
   problem: string | null;
   /** The accounts its reach takes in; a closer reach of other instructions wins. */
   accounts: Reach;

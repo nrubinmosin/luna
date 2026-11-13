@@ -268,12 +268,13 @@ fn added_dirs(args: &[String]) -> Vec<String> {
 /// `--append-system-prompt`: memory outweighs it, a resume keeps the system
 /// prompt its session started with, and reads memory again. Written at every
 /// start and every helper turn, so an edit reaches the session at its next;
-/// with nothing to give, gone, and None.
-pub(crate) fn claude_instructions_dir(chat_id: &str, text: Option<&str>) -> Option<std::path::PathBuf> {
+/// with nothing to give, gone, and None. Err, with why, where it could not be
+/// written: the caller decides whether the session may start without them.
+pub(crate) fn claude_instructions_dir(chat_id: &str, text: Option<&str>) -> Result<Option<std::path::PathBuf>, String> {
     let dir = crate::paths::data_dir().join("hooks").join(crate::paths::id_file_name(chat_id));
     let Some(text) = text else {
         let _ = std::fs::remove_dir_all(&dir);
-        return None;
+        return Ok(None);
     };
     // `hooks/` made owner-only first, if this is what makes it: the settings
     // files beside this folder carry the hub's secret.
@@ -281,13 +282,10 @@ pub(crate) fn claude_instructions_dir(chat_id: &str, text: Option<&str>) -> Opti
     let written = hooks
         .and_then(|()| std::fs::create_dir_all(&dir))
         .and_then(|()| crate::secret::write_private(&dir.join("CLAUDE.md"), text.as_bytes()));
-    match written {
-        Ok(()) => Some(dir),
-        Err(e) => {
-            crate::log::warn("library", &format!("could not give {chat_id} its role layers: {e}"));
-            None
-        }
-    }
+    written.map(|()| Some(dir.clone())).map_err(|e| {
+        crate::log::warn("library", &format!("could not give {chat_id} its role layers: {e}"));
+        format!("Luna could not write its role layers to {}: {e}", dir.join("CLAUDE.md").display())
+    })
 }
 
 /// The MCP config a tooled Claude Code session starts with: Luna's server on
@@ -667,7 +665,15 @@ pub async fn ensure_claude_session(
         // unless the person wrote one. No constraints: a chat is the person's.
         let role = (!login).then(|| crate::library::role_texts(crate::library::Role::Chat));
         let layers = role.as_ref().and_then(|t| crate::library::role_layers(t, &skills, &[]));
-        let instructions = if login { None } else { claude_instructions_dir(&id, layers.as_deref()) };
+        // A chat is the person's: one whose layers will not write starts
+        // without them, and says so (`role.layers-off`), as Codex's over the cap.
+        let (instructions, layers_off) = match login {
+            true => (None, None),
+            false => match claude_instructions_dir(&id, layers.as_deref()) {
+                Ok(dir) => (dir, None),
+                Err(why) => (None, Some(why)),
+            },
+        };
         // The library's instructions are read as memory of a folder added to
         // the session, which has every added folder's read: not the others'.
         let mut luna_dirs = added_dirs(&skills.args);
@@ -737,6 +743,9 @@ pub async fn ensure_claude_session(
         });
         if let (Some(t), Some(dir)) = (&role, &instructions) {
             applied.extend(crate::library::layers_applied(t, &skills, &[], &dir.join("CLAUDE.md").display().to_string()));
+        }
+        if let Some(why) = layers_off {
+            applied.push(crate::applied::Item::RoleLayersOff.with(why));
         }
         Ok(Launch {
             provider: Provider::Claude,
@@ -891,6 +900,11 @@ pub async fn ensure_codex_session(
                 applied.extend(role_applied);
             }
             Err(why) => applied.push(crate::applied::Item::RoleLayersOff.with(why)),
+        }
+        // A helper the person took over: the thread it resumes keeps the
+        // developer message it was started with (agents/handover.rs).
+        if let Some(carried) = crate::agents::carried_into(&id, resume.as_deref()) {
+            applied.push(crate::applied::Item::RoleLayersKept.with(format!("this conversation still carries {carried}")));
         }
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
         Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied, reserved: Some(reserved) })
@@ -1514,6 +1528,24 @@ mod tests {
         assert_eq!(s.value("library.hidden-skills"), Some("skillOverrides off: review"));
         assert_eq!(s.value("library.account-instructions-off"), Some("claudeMdExcludes <acc>/CLAUDE.md"));
         assert_eq!(s.value("library.memory-narrowed"), Some(format!("claudeMdExcludes {}", LIBRARY_MEMORY_OFF.join(", ")).as_str()));
+    }
+
+    #[test]
+    fn a_claude_chat_whose_role_layers_will_not_write_starts_without_them_and_says_so() {
+        const ID: &str = "golden-claude-layers-unwritable";
+        let lib = crate::library::GoldenLibrary::new("pane-claude-unwritable");
+        let r = library_redact(ID, &lib, &lib.claude());
+        // A file where its folder goes: the write fails as on a locked or full disk.
+        let dir = crate::paths::data_dir().join("hooks").join(crate::paths::id_file_name(ID));
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        std::fs::write(&dir, b"in the way").unwrap();
+        let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
+        let _ = std::fs::remove_file(&dir);
+        assert!(!s.args.iter().any(|a| a == "<instructions-dir>"), "{:?}", s.args);
+        assert_eq!(s.instructions, None);
+        assert_eq!(s.value("role.layers"), None);
+        let off = s.value("role.layers-off").expect("the chat says it starts without them");
+        assert!(off.contains("could not write its role layers"), "{off}");
     }
 
     /// What reading the library's instructions as memory would also have read,

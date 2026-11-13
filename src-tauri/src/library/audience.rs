@@ -178,10 +178,42 @@ pub fn audience_applied(s: &SessionSkills) -> Vec<crate::applied::Applied> {
     out
 }
 
+/// Why instructions `name`, given per session now, cannot be made every
+/// session's: their reach names an account, a provider or every account
+/// (`all`) that instructions laid into accounts already name, or that is set
+/// to get none. Per session they went beside those; laid into accounts they
+/// would compete for the account's one file, and the one `chosen` passes over
+/// would reach nobody there. Refused rather than settled for the person, as a
+/// reach is given only by their choosing it (reach.rs `give_instructions`).
+pub(super) fn every_session_refused(lib: &LibrarySettings, name: &str) -> Option<String> {
+    if laid_into_accounts(lib, name) {
+        return None;
+    }
+    let reach = lib.instructions.get(name)?;
+    let words = |r: &str| match r {
+        ALL => "every account".to_string(),
+        r if !r.contains('/') => format!("every {r} account"),
+        r => r.to_string(),
+    };
+    let mut clashes: Vec<String> = Vec::new();
+    for (other, theirs) in lib.instructions.iter().filter(|(n, _)| n.as_str() != name && laid_into_accounts(lib, n)) {
+        clashes.extend(reach.iter().filter(|r| theirs.contains(r)).map(|r| format!("{other} already goes into {}", words(r))));
+    }
+    clashes.extend(reach.iter().filter(|r| lib.no_instructions.contains(r)).map(|r| format!("{} is set to get no instructions", words(r))));
+    (!clashes.is_empty()).then(|| {
+        format!(
+            "{name} cannot be for every session while {}: an account's own file holds one of them, and {name} would reach nobody              there. Change {name}'s accounts or the other's first.",
+            clashes.join(", and ")
+        )
+    })
+}
+
 /// Whose sessions a skill or instructions file is for; every session's drops
 /// it from the settings. Instructions given any other audience than the
 /// person's chats' alone stop being laid into accounts (`laid_out`): from
-/// then on they reach their sessions one session at a time.
+/// then on they reach their sessions one session at a time. Instructions
+/// made every session's where that would leave them reaching nobody are
+/// refused (`every_session_refused`).
 #[tauri::command(async)]
 pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview, String> {
     let (skill, name) = match entry {
@@ -191,17 +223,28 @@ pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview
         Entry::System(n) => return Err(format!("{n} is a system text: it has no audience to pick")),
     };
     check_name(&name)?;
-    crate::log::info("library", &format!("{} {name}: for {}", if skill { "skill" } else { "instructions" }, label(audience)));
-    change(|l| {
+    let mut refused = None;
+    let overview = change(|l| {
+        if !skill && audience.is_every() {
+            refused = every_session_refused(l, &name);
+            if refused.is_some() {
+                return;
+            }
+        }
         if !skill && audience != Audience::CHATS {
             l.laid_out.remove(&name);
         }
         let map = if skill { &mut l.audience.skills } else { &mut l.audience.instructions };
         match audience.is_every() {
             true => map.remove(&name),
-            false => map.insert(name, audience),
+            false => map.insert(name.clone(), audience),
         };
-    })
+    })?;
+    if let Some(why) = refused {
+        return Err(why);
+    }
+    crate::log::info("library", &format!("{} {name}: for {}", if skill { "skill" } else { "instructions" }, label(audience)));
+    Ok(overview)
 }
 
 #[cfg(test)]
@@ -209,6 +252,30 @@ mod tests {
     use super::*;
 
     const LEADS_AND_HELPERS: Audience = Audience { chat: false, lead: true, helper: true };
+
+    #[test]
+    fn instructions_made_every_session_s_where_they_would_reach_nobody_are_refused() {
+        let mut lib = LibrarySettings::default();
+        lib.instructions.insert("main".into(), all());
+        lib.instructions.insert("review".into(), all());
+        lib.audience.instructions.insert("review".into(), Audience::of(&[Role::Helper]));
+        let why = every_session_refused(&lib, "review").expect("both would want every account's file");
+        assert!(why.contains("main already goes into every account") && why.contains("review would reach nobody"), "{why}");
+        assert_eq!(every_session_refused(&lib, "main"), None, "laid into accounts already");
+        // Named more closely, it wins those accounts: nothing to refuse.
+        lib.instructions.insert("review".into(), vec!["claude/work".into()]);
+        assert_eq!(every_session_refused(&lib, "review"), None);
+        // An account set to get none would keep it out as well.
+        lib.no_instructions = vec!["claude/work".into()];
+        assert!(every_session_refused(&lib, "review").unwrap().contains("claude/work is set to get no instructions"));
+        lib.instructions.insert("review".into(), vec!["codex".into()]);
+        lib.instructions.insert("main".into(), vec!["codex".into()]);
+        assert!(every_session_refused(&lib, "review").unwrap().contains("main already goes into every codex account"));
+        // A chats' entry an earlier Luna laid out competes already.
+        lib.audience.instructions.insert("review".into(), Audience::CHATS);
+        lib.laid_out.insert("review".into());
+        assert_eq!(every_session_refused(&lib, "review"), None);
+    }
 
     #[test]
     fn instructions_for_the_chats_are_worded_and_come_back_plain() {
