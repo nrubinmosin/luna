@@ -8,6 +8,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-11-13
+
+Luna now installs Claude Code 2.1.323 and Codex 0.168.0, and no longer runs
+Claude Code below 2.1.323: that release fixes permission checks that could
+let a session do more than its mode allows.
+
 ### Changed
 
 - Claude Code 2.1.323 and Codex 0.168.0 are on the known-good list, so the
@@ -1216,7 +1222,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/nrubinmosin/luna/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/nrubinmosin/luna/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/nrubinmosin/luna/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/nrubinmosin/luna/compare/v0.15.0...v0.16.0
