@@ -585,7 +585,9 @@ until they are through.
   (notifier lines.rs `lead_goes_fresh`); none comes while the switch is
   under way.
 - **Given up** (`gave_up`), before its start (`drop_switch`) the conversation
-  is as it was and the ask stays open; after a start that named no
+  is as it was and the ask stays open, armed again for `unanswered` (its time
+  the give-up's, its turn the one after the notice): left unanswered past the
+  turn that tells it and one more, Luna's document goes instead; after a start that named no
   conversation (`revert_switch`: its CLI could not start, or ended first) it
   goes back to the conversation it left, the opening dropped and the ask
   closed, so a start that keeps failing is not asked over and over. Either way
