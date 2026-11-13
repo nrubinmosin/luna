@@ -261,7 +261,12 @@ fn start(id: &str, s: &LeadSwitch, v: &LeadView) {
     };
     let text = opening(id, s, previous.as_deref(), v.provider);
     match crate::background::begin_fresh(id, s.n, text, previous) {
-        Ok(()) => crate::log::info("handoff", &format!("{} handoff {}: a fresh conversation started from {}", label(id), s.n, s.copy)),
+        Ok(()) => {
+            // A wake for the conversation it left, and where that one's context
+            // stood, are behind it (notifier lines.rs).
+            crate::agents::notifier::lines::lead_goes_fresh(id);
+            crate::log::info("handoff", &format!("{} handoff {}: a fresh conversation started from {}", label(id), s.n, s.copy))
+        }
         Err(why) => {
             // Never started, or started on no conversation: either way none
             // was named, and it goes back to the one it left.

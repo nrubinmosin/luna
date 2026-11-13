@@ -464,7 +464,10 @@ turn, stopped on a prompt (once per stop) or exited.
   lead's own; if it ends with nothing said since the wake, the parent hears
   the lead "seems stuck" (once: it settles the debt). A wake not taken up
   within `WAKE_WAIT_MS` (10 min), or one the breaker stops, leaves the parent
-  told as before.
+  told as before. A lead mid-switch to a fresh conversation
+  ([handoff](handoff.md#leads)) is not woken, its parent waiting on, and as
+  the fresh one starts a wake queued or given in the one it leaves is dropped
+  (`lead_goes_fresh`): the opening says where its delegates stand.
 - **Requests.** Each (caller, session) numbers the caller's requests (owed.rs
   `Requests`: a spawn 1, each send one more, with its `requestKey`), and a
   debt covers those made since the last one settled. With more than one,
@@ -498,7 +501,9 @@ turn, stopped on a prompt (once per stop) or exited.
   `budgetBreach` and a line of its own rides to the parent once, advising a
   fresh helper unless it hands off by itself (`hands_off_by_itself`: a lead
   while auto-handoff for leads is on, handoff `lead_hands_off`). Nothing is
-  stopped.
+  stopped. A lead's reading goes as its fresh conversation starts and is not
+  taken while its switch is under way: the rider comes back with the fresh
+  one's share.
 - **The log.** Each notice's line names, per session told of, what became of
   it (`kind_of`, the `Settled` variant) and how long it was held for company
   (`Notice::held_for`): what a wider batching window would have saved is read

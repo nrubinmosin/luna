@@ -214,6 +214,9 @@ fn the_switch_starts_a_fresh_conversation_at_the_turns_end_and_its_parent_hears(
     let a = store::Asked { conversation: Some("old".into()), ..store::Asked::new(store::AskKind::Auto, now_ms(), None) };
     store::change("ld-switch", |r| r.asked = Some(a)).unwrap();
     let s = scheduled("ld-switch", 3);
+    // A wake queued for the conversation it leaves stays behind with it.
+    let wake = format!("{}: helper ld-low.", crate::agents::notifier::lines::WAKE_HEAD);
+    reg().lock().unwrap().news.push(("ld-switch".into(), wake));
     crate::background::lead_turn_over_for_test("ld-switch", &[], None);
     // Between the turn that handed off and its fresh start it is at work:
     // whoever waits on it waits for what the fresh conversation says.
@@ -230,6 +233,7 @@ fn the_switch_starts_a_fresh_conversation_at_the_turns_end_and_its_parent_hears(
     }
     let now = crate::background::switch_of("ld-switch").unwrap();
     assert_eq!(now.phase, LeadPhase::Fresh);
+    assert!(!reg().lock().unwrap().news.iter().any(|(c, _)| c == "ld-switch"), "the wake left behind");
     // Its CLI names the new conversation; the turn ends.
     crate::background::name_for_test("ld-switch", "new");
     let dir = std::env::temp_dir().join(format!("luna-lead-ld-switch-{}", std::process::id())).to_string_lossy().into_owned();
@@ -247,6 +251,40 @@ fn the_switch_starts_a_fresh_conversation_at_the_turns_end_and_its_parent_hears(
     assert_eq!(line.as_deref(), Some("Lead ld-switch handed off (3): it goes on in a fresh conversation; its helpers stay with it."));
     reg().lock().unwrap().handed_off.remove(PARENT);
     gone("ld-switch");
+}
+
+/// What its parent asked it before the switch is owed by the fresh
+/// conversation: the debt stands through it, its requests under the numbers
+/// they had, and the next request numbered on from them.
+#[test]
+fn requests_owed_before_a_switch_are_owed_by_the_fresh_conversation_under_their_numbers() {
+    use crate::agents::owed::{owe_asked, requests_of, Asked};
+    let id = "ld-requests";
+    let dir = lead(id, Some(70)).to_string_lossy().into_owned();
+    on(60);
+    let ask = |text| Asked { text, key: None, reply: true };
+    owe_asked(PARENT, id, 0, 0, &ask("the spawn's prompt"));
+    owe_asked(PARENT, id, 1, 10, &ask("Where do you stand?"));
+    let open = || requests_of(PARENT, id).iter().map(|q| q.n).collect::<Vec<_>>();
+    assert_eq!(open(), [1, 2]);
+    let a = store::Asked { conversation: Some("old".into()), ..store::Asked::new(store::AskKind::Auto, now_ms(), None) };
+    store::change(id, |r| r.asked = Some(a)).unwrap();
+    scheduled(id, 1);
+    crate::background::lead_turn_over_for_test(id, &[], None);
+    lead_turn_ended(id);
+    crate::background::name_for_test(id, "new");
+    transcript_at(&dir, "new", 10);
+    crate::background::lead_turn_over_for_test(id, &[], None);
+    lead_turn_ended(id);
+    assert!(crate::background::switch_of(id).is_none(), "through");
+    assert!(reg().lock().unwrap().owed.contains_key(&(PARENT.to_string(), id.to_string())), "still owed");
+    assert_eq!(open(), [1, 2], "under their numbers");
+    owe_asked(PARENT, id, 2, 0, &ask("And the third ask"));
+    assert_eq!(open(), [1, 2, 3]);
+    reg().lock().unwrap().owed.remove(&(PARENT.to_string(), id.to_string()));
+    reg().lock().unwrap().requests.remove(&(PARENT.to_string(), id.to_string()));
+    reg().lock().unwrap().handed_off.remove(PARENT);
+    gone(id);
 }
 
 /// The switch waits on nothing of the CLI's own: with what its turns left

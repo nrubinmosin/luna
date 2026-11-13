@@ -74,7 +74,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   handoff. It goes on in a fresh conversation of its own as its turn ends, in
   the worktree it works in, with the same id, role, constraints and helpers;
   its parent hears of it with its next notice. A lead that can write no file
-  goes on from a handoff Luna writes from its records.
+  goes on from a handoff Luna writes from its records. What its parent asked
+  before is owed by the fresh conversation under the same request numbers,
+  and notices about it give that conversation's context share. Its parent is
+  not advised to replace it as its context fills.
 
 ### Changed
 
