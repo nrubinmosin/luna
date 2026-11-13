@@ -186,6 +186,13 @@ pub(super) struct Continued {
     pub line_sha256: String,
     pub conversation: Option<String>,
     pub short: String,
+    /// The handoff the line is of, and when its prompt was typed: a prompt
+    /// the conversation takes in after all drops the line (mod.rs
+    /// `taken_late`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+    #[serde(default)]
+    pub typed_at: u64,
 }
 
 pub(super) type Records = BTreeMap<String, Record>;

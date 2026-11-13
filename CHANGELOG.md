@@ -161,6 +161,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- A handoff in a project whose `SessionStart` hook takes a while (a git
+  sync) no longer gives up a minute after typing the new conversation's
+  prompt while the CLI still holds it, nor types the whole prompt into it
+  again once it is at work on it. The prompt counts as taken once Claude
+  Code has queued it; where the settings give the CLI `SessionStart` hooks,
+  the wait is up to five minutes; and a failure line whose prompt went in
+  after all is dropped, the handoff recorded as through. A move's line is
+  waited for the same way.
 - A new Claude Code chat or helper opens on the effort Claude Code itself
   would use for its model. Claude Code keeps effort per model (`/effort`
   saves it under `modelSettings`), and the account's top-level `effortLevel`
