@@ -270,6 +270,58 @@ fn a_failure_line_with_the_continuation_goes_only_into_the_conversation_the_rese
     done_with(&["hocont-me"], &dir);
 }
 
+/// Seen live: the switch gave up at 60 s, the CLI took the prompt in at 88 s,
+/// and the failure line typed minutes later handed the conversation, already
+/// at work on it, the whole prompt again. Now the line is looked at against
+/// the conversation it was made for first: its prompt there, the line is
+/// dropped untyped and the handoff is on record as through.
+#[test]
+fn a_failure_line_whose_prompt_went_in_late_is_dropped_and_the_handoff_through() {
+    chat("holate-me", Some(70));
+    let (dir, file) = scratch_file("late");
+    schedule("holate-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    let typed_at = now_ms() - 61_000;
+    store::change("holate-me", |r| {
+        let s = r.switch.as_mut().unwrap();
+        s.opened = Some("new".into());
+        s.phase = Phase::Prompting { at: typed_at };
+    })
+    .unwrap();
+    let why = "the new conversation did not take Luna's prompt within 60 s";
+    finish("holate-me", 1, Ended::Failed { why: why.into(), reset: true }, &|| facts::prompt_opening(1) + " PROMPT");
+    let line = reg().lock().unwrap().news.iter().find(|(c, _)| c == "holate-me").map(|(_, l)| l.clone()).unwrap();
+    set_conversation_for_test("holate-me", Some("new"));
+    let transcript = dir.join("new.jsonl");
+    std::fs::write(&transcript, "{\"type\":\"queue-operation\",\"operation\":\"enqueue\"}\n").unwrap();
+    crate::agents::read::transcripts().lock().unwrap().insert("holate-me".into(), transcript.clone());
+    assert!(!withheld("holate-me", &line), "not in yet: the line goes in");
+    let taken = format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"<pasted_content id=\\\"1\\\">\\n{} PROMPT\"}}}}\n",
+        facts::prompt_opening(1)
+    );
+    // In a conversation other than the one the reset opened, it is none of this.
+    let theirs = dir.join("theirs.jsonl");
+    std::fs::write(&theirs, &taken).unwrap();
+    crate::agents::read::transcripts().lock().unwrap().insert("holate-me".into(), theirs);
+    assert!(!withheld("holate-me", &line));
+    std::fs::write(&transcript, taken).unwrap();
+    crate::agents::read::transcripts().lock().unwrap().insert("holate-me".into(), transcript.clone());
+    assert!(withheld("holate-me", &line), "in late: never typed again");
+    // Not typed by the notifier either, whatever its look made of it.
+    crate::pty::fake_terminal_for_test("holate-me", true);
+    crate::agents::notifier::deliver_news_for_test("holate-me", vec![(line.clone(), line.clone())], Box::new(|| {}));
+    assert_eq!(crate::pty::fake_terminal_of("holate-me").0, "", "nothing typed");
+    assert!(taken_late("holate-me", &line));
+    let r = store::records()["holate-me"].clone();
+    assert!(r.past.iter().any(|p| p.n == 1 && p.done && p.why.is_none()), "{:?}", r.past);
+    assert!(r.continued.is_empty() && r.fresh);
+    assert!(!taken_late("holate-me", &line), "once");
+    crate::agents::read::transcripts().lock().unwrap().remove("holate-me");
+    crate::pty::fake_terminal_for_test("holate-me", false);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "holate-me");
+    done_with(&["holate-me"], &dir);
+}
+
 /// A move under way keeps the chat from a handoff: a call whose file was
 /// being copied as the move began schedules nothing, and the person's ask
 /// is neither typed nor closed until the move ends, then looked at again.

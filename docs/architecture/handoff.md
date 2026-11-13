@@ -426,14 +426,22 @@ where it cannot be read; names, tasks
 and skills fenced in double
 quotes as data); past 6,000
 characters the facts go in `<n>-facts.md` beside it → the transcript other than
-the one left holds that opening → done. Then what waited goes in. A person
+the one left holds that opening (looked for in its first and last MiB), or
+Claude Code's `queue-operation` `enqueue` line without `content` with no key
+of the person's since the prompt went in (`Look::queued`: the CLI holds a
+pasted prompt so while the conversation is still opening) → done, the log
+saying when it was taken other than at once (`Ended::Taken`). Then what waited goes in. A person
 writing in the new conversation before the prompt holds it back (`Recovering`)
 until they are through.
 
 ## Failures and restarts
 
 - 60 s without a new conversation, 60 s without the prompt in the new
-  transcript, 30 min without rest, 10 min with its CLI not running, the CLI's
+  transcript (5 min where the CLI may still be running `SessionStart` hooks,
+  which hold a prompt back until they end: the account's or the project's
+  settings give it one, or a source Luna does not read may, `Look::starting`,
+  pty/folder.rs `session_start_hooks`, read only once the minute is out), 30
+  min without rest, 10 min with its CLI not running, the CLI's
   own jobs at rest, or a phase that will not save: given up, kept on record
   (`Past`), the chat told by a line in `news` (before the reset: it goes on as
   it was, and may call again only while its ask still holds; after: what it is,
@@ -443,6 +451,8 @@ until they are through.
   conversation its reset opened (`phase::failed`): past the reset on any
   other, or on none Luna can name once the prompt was typed, the switch ends
   as `Ended::Stray` with the failure's why, and the line names only the copy.
+  Before a prompt's wait is given up, the chat is looked at once more: a
+  prompt in by then is through (`Ended::Taken`), no line and no notification.
 - The notifier types a failure's line later than it is made. One that carries
   the prompt is bound to the conversation its reset opened (`Record::continued`,
   by the line's SHA-256): it goes in whole only while the chat is still on
@@ -457,7 +467,11 @@ until they are through.
   (`NO_LONGER_STANDS`), the line stays queued, and the next look sees the
   conversation their keys took the chat to. On any other conversation, or
   where Luna cannot tell, a short line (`facts::continued_short`) naming the
-  copy takes its place.
+  copy takes its place. Where that conversation's transcript holds the
+  handoff's prompt already, taken in after the wait (`continuation_in`, by
+  `Continued::n`), the line is withheld and dropped untyped, the handoff put
+  on record as through and the log saying how late (`taken_late`): typed, it
+  would hand a conversation at work on the prompt the prompt again.
 - A core restart: `from_bytes` makes a switch in `Resetting` or `Prompting`
   `Recovering`. On another conversation than the one it left and not the one
   its reset opened (`Switch::opened`), or with none on record (the core gone
@@ -665,8 +679,12 @@ tools, an agent, Codex's unasked hooks), at a strict prompt (`strict_prompt`:
 the composer drawn and empty, no turn, nobody typing), its copy still the one
 confirmed. No wait shorter than a day while its CLI runs: an account's
 first-run screens take a person. Done once its transcript holds
-`[Luna move <id>, not typed by the user]`; 60 s after typing without it,
-given up and the person told.
+`[Luna move <id>, not typed by the user]`, or Claude Code has it queued as
+a handoff's prompt counts (`OpenLook::queued`); 60 s after typing without it,
+5 min where the new chat's CLI may still be running `SessionStart` hooks
+(`OpenLook::starting`), given up and the person told. Nothing is typed again
+on a failure. A lead's fresh start shares none of this: its opening is its
+headless turn's own prompt, which the CLI takes once its hooks are through.
 
 **Worktrees.** A Claude Code chat whose start had `worktree` moves into the
 same worktree by name, its old chat stopped first; `opening_refusal` refuses

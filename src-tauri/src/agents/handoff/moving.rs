@@ -25,7 +25,7 @@
 //! account's folder, beside that account's credentials.
 
 use super::document::{self, HelperFact, Inputs, LastHandoff, Stopped};
-use super::phase::{Refused, Typed};
+use super::phase::{Refused, Typed, PROMPT_MAX_MS};
 use super::{copies_of, excerpts, gitfacts, scrub, store};
 use crate::agents::delivery::{TypingInto, SEND_TYPING_MS, TYPING_WAIT};
 use crate::agents::registry::{chat_name, label, reg, DEV_CALLER};
@@ -1899,6 +1899,13 @@ pub(super) struct OpenLook {
     pub draft: bool,
     /// Its transcript holds the move's line.
     pub prompted: bool,
+    /// Its Claude Code transcript has the CLI holding a prompt it gives no
+    /// text of, with no key of a person's since the line went in: the line,
+    /// queued as the conversation opens (phase.rs `Look::queued`).
+    pub queued: bool,
+    /// Its CLI may still be running `SessionStart` hooks, looked at once
+    /// `PROMPT_WAIT_MS` is out (phase.rs `Look::starting`).
+    pub starting: bool,
     /// Why its start is not the one confirmed, if it is not.
     pub mismatch: Option<String>,
     /// Why it is not ready, as `prompt_verdict` says.
@@ -1945,9 +1952,12 @@ pub(super) fn next_open(m: &Move, l: &OpenLook) -> OpenStep {
             }
         }
         MovePhase::Prompting { at } => {
-            if l.prompted {
+            let waited = l.now.saturating_sub(at);
+            if l.prompted || l.queued {
                 OpenStep::Done
-            } else if l.now.saturating_sub(at) > PROMPT_WAIT_MS {
+            } else if waited > PROMPT_MAX_MS {
+                OpenStep::Fail(format!("the new chat did not take Luna's line within {} minutes", PROMPT_MAX_MS / 60_000))
+            } else if waited > PROMPT_WAIT_MS && !l.starting {
                 OpenStep::Fail(format!("the new chat did not take Luna's line within {} s", PROMPT_WAIT_MS / 1000))
             } else {
                 OpenStep::Wait
@@ -2007,9 +2017,16 @@ fn look(m: &Move) -> OpenLook {
     if !alive {
         return l;
     }
-    l.prompted = crate::agents::read::transcript_path(pty, new)
-        .and_then(|p| crate::pty::tail(&p, 1024 * 1024))
-        .is_some_and(|t| t.contains(&line_opening(&m.id)));
+    let transcript = crate::agents::read::transcript_path(pty, new);
+    l.prompted = transcript.as_ref().and_then(|p| crate::pty::tail(p, 1024 * 1024)).is_some_and(|t| t.contains(&line_opening(&m.id)));
+    if let MovePhase::Prompting { at } = m.phase {
+        l.queued = !l.prompted
+            && provider == Provider::Claude
+            && pty.typed_at_ms(new) <= at
+            && transcript.as_deref().is_some_and(super::queued_unseen);
+        // Read off the settings only once the plain wait is out.
+        l.starting = l.now.saturating_sub(at) > PROMPT_WAIT_MS && crate::pty::folder::session_start_hooks(provider, &account, &folder);
+    }
     let verdict = prompt_verdict(pty, new);
     // The person's "Type it now" overrules the layout look alone (rules, a
     // footer a cramped pane draws otherwise): never a dialog or first-run
@@ -2112,7 +2129,16 @@ pub(super) fn beat() {
         match next_open(&m, &l) {
             OpenStep::Wait => {}
             OpenStep::Type => open_with_line(&chat, &m),
-            OpenStep::Done => done(&chat, &m),
+            OpenStep::Done => {
+                if let MovePhase::Prompting { at } = m.phase {
+                    let after = l.now.saturating_sub(at);
+                    if l.queued || after > PROMPT_WAIT_MS {
+                        let how = if l.queued { "queued by the CLI" } else { "taken late" };
+                        crate::log::info("move", &format!("{}: move {}'s line was {how} after {} s", label(&chat), m.id, after / 1000));
+                    }
+                }
+                done(&chat, &m)
+            }
             OpenStep::Fail(why) => failed(&chat, &m, why),
         }
     }
@@ -2321,6 +2347,14 @@ pub(super) mod tests {
         assert_eq!(next_open(&typed, &OpenLook { ready: false, ..ready(11_000) }), OpenStep::Wait);
         assert_eq!(next_open(&typed, &OpenLook { prompted: true, ..ready(11_000) }), OpenStep::Done);
         assert!(matches!(next_open(&typed, &ready(10_001 + PROMPT_WAIT_MS)), OpenStep::Fail(_)));
+        // A new chat's `SessionStart:startup` hooks hold the line back as a
+        // `/clear`'s do a handoff's: waited for up to five minutes, done once
+        // Claude Code has it queued.
+        let starting = OpenLook { starting: true, ..ready(10_001 + PROMPT_WAIT_MS) };
+        assert_eq!(next_open(&typed, &starting), OpenStep::Wait);
+        assert_eq!(next_open(&typed, &OpenLook { queued: true, ..starting.clone() }), OpenStep::Done);
+        let stuck = OpenLook { now: 10_001 + PROMPT_MAX_MS, ..starting };
+        assert!(matches!(next_open(&typed, &stuck), OpenStep::Fail(w) if w.contains("5 minutes")));
         // Started otherwise than confirmed: never typed into.
         let other = OpenLook { mismatch: Some("other permissions".into()), ..ready(2_000) };
         assert!(matches!(next_open(&m, &other), OpenStep::Fail(w) if w.contains("other permissions")));

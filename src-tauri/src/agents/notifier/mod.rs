@@ -454,10 +454,15 @@ pub(super) fn notifier() {
             .collect();
         if !withheld.is_empty() {
             for (caller, line) in &withheld {
-                crate::log::info(
-                    "agents",
-                    &format!("handoff notice to {} dropped: a move of it is under way, or the ask it came with is closed", label(caller)),
-                );
+                if !crate::agents::handoff::taken_late(caller, line) {
+                    crate::log::info(
+                        "agents",
+                        &format!(
+                            "handoff notice to {} dropped: a move of it is under way, or the ask it came with is closed",
+                            label(caller)
+                        ),
+                    );
+                }
                 if let Some(lines) = news.get_mut(caller) {
                     lines.retain(|l| l != line);
                 }

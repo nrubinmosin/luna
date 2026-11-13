@@ -27,6 +27,11 @@ pub(super) const RESET_WAIT_MS: u64 = 60_000;
 /// How long the new conversation gets to hold the continuation prompt: Codex
 /// writes a new thread's rollout only with its first turn.
 pub(super) const PROMPT_WAIT_MS: u64 = 60_000;
+/// How long it gets where its CLI may still be running `SessionStart` hooks
+/// (`Look::starting`), which hold a prompt typed in back until they end: a
+/// project's own sync at a session's start was seen to take 89 s
+/// (docs/cli-compatibility.md, 2.1.322). Past this the CLI is taken for stuck.
+pub(in crate::agents) const PROMPT_MAX_MS: u64 = 5 * 60_000;
 /// How long a scheduled handoff waits for the chat to come to rest: past its
 /// own turn, a person typing, a draft. A draft holds it as long as it stands.
 pub(super) const REST_MAX_MS: u64 = 30 * 60_000;
@@ -116,6 +121,16 @@ pub(super) struct Look {
     pub keys: u64,
     /// A transcript other than the one left holds this handoff's prompt.
     pub prompted: bool,
+    /// A transcript other than the one left has the CLI holding a prompt it
+    /// has not taken in yet, with no text to tell whose: Claude Code's
+    /// `queue-operation` `enqueue` line without `content`, as it writes one
+    /// for a pasted prompt typed while the conversation is still opening.
+    /// Codex's rollouts record no queue. Luna's prompt where no key of a
+    /// person's came since it went in (`keys`).
+    pub queued: bool,
+    /// Its CLI may still be running `SessionStart` hooks (pty/folder.rs
+    /// `session_start_hooks`): only looked at once `PROMPT_WAIT_MS` is out.
+    pub starting: bool,
 }
 
 /// What a look calls for.
@@ -224,11 +239,14 @@ pub(super) fn next(s: &Switch, look: &Look, rest_looks: u32) -> Step {
             }
         }
         Phase::Prompting { at } => {
-            if look.prompted {
+            let waited = look.now.saturating_sub(at);
+            if look.prompted || (look.queued && look.keys <= at) {
                 Step::Done
             } else if moved && !owned {
                 Step::Stray
-            } else if look.now.saturating_sub(at) > PROMPT_WAIT_MS {
+            } else if waited > PROMPT_MAX_MS {
+                Step::Fail(format!("the new conversation did not take Luna's prompt within {} minutes", PROMPT_MAX_MS / 60_000))
+            } else if waited > PROMPT_WAIT_MS && !look.starting {
                 Step::Fail(format!("the new conversation did not take Luna's prompt within {} s", PROMPT_WAIT_MS / 1000))
             } else {
                 Step::Wait
@@ -359,6 +377,9 @@ pub(super) enum Ended {
     /// Handed back to the beat: the chat is not ready for the next step, or
     /// the handoff is no longer this run's.
     Back,
+    /// Through as `Done`, its prompt taken other than at once (`taken`): late,
+    /// or held in the CLI's queue; what the log says of it.
+    Taken(String),
 }
 
 /// Runs the switch of `chat`'s handoff `n` from where its phase stands to its
@@ -465,11 +486,40 @@ pub(super) fn run(term: &dyn Term, chat: &str, n: u32, prompt: &dyn Fn() -> Stri
                 let _ = phases.advance(chat, n, s.phase, Phase::Scheduled, s.attempts);
                 return Ended::Back;
             }
-            Step::Done => return Ended::Done,
+            Step::Done => {
+                return match s.phase {
+                    Phase::Prompting { at } if !look.prompted || look.now.saturating_sub(at) > PROMPT_WAIT_MS => {
+                        Ended::Taken(taken(&look, at))
+                    }
+                    _ => Ended::Done,
+                }
+            }
             Step::Left => return Ended::Left,
             Step::Stray => return Ended::Stray(STRAY.into()),
-            Step::Fail(why) => return failed(&s, &look, why),
+            Step::Fail(why) => {
+                // Looked at once more before anything says the prompt did not
+                // go in: one that lands as the wait runs out is not typed
+                // again into a conversation already working on it.
+                if let Phase::Prompting { at } = s.phase {
+                    let again = term.look(chat, &s);
+                    if again.prompted || (again.queued && again.keys <= at) {
+                        return Ended::Taken(taken(&again, at));
+                    }
+                }
+                return failed(&s, &look, why);
+            }
         }
+    }
+}
+
+/// What the log says of a prompt typed at `at` that `look` finds taken
+/// other than at once: queued by the CLI, or in past `PROMPT_WAIT_MS`.
+fn taken(look: &Look, at: u64) -> String {
+    let after = look.now.saturating_sub(at) / 1000;
+    if look.prompted {
+        format!("its prompt was taken late after {after} s")
+    } else {
+        format!("its prompt was queued by the CLI after {after} s, which takes it in once the conversation has opened")
     }
 }
 
@@ -558,6 +608,30 @@ pub(super) mod tests {
         assert_eq!(next(&s, &moved, 0), Step::Wait);
         assert_eq!(next(&s, &Look { prompted: true, ..moved.clone() }, 0), Step::Done);
         assert!(matches!(next(&s, &Look { now: 20_000 + PROMPT_WAIT_MS + 1, ..moved }, 0), Step::Fail(w) if w.contains("prompt")));
+    }
+
+    /// A project's `SessionStart` hook ran 89 s at `/clear` (seen live with
+    /// 2.1.322): Claude Code queued Luna's pasted prompt at 82 s, with no
+    /// text on its queue line, and took it in at 88 s. Neither is a failure.
+    #[test]
+    fn a_prompt_held_back_by_a_slow_session_start_is_waited_for_then_taken() {
+        let mut s = switch(Provider::Claude);
+        s.opened = Some("new".into());
+        s.phase = Phase::Prompting { at: 20_000 };
+        let moved = Look { conversation: Some("new".into()), ..rest(20_000) };
+        let past = |ms: u64, l: &Look| Look { now: 20_000 + ms, ..l.clone() };
+        let starting = Look { starting: true, ..moved.clone() };
+        assert_eq!(next(&s, &past(61_000, &starting), 0), Step::Wait, "hooks may still be running");
+        assert_eq!(next(&s, &past(82_000, &Look { queued: true, ..starting.clone() }), 0), Step::Done, "queued: the CLI has it");
+        assert_eq!(next(&s, &past(88_000, &Look { prompted: true, ..moved.clone() }), 0), Step::Done);
+        // Without hooks to wait on, the minute is all it gets; with them, five.
+        assert!(matches!(next(&s, &past(61_000, &moved), 0), Step::Fail(w) if w.contains("60 s")));
+        let stuck = past(PROMPT_MAX_MS + 1, &starting);
+        assert!(matches!(next(&s, &stuck, 0), Step::Fail(w) if w.contains("5 minutes")));
+        // A queue line after a key of the person's may be theirs.
+        let theirs = Look { queued: true, keys: 30_000, ..moved.clone() };
+        assert_eq!(next(&s, &past(10_000, &theirs), 0), Step::Wait);
+        assert!(matches!(next(&s, &past(61_000, &theirs), 0), Step::Fail(_)));
     }
 
     #[test]
@@ -728,6 +802,9 @@ pub(super) mod tests {
         /// What the conversation is read as with the keys held, where it is
         /// not the look's: the person's `/clear` landing after the look.
         pub conversation_at_type: RefCell<Vec<Option<String>>>,
+        /// What changes once the clock reaches a time, after the look made
+        /// then: the CLI taking a prompt in while the switch waits.
+        pub at_clock: RefCell<Vec<(u64, Box<dyn Fn(&mut Look)>)>>,
     }
 
     impl Term for Fake {
@@ -735,7 +812,12 @@ pub(super) mod tests {
             if let Some(f) = self.on_look.borrow_mut().take() {
                 f();
             }
-            Look { now: *self.clock.borrow(), ..self.look.borrow().clone() }
+            let now = *self.clock.borrow();
+            let look = Look { now, ..self.look.borrow().clone() };
+            for (_, change) in self.at_clock.borrow_mut().extract_if(.., |(t, _)| *t <= now) {
+                change(&mut self.look.borrow_mut());
+            }
+            look
         }
         fn conversation(&self, _: &str, _: &Switch) -> Option<String> {
             match self.conversation_at_type.borrow_mut().pop() {
@@ -813,6 +895,7 @@ pub(super) mod tests {
             busy_at_type: RefCell::default(),
             on_look: RefCell::default(),
             conversation_at_type: RefCell::default(),
+            at_clock: RefCell::default(),
         }
     }
 
@@ -836,6 +919,55 @@ pub(super) mod tests {
             assert_eq!(run(&t, "c1", 3, &|| "[Luna handoff 3, …]".into(), &phases), Ended::Done, "{provider:?}");
             assert_eq!(*t.typed.borrow(), [reset_command(provider), "[Luna handoff 3, …]"]);
             assert_eq!(phases.switch_of("c1").unwrap().attempts, 1);
+        }
+    }
+
+    /// The live sequence run through: the reset, the prompt typed, the CLI
+    /// in its `SessionStart` hooks past the minute, then the prompt queued
+    /// (Claude Code) or in its transcript (Codex, whose rollouts record no
+    /// queue). Through, the prompt typed once.
+    #[test]
+    fn a_run_waits_out_a_slow_session_start_and_types_the_prompt_once() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let t = fake(move |text, l| {
+                if text == reset_command(provider) {
+                    l.conversation = Some("new".into());
+                } else {
+                    l.starting = true;
+                }
+            });
+            let taken_at = 5_000 + 85_000;
+            let change: Box<dyn Fn(&mut Look)> = match provider {
+                Provider::Claude => Box::new(|l: &mut Look| l.queued = true),
+                Provider::Codex => Box::new(|l: &mut Look| l.prompted = true),
+            };
+            t.at_clock.borrow_mut().push((taken_at, change));
+            let phases = kept(switch(provider));
+            let ended = run(&t, "c1", 3, &|| "[Luna handoff 3, …]".into(), &phases);
+            let how = if provider == Provider::Claude { "queued by the CLI after" } else { "taken late after" };
+            assert!(matches!(&ended, Ended::Taken(w) if w.contains(how)), "{provider:?}: {ended:?}");
+            assert_eq!(*t.typed.borrow(), [reset_command(provider), "[Luna handoff 3, …]"], "{provider:?}");
+        }
+    }
+
+    /// The prompt lands just as the wait runs out: looked at once more before
+    /// the failure is said, it is through, and its failure line never made.
+    #[test]
+    fn a_prompt_that_lands_as_the_wait_runs_out_is_through_not_failed() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let t = fake(move |text, l| {
+                if text == reset_command(provider) {
+                    l.conversation = Some("new".into());
+                }
+            });
+            // The run's looks come a second apart from the prompt's: the one
+            // past the minute fails, and the prompt is in by the next.
+            let fail_at = 5_000 + PROMPT_WAIT_MS + 1_000;
+            t.at_clock.borrow_mut().push((fail_at, Box::new(|l: &mut Look| l.prompted = true)));
+            let phases = kept(switch(provider));
+            let ended = run(&t, "c1", 3, &|| "[Luna handoff 3, …]".into(), &phases);
+            assert!(matches!(&ended, Ended::Taken(w) if w.contains("taken late after 61 s")), "{provider:?}: {ended:?}");
+            assert_eq!(t.typed.borrow().len(), 2, "{provider:?}: the prompt typed once");
         }
     }
 
