@@ -455,6 +455,7 @@ fn hand_off_now_is_refused_where_the_chat_cannot_answer_saying_why() {
     register("honow-plain", Provider::Claude, "C:/p", ACC, None, false, json!({}));
     register("honow-ro", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({ "sandbox": "read-only" }));
     register("honow-plan", Provider::Claude, "C:/p", ACC, None, true, json!({ "permissionMode": "plan" }));
+    register("honow-dontask", Provider::Claude, "C:/p", ACC, None, true, json!({ "permissionMode": "dontAsk" }));
     let refused = |id: &str| now_refusal(id).unwrap_or_default();
     for id in ["honow-kid", "honow-plain", DEV_CALLER] {
         assert!(refused(id).contains("started with Luna's tools"), "{id}: {}", refused(id));
@@ -462,6 +463,7 @@ fn hand_off_now_is_refused_where_the_chat_cannot_answer_saying_why() {
     }
     assert!(refused("honow-ro").contains("read-only sandbox"), "{}", refused("honow-ro"));
     assert!(refused("honow-plan").contains("plan mode"), "{}", refused("honow-plan"));
+    assert!(refused("honow-dontask").contains("don't-ask mode"), "{}", refused("honow-dontask"));
     // Its CLI's own jobs cannot cross.
     crate::activity::subagents_for_test("honow-me", 1);
     assert!(refused("honow-me").contains("own jobs running"), "{}", refused("honow-me"));
@@ -493,7 +495,7 @@ fn hand_off_now_is_refused_where_the_chat_cannot_answer_saying_why() {
     assert!(refused("honow-me").contains("handoff 1 of this chat is under way"), "{}", refused("honow-me"));
     assert!(open_manual("honow-me").is_err());
     finish("honow-me", 1, Ended::Done, &String::new);
-    done_with(&["honow-me", "honow-kid", "honow-plain", "honow-ro", "honow-plan"], &dir);
+    done_with(&["honow-me", "honow-kid", "honow-plain", "honow-ro", "honow-plan", "honow-dontask"], &dir);
 }
 
 #[test]

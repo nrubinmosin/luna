@@ -81,7 +81,8 @@ Windows sandbox could not write, and in the checked private folder nothing can
 be put at a name nobody knows yet; or any file outside the data dir), what Luna adds to the next conversation itself (`LUNA_ADDS`, the one
 list of it), and the instructions past their front matter, naming whose they
 are and their SHA-256. A chat that can write no file (Codex's read-only
-sandboxes, Claude Code's plan mode: `unwritable`) is told so.
+sandboxes, Claude Code's plan mode and `dontAsk`, which refuses a write no
+allow rule lets through: `unwritable`) is told so.
 
 `library::handoff_instructions` resolves them at each ask:
 `<library>/system/session-handoff/SKILL.md` when it will do (`check_skill` with
@@ -735,7 +736,7 @@ the switch, the one that answered last. With the
 model unknown, every window counts (`UsageReading::for_model`). No usage percentage picks a source.
 
 **The ask** (a person's chat with Luna tools whose CLI has listed
-`luna_session_handoff`, not in plan mode or a
+`luna_session_handoff`, not in plan mode, `dontAsk` or a
 read-only sandbox, running, not stopped on a limit: `ask_blocked`; no
 auto-handoff needed): `Asking` until the chat stands at a strict prompt, then
 the fixed line `[Luna move <id> request, not typed by the user]` typed under
