@@ -34,8 +34,8 @@ pub struct LeadView {
     /// Nothing says an earlier core's turn ended (`Entry::unsure`).
     pub unsure: bool,
     pub turns_ended: u32,
-    /// It can write no file: Claude Code without its edit tools or in plan
-    /// mode, Codex in a sandbox that writes nothing.
+    /// It can write no file: Claude Code without its edit tools, in plan
+    /// mode or in dontAsk, Codex in a sandbox that writes nothing.
     pub unwritable: bool,
 }
 
@@ -71,9 +71,14 @@ pub fn lead_view(id: &str) -> Option<LeadView> {
 }
 
 /// Whether a helper run with `s` can write no file, its handoff included.
+/// Claude Code's dontAsk refuses what no allow rule lets through, and Luna
+/// gives none for the drafts folder: its Write there is refused unasked.
+/// Auto leaves the write to its reviewer, which may let it through: it is
+/// asked, and where the write is refused the firm ask goes unanswered and
+/// Luna writes the handoff (lead.rs `unanswered`), as for any lead.
 pub(super) fn unwritable(s: &Spec) -> bool {
     match s.provider {
-        Provider::Claude => s.read_only || s.mode == "plan",
+        Provider::Claude => s.read_only || s.mode == "plan" || s.mode == "dontAsk",
         Provider::Codex => !s.auto_review && !crate::codex::launch::writes_files(&s.mode),
     }
 }
@@ -318,6 +323,12 @@ pub fn read_only_for_test(id: &str) {
     lock().entries.get_mut(id).unwrap().spec.read_only = true;
 }
 
+/// Run in permission mode or sandbox `mode`.
+#[cfg(test)]
+pub fn mode_for_test(id: &str, mode: &str) {
+    lock().entries.get_mut(id).unwrap().spec.mode = mode.into();
+}
+
 /// What a test's lead is, for its assertions: its conversation, its run
 /// claimed, the batch of the turn begun, what is queued, what never went in.
 #[cfg(test)]
@@ -534,8 +545,10 @@ mod tests {
         s.read_only = true;
         assert!(unwritable(&s));
         s.read_only = false;
-        s.mode = "plan".into();
-        assert!(unwritable(&s));
+        for (mode, none) in [("plan", true), ("dontAsk", true), ("auto", false), ("acceptEdits", false), ("bypassPermissions", false)] {
+            s.mode = mode.into();
+            assert_eq!(unwritable(&s), none, "{mode}");
+        }
         let mut s = entry(Provider::Codex).spec;
         for (mode, none) in [("read-only", true), ("read-only-net", true), ("workspace-write", false), ("danger-full-access", false)] {
             s.mode = mode.into();

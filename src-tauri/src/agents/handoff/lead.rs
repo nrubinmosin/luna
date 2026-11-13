@@ -459,6 +459,10 @@ fn measure(id: &str) {
     let floor_at = fresh.then_some(ctx.pct);
     let now = watch::told_now(told.as_ref(), &session, ctx.pct, ctx.tokens, floor_at, l.threshold);
     let level = watch::level(ctx.pct, l.threshold, now.floor);
+    if !watch::due(&now, level) && now.level == 2 && unanswered(id, &session, v.turns_ended) {
+        crate::log::info("handoff", &format!("{} left its firm ask unanswered: handoff from Luna's records", label(id)));
+        return from_records(id, &v, now, &session);
+    }
     if !watch::due(&now, level) {
         if told.as_ref() != Some(&now) {
             if let Err(e) = store::change(id, |r| super::kept_told(r, now)) {
@@ -497,13 +501,35 @@ fn measure(id: &str) {
     }
 }
 
-/// A lead that writes no file, past its threshold: Luna writes its handoff
-/// from its records (document.rs, as for a move from records), copies it as
-/// the next number, and starts its fresh conversation on it at once, the lead
-/// being at rest. Its conversation's told level is kept first, so one whose
-/// document will not build is not built again at every turn's end.
+/// Whether `id`'s ask, Luna's own on `session`, went unanswered: a turn of its
+/// has ended since it was opened (the ask's own, started at once at rest),
+/// with no switch scheduled and none given up since. A lead whose write is
+/// refused unasked (a mode or reviewer that lets it through nowhere) would
+/// otherwise run on to its CLI's own compaction.
+fn unanswered(id: &str, session: &str, turns_ended: u32) -> bool {
+    let r = store::records();
+    let Some(rec) = r.get(id) else { return false };
+    rec.asked.as_ref().is_some_and(|a| {
+        a.kind == store::AskKind::Auto
+            && a.conversation.as_deref() == Some(session)
+            && a.turns.is_some_and(|t| turns_ended > t)
+            && rec.past.last().is_none_or(|p| p.at < a.at)
+    })
+}
+
+/// A lead that writes no file past its threshold, or that left the firm ask
+/// unanswered: Luna writes its handoff from its records (document.rs, as for
+/// a move from records), copies it as the next number, and starts its fresh
+/// conversation on it at once, the lead being at rest. Its conversation's
+/// told level is kept first and the ask closed, so one whose document will
+/// not build is not built again at every turn's end.
 fn from_records(id: &str, v: &LeadView, told: store::Told, session: &str) {
-    if let Err(e) = store::change(id, |r| super::told_of(r, told, false)) {
+    if let Err(e) = store::change(id, |r| {
+        super::told_of(r, told, false);
+        if r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Auto) {
+            r.asked = None;
+        }
+    }) {
         crate::log::warn("handoff", &format!("{}: where its context stands could not be saved: {e}", label(id)));
         return;
     }

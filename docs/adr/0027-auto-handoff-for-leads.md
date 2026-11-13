@@ -32,8 +32,11 @@ held to that threshold as a chat's is (`watch.rs`); past it Luna opens the
 threshold's ask, bound to the conversation whose context passed it, and queues
 it as a turn of Luna's own (`background/switch.rs` `send_luna`), past the firm
 mark ahead of anything queued. A lead that writes no file (Claude Code without
-its edit tools or in plan mode, Codex in a read-only sandbox) is not asked:
-Luna writes its handoff from its records (`document.rs`, as for a move).
+its edit tools, in plan mode or in `dontAsk`, which refuses a write no allow
+rule lets through; Codex in a read-only sandbox) is not asked: Luna writes its
+handoff from its records (`document.rs`, as for a move). So does a lead that
+ends the turn of its firm ask without a handoff (its write refused unasked by
+a reviewer, or never made): it is not left to run on to its CLI's compaction.
 
 The call with `file` is checked and copied as a chat's (`file.rs`) and
 schedules the switch on the conversation that called; from then on what is
