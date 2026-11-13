@@ -124,12 +124,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   session, **Chats** your chats, **Helpers** leads and helpers. Instructions
   for your chats stay in the accounts with a neutral line saying whose they
   are; instructions for helpers leave the accounts and go per session.
-- **Upgrade note:** once Luna 0.18 saves its settings with a library
-  audience other than every session, they are in a form Luna 0.17 cannot
-  read. Rolled back to 0.17, Luna then reads none of its settings file (not
-  only the library's): it runs on the defaults and saves no setting until
-  0.18 is back or the file is restored. To roll back cleanly, set every
-  library entry back to every session first.
+- **Upgrade note:** library audiences are saved so Luna 0.17 still reads the
+  settings file: as **Chats** or **Helpers** where the roles match one of
+  those (helpers being leads and helpers), the roles themselves beside that.
+  Rolled back to 0.17, an entry for a set it has no word for (leads alone,
+  helpers alone, chats with one of the two) is for every session, and
+  instructions for your chats alone go into the accounts as 0.17 lays them
+  out. Once 0.17 has saved the settings, 0.18 reads its words again: those
+  sets come back as every session.
 
 ### Fixed
 
