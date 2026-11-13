@@ -91,7 +91,11 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   (`SessionSkills::role_entries`, every such entry whose reach takes the
   account, in name order; `no_instructions` is about an account's own file and
   does not hold them back), so `give_instructions` makes reaches exclusive only
-  among entries laid into accounts. The exception is
+  among entries laid into accounts. Made every session's, such an entry would
+  join that competition with a reach it was never given against them:
+  `library_set_audience` refuses it while another laid entry, or
+  `no_instructions`, names one of its reach's entries
+  (`every_session_refused`), naming the entry and the accounts. The exception is
   `LibrarySettings::laid_out`: entries an earlier Luna laid out for the
   person's chats (seeded from `"chats"` when the settings are read) stay in the
   accounts with a line before them (`banner_of`, `worded`), so chats started
