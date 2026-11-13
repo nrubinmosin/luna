@@ -495,7 +495,9 @@ mod tests {
 
     /// A fresh start that cannot start keeps what was sent meanwhile: none of
     /// it dropped with the turn, nor started on no conversation; once the
-    /// switch is given up it goes in on the conversation the lead went back to.
+    /// switch is given up it goes in on the conversation the lead went back to,
+    /// and where that cannot start either it is kept as undelivered, for its
+    /// sender to hear of.
     #[test]
     fn a_fresh_start_that_fails_keeps_what_was_sent_meanwhile() {
         let mut e = entry(Provider::Claude);
@@ -523,8 +525,10 @@ mod tests {
         }
 
         assert_eq!(revert_switch("sw-fail", 8).map(|s| s.n), Some(8));
+        assert_eq!(undelivered_for("sw-fail", "its parent", true), ["from its parent"], "told to its sender");
         let e = lock().entries.remove("sw-fail").unwrap();
-        assert!(e.queue.is_empty() && e.in_flight.is_empty() && e.undelivered.is_empty());
+        assert!(e.queue.is_empty() && e.in_flight.is_empty());
+        assert_eq!(e.undelivered, ["from its parent"], "kept, not lost with the second start");
         let back = e.log.iter().position(|l| l.contains("back on the conversation it left")).expect("given up");
         assert!(
             e.log.iter().skip(back).any(|l| l.starts_with("could not start the turn")),

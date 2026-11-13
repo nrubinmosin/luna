@@ -306,6 +306,10 @@ pub fn claim_delete(id: &str) -> Result<DeleteClaim, String> {
 
 /// What waited while helper `id` was held (`Entry::held_back`) goes on once it is
 /// not: the turn on what was sent meanwhile, or the resume a restart left it.
+/// A turn that cannot start keeps that text as undelivered, for its senders to
+/// hear of with their next notice: it waited through the hold already, and a
+/// lead's handoff given up may be what will not start (switch.rs
+/// `revert_switch`).
 pub(super) fn go_on(id: &str) {
     let next = {
         let mut r = lock();
@@ -321,8 +325,10 @@ pub(super) fn go_on(id: &str) {
             save();
             if run_turn(id, &text).is_err() {
                 if let Some(e) = lock().entries.get_mut(id) {
-                    e.in_flight.clear();
+                    let batch = std::mem::take(&mut e.in_flight);
+                    e.undelivered.extend(batch);
                 }
+                save();
             }
         }
         // A `resumeOnRestart` helper a restart left to go on, which the hold kept
