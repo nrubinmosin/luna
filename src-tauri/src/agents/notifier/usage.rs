@@ -451,15 +451,19 @@ mod tests {
         assert!(quota_from(b"not json", now).is_empty());
     }
 
-    /// Writes a transcript or rollout whose last answer has `tokens` in the window.
+    /// Writes a transcript or rollout whose last answer has `tokens` in the
+    /// window, padded by them: a file is read again only once its length or
+    /// time differs (claude::session `ending`), and on Windows a rewrite in the
+    /// same clock tick keeps the time.
     fn write_usage(path: &std::path::Path, provider: Provider, tokens: u64) {
-        let line = match provider {
+        let mut line = match provider {
             Provider::Claude => {
                 serde_json::json!({ "type": "assistant", "message": { "model": "claude-sonnet-5-5", "usage": { "input_tokens": tokens }, "content": [] } })
             }
             Provider::Codex => serde_json::json!({ "timestamp": "t", "type": "event_msg", "payload": { "type": "token_count", "info": {
                 "total_token_usage": { "total_tokens": tokens }, "last_token_usage": { "input_tokens": tokens, "total_tokens": tokens }, "model_context_window": 258400 } } }),
         };
+        line["pad"] = " ".repeat((tokens / 1000) as usize).into();
         std::fs::write(path, format!("{line}\n")).unwrap();
     }
 
