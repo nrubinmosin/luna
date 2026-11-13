@@ -15,11 +15,13 @@
 /// `PowerShell` and `Monitor`, and Codex's shell, which its hooks call `Bash`.
 pub const TOOLS: &str = "Bash|PowerShell|Monitor";
 
-/// What the model is told when a command is refused.
+/// What the model is told when a command is refused. PowerShell's `timeout`
+/// only waits, so it is shown a loop that ends.
 pub const REFUSAL: &str = "Luna refused this command: it follows a file (`tail -f`, `Get-Content -Wait`) with no \
-deadline of its own, and such a wait outlives the tool that runs it and keeps the machine awake. Put `timeout N` in \
-front of it in the same command (`timeout 1800 tail -f run.log | grep -m1 DONE`), or poll in a loop that ends by \
-itself. The tool's own timeout is no deadline.";
+deadline of its own, and such a wait outlives the tool that runs it and keeps the machine awake. In bash put \
+`timeout N` in front of it in the same command (`timeout 1800 tail -f run.log | grep -m1 DONE`); in PowerShell poll \
+to a deadline (`$end=(Get-Date).AddMinutes(30); while((Get-Date) -lt $end){ if(Select-String DONE run.log -Quiet){break}; \
+Start-Sleep 5 }`). The tool's own timeout is no deadline.";
 
 /// The hook's answer to a call, from its JSON (`tool_name`, `tool_input.command`):
 /// Some(the decision to print) for one to refuse, None to let it go ahead. The
@@ -411,7 +413,12 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&deny).unwrap();
         assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse");
-        assert!(v["hookSpecificOutput"]["permissionDecisionReason"].as_str().is_some_and(|r| r.contains("timeout 1800")));
+        let reason = v["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap();
+        assert!(reason.contains("timeout 1800") && reason.contains("Start-Sleep"), "{reason}");
+        // What it suggests, in either shell, it lets through.
+        for suggested in reason.split('`').filter(|s| s.starts_with("timeout ") || s.starts_with("$end")) {
+            assert!(!follows_unbounded(suggested), "{suggested}");
+        }
         assert!(call("PowerShell", "Get-Content x.log -Wait").is_some());
         assert!(call("Monitor", "tail -f x.log | grep DONE").is_some());
         assert!(call("Bash", "timeout 600 tail -f x.log").is_none());
