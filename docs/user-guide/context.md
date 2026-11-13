@@ -109,11 +109,12 @@ them. Each costs the session a turn as well as its tokens.
 | NOT done yet: a job, subagent or helper of its still runs (said once) | 135 |
 | Nothing left running, and it said nothing since | 50 |
 | Only idle processes left, with what they were started as | 85 |
-| Mid-turn and quiet for 30 minutes (once a turn) | 60 |
+| Mid-turn and quiet for 30 minutes (once a turn), with how to see its screen | 70 |
 | Answered, but its CLI waits on what it left in the background | 125 |
 | Its CLI stopped its background work (added to another line) | 60 |
 | Did NOT finish: Luna's core restarted, or it stopped on an error | 40 to 60 |
 | A question or a permission prompt, with its askId (plus the question) | 30 + the question |
+| Stopped on a prompt Luna cannot read, with how to see it | 45 |
 | A lead's delegates have finished (to the lead itself) | 85 |
 | An account at 90% or 95% of a usage window | 35 |
 | A helper past 85% of its context | 45 to 70 |

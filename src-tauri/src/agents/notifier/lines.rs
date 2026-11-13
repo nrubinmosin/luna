@@ -659,11 +659,11 @@ fn quiet_line(who: &str, quiet_ms: u64, past_due_ms: Option<u64>) -> String {
     let quiet = quiet_ms / 60_000;
     match past_due_ms {
         Some(past) => format!(
-            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang. Said once per turn; the usual notice comes when it ends.",
+            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang; luna_message_list with screen: true shows where it is. Said once per turn; the usual notice comes when it ends.",
             past / 60_000
         ),
         None => format!(
-            "{who} is mid-turn and has written nothing for {quiet} min: a command it runs may hang, or simply take long. Said once per turn; the usual notice comes when it ends."
+            "{who} is mid-turn and has written nothing for {quiet} min: a command it runs may hang, or simply take long; luna_message_list with screen: true shows where it is. Said once per turn; the usual notice comes when it ends."
         ),
     }
 }
@@ -832,7 +832,7 @@ pub(in crate::agents) fn standing_line(
                 Some(ask_id) => format!("{who} {}. Answer with luna_session_answer, askId {ask_id}.", a.line()),
                 None => format!("{who} {}. Answer with luna_session_answer.", a.line()),
             },
-            None => format!("{who} is stopped on a prompt in its terminal that Luna cannot read; only the person can answer it."),
+            None => format!("{who} is stopped on a prompt in its terminal that Luna cannot read; luna_message_list with screen: true shows it, and only the person can answer it."),
         };
         return Some((Some(line), Settled::Waiting));
     }
@@ -1254,6 +1254,7 @@ mod tests {
                 panic!("{id}: a finished command holds nothing back")
             };
             assert!(text.contains("written nothing for 31 min: a command it runs may hang"), "{text}");
+            assert!(text.contains("luna_message_list with screen: true shows where it is"), "{text}");
             crate::background::gone_for_test(&id);
             forget(&id);
         }
