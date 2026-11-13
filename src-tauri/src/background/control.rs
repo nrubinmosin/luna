@@ -343,7 +343,7 @@ pub fn remove(id: &str) -> Option<String> {
     for sub in ["hooks", "mcp"] {
         let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{}.json", crate::paths::id_file_name(id))));
     }
-    crate::pty::claude_instructions_dir(id, None);
+    let _ = crate::pty::claude_instructions_dir(id, None);
     changed();
     let e = e?;
     crate::agents::undelivered_left(id, &e.undelivered);

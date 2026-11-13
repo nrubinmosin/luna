@@ -262,7 +262,8 @@ pub fn register(
     // core's, kept across every start.
     let mut settings = settings;
     if let Some(k) = &previous {
-        for key in CORE_SETTINGS {
+        // And what a Codex helper taken over still carries (handover.rs).
+        for key in CORE_SETTINGS.into_iter().chain([crate::agents::handover::STARTED_WITH]) {
             if let Some(v) = k.settings.get(key) {
                 settings[key] = v.clone();
             }

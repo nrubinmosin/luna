@@ -76,11 +76,16 @@ Luna starts sessions in three roles (`settings::Role`): `chat` (the person's,
 run in a pane: `pty/start.rs`), `lead` (a background helper spawned with
 `tools`, which may spawn its own: `background/command.rs` `role_of`) and
 `helper` (spawned without them). Each instructions file and skill has an
-**audience** in `settings.json` (`library.audience.instructions` / `.skills`,
-by name; absent is every session): `"every"` or a list of roles. What earlier
-Lunas wrote still reads: `both` is every session, `chats` is `["chat"]`,
-`helpers` is `["lead", "helper"]` (`AudienceField`); only the new form is
-written, and the ledger's `worded` reads the same way. Renaming or deleting an
+**audience** in `settings.json`, by name (absent is every session), written
+so that Luna 0.17 rolled back to still reads the file (`Audiences`'
+Serialize): `library.audience.roles.instructions` / `.skills` hold every
+audience as a list of roles, which 0.17 ignores as it ignores any key it does
+not know; `library.audience.instructions` / `.skills` hold 0.17's word where
+it has one (`chats` for `["chat"]`, `helpers` for `["lead", "helper"]`), the
+other sets left out, every session's to it. A file with `roles` is read from
+there; one without is an earlier Luna's, or one 0.17 saved, and its words read
+as roles: `both` is every session (`AudienceField`). The ledger's `worded`
+reads both forms. Renaming or deleting an
 entry carries its audience along. `session_args` takes the start's `Role` and,
 in `folder_args`, keeps from it what is not for its role and gives it what is:
 
@@ -91,13 +96,20 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   (`SessionSkills::role_entries`, every such entry whose reach takes the
   account, in name order; `no_instructions` is about an account's own file and
   does not hold them back), so `give_instructions` makes reaches exclusive only
-  among entries laid into accounts. The exception is
+  among entries laid into accounts. Made every session's, such an entry would
+  join that competition with a reach it was never given against them:
+  `library_set_audience` refuses it while another laid entry, or
+  `no_instructions`, names one of its reach's entries
+  (`every_session_refused`), naming the entry and the accounts. The exception is
   `LibrarySettings::laid_out`: entries an earlier Luna laid out for the
-  person's chats (seeded from `"chats"` when the settings are read) stay in the
+  person's chats (seeded from `"chats"` when a file without `roles` is read) stay in the
   accounts with a line before them (`banner_of`, `worded`), so chats started
   outside Luna keep them. Setting such an entry's audience to anything else
   takes it out of `laid_out`, and the next pass takes its copies out as no
-  longer wanted (or keeps a copy changed there, as ever). An old helpers-only
+  longer wanted (or keeps a copy changed there, as ever). A rename moves its
+  `laid_out` with its reach and audience (`rename_instructions`); a delete
+  drops it, and new instructions under the name never inherit it
+  (`forget_instructions`). An old helpers-only
   entry leaves the accounts the same way; `chosen` may then give an account
   another file, which the pass reports.
 - **Claude Code:** the instructions a session would read from its account or
@@ -150,16 +162,27 @@ no override and no entries for chats is started as before.
   `--add-dir` with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`
   (`pty::claude_instructions_dir`); the other added folders' memory is left out
   (`claude_memory_off`). Memory is read again on resume, unlike
-  `--append-system-prompt`, which Luna no longer passes.
+  `--append-system-prompt`, which Luna no longer passes. Where the file will
+  not write (a locked file, a full disk), a lead's or helper's turn is refused
+  rather than run without its role and constraints; a chat starts without its
+  layers and says so (`role.layers-off`).
 - **Codex:** `-c developer_instructions=<value>` (`pty::codex_role_args`), the
   value being what the config stack sets (`codex/config.rs`
   `developer_instructions_in`: `/etc/codex/config.toml` on Unix, the account's
-  `config.toml`, a trusted project's layers, the selected profile's) and then
-  the layers. A `-c` replaces the stack's string, so Luna puts it first. A
+  `config.toml`, a trusted project's layers) and then the layers. A `-c`
+  replaces the stack's string, so Luna puts it first. No profile goes over it:
+  0.167.2 refuses a legacy `profile = "<name>"` selector, and a `--profile`
+  file is a layer below the `-c` (docs/cli-compatibility.md). A
   managed layer, which comes above the `-c`, that sets the key, or a layer Luna
   cannot read, is said as `role.layers-unsure`; the session starts all the
-  same. The value is held to 24 KB (`CODEX_ROLE_MAX`): over it a helper's turn
-  is refused, a chat starts without its layers (`role.layers-off`). Codex sends
+  same. The `developer_instructions=` argument is held to 24,576 UTF-16 units of
+  the command line, measured as it goes there: TOML-escaped and quoted as
+  Windows quotes it (`CODEX_ROLE_MAX`, `command_line_units`), the rest of the
+  32,767 left to the executable and the other arguments. Over it a helper's turn
+  is refused, a chat starts without its layers (`role.layers-off`). The
+  overview marks every entry given per session that would, for some role on
+  some Codex account, with Luna's text for the role and the account's own
+  value, not fit (`codex_overflows`, shown as the entry's problem). Codex sends
   the value at a thread's start and after a compaction; `exec resume` and
   `codex resume` rebuild the context from the rollout, so a changed value
   reaches a running thread only then.

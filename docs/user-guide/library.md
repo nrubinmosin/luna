@@ -53,7 +53,11 @@ one off. At least one stays on.
   every such file whose accounts take the session's account, in name order.
   They reach only sessions Luna starts, not one you start by hand. Their row
   has a box per account rather than a radio: they compete with no other file
-  for an account.
+  for an account. Turning all three roles back on is refused, naming the other
+  file, while another file for every session (or **no instructions**) holds
+  one of the same accounts the same way: only one could go into the account's
+  file, and this one would reach nobody there. Change either one's accounts
+  first.
 - **Instructions for your chats only** that an earlier Luna put into accounts
   stay there, with a line before them saying whose they are ("For chats with a
   person only: a session whose task came from another agent skips this whole
@@ -94,8 +98,12 @@ next turn. Codex reads them in `developer_instructions`, after the value its
 own config sets; Codex sends that when a conversation starts and after a
 compaction, not on a resume, so a change reaches a running Codex session only
 then. A Codex chat whose layers, with its config's own value, would not fit on
-a command line (24 KB) starts without them, and its panel says so; a lead or
-helper is not started.
+a command line starts without them, and its panel says so; a lead or helper is
+not started. The Library window marks each instructions file for some roles
+that, with the others for the same role, would not fit a Codex account's
+command line. The same goes for a Claude Code session whose file Luna
+cannot write (a locked file, a full disk): a chat starts without its layers and
+says so, a lead's or helper's turn is not started.
 
 A lead's or helper's task also carries a one-line note after it: that it comes
 from another agent, not a person, and that rules written for a chat with a
