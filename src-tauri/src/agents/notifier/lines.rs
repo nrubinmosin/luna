@@ -182,7 +182,7 @@ pub(in crate::agents) fn worth_waking(said: &Said, lead: bool, no_reply: bool) -
 /// that turn ends without a word they hear the lead seems stuck.
 #[derive(Clone, Copy)]
 pub(in crate::agents) struct Woken {
-    ended: u32,
+    pub(super) ended: u32,
     cursor: u64,
     at: u64,
 }
@@ -1875,6 +1875,35 @@ mod tests {
             forget(s);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A lead owed to its parent and to a peer that sent to it: the parent's
+    /// look wakes it, and the peer, whose debt was never told it is not done,
+    /// hears of the same end without one. That notice settling must leave the
+    /// wake standing, or the parent's next look wakes the lead again for one
+    /// end; told of the turn the wake brought, it is behind it.
+    #[test]
+    fn a_lead_owed_to_two_callers_is_woken_once_for_one_end() {
+        let (id, parent, peer) = ("w2-lead", "w2-parent", "w2-peer");
+        crate::background::idle_for_test(id, Provider::Claude, 2, false);
+        reg().lock().unwrap().woken.insert(id.into(), Woken { ended: 2, cursor: 0, at: now_ms() });
+        let wakes = || reg().lock().unwrap().news.iter().filter(|(c, l)| c == id && is_wake(l)).count();
+        let settle = |caller: &str, ended: u32| {
+            let told = Owed::from(1, 0);
+            reg().lock().unwrap().owed.insert((caller.into(), id.into()), told);
+            let text = "Your helper finished its turn without a reply.";
+            super::super::settle_delivered(&mut reg().lock().unwrap(), caller, id.into(), Settled::Answered, &told, text, Some(ended));
+        };
+        settle(peer, 2);
+        assert!(reg().lock().unwrap().woken.get(id).is_some_and(|w| w.ended == 2), "the wake stands");
+        assert_eq!(wake_lead(crate::pty::manager(), id, 2), Wake::Waits);
+        assert_eq!(wakes(), 0, "not woken again for the same end");
+        settle(parent, 3);
+        assert!(!reg().lock().unwrap().woken.contains_key(id), "its turn on the wake told: behind it");
+        crate::background::gone_for_test(id);
+        for s in [id, parent, peer] {
+            forget(s);
+        }
     }
 
     /// Live on 13 November: a Codex lead's helper answered, and the lead's

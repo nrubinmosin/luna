@@ -474,8 +474,10 @@ turn, stopped on a prompt (once per stop) or exited.
   Luna wakes the lead instead of telling its parent (`wake_lead`): a queued
   line opening `Your delegates have finished` (`WAKE_HEAD`), naming what it
   was last seen waiting on (`note_delegates`), once per end (`Registry::woken`,
-  by the count it was seen at), counted by the breaker as the pair (lead,
-  lead). The turn it starts is marked `NoticeTurn::wake` and counts as the
+  by the count it was seen at; a notice of the lead's end to another of its
+  callers, told without a wake, leaves it standing until the lead has ended
+  a turn past it, notifier `settle_delivered`), counted by the breaker as the
+  pair (lead, lead). The turn it starts is marked `NoticeTurn::wake` and counts as the
   lead's own; if it ends with nothing said since the wake, the parent hears
   the lead "seems stuck" (once: it settles the debt). A wake not taken up
   within `WAKE_WAIT_MS` (10 min), or one the breaker stops, leaves the parent

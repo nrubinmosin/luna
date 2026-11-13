@@ -976,6 +976,9 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             let told_left: Vec<String> =
                 settled.iter().map(|(id, _, _)| id.clone()).filter(|id| parent_of(id).as_deref() == Some(caller)).collect();
             let mut stopped = Vec::new();
+            // Read before the registry's lock: where each helper's turns stand.
+            let ended: HashMap<String, u32> =
+                settled.iter().filter_map(|(id, _, _)| Some((id.clone(), crate::activity::turn_state(id)?.turns_ended))).collect();
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             for id in &told_left {
                 r.worktrees_left.remove(id);
@@ -991,7 +994,8 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
                 if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now_ms()) {
                     stopped.push(id.clone());
                 }
-                settle_delivered(&mut r, caller, id, how, &told, text);
+                let now_ended = ended.get(&id).copied();
+                settle_delivered(&mut r, caller, id, how, &told, text, now_ended);
             }
             let told_quota = !quota_lines.is_empty();
             for n in quota_lines {
@@ -1072,10 +1076,14 @@ pub(in crate::agents) fn deliver_news_for_test(caller: &str, news_lines: Vec<(St
 }
 
 /// A notice that went into `caller` (`text`) settles what it told of `id`.
-fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, told: &Owed, text: &str) {
+fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, told: &Owed, text: &str, ended: Option<u32>) {
     let answered = matches!(how, Settled::Answered);
     // Told of its end: a wake before it is behind it (lines.rs `woken_before`).
-    if matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited) {
+    // Not one at the turns it has ended now (`ended`), which it has yet to take
+    // up: another caller told of the same end without a wake would have the
+    // next look wake it again.
+    let behind = |w: &lines::Woken| ended.is_none_or(|e| w.ended < e);
+    if matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited) && r.woken.get(&id).is_some_and(behind) {
         r.woken.remove(&id);
     }
     settle_told(r, (caller.to_string(), id.clone()), how, told);
@@ -1657,7 +1665,7 @@ mod tests {
         reg().lock().unwrap().owed.insert(key(b), ob);
         let says = format!("Your helper finished its turn.{}", lines::BACKGROUND_STOPPED);
         let settle = |caller: &str, how: Settled, told: &Owed, text: &str| {
-            settle_delivered(&mut reg().lock().unwrap(), caller, id.to_string(), how, told, text);
+            settle_delivered(&mut reg().lock().unwrap(), caller, id.to_string(), how, told, text, None);
         };
         settle(a, Settled::Exited, &oa, "Your helper has exited.");
         assert!(crate::background::background_stopped_for(id, a), "an exited line did not say it");
