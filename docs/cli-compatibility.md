@@ -131,7 +131,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | Hooks run through the user's shell (PowerShell on Windows, where a bare `@-` does not parse); a failing hook lets the call go ahead | the guard's command quotes `"@-"` and calls curl by full path |
 | Hooks call its shell tool `Bash` | the guard matches `Bash` |
 | MCP calls get 60 s by default | `tool_timeout_sec=1900`, `default_tools_approval_mode="approve"` |
-| `-c developer_instructions=` replaces the value from the config stack (ancestors' `.codex` included) | Luna appends a note to helper prompts instead |
+| `-c developer_instructions=` replaces the value from the config stack (ancestors' `.codex` included) | Luna gives the stack's own value first, then the session's role layers (`codex/config.rs` `developer_instructions_in`, `pty::codex_role_args`, ADR-0026); the one-line note after a helper's prompt is a note, not its instructions |
 | Trust is matched by the checkout's exact path; a parent folder does not count; `-c projects=…` trusts for one run | trust per path, or a one-run override |
 | The trust screen is followed by a Windows sandbox setup question | trust written before the spawn when the new-chat dialog's box is ticked; unticked, both are Codex's to ask |
 | A `-c` key is split at each dot | plugin slugs are `[a-z0-9-]` |
