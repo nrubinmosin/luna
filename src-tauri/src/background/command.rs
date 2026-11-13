@@ -206,8 +206,11 @@ pub(super) fn command_with(
             let mut skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir, role);
             // Its role layers, written afresh every turn: an edit reaches it
             // at its next (library/role.rs).
+            // Never without them: a lead or helper started without its
+            // role and constraints would run on what its caller asked alone.
             let layers = crate::library::role_layers(texts, &skills, &constraints);
-            let instructions = crate::pty::claude_instructions_dir(id, layers.as_deref());
+            let instructions = crate::pty::claude_instructions_dir(id, layers.as_deref())
+                .map_err(|why| format!("the helper's turn is not started: {why}; its role and constraints would not reach it"))?;
             let mut luna_dirs: Vec<String> = skills.args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect();
             luna_dirs.extend(notes);
             luna_dirs.extend(copies.and_then(Result::ok).map(|d| d.to_string_lossy().into_owned()));
@@ -841,6 +844,27 @@ mod tests {
         let mut e = entry(Provider::Claude);
         e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
         assert!(command_for(&e, "too-long").is_ok());
+    }
+
+    #[test]
+    fn a_claude_turn_whose_role_layers_will_not_write_is_refused() {
+        const ID: &str = "bg-layers-unwritable";
+        // A file where its folder goes: the write fails as on a locked or full disk.
+        let dir = crate::paths::data_dir().join("hooks").join(crate::paths::id_file_name(ID));
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        std::fs::write(&dir, b"in the way").unwrap();
+        for tools in [false, true] {
+            let mut e = entry(Provider::Claude);
+            e.spec.parent = Some("p-1".into());
+            e.spec.tools = tools;
+            e.spec.constraints = vec![crate::agents::Constraint { from: "p-1".into(), text: "No network.".into() }];
+            let why = command_for(&e, ID).unwrap_err();
+            assert!(why.contains("not started") && why.contains("could not write its role layers"), "{why}");
+        }
+        std::fs::remove_file(&dir).unwrap();
+        let (args, _, _, _) = command_for(&entry(Provider::Claude), ID).unwrap();
+        assert!(layers_of(Provider::Claude, &args).is_some_and(|l| l.contains("# Your role")), "written once it can be");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

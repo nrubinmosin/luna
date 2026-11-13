@@ -150,7 +150,10 @@ no override and no entries for chats is started as before.
   `--add-dir` with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`
   (`pty::claude_instructions_dir`); the other added folders' memory is left out
   (`claude_memory_off`). Memory is read again on resume, unlike
-  `--append-system-prompt`, which Luna no longer passes.
+  `--append-system-prompt`, which Luna no longer passes. Where the file will
+  not write (a locked file, a full disk), a lead's or helper's turn is refused
+  rather than run without its role and constraints; a chat starts without its
+  layers and says so (`role.layers-off`).
 - **Codex:** `-c developer_instructions=<value>` (`pty::codex_role_args`), the
   value being what the config stack sets (`codex/config.rs`
   `developer_instructions_in`: `/etc/codex/config.toml` on Unix, the account's

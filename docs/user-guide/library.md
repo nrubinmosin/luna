@@ -95,7 +95,9 @@ own config sets; Codex sends that when a conversation starts and after a
 compaction, not on a resume, so a change reaches a running Codex session only
 then. A Codex chat whose layers, with its config's own value, would not fit on
 a command line (24 KB) starts without them, and its panel says so; a lead or
-helper is not started.
+helper is not started. The same goes for a Claude Code session whose file Luna
+cannot write (a locked file, a full disk): a chat starts without its layers and
+says so, a lead's or helper's turn is not started.
 
 A lead's or helper's task also carries a one-line note after it: that it comes
 from another agent, not a person, and that rules written for a chat with a
