@@ -124,6 +124,29 @@ pub(in crate::agents) fn real_turn_past(
     counts || (on_helpers && !turns.is_empty() && upward())
 }
 
+/// Whether every turn of `id` past `after` and up to `ended` was one on a
+/// notice about its own helpers (`notice_turn`), none a wake's.
+fn turns_on_helpers(id: &str, after: u32, ended: u32) -> bool {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let marked = r.notice_turns.get(id);
+    let turns = after.saturating_add(1)..=ended;
+    !turns.is_empty()
+        && turns.into_iter().all(|turn| {
+            marked.and_then(|m| m.iter().find(|m| m.turn == turn)).is_some_and(|m| !m.wake && m.only_helpers && !m.helpers.is_empty())
+        })
+}
+
+/// Whether lead `id` has written nothing since its last turn held back while
+/// its delegates worked (`Owed::held_to`), `said` being what it wrote since
+/// the debt's cursor: what it wrote before then, interim words the caller
+/// has not had yet, is no word on its delegates' end.
+fn quiet_since_held(pty: &crate::pty::PtyManager, id: &str, k: &Known, o: &Owed, said: &Said) -> bool {
+    match o.held_to {
+        Some(at) => said_since(pty, id, k.provider, at).is_empty(),
+        None => said.is_empty(),
+    }
+}
+
 /// For `real_turn_past`: `caller` is `id`'s parent, and `id`, a lead whose
 /// own helpers are still out, has written a message since `cursor` that opens
 /// on a status word (said.rs `says_status`): word that it is done, blocked or
@@ -384,7 +407,7 @@ pub(in crate::agents) fn notice_line(
         && real_turn_past(id, caller, o.baseline, ended, waits, || between_turns && news_for_parent(pty, caller, id, k, o.cursor));
     let now = verdict(&o, ended, turn, background || waits, real_turn);
     if now == Verdict::OnlyNotices {
-        return Some((None, Settled::Skip(ended)));
+        return Some((None, Settled::Skip(ended, transcript_end(id))));
     }
     if now == Verdict::AtWork && o.held.is_some() {
         return Some((None, Settled::Unhold));
@@ -413,8 +436,9 @@ pub(in crate::agents) fn notice_line(
                 let plain = failed.is_none() && !o.job_went && stopped.is_empty();
                 let how = if said.is_empty() && plain { Settled::NoNews(at) } else { Settled::Answered };
                 // A lead with all its delegates done and not a word of it: it is
-                // woken to go on, and its callers hear of the turn that brings.
-                if matches!(how, Settled::NoNews(_)) && is_lead(k) && wake_lead(pty, id, ended) == Wake::Waits {
+                // woken to go on, and its callers hear of the turn that brings,
+                // what it wrote while they worked included.
+                if plain && is_lead(k) && quiet_since_held(pty, id, k, &o, &said) && wake_lead(pty, id, ended) == Wake::Waits {
                     return None;
                 }
                 if o.no_reply && plain && !worth_waking(&said, false, true) {
@@ -530,7 +554,7 @@ pub(in crate::agents) fn notice_line(
             // that answers a send of its caller's is no interim report.
             let held_as_lead = lead && !(o.by_send && !o.told_pending);
             if !worth_waking(&replies, held_as_lead, o.no_reply) {
-                return Some((None, Settled::Skip(ended)));
+                return Some((None, Settled::Skip(ended, transcript_end(id))));
             }
             // Said first and plainly: a weak model read "ended a turn" as
             // done and deleted the helper mid-job. Once per debt: a job can
@@ -562,6 +586,20 @@ pub(in crate::agents) fn notice_line(
                     Settled::Answered,
                 ));
             }
+        }
+        // Its own helpers answered, and its turns on their notices said nothing
+        // past what waited while they worked: woken to go on, as for a job's
+        // end, rather than its callers told it ended without a reply.
+        if lead
+            && o.told_pending
+            && lost.is_empty()
+            && stopped.is_empty()
+            && !o.unsure
+            && turns_on_helpers(id, o.baseline, ended)
+            && quiet_since_held(pty, id, k, &o, &replies)
+            && wake_lead(pty, id, ended) == Wake::Waits
+        {
+            return None;
         }
         if o.no_reply && lost.is_empty() && stopped.is_empty() && !o.unsure && !o.resumed && !worth_waking(&replies, false, true) {
             return Some((None, Settled::Unasked));
@@ -1106,18 +1144,18 @@ mod tests {
         assert!(std::fs::read_to_string(file).unwrap().starts_with("BLOCKED: Phase 1 is in"));
         let _ = std::fs::remove_file(file);
         // A line or two is no news worth a turn: it comes with the answer.
-        assert!(matches!(line("ir-top", &format!("{notice}{}", said("Noted; waiting on ir-low2."))), Some((None, Settled::Skip(2)))));
+        assert!(matches!(line("ir-top", &format!("{notice}{}", said("Noted; waiting on ir-low2."))), Some((None, Settled::Skip(2, _)))));
         // Nor is a long interim report with no status word: it rides with the next notice.
         let interim = format!("Phase 1 is in, phase 2 under way. {}", "Evidence. ".repeat(45));
-        assert!(matches!(line("ir-top", &format!("{notice}{}", said(&interim))), Some((None, Settled::Skip(2)))));
+        assert!(matches!(line("ir-top", &format!("{notice}{}", said(&interim))), Some((None, Settled::Skip(2, _)))));
         // A status word lower down is none: it opens the message or does not count.
-        assert!(matches!(line("ir-top", &format!("{notice}{}", said("Notes.\nDONE: all of it"))), Some((None, Settled::Skip(2)))));
+        assert!(matches!(line("ir-top", &format!("{notice}{}", said("Notes.\nDONE: all of it"))), Some((None, Settled::Skip(2, _)))));
         // Only its parent: a session that wrote to it is told of its own turns alone.
-        assert!(matches!(line("ir-peer", &format!("{notice}{}", said(&report))), Some((None, Settled::Skip(2)))));
+        assert!(matches!(line("ir-peer", &format!("{notice}{}", said(&report))), Some((None, Settled::Skip(2, _)))));
         // A turn on a notice about anyone but its own helpers is no news for the parent.
         notice_turn(&mut reg().lock().unwrap(), "ir-mid", 2, &["ir-low".into(), "ir-peer".into()], false);
         reg().lock().unwrap().notice_turns.get_mut("ir-mid").unwrap().remove(0);
-        assert!(matches!(line("ir-top", &format!("{notice}{}", said(&report))), Some((None, Settled::Skip(2)))));
+        assert!(matches!(line("ir-top", &format!("{notice}{}", said(&report))), Some((None, Settled::Skip(2, _)))));
         let _ = std::fs::remove_file(&path);
         crate::background::gone_for_test("ir-mid");
         for id in ["ir-low", "ir-low2", "ir-mid", "ir-top", "ir-peer"] {
@@ -1707,7 +1745,7 @@ mod tests {
         let pty = crate::pty::manager();
         let line = |o: Owed| notice_line(pty, top, "Your helper", id, &known, o);
         let first = held(Owed::from(0, 0), 1, BACKGROUND_GRACE_MS);
-        assert!(matches!(line(first), Some((None, Settled::Skip(1)))), "no notice, and no NOT done yet: that is a lead's normal state");
+        assert!(matches!(line(first), Some((None, Settled::Skip(1, _)))), "no notice, and no NOT done yet: that is a lead's normal state");
         // As the notifier leaves it: told it is not done, what it said still to come.
         let waiting = Owed { rev: first.rev, ..Owed::pending(1, 0) };
         assert!(!matches!(line(waiting), Some((Some(_), _))), "nothing to say while the job runs");
@@ -1720,7 +1758,7 @@ mod tests {
         }
         for not_one in ["done: lowercase", "DONEZO", "Status: DONE"] {
             std::fs::write(&path, said_line(not_one)).unwrap();
-            assert!(matches!(line(first), Some((None, Settled::Skip(1)))), "{not_one}");
+            assert!(matches!(line(first), Some((None, Settled::Skip(1, _)))), "{not_one}");
         }
         // Its parent asked it something: the answer is no interim report.
         std::fs::write(&path, said_line("Lane 2 of 3; the gate is still out.")).unwrap();
@@ -1728,7 +1766,7 @@ mod tests {
         let Some((Some(text), Settled::Pending(1, _))) = line(sent) else { panic!("an answer to a send goes") };
         assert!(text.contains("Lane 2 of 3") && !text.contains("NOT done yet"), "{text}");
         let quiet = Owed { no_reply: true, ..sent };
-        assert!(matches!(line(quiet), Some((None, Settled::Skip(1)))), "unless the send asked for no reply");
+        assert!(matches!(line(quiet), Some((None, Settled::Skip(1, _)))), "unless the send asked for no reply");
         // A prompt it stops on comes as ever.
         crate::background::set_running_for_test(id);
         crate::background::hold_for_test(id);
@@ -1753,53 +1791,127 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Sub-orchestrators of 13 November "has nothing left running now, and it
-    /// has said nothing" seven times in a night, each woken by hand: Luna wakes
-    /// the lead itself, once per such end, and its parent hears of the turn
-    /// that brings, or that it seems stuck if that turn says nothing.
+    /// What the notifier does with what a look at `id` for `top` came to, as
+    /// its loop and a notice's delivery do: a hold starts the grace (put back
+    /// past it here), and the rest settles (`settle_told`). The look's result.
+    fn look(top: &str, id: &str, known: &Known) -> Option<(Option<String>, Settled)> {
+        let key = (top.to_string(), id.to_string());
+        let o = reg().lock().unwrap().owed[&key];
+        let said = notice_line(crate::pty::manager(), top, "Your helper", id, known, o);
+        match &said {
+            Some((None, Settled::Hold(n))) => {
+                reg().lock().unwrap().owed.get_mut(&key).unwrap().held = Some((*n, now_ms() - BACKGROUND_GRACE_MS.max(REPLY_GRACE_MS)))
+            }
+            Some((_, how)) => crate::agents::notifier::settle_told(&mut reg().lock().unwrap(), key, how.clone(), &o),
+            _ => {}
+        }
+        said
+    }
+
+    /// Live on 13 November: a lead wrote "Progress: the ping runs." and ended
+    /// its turn with its job at work, then went quiet; once the job was over its
+    /// parent was told it "wrote 2 messages", and the lead sat idle. What it
+    /// wrote while its delegates worked waits for its parent and is no word on
+    /// their end: Luna wakes the lead, once, and its parent hears of the turn
+    /// that brings, all it wrote included, or that it seems stuck if that turn
+    /// says nothing.
     #[test]
     fn a_lead_whose_delegates_finished_is_woken_once_and_its_parent_hears_of_what_came_of_it() {
+        use crate::agents::owed::{owe_asked, Asked};
         let (top, id) = ("wk-top", "wk-lead");
-        let text = said_line("Waiting on the gate and both checkers.");
-        let (known, path) = lead(top, id, 1, false, &text);
-        reg().lock().unwrap().delegates.insert(id.into(), vec!["Bash `scripts/gate.ps1`".into(), "helper wk-low".into()]);
-        let pty = crate::pty::manager();
-        let line = |o: Owed| notice_line(pty, top, "Your helper", id, &known, o);
+        let interim = said_line("Progress: the ping runs.");
+        // Its first turn ends on that, its job still at work.
+        let (known, path) = lead(top, id, 1, true, &interim);
+        owe_asked(top, id, 0, 0, &Asked { text: "Run the ping and report", key: None, reply: true });
         let wakes = || reg().lock().unwrap().news.iter().filter(|(c, l)| c == id && is_wake(l)).count();
-        let told = Owed::pending(1, text.len() as u64);
-        reg().lock().unwrap().owed.insert((top.into(), id.into()), told);
-        let over = held(told, 1, BACKGROUND_GRACE_MS);
-        assert!(line(over).is_none(), "its parent hears nothing yet");
+        assert!(matches!(look(top, id, &known), Some((None, Settled::Hold(1)))));
+        assert!(matches!(look(top, id, &known), Some((None, Settled::Skip(1, _)))), "held back from its parent");
+        assert!(look(top, id, &known).is_none_or(|(line, _)| line.is_none()), "nothing while the job runs");
+        // The job ends; the lead says nothing more.
+        crate::background::left_for_test(id, &[]);
+        assert!(matches!(look(top, id, &known), Some((None, Settled::Hold(1)))));
+        assert!(look(top, id, &known).is_none(), "its parent hears nothing yet");
         assert_eq!(wakes(), 1, "the lead is woken");
         let wake = reg().lock().unwrap().news.iter().find(|(c, _)| c == id).map(|(_, l)| l.clone()).unwrap();
-        assert!(wake.starts_with("Your delegates have finished: Bash `scripts/gate.ps1`; helper wk-low."), "{wake}");
-        assert!(line(over).is_none());
+        assert!(wake.starts_with("Your delegates have finished: processes bash.exe"), "{wake}");
+        assert!(look(top, id, &known).is_none());
         assert_eq!(wakes(), 1, "once per end");
-        // Its turn on the wake ends without a word: stuck, said once (it settles the debt).
+        // Its turn on the wake.
+        reg().lock().unwrap().news.retain(|(c, _)| c != id);
         notice_turn(&mut reg().lock().unwrap(), id, 2, &[], true);
         crate::background::idle_for_test(id, Provider::Claude, 2, false);
-        let Some((Some(stuck), Settled::Answered)) = line(held(told, 2, REPLY_GRACE_MS)) else { panic!("its parent hears") };
-        assert!(stuck.contains("seems stuck") && stuck.contains("without a word"), "{stuck}");
-        // One that takes it up is heard of as any turn of its own.
-        std::fs::write(&path, format!("{text}{}", said_line("DONE: gate green, both checks pass."))).unwrap();
-        let Some((Some(done), Settled::Answered)) = line(held(told, 2, REPLY_GRACE_MS)) else { panic!("its turn on the wake") };
-        assert!(done.contains("finished its turn") && done.contains("DONE: gate green"), "{done}");
+        // One that takes it up is heard of, with what it wrote before.
+        std::fs::write(&path, format!("{interim}{}", said_line("DONE: the ping ran clean."))).unwrap();
+        let o = reg().lock().unwrap().owed[&(top.to_string(), id.to_string())];
+        let Some((Some(done), Settled::Answered)) = notice_line(crate::pty::manager(), top, "Your helper", id, &known, o) else {
+            panic!("its turn on the wake")
+        };
+        assert!(done.contains("finished its turn with 2 messages since you asked") && done.contains("DONE: the ping ran clean"), "{done}");
+        // One that says nothing: stuck, said once, as it settles the debt.
+        std::fs::write(&path, &interim).unwrap();
+        let Some((Some(stuck), Settled::Answered)) = look(top, id, &known) else { panic!("its parent hears") };
+        assert!(stuck.contains("seems stuck") && stuck.contains("Progress: the ping runs."), "{stuck}");
+        assert!(!reg().lock().unwrap().owed.contains_key(&(top.to_string(), id.to_string())), "settled");
         // Stopped by the breaker, it is not woken, and its parent hears as before.
-        reg().lock().unwrap().news.retain(|(c, _)| c != id);
+        let told = Owed { held_to: Some(interim.len() as u64), ..Owed::pending(1, 0) };
+        reg().lock().unwrap().owed.insert((top.into(), id.into()), told);
         reg().lock().unwrap().woken.remove(id);
         reg().lock().unwrap().stopped.insert((id.into(), id.into()), now_ms());
         crate::background::idle_for_test(id, Provider::Claude, 1, false);
-        std::fs::write(&path, &text).unwrap();
-        let Some((Some(plain), Settled::NoNews(_))) = line(over) else { panic!("as before") };
-        assert!(plain.contains("has nothing left running now"), "{plain}");
+        let over = held(told, 1, BACKGROUND_GRACE_MS);
+        let line = |o: Owed| notice_line(crate::pty::manager(), top, "Your helper", id, &known, o);
+        let Some((Some(plain), Settled::Answered)) = line(over) else { panic!("as before") };
+        assert!(plain.contains("has nothing left running now, and it wrote 1 message"), "{plain}");
         assert_eq!(wakes(), 0);
         reg().lock().unwrap().stopped.remove(&(id.to_string(), id.to_string()));
         // A wake not taken up in WAKE_WAIT_MS: its parent hears.
         reg().lock().unwrap().woken.insert(id.into(), Woken { ended: 1, cursor: 0, at: now_ms() - WAKE_WAIT_MS });
-        assert!(matches!(line(over), Some((Some(_), Settled::NoNews(_)))));
+        assert!(matches!(line(over), Some((Some(_), Settled::Answered))));
         // A turn a wake started counts as the lead's own for every caller.
         assert!(real_turn_past(id, top, 1, 2, true, || false));
+        reg().lock().unwrap().owed.remove(&(top.to_string(), id.to_string()));
         for s in [id, top] {
+            crate::background::gone_for_test(s);
+            forget(s);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Live on 13 November: a Codex lead's helper answered, and the lead's
+    /// turn on that notice said nothing; its parent heard it "finished its
+    /// turn without a reply", and nothing went on. A lead whose own helpers
+    /// have answered and that says nothing of them is woken as for a job's end.
+    #[test]
+    fn a_lead_silent_on_its_helpers_answers_is_woken() {
+        use crate::agents::owed::{owe_asked, Asked};
+        let (top, id, low) = ("wh-top", "wh-lead", "wh-low");
+        let interim = said_line("Progress: the review is out.");
+        let (known, path) = lead(top, id, 1, false, &interim);
+        register(low, Provider::Codex, "C:\\p", "C:\\acc\\openai\\one", Some(id), false, serde_json::json!({ "background": true }));
+        owe_asked(top, id, 0, 0, &Asked { text: "Get the branch reviewed", key: None, reply: true });
+        owe_asked(id, low, 0, 0, &Asked { text: "Review the branch", key: None, reply: true });
+        let wakes = || reg().lock().unwrap().news.iter().filter(|(c, l)| c == id && is_wake(l)).count();
+        // Its first turn ends with its helper out: held back.
+        assert!(matches!(look(top, id, &known), Some((None, Settled::Skip(1, _)))), "held back from its parent");
+        // The helper answers, a notice tells the lead, and its turn on that says nothing.
+        let helper_key = (id.to_string(), low.to_string());
+        let owed_low = reg().lock().unwrap().owed[&helper_key];
+        crate::agents::notifier::settle_told(&mut reg().lock().unwrap(), helper_key, Settled::Answered, &owed_low);
+        notice_turn(&mut reg().lock().unwrap(), id, 2, &[low.to_string()], false);
+        crate::background::idle_for_test(id, Provider::Claude, 2, false);
+        assert!(look(top, id, &known).is_none(), "its parent hears nothing yet");
+        assert_eq!(wakes(), 1, "the lead is woken");
+        let wake = reg().lock().unwrap().news.iter().find(|(c, _)| c == id).map(|(_, l)| l.clone()).unwrap();
+        assert!(wake.contains("helper wh-low"), "{wake}");
+        // Its turn on the wake takes them up: its parent hears of it.
+        reg().lock().unwrap().news.retain(|(c, _)| c != id);
+        notice_turn(&mut reg().lock().unwrap(), id, 3, &[], true);
+        crate::background::idle_for_test(id, Provider::Claude, 3, false);
+        std::fs::write(&path, format!("{interim}{}", said_line("DONE: reviewed, two fixes in."))).unwrap();
+        let Some((Some(done), Settled::Answered)) = look(top, id, &known) else { panic!("its turn on the wake") };
+        assert!(done.contains("finished its turn") && done.contains("DONE: reviewed"), "{done}");
+        reg().lock().unwrap().woken.remove(id);
+        for s in [low, id, top] {
             crate::background::gone_for_test(s);
             forget(s);
         }
