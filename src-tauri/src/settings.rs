@@ -195,6 +195,20 @@ impl Audience {
     pub fn roles(self) -> Vec<Role> {
         Role::ALL.into_iter().filter(|r| self.takes(*r)).collect()
     }
+
+    /// The word a Luna before roles (0.17) wrote for this audience, where it
+    /// had one: its helpers were leads and helpers alike.
+    fn word_before_roles(self) -> Option<&'static str> {
+        if self.is_every() {
+            Some("both")
+        } else if self == Audience::CHATS {
+            Some("chats")
+        } else if self == Audience::of(&[Role::Lead, Role::Helper]) {
+            Some("helpers")
+        } else {
+            None
+        }
+    }
 }
 
 /// An audience as the file may hold it: a word, or a list of roles.
@@ -246,12 +260,9 @@ impl Serialize for Audience {
 
 /// The library's entries whose audience is not every session's, by kind and
 /// name: an instructions file and a skill may share a name.
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Clone, Default)]
 pub struct Audiences {
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub instructions: std::collections::BTreeMap<String, Audience>,
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub skills: std::collections::BTreeMap<String, Audience>,
 }
 
@@ -261,10 +272,48 @@ impl Audiences {
     }
 }
 
-/// `Audiences` as the file holds them, each value as written.
+/// Written so that Luna 0.17, rolled back to, still reads the whole file:
+/// `instructions` and `skills` hold its words ("chats", "helpers") for the
+/// audiences it has one for, and `roles`, which it ignores as it ignores
+/// every key it does not know, holds them all as lists of roles; an entry for
+/// a set it has no word for (leads alone, chats and helpers) is every
+/// session's to it. This Luna reads `roles` where it is there
+/// (`LibrarySettings`' TryFrom).
+impl Serialize for Audiences {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        type ByName<'a, T> = std::collections::BTreeMap<&'a str, T>;
+        fn words(m: &std::collections::BTreeMap<String, Audience>) -> ByName<'_, &'static str> {
+            m.iter().filter_map(|(n, a)| Some((n.as_str(), a.word_before_roles()?))).collect()
+        }
+        let (instructions, skills) = (words(&self.instructions), words(&self.skills));
+        let mut st = s.serialize_struct("Audiences", 3)?;
+        for (key, words) in [("instructions", &instructions), ("skills", &skills)] {
+            match words.is_empty() {
+                true => st.skip_field(key)?,
+                false => st.serialize_field(key, words)?,
+            }
+        }
+        let roles: ByName<'_, &std::collections::BTreeMap<String, Audience>> =
+            [("instructions", &self.instructions), ("skills", &self.skills)].into_iter().filter(|(_, m)| !m.is_empty()).collect();
+        st.serialize_field("roles", &roles)?;
+        st.end()
+    }
+}
+
+/// `Audiences` as the file holds them, each value as written: this Luna's
+/// under `roles`, a Luna before roles' words beside them or alone.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct AudiencesFile {
+    instructions: std::collections::BTreeMap<String, AudienceField>,
+    skills: std::collections::BTreeMap<String, AudienceField>,
+    roles: Option<AudienceRolesFile>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AudienceRolesFile {
     instructions: std::collections::BTreeMap<String, AudienceField>,
     skills: std::collections::BTreeMap<String, AudienceField>,
 }
@@ -358,15 +407,24 @@ impl TryFrom<LibrarySettingsFile> for LibrarySettings {
         for name in &f.folders_only {
             skills.remove(name);
         }
-        // Instructions an earlier Luna laid into accounts for the person's
-        // chats stay there, still said to be theirs (`laid_out`).
+        // This Luna's file has every audience under `roles`, beside the
+        // words a Luna before roles reads (`Audiences`' Serialize). Without
+        // them the words are that Luna's: instructions it laid into accounts
+        // for the person's chats stay there, still said to be theirs
+        // (`laid_out`).
         let mut laid_out = f.laid_out;
-        laid_out.extend(f.audience.instructions.iter().filter(|(_, a)| a.was_chats()).map(|(n, _)| n.clone()));
+        let (by_role, skills_by_role) = match f.audience.roles {
+            Some(roles) => (roles.instructions, roles.skills),
+            None => {
+                laid_out.extend(f.audience.instructions.iter().filter(|(_, a)| a.was_chats()).map(|(n, _)| n.clone()));
+                (f.audience.instructions, f.audience.skills)
+            }
+        };
         type ByName<T> = std::collections::BTreeMap<String, T>;
         let read = |m: ByName<AudienceField>| -> Result<ByName<Audience>, String> {
             m.into_iter().map(|(n, a)| Audience::try_from(a).map(|a| (n, a))).filter(|r| !matches!(r, Ok((_, a)) if a.is_every())).collect()
         };
-        let audience = Audiences { instructions: read(f.audience.instructions)?, skills: read(f.audience.skills)? };
+        let audience = Audiences { instructions: read(by_role)?, skills: read(skills_by_role)? };
         Ok(LibrarySettings {
             source: f.source,
             instructions: match f.instructions {
@@ -601,7 +659,8 @@ mod tests {
         assert_eq!(back.library.audience.skills, read.library.audience.skills);
         assert_eq!(back.library.audience.instructions, read.library.audience.instructions);
         let json = serde_json::to_value(&read).unwrap();
-        assert_eq!(json["library"]["audience"]["instructions"]["main"], serde_json::json!(["chat", "helper"]));
+        assert_eq!(json["library"]["audience"]["roles"]["instructions"]["main"], serde_json::json!(["chat", "helper"]));
+        assert!(json["library"]["audience"].get("instructions").is_none(), "0.17 has no word for chats and helpers");
         let json = serde_json::to_value(Settings::default()).unwrap();
         assert!(json["library"].get("audience").is_none() && json["library"].get("laidOut").is_none(), "nothing set, nothing written");
         assert!(serde_json::from_str::<Settings>(r#"{"library": {"audience": {"skills": {"x": "people"}}}}"#).is_err(), "no guess");
@@ -624,13 +683,67 @@ mod tests {
         assert_eq!(a.instructions["main"], Audience::CHATS);
         assert_eq!(a.instructions["terse"], Audience::of(&[Role::Lead, Role::Helper]));
         assert_eq!(old.library.laid_out, ["main".to_string()].into(), "the chats' instructions stay in the accounts");
-        // Written back in the new form, which reads the same.
+        // Written back with the roles beside the old words, which reads the same.
         let json = serde_json::to_value(&old).unwrap();
-        assert_eq!(json["library"]["audience"]["instructions"]["main"], serde_json::json!(["chat"]));
+        assert_eq!(json["library"]["audience"]["roles"]["instructions"]["main"], serde_json::json!(["chat"]));
+        assert_eq!(json["library"]["audience"]["instructions"]["main"], "chats");
         assert_eq!(json["library"]["laidOut"], serde_json::json!(["main"]));
         let back: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(back.library.laid_out, old.library.laid_out);
         assert_eq!(back.library.audience.instructions, old.library.audience.instructions);
+    }
+
+    /// Settings as Luna 0.17 reads them (its `Audiences` and `Audience`, the
+    /// rest of the file left to its defaults): no `deny_unknown_fields`
+    /// anywhere, so a key it does not know is passed over.
+    mod v017 {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        #[serde(rename_all = "camelCase")]
+        pub enum Audience {
+            Both,
+            Chats,
+            Helpers,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[serde(rename_all = "camelCase", default)]
+        pub struct Audiences {
+            pub instructions: std::collections::BTreeMap<String, Audience>,
+            pub skills: std::collections::BTreeMap<String, Audience>,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[serde(rename_all = "camelCase", default)]
+        pub struct Library {
+            pub audience: Audiences,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[serde(rename_all = "camelCase", default)]
+        pub struct Settings {
+            pub library: Library,
+        }
+    }
+
+    #[test]
+    fn audiences_are_written_so_0_17_still_reads_the_file() {
+        let mut s = Settings::default();
+        let a = &mut s.library.audience;
+        a.instructions.insert("chats".into(), Audience::CHATS);
+        a.instructions.insert("leads".into(), Audience::of(&[Role::Lead]));
+        a.skills.insert("helpers".into(), Audience::of(&[Role::Lead, Role::Helper]));
+        a.skills.insert("chat-and-helper".into(), Audience::of(&[Role::Chat, Role::Helper]));
+        let text = serde_json::to_string(&s).unwrap();
+
+        let old: v017::Settings = serde_json::from_str(&text).expect("0.17 parses it");
+        assert_eq!(old.library.audience.instructions.into_iter().collect::<Vec<_>>(), [(String::from("chats"), v017::Audience::Chats)]);
+        assert_eq!(
+            old.library.audience.skills.into_iter().collect::<Vec<_>>(),
+            [(String::from("helpers"), v017::Audience::Helpers)],
+            "a set 0.17 has no word for is every session's to it"
+        );
+
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.library.audience.instructions, s.library.audience.instructions, "every set back, the new ones too");
+        assert_eq!(back.library.audience.skills, s.library.audience.skills);
+        assert!(back.library.laid_out.is_empty(), "this Luna's chats' word is no 0.17 layout to keep");
     }
 
     #[test]

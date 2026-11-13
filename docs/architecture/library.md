@@ -76,11 +76,16 @@ Luna starts sessions in three roles (`settings::Role`): `chat` (the person's,
 run in a pane: `pty/start.rs`), `lead` (a background helper spawned with
 `tools`, which may spawn its own: `background/command.rs` `role_of`) and
 `helper` (spawned without them). Each instructions file and skill has an
-**audience** in `settings.json` (`library.audience.instructions` / `.skills`,
-by name; absent is every session): `"every"` or a list of roles. What earlier
-Lunas wrote still reads: `both` is every session, `chats` is `["chat"]`,
-`helpers` is `["lead", "helper"]` (`AudienceField`); only the new form is
-written, and the ledger's `worded` reads the same way. Renaming or deleting an
+**audience** in `settings.json`, by name (absent is every session), written
+so that Luna 0.17 rolled back to still reads the file (`Audiences`'
+Serialize): `library.audience.roles.instructions` / `.skills` hold every
+audience as a list of roles, which 0.17 ignores as it ignores any key it does
+not know; `library.audience.instructions` / `.skills` hold 0.17's word where
+it has one (`chats` for `["chat"]`, `helpers` for `["lead", "helper"]`), the
+other sets left out, every session's to it. A file with `roles` is read from
+there; one without is an earlier Luna's, or one 0.17 saved, and its words read
+as roles: `both` is every session (`AudienceField`). The ledger's `worded`
+reads both forms. Renaming or deleting an
 entry carries its audience along. `session_args` takes the start's `Role` and,
 in `folder_args`, keeps from it what is not for its role and gives it what is:
 
@@ -97,7 +102,7 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   `no_instructions`, names one of its reach's entries
   (`every_session_refused`), naming the entry and the accounts. The exception is
   `LibrarySettings::laid_out`: entries an earlier Luna laid out for the
-  person's chats (seeded from `"chats"` when the settings are read) stay in the
+  person's chats (seeded from `"chats"` when a file without `roles` is read) stay in the
   accounts with a line before them (`banner_of`, `worded`), so chats started
   outside Luna keep them. Setting such an entry's audience to anything else
   takes it out of `laid_out`, and the next pass takes its copies out as no
