@@ -168,6 +168,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   model. Each model now gets the level the settings files keep for it, else
   its own default, the dialog naming the file and key, and moves to it when
   another model is picked; `luna_account_get` gives `effortByModel`.
+- Text sent to a helper while a stop between its turns ended what it left
+  running is no longer lost when the turn it was to start cannot start: its
+  sender hears of it as undelivered with the next notice.
 
 - A Claude Code helper's background subagents are no longer stopped 10
   minutes after its turn: Claude Code 2.1.319+ stops what a `-p` run left in
