@@ -228,11 +228,20 @@ pub fn lead_taken_up(id: &str) {
     }
 }
 
-/// `s`, scheduled in the turn that just ended, started: only where the turn
-/// was not stopped and nothing of its CLI's own is left at work, which would
-/// run on with no conversation to know of it.
+/// `s`, scheduled in the turn that just ended, started: only where nothing
+/// holds it up (`held_up`).
 fn switch_now(id: &str, s: &LeadSwitch, v: &LeadView) {
-    let why = if v.stopped {
+    match held_up(v) {
+        Some(why) => gave_up(id, s, &why, false),
+        None => start(id, s, v),
+    }
+}
+
+/// Why no fresh conversation may start after the turn that just ended: the
+/// turn was stopped, or something of its CLI's own is left at work, which
+/// would run on with no conversation to know of it.
+fn held_up(v: &LeadView) -> Option<String> {
+    if v.stopped {
         Some("its turn was stopped (luna_session_stop or the window)".to_string())
     } else if !v.left.is_empty() {
         Some(format!("what its turns left is still running ({})", v.left.join(", ")))
@@ -240,10 +249,6 @@ fn switch_now(id: &str, s: &LeadSwitch, v: &LeadView) {
         Some("codex exec interrupted the subagents of its turn as it ended, their work maybe unfinished".to_string())
     } else {
         None
-    };
-    match why {
-        Some(why) => gave_up(id, s, &why, false),
-        None => start(id, s, v),
     }
 }
 
@@ -520,10 +525,16 @@ fn unanswered(id: &str, session: &str, turns_ended: u32) -> bool {
 /// A lead that writes no file past its threshold, or that left the firm ask
 /// unanswered: Luna writes its handoff from its records (document.rs, as for
 /// a move from records), copies it as the next number, and starts its fresh
-/// conversation on it at once, the lead being at rest. Its conversation's
-/// told level is kept first and the ask closed, so one whose document will
-/// not build is not built again at every turn's end.
+/// conversation on it at once, the lead being at rest. Not after a turn that
+/// was stopped or left work running (`held_up`), as for a switch it called
+/// for: nothing is kept then, and the next turn's end looks again. Its
+/// conversation's told level is kept first and the ask closed, so one whose
+/// document will not build is not built again at every turn's end.
 fn from_records(id: &str, v: &LeadView, told: store::Told, session: &str) {
+    if let Some(why) = held_up(v) {
+        crate::log::info("handoff", &format!("{}: no handoff from Luna's records after this turn: {why}", label(id)));
+        return;
+    }
     if let Err(e) = store::change(id, |r| {
         super::told_of(r, told, false);
         if r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Auto) {
@@ -559,8 +570,9 @@ fn from_records(id: &str, v: &LeadView, told: store::Told, session: &str) {
         return;
     }
     crate::log::info("handoff", &format!("{} writes no file: handoff {n} from Luna's records", label(id)));
+    // Looked at again as it starts: a Stop may have come while it was built.
     if let Some(v) = crate::background::lead_view(id) {
-        start(id, &s, &v);
+        switch_now(id, &s, &v);
     }
 }
 

@@ -508,6 +508,53 @@ fn a_firm_ask_answered_and_given_up_is_not_taken_over() {
     gone("ld-firm-given");
 }
 
+/// A lead stopped in the turn its firm ask began, on either CLI, is not
+/// started again on Luna's document: nothing is written and the ask stays
+/// open until a turn its caller gives it ends unstopped. Nor is one that
+/// writes no file, stopped past its threshold.
+#[test]
+fn a_lead_stopped_in_its_firm_asks_turn_starts_no_fresh_conversation() {
+    for provider in [Provider::Claude, Provider::Codex] {
+        let id = format!("ld-firm-stop-{}", provider.as_str());
+        let session = match provider {
+            Provider::Claude => {
+                lead(&id, Some(90));
+                "old".to_string()
+            }
+            Provider::Codex => {
+                let thread = format!("{id}-thread");
+                codex_lead(&id, &thread, 90);
+                thread
+            }
+        };
+        on(60);
+        lead_turn_ended(&id);
+        assert!(asked(&id).is_some(), "{id}: asked");
+        crate::background::lead_turn_over_for_test(&id, &[], Some(crate::background::STOPPED_BY_STOP));
+        lead_turn_ended(&id);
+        assert!(crate::background::switch_of(&id).is_none(), "{id}: no fresh start after a Stop");
+        let (now, running, ..) = crate::background::lead_for_test(&id);
+        assert_eq!((now.as_deref(), running), (Some(session.as_str()), false), "{id}: left as stopped");
+        assert!(store::records()[&id].past.is_empty(), "{id}: nothing written");
+        assert!(asked(&id).is_some(), "{id}: the ask stays open");
+        // Its caller sends it on; that turn ends with no call.
+        crate::background::set_running_for_test(&id);
+        crate::background::lead_turn_over_for_test(&id, &[], None);
+        lead_turn_ended(&id);
+        assert!(crate::background::switch_of(&id).is_some_and(|s| s.from_records), "{id}: then Luna's document");
+        gone(&id);
+    }
+
+    lead("ld-ro-stop", Some(70));
+    on(60);
+    crate::background::read_only_for_test("ld-ro-stop");
+    crate::background::lead_turn_over_for_test("ld-ro-stop", &[], Some(crate::background::STOPPED_BY_STOP));
+    lead_turn_ended("ld-ro-stop");
+    assert!(crate::background::switch_of("ld-ro-stop").is_none(), "no fresh start after a Stop");
+    assert!(!crate::background::lead_for_test("ld-ro-stop").1);
+    gone("ld-ro-stop");
+}
+
 /// The parent's line rides: kept per parent, one lead's again in its place,
 /// and gone once a notice told it.
 #[test]
