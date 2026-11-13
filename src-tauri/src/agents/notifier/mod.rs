@@ -106,9 +106,10 @@ pub(super) enum Settled {
     /// A job looked over and is at work again: the grace starts over.
     Unhold,
     /// Told it is not done, and all that ended since were turns on Luna's own
-    /// notices: nothing to say, and owed on from this turn count, what they
-    /// said included.
-    Skip(u32),
+    /// notices, or a lead's turns while its delegates work: nothing to say,
+    /// and owed on from this turn count, what they said included, which ends
+    /// at this transcript length (`Owed::held_to`).
+    Skip(u32, u64),
     Waiting,
     /// It asks a question it does not wait on; told once per question.
     Asked(u64),
@@ -572,16 +573,8 @@ pub(super) fn notifier() {
                             o.held = None;
                         }
                     }
-                    // Owed on from this turn, what it said included: a turn a
-                    // lead ended with its delegates at work counts as told it
-                    // is not done, with nothing said (lines.rs `worth_waking`).
-                    Some((None, Settled::Skip(ended))) => {
-                        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(o) = r.owed.get_mut(&(caller.clone(), id.clone())).filter(|now| now.rev == o.rev) {
-                            o.baseline = ended;
-                            o.held = None;
-                            o.told_pending = true;
-                        }
+                    Some((None, how @ Settled::Skip(..))) => {
+                        settle_told(&mut reg().lock().unwrap_or_else(|e| e.into_inner()), (caller.clone(), id.clone()), how, o);
                     }
                     Some((None, Settled::Unasked)) => {
                         let key = (caller.clone(), id.clone());
@@ -842,7 +835,7 @@ fn kind_of(how: &Settled) -> &'static str {
         Settled::Pending(..) => "pending",
         Settled::Hold(_) => "hold",
         Settled::Unhold => "unhold",
-        Settled::Skip(_) => "skip",
+        Settled::Skip(..) => "skip",
         Settled::Waiting => "waiting",
         Settled::Asked(_) => "asked",
         Settled::Resumed => "resumed",
@@ -1148,7 +1141,18 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
                 o.told_background_wait = Some(ended);
             }
         }
-        Settled::Hold(_) | Settled::Unhold | Settled::Skip(_) => {}
+        // Owed on from this turn, what it said included: a turn a lead ended
+        // with its delegates at work counts as told it is not done, with
+        // nothing said (lines.rs `worth_waking`).
+        Settled::Skip(ended, cursor) => {
+            if let Some(o) = r.owed.get_mut(&key) {
+                o.baseline = ended;
+                o.held = None;
+                o.told_pending = true;
+                o.held_to = Some(cursor);
+            }
+        }
+        Settled::Hold(_) | Settled::Unhold => {}
     }
 }
 

@@ -80,6 +80,11 @@ pub(super) struct Owed {
     /// moved since, a new one has the same baseline and cursor as the old, and
     /// what was decided about the old is not to touch it.
     pub(super) rev: u64,
+    /// Where a lead's transcript ended at its last turn held back from the
+    /// caller while its delegates worked (notifier `Settled::Skip`): what it
+    /// wrote up to there waits in its report, and is no word on their end
+    /// (lines.rs `wake_lead`).
+    pub(super) held_to: Option<u64>,
     /// The asks this debt took in after debt `Since::rev` stood, which a notice
     /// may be telling of as they come (`owe`): once that one is told, these
     /// are all that is left of it (`told_before`).
@@ -127,6 +132,7 @@ impl Owed {
             told_background_wait: None,
             no_reply: false,
             by_send: false,
+            held_to: None,
             since: None,
         }
     }

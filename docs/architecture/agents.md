@@ -455,8 +455,9 @@ turn, stopped on a prompt (once per stop) or exited.
 - **Leads.** A lead (`is_lead`: spawned with tools) whose delegates still work
   (its own helpers out, or what its CLI left in the background) is not done as
   a matter of course: a turn it ends then settles as `Settled::Skip` (no
-  notice, `told_pending` set, the debt's offset kept), so what it wrote rides
-  in its report with the next notice, never "NOT done yet". Not the first
+  notice, `told_pending` set, the debt's offset kept, where that turn's text
+  ends kept as `Owed::held_to`), so what it wrote rides in its report with
+  the next notice, never "NOT done yet". Not the first
   turn to answer a send of its caller's (`Owed::by_send`, before
   `told_pending`): that is the answer asked for, unless the send asked for
   none. A message whose
@@ -466,7 +467,10 @@ turn, stopped on a prompt (once per stop) or exited.
   its helpers' notices that wrote one (`news_for_parent`, only ever upward).
   Prompts, questions, errors, exits and the quiet-turn notices go as ever.
   The lead's role text says so (`resources/system/role-lead.md`).
-  Once all its delegates are done (`Verdict::JobOver`) with nothing said since,
+  Once all its delegates are done (`Verdict::JobOver`, or a turn on its own
+  helpers' notices once they have all answered, `turns_on_helpers`) with
+  nothing said past `held_to` (`quiet_since_held`: what it wrote while they
+  worked waits for its parent and is no word on their end),
   Luna wakes the lead instead of telling its parent (`wake_lead`): a queued
   line opening `Your delegates have finished` (`WAKE_HEAD`), naming what it
   was last seen waiting on (`note_delegates`), once per end (`Registry::woken`,
