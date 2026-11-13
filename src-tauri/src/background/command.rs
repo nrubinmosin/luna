@@ -460,8 +460,7 @@ mod tests {
 
     /// A helper without Luna's tools is started with no word of the handoff,
     /// nor with its instructions as a skill; nor is a lead while auto-handoff
-    /// for leads is off, but for its role's own line naming the tool (it is
-    /// never asked then).
+    /// for leads is off (it is never asked then).
     #[test]
     fn a_tool_less_helper_is_started_with_nothing_of_the_handoff() {
         let off = crate::settings::LeadHandoff { on: false, threshold: 60 };
@@ -473,7 +472,6 @@ mod tests {
                 e.spec.parent = Some("a-chat".into());
                 let (args, dir, envs, applied) = command_for(&e, "bg-no-handoff").unwrap();
                 let said = format!("{args:?}{dir:?}{envs:?}{applied:?}").to_lowercase();
-                let said = said.replace("follow `luna_session_handoff`", "");
                 for word in ["luna_session_handoff", "session-handoff", "handoffs", "auto-handoff"] {
                     assert!(!said.contains(word), "{provider:?} tools {tools}: {word} in {said}");
                 }

@@ -853,7 +853,7 @@ mod tests {
     #[test]
     fn luna_s_own_text_has_one_hash_from_every_checkout() {
         assert!(!LUNA_HANDOFF.contains('\r'));
-        assert_eq!(sha256_hex(LUNA_HANDOFF.as_bytes()), "6f3cd7063e55dac8b37986b30d08e243a3276d8a6196e552967f99592566c99e");
+        assert_eq!(sha256_hex(LUNA_HANDOFF.as_bytes()), "55823632fb66e7dd403e426c2656f923ee5bd798ce0a0e00c456ae7de413b2ec");
     }
 
     /// The override is served, never laid out: a pass that lays the

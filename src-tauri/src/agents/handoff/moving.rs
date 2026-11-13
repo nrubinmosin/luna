@@ -1354,9 +1354,8 @@ pub(super) fn is_ask_line(text: &str) -> bool {
 pub(super) fn ask_line(id: &str) -> String {
     format!(
         "{MOVE_TAG} {id}{ASK_TAG_END} The person is moving this chat to another account of this CLI, \
-         where a new chat goes on from a document you write now. Call luna_session_handoff without arguments for how, \
-         write the document, call luna_session_handoff with file set to its absolute path, and end your turn. Nothing is \
-         cleared: this conversation goes on as it is."
+         where a new chat goes on from a document you write now. Nothing is cleared: this conversation goes on as it is. \
+         luna_session_handoff without arguments says how."
     )
 }
 

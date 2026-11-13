@@ -431,9 +431,10 @@ fn a_parent_hears_of_its_leads_handoffs_in_one_line() {
     reg().lock().unwrap().handed_off.remove("ld-rider-top");
 }
 
-/// Luna's own default for a lead tells it to follow the tool once asked.
+/// Neither role's default speaks of the handoff: the notice that asks a lead
+/// for one points to the tool, which says how.
 #[test]
-fn the_leads_role_text_names_the_tool() {
-    assert!(include_str!("../../../resources/system/role-lead.md").contains("luna_session_handoff"));
+fn the_role_texts_leave_the_handoff_to_its_ask() {
+    assert!(!include_str!("../../../resources/system/role-lead.md").contains("handoff"));
     assert!(!include_str!("../../../resources/system/role-helper.md").contains("handoff"));
 }

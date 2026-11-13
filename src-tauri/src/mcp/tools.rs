@@ -189,15 +189,16 @@ pub(super) fn names() -> Vec<String> {
     tools().as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect()
 }
 
-/// The tool a person's chat with Luna's tools is offered besides the rest,
-/// and no other session (agents/handoff `may_list`). No target: it acts on
-/// the caller's own chat, the one its token is. It answers only while the
-/// chat is asked for a handoff: without `file` how to write it; with one it
-/// hands off.
+/// The tool a person's chat with Luna's tools, and a lead while auto-handoff
+/// for leads is on, is offered besides the rest (agents/handoff `may_list`).
+/// No target: it acts on the caller's own session, the one its token is. It
+/// answers only while that session is asked for a handoff: without `file` how
+/// to write it, the procedure included (facts.rs `how_to`); with one it hands
+/// off.
 pub(super) fn handoff_tool() -> Value {
     json!({
         "name": "luna_session_handoff",
-        "description": "Go on in a fresh conversation of this chat, from a handoff you wrote. Without file: how to write it, and where. With file (Markdown, absolute path): Luna copies it, waits for your turn to end, clears this conversation and opens the next with the file and the facts it knows (helpers, debts, accounts). Call it only when a notice from Luna asks this chat for a handoff (the person's request, or auto-handoff at its threshold); unasked it refuses. After a call with file, end your turn.",
+        "description": "Go on in a fresh conversation of this session from a handoff you write, once a notice from Luna asks for one; unasked it refuses. Without file: how to write it, and where. With file (Markdown, absolute path): Luna takes it and switches once your turn ends.",
         "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } }, "required": [] },
         "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false }
     })
