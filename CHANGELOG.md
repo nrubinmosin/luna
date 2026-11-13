@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-13
+
+Helpers can now lead: one spawned with Luna's tools works as a **lead**, with
+its own instructions, delegates of its own and auto-handoff at 60%, while its
+progress stops flooding the chat above it. Below your chats a session reaches
+only its own helpers. Background subagents of a helper are no longer stopped
+10 minutes after its turn, and docs/user-guide/context.md shows everything
+Luna adds to a model's context.
+
 ### Added
 
 - A handoff has a seventh section, **Skills to load first**: the skills the
@@ -1188,7 +1197,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/nrubinmosin/luna/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/nrubinmosin/luna/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/nrubinmosin/luna/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/nrubinmosin/luna/compare/v0.14.0...v0.15.0
