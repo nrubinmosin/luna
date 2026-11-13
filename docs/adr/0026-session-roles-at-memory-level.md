@@ -55,12 +55,13 @@ What each CLI allows, seen on the pinned versions:
   instructions first, in the account's place); its constraints, last, under
   a heading that lets them only narrow the session's other instructions,
   the stricter applying where they conflict: their text comes from an agent
-  that may have been prompt-injected (`library/role.rs`). Layers 2-4 go to Claude Code as
-  `hooks/<id>/CLAUDE.md` through `--add-dir`, written at every start and turn;
-  to Codex as `-c developer_instructions`, the stack's own value first
-  (`codex/config.rs` `developer_instructions_in`), held to 24 KB. A Codex
-  layer Luna cannot read, or a managed one that sets the key, is said in What
-  Luna applied and does not stop the start. `--append-system-prompt` is no
+  that may have been prompt-injected (`library/role.rs`). Layers 2-4 go to
+  Claude Code as `hooks/<id>/CLAUDE.md` through `--add-dir`, written at
+  every start and turn; to Codex as `-c developer_instructions`, the stack's
+  own value first (`codex/config.rs` `developer_instructions_in`), held to
+  24,576 characters of the command line as it goes there, TOML escapes and
+  Windows quoting in. A Codex layer Luna cannot read, or a managed one that
+  sets the key, is said in What Luna applied and does not stop the start. `--append-system-prompt` is no
   longer passed.
 - **Every behavioral text Luna gives a model is a system text** with Luna's
   default and one override for everyone in `<library>/system/<name>/`
@@ -90,8 +91,9 @@ What each CLI allows, seen on the pinned versions:
   session only after a compaction or a fresh thread. Accepted, and said where
   the person edits.
 - Luna resolves Codex's `developer_instructions` itself, as Codex merges its
-  stack; a layer it reads wrong is replaced silently. A value over 24 KB
-  refuses a helper's turn and starts a chat without its layers.
+  stack; a layer it reads wrong is replaced silently. A value over the cap
+  refuses a helper's turn and starts a chat without its layers; the Library
+  window names the entries that would push a Codex account past it.
 - An entry for some roles reaches no session started outside Luna. An old
   helpers-only entry leaves the accounts, and `chosen` may give an account
   another file; the pass reports both.

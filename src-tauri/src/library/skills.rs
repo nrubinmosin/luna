@@ -135,7 +135,9 @@ pub struct InstructionsInfo {
     pub name: String,
     /// Its first heading, to tell it by (`instructions_title`); empty without one.
     pub description: String,
-    /// Why it is laid out nowhere, while it is not fit to be.
+    /// Why it is laid out nowhere, while it is not fit to be; or, given per
+    /// session, why it is too long for some Codex sessions' command line
+    /// (role.rs `codex_overflows`).
     pub problem: Option<String>,
     /// The accounts its reach takes in; each gets it unless a closer reach
     /// gives it other instructions.

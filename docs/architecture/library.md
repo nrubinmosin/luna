@@ -170,8 +170,14 @@ no override and no entries for chats is started as before.
   file is a layer below the `-c` (docs/cli-compatibility.md). A
   managed layer, which comes above the `-c`, that sets the key, or a layer Luna
   cannot read, is said as `role.layers-unsure`; the session starts all the
-  same. The value is held to 24 KB (`CODEX_ROLE_MAX`): over it a helper's turn
-  is refused, a chat starts without its layers (`role.layers-off`). Codex sends
+  same. The `developer_instructions=` argument is held to 24,576 UTF-16 units of
+  the command line, measured as it goes there: TOML-escaped and quoted as
+  Windows quotes it (`CODEX_ROLE_MAX`, `command_line_units`), the rest of the
+  32,767 left to the executable and the other arguments. Over it a helper's turn
+  is refused, a chat starts without its layers (`role.layers-off`). The
+  overview marks every entry given per session that would, for some role on
+  some Codex account, with Luna's text for the role and the account's own
+  value, not fit (`codex_overflows`, shown as the entry's problem). Codex sends
   the value at a thread's start and after a compaction; `exec resume` and
   `codex resume` rebuild the context from the rollout, so a changed value
   reaches a running thread only then.

@@ -839,7 +839,7 @@ mod tests {
         let mut e = entry(Provider::Codex);
         e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
         let why = command_for(&e, "too-long").unwrap_err();
-        assert!(why.contains("not started") && why.contains("24 KB"), "{why}");
+        assert!(why.contains("not started") && why.contains("of its command line"), "{why}");
         // Claude Code reads them from a file: no command line to fit.
         let mut e = entry(Provider::Claude);
         e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
