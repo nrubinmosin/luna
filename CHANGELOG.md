@@ -13,6 +13,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Codex 0.169.0 is on the known-good list, so the default channel installs
   it.
 
+### Fixed
+
+- Settings → CLIs no longer offers **Use**, **Mark good** or **Roll back**
+  for an installed version below the oldest safe one, which Luna refuses to
+  run: such a version says "below the minimum safe version" instead.
+
 ## [0.18.1] - 2026-11-13
 
 Luna now installs Claude Code 2.1.323 and Codex 0.168.0, and no longer runs

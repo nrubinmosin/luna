@@ -43,6 +43,7 @@ const CLAUDE: CliVersionsDto = {
       previous: false,
       inUse: true,
       knownGood: false,
+      belowMinSafe: false,
       bad: null,
       good: null
     },
@@ -53,6 +54,7 @@ const CLAUDE: CliVersionsDto = {
       previous: true,
       inUse: true,
       knownGood: true,
+      belowMinSafe: false,
       bad: null,
       good: null
     },
@@ -63,12 +65,13 @@ const CLAUDE: CliVersionsDto = {
       previous: false,
       inUse: false,
       knownGood: false,
+      belowMinSafe: false,
       bad: 'hangs',
       good: null
     }
   ],
   knownGood: ['2.1.319'],
-  minSafe: '2.1.319',
+  minSafe: '2.1.250',
   floor: '2.1.340',
   pinned: null,
   bad: { '2.1.300': 'hangs', '2.1.200': 'failed the offline probe: x' },
@@ -88,6 +91,7 @@ const CODEX: CliVersionsDto = {
       previous: false,
       inUse: false,
       knownGood: true,
+      belowMinSafe: false,
       bad: null,
       good: null
     }
@@ -145,6 +149,22 @@ describe('ClisSection', () => {
       ['good', 'claude', '2.1.340'],
       ['clear', 'claude', '2.1.300']
     ]);
+  });
+
+  it('offers neither Use, Mark good nor a rollback for a version below the minimum', async () => {
+    const [current, previous] = CLAUDE.versions;
+    const old = { ...previous!, version: '2.1.240', dir: '2.1.240', knownGood: false, belowMinSafe: true };
+    act(() => useCli.setState({ versions: { claude: { ...CLAUDE, versions: [current!, old] }, codex: CODEX } }));
+    render(<ClisSection />);
+    const user = userEvent.setup();
+    expect(screen.queryByRole('button', { name: /^Roll back/ })).toBeNull();
+    expect(screen.getByText(/2\.1\.240, the one before, is below the minimum safe version/)).toBeInTheDocument();
+    const item = within(screen.getByRole('list', { name: 'Claude Code versions' })).getAllByRole('listitem')[1]!;
+    expect(within(item).getByText('below the minimum safe version (2.1.250)')).toBeInTheDocument();
+    expect(within(item).queryByRole('button', { name: 'Use' })).toBeNull();
+    expect(within(item).queryByRole('button', { name: 'Mark good' })).toBeNull();
+    await user.click(within(item).getByRole('button', { name: 'Mark bad' }));
+    expect(calls).toEqual([['bad', 'claude', '2.1.240']]);
   });
 
   it('keeps a mark on a version no longer installed within reach', async () => {
