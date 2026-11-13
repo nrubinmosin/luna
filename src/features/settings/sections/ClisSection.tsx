@@ -45,6 +45,9 @@ function tags(r: CliVersionRowDto, v: CliVersionsDto | null): string[] {
   ].filter((t): t is string => !!t);
 }
 
+/** Why a version left installed from before the minimum rose has no Use. */
+const BELOW_MIN = 'below the minimum safe version';
+
 const tagClass = (t: string) => `set-tag${t === 'bad' ? ' set-tag-bad' : t === 'current' ? ' set-tag-on' : ''}`;
 
 /** The marks on a version and how each is undone or made: a bad one is
@@ -76,7 +79,8 @@ function MarkButtons({
           Unmark good
         </button>
       ) : (
-        !row.knownGood && (
+        !row.knownGood &&
+        !row.belowMinSafe && (
           <button
             className="slim"
             disabled={busy}
@@ -123,11 +127,19 @@ function VersionItem({
             {row.bad}
           </span>
         )}
+        {row.belowMinSafe && (
+          <span className="set-cmd">
+            {BELOW_MIN}
+            {versions?.minSafe ? ` (${versions.minSafe})` : ''}
+          </span>
+        )}
       </span>
       <span className="set-item-actions">
-        <button className="slim" disabled={busy || row.current} onClick={onUse}>
-          Use
-        </button>
+        {!row.belowMinSafe && (
+          <button className="slim" disabled={busy || row.current} onClick={onUse}>
+            Use
+          </button>
+        )}
         <MarkButtons row={row} busy={busy} {...marks} />
       </span>
     </ListItem>
@@ -180,6 +192,8 @@ function CliGroup({ provider, about }: { provider: Provider; about?: About }) {
   const channel: CliChannel = v?.channel ?? s?.channel ?? 'knownGood';
   const current = v?.versions.find(r => r.current);
   const previous = v?.versions.find(r => r.previous);
+  // The one before, unless it is too old to run: then there is nothing to roll back to.
+  const rollback = previous?.belowMinSafe ? undefined : previous;
   const pinned = v?.pinned ? v.versions.find(r => r.dir === v.pinned) : undefined;
   const warning = canaryWarning(v);
   const installed = new Set(v?.versions.map(r => r.version));
@@ -205,17 +219,17 @@ function CliGroup({ provider, about }: { provider: Provider; about?: About }) {
       {warning && (
         <Row
           label={`${name} ${warning.version} may be broken`}
-          note={`${warning.failures.length} of the ${warning.watched} sessions started on it so far failed soon after starting. Running sessions keep their version either way.`}
+          note={`${warning.failures.length} of the ${warning.watched} sessions started on it so far failed soon after starting.${previous && !rollback ? ` ${previous.version}, the one before, is ${BELOW_MIN}, so there is none to roll back to.` : ''} Running sessions keep their version either way.`}
           warn
           control={
             <>
-              {previous && (
+              {rollback && (
                 <button
                   className="slim primary"
                   disabled={busy}
-                  onClick={() => act(() => cliUseVersion(provider, previous.dir))}
+                  onClick={() => act(() => cliUseVersion(provider, rollback.dir))}
                 >
-                  Roll back to {previous.version}
+                  Roll back to {rollback.version}
                 </button>
               )}
               <button className="slim" disabled={busy} onClick={() => act(() => cliCanaryDismiss(provider))}>
@@ -343,10 +357,11 @@ const ABOUT = {
       <p>
         The first sessions on a new version are watched: if two of the first three fail soon after starting, Luna says
         so here and in the status bar, and once all three are past their start with none failed, the version says so. It
-        never rolls back on its own. Use goes back to any installed version (the one before is always kept) once its
-        files match their checksums again, and holds there until you follow the channel again. Mark good lets the
-        known-good channel install an installed version this Luna does not list, Mark bad keeps any version out, and
-        Clear bad or Unmark good takes a mark back. Running sessions always keep the version they started with.
+        never rolls back on its own. Use goes back to any installed version not below the oldest safe one (the one
+        before is always kept) once its files match their checksums again, and holds there until you follow the channel
+        again. Mark good lets the known-good channel install an installed version this Luna does not list, Mark bad
+        keeps any version out, and Clear bad or Unmark good takes a mark back. Running sessions always keep the version
+        they started with.
       </p>
     </>
   )
