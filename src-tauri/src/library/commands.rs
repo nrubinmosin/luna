@@ -715,11 +715,39 @@ pub fn library_new_instructions(name: String) -> Result<Overview, String> {
         return Err(format!("The library already has instructions named {name}"));
     }
     dirs.write(&path, b"")?;
-    crate::settings::update(|s| {
-        s.library.instructions.remove(&name);
-        s.library.audience.instructions.remove(&name);
-    })?;
+    crate::settings::update(|s| forget_instructions(&mut s.library, &name))?;
     overview_locked(false)
+}
+
+/// What the settings keep of instructions `name` gone: its reach, its
+/// audience, and its being laid into accounts for the chats (`laid_out`),
+/// which only instructions an earlier Luna laid out carry; one made anew
+/// under the name inherits none of it.
+fn forget_instructions(lib: &mut LibrarySettings, name: &str) {
+    lib.instructions.remove(name);
+    lib.audience.instructions.remove(name);
+    lib.laid_out.remove(name);
+}
+
+/// Instructions `from` renamed `to` in the settings: their reach, audience
+/// and `laid_out` move with them, or the next pass would take for per session
+/// what is laid into accounts and remove its copies; the folders that gave
+/// them give them under the new name.
+fn rename_instructions(lib: &mut LibrarySettings, from: &str, to: &str) {
+    if let Some(reach) = lib.instructions.remove(from) {
+        lib.instructions.insert(to.to_string(), reach);
+    }
+    if let Some(audience) = lib.audience.instructions.remove(from) {
+        lib.audience.instructions.insert(to.to_string(), audience);
+    }
+    if lib.laid_out.remove(from) {
+        lib.laid_out.insert(to.to_string());
+    }
+    for choice in lib.folders.iter_mut().flat_map(|f| f.instructions.values_mut()) {
+        if choice.as_deref() == Some(from) {
+            *choice = Some(to.to_string());
+        }
+    }
 }
 
 /// Renames instructions, their reach with them. Their copies stay as they
@@ -741,19 +769,7 @@ pub fn library_rename_instructions(from: String, to: String) -> Result<Overview,
     std::fs::rename(&old, &new).map_err(|e| format!("{}: {e}", old.display()))?;
     // The file and its reach move together or not at all: the file renamed
     // without its reach would take every one of its copies out.
-    let moved = crate::settings::update(|s| {
-        if let Some(reach) = s.library.instructions.remove(&from) {
-            s.library.instructions.insert(to.clone(), reach);
-        }
-        if let Some(audience) = s.library.audience.instructions.remove(&from) {
-            s.library.audience.instructions.insert(to.clone(), audience);
-        }
-        for choice in s.library.folders.iter_mut().flat_map(|f| f.instructions.values_mut()) {
-            if choice.as_deref() == Some(from.as_str()) {
-                *choice = Some(to.clone());
-            }
-        }
-    });
+    let moved = crate::settings::update(|s| rename_instructions(&mut s.library, &from, &to));
     if let Err(e) = moved {
         let _ = std::fs::rename(&new, &old);
         return Err(e);
@@ -776,8 +792,7 @@ pub fn library_delete_instructions(name: String) -> Result<Overview, String> {
         std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     crate::settings::update(|s| {
-        s.library.instructions.remove(&name);
-        s.library.audience.instructions.remove(&name);
+        forget_instructions(&mut s.library, &name);
         // A folder that gave them goes by what holds outside it again.
         for f in &mut s.library.folders {
             f.instructions.retain(|_, choice| choice.as_deref() != Some(name.as_str()));
@@ -813,6 +828,34 @@ pub fn library_open(skill: Option<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chats' instructions an earlier Luna laid into accounts, read as this
+    /// one migrates them, then renamed: they stay laid out, worded, in a
+    /// Claude Code and a Codex account alike; deleted, they are not laid out
+    /// for whatever takes the name next.
+    #[test]
+    fn instructions_laid_out_before_stay_laid_out_through_a_rename() {
+        let f = Fixture::new("laid-out-rename");
+        f.instructions("main", "Speak Russian to me.\n");
+        let old: crate::settings::Settings =
+            serde_json::from_str(r#"{"library": {"instructions": true, "audience": {"instructions": {"main": "chats"}}}}"#).unwrap();
+        let mut lib = old.library;
+        assert!(lib.laid_out.contains("main"), "migrated as laid out");
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let worded =
+            |i: usize, file: &str| f.read(i, file).ends_with("Speak Russian to me.\n") && f.read(i, file).starts_with("> For chats");
+        assert!(worded(0, "CLAUDE.md") && worded(1, "AGENTS.md"), "laid into both providers' accounts");
+
+        std::fs::rename(f.dirs.instructions_file("main"), f.dirs.instructions_file("russian")).unwrap();
+        rename_instructions(&mut lib, "main", "russian");
+        assert!(lib.laid_out.contains("russian") && !lib.laid_out.contains("main"));
+        let p = f.run(&lib, &mut ledger, true);
+        assert!(worded(0, "CLAUDE.md") && worded(1, "AGENTS.md"), "still in both accounts: {:?}", p.places);
+
+        forget_instructions(&mut lib, "russian");
+        assert!(lib.laid_out.is_empty(), "nothing left for a new entry of the name to inherit");
+    }
 
     /// With no lock to be had — a folder where the lock file goes, which opens
     /// on neither Windows nor Unix — every change is refused with nothing
