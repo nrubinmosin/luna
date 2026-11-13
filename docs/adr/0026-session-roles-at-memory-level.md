@@ -52,8 +52,10 @@ What each CLI allows, seen on the pinned versions:
   `-c skills.config`).
 - **Four layers** per session, in order: the account's file; Luna's default
   for its role; the library's entries for its role (a Claude Code folder's
-  instructions first, in the account's place); its constraints, last so they
-  bind most (`library/role.rs`). Layers 2-4 go to Claude Code as
+  instructions first, in the account's place); its constraints, last, under
+  a heading that lets them only narrow the session's other instructions,
+  the stricter applying where they conflict: their text comes from an agent
+  that may have been prompt-injected (`library/role.rs`). Layers 2-4 go to Claude Code as
   `hooks/<id>/CLAUDE.md` through `--add-dir`, written at every start and turn;
   to Codex as `-c developer_instructions`, the stack's own value first
   (`codex/config.rs` `developer_instructions_in`), held to 24 KB. A Codex

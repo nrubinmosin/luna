@@ -82,7 +82,9 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   16 KB per chain. The chain goes on the helper's `Spec` and into its registry
   settings as `"constraints"` (kept across starts, `CORE_SETTINGS`; shown by
   `luna_session_get`), never changes after the spawn, and is the last of its
-  role layers at every turn. Taken over as the person's chat, a session drops
+  role layers at every turn, under a heading that lets it only narrow the
+  session's other instructions (the stricter applies where they conflict:
+  an injected lead's text must not loosen its descendants' rules). Taken over as the person's chat, a session drops
   it with the other helper settings (`HELPER_SETTINGS`). Text, not
   enforcement: privilege is still the mode's (ADR-0007).
 - The instruction says the CLIs' own subagents cannot use another provider or
