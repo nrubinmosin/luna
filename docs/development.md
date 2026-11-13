@@ -121,7 +121,9 @@ small screen is shot as it is seen: a 1280×720 screen at 150% is
 ## Fit on small screens
 
 `./scripts/fit-check.ps1` serves the same demo in the same image and drives
-headless Chromium over its DevTools protocol (`scripts/fit-check.mjs`). It
+headless Chromium over its DevTools protocol (`scripts/fit-check.mjs`; the
+steps it takes in the page are `scripts/fit-check-page.mjs`, which ESLint
+lints with the browser's globals and the rest with Node's). It
 opens every scene of `src/dev/demo/scenes.ts` (the `-dark` twins left out:
 the theme changes no size) and the popups that only a click opens (its
 `EXTRAS`: the account list, the library's pickers, the link chooser, a chat's
