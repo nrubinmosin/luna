@@ -80,6 +80,23 @@ pub(super) struct Owed {
     /// moved since, a new one has the same baseline and cursor as the old, and
     /// what was decided about the old is not to touch it.
     pub(super) rev: u64,
+    /// The asks this debt took in after debt `Since::rev` stood, which a notice
+    /// may be telling of as they come (`owe`): once that one is told, these
+    /// are all that is left of it (`told_before`).
+    pub(super) since: Option<Since>,
+}
+
+/// What a debt owes of its own past an earlier one it took in (`Owed::since`):
+/// from the first ask after that one's, and whether every such ask wanted no
+/// reply.
+#[derive(Clone, Copy)]
+pub(super) struct Since {
+    rev: u64,
+    baseline: u32,
+    cursor: u64,
+    no_reply: bool,
+    /// The last of the caller's requests the earlier debt covered.
+    upto: u32,
 }
 
 fn next_rev() -> u64 {
@@ -110,6 +127,7 @@ impl Owed {
             told_background_wait: None,
             no_reply: false,
             by_send: false,
+            since: None,
         }
     }
 
@@ -378,16 +396,26 @@ fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64
     }
     let key = (caller.to_string(), id.to_string());
     let before = r.owed.get(&key).copied();
+    let asked_from = cursor;
     // A new turn answers this one; that the last was cut short has yet to be
     // said all the same.
     let (cursor, resumed) = before.map_or((cursor, false), |o| (o.cursor.min(cursor), o.resumed || o.cut_short));
     // Asked for a reply once, a debt wants one.
-    let no_reply = asked.is_some_and(|a| !a.reply) && before.is_none_or(|o| o.no_reply);
+    let own_no_reply = asked.is_some_and(|a| !a.reply);
+    let no_reply = own_no_reply && before.is_none_or(|o| o.no_reply);
     // Text can miss its turn before the send that placed it gets here (`retried`).
     let floor = r.delivery_floors.get(&key).copied().unwrap_or(0);
     // Only a send to a helper's queue comes with a count of handovers.
     let by_send = handovers.is_some();
-    r.owed.insert(key.clone(), Owed { resumed, no_reply, by_send, ..Owed::from(baseline.max(floor), cursor) });
+    // The debt before may be told this very moment, by a notice that settles
+    // it only as it was (notifier `settle_told`): what this ask owes of its own
+    // is kept, to be all that is left once that one is told.
+    let made = r.requests.get(&key).map_or(0, |q| q.made);
+    let since = before.map(|o| match o.since {
+        Some(s) => Since { no_reply: s.no_reply && own_no_reply, ..s },
+        None => Since { rev: o.rev, baseline: baseline.max(floor), cursor: asked_from, no_reply: own_no_reply, upto: made },
+    });
+    r.owed.insert(key.clone(), Owed { resumed, no_reply, by_send, since, ..Owed::from(baseline.max(floor), cursor) });
     let requests = r.requests.entry(key).or_default();
     // A debt of its own: what earlier ones covered has been answered.
     if before.is_none() {
@@ -401,6 +429,20 @@ fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64
     // A spawn's or a question's: a core killed now must not forget either.
     crate::background::save();
     true
+}
+
+/// A notice told `caller`'s debt `told` (by `rev`) as it was after another ask
+/// had taken it in (`Owed::since`): the debt is that ask's alone now, from
+/// where it was asked and wanting a reply only if it did, its requests those
+/// asked since. The same debt still (`rev`): what was decided about it holds. A "no reply" send that crossed a notice in flight otherwise
+/// had its answer told as one to both, the first told again.
+pub(super) fn told_before(r: &mut Registry, key: &(String, String), told: u64) {
+    let Some(now) = r.owed.get(key).copied() else { return };
+    let Some(s) = now.since.filter(|s| s.rev == told) else { return };
+    r.owed.insert(key.clone(), Owed { rev: now.rev, no_reply: s.no_reply, by_send: now.by_send, ..Owed::from(s.baseline, s.cursor) });
+    if let Some(q) = r.requests.get_mut(key) {
+        q.open.retain(|q| q.n > s.upto);
+    }
 }
 
 /// The last count `caller` was shown for `id`, if any.
