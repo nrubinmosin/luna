@@ -178,7 +178,8 @@ up by itself, its helpers carrying on. It does so only when it is asked:
   its tooltip saying why, where the chat could not answer: no Luna tools,
   Claude Code's plan mode or Codex's read-only sandbox, a handoff or a move
   of the chat under way, or an ask of yours already open. The core may still refuse
-  (the CLI's own jobs running, its CLI not running); its reason then shows in
+  (the CLI's own jobs running, its CLI not running, Claude Code's don't-ask
+  mode, which a helper you took over may run in); its reason then shows in
   a strip over the pane, × to dismiss. Luna types the request only once the
   chat stands at its prompt, with nothing in its composer. The chip on the
   title bar reads **handoff asked** (or **· asked** beside a threshold), and
@@ -236,7 +237,7 @@ menu, so words injected into the chat cannot hand it off on their own.
   that folder private as the chat started, it gives and names none, and the
   chat writes the file outside Luna's folder, in its own workspace; the
   `handoff-tool` line of What Luna applied says why. Under Codex's read-only
-  sandbox, or in Claude Code's plan mode, it can write no file at all, and the
+  sandbox, or in Claude Code's plan or don't-ask mode, it can write no file at all, and the
   tool's answer tells it so: you write the file, or give the chat a sandbox
   that writes.
 - The chat calls `luna_session_handoff` with the file. Luna copies
@@ -318,7 +319,7 @@ defaults). It goes on from a document, chosen under **The document**:
   instructions in effect (yours from the library, if you have them) under the
   move's own rules. Nothing is cleared in it. Claude Code in its default mode
   asks you in its pane before it creates the file. Not offered, and why said
-  beside it, for a chat without Luna tools, in plan mode or a read-only
+  beside it, for a chat without Luna tools, in plan or don't-ask mode or a read-only
   sandbox, not running, or stopped on a usage limit; a chat whose CLI started
   before it was listed the tool is to be resumed first.
 - **Luna builds it from the chat's records**, with no model asked: how to go

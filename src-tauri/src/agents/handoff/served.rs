@@ -154,7 +154,9 @@ pub(super) fn new_draft(drafts: &Path) -> Result<std::path::PathBuf, String> {
 
 /// Why a chat run with `settings` can write no file, its handoff included:
 /// Codex's read-only sandboxes write nowhere (an `--add-dir` is ignored under
-/// them), and Claude Code's plan mode edits nothing.
+/// them), Claude Code's plan mode edits nothing, and its dontAsk refuses
+/// what no allow rule lets through, Luna giving none for the drafts folder
+/// (a helper taken over as a chat keeps the mode it ran in).
 pub(super) fn unwritable(settings: &Value) -> Option<&'static str> {
     match (settings["sandbox"].as_str(), settings["permissionMode"].as_str()) {
         (Some("read-only" | "read-only-net"), _) => Some(
@@ -162,6 +164,9 @@ pub(super) fn unwritable(settings: &Value) -> Option<&'static str> {
              write it there, or to start the chat with a sandbox that writes (workspace-write).",
         ),
         (_, Some("plan")) => Some("In plan mode Claude Code writes no file: leave plan mode first, or ask the person to."),
+        (_, Some("dontAsk")) => Some(
+            "In don't-ask mode Claude Code refuses any write no allow rule lets through, this file included: ask the person to              switch the chat to a mode that writes, or to start it again in one.",
+        ),
         _ => None,
     }
 }
@@ -271,6 +276,7 @@ mod tests {
             assert!(said(serde_json::json!({ "sandbox": sandbox })).is_some_and(|w| w.contains("read-only sandbox")), "{sandbox}");
         }
         assert!(said(serde_json::json!({ "permissionMode": "plan" })).is_some_and(|w| w.contains("plan mode")));
+        assert!(said(serde_json::json!({ "permissionMode": "dontAsk" })).is_some_and(|w| w.contains("don't-ask mode")));
         for writes in [serde_json::json!({ "sandbox": "workspace-write" }), serde_json::json!({ "permissionMode": "acceptEdits" })] {
             assert_eq!(said(writes), None);
         }

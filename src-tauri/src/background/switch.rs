@@ -34,8 +34,8 @@ pub struct LeadView {
     /// Nothing says an earlier core's turn ended (`Entry::unsure`).
     pub unsure: bool,
     pub turns_ended: u32,
-    /// It can write no file: Claude Code without its edit tools or in plan
-    /// mode, Codex in a sandbox that writes nothing.
+    /// It can write no file: Claude Code without its edit tools, in plan
+    /// mode or in dontAsk, Codex in a sandbox that writes nothing.
     pub unwritable: bool,
 }
 
@@ -71,9 +71,14 @@ pub fn lead_view(id: &str) -> Option<LeadView> {
 }
 
 /// Whether a helper run with `s` can write no file, its handoff included.
+/// Claude Code's dontAsk refuses what no allow rule lets through, and Luna
+/// gives none for the drafts folder: its Write there is refused unasked.
+/// Auto leaves the write to its reviewer, which may let it through: it is
+/// asked, and where the write is refused the firm ask goes unanswered and
+/// Luna writes the handoff (lead.rs `unanswered`), as for any lead.
 pub(super) fn unwritable(s: &Spec) -> bool {
     match s.provider {
-        Provider::Claude => s.read_only || s.mode == "plan",
+        Provider::Claude => s.read_only || s.mode == "plan" || s.mode == "dontAsk",
         Provider::Codex => !s.auto_review && !crate::codex::launch::writes_files(&s.mode),
     }
 }
@@ -162,12 +167,17 @@ pub fn begin_fresh(id: &str, n: u32, opening: String, previous: Option<String>) 
 }
 
 /// The turn on `text`, on the run claimed for it. A test starts no CLI: the
-/// claim stays, with the text as its batch, as a turn just begun has it.
+/// claim stays, with the text as its batch, as a turn just begun has it;
+/// unless its folder is not there, where no spawn gets far and the turn fails
+/// as `run_turn` has one fail.
 fn start_turn(id: &str, text: &str) -> Result<(), String> {
     #[cfg(not(test))]
     return run_turn(id, text);
     #[cfg(test)]
     {
+        if lock().entries.get(id).is_some_and(|e| !std::path::Path::new(&e.spec.folder).is_dir()) {
+            return run_turn(id, text);
+        }
         if let Some(e) = lock().entries.get_mut(id).filter(|e| e.in_flight.is_empty()) {
             e.in_flight.push(Queued::new(None, text.to_string(), Vec::new()));
         }
@@ -311,6 +321,12 @@ pub fn name_for_test(id: &str, session: &str) {
 #[cfg(test)]
 pub fn read_only_for_test(id: &str) {
     lock().entries.get_mut(id).unwrap().spec.read_only = true;
+}
+
+/// Run in permission mode or sandbox `mode`.
+#[cfg(test)]
+pub fn mode_for_test(id: &str, mode: &str) {
+    lock().entries.get_mut(id).unwrap().spec.mode = mode.into();
 }
 
 /// What a test's lead is, for its assertions: its conversation, its run
@@ -477,6 +493,50 @@ mod tests {
         lock().entries.remove("sw-revert");
     }
 
+    /// A fresh start that cannot start keeps what was sent meanwhile: none of
+    /// it dropped with the turn, nor started on no conversation; once the
+    /// switch is given up it goes in on the conversation the lead went back to.
+    #[test]
+    fn a_fresh_start_that_fails_keeps_what_was_sent_meanwhile() {
+        let mut e = entry(Provider::Claude);
+        e.spec.tools = true;
+        // No spawn gets far: the folder is not there (or, run as root in a
+        // container, Luna's guard refuses first), and the start fails as
+        // `run_turn` has one fail.
+        e.spec.folder = "C:\\luna-no-such-folder".into();
+        e.session = Some("old".into());
+        e.switch = Some(a_switch(8, LeadPhase::Scheduled));
+        e.run = Some(Run::claimed(None, 0));
+        assert_eq!(place(&mut e, "from its parent".into(), true), Placed::Queued);
+        e.run = None;
+        let ended = e.turns_ended;
+        lock().entries.insert("sw-fail".into(), e);
+
+        assert!(begin_fresh("sw-fail", 8, "the opening".into(), None).is_err());
+        {
+            let r = lock();
+            let e = &r.entries["sw-fail"];
+            assert_eq!(e.queue, ["from its parent"], "kept for the conversation after the switch");
+            assert!(e.run.is_none() && e.session.is_none(), "nothing started on no conversation");
+            assert_eq!(e.turns_ended, ended + 1, "the start that failed, and no turn after it");
+            assert!(!e.log.iter().any(|l| l.contains("dropped")), "{:?}", e.log);
+        }
+
+        assert_eq!(revert_switch("sw-fail", 8).map(|s| s.n), Some(8));
+        let e = lock().entries.remove("sw-fail").unwrap();
+        assert!(e.queue.is_empty() && e.in_flight.is_empty() && e.undelivered.is_empty());
+        let back = e.log.iter().position(|l| l.contains("back on the conversation it left")).expect("given up");
+        assert!(
+            e.log.iter().skip(back).any(|l| l.starts_with("could not start the turn")),
+            "what waited went in on the old conversation, here to fail as its folder is gone: {:?}",
+            e.log
+        );
+        assert_eq!((e.session.as_deref(), e.turns_ended), (Some("old"), ended + 2));
+        if let Ok(dir) = crate::agents::handoff::dir_of("sw-fail") {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
     #[test]
     fn a_lead_that_writes_no_file_is_told_from_one_that_does() {
         let mut s = entry(Provider::Claude).spec;
@@ -485,8 +545,10 @@ mod tests {
         s.read_only = true;
         assert!(unwritable(&s));
         s.read_only = false;
-        s.mode = "plan".into();
-        assert!(unwritable(&s));
+        for (mode, none) in [("plan", true), ("dontAsk", true), ("auto", false), ("acceptEdits", false), ("bypassPermissions", false)] {
+            s.mode = mode.into();
+            assert_eq!(unwritable(&s), none, "{mode}");
+        }
         let mut s = entry(Provider::Codex).spec;
         for (mode, none) in [("read-only", true), ("read-only-net", true), ("workspace-write", false), ("danger-full-access", false)] {
             s.mode = mode.into();

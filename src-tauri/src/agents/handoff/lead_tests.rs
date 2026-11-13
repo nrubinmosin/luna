@@ -415,6 +415,91 @@ fn a_lead_that_writes_no_file_goes_on_from_lunas_document() {
     let batch = crate::background::lead_for_test("ld-ro").2;
     assert!(batch[0].contains("Luna wrote a handoff of the one before it from its records"), "{}", batch[0]);
     gone("ld-ro");
+
+    // Claude Code's dontAsk refuses its Write unasked: no allow rule names
+    // the drafts folder.
+    lead("ld-dontask", Some(70));
+    on(60);
+    crate::background::mode_for_test("ld-dontask", "dontAsk");
+    lead_turn_ended("ld-dontask");
+    assert!(asked("ld-dontask").is_none(), "not asked");
+    assert!(crate::background::switch_of("ld-dontask").is_some_and(|s| s.from_records && s.phase == LeadPhase::Fresh));
+    gone("ld-dontask");
+}
+
+/// A Codex lead on thread `thread`, its rollout in its account folder at
+/// `pct` of its context, as `lead` makes a Claude Code one.
+fn codex_lead(id: &str, thread: &str, pct: u64) {
+    let dir = lead(id, None);
+    let at = dir.to_string_lossy().into_owned();
+    register(id, Provider::Codex, &at, &at, Some(PARENT), true, json!({ "model": "gpt-5.5" }));
+    crate::background::test_lead(id, Provider::Codex, &at, Some(thread), None);
+    let day = dir.join("sessions").join("2026").join("11").join("13");
+    std::fs::create_dir_all(&day).unwrap();
+    let window = 258_400;
+    let tokens = window * pct / 100;
+    let line = json!({ "timestamp": "t", "type": "event_msg", "payload": { "type": "token_count", "info": {
+        "total_token_usage": { "total_tokens": tokens }, "last_token_usage": { "input_tokens": tokens, "total_tokens": tokens },
+        "model_context_window": window } } });
+    std::fs::write(day.join(format!("rollout-2026-11-13T10-00-00-{thread}.jsonl")), format!("{line}\n")).unwrap();
+}
+
+/// A lead asked firmly that ends the turn it was asked in without a handoff,
+/// on either CLI (its write refused unasked, by its mode or a reviewer), is
+/// not left to run on to its CLI's compaction: Luna writes its handoff from
+/// its records and starts the fresh conversation on it, the ask closed.
+#[test]
+fn a_firm_ask_left_unanswered_goes_on_from_lunas_document() {
+    for provider in [Provider::Claude, Provider::Codex] {
+        let id = format!("ld-firm-{}", provider.as_str());
+        let session = match provider {
+            Provider::Claude => {
+                lead(&id, Some(90));
+                "old".to_string()
+            }
+            Provider::Codex => {
+                let thread = format!("{id}-thread");
+                codex_lead(&id, &thread, 90);
+                thread
+            }
+        };
+        on(60);
+        lead_turn_ended(&id);
+        let a = asked(&id).unwrap_or_else(|| panic!("{id}: asked"));
+        assert_eq!(a.conversation.as_deref(), Some(session.as_str()), "{id}");
+        let batch = crate::background::lead_for_test(&id).2;
+        assert!(batch.iter().any(|t| t.starts_with(crate::agents::NOTICE_TAG)), "{id}: the firm ask is its turn: {batch:?}");
+        // Its turn ends with no call: nothing scheduled.
+        crate::background::lead_turn_over_for_test(&id, &[], None);
+        lead_turn_ended(&id);
+        let s = crate::background::switch_of(&id).unwrap_or_else(|| panic!("{id}: switched from records"));
+        assert!(s.from_records && s.phase == LeadPhase::Fresh, "{id}: {s:?}");
+        assert!(asked(&id).is_none(), "{id}: the ask closed");
+        let batch = crate::background::lead_for_test(&id).2;
+        assert!(batch[0].contains("Luna wrote a handoff of the one before it from its records"), "{id}: {}", batch[0]);
+        gone(&id);
+    }
+}
+
+/// A firm ask whose handoff was given up since (something its turns left
+/// still running as the switch was to start) stays the lead's to answer:
+/// Luna does not write it over it.
+#[test]
+fn a_firm_ask_answered_and_given_up_is_not_taken_over() {
+    lead("ld-firm-given", Some(90));
+    on(60);
+    lead_turn_ended("ld-firm-given");
+    assert!(asked("ld-firm-given").is_some());
+    scheduled("ld-firm-given", 1);
+    crate::background::lead_turn_over_for_test("ld-firm-given", &[], Some(crate::background::STOPPED_BY_STOP));
+    lead_turn_ended("ld-firm-given");
+    assert!(crate::background::switch_of("ld-firm-given").is_none(), "given up before its start");
+    assert!(asked("ld-firm-given").is_some(), "the ask stays open");
+    // The notice that it was given up is its next turn; that one ends too.
+    crate::background::lead_turn_over_for_test("ld-firm-given", &[], None);
+    lead_turn_ended("ld-firm-given");
+    assert!(crate::background::switch_of("ld-firm-given").is_none(), "not written over its own");
+    gone("ld-firm-given");
 }
 
 /// The parent's line rides: kept per parent, one lead's again in its place,
