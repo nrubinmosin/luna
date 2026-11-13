@@ -120,7 +120,11 @@ fn moved_to(id: &str, was: &std::path::Path, now: &std::path::Path) -> u64 {
     let mut moved = 0;
     for ((_, of), o) in r.owed.iter_mut() {
         if of == id {
+            // Every offset of the debt's, its hold's and what it took in
+            // after a notice's alike (owed.rs `Owed::held_to`, `Owed::since`).
             o.cursor = from;
+            o.held_to = o.held_to.map(|_| from);
+            o.rebase_since(from);
             moved += 1;
         }
     }
@@ -498,6 +502,35 @@ mod tests {
     use crate::agents::owed::owe_from;
     use crate::agents::registry::{reg, register, session_exited};
     use crate::agents::teardown::forget;
+
+    /// A session gone on in another transcript: every offset its debts keep
+    /// is into the last one, the hold of a lead's words and what an ask took
+    /// in after a notice's debt as much as the cursor. Left as they were, a
+    /// lead that answered in the fresh one reads as quiet since its hold.
+    #[test]
+    fn a_move_to_another_transcript_rebases_every_offset_a_debt_keeps() {
+        use crate::agents::owed::{owe_asked, told_before, Asked};
+        let (caller, id) = ("mv-caller", "mv-helper");
+        let dir = std::env::temp_dir().join(format!("luna-moved-to-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (was, now) = (dir.join("was.jsonl"), dir.join("now.jsonl"));
+        std::fs::write(&was, "x".repeat(50_000)).unwrap();
+        std::fs::write(&now, "y".repeat(100)).unwrap();
+        let key = (caller.to_string(), id.to_string());
+        owe_asked(caller, id, 0, 10_000, &Asked { text: "Run it", key: None, reply: true });
+        let first = reg().lock().unwrap().owed[&key].rev;
+        owe_asked(caller, id, 1, 40_000, &Asked { text: "And this", key: None, reply: true });
+        reg().lock().unwrap().owed.get_mut(&key).unwrap().held_to = Some(45_000);
+        let from = moved_to(id, &was, &now);
+        let o = reg().lock().unwrap().owed[&key];
+        assert!(o.cursor == from && o.held_to == Some(from), "{} {:?} {from}", o.cursor, o.held_to);
+        told_before(&mut reg().lock().unwrap(), &key, first);
+        assert_eq!(reg().lock().unwrap().owed[&key].cursor, from, "what came after the first, read in the new one");
+        reg().lock().unwrap().owed.remove(&key);
+        forget(id);
+        forget(caller);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// `luna_report_get` reads as a read does: the reader's cursor, never past a
     /// line still being written; a long report cut at MAX_TEXT; an explicit

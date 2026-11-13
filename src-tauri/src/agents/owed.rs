@@ -85,19 +85,24 @@ pub(super) struct Owed {
     /// wrote up to there waits in its report, and is no word on their end
     /// (lines.rs `wake_lead`).
     pub(super) held_to: Option<u64>,
-    /// The asks this debt took in after debt `Since::rev` stood, which a notice
-    /// may be telling of as they come (`owe`): once that one is told, these
-    /// are all that is left of it (`told_before`).
-    pub(super) since: Option<Since>,
+    /// For each of the debts this one took in, the last `SINCE_KEPT`, oldest
+    /// first: the asks that came after that debt stood (`Since::rev`), which a
+    /// notice built on it may be telling of as they come (`owe`). Once that
+    /// one is told, these are all that is left of it (`told_before`).
+    pub(super) since: [Option<Since>; SINCE_KEPT],
 }
 
+/// The debts taken in that `Owed::since` keeps what came after: a notice is
+/// built on the debt as it stands, and asks merging in while it goes in take
+/// seconds each.
+pub(super) const SINCE_KEPT: usize = 4;
+
 /// What a debt owes of its own past an earlier one it took in (`Owed::since`):
-/// from the first ask after that one's, and whether every such ask wanted no
-/// reply.
+/// from where the first ask after that one's was asked, and whether every
+/// such ask wanted no reply.
 #[derive(Clone, Copy)]
 pub(super) struct Since {
     rev: u64,
-    baseline: u32,
     cursor: u64,
     no_reply: bool,
     /// The last of the caller's requests the earlier debt covered.
@@ -133,7 +138,15 @@ impl Owed {
             no_reply: false,
             by_send: false,
             held_to: None,
-            since: None,
+            since: [None; SINCE_KEPT],
+        }
+    }
+
+    /// The session went on in another transcript (read.rs `moved_to`): what
+    /// came after each debt taken in is read there from `from`.
+    pub(super) fn rebase_since(&mut self, from: u64) {
+        for s in self.since.iter_mut().flatten() {
+            s.cursor = from;
         }
     }
 
@@ -416,11 +429,19 @@ fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64
     // The debt before may be told this very moment, by a notice that settles
     // it only as it was (notifier `settle_told`): what this ask owes of its own
     // is kept, to be all that is left once that one is told.
+    // Whichever of the debts before that notice is of: the one standing now,
+    // or one it took in.
     let made = r.requests.get(&key).map_or(0, |q| q.made);
-    let since = before.map(|o| match o.since {
-        Some(s) => Since { no_reply: s.no_reply && own_no_reply, ..s },
-        None => Since { rev: o.rev, baseline: baseline.max(floor), cursor: asked_from, no_reply: own_no_reply, upto: made },
-    });
+    let mut since = [None; SINCE_KEPT];
+    if let Some(o) = before {
+        let mine = Since { rev: o.rev, cursor: asked_from, no_reply: own_no_reply, upto: made };
+        let mut kept: Vec<Since> = o.since.iter().flatten().map(|s| Since { no_reply: s.no_reply && own_no_reply, ..*s }).collect();
+        kept.push(mine);
+        let over = kept.len().saturating_sub(SINCE_KEPT);
+        for (slot, s) in since.iter_mut().zip(kept.into_iter().skip(over)) {
+            *slot = Some(s);
+        }
+    }
     r.owed.insert(key.clone(), Owed { resumed, no_reply, by_send, since, ..Owed::from(baseline.max(floor), cursor) });
     let requests = r.requests.entry(key).or_default();
     // A debt of its own: what earlier ones covered has been answered.
@@ -437,15 +458,20 @@ fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64
     true
 }
 
-/// A notice told `caller`'s debt `told` (by `rev`) as it was after another ask
-/// had taken it in (`Owed::since`): the debt is that ask's alone now, from
-/// where it was asked and wanting a reply only if it did, its requests those
-/// asked since. The same debt still (`rev`): what was decided about it holds. A "no reply" send that crossed a notice in flight otherwise
-/// had its answer told as one to both, the first told again.
+/// A notice told `caller`'s debt `told` (by `rev`) as it was before other asks
+/// took it in (`Owed::since`): the debt is theirs alone now, read from where
+/// the first of them was asked and wanting a reply only if one did, its
+/// requests those asked since. The rest is the debt as it stands, its
+/// baseline the last ask's, as any merged debt's is, and its `rev`: what was
+/// decided about it since holds (`queued`, `late`, `unsure`, `cut_short`). A
+/// hold was of the answer to them all, and goes. A "no reply" send that
+/// crossed a notice in flight otherwise had its answer told as one to all,
+/// the first told again.
 pub(super) fn told_before(r: &mut Registry, key: &(String, String), told: u64) {
     let Some(now) = r.owed.get(key).copied() else { return };
-    let Some(s) = now.since.filter(|s| s.rev == told) else { return };
-    r.owed.insert(key.clone(), Owed { rev: now.rev, no_reply: s.no_reply, by_send: now.by_send, ..Owed::from(s.baseline, s.cursor) });
+    let Some(s) = now.since.iter().flatten().find(|s| s.rev == told).copied() else { return };
+    let left = Owed { cursor: s.cursor, no_reply: s.no_reply, since: [None; SINCE_KEPT], held: None, ..now };
+    r.owed.insert(key.clone(), left);
     if let Some(q) = r.requests.get_mut(key) {
         q.open.retain(|q| q.n > s.upto);
     }

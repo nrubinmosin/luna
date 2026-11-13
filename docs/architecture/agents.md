@@ -500,10 +500,15 @@ turn, stopped on a prompt (once per stop) or exited.
   caller only with a status word or a message of 400 characters or more;
   otherwise the debt settles with no notice (`Settled::Unasked`). A send that
   takes in a debt a notice may be telling of as it comes keeps what it owes
-  of its own (`Owed::since`): once that notice settles the debt it was put
-  together on, what is left is the send's alone, from where it was asked,
-  with its own `no_reply` and requests (owed.rs `told_before`), so the first
-  answer is not told again.
+  of its own past each debt it took in, the last four (`Owed::since`, by
+  `rev`): once that notice settles the debt it was put together on, whichever
+  that was, what is left is what came after it alone, from where the first
+  ask after it was asked, wanting a reply only if one of them did, with their
+  requests (owed.rs `told_before`), so an earlier answer is not told again.
+  The rest is the debt as it stands: the last ask's baseline and what was
+  decided of it (`queued`, `late`, `unsure`, `cut_short`). A session gone on
+  in another transcript has every offset its debts keep moved there
+  (read.rs `moved_to`: the cursor, `held_to` and each `since`'s).
 - **The breaker.** Past 12 turn-end notices in 15 minutes for one (caller,
   session) pair (`BREAKER_NOTICES`), that pair's turn and job news stops: the
   last notice says so, the log warns, the desktop is told once, and a person

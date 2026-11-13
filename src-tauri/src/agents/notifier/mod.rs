@@ -1625,6 +1625,62 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// The same race a debt later: two requests merged before the notice
+    /// was put together, so it tells of their debt, not the first one's. A
+    /// third, wanting no reply, crosses it in flight; once it settles, what is
+    /// left is the third's alone, from where it was asked and past the turns
+    /// counted as it was, with what was decided of it as it came (`queued`).
+    #[test]
+    fn a_no_reply_send_crossing_a_notice_of_two_merged_requests_repeats_neither() {
+        use crate::agents::owed::{owe_asked, requests_of, Asked};
+        let (a, id) = ("nx2-caller", "nx2-helper");
+        register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, serde_json::json!({ "background": true }));
+        crate::background::test_helper(a, "C:\\acc", None, true);
+        crate::background::idle_for_test(id, Provider::Claude, 2, false);
+        let prompt = |t: &str| format!("{}\n", serde_json::json!({ "type": "user", "message": { "role": "user", "content": t } }));
+        let said = |t: &str| {
+            format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } }))
+        };
+        let first = format!("{}{}{}{}", prompt("Review PR 7719"), said("Reviewing."), prompt("And 7720"), said("VERDICT: GO for both."));
+        let path = std::env::temp_dir().join(format!("luna-{id}-{}.jsonl", std::process::id()));
+        std::fs::write(&path, &first).unwrap();
+        crate::agents::read::transcripts().lock().unwrap().insert(id.into(), path.clone());
+        owe_asked(a, id, 0, 0, &Asked { text: "Review PR 7719", key: None, reply: true });
+        owe_asked(a, id, 1, 40, &Asked { text: "And 7720", key: None, reply: true });
+        let key = (a.to_string(), id.to_string());
+        let told = reg().lock().unwrap().owed[&key];
+        let k = reg().lock().unwrap().known.get(id).cloned().unwrap();
+        let pty = crate::pty::manager();
+        let Some((Some(line), Settled::Answered)) = notice_line(pty, a, "Your helper", id, &k, told) else { panic!("answered") };
+        let end = first.len() as u64;
+        run_between(
+            a,
+            Box::new(move || {
+                owe_asked(a, id, 2, end, &Asked { text: "FYI: main moved", key: None, reply: false });
+                reg().lock().unwrap().owed.get_mut(&(a.to_string(), id.to_string())).unwrap().queued = true;
+            }),
+        );
+        let text = format!("{NOTICE_TAG} {line}");
+        deliver_notice(pty, a, &text, Notice { settled: vec![(id.to_string(), Settled::Answered, told)], ..Notice::default() });
+        let left = reg().lock().unwrap().owed[&key];
+        assert!(left.no_reply && left.cursor == end && left.baseline == 2, "the third send's own debt is what is left");
+        assert!(left.queued, "what was decided of it holds");
+        assert_eq!(requests_of(a, id).iter().map(|q| q.n).collect::<Vec<_>>(), [3]);
+        // Its turn begun, the queue's grace is behind it.
+        let left = Owed { queued: false, ..left };
+        reg().lock().unwrap().owed.insert(key.clone(), left);
+        std::fs::write(&path, format!("{first}{}{}", prompt("FYI: main moved"), said("ok."))).unwrap();
+        crate::background::idle_for_test(id, Provider::Claude, 3, false);
+        assert!(matches!(notice_line(pty, a, "Your helper", id, &k, left), Some((None, Settled::Unasked))));
+        reg().lock().unwrap().owed.remove(&key);
+        for s in [id, a] {
+            crate::background::gone_for_test(s);
+            forget(s);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// A look taken before a retry reads the turn that missed as the answer.
     #[test]
     fn a_notice_looked_up_before_a_retry_neither_goes_out_nor_settles() {
