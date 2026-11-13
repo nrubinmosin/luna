@@ -14,11 +14,12 @@ The model can start a helper session (another model, another account, Codex
 instead of Claude) with an opening prompt, wait for its reply, send follow-ups,
 answer what it asks, and delete it when done, worktree and its `worktree-*`
 branch included if it asked for one. The tools and a short instruction cost
-about 2k tokens once per session; the full manual is `luna_guide_get`'s, read only
-when the model asks: whole with `topic: "all"` (the instruction says to, before
-the first spawn), one section by a word of its title (`topic: "spawning"`), or,
-with no topic, its opening and the sections to ask for. A chat without the box knows nothing of Luna, and neither
-does a background helper spawned without tools.
+about 2,500 tokens with every request of a tooled session ([what Luna adds to a
+model's context](context.md)); the manual is `luna_guide_get`'s, read only when
+the model asks, a topic at a time (a tool's name, `notices`, `restart`,
+`helpers`), or with no topic its opening and the topics. A chat without the box
+knows nothing of Luna, and neither does a background helper spawned without
+tools.
 
 - `luna_notification_send` raises a desktop notification mid-turn, titled with the chat's
   name and opening it when clicked, at most one every 10 seconds.
@@ -114,14 +115,11 @@ hooks run unasked.
   it can delete, and your chat is told too, as only it can free the rest. A
   helper's helpers get no tools.
 - Every session gets its id as `LUNA_SESSION_ID`, a helper its parent's as
-  `LUNA_PARENT_ID`. A helper is told what it is — not the chat of whoever its
-  instructions call the operator, the user or the person at this machine — and
-  to write in the language of its task, and to install nothing and change
-  nothing machine-wide or in its account's folder unless its task names that
-  change, handing its caller the command instead: Claude Code through its system prompt
-  and a note after its first prompt; Codex, which can only replace
-  `developer_instructions`, through a note Luna appends to each prompt. A prompt
-  opening with a slash command goes without it.
+  `LUNA_PARENT_ID`. A lead or helper is told of its role in its instructions
+  ([the library](library.md#what-a-session-is-told-of-its-role)), and a note
+  after its task says the task comes from another agent, not a person: after
+  the first task on Claude Code, after each on Codex. A prompt opening with a
+  slash command goes without the note.
 
 ## Spawning options
 
@@ -227,7 +225,7 @@ one of your own chats an agent may answer only a question its model asked
   all; `reply: "all"` returns everything, `"none"` nothing. `luna_report_get` gives the report
   alone and, with `ack: true`, collects the answer so no notice follows. The report is the
   message the CLI marked as its turn's final answer, or, without that mark, the longest of the
-  turn, which Luna then says it picked by length. Past 60,000 characters a read is cut:
+  turn, which a read then marks (`reportGuessed`). Past 60,000 characters a read is cut:
   `rest` says how many messages it left out, and its cursor goes on from there.
 - `luna_session_wait` takes several sessions (`ids`, `mode: "any"` or `"all"`) and says
   which finished; the terminal comes only with `screen: true`. `luna_session_list` gives

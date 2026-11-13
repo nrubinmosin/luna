@@ -14,6 +14,8 @@
   orphans, worktrees, the log
 - [Agents and MCP tools](user-guide/agents.md): helpers, talking to sessions,
   answers, notices, lifetime
+- [What Luna adds to a model's context](user-guide/context.md): every text Luna
+  puts before a model, by channel and role, its size and how to turn it off
 - [Power and shutdown-when-done](user-guide/power.md)
 - [Updates](user-guide/updates.md): Luna and the CLIs
 - [Settings](user-guide/settings.md): what each page holds and where it went

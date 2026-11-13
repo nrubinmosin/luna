@@ -196,6 +196,37 @@ fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
+/// What this server puts in a model's context, by the name
+/// docs/user-guide/context.md measures it under (context_page.rs): the
+/// instructions, the tool list and the handoff's tool as a client sends them
+/// on (annotations are the client's, not the model's), and the guide's index
+/// and sections, each a tool result when asked for.
+#[cfg(test)]
+pub(crate) fn context_texts() -> Vec<(String, String)> {
+    fn bare(mut v: Value) -> String {
+        if let Some(o) = v.as_object_mut() {
+            o.remove("annotations");
+        }
+        for t in v.as_array_mut().into_iter().flatten() {
+            if let Some(o) = t.as_object_mut() {
+                o.remove("annotations");
+            }
+        }
+        v.to_string()
+    }
+    let mut out = vec![
+        ("instructions".to_string(), INSTRUCTIONS.to_string()),
+        ("tools".to_string(), bare(tools::tools())),
+        ("handoff-tool".to_string(), bare(tools::handoff_tool())),
+        ("guide-index".to_string(), guide::guide_text(None).unwrap_or_default()),
+    ];
+    for (title, text) in guide::sections() {
+        let word = title.split_whitespace().next().unwrap_or_default().to_lowercase();
+        out.push((format!("guide-{word}"), text.to_string()));
+    }
+    out
+}
+
 /// A result as text blocks: the JSON, then the terminal if it has one, for
 /// each session of a wait on several. A screen left inside the JSON reaches
 /// the model with its line breaks as `\n` escapes — the whole terminal on one
