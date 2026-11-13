@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   helpersAboveCaller,
   helperSettings,
+  setHelperContextPct,
   setHelperMode,
   setHelpersAboveCaller,
   setMaxHelpers,
@@ -10,9 +11,13 @@ import {
 } from '../../../ipc/agents';
 import { CheckRow, Group, Row } from '../SettingsRows';
 
+/** The shares of a helper's context window its notices may say it is past. */
+const CONTEXT_PCTS = [0, 30, 40, 50, 60, 70, 80, 90];
+
 /** How helpers are held: whether one may run with more privilege than the
- *  session spawning it, how many places a chat's line of helpers has, and the
- *  mode a helper takes when its spawn names none. Kept by the Rust side, which
+ *  session spawning it, how many places a chat's line of helpers has, the
+ *  mode a helper takes when its spawn names none, and past what share of its
+ *  context its notices say so. Kept by the Rust side, which
  *  holds every spawn to them (agents/privilege.rs `cap`, agents/spawn
  *  `max_descendants`). What turning the first on lets an agent do stays in view. */
 export function HelpersSection() {
@@ -90,6 +95,26 @@ export function HelpersSection() {
           >
             <option value="inherit">The spawning chat’s</option>
             <option value="account">The account’s default</option>
+          </select>
+        }
+      />
+      <Row
+        label="Tell me when a helper’s context passes"
+        htmlFor="set-helper-context"
+        desc="Notices about a helper past this share of its context window say how full it is; past 85% one comes on its own. A spawn may set its own."
+        control={
+          <select
+            id="set-helper-context"
+            className="set-browser"
+            value={limits?.helperContextPct ?? 50}
+            disabled={!limits}
+            onChange={e => void setHelperContextPct(Number(e.target.value)).then(setLimits)}
+          >
+            {CONTEXT_PCTS.map(n => (
+              <option key={n} value={n}>
+                {n === 0 ? 'Never' : `${n}%`}
+              </option>
+            ))}
           </select>
         }
       />

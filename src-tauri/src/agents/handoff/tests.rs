@@ -198,11 +198,11 @@ fn notices_and_sends_wait_while_a_handoff_is_under_way() {
     schedule("hohw-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     assert!(crate::agents::notifier::notice_waits("hohw-me"), "the notifier holds what it has for the chat");
     // Text another session sends goes in after, into the new conversation.
-    let sent = crate::agents::send("hohw-sender", "hohw-me", "the build is green", false).unwrap();
+    let sent = crate::agents::send("hohw-sender", "hohw-me", "the build is green", false, None, true).unwrap();
     assert!(sent.held && !sent.started);
     assert!(crate::agents::held::is_held("hohw-sender", "hohw-me"));
     // A command is still refused as one, held or not.
-    assert!(crate::agents::send("hohw-sender", "hohw-me", "/exit", false).is_err());
+    assert!(crate::agents::send("hohw-sender", "hohw-me", "/exit", false, None, true).is_err());
     finish("hohw-me", 1, Ended::Done, &String::new);
     assert!(!crate::agents::notifier::notice_waits("hohw-me"), "released once it is through");
     reg().lock().unwrap().held.retain(|h| h.id != "hohw-me");

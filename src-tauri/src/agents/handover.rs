@@ -304,12 +304,13 @@ mod tests {
             let placed = crate::background::send(&id, "one more thing", Some(&parent)).unwrap();
             assert_eq!(placed, crate::background::Placed::Queued, "held while it opens");
             // A debt it had registered by then, which the handover clears.
-            owe_from_at(&parent, &id, 1, 0, before);
+            let asked = crate::agents::owed::Asked { text: "one more thing", key: None, reply: true };
+            owe_from_at(&parent, &id, 1, 0, before, &asked);
             take_over(&id, || Some(Vec::new())).unwrap();
-            assert!(!owe_from_at(&parent, &id, 2, 0, before), "the send learns it was taken over");
+            assert!(!owe_from_at(&parent, &id, 2, 0, before, &asked), "the send learns it was taken over");
             assert!(!reg().lock().unwrap().owed.contains_key(&(parent.clone(), id.clone())), "and nothing is owed");
             // Text sent to the person's chat from now on is owed as any chat's.
-            assert!(owe_from_at(&parent, &id, 2, 0, handovers_of(&id)));
+            assert!(owe_from_at(&parent, &id, 2, 0, handovers_of(&id), &asked));
             reg().lock().unwrap().news.retain(|(c, _)| *c != parent);
             crate::background::gone_for_test(&id);
             forget(&id);

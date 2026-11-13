@@ -30,6 +30,10 @@ pub struct Settings {
     /// The mode a helper starts in when its spawn names none
     /// (agents/privilege.rs `settle_mode`).
     pub helper_mode: HelperMode,
+    /// The share of its context window past which notices about a helper say
+    /// where it stands (agents/notifier usage.rs `budget_news`); 0 is off. A
+    /// spawn's `budgetPct` sets its own.
+    pub helper_context_pct: u32,
     /// Per provider, the account whose settings file the others copy
     /// (account_settings/sync.rs), by name.
     pub settings_parents: SettingsParents,
@@ -403,6 +407,7 @@ impl Default for Settings {
             helpers_above_caller: false,
             max_helpers: crate::agents::spawn::HELPERS_DEFAULT,
             helper_mode: HelperMode::Inherit,
+            helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
             fetch_before_worktree: true,

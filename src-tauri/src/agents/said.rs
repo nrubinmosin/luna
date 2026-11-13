@@ -56,12 +56,129 @@ pub(super) struct Said {
     /// Beside `texts`: each one its CLI marked a turn's final answer
     /// (`Message::final_answer`).
     finals: Vec<bool>,
+    /// The prompts among them, each with the index in `texts` of the first
+    /// message after it: which of the caller's requests a turn answers is read
+    /// off these (`asked`).
+    prompts: Vec<(usize, String)>,
+    /// The caller's requests these answer, in the order they went in, and beside
+    /// `texts` the one each message answers, by index into them (`asked`).
+    requests: Vec<Request>,
+    re: Vec<usize>,
+}
+
+/// A request of a caller's that a debt covers: its number among the caller's
+/// requests to that session (a spawn 1, each send one more), the `requestKey`
+/// it came with, and how its text began, to find the turn it started by.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Request {
+    pub(super) n: u32,
+    pub(super) key: Option<String>,
+    pub(super) head: String,
+}
+
+/// How much of a request's text is kept to find it again among the prompts:
+/// enough to tell two apart, short of where a CLI might fold or note it.
+const REQUEST_HEAD: usize = 60;
+
+/// The start of a request's text, as `Request::head` keeps it.
+pub(super) fn request_head(text: &str) -> String {
+    flat(text).chars().take(REQUEST_HEAD).collect()
+}
+
+/// Text on one line, its runs of whitespace one space.
+fn flat(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+impl Request {
+    /// `request 2`, or `request 2 (requestKey "x")`, as notices and replies name it.
+    pub(super) fn name(&self) -> String {
+        match &self.key {
+            Some(key) => format!("request {} (requestKey \"{key}\")", self.n),
+            None => format!("request {}", self.n),
+        }
+    }
 }
 
 impl Said {
     /// Messages of one turn, or of turns that cannot be told apart.
     pub(super) fn one_turn(texts: Vec<String>) -> Said {
-        Said { texts, last_turn: 0, starts: vec![0], by_cli: false, finals: Vec::new() }
+        Said { texts, last_turn: 0, starts: vec![0], ..Said::default() }
+    }
+
+    /// These messages as answers to the caller's `requests`: with more than
+    /// one, each message is put down to the latest request whose text started
+    /// a turn at or before it, found among the prompts by its head, in order.
+    /// A message before any found is the request's before the first found (a
+    /// spawn's, whose prompt may lie before what was read). None found, none
+    /// is put down to any: the requests are still named, not whose is which.
+    pub(super) fn asked(mut self, requests: Vec<Request>) -> Said {
+        self.re.clear();
+        if requests.len() > 1 {
+            let mut from = 0;
+            let found: Vec<Option<usize>> = requests
+                .iter()
+                .map(|q| {
+                    let at = self.prompts.iter().skip(from).position(|(_, text)| !q.head.is_empty() && flat(text).contains(&q.head));
+                    let at = at.map(|i| i + from);
+                    if let Some(i) = at {
+                        from = i + 1;
+                    }
+                    at.map(|i| self.prompts[i].0)
+                })
+                .collect();
+            if let Some(first) = found.iter().position(Option::is_some) {
+                self.re = (0..self.texts.len())
+                    .map(|i| (0..requests.len()).rev().find(|&k| found[k].is_some_and(|at| at <= i)).unwrap_or(first.saturating_sub(1)))
+                    .collect();
+            }
+        }
+        self.requests = requests;
+        self
+    }
+
+    /// The requests these answer, when more than one: what a notice and a
+    /// reply name.
+    pub(super) fn requests(&self) -> &[Request] {
+        if self.requests.len() > 1 {
+            &self.requests
+        } else {
+            &[]
+        }
+    }
+
+    /// The request message `i` answers, where that is known.
+    pub(super) fn re_of(&self, i: usize) -> Option<&Request> {
+        self.requests.get(*self.re.get(i)?)
+    }
+
+    /// Messages `from..to` alone, their turns as they were.
+    fn part(&self, from: usize, to: usize) -> Said {
+        let mut starts: Vec<usize> = self.starts.iter().filter(|&&s| s > from && s < to).map(|s| s - from).collect();
+        starts.insert(0, 0);
+        Said {
+            texts: self.texts[from..to].to_vec(),
+            last_turn: starts.last().copied().unwrap_or(0),
+            starts,
+            finals: self.finals.get(from..to).map(<[bool]>::to_vec).unwrap_or_default(),
+            ..Said::default()
+        }
+    }
+
+    /// Runs of messages that answer one request each, newest first, each with
+    /// its request: none unless they answer several and whose is which is known.
+    fn by_request(&self) -> Vec<(&Request, Said)> {
+        if self.requests().is_empty() || self.re.len() != self.texts.len() {
+            return Vec::new();
+        }
+        let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+        for (i, &k) in self.re.iter().enumerate() {
+            match runs.last_mut() {
+                Some((_, to, last)) if *last == k => *to = i + 1,
+                _ => runs.push((i, i + 1, k)),
+            }
+        }
+        runs.into_iter().rev().map(|(from, to, k)| (&self.requests[k], self.part(from, to))).collect()
     }
 }
 
@@ -85,11 +202,14 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
     }
     let mut said = Said::default();
     let mut prompted = false;
+    let mut prompts = Vec::new();
     for m in messages {
         if m.role != "assistant" {
             prompted = true;
+            prompts.push(m.text);
             continue;
         }
+        said.prompts.extend(prompts.drain(..).map(|text| (said.texts.len(), text)));
         if prompted || m.after_cli || said.texts.is_empty() {
             if !said.texts.is_empty() {
                 said.last_turn = said.texts.len();
@@ -136,13 +256,50 @@ pub(super) fn answer_where(file: Option<&std::path::Path>, span: Option<(usize, 
 /// (`answer_text`), are the report, and how many it has in all. None with
 /// nothing said.
 pub(super) fn report_span(replies: &Said, text: &str) -> Option<(usize, usize)> {
+    let all = text.lines().count().max(1);
+    // Answers to several requests: the newest one's heading and report lead.
+    if let Some((_, part)) = replies.by_request().first() {
+        let report = part.get(report_of(part))?;
+        return Some((report.lines().count().max(1) + 2, all));
+    }
     let report = replies.get(report_of(replies))?;
-    Some((report.lines().count().max(1), text.lines().count().max(1)))
+    Some((report.lines().count().max(1), all))
 }
 
-/// The report alone (`report_of`), what `luna_report_get` gives.
+/// The report alone (`report_of`), what `luna_report_get` gives; where the
+/// messages answer several requests, opened by the one it answers, as its
+/// section in `answer_text` is.
 pub(super) fn report_text(replies: &Said) -> Option<String> {
-    replies.get(report_of(replies)).cloned()
+    let report = replies.get(report_of(replies))?;
+    Some(match report_re(replies).filter(|_| !replies.by_request().is_empty()) {
+        Some(q) => format!("Re {}:\n\n{report}", q.name()),
+        None => report.clone(),
+    })
+}
+
+/// The request the report answers (`report_of`), where it is known.
+pub(super) fn report_re(replies: &Said) -> Option<&Request> {
+    replies.re_of(report_of(replies))
+}
+
+/// The words a message may open with to say where its writer stands. One
+/// brings a session's notice where it would otherwise wait (notifier
+/// lines.rs): a lead's turn while its delegates work, an answer to a send
+/// that asked for none. They only ever bring a notice sooner.
+pub(super) const STATUS_WORDS: [&str; 5] = ["DONE", "BLOCKED", "QUESTION", "FAILED", "PLAN"];
+
+/// Whether `text`'s first line opens with a status word (STATUS_WORDS) as
+/// written, case and all, alone or followed by a colon or a space; markdown's
+/// emphasis or heading marks around it do not count against it.
+pub(super) fn says_status(text: &str) -> bool {
+    let first = text.trim_start().lines().next().unwrap_or("");
+    let bare = first.trim_start_matches(|c: char| matches!(c, '#' | '*' | '_' | '>') || c.is_whitespace());
+    STATUS_WORDS.iter().any(|word| {
+        bare.strip_prefix(word).is_some_and(|rest| {
+            let rest = rest.trim_start_matches(['*', '_']);
+            rest.is_empty() || rest.starts_with(':') || rest.starts_with(' ')
+        })
+    })
 }
 
 /// `text` in a file for a notice to name, under `notes_dir`. Named by what it
@@ -168,6 +325,13 @@ pub(super) fn note_file(id: &str, text: &str) -> Option<std::path::PathBuf> {
 /// ("that was a stale wakeup, nothing changed") the report must not bury;
 /// then the rest, in order, earlier turns' reports among them.
 pub(super) fn answer_text(replies: &Said) -> String {
+    // Answers to several requests: a section each, the newest first, opened
+    // by the request it answers.
+    let parts = replies.by_request();
+    if !parts.is_empty() {
+        let sections: Vec<String> = parts.iter().map(|(q, part)| format!("Re {}:\n\n{}", q.name(), answer_text(part))).collect();
+        return sections.join("\n\n===\n\n");
+    }
     let longest = report_of(replies);
     let last = replies.len().saturating_sub(1);
     let mut whole = replies[longest].clone();
@@ -322,6 +486,55 @@ pub(super) fn begins(replies: &Said) -> String {
 mod tests {
     use super::*;
     use crate::agents::read::Message;
+
+    #[test]
+    fn a_status_word_opens_the_first_line_as_written() {
+        for yes in [
+            "DONE",
+            "DONE: all green",
+            "BLOCKED on review",
+            "QUESTION:",
+            "FAILED",
+            "PLAN: two lanes",
+            "## DONE",
+            "**BLOCKED**: x",
+            "  DONE\nmore",
+        ] {
+            assert!(says_status(yes), "{yes}");
+        }
+        for no in ["done", "Done: x", "DONEZO", "Notes\nDONE", "Status: DONE", "PLANNING", ""] {
+            assert!(!says_status(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn answers_to_several_requests_are_put_down_to_the_turn_each_started() {
+        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
+        let q = |n: u32, head: &str| Request { n, key: None, head: request_head(head) };
+        let said = || {
+            said_of(vec![
+                m("assistant", "Looking at it."),
+                m("assistant", "NO-GO: tests fail."),
+                m("user", "[From session x via Luna] Now   the second\none, please"),
+                m("assistant", "GO."),
+            ])
+        };
+        let one = said().asked(vec![q(1, "first")]);
+        assert!(one.requests().is_empty() && answer_text(&one).starts_with("GO."), "one request: nothing set apart");
+        let two = said().asked(vec![q(1, "the first, spawned"), q(2, "Now the second one, please")]);
+        assert_eq!(two.requests().len(), 2);
+        assert_eq!(two.re_of(0).map(|q| q.n), Some(1), "before the second's prompt: the first's");
+        assert_eq!(two.re_of(2).map(|q| q.n), Some(2));
+        assert_eq!(report_re(&two).map(|q| q.n), Some(2));
+        let text = answer_text(&two);
+        assert!(text.starts_with("Re request 2:\n\nGO.\n\n===\n\nRe request 1:\n\nNO-GO: tests fail."), "{text}");
+        assert_eq!(report_text(&two).as_deref(), Some("Re request 2:\n\nGO."));
+        assert_eq!(report_span(&two, &text).map(|(report, _)| report), Some(3), "the heading, a blank, the report");
+        // Neither found among the prompts: named, not set apart.
+        let lost = said().asked(vec![q(1, "something else"), q(2, "and another")]);
+        assert_eq!(lost.requests().len(), 2);
+        assert!(lost.re_of(0).is_none() && !answer_text(&lost).starts_with("Re "));
+    }
 
     #[test]
     fn a_notice_says_which_lines_are_the_report() {

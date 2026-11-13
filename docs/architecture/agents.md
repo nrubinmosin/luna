@@ -37,7 +37,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/teardown.rs` | kill, delete, the person's guarded delete (`delete_by_user`, `at_stake`), `reap` (autoDelete), `forget` |
 | `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
 | `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
-| `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and budget news |
+| `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and context news |
 | `agents/handoff/` | auto-handoff ([its own page](handoff.md)): `luna_session_handoff`, the instructions served (`served.rs`), the threshold notices (`watch.rs`), the file check and copy (`file.rs`), the switch's machine (`phase.rs`), its saved state (`store.rs`, `<data>/handoffs/handoffs.json`) and what the prompt and notices say (`facts.rs`) |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
 | `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic its opening and the topics; every session with tools reads it, so it has nothing of auto-handoff |
@@ -410,7 +410,11 @@ turn, stopped on a prompt (once per stop) or exited.
   After that the caller hears only of a turn no notice started (`notice_turn`,
   `real_turn_past`) or the job's end (`Verdict::JobOver`). All of it idle for 30
   min (`IDLE_JOB_MS`): one notice that only idle processes are left
-  (`Settled::Idle`); the debt stays open. A job's end is clocked on the debt
+  (`Settled::Idle`), with what the transcript started them as (`idle_line`:
+  Claude Code's open background calls, `claude::session::background_calls`;
+  Codex's `exec_command` calls whose output said `Process running with session
+  ID N` and no `write_stdin` to it since said it exited,
+  `codex::session::background_calls`); the debt stays open. A job's end is clocked on the debt
   itself (`Owed::held`): the notifier and a `wait` go by the same 20 s
   (`held_for_wait`, `job_end_stood`), so the end reaches the caller once.
 - A notice is an ordinary turn of the caller; a dev caller with no terminal gets
@@ -422,9 +426,12 @@ turn, stopped on a prompt (once per stop) or exited.
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
   `chat-ties.json` until told.
 - **Riders.** A job's end with nothing said (`Settled::NoNews`), the idle line,
-  quota news and budget news are no reason to wake a caller: they ride with the
-  next notice (`riders_go`), and go alone only once they are all it is owed,
-  nothing in Luna is busy, or after `RIDE_MAX_MS`.
+  a context line (`budget_news`) and a refusal for want of places are no reason
+  to wake a caller: they ride with the next notice (`riders_go`), and go alone
+  only once they are all it is owed, nothing in Luna is busy, or after
+  `RIDE_MAX_MS`. Quota news does not ride: its lines go into the notice's lines
+  as they are put together (mod.rs, before `riders_go` is asked), like a turn's
+  end, so a window at 90% wakes the caller and brings the riders with it.
 - **Company.** A notice ready for an idle caller that is owed an answer by
   another session still mid-turn (`Turn::Busy`) waits for it up to
   `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
@@ -433,9 +440,45 @@ turn, stopped on a prompt (once per stop) or exited.
   have; one that carries a question or a permission prompt (`Settled::Waiting`,
   `Settled::Asked`) never waits.
 - A helper with its own helpers out (`waits_on_helpers`) reads `background`; a
-  turn on a notice from them counts once it has all their answers. Meanwhile
-  its parent hears of turns that wrote a message of 400 characters or more
-  (`news_for_parent`), once each, only ever upward.
+  turn on a notice from them counts once it has all their answers.
+- **Leads.** A lead (`is_lead`: spawned with tools) whose delegates still work
+  (its own helpers out, or what its CLI left in the background) is not done as
+  a matter of course: a turn it ends then settles as `Settled::Skip` (no
+  notice, `told_pending` set, the debt's offset kept), so what it wrote rides
+  in its report with the next notice, never "NOT done yet". Not the first
+  turn to answer a send of its caller's (`Owed::by_send`, before
+  `told_pending`): that is the answer asked for, unless the send asked for
+  none. A message whose
+  first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`
+  (`said::says_status`, case-sensitive, alone or before `:` or a space,
+  markdown marks aside) goes at once (`worth_waking`), and so does a turn on
+  its helpers' notices that wrote one (`news_for_parent`, only ever upward).
+  Prompts, questions, errors, exits and the quiet-turn notices go as ever.
+  The lead's role text says so (`resources/system/role-lead.md`).
+  Once all its delegates are done (`Verdict::JobOver`) with nothing said since,
+  Luna wakes the lead instead of telling its parent (`wake_lead`): a queued
+  line opening `Your delegates have finished` (`WAKE_HEAD`), naming what it
+  was last seen waiting on (`note_delegates`), once per end (`Registry::woken`,
+  by the count it was seen at), counted by the breaker as the pair (lead,
+  lead). The turn it starts is marked `NoticeTurn::wake` and counts as the
+  lead's own; if it ends with nothing said since the wake, the parent hears
+  the lead "seems stuck" (once: it settles the debt). A wake not taken up
+  within `WAKE_WAIT_MS` (10 min), or one the breaker stops, leaves the parent
+  told as before.
+- **Requests.** Each (caller, session) numbers the caller's requests (owed.rs
+  `Requests`: a spawn 1, each send one more, with its `requestKey`), and a
+  debt covers those made since the last one settled. With more than one,
+  `Said::asked` puts each message down to the latest request whose text (its
+  first 60 characters, `request_head`) opened a prompt at or before it; the
+  notice says it answers several and which the quoted report is for
+  (`answering`, `begins_re`), and `answer_text` sets each request's part apart
+  under `Re request N`, the latest first, as do `luna_report_get` and
+  `luna_session_wait` (`report_text`). Kept in memory only: after a core
+  restart an answer names no request.
+- **No reply asked.** A send with `expectReply: false` sets `Owed::no_reply`
+  (a later send that asks for one clears it). A turn that answers it wakes the
+  caller only with a status word or a message of 400 characters or more;
+  otherwise the debt settles with no notice (`Settled::Unasked`).
 - **The breaker.** Past 12 turn-end notices in 15 minutes for one (caller,
   session) pair (`BREAKER_NOTICES`), that pair's turn and job news stops: the
   last notice says so, the log warns, the desktop is told once, and a person
@@ -445,9 +488,20 @@ turn, stopped on a prompt (once per stop) or exited.
 - **Quota news.** An account a caller's live helpers run on reaching 90%, then
   95%, of a window, once per level per window, kept in
   `<data>/quota-told.json`.
-- **Budget.** `budgetTokens` on a spawn: `budget_news`, every fifth look, reads
-  `Context::of`; the first reading past it stays as `budgetBreach` and rides to
-  the parent once. Nothing is stopped.
+- **Context.** Every fifth look `budget_news` reads each helper's context
+  (`Context::of`) against its level (`level_of`): its spawn's `budgetPct` (0:
+  never), else its deprecated `budgetTokens` as the share of the window they
+  are, else the person's setting (`Settings::helper_context_pct`, 50 by
+  default, 0 off). Past it, `Registry::context_seen` holds the reading and
+  every notice line about the helper ends ` (context N%)` (`context_rider`).
+  Past 85% (`ALARM_PCT`), or its level if higher, the first reading stays as
+  `budgetBreach` and a line of its own rides to the parent once, advising a
+  fresh helper unless it hands off by itself (`hands_off_by_itself`, the hook
+  auto-handoff for leads is to answer). Nothing is stopped.
+- **The log.** Each notice's line names, per session told of, what became of
+  it (`kind_of`, the `Settled` variant) and how long it was held for company
+  (`Notice::held_for`): what a wider batching window would have saved is read
+  off there.
 
 ## Typing into terminals
 

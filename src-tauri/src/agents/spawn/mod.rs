@@ -60,10 +60,20 @@ pub struct SpawnParams {
     /// Kept in the settings it runs with.
     #[serde(skip_serializing)]
     pub resume_on_restart: Option<bool>,
-    /// Context tokens past which its parent hears, once (`budget_news`). Kept
-    /// in the settings it runs with.
+    /// Deprecated for `budget_pct`: context tokens, read as the share of its
+    /// window they are once the window is known (`budget_news`). Kept in the
+    /// settings it runs with, as records saved before `budgetPct` have it.
     #[serde(skip_serializing)]
     pub budget_tokens: Option<u64>,
+    /// The share of its context window past which notices about it say where
+    /// it stands (`budget_news`), 0 for never; none: the person's setting
+    /// (`Settings::helper_context_pct`). Kept in the settings it runs with.
+    #[serde(skip_serializing)]
+    pub budget_pct: Option<u32>,
+    /// The `requestKey` the spawn came with, which notices name its answer by
+    /// (said.rs `Request`); the retry itself is the dispatcher's.
+    #[serde(skip_serializing)]
+    pub request_key: Option<String>,
     /// Without the edit tools (Claude Code); in a read-only sandbox (Codex).
     pub read_only: Option<bool>,
     /// The agent it runs as: Claude Code's `--agent`.
@@ -161,6 +171,8 @@ pub(super) struct SpawnTaken {
     #[serde(default)]
     pub(super) budget_tokens: Option<u64>,
     #[serde(default)]
+    pub(super) budget_pct: Option<u32>,
+    #[serde(default)]
     pub(super) connectors: bool,
     pub(super) in_worktree: Option<String>,
     pub(super) account_path: String,
@@ -211,6 +223,7 @@ impl SpawnUnderWay {
             auto_delete: params.auto_delete,
             resume_on_restart: params.resume_on_restart == Some(true),
             budget_tokens: params.budget_tokens,
+            budget_pct: params.budget_pct,
             connectors: params.connectors == Some(true),
             in_worktree: in_worktree.map(str::to_owned),
             account_path: account_path.to_string(),
@@ -423,6 +436,9 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     if params.budget_tokens == Some(0) {
         return Err("budgetTokens must be above 0".into());
     }
+    if params.budget_pct.is_some_and(|pct| pct > 100) {
+        return Err("budgetPct is a share of the context window: 0 (never) to 100".into());
+    }
     // Off the registry lock: this reads the CLI's registry from disk. A
     // helper works where its caller does, worktree and all.
     let worktree = if params.folder.is_none() { caller_worktree(caller) } else { None };
@@ -588,7 +604,14 @@ pub struct HelperSettings {
     pub min: u32,
     pub max: u32,
     pub helper_mode: crate::settings::HelperMode,
+    /// `Settings::helper_context_pct`, 0 for off.
+    pub helper_context_pct: u32,
 }
+
+/// The share of a helper's context window past which notices about it say
+/// where it stands, unless the person sets otherwise: a reviewer with a small
+/// window filled to 89% before its caller thought to rotate it.
+pub const CONTEXT_PCT_DEFAULT: u32 = 50;
 
 #[tauri::command]
 pub fn helper_settings() -> HelperSettings {
@@ -598,7 +621,17 @@ pub fn helper_settings() -> HelperSettings {
         min: *HELPERS_RANGE.start(),
         max: *HELPERS_RANGE.end(),
         helper_mode: s.helper_mode,
+        helper_context_pct: s.helper_context_pct.min(100),
     }
+}
+
+/// Only what notices say: nothing a helper may do changes.
+#[tauri::command]
+pub fn set_helper_context_pct(pct: u32) -> Result<HelperSettings, String> {
+    let pct = pct.min(100);
+    crate::settings::update(|s| s.helper_context_pct = pct)?;
+    crate::log::info("agents", &format!("helpers' context told of past: {pct}%"));
+    Ok(helper_settings())
 }
 
 /// Neither of these lets a helper do more than its caller: more places are more
