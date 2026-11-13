@@ -29,10 +29,20 @@ pub(crate) fn role_of(s: &Spec) -> crate::library::Role {
     }
 }
 
-/// `command_with` on the texts its role is served now.
+/// `command_with` on the texts its role is served now, and a lead's handoff
+/// folder as a turn would have it.
 #[cfg(test)]
 pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
-    command_with(e, id, &crate::library::role_texts(role_of(&e.spec)))
+    command_with(e, id, &crate::library::role_texts(role_of(&e.spec)), handoff_dir(id, &e.spec).as_ref())
+}
+
+/// A lead's drafts folder while auto-handoff for leads is on, made private
+/// before its CLI runs, at every turn (agents/handoff `drafts_at_start`), or
+/// why it could not be; None for a helper the handoff's tool is not listed
+/// to. Off this module's lock: it reads and resets the folder's DACL.
+pub(super) fn handoff_dir(id: &str, s: &Spec) -> Option<Result<std::path::PathBuf, String>> {
+    (role_of(s) == crate::library::Role::Lead && crate::agents::handoff::lead_settings().on)
+        .then(|| crate::agents::handoff::drafts_at_start(id))
 }
 
 /// `stdin_with` on the note its role is served now.
@@ -45,8 +55,14 @@ pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
 /// system texts, read before this module's lock (`spawn_turn`). Err when a
 /// Claude Code turn's mandatory settings — its core-folder deny (threat model
 /// F3) — cannot be written, or a Codex turn's role layers do not fit on its
-/// command line: the turn refuses rather than run without them.
-pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleTexts) -> Result<Command, String> {
+/// command line: the turn refuses rather than run without them. `handoff`: a
+/// lead's drafts folder (`handoff_dir`).
+pub(super) fn command_with(
+    e: &Entry,
+    id: &str,
+    texts: &crate::library::RoleTexts,
+    handoff: Option<&Result<std::path::PathBuf, String>>,
+) -> Result<Command, String> {
     let s = &e.spec;
     let role = role_of(s);
     let constraints: Vec<String> = s.constraints.iter().map(|c| c.text.clone()).collect();
@@ -100,6 +116,10 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                     args.extend(["--resume".into(), sid.clone()]);
                 }
                 (Some(sid), None) => args.extend(["--resume".into(), sid.clone()]),
+                // A lead's fresh conversation (switch.rs) in the worktree its
+                // first turn made: `--worktree` would make another, or refuse
+                // one with work in it (worktree `as_made`).
+                (None, Some(wt)) if std::path::Path::new(wt).is_dir() => dir = wt.clone(),
                 (None, _) if s.worktree => args.push(crate::worktree::worktree_arg(s.worktree_name.as_deref())),
                 (None, _) => {}
             }
@@ -149,6 +169,24 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             if let (Some(_), Some(note)) = (&s.parent, &texts.note) {
                 applied.push(Item::HelperIdentity.with(format!("a note after its first prompt: {note}")));
             }
+            // A lead listed the handoff's tool: its folder of copies, with the
+            // drafts folder it writes its handoff in, and the copy its next
+            // conversation reads first, without asking; none where the drafts
+            // folder could not be made private.
+            let copies = handoff.map(|d| d.as_ref().map_err(String::as_str).map(|d| d.parent().unwrap_or(d).to_path_buf()));
+            if let Some(copies) = &copies {
+                let mut value = "on request: luna_session_handoff".to_string();
+                match copies {
+                    Ok(dir) => {
+                        let dir = dir.to_string_lossy().into_owned();
+                        args.extend(["--add-dir".into(), dir.clone()]);
+                        value.push_str(&format!("; --add-dir {dir}"));
+                    }
+                    Err(why) => value.push_str(&crate::agents::handoff::no_drafts_applied(why)),
+                }
+                applied.push(Item::HandoffTool.with(value));
+                applied.push(Item::AutoHandoff.with(format!("at {}% of the context", crate::agents::handoff::lead_settings().threshold)));
+            }
             // A helper with tools has helpers of its own to hear from: what a
             // notice names is a file there, to read without asking.
             let mut notes = None;
@@ -172,6 +210,7 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             let instructions = crate::pty::claude_instructions_dir(id, layers.as_deref());
             let mut luna_dirs: Vec<String> = skills.args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect();
             luna_dirs.extend(notes);
+            luna_dirs.extend(copies.and_then(Result::ok).map(|d| d.to_string_lossy().into_owned()));
             let own = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
             if own.is_some() {
                 (skills.memory_off, skills.memory_kept) = crate::pty::claude_memory_off(&luna_dirs, &s.account_path, &dir, own.as_deref());
@@ -225,14 +264,23 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                         dir = wt;
                     }
                 }
-                None => {
-                    args.extend(["-C".into(), s.folder.clone()]);
-                    applied.push(Item::Folder.with(format!("-C {}", s.folder)));
-                    if s.worktree {
-                        args.push("--worktree".into());
-                        applied.push(Item::Worktree.with("--worktree"));
+                // A lead's fresh conversation (switch.rs) in the worktree its
+                // first turn made: `--worktree` always makes a new one (0.167.2).
+                None => match made.filter(|w| std::path::Path::new(w).is_dir()) {
+                    Some(wt) => {
+                        args.extend(["-C".into(), wt.clone()]);
+                        applied.push(Item::Folder.with(format!("-C {wt}")));
+                        dir = wt;
                     }
-                }
+                    None => {
+                        args.extend(["-C".into(), s.folder.clone()]);
+                        applied.push(Item::Folder.with(format!("-C {}", s.folder)));
+                        if s.worktree {
+                            args.push("--worktree".into());
+                            applied.push(Item::Worktree.with("--worktree"));
+                        }
+                    }
+                },
             }
             args.push("--json".into());
             // `exec` refuses a folder outside git without it; in a repository
@@ -318,6 +366,18 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 envs.push(("LUNA_MCP_TOKEN", token));
                 applied.push(Item::LunaTools.with(crate::codex::launch::LUNA_TOOLS_VALUE));
             }
+            // A lead listed the handoff's tool: no drafts folder, as `exec
+            // resume`, the turn it is asked in, takes no `--add-dir` (0.167.2).
+            // It writes its handoff in its workspace, outside Luna's folder,
+            // as file.rs takes one; its sandboxes read Luna's copy anywhere.
+            if let Some(drafts) = handoff {
+                let mut value = "on request: luna_session_handoff; written in its workspace".to_string();
+                if let Err(why) = drafts {
+                    value.push_str(&format!(" (its drafts folder could not be made private: {why})"));
+                }
+                applied.push(Item::HandoffTool.with(value));
+                applied.push(Item::AutoHandoff.with(format!("at {}% of the context", crate::agents::handoff::lead_settings().threshold)));
+            }
             let git = crate::pty::codex_git_envs(&s.mode);
             if !git.is_empty() {
                 applied.push(crate::codex::launch::git_ssl_applied(&git));
@@ -398,22 +458,82 @@ pub(super) fn user_line(uuid: &str, text: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Auto-handoff is a person's chat's alone: a helper, tools or none, is
-    /// started with no word of it, nor with its instructions as a skill.
+    /// A helper without Luna's tools is started with no word of the handoff,
+    /// nor with its instructions as a skill; nor is a lead while auto-handoff
+    /// for leads is off, but for its role's own line naming the tool (it is
+    /// never asked then).
     #[test]
-    fn a_helper_is_started_with_nothing_of_the_handoff() {
+    fn a_tool_less_helper_is_started_with_nothing_of_the_handoff() {
+        let off = crate::settings::LeadHandoff { on: false, threshold: 60 };
         for provider in [Provider::Claude, Provider::Codex] {
             for tools in [false, true] {
+                crate::agents::handoff::lead_settings_for_test(Some(if tools { off } else { Default::default() }));
                 let mut e = entry(provider);
                 e.spec.tools = tools;
                 e.spec.parent = Some("a-chat".into());
                 let (args, dir, envs, applied) = command_for(&e, "bg-no-handoff").unwrap();
                 let said = format!("{args:?}{dir:?}{envs:?}{applied:?}").to_lowercase();
+                let said = said.replace("follow `luna_session_handoff`", "");
                 for word in ["luna_session_handoff", "session-handoff", "handoffs", "auto-handoff"] {
                     assert!(!said.contains(word), "{provider:?} tools {tools}: {word} in {said}");
                 }
             }
         }
+        crate::agents::handoff::lead_settings_for_test(None);
+    }
+
+    /// A lead, while auto-handoff for leads is on, has its drafts folder made
+    /// private before every turn's CLI runs; Claude Code is given its folder
+    /// of copies, which holds the drafts folder and the copy its next
+    /// conversation reads first.
+    #[test]
+    fn a_lead_is_given_its_handoff_folder_while_the_setting_is_on() {
+        crate::agents::handoff::lead_settings_for_test(Some(Default::default()));
+        let copies = crate::agents::handoff::dir_of("bg-lead-handoff").unwrap();
+        let drafts = copies.join("drafts").to_string_lossy().into_owned();
+        let copies = copies.to_string_lossy().into_owned();
+        let mut e = entry(Provider::Claude);
+        e.spec.tools = true;
+        e.spec.mode = "default".into();
+        let (args, _, _, applied) = command_for(&e, "bg-lead-handoff").unwrap();
+        assert!(args.windows(2).any(|w| w[0] == "--add-dir" && w[1] == copies), "{args:?}");
+        assert!(applied.iter().any(|a| format!("{a:?}").contains("auto-handoff")), "{applied:?}");
+        // Codex's `exec resume` takes no `--add-dir` (0.167.2): its handoff is
+        // written in its workspace.
+        let mut e = entry(Provider::Codex);
+        e.spec.tools = true;
+        e.spec.mode = "workspace-write".into();
+        let (args, _, _, applied) = command_for(&e, "bg-lead-handoff").unwrap();
+        assert!(!args.iter().any(|a| *a == drafts || a == "--add-dir"), "{args:?}");
+        assert!(applied.iter().any(|a| format!("{a:?}").contains("written in its workspace")), "{applied:?}");
+        crate::agents::handoff::lead_settings_for_test(None);
+    }
+
+    /// A lead's fresh conversation (switch.rs) starts in the worktree its first
+    /// turn made, with no conversation to resume and no `--worktree`, which
+    /// would make another (Claude Code 2.1.323 `-w, --worktree [name]`
+    /// "Create a new git worktree"; Codex 0.167.2 "Run the session in a new
+    /// managed Git worktree").
+    #[test]
+    fn a_fresh_conversation_starts_in_the_worktree_already_made() {
+        let wt = std::env::temp_dir().join(format!("luna-fresh-wt-{}", std::process::id()));
+        std::fs::create_dir_all(&wt).unwrap();
+        let wt = wt.to_string_lossy().into_owned();
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut e = entry(provider);
+            e.spec.worktree = true;
+            e.spec.worktree_name = Some("luna-x".into());
+            e.cwd = Some(wt.clone());
+            e.session = None;
+            let (args, dir, _, _) = command_for(&e, "x").unwrap();
+            assert_eq!(dir, wt, "{provider:?}");
+            assert!(!args.iter().any(|a| a.starts_with("--worktree")), "{provider:?}: {args:?}");
+            assert!(!args.iter().any(|a| a == "--resume" || a == "resume"), "{provider:?}: {args:?}");
+            if provider == Provider::Codex {
+                assert_eq!(args[..3], ["exec", "-C", wt.as_str()]);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&wt);
     }
 
     #[test]
@@ -660,10 +780,12 @@ mod tests {
     #[test]
     fn a_helper_knows_it_is_one_on_both_clis() {
         for provider in [Provider::Claude, Provider::Codex] {
+            // An id of its own: its role layers are a file of the id's, which
+            // another test's turn of "x" may write meanwhile.
             let mut e = entry(provider);
             e.spec.parent = Some("p-1".into());
-            let (args, _, envs, applied) = command_for(&e, "x").unwrap();
-            assert!(envs.iter().any(|(k, v)| *k == "LUNA_SESSION_ID" && v == "x"));
+            let (args, _, envs, applied) = command_for(&e, "bg-knows").unwrap();
+            assert!(envs.iter().any(|(k, v)| *k == "LUNA_SESSION_ID" && v == "bg-knows"));
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
             assert!(!args.iter().any(|a| a == "--append-system-prompt"), "memory outweighs it: the role goes there");
             let layers = layers_of(provider, &args).unwrap_or_else(|| panic!("{provider:?}: {args:?}"));
@@ -675,7 +797,7 @@ mod tests {
             }
             // A lead is told of its helpers.
             e.spec.tools = true;
-            let (args, _, _, _) = command_for(&e, "x").unwrap();
+            let (args, _, _, _) = command_for(&e, "bg-knows").unwrap();
             assert!(layers_of(provider, &args).unwrap().contains("You may start helpers of your own"), "{provider:?}");
         }
         for provider in [Provider::Claude, Provider::Codex] {
@@ -961,6 +1083,7 @@ mod tests {
     #[test]
     fn golden_headless_claude_helper_with_tools_answers_permissions_through_luna() {
         const ID: &str = "golden-bg-claude-helper";
+        crate::agents::handoff::lead_settings_for_test(Some(Default::default()));
         let r = Redact::for_chat(ID);
         let mut e = entry(Provider::Claude);
         e.spec.mode = "default".into();
@@ -983,6 +1106,11 @@ mod tests {
             "mcp__luna",
             "--disallowedTools",
             "Edit,Write,NotebookEdit,mcp__luna__luna_permission",
+            // Its folder of copies, auto-handoff for leads on: read-only, it
+            // is never asked, but its next conversation reads Luna's
+            // document there.
+            "--add-dir",
+            "<handoff-dir>",
             "--add-dir",
             "<notes-dir>",
             "--settings",
@@ -1004,7 +1132,11 @@ mod tests {
             "<notes-dir>/CLAUDE.md",
             "<notes-dir>/CLAUDE.local.md",
             "<notes-dir>/.claude/CLAUDE.md",
-            "<notes-dir>/.claude/rules/**"
+            "<notes-dir>/.claude/rules/**",
+            "<handoff-dir>/CLAUDE.md",
+            "<handoff-dir>/CLAUDE.local.md",
+            "<handoff-dir>/.claude/CLAUDE.md",
+            "<handoff-dir>/.claude/rules/**"
         ]);
         assert_eq!(t.settings, Some(guard), "the guard alone");
         assert_eq!(t.mcp, Some(golden::claude_mcp_config()));

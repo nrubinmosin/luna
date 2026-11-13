@@ -4,7 +4,8 @@
   [ADR-0020](0020-session-self-handoff.md) (opt-in),
   [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md) (who knows) and
   [ADR-0023](0023-moving-a-chat-to-another-account.md) (who writes a move's
-  document)
+  document); amended by [ADR-0027](0027-auto-handoff-for-leads.md) (listed
+  to leads too, while auto-handoff for leads is on)
 - **Date:** 2026-11-12
 
 ## Context

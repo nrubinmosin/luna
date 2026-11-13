@@ -44,7 +44,7 @@ pub const MOVE_TAG: &str = "[Luna move";
 
 /// How long the document gets to be built: its reads and git are bounded on
 /// their own; this bounds the call.
-const BUILD_WAIT: Duration = Duration::from_secs(30);
+pub(super) const BUILD_WAIT: Duration = Duration::from_secs(30);
 /// How long a new chat's CLI may be not running before its opening is given
 /// up, said on its row: a pane starts it within seconds of its row, and a core
 /// restart gives it this long again (`taken_up`).
@@ -538,13 +538,13 @@ fn transcript_of(chat: &str, provider: Provider, account_path: &str, session_id:
 /// The chat's last handoff that went through, its copy read as Luna made it
 /// (`handoff_file` checks where it is and reads it private) and its hash the
 /// one on record.
-fn last_handoff(chat: &str) -> Option<LastHandoff> {
+pub(super) fn last_handoff(chat: &str) -> Option<LastHandoff> {
     let p = store::records().get(chat)?.past.iter().rev().find(|p| p.done && !p.moved)?.clone();
     let text = super::handoff_file(chat.to_string(), p.n).ok()?;
     (sha256_hex(text.as_bytes()) == p.sha256).then(|| LastHandoff { n: p.n, at: crate::background::iso(p.at).unwrap_or_default(), text })
 }
 
-fn helpers_of(chat: &str) -> (Vec<HelperFact>, usize) {
+pub(super) fn helpers_of(chat: &str) -> (Vec<HelperFact>, usize) {
     let listing = crate::agents::list::list(chat, None, false);
     let owed: Vec<String> =
         reg().lock().unwrap_or_else(|e| e.into_inner()).owed.keys().filter(|(c, _)| c == chat).map(|(_, id)| id.clone()).collect();
@@ -742,6 +742,7 @@ fn inputs_of(chat: &str, old: &Old, to_account: &str, note: String) -> Inputs {
         at: crate::background::iso(now_ms()).unwrap_or_default(),
         boundary: crate::secret::random_hex(6),
         chat_text: None,
+        lead: false,
     }
 }
 
@@ -810,7 +811,7 @@ fn warnings_of(chat: &str, worktree: bool) -> Vec<String> {
 /// build given up on ends by itself, its result dropped.
 /// `ask` is the move's last ask (`ask_span`), for a transcript window that
 /// starts inside its turn.
-fn build_within(
+pub(super) fn build_within(
     mut inputs: Inputs,
     transcript: Option<PathBuf>,
     ask: Option<(u64, Option<u64>)>,

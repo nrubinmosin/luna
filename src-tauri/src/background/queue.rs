@@ -195,7 +195,9 @@ fn join(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
 /// is by then, so they count as arrived when the CLI has it, not before.
 pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool) -> Placed {
     if e.run.is_some() || e.ending_left || e.held_back() {
-        let q = if may_join {
+        // Not into the turn that wrote a lead's handoff: what it is sent goes
+        // to the conversation after it (switch.rs).
+        let q = if may_join && e.switch.is_none() {
             match join(e, q) {
                 Ok(()) => return Placed::Joined,
                 Err(q) => q,

@@ -143,15 +143,24 @@ export const setHelpersAboveCaller = (on: boolean) => call<boolean>('set_helpers
 /** Where a helper's mode comes from when its spawn names none. */
 export type HelperMode = 'inherit' | 'account';
 
+/** Auto-handoff for leads, helpers spawned with Luna tools (agents/handoff
+ *  `lead.rs`): on, and its threshold in percent of a lead's context. */
+export interface LeadHandoffDto {
+  on: boolean;
+  threshold: number;
+}
+
 /** The places a line of sessions has, the range they may be set in, the
- *  helpers' mode when not given, and the share of a helper's context past
- *  which its notices say so, 0 for off (agents/spawn `HelperSettings`). */
+ *  helpers' mode when not given, the share of a helper's context past which
+ *  its notices say so (0 for off), and auto-handoff for leads
+ *  (agents/spawn `HelperSettings`). */
 export interface HelperSettingsDto {
   maxHelpers: number;
   min: number;
   max: number;
   helperMode: HelperMode;
   helperContextPct: number;
+  leadHandoff: LeadHandoffDto;
 }
 
 const HELPER_DEFAULTS: HelperSettingsDto = {
@@ -159,7 +168,8 @@ const HELPER_DEFAULTS: HelperSettingsDto = {
   min: 1,
   max: 32,
   helperMode: 'inherit',
-  helperContextPct: 50
+  helperContextPct: 50,
+  leadHandoff: { on: true, threshold: 60 }
 };
 export const helperSettings = () => call<HelperSettingsDto>('helper_settings', {}, HELPER_DEFAULTS);
 export const setMaxHelpers = (n: number) =>
@@ -168,6 +178,12 @@ export const setHelperMode = (mode: HelperMode) =>
   call<HelperSettingsDto>('set_helper_mode', { mode }, { ...HELPER_DEFAULTS, helperMode: mode });
 export const setHelperContextPct = (pct: number) =>
   call<HelperSettingsDto>('set_helper_context_pct', { pct }, { ...HELPER_DEFAULTS, helperContextPct: pct });
+export const setLeadHandoff = (on: boolean, threshold: number) =>
+  call<HelperSettingsDto>(
+    'set_lead_handoff',
+    { on, threshold },
+    { ...HELPER_DEFAULTS, leadHandoff: { on, threshold } }
+  );
 
 /** The page is alive: watchdog.rs rebuilds a window whose page stops saying so. */
 export const uiHeartbeat = () => call<void>('ui_heartbeat');

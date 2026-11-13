@@ -595,8 +595,9 @@ pub(super) fn spawn_is(request: u64, id: &str) -> Result<(), String> {
 
 /// The helpers' settings the window shows beside `helpersAboveCaller`: how
 /// many places a line has (`max_descendants`), the range it may be set in,
-/// and the mode a helper takes when its spawn names none (privilege.rs
-/// `settle_mode`).
+/// the mode a helper takes when its spawn names none (privilege.rs
+/// `settle_mode`), the context share its notices speak past, and auto-handoff
+/// for leads (handoff/lead.rs).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelperSettings {
@@ -606,6 +607,7 @@ pub struct HelperSettings {
     pub helper_mode: crate::settings::HelperMode,
     /// `Settings::helper_context_pct`, 0 for off.
     pub helper_context_pct: u32,
+    pub lead_handoff: crate::settings::LeadHandoff,
 }
 
 /// The share of a helper's context window past which notices about it say
@@ -622,6 +624,7 @@ pub fn helper_settings() -> HelperSettings {
         max: *HELPERS_RANGE.end(),
         helper_mode: s.helper_mode,
         helper_context_pct: s.helper_context_pct.min(100),
+        lead_handoff: crate::agents::handoff::lead_settings(),
     }
 }
 
@@ -642,6 +645,17 @@ pub fn set_max_helpers(n: u32) -> Result<HelperSettings, String> {
     let n = n.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end());
     crate::settings::update(|s| s.max_helpers = n)?;
     crate::log::info("agents", &format!("places on a line: {n}"));
+    Ok(helper_settings())
+}
+
+/// Auto-handoff for leads on or off, at `threshold`. No dialog either: a lead
+/// asked for a handoff goes on in a fresh conversation of its own, with no
+/// more reach than it had (handoff/lead.rs).
+#[tauri::command]
+pub fn set_lead_handoff(on: bool, threshold: u8) -> Result<HelperSettings, String> {
+    let threshold = threshold.clamp(crate::agents::handoff::THRESHOLD_MIN, crate::agents::handoff::THRESHOLD_MAX);
+    crate::settings::update(|s| s.lead_handoff = crate::settings::LeadHandoff { on, threshold })?;
+    crate::log::info("agents", &format!("auto-handoff for leads: {}, at {threshold}%", if on { "on" } else { "off" }));
     Ok(helper_settings())
 }
 

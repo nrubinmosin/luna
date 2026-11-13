@@ -68,6 +68,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Helpers: **Tell me when a helper's context passes** (50% unless changed, or
   never). Past it, every notice about the helper ends "(context N%)"; past
   85% a notice says so on its own, once.
+- **Auto-handoff for leads** (Settings → Agents & trust → Helpers, on at 60%
+  by default): a helper with Luna tools is offered `luna_session_handoff`, and
+  past that share of its context, at the end of a turn, Luna asks it for a
+  handoff. It goes on in a fresh conversation of its own as its turn ends, in
+  the worktree it works in, with the same id, role, constraints and helpers;
+  its parent hears of it with its next notice. A lead that can write no file
+  goes on from a handoff Luna writes from its records.
 
 ### Changed
 
@@ -83,7 +90,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - The notice that a helper has only idle processes left names what its
   transcript started them as (Claude Code's background calls, Codex's
   commands still running), not the processes alone.
-
 - Auto-handoff ticked on a chat already past its threshold, or set lower than
   where it stands, asks as soon as the chat is at rest rather than at its
   next turn's end. Turned off before Luna typed its notice, the notice is

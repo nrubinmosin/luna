@@ -34,6 +34,10 @@ pub struct Settings {
     /// where it stands (agents/notifier usage.rs `budget_news`); 0 is off. A
     /// spawn's `budgetPct` sets its own.
     pub helper_context_pct: u32,
+    /// Auto-handoff for leads, helpers spawned with Luna's tools
+    /// (agents/handoff/lead.rs): on, such a helper is listed
+    /// `luna_session_handoff` and asked for a handoff past its threshold.
+    pub lead_handoff: LeadHandoff,
     /// Per provider, the account whose settings file the others copy
     /// (account_settings/sync.rs), by name.
     pub settings_parents: SettingsParents,
@@ -70,6 +74,23 @@ pub enum HelperMode {
     #[default]
     Inherit,
     Account,
+}
+
+/// Auto-handoff for leads: whether it is on, and the threshold in percent of
+/// a lead's context window, held to the chats' range where it is read
+/// (agents/handoff `THRESHOLD_MIN`..`THRESHOLD_MAX`). On by default: a lead
+/// runs a long campaign, and its delegates' notices fill its context.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LeadHandoff {
+    pub on: bool,
+    pub threshold: u8,
+}
+
+impl Default for LeadHandoff {
+    fn default() -> Self {
+        LeadHandoff { on: true, threshold: 60 }
+    }
 }
 
 /// Which accounts something goes into: `all`, a provider's every account
@@ -408,6 +429,7 @@ impl Default for Settings {
             max_helpers: crate::agents::spawn::HELPERS_DEFAULT,
             helper_mode: HelperMode::Inherit,
             helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
+            lead_handoff: LeadHandoff::default(),
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
             fetch_before_worktree: true,

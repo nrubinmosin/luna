@@ -35,6 +35,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         deleting: false,
         handing: false,
         observed: Observed::default(),
+        switch: None,
     };
     claim(&mut e);
     lock().entries.insert(id.to_string(), e);
@@ -284,11 +285,15 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // lock (library/folders.rs `session_args`).
     // The helper's account counted as in use from here, as a chat's start
     // counts its own (`library::lay_out_for`).
-    let (account_path, role) = lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec))).ok_or("no such helper")?;
+    let (account_path, role, spec) =
+        lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec), e.spec.clone())).ok_or("no such helper")?;
     let reserved = crate::library::lay_out_for("before a helper's turn", &account_path)?;
     // Its role's texts, also off the lock: an override's read waits on the
     // library's system lock while an adoption swaps one in.
     let texts = crate::library::role_texts(role);
+    // A lead's drafts folder, made private before its CLI runs: off the lock
+    // too, as it resets the folder's DACL.
+    let handoff = handoff_dir(id, &spec);
     let (args, dir, envs, applied, provider, on_stdin, line, account) = {
         let r = lock();
         if r.closed {
@@ -298,7 +303,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         if e.run.as_ref().is_some_and(|run| run.stopped) {
             return Err(STOPPED.into());
         }
-        let (args, dir, envs, applied) = command_with(e, id, &texts)?;
+        let (args, dir, envs, applied) = command_with(e, id, &texts, handoff.as_ref())?;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
         (args, dir, envs, applied, e.spec.provider, stdin_with(e, prompt, texts.note.as_deref()), line, e.spec.account_path.clone())
