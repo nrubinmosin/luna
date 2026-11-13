@@ -84,9 +84,11 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   `luna_session_get`), never changes after the spawn, and is the last of its
   role layers at every turn, under a heading that lets it only narrow the
   session's other instructions (the stricter applies where they conflict:
-  an injected lead's text must not loosen its descendants' rules). Taken over as the person's chat, a session drops
-  it with the other helper settings (`HELPER_SETTINGS`). Text, not
-  enforcement: privilege is still the mode's (ADR-0007).
+  an injected lead's text must not loosen its descendants' rules). Taken
+  over as the person's chat, a session drops it with the other helper
+  settings (`HELPER_SETTINGS`), so no helper it starts inherits it; a Codex
+  thread still carries it (see "Handed over"). Text, not enforcement:
+  privilege is still the mode's (ADR-0007).
 - The instruction says the CLIs' own subagents cannot use another provider or
   account (without it a Codex orchestrator used its own `spawn_agent`).
 - A helper gets Luna's server and none of its account's, unless spawned with
@@ -197,7 +199,14 @@ then the window's `background_promoted`) becomes theirs for good
    so the line outlives a core; the dev caller's goes to the log.
 
 The helper's own helpers stay its; the chat the person now has owes them
-nothing new. A row the window could not make leaves everything as it was.
+nothing new. A Codex helper's thread keeps the developer message it was
+started with (`codex resume` sends no `developer_instructions`), so the same
+hold keeps what it carried apart from its settings (`STARTED_WITH`: its role,
+its constraints' words), `background_promoted` adds the thread it ran in
+(`started_in`), `register` keeps it across starts, and the pane that resumes
+that thread says it in `role.layers-kept` (`carried_into`); a new thread
+says nothing. A Claude Code session reads its layers at every start, so a
+chat's replace a helper's. A row the window could not make leaves everything as it was.
 `agents.jsonl` records the run as ended `taken over by the person`
 (`agentlog::TAKEN_OVER`): a history's lineage goes by each link's owner now
 while the core knows it, and past a gone link by the spawner its run records,

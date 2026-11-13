@@ -275,11 +275,12 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
                 None => return Ok(true),
             }
         }
-        let mut count = None;
+        let (mut count, mut thread) = (None, None);
         let handed = crate::agents::take_over(&id, || {
             // Gone already (deleted meanwhile): the row has its conversation.
             let mut e = lock().entries.remove(&id)?;
             count = Some(e.turns_ended);
+            thread = e.session.clone();
             let mut unsent = std::mem::take(&mut e.undelivered);
             unsent.extend(std::mem::take(&mut e.queue));
             Some(unsent)
@@ -297,6 +298,9 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
         if let Some(n) = count {
             crate::activity::count_at_least(&id, n);
         }
+        // The conversation the pane resumes: a Codex one still carries what it
+        // was started with, and is told so there (agents/handover.rs).
+        crate::agents::started_in(&id, thread.as_deref());
         changed();
         // Or a core killed now would take it up beside the chat it has become.
         save();

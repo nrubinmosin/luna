@@ -103,6 +103,12 @@ hooks run unasked.
     notice names the file it is in. Luna asks before it does this. If Luna
     cannot finish opening it (the window closed midway and stays closed), the
     helper goes back to its agent after 15 minutes, and the agent is told.
+    A Codex helper's conversation keeps what it was started with: Codex
+    resumes a conversation with the instructions it began with, so the chat
+    still has its role and constraints as a helper (until Codex compacts its
+    context), and its **What Luna applied** says so (`role.layers-kept`).
+    Start a new chat for one without them. A Claude Code helper's chat reads
+    a chat's instructions from its first start as yours.
   - **Stop** and **Delete**; Delete waits while it is at work, and keeps a
     worktree that holds uncommitted work.
 - Each of your chats has a number of places for the sessions under it, its
@@ -167,7 +173,9 @@ hooks run unasked.
   for word; none is ever taken off (4 KB a spawn, 16 KB in all). They show in
   the helper's settings (`luna_session_get`) and its **What Luna applied**.
   They are instructions, not permissions: what a helper may do is still its
-  mode's. A helper you open as your own chat leaves them behind.
+  mode's. A helper you open as your own chat passes none on to helpers it
+  starts; a Claude Code one is no longer told them, a Codex one keeps them
+  in its conversation (see **Open as chat**).
 - A helper started with Luna's tools is a **lead**, one without them a
   **helper**: each is told of its role as described in
   [the library](library.md#what-a-session-is-told-of-its-role), and the
