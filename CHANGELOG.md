@@ -8,6 +8,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-11-13
+
+Luna now installs Codex 0.169.0, and Settings no longer offers a CLI version
+below the minimum safe one: such a version says why instead.
+
 ### Changed
 
 - Codex 0.169.0 is on the known-good list, so the default channel installs
@@ -1233,7 +1238,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.2...HEAD
+[0.18.2]: https://github.com/nrubinmosin/luna/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/nrubinmosin/luna/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/nrubinmosin/luna/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/nrubinmosin/luna/compare/v0.16.0...v0.17.0
