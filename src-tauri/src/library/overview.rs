@@ -234,14 +234,19 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         .map(|a| a.name.clone())
         .collect();
     let kept = p.kept.iter().map(|k| kept_copy(&dirs, &lib, &accounts, k, ledger.kept.get(k).is_some_and(is_file))).collect();
+    // An entry given per session that would push a Codex session's
+    // developer_instructions off its command line (role.rs).
+    let mut over = if found { codex_overflows(&dirs, &lib, &accounts) } else { BTreeMap::new() };
+    let mut info = |name: &String, text| {
+        let mut i = instructions_info(name, text, &lib);
+        i.problem = i.problem.or_else(|| over.remove(name));
+        i
+    };
     Ok(Overview {
         root: dirs.root.to_string_lossy().into_owned(),
         is_default: lib.source.is_none(),
         found,
-        instructions: instructions
-            .as_ref()
-            .map(|i| i.iter().map(|(name, text)| instructions_info(name, text, &lib)).collect())
-            .unwrap_or_default(),
+        instructions: instructions.as_ref().map(|i| i.iter().map(|(name, text)| info(name, text)).collect()).unwrap_or_default(),
         instructions_for,
         old_instructions: old_instructions.is_file().then(|| old_instructions.to_string_lossy().into_owned()),
         skills,
