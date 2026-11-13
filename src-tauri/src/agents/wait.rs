@@ -377,9 +377,11 @@ fn wait_for(
             };
             let mut failed = failure();
             // A turn that stopped on an error has said all it will.
-            let reply_now = |stopped: bool| reply_of(pty, id, known.provider, asked_at, alone, stopped);
+            // Which of the caller's requests each answer is to, as a notice says it.
+            let requests = crate::agents::owed::requests_of(caller, id);
+            let reply_now = |stopped: bool| reply_of(pty, id, known.provider, asked_at, alone, stopped, requests.clone());
             let mut reply = if outcome == "job_done" {
-                asked_at.and_then(|at| reply_with_report(id, &said_since(pty, id, known.provider, at), alone))
+                asked_at.and_then(|at| reply_with_report(id, &said_since(pty, id, known.provider, at).asked(requests.clone()), alone))
             } else if says {
                 reply_now(failed.is_some())
             } else {
@@ -726,9 +728,10 @@ fn reply_of(
     asked_at: Option<u64>,
     cut: bool,
     stopped: bool,
+    requests: Vec<crate::agents::said::Request>,
 ) -> Option<(String, ReportPart)> {
     let replies = match asked_at {
-        Some(at) => replies_since(pty, id, provider, at, stopped),
+        Some(at) => replies_since(pty, id, provider, at, stopped).asked(requests),
         None => Said::one_turn(replies_since(pty, id, provider, 0, false).texts.pop().into_iter().collect()),
     };
     reply_with_report(id, &replies, cut)
@@ -1219,8 +1222,12 @@ mod tests {
             assert!(e.contains("not one you spawned") || e.contains("no longer yours"), "{caller}: {e}");
         }
         let call = crate::mcp::Call::new();
-        let w = wait("wt-mid", "wt-helper", "turn_done", 5, Some(0), Some("all"), &call).expect("scope all reaches it");
+        // The person's chat at the top reaches it with scope all; a helper never past its own subtree.
+        let w = wait("wt-top", "wt-helper", "turn_done", 5, Some(0), Some("all"), &call).expect("scope all reaches it");
         assert_eq!(w.outcome, "turn_done");
+        let e = wait("wt-mid", "wt-helper", "turn_done", 5, Some(0), Some("all"), &call).err().unwrap();
+        assert!(e.contains("no longer yours"), "{e}");
+        assert!(in_scope("wt-mid", "wt-helper", Some("all"), "wait on").unwrap_err().contains("person's chats"));
         let e = wait("wt-mid", "wt-helper", "turn_done", 5, Some(0), None, &call).err().unwrap();
         assert!(e.contains("no longer yours"), "{e}");
         // A wait on several holds to it the same way: the one out of reach comes

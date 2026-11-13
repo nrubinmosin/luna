@@ -361,7 +361,8 @@ pub(super) fn take_up_chats(saved: SavedChats) {
 
 /// What only a helper's settings hold (`registry::CORE_SETTINGS`, `background`):
 /// a chat of the person's has none of them.
-pub(super) const HELPER_SETTINGS: [&str; 6] = ["background", "resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "connectors"];
+pub(super) const HELPER_SETTINGS: [&str; 8] =
+    ["background", "resumeOnRestart", "budgetTokens", "budgetPct", "budgetBreach", "budgetTold", "connectors", "constraints"];
 
 /// How long this core has been up.
 pub(super) fn core_up_ms() -> u64 {
@@ -593,8 +594,10 @@ mod tests {
     fn a_line_still_to_be_told_outlives_a_core() {
         let line = ("nl-caller".to_string(), "The person took over your helper nl-h".to_string());
         reg().lock().unwrap().news.push(line.clone());
-        let saved = chats_now();
-        assert!(saved.news.contains(&line));
+        assert!(chats_now().news.contains(&line));
+        // Only this line is taken up again: the rest of what `chats_now` saw is
+        // other tests' sessions, which a take-up would write back over theirs.
+        let saved = SavedChats { news: vec![line.clone()], ..Default::default() };
         reg().lock().unwrap().news.retain(|l| *l != line);
         let back: SavedChats = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
         let again: SavedChats = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();

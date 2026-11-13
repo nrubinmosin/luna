@@ -40,6 +40,27 @@ copies of both CLIs current.
 
 ![The dark theme, two panes](docs/screenshots/dark.png)
 
+## What Luna adds to a model's context
+
+Luna spends a model's context only where you turned it on, and says where.
+With default settings:
+
+- **A chat without Luna tools:** nothing.
+- **A chat with Luna tools:** about 2,500 tokens with every request (the
+  instructions and 16 tools), plus a notice of ~50 to 135 tokens each time a
+  helper it started has news.
+- **A helper Luna starts:** about 210 tokens of what it is told of its role,
+  and 65 after its task; a lead, which starts helpers of its own, about 2,800.
+- **A handoff:** about 1,400 tokens once, when the chat or lead is asked for one.
+
+Turned on, the Wait guard adds about 125 tokens to a chat per command it
+refuses, and a role text of yours goes with every request of its sessions.
+
+What a session is told of its role, the note after its task and the
+handoff's instructions are yours to change in the library's System texts. The
+whole list, channel by channel, with what each costs and how to turn it off:
+[What Luna adds to a model's context](docs/user-guide/context.md).
+
 ## Install
 
 Download the setup (`Luna_<version>_x64-setup.exe`) from

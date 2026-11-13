@@ -37,7 +37,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/teardown.rs` | kill, delete, the person's guarded delete (`delete_by_user`, `at_stake`), `reap` (autoDelete), `forget` |
 | `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
 | `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
-| `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and budget news |
+| `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and context news |
 | `agents/handoff/` | auto-handoff ([its own page](handoff.md)): `luna_session_handoff`, the instructions served (`served.rs`), the threshold notices (`watch.rs`), the file check and copy (`file.rs`), the switch's machine (`phase.rs`), its saved state (`store.rs`, `<data>/handoffs/handoffs.json`) and what the prompt and notices say (`facts.rs`) |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
 | `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic its opening and the topics; every session with tools reads it, so it has nothing of auto-handoff |
@@ -52,24 +52,43 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   ask no permission in any mode; the checkbox is the permission.
 - Tokens are per session and reissued on every spawn. The instruction travels
   in `initialize`; together about 2k tokens once.
-- Every session has `LUNA_SESSION_ID`; a helper also `LUNA_PARENT_ID`. A helper
-  is told what it is and to write in its task's language (`pty::helper_line`),
-  naming the words instructions files use for the person (the operator, the
-  user, the person at this machine) so that rules set for that person's chat do
-  not reach it, and what it still owes of them: to stop, before its turn ends,
-  the background work it started that nothing needs any more (watchers, wait
-  loops, dev servers; not helpers it waits on, nor what its task keeps
-  running), keep each caveat with its claim, and send nothing outward unasked; and to
-  install nothing and change nothing machine-wide or in its CLI account's folder
-  (settings, PATH, the registry, services, scheduled tasks, global git or shell
-  config, memory, skills) unless its task names that change, giving its caller
-  the exact command instead. The library can keep such rules from it altogether (an entry's
-  audience, [library](library.md#audiences)). Claude Code by `--append-system-prompt` and a note after its
-  first prompt (`pty::helper_prompt`), as memory files outweigh an appended
-  system prompt; Codex by the note after each turn's prompt, because
-  `-c developer_instructions=` would replace a value Luna would have to resolve
-  from Codex's config stack. The transcript readers drop the note
-  (`without_note`). Slash-command prompts go without.
+- Every session has `LUNA_SESSION_ID`; a helper also `LUNA_PARENT_ID`. A
+  session is told its role at memory level (ADR-0026, [library: role
+  layers](library.md#role-layers)): a lead (spawned with `tools`) or a helper
+  that its task comes from another agent, to answer it in the language and
+  form the task asks for, and what it still owes of the rules written for a
+  person's chat: to stop, before its turn ends, the background work it started
+  that nothing needs any more, keep each caveat with its claim, send nothing
+  outward unasked, and install nothing and change nothing machine-wide or in
+  its CLI account's folder unless its task names that change; a lead also that
+  it owns what its helpers report and passes its constraints on. Those are
+  system texts the person may override (`role-lead`, `role-helper`). Claude
+  Code reads them as `hooks/<id>/CLAUDE.md` through `--add-dir` at every turn;
+  Codex in `-c developer_instructions`, after its config stack's own value.
+  The library can keep the person's chat's rules from it altogether (an
+  entry's audience, [library](library.md#audiences)). Beside the task, a
+  one-line note (`note-lead`, `note-helper`, `pty::helper_prompt`) says it
+  comes from another agent, not a person, after a Claude Code helper's first
+  prompt and every Codex one's: a Codex thread may have compacted its task far
+  from its developer message. Its tag is `[A note, not part of the task: …]`,
+  naming neither Luna nor any session. The transcript readers drop the note
+  (`without_note`): Luna's defaults, every override note ever served (by
+  hash, `<data>/notes-served.json`, the last 64) and the lines earlier Lunas
+  wrote under their tag. Slash-command prompts go without.
+- **Constraints** (`SpawnParams::constraints`, `spawn::Constraint`): text a
+  spawn adds, word for word, to the chain its caller carries (read from the
+  caller's registry settings, `constraints_of`); checked as plain text (no
+  control characters but line breaks and tabs), at most 4 KB per spawn and
+  16 KB per chain. The chain goes on the helper's `Spec` and into its registry
+  settings as `"constraints"` (kept across starts, `CORE_SETTINGS`; shown by
+  `luna_session_get`), never changes after the spawn, and is the last of its
+  role layers at every turn, under a heading that lets it only narrow the
+  session's other instructions (the stricter applies where they conflict:
+  an injected lead's text must not loosen its descendants' rules). Taken
+  over as the person's chat, a session drops it with the other helper
+  settings (`HELPER_SETTINGS`), so no helper it starts inherits it; a Codex
+  thread still carries it (see "Handed over"). Text, not enforcement:
+  privilege is still the mode's (ADR-0007).
 - The instruction says the CLIs' own subagents cannot use another provider or
   account (without it a Codex orchestrator used its own `spawn_agent`).
 - A helper gets Luna's server and none of its account's, unless spawned with
@@ -100,19 +119,31 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 
 | Tool | May target |
 | --- | --- |
-| `luna_session_list`, `luna_session_get` | the caller's own; with `scope: "all"` every session of this launch, and with `ids` any session's row, as metadata: another's `ask`, `askId` and `task` only with `scope: "all"` |
-| `luna_run_list` | the caller's spawns and its helpers' (by owner now, else the recorded lineage); everyone's with `scope: "all"` |
-| `luna_message_list`, `luna_report_get` | its descendants; with `scope: "all"` any session but its own |
-| `luna_session_send` | its descendants; with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
-| `luna_session_wait` | its descendants; with `scope: "all"` any session but its own |
+| `luna_session_list`, `luna_session_get` | the caller's own; from a person's chat, with `scope: "all"` every session of this launch, and with `ids` any session's row, as metadata: another's `ask`, `askId` and `task` only with `scope: "all"`. A helper names only itself and its subtree (`ids_in_reach`) |
+| `luna_run_list` | the caller's spawns and its helpers' (by owner now, else the recorded lineage); everyone's with `scope: "all"`, from a person's chat |
+| `luna_message_list`, `luna_report_get` | its descendants; from a person's chat with `scope: "all"` any session but its own |
+| `luna_session_send` | its descendants; from a person's chat with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
+| `luna_session_wait` | its descendants; from a person's chat with `scope: "all"` any session but its own |
 | `luna_session_stop`, `luna_session_delete` | descendants only, never one the person is opening as a chat (`promoting`) |
-| `luna_session_answer` to a model's question | its descendants; with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`) |
+| `luna_session_answer` to a model's question | its descendants; from a person's chat with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`) |
 | `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, at the caller's privilege |
 | `luna_session_spawn` | a background helper at no more privilege than the caller, never in or above the data dir; a Codex one never with an approval that asks a person |
+| `luna_notification_send`, `luna_power_set` | a person's chat only (`persons_chat_only`): a helper's word reaches the person through the chat above it |
 | `luna_session_handoff` | the caller's own chat only (no target argument); offered only to a person's chat with Luna tools, and answered only while that chat has an open ask (the threshold's, the person's Hand off now, a move's); to any other, a tool there is not |
 
 Every descendant is a background helper: a chat the window runs has no parent,
 so no agent interrupts, stops, deletes or approves for it.
+
+**A helper reaches only its own subtree**
+([ADR-0025](../adr/0025-a-helper-reaches-only-its-own-subtree.md)). Only a
+person's chat (`registry.rs` `persons_chat_in`: no parent, not an orphan, not
+run in the background; or the dev caller) may say `scope: "all"`, notify the
+person or set the PC's power. A helper, a lead with tools included, is refused
+`scope: "all"` in every tool (`scope_all_in`, `SCOPE_ALL_REFUSED`), and
+`in_scope`, `authorize_view` and `authorize_send` (`beneath`) refuse it any
+session not under it, its parent and the person's chats among them, saying
+that what is for anyone else goes in its reply. A prompt injected into a
+helper deep in a tree stays in that tree.
 
 Every call's arguments are held to its tool's schema first (`arguments_fit`):
 an unknown key is refused naming those the tool takes, a value of the wrong
@@ -120,8 +151,10 @@ type or outside its enum is refused, a required one must be there and not
 empty. `scope` is checked in `mcp.rs` (`agents::in_scope`) before the tool runs;
 an unknown session or the caller itself is left to the tool's own refusal.
 
-Tool depth is 1 (a helper's helpers get no tools); at most 8 descendants per
-chat. The full matrix with code references is in the
+Tool depth is 1 (a helper's helpers get no tools). A line, a person's chat and
+every session under it, has as many places as Settings → Helpers says
+(`Settings::max_helpers`, 8 by default, held to 1–32 by `max_descendants`);
+see Places below. The full matrix with code references is in the
 [threat model](../security/threat-model.md#5-mcp-authorization-matrix).
 
 **Lineage.** Children outlive their parent (`forget`): each passes to the
@@ -166,7 +199,14 @@ then the window's `background_promoted`) becomes theirs for good
    so the line outlives a core; the dev caller's goes to the log.
 
 The helper's own helpers stay its; the chat the person now has owes them
-nothing new. A row the window could not make leaves everything as it was.
+nothing new. A Codex helper's thread keeps the developer message it was
+started with (`codex resume` sends no `developer_instructions`), so the same
+hold keeps what it carried apart from its settings (`STARTED_WITH`: its role,
+its constraints' words), `background_promoted` adds the thread it ran in
+(`started_in`), `register` keeps it across starts, and the pane that resumes
+that thread says it in `role.layers-kept` (`carried_into`); a new thread
+says nothing. A Claude Code session reads its layers at every start, so a
+chat's replace a helper's. A row the window could not make leaves everything as it was.
 `agents.jsonl` records the run as ended `taken over by the person`
 (`agentlog::TAKEN_OVER`): a history's lineage goes by each link's owner now
 while the core knows it, and past a gone link by the spawner its run records,
@@ -188,7 +228,49 @@ spawn on disk (`SpawnUnderWay`), registers the helper with its parent
 (`spawn_is` notes its task and, for a Codex one in a worktree of its own, the
 worktrees there were), starts its first turn and answers with `id`,
 `settings`, `turnsEnded`, `sameFolder` (other live sessions in its folder) and
-the worktree once the CLI has made it (`worktreePending` until then).
+the worktree once the CLI has made it (`worktreePending` until then), and
+`places`.
+
+**Places.** The cap is the line's: every session under the top chat, every
+generation, and every spawn under way with no session yet, counted in the hold
+that records a spawn (`under_cap`, `cap_room`); an `autoDelete` helper whose
+answer reached its caller takes none. `places` (`Places`, in the spawn's result
+and in `luna_session_list`) is `inUse` of `of` on the caller's line and
+`underYou`, those under the caller itself. A refusal names the sessions the
+caller can delete itself (`free_first`); below the top it says the rest are
+the top chat's to free, and the top chat hears it (`refused_a_place`, kept in
+`Registry::places_refused`): one line per burst of refusals, riding its next
+notice or going alone after `RIDE_MAX_MS` as other riders do (`riders_go`),
+cleared once that notice is in (`places_told`); a refusal after that starts a
+new line.
+
+**Mode when not given.** A spawn that names no mode (Claude: no
+`permissionMode`; Codex: neither `sandbox` nor `approval`) takes, with
+Settings → Helpers → "Helpers' mode when not given" at "The spawning chat's"
+(`HelperMode::Inherit`, the default), the caller's own mode on the same CLI,
+and across CLIs the highest helper mode its privilege covers on the one scale
+(`privilege.rs` `inherited`, `CLAUDE_LADDER`, `CODEX_LADDER`): a Codex chat
+that asks a person gives `never` with its sandbox; a Claude Code `acceptEdits`
+chat a Codex `read-only`. "The account's default" (`HelperMode::Account`)
+takes the account's and project's default, as before. Either way the mode is
+held to the caller's (`cap`) and pinned; `settings.modeFrom` says `caller`,
+`callerNearest` or `account`. The dev caller has no mode and always takes the
+account's. Claude Code helpers start in `auto` and `dontAsk` too
+(`CLAUDE_MODES`: `claude -p --permission-mode` takes both, 2.1.322).
+
+**One worktree at a time per repository.** Each CLI makes a helper's worktree
+with `git worktree add` as its first turn starts, and two of those in one
+repository at once failed with "unable to stat just-written file". A spawn
+with `worktree: true` holds its repository's queue (`worktree_queue`, keyed by
+the common git folder, `worktree::repository_key`) from starting the turn
+until the CLI has said where its worktree is, the turn has ended without one,
+or `WORKTREE_WAIT` is up.
+
+**Looking into a helper's worktree.** `luna_session_get` on a helper in a
+worktree adds `lastCommit` (its subject) and `status` (`git status
+--porcelain`, the same lines as `--short`, at most 20, `statusMore` the rest;
+`worktree::work_in`): a parent whose CLI keeps it out of other worktrees can
+see uncommitted work all the same.
 
 `account` may be a list of one provider's accounts: the first signed in with
 every window under 95%, else the one with most room; `accountChoice` says why.
@@ -339,7 +421,11 @@ turn, stopped on a prompt (once per stop) or exited.
   After that the caller hears only of a turn no notice started (`notice_turn`,
   `real_turn_past`) or the job's end (`Verdict::JobOver`). All of it idle for 30
   min (`IDLE_JOB_MS`): one notice that only idle processes are left
-  (`Settled::Idle`); the debt stays open. A job's end is clocked on the debt
+  (`Settled::Idle`), with what the transcript started them as (`idle_line`:
+  Claude Code's open background calls, `claude::session::background_calls`;
+  Codex's `exec_command` calls whose output said `Process running with session
+  ID N` and no `write_stdin` to it since said it exited,
+  `codex::session::background_calls`); the debt stays open. A job's end is clocked on the debt
   itself (`Owed::held`): the notifier and a `wait` go by the same 20 s
   (`held_for_wait`, `job_end_stood`), so the end reaches the caller once.
 - A notice is an ordinary turn of the caller; a dev caller with no terminal gets
@@ -351,9 +437,12 @@ turn, stopped on a prompt (once per stop) or exited.
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
   `chat-ties.json` until told.
 - **Riders.** A job's end with nothing said (`Settled::NoNews`), the idle line,
-  quota news and budget news are no reason to wake a caller: they ride with the
-  next notice (`riders_go`), and go alone only once they are all it is owed,
-  nothing in Luna is busy, or after `RIDE_MAX_MS`.
+  a context line (`budget_news`) and a refusal for want of places are no reason
+  to wake a caller: they ride with the next notice (`riders_go`), and go alone
+  only once they are all it is owed, nothing in Luna is busy, or after
+  `RIDE_MAX_MS`. Quota news does not ride: its lines go into the notice's lines
+  as they are put together (mod.rs, before `riders_go` is asked), like a turn's
+  end, so a window at 90% wakes the caller and brings the riders with it.
 - **Company.** A notice ready for an idle caller that is owed an answer by
   another session still mid-turn (`Turn::Busy`) waits for it up to
   `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
@@ -362,9 +451,69 @@ turn, stopped on a prompt (once per stop) or exited.
   have; one that carries a question or a permission prompt (`Settled::Waiting`,
   `Settled::Asked`) never waits.
 - A helper with its own helpers out (`waits_on_helpers`) reads `background`; a
-  turn on a notice from them counts once it has all their answers. Meanwhile
-  its parent hears of turns that wrote a message of 400 characters or more
-  (`news_for_parent`), once each, only ever upward.
+  turn on a notice from them counts once it has all their answers.
+- **Leads.** A lead (`is_lead`: spawned with tools) whose delegates still work
+  (its own helpers out, or what its CLI left in the background) is not done as
+  a matter of course: a turn it ends then settles as `Settled::Skip` (no
+  notice, `told_pending` set, the debt's offset kept, where that turn's text
+  ends kept as `Owed::held_to`), so what it wrote rides in its report with
+  the next notice, never "NOT done yet". Not the first
+  turn to answer a send of its caller's (`Owed::by_send`, before
+  `told_pending`): that is the answer asked for, unless the send asked for
+  none. A message whose
+  first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`
+  (`said::says_status`, case-sensitive, alone or before `:` or a space,
+  markdown marks aside) goes at once (`worth_waking`), and so does a turn on
+  its helpers' notices that wrote one (`news_for_parent`, only ever upward).
+  Prompts, questions, errors, exits and the quiet-turn notices go as ever.
+  The lead's role text says so (`resources/system/role-lead.md`).
+  Once all its delegates are done (`Verdict::JobOver`, or a turn on its own
+  helpers' notices once they have all answered, `turns_on_helpers`) with
+  nothing said of them (`quiet_on_helpers`, `quiet_since_held`: that last
+  turn wrote nothing, or nothing since `held_to`; what it wrote while they
+  worked waits for its parent and is no word on their end),
+  Luna wakes the lead instead of telling its parent (`wake_lead`). Whether
+  its interim turn was held back first is no matter: a helper that answers
+  within that turn's reply grace ends before the notifier has looked at it.
+  A notice never drops what a session wrote because its last turn wrote
+  nothing (`written_since`, `replies_since` stopped). The wake is a queued
+  line opening `Your delegates have finished` (`WAKE_HEAD`), naming what it
+  was last seen waiting on (`note_delegates`), once per end (`Registry::woken`,
+  by the count it was seen at; a notice of the lead's end to another of its
+  callers, told without a wake, leaves it standing until the lead has ended
+  a turn past it, notifier `settle_delivered`), counted by the breaker as the
+  pair (lead, lead). The turn it starts is marked `NoticeTurn::wake` and counts as the
+  lead's own; if it ends with nothing said since the wake, the parent hears
+  the lead "seems stuck" (once: it settles the debt). A wake not taken up
+  within `WAKE_WAIT_MS` (10 min), or one the breaker stops, leaves the parent
+  told as before. A lead mid-switch to a fresh conversation
+  ([handoff](handoff.md#leads)) is not woken, its parent waiting on, and as
+  the fresh one starts a wake queued or given in the one it leaves is dropped
+  (`lead_goes_fresh`): the opening says where its delegates stand.
+- **Requests.** Each (caller, session) numbers the caller's requests (owed.rs
+  `Requests`: a spawn 1, each send one more, with its `requestKey`), and a
+  debt covers those made since the last one settled. With more than one,
+  `Said::asked` puts each message down to the latest request whose text (its
+  first 60 characters, `request_head`) opened a prompt at or before it; the
+  notice says it answers several and which the quoted report is for
+  (`answering`, `begins_re`), and `answer_text` sets each request's part apart
+  under `Re request N`, the latest first, as do `luna_report_get` and
+  `luna_session_wait` (`report_text`). Kept in memory only: after a core
+  restart an answer names no request.
+- **No reply asked.** A send with `expectReply: false` sets `Owed::no_reply`
+  (a later send that asks for one clears it). A turn that answers it wakes the
+  caller only with a status word or a message of 400 characters or more;
+  otherwise the debt settles with no notice (`Settled::Unasked`). A send that
+  takes in a debt a notice may be telling of as it comes keeps what it owes
+  of its own past each debt it took in, the last four (`Owed::since`, by
+  `rev`): once that notice settles the debt it was put together on, whichever
+  that was, what is left is what came after it alone, from where the first
+  ask after it was asked, wanting a reply only if one of them did, with their
+  requests (owed.rs `told_before`), so an earlier answer is not told again.
+  The rest is the debt as it stands: the last ask's baseline and what was
+  decided of it (`queued`, `late`, `unsure`, `cut_short`). A session gone on
+  in another transcript has every offset its debts keep moved there
+  (read.rs `moved_to`: the cursor, `held_to` and each `since`'s).
 - **The breaker.** Past 12 turn-end notices in 15 minutes for one (caller,
   session) pair (`BREAKER_NOTICES`), that pair's turn and job news stops: the
   last notice says so, the log warns, the desktop is told once, and a person
@@ -374,9 +523,23 @@ turn, stopped on a prompt (once per stop) or exited.
 - **Quota news.** An account a caller's live helpers run on reaching 90%, then
   95%, of a window, once per level per window, kept in
   `<data>/quota-told.json`.
-- **Budget.** `budgetTokens` on a spawn: `budget_news`, every fifth look, reads
-  `Context::of`; the first reading past it stays as `budgetBreach` and rides to
-  the parent once. Nothing is stopped.
+- **Context.** Every fifth look `budget_news` reads each helper's context
+  (`Context::of`) against its level (`level_of`): its spawn's `budgetPct` (0:
+  never), else its deprecated `budgetTokens` as the share of the window they
+  are, else the person's setting (`Settings::helper_context_pct`, 50 by
+  default, 0 off). Past it, `Registry::context_seen` holds the reading and
+  every notice line about the helper ends ` (context N%)` (`context_rider`).
+  Past 85% (`ALARM_PCT`), or its level if higher, the first reading stays as
+  `budgetBreach` and a line of its own rides to the parent once, advising a
+  fresh helper unless it hands off by itself (`hands_off_by_itself`: a lead
+  while auto-handoff for leads is on, handoff `lead_hands_off`). Nothing is
+  stopped. A lead's reading goes as its fresh conversation starts and is not
+  taken while its switch is under way: the rider comes back with the fresh
+  one's share.
+- **The log.** Each notice's line names, per session told of, what became of
+  it (`kind_of`, the `Settled` variant) and how long it was held for company
+  (`Notice::held_for`): what a wider batching window would have saved is read
+  off there.
 
 ## Typing into terminals
 

@@ -23,8 +23,9 @@ pub(super) struct Unit {
     target: Target,
     /// What the library has for it, or why it has nothing fit to lay out.
     pub(super) source: Result<Files, String>,
-    /// Instructions for one kind of session: `source` has the line saying so
-    /// before them (audience.rs `worded`). `Both` for everything else.
+    /// Instructions laid out for the person's chats alone: `source` has the
+    /// line saying so before them (audience.rs `worded`). Every session's for
+    /// everything else.
     pub(super) banner: Audience,
 }
 
@@ -307,8 +308,8 @@ pub(super) fn units(
         // of its copies out.
         let source = match instructions.as_ref().map(|found| &found[name]) {
             Ok(Ok(None)) => continue,
-            // Meant for one kind of session, it says so (audience.rs).
-            Ok(Ok(Some(text))) => Ok(Files::from([(String::new(), worded(text, instructions_audience(lib, name)))])),
+            // Laid out for the person's chats alone, it says so (audience.rs).
+            Ok(Ok(Some(text))) => Ok(Files::from([(String::new(), worded(text, banner_of(lib, name)))])),
             Ok(Err(e)) | Err(e) => Err(e.clone()),
         };
         out.push(Unit {
@@ -320,7 +321,7 @@ pub(super) fn units(
             shown: None,
             target: account(a),
             source,
-            banner: instructions_audience(lib, name),
+            banner: banner_of(lib, name),
         });
     }
     for name in lib.skills.keys() {
@@ -335,7 +336,7 @@ pub(super) fn units(
                 shown: None,
                 target: account(a),
                 source: files.clone(),
-                banner: Audience::Both,
+                banner: Audience::EVERY,
             });
         }
     }
@@ -374,7 +375,7 @@ pub(super) fn units(
                     shown,
                     target: Target::Folder { path: f.path.clone(), provider: a.provider, name: a.name.clone() },
                     source,
-                    banner: Audience::Both,
+                    banner: Audience::EVERY,
                 });
             }
         }

@@ -14,25 +14,40 @@ The model can start a helper session (another model, another account, Codex
 instead of Claude) with an opening prompt, wait for its reply, send follow-ups,
 answer what it asks, and delete it when done, worktree and its `worktree-*`
 branch included if it asked for one. The tools and a short instruction cost
-about 2k tokens once per session; the full manual is `luna_guide_get`'s, read only
-when the model asks: whole with `topic: "all"` (the instruction says to, before
-the first spawn), one section by a word of its title (`topic: "spawning"`), or,
-with no topic, its opening and the sections to ask for. A chat without the box knows nothing of Luna, and neither
-does a background helper spawned without tools.
+about 2,500 tokens with every request of a tooled session ([what Luna adds to a
+model's context](context.md)); the manual is `luna_guide_get`'s, read only when
+the model asks, a topic at a time (a tool's name, `notices`, `restart`,
+`helpers`), or with no topic its opening and the topics. A chat without the box
+knows nothing of Luna, and neither does a background helper spawned without
+tools.
 
 - `luna_notification_send` raises a desktop notification mid-turn, titled with the chat's
   name and opening it when clicked, at most one every 10 seconds.
 - `luna_power_set`, for when you ask for it, arms the same "when done" shutdown,
   restart, hibernate or sleep as the power chip, which shows and cancels it; the
   action `cancel` disarms it too.
-- A spawn may set `budgetTokens`: once that helper's context passes it, its
-  parent hears so, once; nothing is stopped.
-- An agent reads, waits on, sends text to and answers its own helpers. Your
-  own chats, another chat's helpers and its own parent it reaches only by
+- Past a share of its context window (**Tell me when a helper's context
+  passes** in Settings → Agents & trust → Helpers, 50% unless changed; a spawn's
+  `budgetPct` sets one helper's), every notice about a helper ends "(context
+  N%)"; past 85% its parent hears so once on its own. Nothing is stopped.
+  `budgetTokens` still works, read as the share of the window it is.
+- A lead (a helper given Luna's tools) does not wake its parent with what it
+  writes while its own helpers or background work are still at it; that waits
+  for the notice that comes once they are done, unless a message opens on
+  `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`. Once they are all done and
+  it has said nothing, Luna wakes the lead itself, once, and its parent hears
+  what came of that, or that it seems stuck.
+- A send may ask for no reply (`expectReply: false`): the helper's answer then
+  wakes the agent only for a status word or a report.
+- An agent reads, waits on, sends text to and answers its own helpers. One of
+  your own chats reaches your other chats and other chats' helpers only by
   saying so (`scope: "all"`), and what it sends them, an answer typed in as a
   message too, arrives opened `[From session <id> via Luna]`, so that chat
-  knows the words are not yours. Only its own helpers
-  can it interrupt, stop or delete.
+  knows the words are not yours. A helper, even one given Luna's tools, reaches
+  only the helpers under it: never your chats, its own parent or another
+  chat's helpers, and it cannot send desktop notifications or set the PC's
+  power. What it has for anyone else goes in its answer. Only its own helpers
+  can an agent interrupt, stop or delete.
 - A helper starts without its account's MCP servers and connectors (claude.ai's
   Gmail, Slack and the like; Codex's apps and the servers in its account's
   `config.toml`), and a Claude Code helper with auto-memory off, so that what
@@ -91,16 +106,20 @@ hooks run unasked.
     helper goes back to its agent after 15 minutes, and the agent is told.
   - **Stop** and **Delete**; Delete waits while it is at work, and keeps a
     worktree that holds uncommitted work.
-- At most eight helpers under one chat, and a helper's helpers get no tools.
+- Each of your chats has a number of places for the sessions under it, its
+  helpers' helpers included: 8 unless you change it in Settings → Agents &
+  trust → Helpers (1 to 32). A helper whose answer reached its caller and that
+  only waits to be deleted takes none. A spawn's result and
+  `luna_session_list` say how many are in use (`places`: `inUse` of `of`, and
+  `underYou`). A helper refused for want of a place is told which of its own
+  it can delete, and your chat is told too, as only it can free the rest. A
+  helper's helpers get no tools.
 - Every session gets its id as `LUNA_SESSION_ID`, a helper its parent's as
-  `LUNA_PARENT_ID`. A helper is told what it is — not the chat of whoever its
-  instructions call the operator, the user or the person at this machine — and
-  to write in the language of its task, and to install nothing and change
-  nothing machine-wide or in its account's folder unless its task names that
-  change, handing its caller the command instead: Claude Code through its system prompt
-  and a note after its first prompt; Codex, which can only replace
-  `developer_instructions`, through a note Luna appends to each prompt. A prompt
-  opening with a slash command goes without it.
+  `LUNA_PARENT_ID`. A lead or helper is told of its role in its instructions
+  ([the library](library.md#what-a-session-is-told-of-its-role)), and a note
+  after its task says the task comes from another agent, not a person: after
+  the first task on Claude Code, after each on Codex. A prompt opening with a
+  slash command goes without the note.
 
 ## Spawning options
 
@@ -126,8 +145,31 @@ hooks run unasked.
   sandbox, approval and network) unless Settings → Agents & trust allows helpers
   above their caller, and never in or above Luna's data folder. Turning that
   setting on asks again in a system dialog; turning it off does not.
+- A spawn that names no mode takes the spawning chat's: the same mode on the
+  same CLI, or on the other CLI the highest mode its own covers (a Claude Code
+  chat in Accept edits gets a read-only Codex helper; a Codex chat that asks
+  you gets its sandbox with approval `never`, as nobody is there to ask).
+  Settings → Agents & trust → Helpers → "Helpers' mode when not given" can make
+  it the account's default instead; either way it is held to the caller's.
+  The spawn's `settings.modeFrom` says which (`caller`, `callerNearest`,
+  `account`). A Claude Code helper may also run in `auto` or `dontAsk`.
+- Helpers that each make a worktree in the same repository start one after
+  another, each once its CLI has made its worktree, as two made at once could
+  fail.
 - A Codex helper never asks a person: its approval is `never` or `auto-review`,
   and one that asks (`on-request` and the like) is refused, as nobody is there.
+- `constraints` is text the helper and every session
+  it starts in turn are told, last among their instructions, at every start,
+  resume and handoff. A spawn adds its own to the ones its caller carries, word
+  for word; none is ever taken off (4 KB a spawn, 16 KB in all). They show in
+  the helper's settings (`luna_session_get`) and its **What Luna applied**.
+  They are instructions, not permissions: what a helper may do is still its
+  mode's. A helper you open as your own chat leaves them behind.
+- A helper started with Luna's tools is a **lead**, one without them a
+  **helper**: each is told of its role as described in
+  [the library](library.md#what-a-session-is-told-of-its-role), and the
+  library's **For** column can give instructions and skills to leads or
+  helpers alone.
 
 ## Talking to sessions
 
@@ -183,7 +225,7 @@ one of your own chats an agent may answer only a question its model asked
   all; `reply: "all"` returns everything, `"none"` nothing. `luna_report_get` gives the report
   alone and, with `ack: true`, collects the answer so no notice follows. The report is the
   message the CLI marked as its turn's final answer, or, without that mark, the longest of the
-  turn, which Luna then says it picked by length. Past 60,000 characters a read is cut:
+  turn, which a read then marks (`reportGuessed`). Past 60,000 characters a read is cut:
   `rest` says how many messages it left out, and its cursor goes on from there.
 - `luna_session_wait` takes several sessions (`ids`, `mode: "any"` or `"all"`) and says
   which finished; the terminal comes only with `screen: true`. `luna_session_list` gives
@@ -246,7 +288,9 @@ one of your own chats an agent may answer only a question its model asked
 
 `luna_session_list` shows per helper its state, the first line of its task and when it last
 did anything; `luna_session_get` adds its transcript and the CLI's own conversation id, its
-branch and commit, when its turn began, the model it
+branch and commit (for a helper in a worktree also its last commit's subject
+and up to 20 lines of `git status --short`, which its parent may not be able to
+open itself), when its turn began, the model it
 ran on (none until a model has answered), how full its context is after its last turn and
 the version of the CLI its process last started from (`cliVersion`).
 `luna_account_list` names the accounts agents may use (the account alone is enough: it brings
@@ -269,6 +313,40 @@ reaches them. Only your chats with Luna tools have the tool, and it acts on
 the calling chat alone: no helper or other session is offered it or finds it
 in `luna_guide_get`, and one that calls it all the same is answered as for a
 tool there is not. See [Chats: Handoff](chats.md#handoff).
+
+### Leads
+
+A lead, a helper spawned with Luna tools, has the tool too while
+**Auto-handoff for leads** is on (Settings → Agents & trust → Helpers; on, at
+60% of its context, by default). Once a turn of its ends past that share and
+it is at rest, Luna asks it for a handoff as a turn of its own; near the point
+where its CLI would compact by itself, once more, ahead of what waits for it.
+It writes the handoff (a Codex lead in its workspace, a Claude Code lead in the
+folder the tool names), calls the tool with it, and ends its turn. As that
+turn ends Luna starts its next turn in a fresh conversation: the opening names
+Luna's copy of the handoff, the skills to load first and what Luna knows (its
+helpers, what they owe it, its accounts), in the worktree it was working in.
+Its id, its role and constraints, its helpers and their answers stay as they
+were; what is sent to it meanwhile waits for the fresh conversation. Its parent
+hears "lead … handed off (N); its helpers stay with it" with its next notice,
+not as a notice of its own.
+
+- A lead that can write no file (Claude Code without its edit tools, in plan
+  mode or in don't-ask mode, Codex in a read-only sandbox) is not asked: Luna
+  writes its handoff from its records, as for a move, and starts the fresh
+  conversation on it. Luna does the same for a lead that ends the turn it was
+  asked in near the limit without handing off.
+- The call is refused while what its turns left is still running; the switch
+  is given up, the lead going on in the same conversation and told why, if
+  something of its own is left at work as the turn ends, the turn was stopped
+  with `luna_session_stop`, or the fresh conversation cannot start.
+- A fresh conversation is not asked again at once: only once it has grown past
+  where its first turn ended.
+- While a handoff is under way the lead cannot be opened as a chat. A core
+  restart in the middle of one goes on with it, whatever `resumeOnRestart`
+  says.
+- With the setting off, no lead is listed the tool, and an ask still open
+  closes at its next turn's end.
 
 ## Lifetime
 

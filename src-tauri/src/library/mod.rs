@@ -33,8 +33,12 @@
 //!
 //! - `reach`: which accounts a skill or an instructions file is meant for,
 //!   and which instructions an account gets.
-//! - `audience`: whose sessions one is for — the person's chats, helpers, or
-//!   both — and how each CLI keeps it from the others.
+//! - `audience`: whose sessions one is for — every session, or some of the
+//!   roles (the person's chats, leads, helpers) — and how each CLI keeps it
+//!   from the others.
+//! - `role`: what a session is told of its role at memory level: Luna's
+//!   default for it, the library's entries for it and its constraints,
+//!   composed for each CLI.
 //! - `skills`: the library's skills and instructions files, read and checked.
 //! - `files`: a copy's files on disk, and the blobs and backups kept of them.
 //! - `folders`: the folders the user names: where their skills wait, and what
@@ -62,6 +66,7 @@ mod folders;
 mod overview;
 mod pass;
 mod reach;
+mod role;
 mod skills;
 mod system;
 #[cfg(test)]
@@ -76,6 +81,7 @@ pub(crate) use folders::*;
 pub(crate) use overview::*;
 pub(crate) use pass::*;
 pub(crate) use reach::*;
+pub(crate) use role::*;
 pub(crate) use skills::*;
 pub(crate) use system::*;
 #[cfg(test)]
@@ -287,9 +293,9 @@ impl Ledger {
     /// sessions alone where that is not every session's.
     fn wrote(&mut self, key: &str, hashes: Hashes, banner: Audience) {
         self.written.insert(key.to_string(), hashes);
-        match banner {
-            Audience::Both => self.worded.remove(key),
-            other => self.worded.insert(key.to_string(), other),
+        match banner.is_every() {
+            true => self.worded.remove(key),
+            false => self.worded.insert(key.to_string(), banner),
         };
     }
     /// Luna's note of `key` gone, files and line alike.

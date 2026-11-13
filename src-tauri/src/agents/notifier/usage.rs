@@ -1,5 +1,5 @@
 //! News of usage: an account's window past 90% and 95% (`quota_news`), and a
-//! helper past its context budget (`budget_news`).
+//! helper's context past its level (`budget_news`).
 
 use crate::agents::ask::live;
 use crate::agents::notifier::NOTICE_TAG;
@@ -173,7 +173,8 @@ pub(in crate::agents) fn your_helper(id: &str, name: Option<&str>) -> String {
     }
 }
 
-/// A budget passed that the helper's parent is yet to hear of.
+/// A helper's context past its level that its parent is yet to hear of on its
+/// own (`ALARM_PCT`).
 pub(in crate::agents) struct BudgetNews {
     pub(in crate::agents) id: String,
     /// When it was passed: the line rides from then (`riders_go`).
@@ -181,50 +182,102 @@ pub(in crate::agents) struct BudgetNews {
     pub(in crate::agents) line: String,
 }
 
-/// The first reading past a budget, kept as read, as `budgetBreach`: a compaction
-/// may take the helper back under it before its parent can be told. At its budget
-/// it has not passed it.
-fn budget_breach(budget: u64, context: &crate::background::Context, now: u64) -> Option<serde_json::Value> {
-    (context.tokens > budget)
-        .then(|| serde_json::json!({ "at": now, "tokens": context.tokens, "window": context.window, "pct": context.pct }))
+/// Past this share of its window, or its own level if that is higher, a
+/// helper's context is news of its own: a notice that rides, told once. Below
+/// it and past its level, it is said only beside other news of the helper
+/// (`context_rider`): a reviewer at 60% is worth a word, not a turn.
+pub(in crate::agents) const ALARM_PCT: u64 = 85;
+
+/// The share of its window past which notices about a helper say where its
+/// context stands, if any: its spawn's `budgetPct` (0: never); else its
+/// deprecated `budgetTokens`, as the share of `window` they are; else the
+/// person's setting (`default`, 0: never).
+fn level_of(settings: &serde_json::Value, default: u64, window: u64) -> Option<u64> {
+    match (settings["budgetPct"].as_u64(), settings["budgetTokens"].as_u64()) {
+        (Some(pct), _) => Some(pct).filter(|p| *p > 0),
+        (None, Some(tokens)) if window > 0 => Some((tokens.saturating_mul(100)).div_ceil(window).clamp(1, 100)),
+        (None, Some(_)) => None,
+        (None, None) => Some(default).filter(|p| *p > 0),
+    }
 }
 
-fn budget_line(who: &str, budget: u64, breach: &serde_json::Value) -> String {
+/// Whether `context` is past `level` percent of its window: by its tokens, as
+/// its rounded `pct` would call 50.4% past 50.
+fn past(context: &crate::background::Context, level: u64) -> bool {
+    context.tokens.saturating_mul(100) > level.saturating_mul(context.window)
+}
+
+/// The first reading past the alarm level, kept as read, as `budgetBreach`: a
+/// compaction may take the helper back under it before its parent can be told.
+fn budget_breach(context: &crate::background::Context, now: u64) -> serde_json::Value {
+    serde_json::json!({ "at": now, "tokens": context.tokens, "window": context.window, "pct": context.pct })
+}
+
+fn budget_line(who: &str, breach: &serde_json::Value, rotate: bool) -> String {
+    let rotate = if rotate {
+        " A fresh helper briefed on what is settled would have room; this one may be losing what it read early on."
+    } else {
+        ""
+    };
     format!(
-        "{who} has passed its budget of {budget} context tokens: {} of its {} window ({}%). Nothing was stopped.",
-        breach["tokens"], breach["window"], breach["pct"]
+        "{who} has used {}% of its context window ({} of {} tokens). Nothing was stopped.{rotate}",
+        breach["pct"], breach["tokens"], breach["window"]
     )
+}
+
+/// Whether helper `id` hands its conversation off by itself as its context
+/// fills, so that a notice about its context has no rotation to advise: a
+/// lead while auto-handoff for leads is on (handoff `lead_hands_off`).
+fn hands_off_by_itself(id: &str) -> bool {
+    crate::agents::handoff::lead_hands_off(id)
+}
+
+/// " (context N%)", the rider every notice about helper `id` carries while its
+/// context is past its level (`budget_news`), or nothing.
+pub(in crate::agents) fn context_rider(id: &str) -> String {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).context_seen.get(id).map_or(String::new(), |pct| format!(" (context {pct}%)"))
 }
 
 /// One watched helper, as `budget_news` takes it off the registry.
 struct Budgeted {
     id: String,
     provider: Provider,
-    budget: u64,
+    settings: serde_json::Value,
     breach: Option<serde_json::Value>,
+    told: bool,
     parent: Option<String>,
     name: Option<String>,
 }
 
-/// What the parents of helpers with a budget are yet to hear, by parent. Where it
-/// stands is kept in the helper's settings, so a core started later goes on from
-/// there: `budgetBreach` once one is seen, `budgetTold` once the line has reached the
-/// parent. Between the two a background parent's own record says where the line is
-/// (`background::budget_mark`), it being marked in the text itself. Told once: a helper
-/// told of is not watched again. A transcript is read only when `read`. Also says
-/// whether where any stands moved, to be saved at once.
+/// Where helpers' contexts stand, by what their transcripts said last: each one
+/// past its level (`level_of`) is in `context_seen` for the rider, and what the
+/// parents of those past the alarm level are yet to hear, by parent. Where that
+/// stands is kept in the helper's settings, so a core started later goes on
+/// from there: `budgetBreach` once one is seen, `budgetTold` once the line has
+/// reached the parent. Between the two a background parent's own record says
+/// where the line is (`background::budget_mark`), it being marked in the text
+/// itself. Told once. Transcripts are read only when `read`. Also says whether
+/// where any stands moved, to be saved at once.
 pub(in crate::agents) fn budget_news(pty: &crate::pty::PtyManager, read: bool) -> (HashMap<String, Vec<BudgetNews>>, bool) {
+    let default = u64::from(crate::settings::get().helper_context_pct.min(100));
     let watched: Vec<Budgeted> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         r.known
             .iter()
-            .filter(|(_, k)| k.settings["budgetTold"] != true)
-            .filter_map(|(id, k)| {
-                let budget = k.settings["budgetTokens"].as_u64()?;
+            .filter(|(_, k)| k.parent.is_some())
+            .map(|(id, k)| {
                 let parent = k.parent.clone().filter(|p| p != DEV_CALLER && r.known.contains_key(p));
                 let name = r.names.get(id).map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
                 let some = |key: &str| k.settings.get(key).filter(|v| !v.is_null()).cloned();
-                Some(Budgeted { id: id.clone(), provider: k.provider, budget, breach: some("budgetBreach"), parent, name })
+                Budgeted {
+                    id: id.clone(),
+                    provider: k.provider,
+                    settings: k.settings.clone(),
+                    breach: some("budgetBreach"),
+                    told: k.settings["budgetTold"] == true,
+                    parent,
+                    name,
+                }
             })
             .collect()
     };
@@ -232,20 +285,31 @@ pub(in crate::agents) fn budget_news(pty: &crate::pty::PtyManager, read: bool) -
     let mut moved = false;
     for w in watched {
         let mut breach = w.breach;
-        if breach.is_none() && read {
-            // Off the registry lock: this reads the session's transcript.
-            let context = transcript_path(pty, &w.id).and_then(|path| crate::background::Context::of(&path, w.provider));
-            breach = context.and_then(|c| budget_breach(w.budget, &c, now_ms()));
-            if let Some(b) = &breach {
-                crate::log::warn(
-                    "agents",
-                    &format!("{} has passed its budget of {} context tokens: {}", label(&w.id), w.budget, b["tokens"]),
-                );
+        if read {
+            // Off the registry lock: this reads the session's transcript. Not
+            // of a lead mid-switch to a fresh conversation (handoff/lead.rs):
+            // the one it leaves says nothing of where the next stands.
+            let switching = crate::background::switch_of(&w.id).is_some();
+            let context =
+                transcript_path(pty, &w.id).filter(|_| !switching).and_then(|path| crate::background::Context::of(&path, w.provider));
+            let level = context.as_ref().and_then(|c| level_of(&w.settings, default, c.window));
+            let over = context.as_ref().zip(level).filter(|(c, level)| past(c, *level));
+            {
+                let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+                match over {
+                    Some((c, _)) => r.context_seen.insert(w.id.clone(), c.pct),
+                    None => r.context_seen.remove(&w.id),
+                };
+            }
+            if let Some((c, level)) = over.filter(|(c, level)| breach.is_none() && !w.told && past(c, (*level).max(ALARM_PCT))) {
+                crate::log::warn("agents", &format!("{} has used {}% of its context, past {}%", label(&w.id), c.pct, level.max(ALARM_PCT)));
+                let b = budget_breach(c, now_ms());
                 set_budget_state(&w.id, "budgetBreach", Some(b.clone()));
+                breach = Some(b);
                 moved = true;
             }
         }
-        let Some(breach) = breach else { continue };
+        let Some(breach) = breach.filter(|_| !w.told) else { continue };
         let Some(parent) = w.parent else { continue };
         match crate::background::budget_mark(&parent, &w.id) {
             MarkStands::Coming => continue,
@@ -262,7 +326,7 @@ pub(in crate::agents) fn budget_news(pty: &crate::pty::PtyManager, read: bool) -
             }
             MarkStands::Nothing => {}
         }
-        let line = budget_line(&your_helper(&w.id, w.name.as_deref()), w.budget, &breach);
+        let line = budget_line(&your_helper(&w.id, w.name.as_deref()), &breach, !hands_off_by_itself(&w.id));
         news.entry(parent).or_default().push(BudgetNews { id: w.id, since: breach["at"].as_u64().unwrap_or(0), line });
     }
     (news, moved)
@@ -387,36 +451,71 @@ mod tests {
         assert!(quota_from(b"not json", now).is_empty());
     }
 
-    fn context(tokens: u64) -> crate::background::Context {
-        crate::background::Context { pct: 21, tokens, window: 1_000_000 }
-    }
-
-    #[test]
-    fn a_budget_is_passed_only_past_it_and_its_line_says_so() {
-        assert_eq!(budget_breach(200_000, &context(200_000), 5), None, "at it, not past it");
-        let b = budget_breach(200_000, &context(200_001), 5).unwrap();
-        assert_eq!(b, serde_json::json!({ "at": 5, "tokens": 200_001, "window": 1_000_000, "pct": 21 }));
-        assert_eq!(
-            budget_line(&your_helper("kid", Some("Tests")), 200_000, &b),
-            "Your helper \"Tests\" (kid) has passed its budget of 200000 context tokens: 200001 of its 1000000 window (21%). Nothing was stopped."
-        );
-        assert!(budget_line(&your_helper("kid", None), 1, &b).starts_with("Your helper kid has passed"));
-    }
-
-    /// Writes a transcript or rollout whose last answer has `tokens` in the window.
+    /// Writes a transcript or rollout whose last answer has `tokens` in the
+    /// window, padded by them: a file is read again only once its length or
+    /// time differs (claude::session `ending`), and on Windows a rewrite in the
+    /// same clock tick keeps the time.
     fn write_usage(path: &std::path::Path, provider: Provider, tokens: u64) {
-        let line = match provider {
+        let mut line = match provider {
             Provider::Claude => {
                 serde_json::json!({ "type": "assistant", "message": { "model": "claude-sonnet-5-5", "usage": { "input_tokens": tokens }, "content": [] } })
             }
             Provider::Codex => serde_json::json!({ "timestamp": "t", "type": "event_msg", "payload": { "type": "token_count", "info": {
                 "total_token_usage": { "total_tokens": tokens }, "last_token_usage": { "input_tokens": tokens, "total_tokens": tokens }, "model_context_window": 258400 } } }),
         };
+        line["pad"] = " ".repeat((tokens / 1000) as usize).into();
         std::fs::write(path, format!("{line}\n")).unwrap();
     }
 
     #[test]
-    fn a_budget_breach_stays_owed_through_a_compaction_and_a_core_and_is_told_once() {
+    fn a_helpers_level_is_its_own_its_tokens_share_or_the_setting() {
+        use serde_json::json;
+        assert_eq!(level_of(&json!({ "budgetPct": 70 }), 50, 1000), Some(70));
+        assert_eq!(level_of(&json!({ "budgetPct": 0 }), 50, 1000), None, "0: never");
+        assert_eq!(level_of(&json!({ "budgetTokens": 129_200 }), 50, 258_400), Some(50), "deprecated tokens, as a share");
+        assert_eq!(level_of(&json!({ "budgetTokens": 1 }), 50, 258_400), Some(1), "a share, never none");
+        assert_eq!(level_of(&json!({ "budgetPct": 30, "budgetTokens": 1 }), 50, 1000), Some(30), "the share wins");
+        assert_eq!(level_of(&json!({}), 50, 1000), Some(50), "the person's setting");
+        assert_eq!(level_of(&json!({}), 0, 1000), None, "which may be off");
+        let c = |tokens| crate::background::Context { pct: tokens / 10, tokens, window: 1000 };
+        assert!(!past(&c(500), 50), "at it, not past it");
+        assert!(past(&c(501), 50));
+    }
+
+    #[test]
+    fn a_context_line_says_where_it_stands_and_advises_a_fresh_helper_unless_it_hands_off_itself() {
+        let b = budget_breach(&crate::background::Context { pct: 90, tokens: 900_000, window: 1_000_000 }, 5);
+        assert_eq!(b, serde_json::json!({ "at": 5, "tokens": 900_000, "window": 1_000_000, "pct": 90 }));
+        assert_eq!(
+            budget_line(&your_helper("kid", Some("Tests")), &b, false),
+            "Your helper \"Tests\" (kid) has used 90% of its context window (900000 of 1000000 tokens). Nothing was stopped."
+        );
+        assert!(budget_line(&your_helper("kid", None), &b, true)
+            .ends_with("A fresh helper briefed on what is settled would have room; this one may be losing what it read early on."));
+        assert!(!hands_off_by_itself("kid"), "no such lead");
+    }
+
+    /// A lead hands off by itself while auto-handoff for leads is on: its
+    /// parent is advised no rotation then, and is again with it off. A helper
+    /// without Luna's tools never hands off.
+    #[test]
+    fn a_lead_hands_off_by_itself_while_auto_handoff_for_leads_is_on() {
+        use crate::settings::LeadHandoff;
+        let (lead, plain) = ("hb-lead", "hb-plain");
+        crate::background::test_lead(lead, Provider::Claude, "C:\\p", None, None);
+        crate::background::idle_for_test(plain, Provider::Claude, 0, false);
+        crate::agents::handoff::lead_settings_for_test(Some(LeadHandoff { on: true, threshold: 60 }));
+        assert!(hands_off_by_itself(lead));
+        assert!(!hands_off_by_itself(plain), "no Luna tools");
+        crate::agents::handoff::lead_settings_for_test(Some(LeadHandoff { on: false, threshold: 60 }));
+        assert!(!hands_off_by_itself(lead), "off");
+        crate::agents::handoff::lead_settings_for_test(None);
+        crate::background::remove_for_test(lead);
+        crate::background::gone_for_test(plain);
+    }
+
+    #[test]
+    fn a_context_past_its_level_rides_and_past_the_alarm_is_told_once_through_a_compaction_and_a_core() {
         let _budgets = budgets_to_myself();
         let pty = crate::pty::manager();
         let dir = std::env::temp_dir().join(format!("luna-budget-{}", std::process::id()));
@@ -425,26 +524,31 @@ mod tests {
             tooled(parent);
             let news_of = |read: bool| budget_news(pty, read).0.remove(parent).unwrap_or_default();
             let path = dir.join(format!("{kid}.jsonl"));
-            write_usage(&path, provider, 900);
+            write_usage(&path, provider, 1);
+            let window = crate::background::Context::of(&path, provider).unwrap().window;
+            let at = |pct: u64| window * pct / 100;
             transcripts().lock().unwrap().insert(kid.to_string(), path.clone());
-            let start = serde_json::json!({ "budgetTokens": 1000 });
-            register(kid, provider, "C:\\p", "C:\\acc\\one", Some(parent), false, start);
+            register(kid, provider, "C:\\p", "C:\\acc\\one", Some(parent), false, serde_json::json!({ "budgetPct": 50 }));
+            write_usage(&path, provider, at(40));
             assert!(news_of(true).is_empty(), "{kid}: under it");
+            assert_eq!(context_rider(kid), "", "{kid}");
+            write_usage(&path, provider, at(60));
+            assert!(news_of(true).is_empty(), "{kid}: past its level, a word on its notices and no notice of its own");
+            assert_eq!(context_rider(kid), " (context 60%)", "{kid}");
             assert!(settings_of(kid).get("budgetBreach").is_none());
-            write_usage(&path, provider, 1500);
+            write_usage(&path, provider, at(90));
             assert!(news_of(false).is_empty(), "{kid}: not a look that reads");
             let first = news_of(true);
-            assert_eq!(first.len(), 1, "{kid}");
-            assert!(first[0].line.contains("has passed its budget of 1000 context tokens: 1500 of its"), "{}", first[0].line);
-            let breach = settings_of(kid)["budgetBreach"].clone();
-            assert_eq!(breach["tokens"], 1500);
+            assert_eq!(first.len(), 1, "{kid}: past the alarm, news of its own");
+            assert!(first[0].line.contains("has used 90% of its context window"), "{}", first[0].line);
 
-            // Its parent busy, the helper compacts: what was read stands.
-            write_usage(&path, provider, 100);
+            // Its parent busy, the helper compacts: what was read stands, and the rider goes.
+            write_usage(&path, provider, at(10));
             let again = news_of(true);
             assert_eq!(again.len(), 1, "{kid}: still owed");
             assert_eq!(again[0].line, first[0].line);
             assert_eq!(again[0].since, first[0].since, "and its time");
+            assert_eq!(context_rider(kid), "");
 
             // A core goes before the parent is told: its ties carry it over.
             let ties = serde_json::to_vec(&ties_of(kid).unwrap()).unwrap();
@@ -452,16 +556,63 @@ mod tests {
             let ties: Ties = serde_json::from_slice(&ties).unwrap();
             tie_back(kid, provider, "C:\\p", "C:\\acc\\one", ties);
             assert_eq!(news_of(true)[0].line, first[0].line, "{kid}: after a core");
+            assert_eq!(settings_of(kid)["budgetPct"], 50, "{kid}: its level too");
 
-            // Typed into its parent: told, not watched, and a second crossing says nothing.
+            // Typed into its parent: told, and a second crossing says nothing of its own.
             set_budget_state(kid, "budgetTold", Some(serde_json::json!(true)));
-            write_usage(&path, provider, 2000);
+            write_usage(&path, provider, at(95));
             assert!(news_of(true).is_empty(), "{kid}: told once");
-            assert_eq!(settings_of(kid)["budgetTold"], true);
+            assert_eq!(context_rider(kid), " (context 95%)", "{kid}: the rider goes on");
             forget(kid);
             forget(parent);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A lead that hands off: the rider goes as its fresh conversation starts
+    /// and while the switch is under way, and comes back with the share of
+    /// the conversation it is on then.
+    #[test]
+    fn a_leads_context_rider_is_of_the_conversation_it_is_on_through_a_handoff() {
+        use crate::background::{LeadPhase, LeadSwitch};
+        let _budgets = budgets_to_myself();
+        let pty = crate::pty::manager();
+        let (parent, kid) = ("bh-p", "bh-lead");
+        tooled(parent);
+        let path = std::env::temp_dir().join(format!("luna-budget-{kid}-{}.jsonl", std::process::id()));
+        write_usage(&path, Provider::Claude, 1);
+        let window = crate::background::Context::of(&path, Provider::Claude).unwrap().window;
+        transcripts().lock().unwrap().insert(kid.to_string(), path.clone());
+        register(kid, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(parent), true, serde_json::json!({ "budgetPct": 50 }));
+        crate::background::idle_for_test(kid, Provider::Claude, 1, false);
+        write_usage(&path, Provider::Claude, window * 70 / 100);
+        budget_news(pty, true);
+        assert_eq!(context_rider(kid), " (context 70%)");
+        crate::agents::notifier::lines::lead_goes_fresh(kid);
+        assert_eq!(context_rider(kid), "", "gone as the fresh conversation starts");
+        let s = LeadSwitch {
+            n: 1,
+            copy: String::new(),
+            sha256: String::new(),
+            source: String::new(),
+            phase: LeadPhase::Fresh,
+            before: Some("old".into()),
+            previous: None,
+            opening_id: None,
+            opened: None,
+            from_records: false,
+        };
+        crate::background::set_switch_for_test(kid, Some(s));
+        budget_news(pty, true);
+        assert_eq!(context_rider(kid), "", "not read off the conversation it left");
+        crate::background::set_switch_for_test(kid, None);
+        write_usage(&path, Provider::Claude, window * 55 / 100);
+        budget_news(pty, true);
+        assert_eq!(context_rider(kid), " (context 55%)", "the fresh one's");
+        crate::background::gone_for_test(kid);
+        forget(kid);
+        forget(parent);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

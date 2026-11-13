@@ -220,6 +220,11 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         if e.deleting {
             return Err("it is being deleted".into());
         }
+        // Its handoff would start a conversation the person's chat does not
+        // have, or resume one it has let go of (switch.rs).
+        if let Some(s) = &e.switch {
+            return Err(format!("it is handing off to a fresh conversation (handoff {}); open it once that is through", s.n));
+        }
         e.promoting = true;
         e.promoting_since = crate::throttle::now_ms();
         (e.spec.clone(), e.cwd.clone(), e.session.clone())
@@ -270,11 +275,12 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
                 None => return Ok(true),
             }
         }
-        let mut count = None;
+        let (mut count, mut thread) = (None, None);
         let handed = crate::agents::take_over(&id, || {
             // Gone already (deleted meanwhile): the row has its conversation.
             let mut e = lock().entries.remove(&id)?;
             count = Some(e.turns_ended);
+            thread = e.session.clone();
             let mut unsent = std::mem::take(&mut e.undelivered);
             unsent.extend(std::mem::take(&mut e.queue));
             Some(unsent)
@@ -292,6 +298,9 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
         if let Some(n) = count {
             crate::activity::count_at_least(&id, n);
         }
+        // The conversation the pane resumes: a Codex one still carries what it
+        // was started with, and is told so there (agents/handover.rs).
+        crate::agents::started_in(&id, thread.as_deref());
         changed();
         // Or a core killed now would take it up beside the chat it has become.
         save();
@@ -486,14 +495,18 @@ pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
     use crate::activity::Turn;
     let r = lock();
     let e = r.entries.get(id)?;
+    // A lead between the turn that wrote its handoff and its fresh start is
+    // at work: its caller is owed what the fresh conversation says, not the
+    // turn that handed off (switch.rs).
     let turn = match &e.run {
         Some(_) if !e.held.is_empty() => Turn::Waiting,
         Some(_) => Turn::Busy,
+        None if e.switch_waits() => Turn::Busy,
         None => Turn::Idle,
     };
     Some(crate::activity::TurnState {
         turn,
-        busy: e.run.is_some(),
+        busy: e.run.is_some() || e.switch_waits(),
         turns_ended: e.turns_ended,
         children_busy: e.run.is_none() && e.left_running,
     })

@@ -87,6 +87,44 @@ fn commits_lost(folder: &str, path: &str, checked_out: Option<&str>) -> Option<u
 /// model that has the whole of `git status` a command away.
 const UNSAVED_NAMED: usize = 10;
 
+/// The most lines of `git status` a look into a worktree gives (`work_in`), and
+/// the most characters of its last commit's subject.
+const STATUS_SHOWN: usize = 20;
+const SUBJECT_CHARS: usize = 200;
+
+/// Where a worktree's work stands, for a caller that cannot open it itself (a
+/// parent whose CLI keeps it out of other worktrees): its last commit's
+/// subject, and `git status --short` (the porcelain lines, the same) up to
+/// STATUS_SHOWN lines, with how many more there are.
+#[derive(serde::Serialize, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkIn {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_commit: Option<String>,
+    pub status: Vec<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub status_more: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// `WorkIn` of the worktree at `path`; None where git cannot read it as a
+/// checkout. A branch with no commit yet has no subject.
+pub fn work_in(path: &str) -> Option<WorkIn> {
+    let changes = changes_in(path)?;
+    let last_commit = git(path)
+        .args(["log", "-1", "--no-show-signature", "--format=%s"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().chars().take(SUBJECT_CHARS).collect::<String>())
+        .filter(|s| !s.is_empty());
+    let status_more = changes.len().saturating_sub(STATUS_SHOWN);
+    Some(WorkIn { last_commit, status: changes.into_iter().take(STATUS_SHOWN).collect(), status_more })
+}
+
 /// What removing this worktree would lose for good, in words: the changes in
 /// it and the commits that would go with it, its checkout gone or not. None
 /// when that is nothing; what cannot be told counts as something.
@@ -173,6 +211,27 @@ mod tests {
         std::fs::remove_file(Path::new(&wt).join(".git")).unwrap();
         assert!(unsaved_work(&repo, &wt).unwrap().contains("cannot read"), "unknown is not nothing");
         assert_eq!(unsaved_work(&repo, &root.join("gone").to_string_lossy()), None, "gone takes nothing with it");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_look_into_a_worktree_gives_its_last_commit_and_a_capped_status() {
+        let Some((root, _repo, wt)) = codex_layout("work-in") else { return };
+        let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
+        assert_eq!(work_in(&wt), Some(WorkIn { last_commit: Some("i".into()), status: Vec::new(), status_more: 0 }), "clean");
+        assert!(ok(git(&wt).args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "Fix the parser"])));
+        for i in 0..STATUS_SHOWN + 3 {
+            std::fs::write(Path::new(&wt).join(format!("f{i:02}.txt")), "x").unwrap();
+        }
+        let got = work_in(&wt).unwrap();
+        assert_eq!(got.last_commit.as_deref(), Some("Fix the parser"));
+        assert_eq!((got.status.len(), got.status_more), (STATUS_SHOWN, 3));
+        assert!(got.status[0].starts_with("?? ") && got.status[0].ends_with(".txt"), "as --short has it: {:?}", got.status[0]);
+        let shown = serde_json::to_value(&got).unwrap();
+        assert_eq!(shown["statusMore"], 3);
+        assert_eq!(serde_json::to_value(WorkIn::default()).unwrap(), serde_json::json!({ "status": [] }), "nothing more said of nothing");
+        std::fs::remove_file(Path::new(&wt).join(".git")).unwrap();
+        assert_eq!(work_in(&wt), None, "not a checkout git can read");
         let _ = std::fs::remove_dir_all(&root);
     }
 

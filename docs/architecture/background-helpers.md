@@ -45,7 +45,8 @@ owed by the person's chats, outlive a core restart.
   it free (`claim`), so text arriving before the process is up queues. A stop
   that finds a turn claimed but with no process yet marks it `stopped`. A turn
   that cannot start counts as an ended turn with its error; text queued behind
-  it fails with it.
+  it fails with it, except behind a lead's fresh start (`switch_waits`): that
+  text waits for the conversation the lead goes back to.
 - On Unix each turn's process leads its own process group.
 - `send` mid-turn to a Claude Code helper joins that turn: stdin stays open
   until the turn's first result and the text goes in at the next tool boundary;
@@ -214,7 +215,10 @@ has read the file, so an empty registry never overwrites it.
   (`owed_stands`).
 - Text queued behind a stopped turn stays, never run; only its sender hears of
   it (`Entry::undelivered`, `undelivered_text`), and `read` / `wait` name it as
-  `undelivered`. `luna_session_stop` drops the queue.
+  `undelivered`. `luna_session_stop` drops the queue. Text that waited
+  through a hold (`go_on`: an open as a chat, a delete, a lead's switch given
+  up) or through a stop ending what its turns left (`kill`), and whose turn
+  then cannot start, is kept the same way (`run_waited`).
 - A helper stopped before any turn named its conversation keeps its opening
   (`Entry::opening`); the notice says it never started (`never_started`).
 - **`resumeOnRestart`** (in `settings`, so in the ties): `resume_stopped`, once
@@ -226,7 +230,7 @@ has read the file, so an empty registry never overwrites it.
   a job tied to the core, `Entry::tied`; off Windows only if `end_last_ties`
   finds nothing left). Otherwise the helper is `Entry::unsure` and the caller
   decides.
-- A `budgetTokens` line is marked in the notice itself (`Queued::budget`), so
+- A context line (usage.rs `budget_news`) is marked in the notice itself (`Queued::budget`), so
   `stdin_took` is the one receipt (`budgets_landed`).
 
 ### The person's chats: `chat-ties.json`

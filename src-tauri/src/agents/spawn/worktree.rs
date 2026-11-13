@@ -2,7 +2,7 @@
 //! and named by Luna, and what is left of one a helper began.
 
 use crate::agents::list::disk_meta;
-use crate::agents::registry::{chat_name, label, reg, Known};
+use crate::agents::registry::{chat_name, is_descendant, label, persons_chat_in, reg, Known};
 use serde::Serialize;
 
 /// Where a session in a worktree works: the path, and the branch and commit
@@ -60,9 +60,14 @@ pub struct Neighbor {
 
 /// Live sessions other than `skip` that run in `dir`, by what the CLI says
 /// its cwd is: the project folder for a chat in it, the worktree for one in
-/// a worktree.
-pub(in crate::agents) fn neighbors_in(dir: &str, skip: &[&str]) -> Vec<Neighbor> {
-    let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).known.keys().cloned().collect();
+/// a worktree. Only those in `caller`'s reach: any for a person's chat, its
+/// own subtree for a helper, which learns of no session past it (ADR-0025).
+pub(in crate::agents) fn neighbors_in(dir: &str, caller: &str, skip: &[&str]) -> Vec<Neighbor> {
+    let ids: Vec<String> = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let all = persons_chat_in(&r, caller);
+        r.known.keys().filter(|id| all || is_descendant(&r, caller, id)).cloned().collect()
+    };
     let pty = crate::pty::manager();
     let mut out = Vec::new();
     for id in ids.into_iter().filter(|id| !skip.contains(&id.as_str())) {
@@ -94,6 +99,22 @@ pub(in crate::agents) fn caller_worktree(caller: &str) -> Option<String> {
     // Its root: the caller's shell may be in a folder of it.
     let (root, _) = crate::worktree::root_of(&cwd)?;
     crate::worktree::is_worktree_of(&folder, &root).then_some(root)
+}
+
+/// One helper's worktree made at a time per repository. Each CLI makes its own
+/// with `git worktree add` as its first turn starts, and two of those in one
+/// repository at once fail on each other ("unable to stat just-written file",
+/// seen with parallel spawns). Keyed by the repository (`repository_key`), so a
+/// spawn from the main checkout and one from a worktree of it wait in one line;
+/// a folder in no repository Luna can read waits by its own path.
+pub(in crate::agents) fn worktree_queue(folder: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    type Queues = std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>;
+    static QUEUES: std::sync::OnceLock<Queues> = std::sync::OnceLock::new();
+    let key = crate::worktree::repository_key(folder).unwrap_or_else(|| crate::paths::path_key(folder));
+    let mut queues = QUEUES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    // Those nobody holds or waits on any more.
+    queues.retain(|_, q| std::sync::Arc::strong_count(q) > 1);
+    queues.entry(key).or_default().clone()
 }
 
 /// What Luna names the worktree of a Claude Code helper it spawns, and so knows to be
@@ -182,6 +203,7 @@ mod tests {
                 worktree,
                 worktree_pending,
                 mcp_left_on: Vec::new(),
+                places: Default::default(),
             })
             .unwrap()
         };
@@ -218,6 +240,84 @@ mod tests {
             made.push(wt);
         }
         Some((root, repo, made))
+    }
+
+    /// `sameFolder` names, for a helper, only the sessions under it; a person's
+    /// chat hears of every session in the folder.
+    #[test]
+    fn a_helper_hears_of_no_neighbor_past_its_own_subtree() {
+        let dir = "C:\\nb-shared\\project";
+        let bg = serde_json::json!({ "background": true });
+        register("nb-top", Provider::Claude, dir, "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        register("nb-lead", Provider::Claude, dir, "C:\\acc\\anthropic\\one", Some("nb-top"), true, bg.clone());
+        register("nb-mine", Provider::Claude, dir, "C:\\acc\\anthropic\\one", Some("nb-lead"), false, bg.clone());
+        register("nb-sib", Provider::Claude, dir, "C:\\acc\\anthropic\\one", Some("nb-top"), false, bg.clone());
+        register("nb-other", Provider::Claude, dir, "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
+        register("nb-theirs", Provider::Claude, dir, "C:\\acc\\anthropic\\one", Some("nb-other"), false, bg);
+        let ids = ["nb-lead", "nb-mine", "nb-sib", "nb-theirs"];
+        for id in ids {
+            crate::background::take_up_for_test(id, dir, 1, &[], None);
+        }
+        let near = |caller: &str| {
+            let mut n: Vec<String> =
+                neighbors_in(dir, caller, &[caller]).into_iter().map(|n| n.id).filter(|i| i.starts_with("nb-")).collect();
+            n.sort();
+            n
+        };
+        assert_eq!(near("nb-lead"), ["nb-mine"], "its own only: not its parent's other helper, not another chat's");
+        assert_eq!(near("nb-mine"), Vec::<String>::new());
+        assert_eq!(near("nb-top"), ["nb-lead", "nb-mine", "nb-sib", "nb-theirs"], "a person's chat hears of every one");
+        for id in ids {
+            crate::background::remove(id);
+        }
+        for id in ["nb-mine", "nb-lead", "nb-sib", "nb-theirs", "nb-other", "nb-top"] {
+            forget(id);
+        }
+    }
+
+    /// Spawns making worktrees in one repository wait in one line, from its main
+    /// checkout or a worktree of it alike; another repository's do not wait on
+    /// them. Under the line, worktrees made side by side all come out.
+    #[test]
+    fn worktrees_are_made_one_at_a_time_per_repository() {
+        let Some((root, repo, made)) = repo_with("queue", &["luna-q"]) else { return };
+        let Some((other_root, other, _)) = repo_with("queue-other", &[]) else { return };
+        let (main, from_worktree, elsewhere) = (worktree_queue(&repo), worktree_queue(&made[0]), worktree_queue(&other));
+        assert!(std::sync::Arc::ptr_eq(&main, &from_worktree), "one repository, one line");
+        assert!(!std::sync::Arc::ptr_eq(&main, &elsewhere), "another repository's is its own");
+        // Held, the next in that repository waits; another repository's does not.
+        let held = main.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = {
+            let (repo, tx) = (repo.clone(), tx.clone());
+            std::thread::spawn(move || {
+                let q = worktree_queue(&repo);
+                let _turn = q.lock().unwrap();
+                tx.send("repo").unwrap();
+            })
+        };
+        let _other_turn = elsewhere.lock().unwrap();
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "it waits for the one at work");
+        drop(held);
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(10)), Ok("repo"));
+        waiter.join().unwrap();
+        // As spawns side by side would: each `git worktree add` under the line.
+        let adds: Vec<_> = (0..4)
+            .map(|i| {
+                let repo = repo.clone();
+                std::thread::spawn(move || {
+                    let q = worktree_queue(&repo);
+                    let _turn = q.lock().unwrap();
+                    let wt = crate::worktree::named_path(&repo, &format!("luna-par-{i}"));
+                    let mut c = std::process::Command::new("git");
+                    c.arg("-C").arg(&repo).args(["worktree", "add", "-q", "-b", &format!("worktree-luna-par-{i}"), &wt]);
+                    c.output().is_ok_and(|o| o.status.success())
+                })
+            })
+            .collect();
+        assert!(adds.into_iter().all(|t| t.join().unwrap()), "every worktree made");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&other_root);
     }
 
     /// A Claude Code helper a core cut off in its first turn starts afresh in the

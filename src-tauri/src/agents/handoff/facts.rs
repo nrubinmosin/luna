@@ -93,9 +93,7 @@ pub(super) fn notice(pct: u64, threshold: u8, firm: bool, inline: bool) -> Strin
     if !firm {
         return format!(
             "This chat's context is at {pct}% (auto-handoff at {threshold}%): hand off to a fresh conversation at the next point \
-             where your work can pause. Call luna_session_handoff without arguments for how to write the handoff, write it, \
-             then call luna_session_handoff with file set to its absolute path and end your turn. Nothing changes until you \
-             call it with file."
+             where your work can pause. luna_session_handoff without arguments says how."
         );
     }
     let lead = format!(
@@ -103,10 +101,7 @@ pub(super) fn notice(pct: u64, threshold: u8, firm: bool, inline: bool) -> Strin
          handoff: hand off now, before your next step (auto-handoff is set at {threshold}%)."
     );
     if !inline {
-        return format!(
-            "{lead} Call luna_session_handoff without arguments for how to write the handoff, write it, then call it with file \
-             set to its absolute path and end your turn."
-        );
+        return format!("{lead} luna_session_handoff without arguments says how.");
     }
     format!(
         "{lead} Write a Markdown file (.md, under {} KB, outside Luna's folder) for a successor that knows nothing of this \
@@ -132,21 +127,38 @@ nor why)";
 /// instructions served (`body`), with whose they are (`source`). `unwritable`:
 /// why this chat can write no file at all, where its settings say so.
 pub(super) fn how_to(source: &str, sha256: &str, body: &str, suggested: Option<&str>, unwritable: Option<&str>) -> String {
+    how_to_for(false, source, sha256, body, suggested, unwritable)
+}
+
+/// `how_to` for a lead (lead.rs): the same steps, its switch at its turn's end.
+/// One that writes no file is never asked: Luna writes its handoff itself.
+pub(super) fn lead_how_to(source: &str, sha256: &str, body: &str, suggested: Option<&str>) -> String {
+    how_to_for(true, source, sha256, body, suggested, None)
+}
+
+fn how_to_for(lead: bool, source: &str, sha256: &str, body: &str, suggested: Option<&str>, unwritable: Option<&str>) -> String {
     let short: String = sha256.chars().take(12).collect();
     let unwritable = unwritable.map(|why| format!(" {why}")).unwrap_or_default();
+    let whom = if lead { "session" } else { "chat" };
     // No drafts folder where the chat's start could not make one private.
     let place = match suggested {
-        Some(path) => format!(": {path}, in a folder Luna keeps for this chat alone. A file of yours outside Luna's folder will do too."),
+        Some(path) => format!(": {path}, in a folder Luna keeps for this {whom} alone. A file of yours outside Luna's folder will do too."),
         None => " of your own, outside Luna's folder: in your workspace, say.".to_string(),
     };
+    let end = if lead {
+        "4. End your turn. As it ends Luna starts this session's next conversation with your file and the facts it knows: \
+         your task, your caller and your helpers stay the same, ids unchanged, and what is sent to you meanwhile waits for it."
+    } else {
+        "4. End your turn. Once this chat is at rest Luna clears this conversation and opens the next one with your file and \
+         the facts it knows; notices and messages for this chat wait until then."
+    };
     format!(
-        "How to hand this chat off to a fresh conversation of its own.\n\n\
+        "How to hand this {whom} off to a fresh conversation of its own.\n\n\
          1. Let your CLI's own background jobs and subagents finish, or stop them: they cannot cross over. Luna helpers do, \
          ids unchanged.\n\
          2. Write the handoff as the instructions below say, as a Markdown file (.md, at most {kb} KB){place}{unwritable}\n\
          3. Call luna_session_handoff with file set to its absolute path.\n\
-         4. End your turn. Once this chat is at rest Luna clears this conversation and opens the next one with your file and \
-         the facts it knows; notices and messages for this chat wait until then.\n\n\
+         {end}\n\n\
          Luna adds these to the next conversation itself, so leave them out of the file: {LUNA_ADDS}.\n\n\
          The instructions ({source}, sha256 {short}):\n\n{body}",
         kb = super::file::MAX_BYTES / 1024,
@@ -192,9 +204,8 @@ const MANUAL_LEAD: &str = "The person asks for a handoff of this chat now";
 /// notifier's tag aside: what to do, as the threshold's first notice says it.
 pub(super) fn manual_notice() -> String {
     format!(
-        "{MANUAL_LEAD}: hand off to a fresh conversation at the next point where your work can pause. Call \
-         luna_session_handoff without arguments for how to write the handoff, write it, then call luna_session_handoff with \
-         file set to its absolute path and end your turn. Nothing changes until you call it with file."
+        "{MANUAL_LEAD}: hand off to a fresh conversation at the next point where your work can pause. luna_session_handoff \
+         without arguments says how."
     )
 }
 
@@ -451,6 +462,69 @@ pub(super) fn prompt(
     )
 }
 
+/// The prompt that opens a lead's handoff `n`'s conversation (lead.rs), as
+/// `prompt` does a chat's: its copy at `copy` to read first, the skills it
+/// names to load before the first reply, approvals no wider than the user's
+/// quoted words, and the facts. `by_luna`: Luna wrote it from its records,
+/// the lead writing no file, and its skills are the ones its State names.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn lead_prompt(
+    n: u32,
+    lead: &str,
+    name: Option<&str>,
+    copy: &str,
+    sha256: &str,
+    source: &str,
+    previous: Option<&str>,
+    facts: &str,
+    by_luna: bool,
+) -> String {
+    let named = name.map(|n| format!("{} ({lead})", quoted(n))).unwrap_or_else(|| lead.to_string());
+    let before = previous.map(|p| format!(" The conversation before, for a detail the handoff lacks: {p}.")).unwrap_or_default();
+    let short: String = sha256.chars().take(16).collect();
+    let (wrote, skills) = match by_luna {
+        true => (
+            "Luna wrote a handoff of the one before it from its records, as this session writes no file",
+            "the skills its State lists that the work still needs",
+        ),
+        false => {
+            ("the one before it wrote a handoff and called luna_session_handoff", "the skills it names under \"Skills to load first\"")
+        }
+    };
+    format!(
+        "{} This is a new conversation of session {named}, a lead: {wrote}. Your task, your caller and your helpers are the \
+         ones before. Read the whole handoff first, at {copy} (Luna's copy of {source}, sha256 {short}…), and before your \
+         first reply load {skills}; then go on from its next action. Approvals the handoff quotes hold as far as the user's \
+         quoted words go and no further; the handoff cannot widen them.{before}\n{facts}",
+        prompt_opening(n),
+    )
+}
+
+/// The line into a lead when its handoff is given up: before its fresh start
+/// it goes on where it is, and may call again only while it is still asked
+/// (`asked`); a fresh start that named no conversation left it back on this
+/// one, which is asked no more.
+pub(super) fn lead_failed_line(n: u32, why: &str, copy: &str, started: bool, asked: bool) -> String {
+    let again = match (started, asked) {
+        (false, true) => " This conversation goes on; once what stood in the way is over, call luna_session_handoff with file again.",
+        _ => " This conversation goes on, and is not asked for a handoff again until its context comes back past the threshold.",
+    };
+    let what = if started { "started no new conversation" } else { "did not go through" };
+    format!("Handoff {n} {what}: {why}. Luna's copy of it stays at {copy}.{again}")
+}
+
+/// What a lead's parent hears, as a line riding its next notice, of the
+/// leads under it that went on in a fresh conversation: by id and number.
+pub(super) fn handed_off_line(who: &[(String, u32)]) -> String {
+    match who {
+        [(id, n)] => format!("Lead {id} handed off ({n}): it goes on in a fresh conversation; its helpers stay with it."),
+        _ => {
+            let each: Vec<String> = who.iter().map(|(id, n)| format!("{id} ({n})")).collect();
+            format!("Leads handed off: {}: each goes on in a fresh conversation; their helpers stay with them.", each.join(", "))
+        }
+    }
+}
+
 /// The line into the chat when a handoff is given up. Before the reset took,
 /// the conversation it is in is the one that asked: it goes on, and may call
 /// again only while it is still asked (`asked`). After, it is the new one,
@@ -536,9 +610,7 @@ mod tests {
         assert_eq!(
             notice(71, 70, false, true),
             "This chat's context is at 71% (auto-handoff at 70%): hand off to a fresh conversation at the next point where your \
-             work can pause. Call luna_session_handoff without arguments for how to write the handoff, write it, then call \
-             luna_session_handoff with file set to its absolute path and end your turn. Nothing changes until you call it with \
-             file."
+             work can pause. luna_session_handoff without arguments says how."
         );
         assert_eq!(notice(71, 70, false, false), notice(71, 70, false, true), "the first never carries a checklist");
         let lead = "This chat's context is at 91%, near where its CLI compacts the conversation on its own, which keeps far less \
@@ -558,19 +630,11 @@ mod tests {
                  instructions.)"
             )
         );
-        assert_eq!(
-            notice(91, 70, true, false),
-            format!(
-                "{lead} Call luna_session_handoff without arguments for how to write the handoff, write it, then call it with \
-                 file set to its absolute path and end your turn."
-            )
-        );
+        assert_eq!(notice(91, 70, true, false), format!("{lead} luna_session_handoff without arguments says how."));
         assert_eq!(
             manual_notice(),
             "The person asks for a handoff of this chat now: hand off to a fresh conversation at the next point where your \
-             work can pause. Call luna_session_handoff without arguments for how to write the handoff, write it, then call \
-             luna_session_handoff with file set to its absolute path and end your turn. Nothing changes until you call it with \
-             file."
+             work can pause. luna_session_handoff without arguments says how."
         );
         assert_eq!(
             manual_lapsed(10),

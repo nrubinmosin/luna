@@ -1,0 +1,1 @@
+This task comes from another agent, not a person: reply to that agent, in the language and form its task asks for. Rules written for a chat with a person (its language, its reply format, questions to that person) do not apply here.

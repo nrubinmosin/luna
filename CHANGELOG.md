@@ -23,9 +23,102 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   called to hand off). A move's document
   carries the same line, the move's own ask left out, and the moved chat is
   told to load what it lists before its first reply.
+- Settings → Agents & trust → Helpers: **Helpers per chat**, the places a
+  chat's line of helpers shares, its helpers' helpers included (1 to 32,
+  8 as before), and **Helpers' mode when not given**: the spawning chat's
+  (the default) or the account's.
+- `luna_session_spawn` and `luna_session_list` say how many places are in use
+  on the caller's line, of how many, and how many under the caller
+  (`places`). A helper refused a place hears only the sessions it can delete,
+  and the chat at the top of its line is told with its next notice.
+- `luna_session_get` on a helper in a worktree gives its last commit's
+  subject and up to 20 lines of `git status --short`, for a parent its CLI
+  keeps out of that worktree.
+- A Claude Code helper may run in `auto` or `dontAsk`.
+- Sessions have a role: your **chats**, **leads** (helpers started with Luna's
+  tools) and **helpers**. Each is told of its role at the level of an
+  instructions file, which outweighs a prompt note and survives a compaction:
+  Claude Code reads it as a `CLAUDE.md` of Luna's, Codex in
+  `developer_instructions` after its config's own value (ADR-0026).
+- The library's **For** column takes any of the three roles. Instructions for
+  some roles only reach each such session as Luna starts it, never through an
+  account; several for one role all go, in name order. One that, with the
+  others for its role, would not fit on a Codex command line is marked so.
+- **System texts** in the library: what a lead and a helper are told of their
+  role, the note after their tasks, and what a chat is told (nothing by
+  default), each with Luna's own text and one override of yours, beside the
+  handoff's instructions.
+- `constraints` on `luna_session_spawn`: text the helper and every session
+  under it are told last among their instructions, at every start and resume.
+  They may only narrow the rest of a session's instructions: where they
+  conflict, the stricter applies. A spawn adds to what its caller carries;
+  nothing removes any. Shown in `luna_session_get`. A Codex helper you open
+  as your own chat keeps them, with its role, in its conversation, and its
+  **What Luna applied** says so; a new chat drops them.
+- A lead whose delegates have all finished (its helpers answered, what its
+  CLI ran in the background over) and that says nothing of it is woken by
+  Luna, once per such end: "Your delegates have finished: …", a helper that
+  answered within seconds of the lead's last turn too. Its parent hears of
+  the turn that brings, what the lead wrote before included, or that it
+  seems stuck if that turn says nothing.
+- An answer that covers several requests to one session (a spawn and a send,
+  two sends) says which is whose: requests are numbered per caller (the spawn
+  1, each send one more, a `requestKey` named), the notice says it answers
+  several, and the answer file, `luna_report_get` and `luna_session_wait`
+  open each request's part with "Re request N".
+- `expectReply: false` on `luna_session_send`: the helper's answer to it
+  wakes the caller only if it opens on a status word or is a report of 400
+  characters or more; it stays in the report.
+- `budgetPct` on `luna_session_spawn`, and Settings → Agents & trust →
+  Helpers: **Tell me when a helper's context passes** (50% unless changed, or
+  never). Past it, every notice about the helper ends "(context N%)"; past
+  85% a notice says so on its own, once.
+- **Auto-handoff for leads** (Settings → Agents & trust → Helpers, on at 60%
+  by default): a helper with Luna tools is offered `luna_session_handoff`, and
+  past that share of its context, at the end of a turn, Luna asks it for a
+  handoff. It goes on in a fresh conversation of its own as its turn ends, in
+  the worktree it works in, with the same id, role, constraints and helpers;
+  its parent hears of it with its next notice. A lead that can write no file
+  goes on from a handoff Luna writes from its records. What its parent asked
+  before is owed by the fresh conversation under the same request numbers,
+  and notices about it give that conversation's context share. Its parent is
+  not advised to replace it as its context fills.
+- [What Luna adds to a model's context](docs/user-guide/context.md), linked
+  from the README: every text Luna puts before a model (MCP instructions and
+  tools, role texts and notes, skills, hook answers, notices, handoff and move
+  texts, what Luna types in), who gets it, when, its size in tokens and how to
+  change or turn it off, with totals by role. A unit test checks the page's
+  sizes against the texts.
 
 ### Changed
 
+- Luna adds less to a model's context. The MCP instructions no longer send a
+  conversation to read two guide topics (~2,200 tokens) before its first
+  spawn; they say where the guide is. Tool descriptions drop the lists of what
+  they return (the guide has them), and the tool list is held to 9,000
+  characters again. Notices drop the tails that named `luna_session_send` or
+  `luna_session_stop` and "(its report picked by length)" (a read still says
+  `reportGuessed`), keeping `luna_message_list` with `screen: true` only where
+  a turn is quiet or stopped on a prompt Luna cannot read, and the breaker's
+  line is shorter. The guard's refusal is shorter, gives one bash and one
+  PowerShell way to a deadline (PowerShell's `timeout` only waits), and no
+  longer names a skill Luna does not ship. The handoff's steps are said once, in
+  `luna_session_handoff`'s answer: its description and the asks point there,
+  and Luna's `session-handoff` instructions and `role-lead` text no longer
+  repeat them.
+
+- A lead's turns no longer wake its parent while its own helpers or its CLI's
+  background work are still at it, a long interim report included, and it is
+  never told "NOT done yet" of one: what it writes waits in its report for
+  the notice that comes once they are done. Its answer to a send of the
+  parent's still goes, and so does a message that opens on `DONE`,
+  `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`; questions, prompts, errors and
+  exits as ever.
+- `budgetTokens` on a spawn is deprecated for `budgetPct`: still taken, and
+  read from saved helpers, as the share of the window it is.
+- The notice that a helper has only idle processes left names what its
+  transcript started them as (Claude Code's background calls, Codex's
+  commands still running), not the processes alone.
 - Auto-handoff ticked on a chat already past its threshold, or set lower than
   where it stands, asks as soon as the chat is at rest rather than at its
   next turn's end. Turned off before Luna typed its notice, the notice is
@@ -36,9 +129,47 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   is spared until it has grown 5 points past where its first turn ended,
   however late it is first looked at: one handed off with Auto-handoff off
   and gone on since is asked once it is turned on, if it has grown so.
+- A helper reaches only the sessions under it, one with Luna's tools
+  included: `scope: "all"` is refused to it in every tool, as is any session
+  outside its subtree (the person's chats, its parent, another chat's
+  helpers), and it no longer sends desktop notifications or sets the PC's
+  power. The person's own chats keep that reach
+  ([ADR-0025](docs/adr/0025-a-helper-reaches-only-its-own-subtree.md)).
+- A spawn that names no mode takes the spawning chat's own, or across CLIs
+  the highest mode the chat's privilege covers, instead of the account's
+  default; `settings.modeFrom` says which.
+- The note after a task from another agent names nobody: it opens
+  `[A note, not part of the task: …]`, no longer speaks of an operator, Luna or
+  other sessions, and older notes still come off what a session was asked.
+  Helpers are no longer started with `--append-system-prompt`.
+- Library audiences of earlier versions read as roles: **Both** is every
+  session, **Chats** your chats, **Helpers** leads and helpers. Instructions
+  for your chats stay in the accounts with a neutral line saying whose they
+  are; instructions for helpers leave the accounts and go per session.
+- Instructions made every session's are refused also where the
+  instructions already laid into accounts name each account they would reach
+  as closely or more (`claude` and `codex` together cover `all`), not only
+  where both name the same accounts: there they would reach nobody.
+- **Upgrade note:** library audiences are saved so Luna 0.17 still reads the
+  settings file: as **Chats** or **Helpers** where the roles match one of
+  those (helpers being leads and helpers), the roles themselves beside that.
+  Rolled back to 0.17, an entry for a set it has no word for (leads alone,
+  helpers alone, chats with one of the two) is for every session, and
+  instructions for your chats alone go into the accounts as 0.17 lays them
+  out. Once 0.17 has saved the settings, 0.18 reads its words again: those
+  sets come back as every session. Narrower sets do not survive a save by
+  0.17; pick them again in 0.18.
 
 ### Fixed
 
+- A handoff in a project whose `SessionStart` hook takes a while (a git
+  sync) no longer gives up a minute after typing the new conversation's
+  prompt while the CLI still holds it, nor types the whole prompt into it
+  again once it is at work on it. The prompt counts as taken once Claude
+  Code has queued it; where the settings give the CLI `SessionStart` hooks,
+  the wait is up to five minutes; and a failure line whose prompt went in
+  after all is dropped, the handoff recorded as through. A move's line is
+  waited for the same way.
 - A new Claude Code chat or helper opens on the effort Claude Code itself
   would use for its model. Claude Code keeps effort per model (`/effort`
   saves it under `modelSettings`), and the account's top-level `effortLevel`
@@ -46,6 +177,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   model. Each model now gets the level the settings files keep for it, else
   its own default, the dialog naming the file and key, and moves to it when
   another model is picked; `luna_account_get` gives `effortByModel`.
+- A notice no longer says a helper "finished its turn without a reply" when
+  it wrote something since its caller asked and only its last turn, on a
+  notice of Luna's, wrote nothing: what it wrote comes with the notice.
+- Text sent to a helper while a stop between its turns ended what it left
+  running is no longer lost when the turn it was to start cannot start: its
+  sender hears of it as undelivered with the next notice.
 
 - A Claude Code helper's background subagents are no longer stopped 10
   minutes after its turn: Claude Code 2.1.319+ stops what a `-p` run left in
@@ -65,6 +202,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - In the new-chat dialog, a model picked now opens on the effort kept for it
   even where the level shown before was one it does not take, rather than on
   its catalog default, and keeps it when another folder is picked.
+- Helpers spawned side by side with `worktree: true` in one repository no
+  longer fail with "unable to stat just-written file": their worktrees are
+  made one at a time.
 
 ## [0.17.0] - 2026-11-13
 

@@ -2,9 +2,9 @@
 //! the call that waits for its first turn.
 
 use crate::agents::delivery::POLL;
-use crate::agents::owed::{owe_from, shown};
+use crate::agents::owed::{owe_asked, shown, Asked};
 use crate::agents::registry::{chat_name, issue_token, reg, register, set_name};
-use crate::agents::spawn::worktree::{helper_worktree_name, neighbors_in, worktree_of, Worktree};
+use crate::agents::spawn::worktree::{helper_worktree_name, neighbors_in, worktree_of, worktree_queue, Worktree};
 use crate::agents::spawn::{spawn_is, SpawnParams, Spawned};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
@@ -19,7 +19,12 @@ const WORKTREE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 const CLAUDE_EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultracode"];
 const ULTRACODE: &str = "ultracode";
 
-pub(in crate::agents) const CLAUDE_MODES: [&str; 4] = ["default", "acceptEdits", "plan", "bypassPermissions"];
+/// The permission modes a Claude Code helper starts in: every one `claude -p
+/// --permission-mode` takes but `manual`, Luna's `default` by another name
+/// (2.1.322's choices; docs/cli-compatibility.md). `auto` has a model review
+/// what would go further and refuses what it cannot review; `dontAsk` runs what
+/// the allow rules let through and refuses the rest. Neither waits on a person.
+pub(in crate::agents) const CLAUDE_MODES: [&str; 6] = ["default", "acceptEdits", "plan", "bypassPermissions", "auto", "dontAsk"];
 
 /// Given and not blank.
 pub(in crate::agents) fn asked(v: &Option<String>) -> Option<&str> {
@@ -120,6 +125,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 agent: params.agent.clone(),
                 parent: None,
                 connectors: params.connectors.unwrap_or(false),
+                constraints: Vec::new(),
                 token: None,
             })
         }
@@ -187,6 +193,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 agent: None,
                 parent: None,
                 connectors: params.connectors.unwrap_or(false),
+                constraints: Vec::new(),
                 token: None,
             })
         }
@@ -201,6 +208,7 @@ pub(in crate::agents) fn spawn_background(
     account_path: String,
     in_worktree: Option<String>,
     request: u64,
+    constraints: Vec<crate::agents::Constraint>,
 ) -> Result<Spawned, String> {
     let provider = if params.provider.as_deref() == Some("codex") { Provider::Codex } else { Provider::Claude };
     let project = params.folder.clone().unwrap_or_default();
@@ -234,9 +242,22 @@ pub(in crate::agents) fn spawn_background(
     if let Some(budget) = params.budget_tokens {
         settings["budgetTokens"] = serde_json::json!(budget);
     }
+    if let Some(pct) = params.budget_pct {
+        settings["budgetPct"] = serde_json::json!(pct);
+    }
     if spec.connectors {
         settings["connectors"] = serde_json::json!(true);
     }
+    // Where its mode came from when the spawn named none (privilege.rs `settle_mode`).
+    if let Some(from) = params.mode_from {
+        settings["modeFrom"] = serde_json::json!(from);
+    }
+    // Kept in the registry too, where `luna_session_get` shows them and every
+    // spawn of its own reads them to pass on (`constraints_for`).
+    if !constraints.is_empty() {
+        settings["constraints"] = serde_json::json!(constraints);
+    }
+    spec.constraints = constraints;
     let tools = spec.tools;
     let auto_delete = params.auto_delete.unwrap_or(true);
     let token = register(&id, provider, &run_in, &account_path, Some(caller), tools, settings.clone());
@@ -266,6 +287,11 @@ pub(in crate::agents) fn spawn_background(
         forget(&id);
         return Err(e);
     }
+    // Its CLI makes its worktree as its first turn starts: one at a time per
+    // repository (`worktree_queue`), held until it has said where, its turn
+    // has ended without, or WORKTREE_WAIT is up.
+    let queue = own_worktree.then(|| worktree_queue(&project));
+    let making = queue.as_ref().map(|q| q.lock().unwrap_or_else(|e| e.into_inner()));
     if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
         forget(&id);
         return Err(e);
@@ -284,9 +310,9 @@ pub(in crate::agents) fn spawn_background(
         auto_delete,
         background: true,
     });
-    let same_folder = if own_worktree { Vec::new() } else { neighbors_in(&run_in, &[caller, &id]) };
+    let same_folder = if own_worktree { Vec::new() } else { neighbors_in(&run_in, caller, &[caller, &id]) };
     shown(caller, &id, 0);
-    owe_from(caller, &id, 0, 0);
+    owe_asked(caller, &id, 0, 0, &Asked { text: &params.prompt, key: params.request_key.as_deref(), reply: true });
     // The CLI makes its worktree as the first turn starts: worth a few
     // seconds, so the caller need not go looking for it.
     let pty = crate::pty::manager();
@@ -295,15 +321,27 @@ pub(in crate::agents) fn spawn_background(
         let deadline = std::time::Instant::now() + WORKTREE_WAIT;
         loop {
             worktree = worktree_of(pty, &id);
-            if worktree.path.is_some() || std::time::Instant::now() >= deadline {
+            let ended = crate::activity::turn_state(&id).is_some_and(|t| t.turns_ended > 0);
+            if worktree.path.is_some() || ended || std::time::Instant::now() >= deadline {
                 break;
             }
             std::thread::sleep(POLL);
         }
     }
+    drop(making);
     let worktree_pending = own_worktree && worktree.path.is_none();
     let mcp_left_on = mcp_left_on(&id);
-    Ok(Spawned { id, turns_ended: 0, settings, same_folder, worktree, worktree_pending, mcp_left_on, account_choice: None })
+    Ok(Spawned {
+        id,
+        turns_ended: 0,
+        settings,
+        same_folder,
+        worktree,
+        worktree_pending,
+        mcp_left_on,
+        account_choice: None,
+        places: Default::default(),
+    })
 }
 
 /// What its first turn's "What Luna applied" lists as kept despite

@@ -513,7 +513,7 @@ impl PtyManager {
         for sub in ["hooks", "mcp"] {
             let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{}.json", crate::paths::id_file_name(id))));
         }
-        claude_instructions_dir(id, None);
+        let _ = claude_instructions_dir(id, None);
         crate::log::info("delete", &format!("chat {}, worktree {resolved:?}, dropping {drop_worktree}", crate::agents::label(id)));
 
         match &resolved {

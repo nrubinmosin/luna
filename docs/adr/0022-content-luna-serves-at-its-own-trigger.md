@@ -1,7 +1,8 @@
 # ADR-0022: Serve the handoff's instructions through Luna's own tool, to the chat that opted in alone
 
 - **Status:** Accepted; who knows amended by
-  [ADR-0024](0024-handoff-on-request.md)
+  [ADR-0024](0024-handoff-on-request.md); its system texts extended by
+  [ADR-0026](0026-session-roles-at-memory-level.md) (roles' texts and notes)
 - **Date:** 2026-11-09
 
 ## Context

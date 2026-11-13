@@ -46,7 +46,7 @@ pub(super) fn tools() -> Value {
     json!([
         {
             "name": "luna_session_list",
-            "description": "Your sessions as compact rows (state, askId, turnsEnded, task, lastActivityAt); scope all: every one; ids: those (others' task, askId: scope all). Filters: state, provider, account, group (a number, I=1, or \"mine\"), q (name, folder, account, id). limit (50); nextCursor goes in cursor.",
+            "description": "Your sessions as compact rows; scope all: every one; ids: those (others' task, askId: scope all). Filters: state, provider, account, group (a number, I=1, or \"mine\"), q (name, folder, account, id). limit (50); nextCursor goes in cursor. places.",
             "inputSchema": s(json!({
                 "scope": scope, "ids": strings, "state": strings, "provider": provider, "account": string,
                 "group": { "anyOf": [{ "type": "integer" }, { "type": "string" }] }, "q": string, "limit": count, "cursor": string
@@ -55,20 +55,20 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_get",
-            "description": "One session whole: its row with settings, folder, cwd, transcript, worktree, branch, sha, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask (another's ask: scope all).",
+            "description": "One session whole: its row with settings, folder, cwd, transcript, worktree, branch, sha, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask (another's ask: scope all); a helper's worktree: lastCommit, status.",
             "inputSchema": s(json!({ "id": string, "scope": scope }), &["id"]),
             "annotations": reads
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted settings: the account's defaults (luna_account_get). Returns id, settings, turnsEnded, sameFolder, worktree, accountChoice.",
+            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: your mode or nearest below (modeFrom), else the account's defaults (luna_account_get).",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,
                 "account": { "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }], "description": "default: yours; a list: the first with room" },
                 "model": { "type": "string", "description": "claude also a full id" },
                 "effort": string,
-                "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|bypassPermissions" },
+                "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|auto|dontAsk|bypassPermissions" },
                 "approval": { "type": "string", "description": "codex: never|auto-review" },
                 "sandbox": { "type": "string", "description": "codex: read-only|read-only-net|workspace-write|danger-full-access" },
                 "readOnly": { "type": "boolean", "description": "claude: no edit tools, Bash still writes; codex: read-only sandbox" },
@@ -79,18 +79,21 @@ pub(super) fn tools() -> Value {
                 "tools": { "type": "boolean", "description": "these tools too (one level)" },
                 "autoDelete": { "type": "boolean", "description": "default true: deleted 30 min after its answer reached you" },
                 "resumeOnRestart": flag,
-                "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" },
+                "budgetPct": { "type": "integer", "description": "context % its notices report past (default 50, 0 off)" },
+                "budgetTokens": count,
                 "connectors": { "type": "boolean", "description": "its account's MCP servers and connectors too" },
+                "constraints": { "type": "string", "description": "rules it and every session under it keep to, after yours; none removed" },
                 "requestKey": key
             }), &["prompt"]),
             "annotations": acts
         },
         {
             "name": "luna_session_send",
-            "description": "Send a prompt to a session you spawned (scope all: any, opened \"[From session <you> via Luna]\"), read as its user's. Returns stateBefore, queued (it was working), joined (a Claude helper takes it at its next tool), held (a user's draft: typed in later), started, turnsEnded.",
+            "description": "Send a prompt to a session you spawned (scope all: any, opened \"[From session <you> via Luna]\"), read as its user's.",
             "inputSchema": s(json!({
                 "id": string, "text": string,
                 "interrupt": { "type": "boolean", "description": "stop its turn first (yours only)" },
+                "expectReply": { "type": "boolean", "description": "false: no notice unless a status word or report" },
                 "scope": scope, "requestKey": key
             }), &["id", "text"]),
             "annotations": acts
@@ -153,7 +156,7 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_run_list",
-            "description": "Past spawns, newest first, deleted helpers too: id, at, ended, how, name, account, prompt and last reply (cut), transcript. Yours and your helpers'; scope all: everyone's. q searches names and prompts; limit (10).",
+            "description": "Past spawns, newest first, deleted helpers too, with prompt, last reply and transcript. Yours and your helpers'; scope all: everyone's. q searches names and prompts; limit (10).",
             "inputSchema": s(json!({ "q": string, "limit": count, "scope": scope }), &[]),
             "annotations": reads
         },
@@ -165,13 +168,13 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_notification_send",
-            "description": "Desktop notification, for a result or blocker the user must see now, not progress. One per 10 s.",
+            "description": "Desktop notification (person's chats only), for a result or blocker the user must see now, not progress. One per 10 s.",
             "inputSchema": s(json!({ "text": string }), &["text"]),
             "annotations": acts
         },
         {
             "name": "luna_power_set",
-            "description": "Only when the user asked: shut down, restart, hibernate or sleep the PC once Luna is quiet for quietSec (default: the user's), CLIs closed first; cancel disarms. drain: till then agents' spawns and sends are refused. Returns busy, waitingForAPerson.",
+            "description": "Person's chats, when the user asked: shut down, restart, hibernate or sleep the PC once Luna is quiet for quietSec (default: the user's), CLIs closed first; cancel disarms. drain: till then agents' spawns and sends are refused.",
             "inputSchema": s(json!({
                 "action": { "type": "string", "enum": ["shutdown", "restart", "hibernate", "sleep", "cancel"] },
                 "quietSec": count, "drain": flag
@@ -186,15 +189,16 @@ pub(super) fn names() -> Vec<String> {
     tools().as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect()
 }
 
-/// The tool a person's chat with Luna's tools is offered besides the rest,
-/// and no other session (agents/handoff `may_list`). No target: it acts on
-/// the caller's own chat, the one its token is. It answers only while the
-/// chat is asked for a handoff: without `file` how to write it; with one it
-/// hands off.
+/// The tool a person's chat with Luna's tools, and a lead while auto-handoff
+/// for leads is on, is offered besides the rest (agents/handoff `may_list`).
+/// No target: it acts on the caller's own session, the one its token is. It
+/// answers only while that session is asked for a handoff: without `file` how
+/// to write it, the procedure included (facts.rs `how_to`); with one it hands
+/// off.
 pub(super) fn handoff_tool() -> Value {
     json!({
         "name": "luna_session_handoff",
-        "description": "Go on in a fresh conversation of this chat, from a handoff you wrote. Without file: how to write it, and where. With file (Markdown, absolute path): Luna copies it, waits for your turn to end, clears this conversation and opens the next with the file and the facts it knows (helpers, debts, accounts). Call it only when a notice from Luna asks this chat for a handoff (the person's request, or auto-handoff at its threshold); unasked it refuses. After a call with file, end your turn.",
+        "description": "Go on in a fresh conversation of this session from a handoff you write, once a notice from Luna asks for one; unasked it refuses. Without file: how to write it, and where. With file (Markdown, absolute path): Luna takes it and switches once your turn ends.",
         "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } }, "required": [] },
         "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false }
     })
