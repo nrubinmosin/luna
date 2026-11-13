@@ -133,9 +133,12 @@ fn managed_layers(account_path: &str) -> Vec<PathBuf> {
 /// Luna's replaces whole (a higher layer's string takes a lower one's place,
 /// codex-rs/config): the system layer (`/etc/codex/config.toml`, Unix), the
 /// account's `config.toml`, the project's layers where the run trusts the
-/// project (`project_trusted`), each later one's value over the earlier; then
-/// the profile the stack selects (`profile`, `[profiles.<name>]`), whose
-/// value goes over them all. A managed layer comes above the `-c` itself:
+/// project (`project_trusted`), each later one's value over the earlier. No
+/// profile: 0.167.2 refuses to start on a `profile = "<name>"` in a config
+/// (`[profiles.<name>]` is legacy), and a `--profile`, which Luna never
+/// passes, is a user layer (`<name>.config.toml`) below the `-c`
+/// (codex-rs/config `ConfigLayerSource::precedence`; docs/cli-compatibility.md).
+/// A managed layer comes above the `-c` itself:
 /// one that sets the key, or one Luna cannot read, is said in `unsure`, and
 /// the session is started all the same (ADR-0026).
 pub fn developer_instructions_in(account_path: &str, folder: &str, project_trusted: bool) -> StackInstructions {
@@ -148,8 +151,6 @@ pub fn developer_instructions_in(account_path: &str, folder: &str, project_trust
     if project_trusted {
         files.extend(project_layers(account_path, folder));
     }
-    let mut profile: Option<String> = None;
-    let mut docs = Vec::new();
     for file in files {
         match std::fs::read_to_string(&file) {
             Ok(text) => match text.parse::<DocumentMut>() {
@@ -157,24 +158,11 @@ pub fn developer_instructions_in(account_path: &str, folder: &str, project_trust
                     if let Some(v) = string_at(&doc, "developer_instructions") {
                         out.value = Some(v);
                     }
-                    if let Some(p) = string_at(&doc, "profile") {
-                        profile = Some(p);
-                    }
-                    docs.push(doc);
                 }
                 Err(e) => out.unsure.push(format!("{} does not parse ({e}): its developer_instructions not read", file.display())),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => out.unsure.push(format!("{}: {e}: its developer_instructions not read", file.display())),
-        }
-    }
-    if let Some(profile) = profile {
-        for doc in &docs {
-            if let Some(v) = doc.get("profiles").and_then(|p| p.get(&profile)).and_then(|p| p.get("developer_instructions")) {
-                if let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
-                    out.value = Some(s.to_string());
-                }
-            }
         }
     }
     for file in managed_layers(account_path) {
@@ -397,13 +385,16 @@ mod tests {
         std::fs::write(sub.join(".codex").join("config.toml"), "developer_instructions = '''The folder's.'''\n").unwrap();
         assert_eq!(value(true).value.as_deref(), Some("The folder's."), "the deepest layer last");
         assert_eq!(value(false).value.as_deref(), Some("The account's."), "an untrusted project's layers are not read");
-        // A profile the stack selects goes over every layer.
+        // A legacy profile is no layer of 0.167.2's (it refuses to start on
+        // the selector), and a `--profile` file sits below the `-c`: the
+        // account's own value stands, and Luna's goes over both.
         std::fs::write(
             account.join("config.toml"),
             "profile = \"work\"\ndeveloper_instructions = \"The account's.\"\n[profiles.work]\ndeveloper_instructions = \"Work's.\"\n",
         )
         .unwrap();
-        assert_eq!(value(true).value.as_deref(), Some("Work's."));
+        std::fs::write(account.join("work.config.toml"), "developer_instructions = \"Work's.\"\n").unwrap();
+        assert_eq!(value(false), StackInstructions { value: Some("The account's.".into()), unsure: Vec::new() });
         // One that will not parse, and a managed layer over the `-c`: said, not refused.
         std::fs::write(sub.join(".codex").join("config.toml"), "developer_instructions = [broken\n").unwrap();
         let v = value(true);

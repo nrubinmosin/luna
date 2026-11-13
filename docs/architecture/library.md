@@ -154,8 +154,10 @@ no override and no entries for chats is started as before.
 - **Codex:** `-c developer_instructions=<value>` (`pty::codex_role_args`), the
   value being what the config stack sets (`codex/config.rs`
   `developer_instructions_in`: `/etc/codex/config.toml` on Unix, the account's
-  `config.toml`, a trusted project's layers, the selected profile's) and then
-  the layers. A `-c` replaces the stack's string, so Luna puts it first. A
+  `config.toml`, a trusted project's layers) and then the layers. A `-c`
+  replaces the stack's string, so Luna puts it first. No profile goes over it:
+  0.167.2 refuses a legacy `profile = "<name>"` selector, and a `--profile`
+  file is a layer below the `-c` (docs/cli-compatibility.md). A
   managed layer, which comes above the `-c`, that sets the key, or a layer Luna
   cannot read, is said as `role.layers-unsure`; the session starts all the
   same. The value is held to 24 KB (`CODEX_ROLE_MAX`): over it a helper's turn
