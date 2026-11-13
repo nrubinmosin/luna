@@ -97,7 +97,10 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   accounts with a line before them (`banner_of`, `worded`), so chats started
   outside Luna keep them. Setting such an entry's audience to anything else
   takes it out of `laid_out`, and the next pass takes its copies out as no
-  longer wanted (or keeps a copy changed there, as ever). An old helpers-only
+  longer wanted (or keeps a copy changed there, as ever). A rename moves its
+  `laid_out` with its reach and audience (`rename_instructions`); a delete
+  drops it, and new instructions under the name never inherit it
+  (`forget_instructions`). An old helpers-only
   entry leaves the accounts the same way; `chosen` may then give an account
   another file, which the pass reports.
 - **Claude Code:** the instructions a session would read from its account or
