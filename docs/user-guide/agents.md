@@ -124,10 +124,14 @@ hooks run unasked.
   instructions call the operator, the user or the person at this machine — and
   to write in the language of its task, and to install nothing and change
   nothing machine-wide or in its account's folder unless its task names that
-  change, handing its caller the command instead: Claude Code through its system prompt
-  and a note after its first prompt; Codex, which can only replace
-  `developer_instructions`, through a note Luna appends to each prompt. A prompt
-  opening with a slash command goes without it.
+  change, handing its caller the command instead. That is its role, which
+  both CLIs read at the level of an instructions file, beside the library's
+  instructions for its role and its constraints
+  ([library](library.md#what-a-session-is-told-of-its-role)): Claude Code as
+  the `CLAUDE.md` of a folder of Luna's, Codex in `developer_instructions`
+  after its config's own value. A one-line note after its prompt says the task
+  comes from another agent: after its first prompt on Claude Code, after each
+  on Codex. A prompt opening with a slash command goes without the note.
 
 ## Spawning options
 
