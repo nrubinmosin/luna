@@ -496,8 +496,9 @@ turn, stopped on a prompt (once per stop) or exited.
   every notice line about the helper ends ` (context N%)` (`context_rider`).
   Past 85% (`ALARM_PCT`), or its level if higher, the first reading stays as
   `budgetBreach` and a line of its own rides to the parent once, advising a
-  fresh helper unless it hands off by itself (`hands_off_by_itself`, the hook
-  auto-handoff for leads is to answer). Nothing is stopped.
+  fresh helper unless it hands off by itself (`hands_off_by_itself`: a lead
+  while auto-handoff for leads is on, handoff `lead_hands_off`). Nothing is
+  stopped.
 - **The log.** Each notice's line names, per session told of, what became of
   it (`kind_of`, the `Settled` variant) and how long it was held for company
   (`Notice::held_for`): what a wider batching window would have saved is read

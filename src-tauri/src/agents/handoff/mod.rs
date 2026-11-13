@@ -199,6 +199,14 @@ pub fn may_list(id: &str) -> bool {
     chat_listed(id) || lead::listed_to(id)
 }
 
+/// Whether lead `id` hands its conversation off by itself as its context
+/// fills: listed the tool while auto-handoff for leads is on (lead.rs
+/// `listed_to`). Notices about its context advise its parent no rotation then
+/// (notifier usage.rs).
+pub(in crate::agents) fn lead_hands_off(id: &str) -> bool {
+    lead::listed_to(id)
+}
+
 /// Whether `id` is a person's own chat (no parent, no background helper, not
 /// the dev caller, which has no terminal) with Luna's tools, auto-handoff on or
 /// not: what the threshold's beat, Hand off now and a move go by.

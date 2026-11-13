@@ -226,10 +226,10 @@ fn budget_line(who: &str, breach: &serde_json::Value, rotate: bool) -> String {
 }
 
 /// Whether helper `id` hands its conversation off by itself as its context
-/// fills, so that a notice about its context has no rotation to advise. None
-/// does yet: auto-handoff for leads, when it comes, is to answer here.
-fn hands_off_by_itself(_id: &str) -> bool {
-    false
+/// fills, so that a notice about its context has no rotation to advise: a
+/// lead while auto-handoff for leads is on (handoff `lead_hands_off`).
+fn hands_off_by_itself(id: &str) -> bool {
+    crate::agents::handoff::lead_hands_off(id)
 }
 
 /// " (context N%)", the rider every notice about helper `id` carries while its
@@ -484,7 +484,26 @@ mod tests {
         );
         assert!(budget_line(&your_helper("kid", None), &b, true)
             .ends_with("A fresh helper briefed on what is settled would have room; this one may be losing what it read early on."));
-        assert!(!hands_off_by_itself("kid"), "none does yet");
+        assert!(!hands_off_by_itself("kid"), "no such lead");
+    }
+
+    /// A lead hands off by itself while auto-handoff for leads is on: its
+    /// parent is advised no rotation then, and is again with it off. A helper
+    /// without Luna's tools never hands off.
+    #[test]
+    fn a_lead_hands_off_by_itself_while_auto_handoff_for_leads_is_on() {
+        use crate::settings::LeadHandoff;
+        let (lead, plain) = ("hb-lead", "hb-plain");
+        crate::background::test_lead(lead, Provider::Claude, "C:\\p", None, None);
+        crate::background::idle_for_test(plain, Provider::Claude, 0, false);
+        crate::agents::handoff::lead_settings_for_test(Some(LeadHandoff { on: true, threshold: 60 }));
+        assert!(hands_off_by_itself(lead));
+        assert!(!hands_off_by_itself(plain), "no Luna tools");
+        crate::agents::handoff::lead_settings_for_test(Some(LeadHandoff { on: false, threshold: 60 }));
+        assert!(!hands_off_by_itself(lead), "off");
+        crate::agents::handoff::lead_settings_for_test(None);
+        crate::background::remove_for_test(lead);
+        crate::background::gone_for_test(plain);
     }
 
     #[test]
