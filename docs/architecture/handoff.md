@@ -544,7 +544,11 @@ until they are through.
   (`unanswered`: the ask Luna's own on this conversation, a turn ended since,
   no switch scheduled and none given up since): at that turn's end, at rest,
   the told level kept and the ask closed first, so a document that will not
-  build is not tried again at every turn's end.
+  build is not tried again at every turn's end. Not after a turn that was
+  stopped or left work running (`held_up`, as for a switch it called for):
+  nothing is kept, and the next turn's end looks again; and looked at again
+  as the switch starts (`switch_now`), for a Stop that came while the
+  document was built.
 - **The call.** `lead::handoff` answers only while the ask holds in the
   conversation the lead is on (`asked_now`: `Asked::conversation` equal to
   `background::session_id`), else `lead::NOT_ASKED`. Refused while what its
