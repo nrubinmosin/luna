@@ -487,11 +487,11 @@ fn a_firm_ask_left_unanswered_goes_on_from_lunas_document() {
     }
 }
 
-/// A firm ask whose handoff was given up since (something its turns left
-/// still running as the switch was to start) stays the lead's to answer:
-/// Luna does not write it over it.
+/// A firm ask whose handoff was given up since (its turn stopped as the
+/// switch was to start) stays the lead's to answer for the turn that tells it
+/// and one more; one left unanswered past them goes on from Luna's document.
 #[test]
-fn a_firm_ask_answered_and_given_up_is_not_taken_over() {
+fn a_firm_ask_answered_and_given_up_is_the_leads_for_two_turns_more() {
     lead("ld-firm-given", Some(90));
     on(60);
     lead_turn_ended("ld-firm-given");
@@ -505,6 +505,13 @@ fn a_firm_ask_answered_and_given_up_is_not_taken_over() {
     crate::background::lead_turn_over_for_test("ld-firm-given", &[], None);
     lead_turn_ended("ld-firm-given");
     assert!(crate::background::switch_of("ld-firm-given").is_none(), "not written over its own");
+    // The turn after that ends with no call either.
+    crate::background::set_running_for_test("ld-firm-given");
+    crate::background::lead_turn_over_for_test("ld-firm-given", &[], None);
+    lead_turn_ended("ld-firm-given");
+    let s = crate::background::switch_of("ld-firm-given").expect("switched from records");
+    assert!(s.from_records && s.phase == LeadPhase::Fresh, "{s:?}");
+    assert!(asked("ld-firm-given").is_none(), "the ask closed");
     gone("ld-firm-given");
 }
 

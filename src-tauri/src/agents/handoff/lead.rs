@@ -325,8 +325,9 @@ fn opening(id: &str, s: &LeadSwitch, previous: Option<&str>, provider: Provider)
 /// `s` given up, `started` after a fresh start that named no conversation:
 /// back where it was (switch.rs), kept on record, and the lead told. Before
 /// its start the ask stays open, so it may call again once what stood in the
-/// way is over; after, the ask closes, so a start that keeps failing is not
-/// asked over and over.
+/// way is over, armed again for `unanswered`: the turn that tells it, and one
+/// more, are its to call in. After, the ask closes, so a start that keeps
+/// failing is not asked over and over.
 fn gave_up(id: &str, s: &LeadSwitch, why: &str, started: bool) {
     let back = match started {
         true => crate::background::revert_switch(id, s.n),
@@ -335,11 +336,16 @@ fn gave_up(id: &str, s: &LeadSwitch, why: &str, started: bool) {
     if back.is_none() {
         return;
     }
-    let provider = crate::background::lead_view(id).map_or(Provider::Claude, |v| v.provider);
+    let (provider, turns_ended) = crate::background::lead_view(id).map_or((Provider::Claude, 0), |v| (v.provider, v.turns_ended));
     let recorded = store::change(id, |r| {
         record_past(r, s, provider, Some(why.to_string()));
         if started || s.from_records {
             r.asked = None;
+        }
+        let at = r.past.last().map_or_else(now_ms, |p| p.at);
+        if let Some(a) = r.asked.as_mut() {
+            a.at = at;
+            a.turns = Some(turns_ended + 1);
         }
         r.asked.is_some()
     });
@@ -507,10 +513,11 @@ fn measure(id: &str) {
 }
 
 /// Whether `id`'s ask, Luna's own on `session`, went unanswered: a turn of its
-/// has ended since it was opened (the ask's own, started at once at rest),
-/// with no switch scheduled and none given up since. A lead whose write is
-/// refused unasked (a mode or reviewer that lets it through nowhere) would
-/// otherwise run on to its CLI's own compaction.
+/// has ended since it was opened (the ask's own, started at once at rest) or
+/// armed again by a switch given up (`gave_up`), with no switch scheduled and
+/// none given up since. A lead whose write is refused unasked (a mode or
+/// reviewer that lets it through nowhere) would otherwise run on to its CLI's
+/// own compaction.
 fn unanswered(id: &str, session: &str, turns_ended: u32) -> bool {
     let r = store::records();
     let Some(rec) = r.get(id) else { return false };
@@ -518,7 +525,7 @@ fn unanswered(id: &str, session: &str, turns_ended: u32) -> bool {
         a.kind == store::AskKind::Auto
             && a.conversation.as_deref() == Some(session)
             && a.turns.is_some_and(|t| turns_ended > t)
-            && rec.past.last().is_none_or(|p| p.at < a.at)
+            && rec.past.last().is_none_or(|p| p.at <= a.at)
     })
 }
 
