@@ -143,6 +143,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   session, **Chats** your chats, **Helpers** leads and helpers. Instructions
   for your chats stay in the accounts with a neutral line saying whose they
   are; instructions for helpers leave the accounts and go per session.
+- Instructions made every session's are refused also where the
+  instructions already laid into accounts name each account they would reach
+  as closely or more (`claude` and `codex` together cover `all`), not only
+  where both name the same accounts: there they would reach nobody.
 - **Upgrade note:** library audiences are saved so Luna 0.17 still reads the
   settings file: as **Chats** or **Helpers** where the roles match one of
   those (helpers being leads and helpers), the roles themselves beside that.

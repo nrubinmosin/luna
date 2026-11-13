@@ -179,12 +179,14 @@ pub fn audience_applied(s: &SessionSkills) -> Vec<crate::applied::Applied> {
 }
 
 /// Why instructions `name`, given per session now, cannot be made every
-/// session's: their reach names an account, a provider or every account
-/// (`all`) that instructions laid into accounts already name, or that is set
-/// to get none. Per session they went beside those; laid into accounts they
-/// would compete for the account's one file, and the one `chosen` passes over
-/// would reach nobody there. Refused rather than settled for the person, as a
-/// reach is given only by their choosing it (reach.rs `give_instructions`).
+/// session's: an account, a provider or every account (`all`) their reach
+/// names would get, in every account it takes in, the file of instructions
+/// laid into accounts already that name it as closely or more (reach.rs
+/// `chosen`: `codex` and `claude` together take every account from `all`),
+/// or none, as set to get none. Per session they went beside those; laid into
+/// accounts they would compete for the account's one file, and lose it there
+/// to reach nobody. Refused rather than settled for the person, as a reach is
+/// given only by their choosing it (reach.rs `give_instructions`).
 pub(super) fn every_session_refused(lib: &LibrarySettings, name: &str) -> Option<String> {
     if laid_into_accounts(lib, name) {
         return None;
@@ -195,17 +197,62 @@ pub(super) fn every_session_refused(lib: &LibrarySettings, name: &str) -> Option
         r if !r.contains('/') => format!("every {r} account"),
         r => r.to_string(),
     };
+    let laid: Vec<(&String, &Reach)> = lib.instructions.iter().filter(|(n, _)| n.as_str() != name && laid_into_accounts(lib, n)).collect();
     let mut clashes: Vec<String> = Vec::new();
-    for (other, theirs) in lib.instructions.iter().filter(|(n, _)| n.as_str() != name && laid_into_accounts(lib, n)) {
-        clashes.extend(reach.iter().filter(|r| theirs.contains(r)).map(|r| format!("{other} already goes into {}", words(r))));
+    for r in reach {
+        let mut by: BTreeSet<&str> = BTreeSet::new();
+        let mut none = false;
+        let mut wins = false;
+        for a in stand_ins(lib, r) {
+            let c = closeness(std::slice::from_ref(r), &a);
+            let over: Vec<&str> = laid.iter().filter(|(_, theirs)| closeness(theirs, &a) >= c).map(|(n, _)| n.as_str()).collect();
+            let kept_out = closeness(&lib.no_instructions, &a) >= c;
+            if over.is_empty() && !kept_out {
+                wins = true;
+                break;
+            }
+            by.extend(over);
+            none |= kept_out;
+        }
+        if wins {
+            continue;
+        }
+        let names: Vec<&str> = by.into_iter().collect();
+        let goes = if names.len() == 1 { "goes" } else { "go" };
+        clashes.push(match (names.is_empty(), none) {
+            (true, _) => format!("{} is set to get no instructions", words(r)),
+            (false, false) => format!("{} already {goes} into {}", names.join(" and "), words(r)),
+            (false, true) => format!("{} already {goes} into {}, and the rest of it is set to get none", names.join(" and "), words(r)),
+        });
     }
-    clashes.extend(reach.iter().filter(|r| lib.no_instructions.contains(r)).map(|r| format!("{} is set to get no instructions", words(r))));
     (!clashes.is_empty()).then(|| {
         format!(
-            "{name} cannot be for every session while {}: an account's own file holds one of them, and {name} would reach nobody              there. Change {name}'s accounts or the other's first.",
+            "{name} cannot be for every session while {}: an account's own file holds one of them, and {name} would reach nobody \
+             there. Change {name}'s accounts or the other's first.",
             clashes.join(", and ")
         )
     })
+}
+
+/// An account of `provider` called `name`, for `stand_ins`.
+fn stand_in(provider: Provider, name: &str) -> AccountInfo {
+    AccountInfo { provider, name: name.into(), path: String::new() }
+}
+
+/// One account of each kind selector `r` takes in, as reach.rs `closeness`
+/// tells them apart: each account a reach of the library names, and for each
+/// provider one named nowhere (no name, which no selector has), standing for
+/// all its others, there now or added later.
+fn stand_ins(lib: &LibrarySettings, r: &str) -> Vec<AccountInfo> {
+    let named: BTreeSet<&str> = lib.instructions.values().flatten().chain(&lib.no_instructions).map(String::as_str).collect();
+    Provider::ALL
+        .into_iter()
+        .flat_map(|p| {
+            let names = named.iter().filter_map(move |x| x.split_once('/').filter(|(q, _)| *q == p.as_str()).map(|(_, n)| n));
+            names.chain([""]).map(move |n| stand_in(p, n)).collect::<Vec<_>>()
+        })
+        .filter(|a| reaches(&[r.to_string()], a))
+        .collect()
 }
 
 /// Whose sessions a skill or instructions file is for; every session's drops
@@ -271,6 +318,25 @@ mod tests {
         lib.instructions.insert("review".into(), vec!["codex".into()]);
         lib.instructions.insert("main".into(), vec!["codex".into()]);
         assert!(every_session_refused(&lib, "review").unwrap().contains("main already goes into every codex account"));
+        // Named by none alike, but shadowed all the same: `main` for both
+        // providers takes every account from `review`'s `all`, more closely.
+        lib.no_instructions.clear();
+        lib.audience.instructions.insert("review".into(), Audience::of(&[Role::Helper]));
+        lib.instructions.insert("main".into(), vec!["claude".into(), "codex".into()]);
+        lib.instructions.insert("review".into(), all());
+        let why = every_session_refused(&lib, "review").expect("main wins every account");
+        assert!(why.contains("main already goes into every account") && why.contains("nobody there"), "{why}");
+        // One provider's alone leaves it the other's accounts.
+        lib.instructions.insert("main".into(), vec!["claude".into()]);
+        assert_eq!(every_session_refused(&lib, "review"), None);
+        // Each account named, and the rest of that provider set to get none.
+        lib.instructions.insert("review".into(), vec!["codex".into()]);
+        lib.instructions.insert("main".into(), vec!["codex/home".into()]);
+        lib.no_instructions = vec!["codex".into()];
+        let why = every_session_refused(&lib, "review").unwrap();
+        assert!(why.contains("main already goes into every codex account, and the rest of it is set to get none"), "{why}");
+        lib.no_instructions.clear();
+        assert_eq!(every_session_refused(&lib, "review"), None, "every other codex account is its");
         // A chats' entry an earlier Luna laid out competes already.
         lib.audience.instructions.insert("review".into(), Audience::CHATS);
         lib.laid_out.insert("review".into());

@@ -54,10 +54,11 @@ one off. At least one stays on.
   They reach only sessions Luna starts, not one you start by hand. Their row
   has a box per account rather than a radio: they compete with no other file
   for an account. Turning all three roles back on is refused, naming the other
-  file, while another file for every session (or **no instructions**) holds
-  one of the same accounts the same way: only one could go into the account's
-  file, and this one would reach nobody there. Change either one's accounts
-  first.
+  file, while other files for every session (or **no instructions**) hold
+  every account one of its choices takes in, as closely or more (an account
+  by name beats a provider, a provider beats **all**, and Claude Code and
+  Codex together hold all): only one could go into the account's file, and
+  this one would reach nobody there. Change either one's accounts first.
 - **Instructions for your chats only** that an earlier Luna put into accounts
   stay there, with a line before them saying whose they are ("For chats with a
   person only: a session whose task came from another agent skips this whole
