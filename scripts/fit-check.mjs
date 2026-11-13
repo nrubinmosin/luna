@@ -36,56 +36,122 @@ const SIZES = [
   { name: '1024x600@150', w: 683, h: 400, s: 1.5 }
 ];
 
-// Page-side snippets for the extras. A control is scrolled into view before it
-// is clicked, as a person would have to.
-const store = path => `(await import('/src/${path}'))`;
-const wait = ms => `await new Promise(r => setTimeout(r, ${ms}));`;
-const press = el =>
-  `{ const el = ${el}; if (!el) throw new Error('nothing to press'); el.scrollIntoView({ block: 'nearest' }); ${wait(200)} el.click(); }`;
-const click = selector => press(`document.querySelector(${JSON.stringify(selector)})`);
-const clickText = (selector, text) =>
-  press(
-    `[...document.querySelectorAll(${JSON.stringify(selector)})].find(e => e.textContent.trim() === ${JSON.stringify(text)})`
-  );
+// Page-side steps for the extras: each a name and its arguments, data that the
+// table hands to one fixed function on the page (pageSteps), never code. A
+// control is scrolled into view before it is clicked, as a person would have to.
+const wait = ms => ['wait', ms];
+const click = selector => ['click', selector];
+const clickText = (selector, text) => ['clickText', selector, text];
 /** Scrolls the open dialog's body by 60px, whichever way it can go, and says
  *  whether it moved: a body that fits has nothing to scroll. */
-const scrollBody = `const b = document.querySelector('.scrim > .window > .window-body'); const was = b.scrollTop; b.scrollTop = was > 60 ? was - 60 : was + 60; return b.scrollTop !== was;`;
-const has = selector => `document.querySelector(${JSON.stringify(selector)})`;
+const scrollBody = [['scrollBody']];
+/** Whether `selector` is on the page, with `text` in it if given. */
+const has = (selector, text) => [['has', selector, text]];
 /** The first chat with fourteen helpers at work, more than any window is tall. */
-const manyHelpers =
-  `{ const s = ${store('features/agents/background.store.ts')}.useBackground;` +
-  `const h = s.getState().helpers.find(x => x.parent === 'demo-1');` +
-  `s.setState({ helpers: Array.from({ length: 14 }, (_, i) => ({ ...h, id: h.id + '-' + i, name: 'helper ' + i })) }); } ${wait(300)}`;
+const manyHelpers = [['helpers', Array.from({ length: 14 }, (_, i) => `helper ${i}`), false], wait(300)];
 /** Rests the pointer on the first pane's helper pill, which opens its list.
  *  A hover, not focus: a headless page that is not focused fires no focus events. */
-const hoverPill = `{ const p = document.querySelector('.pane .hpill'); if (!p) throw new Error('no pill'); p.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' })); } ${wait(500)}`;
+const hoverPill = [['hover', '.pane .hpill'], wait(500)];
 /** Holds the first pane to `px` wide, whatever the board gives it. */
-const narrowPane = px => `document.querySelector('.pane').style.maxWidth = '${px}px'; ${wait(200)}`;
-const linkChooser = `[...document.querySelectorAll('.window')].find(w => w.textContent.includes('Copy link'))`;
+const narrowPane = px => [['maxWidth', '.pane', px], wait(200)];
+const LINK = 'https://example.com/a/rather/long/link?with=query';
 
-/** What only a click (or a store a click would set) opens: a scene to start
- *  from, what to do in it, and what must then be open (`opens`, a page
- *  expression), or the check would measure the scene beneath and pass.
- *  `then` runs once it is open; with `closes`, no popup may be left open
- *  after it if it says it scrolled something. */
-const EXTRAS = [
-  { name: 'newchat-picker', scene: 'newchat', setup: click('.picker-face'), opens: has('.picker-list') },
-  {
+/** Takes `steps` on the page in order and returns what the last one gave.
+ *  The only code of the extras that reaches the page: its source is fixed,
+ *  and the steps come in as its argument, by value. It runs in the page, so
+ *  the page's globals are named for the linter, which sees a Node script. */
+/* global document, innerWidth, innerHeight, PointerEvent */
+async function pageSteps(steps) {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const store = path => import(`/src/${path}`);
+  const press = async el => {
+    if (!el) throw new Error('nothing to press');
+    el.scrollIntoView({ block: 'nearest' });
+    await sleep(200);
+    el.click();
+  };
+  const linkChooser = () => [...document.querySelectorAll('.window')].find(w => w.textContent.includes('Copy link'));
+  const holds = (el, text) => !!el && (text == null || el.textContent.includes(text));
+  const actions = {
+    wait: sleep,
+    click: selector => press(document.querySelector(selector)),
+    clickText: (selector, text) =>
+      press([...document.querySelectorAll(selector)].find(e => e.textContent.trim() === text)),
+    // A click where the element stands, if it is there at all.
+    clickIfThere: selector => document.querySelector(selector)?.click(),
+    hover: selector => {
+      const el = document.querySelector(selector);
+      if (!el) throw new Error(`nothing at ${selector}`);
+      el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' }));
+    },
+    maxWidth: (selector, px) => {
+      document.querySelector(selector).style.maxWidth = `${px}px`;
+    },
+    scrollToEnd: selector => {
+      document.querySelector(selector).scrollTop = 1e6;
+    },
+    scrollBody: () => {
+      const b = document.querySelector('.scrim > .window > .window-body');
+      const was = b.scrollTop;
+      b.scrollTop = was > 60 ? was - 60 : was + 60;
+      return b.scrollTop !== was;
+    },
     // The account box at the very bottom of the dialog's body, then opened:
     // the body's content pushed 320px down, so it scrolls there at any size.
-    name: 'newchat-picker-low',
-    scene: 'newchat',
-    setup:
-      `const body = document.querySelector('.scrim > .window > .window-body'); const face = document.querySelector('.picker-face');` +
-      `body.firstElementChild.style.marginTop = '320px'; ${wait(100)}` +
-      `body.scrollTop += face.getBoundingClientRect().bottom - body.getBoundingClientRect().bottom + 6; ${wait(200)}` +
-      `face.click();`,
-    opens: has('.picker-list')
-  },
+    lowPicker: async () => {
+      const body = document.querySelector('.scrim > .window > .window-body');
+      const face = document.querySelector('.picker-face');
+      body.firstElementChild.style.marginTop = '320px';
+      await sleep(100);
+      body.scrollTop += face.getBoundingClientRect().bottom - body.getBoundingClientRect().bottom + 6;
+      await sleep(200);
+      face.click();
+    },
+    link: async url =>
+      (await store('features/browsers/browsers.store.ts')).useLinkChooser
+        .getState()
+        .show(url, 'demo-1', innerWidth - 120, innerHeight - 60),
+    browsers: async count => {
+      const s = await store('features/browsers/browsers.store.ts');
+      const d = s.useBrowsers.getState().data;
+      const found = Array.from({ length: count }, (_, i) => ({
+        id: 'b' + i,
+        name: 'Browser profile ' + i,
+        command: 'x %1'
+      }));
+      s.useBrowsers.setState({ data: { ...d, found } });
+    },
+    // The first chat's helpers, each a copy of its first under one of `names`;
+    // `done` leaves them idle with nothing left running.
+    helpers: async (names, done) => {
+      const s = (await store('features/agents/background.store.ts')).useBackground;
+      const h = s.getState().helpers.find(x => x.parent === 'demo-1');
+      const idle = done ? { state: 'idle', leftRunning: [] } : {};
+      s.setState({ helpers: names.map((name, i) => ({ ...h, id: h.id + '-' + i, name, ...idle })) });
+    },
+    has: (selector, text) => holds(document.querySelector(selector), text),
+    linkChooser: text => holds(linkChooser(), text)
+  };
+  let last;
+  for (const [name, ...args] of steps) {
+    if (!Object.hasOwn(actions, name)) throw new Error(`no page step called ${name}`);
+    last = await actions[name](...args);
+  }
+  return last;
+}
+
+/** What only a click (or a store a click would set) opens: a scene to start
+ *  from, the steps to take in it, and what must then be open (`opens`, steps
+ *  that say whether it is), or the check would measure the scene beneath and
+ *  pass. `then` runs once it is open; with `closes`, no popup may be left
+ *  open after it if it says it scrolled something. */
+const EXTRAS = [
+  { name: 'newchat-picker', scene: 'newchat', setup: [click('.picker-face')], opens: has('.picker-list') },
+  { name: 'newchat-picker-low', scene: 'newchat', setup: [['lowPicker']], opens: has('.picker-list') },
   {
     name: 'newchat-picker-scroll',
     scene: 'newchat',
-    setup: click('.picker-face'),
+    setup: [click('.picker-face')],
     opens: has('.picker-list'),
     then: scrollBody,
     closes: true
@@ -93,34 +159,34 @@ const EXTRAS = [
   {
     name: 'settings-links-menu',
     scene: 'settings-links',
-    setup: click('[aria-haspopup="menu"]'),
+    setup: [click('[aria-haspopup="menu"]')],
     opens: has('[role=menu]')
   },
   {
     name: 'library-editor',
     scene: 'library',
-    setup: click('button[title^="Edit "][title$="SKILL.md"]'),
+    setup: [click('button[title^="Edit "][title$="SKILL.md"]')],
     opens: has('.config-text')
   },
   {
     name: 'library-addfolder',
     scene: 'library',
-    setup: clickText('button', 'Add a folder…'),
+    setup: [clickText('button', 'Add a folder…')],
     opens: has('[role=menu]')
   },
-  { name: 'library-reach', scene: 'library', setup: click('.picker-face'), opens: has('.popover') },
+  { name: 'library-reach', scene: 'library', setup: [click('.picker-face')], opens: has('.popover') },
   {
     // The scene's ask fails on the dialog's first look after it, past the
     // wait every scene gets: its buttons are looked at once they are there.
     name: 'move-failed-buttons',
     scene: 'move-failed',
-    setup: wait(2500),
+    setup: [wait(2500)],
     opens: has('[data-testid="move-failed"]')
   },
   {
     name: 'library-reach-scroll',
     scene: 'library',
-    setup: click('.picker-face'),
+    setup: [click('.picker-face')],
     opens: has('.popover'),
     then: scrollBody,
     closes: true
@@ -128,85 +194,71 @@ const EXTRAS = [
   {
     name: 'handoff-previous',
     scene: 'handoff',
-    setup:
-      `document.querySelector('.scrim')?.click(); ${wait(300)}` + clickText('.handoff-link', 'previous conversation'),
+    setup: [['clickIfThere', '.scrim'], wait(300), clickText('.handoff-link', 'previous conversation')],
     opens: has('.helper-view')
   },
   // The move's account list, open in its dialog; its document scrolled to
   // the end in the preview, Send in reach.
-  { name: 'move-picker', scene: 'move', setup: click('.move-dialog .picker-face'), opens: has('.picker-list') },
+  { name: 'move-picker', scene: 'move', setup: [click('.move-dialog .picker-face')], opens: has('.picker-list') },
   {
     name: 'move-scroll',
     scene: 'move-preview',
-    setup: `document.querySelector('.move-doc').scrollTop = 1e6; ${wait(200)}`,
+    setup: [['scrollToEnd', '.move-doc'], wait(200)],
     opens: has('.move-dialog .move-doc')
   },
   {
     // The color picker, from the pane's "…" menu.
     name: 'color',
     scene: 'main',
-    setup: click('.pane [data-glyph="more"]') + wait(200) + clickText('.pane-menu [role=menuitem]', 'Chat color…'),
+    setup: [click('.pane [data-glyph="more"]'), wait(200), clickText('.pane-menu [role=menuitem]', 'Chat color…')],
     opens: has('.popover .swatch')
   },
-  {
-    name: 'link',
-    scene: 'main',
-    setup: `${store('features/browsers/browsers.store.ts')}.useLinkChooser.getState().show('https://example.com/a/rather/long/link?with=query', 'demo-1', innerWidth - 120, innerHeight - 60);`,
-    opens: linkChooser
-  },
+  { name: 'link', scene: 'main', setup: [['link', LINK]], opens: [['linkChooser']] },
   {
     // More browsers than any window is tall.
     name: 'link-many',
     scene: 'main',
-    setup:
-      `const s = ${store('features/browsers/browsers.store.ts')};` +
-      `s.useLinkChooser.getState().show('https://example.com/a/rather/long/link?with=query', 'demo-1', innerWidth - 120, innerHeight - 60); ${wait(400)}` +
-      `const d = s.useBrowsers.getState().data;` +
-      `s.useBrowsers.setState({ data: { ...d, found: Array.from({ length: 24 }, (_, i) => ({ id: 'b' + i, name: 'Browser profile ' + i, command: 'x %1' })) } });`,
-    opens: `${linkChooser}?.textContent.includes('Browser profile 23')`
+    setup: [['link', LINK], wait(400), ['browsers', 24]],
+    opens: [['linkChooser', 'Browser profile 23']]
   },
   {
     // Three helpers done: every button of each row enabled, Open as chat too.
     name: 'helpers-done',
     scene: 'main',
-    setup:
-      `const s = ${store('features/agents/background.store.ts')}.useBackground;` +
-      `const h = s.getState().helpers.find(x => x.parent === 'demo-1');` +
-      `s.setState({ helpers: ['reviewer-handoff', 'reviewer-0.12', 'reviewer-library'].map((name, i) => ({ ...h, id: h.id + '-' + i, name, state: 'idle', leftRunning: [] })) }); ${wait(300)}` +
-      click('.chat-row[data-active="yes"] .kids'),
-    opens: `${has('.popover')}?.textContent.includes('reviewer-library')`
+    setup: [
+      ['helpers', ['reviewer-handoff', 'reviewer-0.12', 'reviewer-library'], true],
+      wait(300),
+      click('.chat-row[data-active="yes"] .kids')
+    ],
+    opens: has('.popover', 'reviewer-library')
   },
   {
     // A chat's helpers, more than any window is tall.
     name: 'helpers-many',
     scene: 'main',
-    setup:
-      `const s = ${store('features/agents/background.store.ts')}.useBackground;` +
-      `const h = s.getState().helpers.find(x => x.parent === 'demo-1');` +
-      `s.setState({ helpers: Array.from({ length: 14 }, (_, i) => ({ ...h, id: h.id + '-' + i, name: 'helper ' + i })) }); ${wait(300)}` +
-      click('.chat-row[data-active="yes"] .kids'),
-    opens: `${has('.popover')}?.textContent.includes('helper 13')`
+    setup: [...manyHelpers, click('.chat-row[data-active="yes"] .kids')],
+    opens: has('.popover', 'helper 13')
   },
   {
     // The same fourteen from the pane's pill, opened by a hover.
     name: 'helpers-pane',
     scene: 'main',
-    setup: manyHelpers + hoverPill,
-    opens: `${has('.helper-panel')}?.textContent.includes('helper 13')`
+    setup: [...manyHelpers, ...hoverPill],
+    opens: has('.helper-panel', 'helper 13')
   },
   {
     // A pane at its narrowest, and its "…" menu.
     name: 'pane-narrow-menu',
     scene: 'main',
-    setup: narrowPane(380) + click('.pane [data-glyph="more"]'),
+    setup: [...narrowPane(380), click('.pane [data-glyph="more"]')],
     opens: has('.pane-menu')
   },
   {
     // The narrowest pill, on a pane at its least, and its list.
     name: 'pane-narrow-helpers',
     scene: 'main',
-    setup: narrowPane(260) + manyHelpers + hoverPill,
-    opens: `${has('.helper-panel')}?.textContent.includes('helper 13')`
+    setup: [...narrowPane(260), ...manyHelpers, ...hoverPill],
+    opens: has('.helper-panel', 'helper 13')
   }
 ];
 
@@ -365,6 +417,20 @@ async function devtools() {
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
     return r.result.value;
   };
+  // The extras' steps, as the argument of pageSteps called on the page's
+  // global object: they arrive as a value, not as source to run.
+  const steps = async list => {
+    const global = await send('Runtime.evaluate', { expression: 'globalThis' });
+    const r = await send('Runtime.callFunctionOn', {
+      functionDeclaration: pageSteps.toString(),
+      objectId: global.result.objectId,
+      arguments: [{ value: list }],
+      awaitPromise: true,
+      returnByValue: true
+    });
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
+    return r.result.value;
+  };
   const open = async url => {
     // Each from a clean slate: what one scene leaves in localStorage (the
     // account a chat was last made on) would carry into the next.
@@ -375,7 +441,7 @@ async function devtools() {
   };
   await send('Page.enable');
   await send('Runtime.enable');
-  return { send, evaluate, open };
+  return { send, evaluate, steps, open };
 }
 
 /** The names a filter gives, or null for all; a name it does not know is an
@@ -430,11 +496,11 @@ async function main() {
       let scrolled = false;
       if (run.setup) {
         try {
-          await cdp.evaluate(`(async () => { ${run.setup} })()`);
+          await cdp.steps(run.setup);
           await new Promise(r => setTimeout(r, 900));
-          if (!(await cdp.evaluate(`!!(${run.opens})`))) throw new Error(`nothing opened (${run.opens})`);
+          if (!(await cdp.steps(run.opens))) throw new Error(`nothing opened (${JSON.stringify(run.opens)})`);
           if (run.then) {
-            scrolled = (await cdp.evaluate(`(async () => { ${run.then} })()`)) === true;
+            scrolled = (await cdp.steps(run.then)) === true;
             await new Promise(r => setTimeout(r, 900));
           }
         } catch (e) {
