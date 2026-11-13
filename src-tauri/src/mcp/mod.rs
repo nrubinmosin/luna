@@ -515,7 +515,8 @@ mod tests {
         // The person's chat at the top keeps its reach.
         let (_, text) = call("lr-top", "luna_message_list", json!({ "id": "lr-chat", "scope": "all" }));
         assert!(!text.contains("scope") && !text.contains("not under you"), "{text}");
-        let (failed, text) = call("lr-top", "luna_session_list", json!({ "scope": "all" }));
+        // By id: a list of every session is paged, and other tests' fill it.
+        let (failed, text) = call("lr-top", "luna_session_list", json!({ "ids": ["lr-chat"], "scope": "all" }));
         assert!(!failed && text.contains("lr-chat"), "{text}");
         // Past the gate to the tool's own check, with nothing armed or disarmed.
         let (_, text) = call("lr-top", "luna_power_set", json!({ "action": "explode" }));
