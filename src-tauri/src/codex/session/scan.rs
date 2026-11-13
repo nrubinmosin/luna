@@ -497,7 +497,11 @@ mod tests {
             // A helper's next turn, with the note Luna puts on each.
             &format!(
                 r#"{{"timestamp":"t","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":{}}}]}}}}"#,
-                serde_json::to_string(&crate::pty::helper_prompt("p-1", "And now?")).unwrap()
+                serde_json::to_string(&crate::pty::helper_prompt(
+                    &crate::library::role_texts(crate::library::Role::Helper).note.unwrap(),
+                    "And now?"
+                ))
+                .unwrap()
             ),
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();

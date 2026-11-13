@@ -55,7 +55,7 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
  *  older Claude model with no effort levels), `?demo=codex` (the same on a Codex account), `?demo=settings` / `settings-dark` and one per page (`settings-chats`, …), `?demo=accounts`,
  *  `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
  *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
- *  `?demo=library`, `?demo=library-system` / `library-system-dark` (its System skills, an override compared
+ *  `?demo=library`, `?demo=library-system` / `library-system-dark` (its System texts, an override compared
  *  with Luna's own and a skill of the system skill's name), `?demo=power`, `?demo=applied` / `applied-dark` (a
  *  chat's What Luna applied),
  *  `?demo=helper` / `helper-dark` (a helper watched read-only), `?demo=helpers` / `helpers-dark` (a chat's
@@ -224,7 +224,7 @@ export function seedDemo(scene: Scene) {
   if (scene.startsWith('library-system')) {
     useLibrary.getState().setOpen(true);
     // The override compared with Luna's own, opened the way a click would,
-    // and the window scrolled down to its System skills.
+    // and the window scrolled down to its System texts.
     setTimeout(() => {
       [...document.querySelectorAll<HTMLButtonElement>('button')]
         .find(b => b.textContent === 'Compare with Luna’s')

@@ -124,7 +124,7 @@ pub(super) fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
             Err(e) => (String::new(), Some(e.clone())),
         };
         let files = checked.and(files);
-        out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new(), audience: Audience::Both }, files));
+        out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new(), audience: Audience::EVERY }, files));
     }
     Ok(out)
 }
@@ -135,13 +135,19 @@ pub struct InstructionsInfo {
     pub name: String,
     /// Its first heading, to tell it by (`instructions_title`); empty without one.
     pub description: String,
-    /// Why it is laid out nowhere, while it is not fit to be.
+    /// Why it is laid out nowhere, while it is not fit to be; or, given per
+    /// session, why it is too long for some Codex sessions' command line
+    /// (role.rs `codex_overflows`).
     pub problem: Option<String>,
     /// The accounts its reach takes in; each gets it unless a closer reach
     /// gives it other instructions.
     pub accounts: Reach,
     /// Whose sessions it is for (audience.rs).
     pub audience: Audience,
+    /// For some roles only: given to each of their sessions as Luna starts
+    /// it, never laid into an account, so its accounts do not compete with
+    /// other instructions for one (audience.rs `laid_into_accounts`).
+    pub per_session: bool,
 }
 
 /// Every instructions file in the library, by name. A folder that will not
@@ -218,6 +224,7 @@ pub(super) fn instructions_info(name: &str, text: &Result<Option<Vec<u8>>, Strin
         problem,
         accounts: lib.instructions.get(name).cloned().unwrap_or_default(),
         audience: instructions_audience(lib, name),
+        per_session: !laid_into_accounts(lib, name),
     }
 }
 

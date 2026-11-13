@@ -34,6 +34,7 @@ mod excerpts;
 mod facts;
 mod file;
 mod gitfacts;
+mod lead;
 mod moving;
 mod phase;
 mod scrub;
@@ -41,10 +42,15 @@ mod served;
 mod store;
 mod watch;
 
+pub use lead::lead_taken_up;
 pub use moving::{
     move_ask, move_build_from_records, move_cancel, move_confirm, move_facts, move_list, move_prepare, move_preview, move_step, moved_dir,
     opening_refusal, stopping_for_move, MOVE_TAG,
 };
+// Called off a lead's turn's thread, which tests do not start (background/events.rs).
+#[cfg_attr(test, allow(unused_imports))]
+pub use lead::lead_turn_ended;
+pub(in crate::agents) use lead::HandedOff;
 pub use served::{applied_of, HandoffApplied};
 
 use crate::agents::delivery::{type_in, TypingInto, POLL, SEND_TYPING_MS, TYPING_WAIT};
@@ -184,11 +190,27 @@ pub(super) fn threshold_in(settings: &Value) -> Option<u8> {
     settings["handoff"].as_u64().and_then(|t| u8::try_from(t).ok()).filter(|t| (THRESHOLD_MIN..=THRESHOLD_MAX).contains(t))
 }
 
-/// Whether `id` is listed `luna_session_handoff`: a person's own chat (no
-/// parent, no background helper, not the dev caller, which has no terminal)
-/// with Luna's tools, auto-handoff on or not. Helpers are their orchestrator's
-/// to rotate. Listed is not answered: a call needs an ask (`open_ask`).
+/// Whether `id` is listed `luna_session_handoff`: a person's own chat with
+/// Luna's tools (`chat_listed`), or a lead while auto-handoff for leads is on
+/// (lead.rs `listed_to`). A helper without Luna's tools never is: it is its
+/// orchestrator's to rotate. Listed is not answered: a call needs an ask
+/// (`open_ask`).
 pub fn may_list(id: &str) -> bool {
+    chat_listed(id) || lead::listed_to(id)
+}
+
+/// Whether lead `id` hands its conversation off by itself as its context
+/// fills: listed the tool while auto-handoff for leads is on (lead.rs
+/// `listed_to`). Notices about its context advise its parent no rotation then
+/// (notifier usage.rs).
+pub(in crate::agents) fn lead_hands_off(id: &str) -> bool {
+    lead::listed_to(id)
+}
+
+/// Whether `id` is a person's own chat (no parent, no background helper, not
+/// the dev caller, which has no terminal) with Luna's tools, auto-handoff on or
+/// not: what the threshold's beat, Hand off now and a move go by.
+pub(super) fn chat_listed(id: &str) -> bool {
     if id == DEV_CALLER || crate::background::has(id) {
         return false;
     }
@@ -196,10 +218,36 @@ pub fn may_list(id: &str) -> bool {
     r.known.get(id).is_some_and(|k| k.tools && k.parent.is_none() && !k.orphan)
 }
 
+/// Auto-handoff for leads as the settings have it, its threshold held to the
+/// range a chat's is.
+pub fn lead_settings() -> crate::settings::LeadHandoff {
+    #[cfg(test)]
+    if let Some(l) = LEAD_FOR_TEST.with(std::cell::Cell::get) {
+        let mut l = l;
+        l.threshold = l.threshold.clamp(THRESHOLD_MIN, THRESHOLD_MAX);
+        return l;
+    }
+    let mut l = crate::settings::get().lead_handoff;
+    l.threshold = l.threshold.clamp(THRESHOLD_MIN, THRESHOLD_MAX);
+    l
+}
+
+// A test's own word for the setting, on its thread: tests share the data
+// dir's settings.json.
+#[cfg(test)]
+thread_local! {
+    static LEAD_FOR_TEST: std::cell::Cell<Option<crate::settings::LeadHandoff>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn lead_settings_for_test(l: Option<crate::settings::LeadHandoff>) {
+    LEAD_FOR_TEST.with(|c| c.set(l));
+}
+
 /// Whether auto-handoff's threshold is set on `id`, a chat that may be listed
 /// the tool: the trigger that asks it at its threshold.
 pub(super) fn auto_on(id: &str) -> bool {
-    may_list(id) && reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| threshold_in(&k.settings).is_some())
+    chat_listed(id) && reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| threshold_in(&k.settings).is_some())
 }
 
 /// Who has `id` asked for a handoff now, if anyone: the threshold or the
@@ -338,6 +386,10 @@ pub(super) const NOT_OFFERED: &str = "luna_session_handoff is not one of this se
 /// `luna_session_handoff` without `file`: how the caller's own chat hands off,
 /// with the instructions Luna serves for it now (served.rs).
 pub fn instructions(caller: &str) -> Result<String, String> {
+    // A lead's: its switch is a turn's end, not a terminal's (lead.rs).
+    if crate::background::has(caller) {
+        return lead::instructions(caller);
+    }
     served::instructions(caller)
 }
 
@@ -348,6 +400,9 @@ pub fn instructions(caller: &str) -> Result<String, String> {
 pub fn handoff(caller: &str, file: &str) -> Result<Value, String> {
     if !may_list(caller) {
         return Err(NOT_OFFERED.into());
+    }
+    if crate::background::has(caller) {
+        return lead::handoff(caller, file);
     }
     // Asked for a move's document: collected, nothing reset, so the CLI's
     // own jobs may go on (moving.rs). A move's late answer is refused there.
@@ -542,9 +597,34 @@ fn transcript_is(path: &Path, provider: Provider, live: &str) -> bool {
     }
 }
 
-/// Whether the transcript at `path` holds handoff `n`'s prompt.
+/// Whether the transcript at `path` holds handoff `n`'s prompt: at the start
+/// of the conversation it opens, so looked for in the file's first and last
+/// MiB, the conversation as long as it may be by a late look.
 fn holds_prompt(path: &Path, n: u32) -> bool {
-    crate::pty::tail(path, 1024 * 1024).is_some_and(|t| t.contains(&facts::prompt_opening(n)))
+    let opening = facts::prompt_opening(n);
+    head(path, 1024 * 1024).is_some_and(|t| t.contains(&opening))
+        || crate::pty::tail(path, 1024 * 1024).is_some_and(|t| t.contains(&opening))
+}
+
+/// The first `max` bytes of the file at `path`, as text.
+fn head(path: &Path, max: u64) -> Option<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(max).read_to_end(&mut bytes).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Whether the Claude Code transcript at `path` has the CLI holding a prompt
+/// it gives no text of (`Look::queued`): a `queue-operation` `enqueue` line
+/// without `content`, written for a paste typed while the conversation was
+/// still opening (docs/cli-compatibility.md, 2.1.322). One with `content`
+/// holds the prompt's own words, which `holds_prompt` finds.
+fn queued_unseen(path: &Path) -> bool {
+    let Some(text) = head(path, 1024 * 1024) else { return false };
+    text.lines().filter(|l| l.contains("\"queue-operation\"")).any(|l| {
+        serde_json::from_str::<Value>(l)
+            .is_ok_and(|v| v["type"] == "queue-operation" && v["operation"] == "enqueue" && v.get("content").is_none())
+    })
 }
 
 /// The chat's terminal, as the switch drives it.
@@ -559,9 +639,19 @@ impl Term for Pty {
         }
         let transcript = transcript_path(pty, chat);
         let left = |t: &PathBuf| s.before.transcript.as_deref() != Some(&*t.to_string_lossy());
-        let prompted = transcript.as_ref().filter(|t| left(t)).is_some_and(|t| holds_prompt(t, s.n));
+        let new = transcript.as_ref().filter(|t| left(t));
+        let prompted = new.is_some_and(|t| holds_prompt(t, s.n));
+        let now = now_ms();
+        let prompting = match s.phase {
+            Phase::Prompting { at } => Some(now.saturating_sub(at)),
+            _ => None,
+        };
+        let queued = prompting.is_some() && !prompted && s.provider == Provider::Claude && new.is_some_and(|t| queued_unseen(t));
+        // Read off the settings only once the plain wait is out.
+        let starting = prompting.is_some_and(|waited| waited > phase::PROMPT_WAIT_MS)
+            && pty.probe(chat).is_some_and(|p| crate::pty::folder::session_start_hooks(s.provider, &p.account_path, &p.cwd));
         Look {
-            now: now_ms(),
+            now,
             alive,
             at_rest: ready_for_notice(pty, chat),
             draft: pty.has_draft(chat),
@@ -571,6 +661,8 @@ impl Term for Pty {
             // After the conversation, in this order (`Look::keys`).
             keys: pty.typed_at_ms(chat),
             prompted,
+            queued,
+            starting,
         }
     }
 
@@ -907,6 +999,10 @@ fn finish(chat: &str, n: u32, ended: Ended, prompt: &dyn Fn() -> String) {
     let (done, why, reset, left): (bool, Option<String>, bool, Option<LeftLine>) = match ended {
         Ended::Back => return,
         Ended::Done => (true, None, true, None),
+        Ended::Taken(how) => {
+            crate::log::info("handoff", &format!("{}: handoff {n}: {how}", label(chat)));
+            (true, None, true, None)
+        }
         Ended::Failed { why, reset } => (false, Some(why), reset, None),
         Ended::Left => (false, Some(phase::LEFT.to_string()), false, Some(facts::left_line)),
         Ended::Stray(why) => (false, Some(why), false, Some(facts::stray_line)),
@@ -973,7 +1069,12 @@ fn ended_with(
             // another conversation: one with the continuation in it is bound
             // to the conversation the reset opened (`as_told`).
             if left.is_none() && reset && !prompt.is_empty() {
-                bind_continued(chat, &line, s.opened.clone(), facts::continued_short(Some(s.n), Some(&why), Some(&s.snapshot)));
+                let typed_at = match s.phase {
+                    Phase::Prompting { at } => at,
+                    _ => 0,
+                };
+                let short = facts::continued_short(Some(s.n), Some(&why), Some(&s.snapshot));
+                bind_continued(chat, &line, s.opened.clone(), short, s.n, typed_at);
             }
             reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), line));
             crate::agents::save_chats();
@@ -983,12 +1084,13 @@ fn ended_with(
     }
 }
 
-/// Failure line `line` of `chat`, which carries the continuation, kept bound
-/// to `conversation`, with `short` to take its place elsewhere. The last few
-/// are kept: a line waits in the notifier's queue only until it is told. A
-/// record that will not save keeps it in memory, as `finish` does its end.
-fn bind_continued(chat: &str, line: &str, conversation: Option<String>, short: String) {
-    let bound = store::Continued { line_sha256: sha256_of(line), conversation, short };
+/// Failure line `line` of `chat`'s handoff `n`, which carries the
+/// continuation typed at `typed_at`, kept bound to `conversation`, with
+/// `short` to take its place elsewhere. The last few are kept: a line waits
+/// in the notifier's queue only until it is told. A record that will not save
+/// keeps it in memory, as `finish` does its end.
+fn bind_continued(chat: &str, line: &str, conversation: Option<String>, short: String, n: u32, typed_at: u64) {
+    let bound = store::Continued { line_sha256: sha256_of(line), conversation, short, n: Some(n), typed_at };
     let add = |r: &mut store::Record| {
         r.continued.push(bound.clone());
         let over = r.continued.len().saturating_sub(store::KEPT);
@@ -1027,6 +1129,63 @@ pub(in crate::agents) fn as_told(chat: &str, line: &str) -> String {
     }
 }
 
+/// Handoff `n` and when its prompt was typed, where `line` of `chat`'s
+/// notifier queue is its failure line carrying the continuation and the
+/// conversation it was made for holds that prompt already: the CLI took it in
+/// past the switch's wait (a slow session start). The chat's transcript now
+/// is looked at, and only as that conversation's (`transcript_is`).
+fn continuation_in(chat: &str, line: &str) -> Option<(u32, u64)> {
+    if !bound_to_conversation(line) {
+        return None;
+    }
+    let sha = sha256_of(line);
+    let (n, typed_at, opened, provider) = {
+        let records = store::records();
+        let r = records.get(chat)?;
+        let c = r.continued.iter().find(|c| c.line_sha256 == sha)?;
+        let n = c.n?;
+        let provider = r.past.iter().find(|p| p.n == n && !p.moved)?.provider;
+        (n, c.typed_at, c.conversation.clone()?, provider)
+    };
+    let path = transcript_path(crate::pty::manager(), chat)?;
+    (transcript_is(&path, provider, &opened) && holds_prompt(&path, n)).then_some((n, typed_at))
+}
+
+/// Whether line `line` of `chat`'s notifier queue, dropped as `withheld`, was
+/// a failure line whose prompt went in after all (`continuation_in`): then
+/// the handoff is on record as through and the log says how late. The
+/// notifier logs any other drop as its own.
+pub(in crate::agents) fn taken_late(chat: &str, line: &str) -> bool {
+    let Some((n, typed_at)) = continuation_in(chat, line) else { return false };
+    let sha = sha256_of(line);
+    let through = |r: &mut store::Record| {
+        r.continued.retain(|c| c.line_sha256 != sha);
+        let Some(p) = r.past.iter_mut().find(|p| p.n == n && !p.moved) else { return };
+        p.done = true;
+        p.why = None;
+        // As `close` leaves a handoff that went through.
+        r.fresh = true;
+        r.served = None;
+        r.asked = None;
+        if let Some(t) = r.told.as_mut() {
+            t.shares.clear();
+            t.compacted = 0;
+        }
+    };
+    if let Err(e) = store::change(chat, through) {
+        crate::log::warn("handoff", &format!("{}: handoff {n} could not be saved as through: {e}", label(chat)));
+        if let Some(r) = store::records().get_mut(chat) {
+            through(r);
+        }
+    }
+    let after = if typed_at == 0 { String::new() } else { format!(" after {} s", now_ms().saturating_sub(typed_at) / 1000) };
+    crate::log::info(
+        "handoff",
+        &format!("{}: handoff {n}'s prompt was taken late{after}: through after all, its failure notice dropped", label(chat)),
+    );
+    true
+}
+
 /// Whether line `line` of the notifier's queue goes in whole only on the
 /// conversation it was made for (`as_told`): a handoff's failure line
 /// carrying the continuation.
@@ -1049,8 +1208,11 @@ pub(in crate::agents) fn keyed_to_conversation(line: &str) -> bool {
 /// (`moving::under_way`). A move's start drops one queued and retires the ask
 /// it opened, but one already put together, or queued as the move began, would
 /// still ask the chat for a handoff that resets it in the middle of the move.
+/// And a failure line carrying a continuation the conversation took in after
+/// all (`continuation_in`): typed, it would hand it the prompt twice.
 pub(in crate::agents) fn withheld(chat: &str, line: &str) -> bool {
-    facts::is_notice(line) && (moving::under_way(chat) || (facts::is_threshold_notice(line) && !threshold_ask_of(chat, line)))
+    (facts::is_notice(line) && (moving::under_way(chat) || (facts::is_threshold_notice(line) && !threshold_ask_of(chat, line))))
+        || continuation_in(chat, line).is_some()
 }
 
 /// Whether threshold notice `line` still has the ask it was queued with open
@@ -1172,7 +1334,7 @@ fn opted_in() -> Vec<(String, u8, Provider)> {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         r.known.iter().filter_map(|(id, k)| Some((id.clone(), threshold_in(&k.settings)?, k.provider))).collect()
     };
-    set.into_iter().filter(|(id, ..)| may_list(id)).collect()
+    set.into_iter().filter(|(id, ..)| chat_listed(id)).collect()
 }
 
 /// The chats whose threshold is to be looked at as soon as they are at rest,
@@ -1378,7 +1540,7 @@ fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told,
 /// The threshold auto-handoff is set at on `id` now, a chat that may be
 /// listed the tool.
 fn threshold_now(id: &str) -> Option<u8> {
-    if !may_list(id) {
+    if !chat_listed(id) {
         return None;
     }
     reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).and_then(|k| threshold_in(&k.settings))
@@ -1449,7 +1611,7 @@ fn manual_ask_of(chat: &str, now: u64) {
         // would otherwise refuse the person's next ask for good.
         None if now.saturating_sub(a.at) > MANUAL_DELIVER_MS => undelivered(chat, &a),
         None => {
-            if is_listed(chat) && may_list(chat) && moving::prompt_verdict(crate::pty::manager(), chat).is_ok() {
+            if is_listed(chat) && chat_listed(chat) && moving::prompt_verdict(crate::pty::manager(), chat).is_ok() {
                 type_manual(chat, a.at);
             }
         }
@@ -1751,7 +1913,7 @@ pub fn handoff_now(chat_id: String) -> Result<HandoffNow, String> {
 /// Why `chat` is not to be asked for a handoff now, what takes a terminal
 /// aside.
 fn now_refusal(chat: &str) -> Option<String> {
-    if !may_list(chat) {
+    if !chat_listed(chat) {
         return Some(
             "only a person's chat started with Luna's tools hands off: this one has none (start a chat with the Luna tools box \
              ticked)"
@@ -1988,6 +2150,25 @@ pub fn forget(id: &str) {
     if real_dir(&root()) && real_dir(&dir) {
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// What a handoff or a move puts in a model's context besides the
+/// instructions themselves, by the name docs/user-guide/context.md measures
+/// it under (context_page.rs): the asks as typed in, the notifier's tag aside,
+/// and the tool's answer around an empty body with no path suggested.
+#[cfg(test)]
+pub(crate) fn context_texts() -> Vec<(String, String)> {
+    let sha = "0".repeat(64);
+    [
+        ("handoff-ask", facts::notice(71, 70, false, true)),
+        ("handoff-ask-firm", facts::notice(91, 70, true, true)),
+        ("handoff-how-to", facts::how_to("Luna's own", &sha, "", None, None)),
+        ("move-ask", moving::ask_line("cmwdb4et66")),
+        ("move-how-to", facts::move_how_to("", "Luna's own", &sha, "")),
+    ]
+    .into_iter()
+    .map(|(name, text)| (name.to_string(), text))
+    .collect()
 }
 
 #[cfg(test)]

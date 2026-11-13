@@ -66,14 +66,21 @@ pub(super) fn tidy_reach(reach: Vec<String>) -> Result<Reach, String> {
 pub(super) fn give_instructions(lib: &mut LibrarySettings, name: Option<&str>, mut reach: Reach) {
     let mut seen = BTreeSet::new();
     reach.retain(|r| seen.insert(r.clone()));
+    // Only the files laid into accounts compete for an account's own file:
+    // those given per session for some roles (audience.rs) go to every
+    // session they are for, beside each other and beside the account's.
+    let competes = name.is_none_or(|n| laid_into_accounts(lib, n));
+    let laid: BTreeSet<String> = lib.instructions.keys().filter(|n| laid_into_accounts(lib, n)).cloned().collect();
     for (n, r) in lib.instructions.iter_mut() {
-        if Some(n.as_str()) != name {
+        if Some(n.as_str()) != name && competes && laid.contains(n) {
             r.retain(|x| !reach.contains(x));
         }
     }
     match name {
         Some(n) => {
-            lib.no_instructions.retain(|x| !reach.contains(x));
+            if competes {
+                lib.no_instructions.retain(|x| !reach.contains(x));
+            }
             lib.instructions.insert(n.to_string(), reach);
         }
         None => lib.no_instructions = reach,
@@ -81,13 +88,15 @@ pub(super) fn give_instructions(lib: &mut LibrarySettings, name: Option<&str>, m
     lib.instructions.retain(|_, r| !r.is_empty());
 }
 
-/// The instructions an account gets, of those `have` says the library has:
-/// the one whose reach takes it in most closely, or none when that is
-/// `no_instructions`' (which wins a tie, as the safer side). Two at one
-/// closeness only come of settings edited by hand: the first by name wins.
+/// The instructions an account's own file gets, of those `have` says the
+/// library has and that are laid into accounts (audience.rs
+/// `laid_into_accounts`): the one whose reach takes it in most closely, or
+/// none when that is `no_instructions`' (which wins a tie, as the safer
+/// side). Two at one closeness only come of settings edited by hand: the
+/// first by name wins.
 pub(super) fn chosen<'a>(lib: &'a LibrarySettings, have: impl Fn(&str) -> bool, a: &AccountInfo) -> Option<&'a str> {
     let mut best: Option<(u8, Option<&str>)> = closeness(&lib.no_instructions, a).map(|c| (c, None));
-    for (name, reach) in lib.instructions.iter().filter(|(n, _)| have(n)) {
+    for (name, reach) in lib.instructions.iter().filter(|(n, _)| have(n) && laid_into_accounts(lib, n)) {
         if let Some(c) = closeness(reach, a) {
             if best.is_none_or(|(b, _)| c > b) {
                 best = Some((c, Some(name.as_str())));
@@ -456,7 +465,8 @@ mod tests {
             skipped: [0, 1].iter().map(|&i| f.account(i).join("skills").join("spare").to_string_lossy().into_owned()).collect(),
             ..Default::default()
         };
-        lib.audience.instructions.insert("main".into(), Audience::Chats);
+        lib.audience.instructions.insert("main".into(), Audience::CHATS);
+        lib.laid_out.insert("main".into());
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         for i in [0, 1] {
@@ -519,7 +529,7 @@ mod tests {
             assert!(p.kept.iter().any(|k| Path::new(k) == account.join("skills").join("old")), "account {i}: {:?}", p.kept);
             let file = account.join(instructions_name(f.accounts[i].provider));
             let dest = file.to_string_lossy().into_owned();
-            assert_eq!(ledger.worded.get(&dest), Some(&Audience::Chats), "account {i}");
+            assert_eq!(ledger.worded.get(&dest), Some(&Audience::CHATS), "account {i}");
             // What taking it into the library keeps (commands.rs `library_resolve`).
             assert_eq!(unworded(&std::fs::read(&file).unwrap(), ledger.worded[&dest]), b"Be brief.\n");
         }

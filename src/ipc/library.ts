@@ -26,9 +26,11 @@ export interface PlaceDto {
 /** Which accounts something goes into: `all`, a provider's every account
  *  (`claude`, `codex`) or one account (`provider/name`) per entry. */
 export type Reach = string[];
-/** Whose sessions a skill or instructions file is for: the person's own chats, the helpers other sessions
- *  start, or both. */
-export type Audience = 'both' | 'chats' | 'helpers';
+/** The three kinds of session (settings.rs `Role`): the person's own chat, a lead (a helper started with Luna's
+ *  tools) and a helper. */
+export type Role = 'chat' | 'lead' | 'helper';
+/** Whose sessions a skill or instructions file is for: every session, or the roles listed. */
+export type Audience = 'every' | Role[];
 export interface LibrarySkillDto {
   name: string;
   description: string;
@@ -42,11 +44,15 @@ export interface LibraryInstructionsDto {
   name: string;
   /** Its first heading, `#` or else `##`; empty without one. */
   description: string;
-  /** Why it is laid out nowhere: blank, or a file that will not do. */
+  /** Why it is laid out nowhere: blank, or a file that will not do; or, given per session, why it is too long
+   *  for some Codex sessions' command line. */
   problem: string | null;
   /** The accounts its reach takes in; a closer reach of other instructions wins. */
   accounts: Reach;
   audience: Audience;
+  /** For some roles only: given to each of their sessions as Luna starts it, never put into an account, so it
+   *  competes with no other instructions for an account. */
+  perSession: boolean;
 }
 export interface LibraryFolderDto {
   path: string;

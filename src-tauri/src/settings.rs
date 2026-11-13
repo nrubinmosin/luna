@@ -24,6 +24,20 @@ pub struct Settings {
     /// Helpers may run with more privilege than the session spawning them
     /// (agents/privilege.rs `cap`). Off: a helper is held to its caller's.
     pub helpers_above_caller: bool,
+    /// The most sessions one chat may have under it, every generation counted
+    /// (agents/spawn `max_descendants`, held to its range there).
+    pub max_helpers: u32,
+    /// The mode a helper starts in when its spawn names none
+    /// (agents/privilege.rs `settle_mode`).
+    pub helper_mode: HelperMode,
+    /// The share of its context window past which notices about a helper say
+    /// where it stands (agents/notifier usage.rs `budget_news`); 0 is off. A
+    /// spawn's `budgetPct` sets its own.
+    pub helper_context_pct: u32,
+    /// Auto-handoff for leads, helpers spawned with Luna's tools
+    /// (agents/handoff/lead.rs): on, such a helper is listed
+    /// `luna_session_handoff` and asked for a handoff past its threshold.
+    pub lead_handoff: LeadHandoff,
     /// Per provider, the account whose settings file the others copy
     /// (account_settings/sync.rs), by name.
     pub settings_parents: SettingsParents,
@@ -51,12 +65,40 @@ pub struct Settings {
     pub recommendations_dismissed: Vec<String>,
 }
 
+/// A helper's mode when its spawn names none: the caller's own, as far as the
+/// helper's CLI has it (`Inherit`), or the account's and project's default
+/// (`Account`), held to the caller's either way.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HelperMode {
+    #[default]
+    Inherit,
+    Account,
+}
+
+/// Auto-handoff for leads: whether it is on, and the threshold in percent of
+/// a lead's context window, held to the chats' range where it is read
+/// (agents/handoff `THRESHOLD_MIN`..`THRESHOLD_MAX`). On by default: a lead
+/// runs a long campaign, and its delegates' notices fill its context.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LeadHandoff {
+    pub on: bool,
+    pub threshold: u8,
+}
+
+impl Default for LeadHandoff {
+    fn default() -> Self {
+        LeadHandoff { on: true, threshold: 60 }
+    }
+}
+
 /// Which accounts something goes into: `all`, a provider's every account
 /// (`claude`, `codex`) or one account (`provider/name`) per entry.
 pub type Reach = Vec<String>;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase", from = "LibrarySettingsFile")]
+#[serde(rename_all = "camelCase", try_from = "LibrarySettingsFile")]
 pub struct LibrarySettings {
     /// Absolute path of the library's folder; None means `<data>/library`.
     pub source: Option<String>,
@@ -78,27 +120,149 @@ pub struct LibrarySettings {
     /// not every session's (library/audience.rs).
     #[serde(skip_serializing_if = "Audiences::is_empty")]
     pub audience: Audiences,
+    /// Instructions for the person's chats alone that are still laid into
+    /// accounts, with a line saying whose they are (library/audience.rs
+    /// `worded`): those an earlier Luna laid out so, which chats started
+    /// outside Luna read there too. Every other entry for some roles only
+    /// reaches its sessions one session at a time, never through an account.
+    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub laid_out: std::collections::BTreeSet<String>,
 }
 
-/// Whose sessions a library entry is for: the person's own chats, the
-/// helpers other sessions start, or both.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The three kinds of session Luna starts, by who gave it its task: the
+/// person's own chat in a pane; a helper another session started with Luna's
+/// tools, able to start helpers of its own (a lead); and one started without
+/// them (a helper).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
-pub enum Audience {
-    #[default]
-    Both,
-    Chats,
-    Helpers,
+pub enum Role {
+    Chat,
+    Lead,
+    Helper,
 }
 
-/// The library's entries whose audience is not both, by kind and name: an
-/// instructions file and a skill may share a name.
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
+impl Role {
+    pub const ALL: [Role; 3] = [Role::Chat, Role::Lead, Role::Helper];
+}
+
+/// Whose sessions a library entry is for: every session (the default, so
+/// nothing changes until the person chooses), or the roles named. Written as
+/// `"every"` or a list of roles; read from what earlier Lunas wrote too:
+/// `"both"` is every session, `"chats"` the person's chats, `"helpers"` every
+/// session another started, a lead as much as a helper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Audience {
+    pub chat: bool,
+    pub lead: bool,
+    pub helper: bool,
+}
+
+impl Default for Audience {
+    fn default() -> Self {
+        Audience::EVERY
+    }
+}
+
+impl Audience {
+    pub const EVERY: Audience = Audience { chat: true, lead: true, helper: true };
+    pub const CHATS: Audience = Audience { chat: true, lead: false, helper: false };
+
+    pub fn of(roles: &[Role]) -> Audience {
+        let has = |r| roles.contains(&r);
+        let a = Audience { chat: has(Role::Chat), lead: has(Role::Lead), helper: has(Role::Helper) };
+        // None at all would be an entry nobody gets: every session's, as an
+        // audience never chosen is.
+        if a.roles().is_empty() {
+            Audience::EVERY
+        } else {
+            a
+        }
+    }
+
+    pub fn is_every(self) -> bool {
+        self == Audience::EVERY
+    }
+
+    /// Whether a session of this role is meant to see the entry.
+    pub fn takes(self, role: Role) -> bool {
+        match role {
+            Role::Chat => self.chat,
+            Role::Lead => self.lead,
+            Role::Helper => self.helper,
+        }
+    }
+
+    pub fn roles(self) -> Vec<Role> {
+        Role::ALL.into_iter().filter(|r| self.takes(*r)).collect()
+    }
+
+    /// The word a Luna before roles (0.17) wrote for this audience, where it
+    /// had one: its helpers were leads and helpers alike.
+    fn word_before_roles(self) -> Option<&'static str> {
+        if self.is_every() {
+            Some("both")
+        } else if self == Audience::CHATS {
+            Some("chats")
+        } else if self == Audience::of(&[Role::Lead, Role::Helper]) {
+            Some("helpers")
+        } else {
+            None
+        }
+    }
+}
+
+/// An audience as the file may hold it: a word, or a list of roles.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AudienceField {
+    Word(String),
+    Roles(Vec<Role>),
+}
+
+impl AudienceField {
+    /// Written by a Luna before roles, for the person's chats alone.
+    fn was_chats(&self) -> bool {
+        matches!(self, AudienceField::Word(w) if w == "chats")
+    }
+}
+
+impl TryFrom<AudienceField> for Audience {
+    type Error = String;
+
+    fn try_from(f: AudienceField) -> Result<Self, String> {
+        match f {
+            AudienceField::Roles(roles) => Ok(Audience::of(&roles)),
+            AudienceField::Word(w) => match w.as_str() {
+                "every" | "both" => Ok(Audience::EVERY),
+                "chats" => Ok(Audience::CHATS),
+                "helpers" => Ok(Audience::of(&[Role::Lead, Role::Helper])),
+                other => Err(format!("unknown audience {other:?}")),
+            },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Audience {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Audience::try_from(AudienceField::deserialize(d)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for Audience {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if self.is_every() {
+            s.serialize_str("every")
+        } else {
+            self.roles().serialize(s)
+        }
+    }
+}
+
+/// The library's entries whose audience is not every session's, by kind and
+/// name: an instructions file and a skill may share a name.
+#[derive(Clone, Default)]
 pub struct Audiences {
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub instructions: std::collections::BTreeMap<String, Audience>,
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub skills: std::collections::BTreeMap<String, Audience>,
 }
 
@@ -106,6 +270,52 @@ impl Audiences {
     pub fn is_empty(&self) -> bool {
         self.instructions.is_empty() && self.skills.is_empty()
     }
+}
+
+/// Written so that Luna 0.17, rolled back to, still reads the whole file:
+/// `instructions` and `skills` hold its words ("chats", "helpers") for the
+/// audiences it has one for, and `roles`, which it ignores as it ignores
+/// every key it does not know, holds them all as lists of roles; an entry for
+/// a set it has no word for (leads alone, chats and helpers) is every
+/// session's to it. This Luna reads `roles` where it is there
+/// (`LibrarySettings`' TryFrom).
+impl Serialize for Audiences {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        type ByName<'a, T> = std::collections::BTreeMap<&'a str, T>;
+        fn words(m: &std::collections::BTreeMap<String, Audience>) -> ByName<'_, &'static str> {
+            m.iter().filter_map(|(n, a)| Some((n.as_str(), a.word_before_roles()?))).collect()
+        }
+        let (instructions, skills) = (words(&self.instructions), words(&self.skills));
+        let mut st = s.serialize_struct("Audiences", 3)?;
+        for (key, words) in [("instructions", &instructions), ("skills", &skills)] {
+            match words.is_empty() {
+                true => st.skip_field(key)?,
+                false => st.serialize_field(key, words)?,
+            }
+        }
+        let roles: ByName<'_, &std::collections::BTreeMap<String, Audience>> =
+            [("instructions", &self.instructions), ("skills", &self.skills)].into_iter().filter(|(_, m)| !m.is_empty()).collect();
+        st.serialize_field("roles", &roles)?;
+        st.end()
+    }
+}
+
+/// `Audiences` as the file holds them, each value as written: this Luna's
+/// under `roles`, a Luna before roles' words beside them or alone.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AudiencesFile {
+    instructions: std::collections::BTreeMap<String, AudienceField>,
+    skills: std::collections::BTreeMap<String, AudienceField>,
+    roles: Option<AudienceRolesFile>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AudienceRolesFile {
+    instructions: std::collections::BTreeMap<String, AudienceField>,
+    skills: std::collections::BTreeMap<String, AudienceField>,
 }
 
 /// The library's settings as the file may hold them: before a reach, the
@@ -126,7 +336,8 @@ struct LibrarySettingsFile {
     folders: Vec<LibraryFolderFile>,
     folders_only: Vec<String>,
     skipped: Vec<String>,
-    audience: Audiences,
+    audience: AudiencesFile,
+    laid_out: std::collections::BTreeSet<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -158,8 +369,10 @@ enum InstructionsField {
 /// (library/skills.rs moves the file to match).
 pub const FIRST_INSTRUCTIONS: &str = "main";
 
-impl From<LibrarySettingsFile> for LibrarySettings {
-    fn from(f: LibrarySettingsFile) -> Self {
+impl TryFrom<LibrarySettingsFile> for LibrarySettings {
+    type Error = String;
+
+    fn try_from(f: LibrarySettingsFile) -> Result<Self, String> {
         let mut skills = f.skills;
         for name in f.everywhere {
             skills.entry(name).or_insert_with(|| vec!["all".into()]);
@@ -194,7 +407,25 @@ impl From<LibrarySettingsFile> for LibrarySettings {
         for name in &f.folders_only {
             skills.remove(name);
         }
-        LibrarySettings {
+        // This Luna's file has every audience under `roles`, beside the
+        // words a Luna before roles reads (`Audiences`' Serialize). Without
+        // them the words are that Luna's: instructions it laid into accounts
+        // for the person's chats stay there, still said to be theirs
+        // (`laid_out`).
+        let mut laid_out = f.laid_out;
+        let (by_role, skills_by_role) = match f.audience.roles {
+            Some(roles) => (roles.instructions, roles.skills),
+            None => {
+                laid_out.extend(f.audience.instructions.iter().filter(|(_, a)| a.was_chats()).map(|(n, _)| n.clone()));
+                (f.audience.instructions, f.audience.skills)
+            }
+        };
+        type ByName<T> = std::collections::BTreeMap<String, T>;
+        let read = |m: ByName<AudienceField>| -> Result<ByName<Audience>, String> {
+            m.into_iter().map(|(n, a)| Audience::try_from(a).map(|a| (n, a))).filter(|r| !matches!(r, Ok((_, a)) if a.is_every())).collect()
+        };
+        let audience = Audiences { instructions: read(by_role)?, skills: read(skills_by_role)? };
+        Ok(LibrarySettings {
             source: f.source,
             instructions: match f.instructions {
                 Some(InstructionsField::On(true)) => first(vec!["all".into()]),
@@ -207,8 +438,9 @@ impl From<LibrarySettingsFile> for LibrarySettings {
             skills,
             folders,
             skipped: f.skipped,
-            audience: f.audience,
-        }
+            audience,
+            laid_out,
+        })
     }
 }
 
@@ -252,6 +484,10 @@ impl Default for Settings {
             power_action: "shutdown".into(),
             agent_blocked_accounts: Vec::new(),
             helpers_above_caller: false,
+            max_helpers: crate::agents::spawn::HELPERS_DEFAULT,
+            helper_mode: HelperMode::Inherit,
+            helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
+            lead_handoff: LeadHandoff::default(),
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
             fetch_before_worktree: true,
@@ -411,16 +647,103 @@ mod tests {
     }
 
     #[test]
-    fn an_audience_is_kept_by_kind_and_name_and_both_is_not_written() {
-        let read: Settings =
-            serde_json::from_str(r#"{"library": {"audience": {"skills": {"council": "chats"}, "instructions": {"main": "helpers"}}}}"#)
-                .unwrap();
-        assert_eq!(read.library.audience.skills["council"], Audience::Chats);
-        assert_eq!(read.library.audience.instructions["main"], Audience::Helpers);
+    fn an_audience_is_kept_by_kind_and_name_and_every_is_not_written() {
+        let read: Settings = serde_json::from_str(
+            r#"{"library": {"audience": {"skills": {"council": ["lead"]}, "instructions": {"main": ["chat", "helper"], "all": "every"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(read.library.audience.skills["council"], Audience::of(&[Role::Lead]));
+        assert_eq!(read.library.audience.instructions["main"], Audience::of(&[Role::Chat, Role::Helper]));
+        assert!(!read.library.audience.instructions.contains_key("all"), "every session's is no audience to keep");
         let back: Settings = serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();
         assert_eq!(back.library.audience.skills, read.library.audience.skills);
+        assert_eq!(back.library.audience.instructions, read.library.audience.instructions);
+        let json = serde_json::to_value(&read).unwrap();
+        assert_eq!(json["library"]["audience"]["roles"]["instructions"]["main"], serde_json::json!(["chat", "helper"]));
+        assert!(json["library"]["audience"].get("instructions").is_none(), "0.17 has no word for chats and helpers");
         let json = serde_json::to_value(Settings::default()).unwrap();
-        assert!(json["library"].get("audience").is_none(), "nothing set, nothing written: {json}");
+        assert!(json["library"].get("audience").is_none() && json["library"].get("laidOut").is_none(), "nothing set, nothing written");
+        assert!(serde_json::from_str::<Settings>(r#"{"library": {"audience": {"skills": {"x": "people"}}}}"#).is_err(), "no guess");
+        assert_eq!(Audience::of(&[]), Audience::EVERY, "nobody's is everybody's");
+    }
+
+    #[test]
+    fn audiences_of_before_roles_read_as_roles_and_chats_instructions_stay_laid_out() {
+        let old: Settings = serde_json::from_str(
+            r#"{"library": {"audience": {
+                "skills": {"council": "chats", "cleanup": "helpers", "review": "both"},
+                "instructions": {"main": "chats", "terse": "helpers"}
+            }}}"#,
+        )
+        .unwrap();
+        let a = &old.library.audience;
+        assert_eq!(a.skills["council"], Audience::CHATS);
+        assert_eq!(a.skills["cleanup"], Audience::of(&[Role::Lead, Role::Helper]), "a lead was a helper too");
+        assert!(!a.skills.contains_key("review"));
+        assert_eq!(a.instructions["main"], Audience::CHATS);
+        assert_eq!(a.instructions["terse"], Audience::of(&[Role::Lead, Role::Helper]));
+        assert_eq!(old.library.laid_out, ["main".to_string()].into(), "the chats' instructions stay in the accounts");
+        // Written back with the roles beside the old words, which reads the same.
+        let json = serde_json::to_value(&old).unwrap();
+        assert_eq!(json["library"]["audience"]["roles"]["instructions"]["main"], serde_json::json!(["chat"]));
+        assert_eq!(json["library"]["audience"]["instructions"]["main"], "chats");
+        assert_eq!(json["library"]["laidOut"], serde_json::json!(["main"]));
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(back.library.laid_out, old.library.laid_out);
+        assert_eq!(back.library.audience.instructions, old.library.audience.instructions);
+    }
+
+    /// Settings as Luna 0.17 reads them (its `Audiences` and `Audience`, the
+    /// rest of the file left to its defaults): no `deny_unknown_fields`
+    /// anywhere, so a key it does not know is passed over.
+    mod v017 {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        #[serde(rename_all = "camelCase")]
+        pub enum Audience {
+            Both,
+            Chats,
+            Helpers,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[serde(rename_all = "camelCase", default)]
+        pub struct Audiences {
+            pub instructions: std::collections::BTreeMap<String, Audience>,
+            pub skills: std::collections::BTreeMap<String, Audience>,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[serde(rename_all = "camelCase", default)]
+        pub struct Library {
+            pub audience: Audiences,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[serde(rename_all = "camelCase", default)]
+        pub struct Settings {
+            pub library: Library,
+        }
+    }
+
+    #[test]
+    fn audiences_are_written_so_0_17_still_reads_the_file() {
+        let mut s = Settings::default();
+        let a = &mut s.library.audience;
+        a.instructions.insert("chats".into(), Audience::CHATS);
+        a.instructions.insert("leads".into(), Audience::of(&[Role::Lead]));
+        a.skills.insert("helpers".into(), Audience::of(&[Role::Lead, Role::Helper]));
+        a.skills.insert("chat-and-helper".into(), Audience::of(&[Role::Chat, Role::Helper]));
+        let text = serde_json::to_string(&s).unwrap();
+
+        let old: v017::Settings = serde_json::from_str(&text).expect("0.17 parses it");
+        assert_eq!(old.library.audience.instructions.into_iter().collect::<Vec<_>>(), [(String::from("chats"), v017::Audience::Chats)]);
+        assert_eq!(
+            old.library.audience.skills.into_iter().collect::<Vec<_>>(),
+            [(String::from("helpers"), v017::Audience::Helpers)],
+            "a set 0.17 has no word for is every session's to it"
+        );
+
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.library.audience.instructions, s.library.audience.instructions, "every set back, the new ones too");
+        assert_eq!(back.library.audience.skills, s.library.audience.skills);
+        assert!(back.library.laid_out.is_empty(), "this Luna's chats' word is no 0.17 layout to keep");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 # ADR-0012: Agents drive sessions over MCP, and answers come back as notices
 
-- **Status:** Accepted
+- **Status:** Accepted; a helper's reach narrowed by
+  [ADR-0025](0025-a-helper-reaches-only-its-own-subtree.md)
 - **Date:** 2026-09-24 (`3efaab9`, the MCP tools); notices typed into the caller
   since 2026-10-08 (`298ade6`)
 

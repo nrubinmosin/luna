@@ -14,6 +14,8 @@ mod checks;
 mod claude;
 mod cli;
 mod codex;
+#[cfg(test)]
+mod context_page;
 mod corecmd;
 mod corelink;
 mod coreproc;
@@ -209,6 +211,11 @@ macro_rules! app_handler {
             agents::spawn::account::set_agent_account,
             agents::privilege::helpers_above_caller,
             agents::privilege::set_helpers_above_caller,
+            agents::spawn::helper_settings,
+            agents::spawn::set_max_helpers,
+            agents::spawn::set_helper_context_pct,
+            agents::spawn::set_helper_mode,
+            agents::spawn::set_lead_handoff,
             cli::cli_status,
             cli::cli_update_now,
             cli::cli_versions,

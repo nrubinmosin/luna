@@ -17,8 +17,18 @@ use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 
-/// The most a caller may spawn under itself, all generations counted.
-pub(in crate::agents) const MAX_DESCENDANTS: usize = 8;
+/// How many sessions a line may have under its top chat, all generations
+/// counted, unless the person sets otherwise (`Settings::max_helpers`), and
+/// the range they may set it in: each place is a CLI process and its tokens.
+pub(crate) const HELPERS_DEFAULT: u32 = 8;
+pub(crate) const HELPERS_RANGE: std::ops::RangeInclusive<u32> = 1..=32;
+
+/// The most sessions one line may have under its top chat, as the person set
+/// it, held to `HELPERS_RANGE` whatever the file says. Reads the settings
+/// file's stamp: called before the registry is held.
+pub(in crate::agents) fn max_descendants() -> usize {
+    crate::settings::get().max_helpers.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end()) as usize
+}
 
 /// A child of a child may exist; a child of that may not have tools.
 const MAX_TOOL_DEPTH: usize = 1;
@@ -50,10 +60,20 @@ pub struct SpawnParams {
     /// Kept in the settings it runs with.
     #[serde(skip_serializing)]
     pub resume_on_restart: Option<bool>,
-    /// Context tokens past which its parent hears, once (`budget_news`). Kept
-    /// in the settings it runs with.
+    /// Deprecated for `budget_pct`: context tokens, read as the share of its
+    /// window they are once the window is known (`budget_news`). Kept in the
+    /// settings it runs with, as records saved before `budgetPct` have it.
     #[serde(skip_serializing)]
     pub budget_tokens: Option<u64>,
+    /// The share of its context window past which notices about it say where
+    /// it stands (`budget_news`), 0 for never; none: the person's setting
+    /// (`Settings::helper_context_pct`). Kept in the settings it runs with.
+    #[serde(skip_serializing)]
+    pub budget_pct: Option<u32>,
+    /// The `requestKey` the spawn came with, which notices name its answer by
+    /// (said.rs `Request`); the retry itself is the dispatcher's.
+    #[serde(skip_serializing)]
+    pub request_key: Option<String>,
     /// Without the edit tools (Claude Code); in a read-only sandbox (Codex).
     pub read_only: Option<bool>,
     /// The agent it runs as: Claude Code's `--agent`.
@@ -62,6 +82,58 @@ pub struct SpawnParams {
     /// Codex's apps), which a helper otherwise starts without.
     #[serde(skip_serializing)]
     pub connectors: Option<bool>,
+    /// Where the mode came from when the spawn named none (privilege.rs
+    /// `settle_mode`): Luna's to set, never an argument.
+    #[serde(skip)]
+    pub mode_from: Option<&'static str>,
+    /// What the helper and every session under it are to keep to, added word
+    /// for word to what its caller was given (`Constraint`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<String>,
+}
+
+/// One spawn's `constraints`, and the session whose spawn gave them. A
+/// session's are its caller's, then its own spawn's: set once at the spawn,
+/// never changed, and passed down whole to every session it starts. Text,
+/// not enforcement: a session is told them as the last of its role layers
+/// (library/role.rs), at every start, resume and handoff, and its privilege
+/// is what it was (agents/privilege.rs).
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct Constraint {
+    pub from: String,
+    pub text: String,
+}
+
+/// The most one spawn's constraints may hold, and a whole chain's, in bytes:
+/// all of it goes into every turn of every session under it, and on a Codex
+/// command line (library/role.rs `CODEX_ROLE_MAX`).
+pub const CONSTRAINT_MAX: usize = 4 * 1024;
+pub const CONSTRAINTS_MAX: usize = 16 * 1024;
+
+/// The constraints a session carries, as its registry settings keep them
+/// (`"constraints"`); none where it has none or they will not read.
+pub fn constraints_of(settings: &serde_json::Value) -> Vec<Constraint> {
+    serde_json::from_value(settings["constraints"].clone()).unwrap_or_default()
+}
+
+/// The chain a spawn by `caller` gives its helper: the caller's own, then
+/// what the spawn adds, checked and held to the caps.
+pub(super) fn constraints_for(caller: &str, carried: Vec<Constraint>, added: Option<&str>) -> Result<Vec<Constraint>, String> {
+    let mut chain = carried;
+    if let Some(text) = added.map(str::trim).filter(|t| !t.is_empty()) {
+        plain_text(text).map_err(|e| format!("constraints: {e}"))?;
+        if text.len() > CONSTRAINT_MAX {
+            return Err(format!("constraints come to {} bytes, over the {CONSTRAINT_MAX} one spawn may add", text.len()));
+        }
+        chain.push(Constraint { from: caller.to_string(), text: text.to_string() });
+    }
+    let total: usize = chain.iter().map(|c| c.text.len()).sum();
+    if total > CONSTRAINTS_MAX {
+        return Err(format!(
+            "constraints come to {total} bytes with those the caller carries, over the {CONSTRAINTS_MAX} a chain may hold"
+        ));
+    }
+    Ok(chain)
 }
 
 /// `account` in a spawn: a name, or names to choose from (`pick_from_list`).
@@ -98,6 +170,8 @@ pub(super) struct SpawnTaken {
     pub(super) resume_on_restart: bool,
     #[serde(default)]
     pub(super) budget_tokens: Option<u64>,
+    #[serde(default)]
+    pub(super) budget_pct: Option<u32>,
     #[serde(default)]
     pub(super) connectors: bool,
     pub(super) in_worktree: Option<String>,
@@ -141,6 +215,7 @@ impl SpawnUnderWay {
             (Some(true), Some(folder)) => crate::worktree::made_for(folder, account_path),
             _ => Vec::new(),
         };
+        let most = max_descendants();
         let taken = SpawnTaken {
             request: 0,
             caller: caller.to_string(),
@@ -148,6 +223,7 @@ impl SpawnUnderWay {
             auto_delete: params.auto_delete,
             resume_on_restart: params.resume_on_restart == Some(true),
             budget_tokens: params.budget_tokens,
+            budget_pct: params.budget_pct,
             connectors: params.connectors == Some(true),
             in_worktree: in_worktree.map(str::to_owned),
             account_path: account_path.to_string(),
@@ -168,7 +244,10 @@ impl SpawnUnderWay {
             if crate::agents::handoff::stopping_for_move(&top) {
                 return Err(format!("{top} is being stopped for a move to another account: no helper starts under it now"));
             }
-            cap_room(&r, caller, replaces)?;
+            if let Err(e) = cap_room(&r, caller, replaces, most) {
+                refused_a_place(&mut r, caller);
+                return Err(e);
+            }
             let request = r.next_request;
             r.next_request += 1;
             if let Some(old) = replaces {
@@ -201,22 +280,105 @@ pub(in crate::agents) fn under_cap(r: &Registry, caller: &str, except: Option<u6
     (counted, coming)
 }
 
-/// Whether `caller` may spawn one more (MAX_DESCENDANTS); refused, it hears which
-/// sessions take the places, to delete what it is done with.
-fn cap_room(r: &Registry, caller: &str, except: Option<u64>) -> Result<(), String> {
+/// Whether `caller` may spawn one more of the `most` its line may have
+/// (`max_descendants`); refused, it hears which sessions take the places that
+/// it can free itself, to delete what it is done with.
+fn cap_room(r: &Registry, caller: &str, except: Option<u64>, most: usize) -> Result<(), String> {
     let (counted, coming) = under_cap(r, caller, except);
-    if counted.len() + coming < MAX_DESCENDANTS {
+    if counted.len() + coming < most {
         return Ok(());
     }
     let coming = if coming > 0 { format!(", and {coming} spawn(s) under way") } else { String::new() };
-    let whose = if top_of(r, caller) == caller { "you" } else { "the chat at the top of your line" };
+    let top = top_of(r, caller);
+    if top == caller {
+        return Err(format!(
+            "you already have {most} sessions under you: {}{coming}. Helpers whose answer reached you and that wait out \
+             autoDelete do not count; delete those you are done with",
+            counted.join(", ")
+        ));
+    }
     Err(format!(
-        "{whose} already {} {MAX_DESCENDANTS} sessions under {}: {}{coming}. Helpers whose answer reached you and that wait \
-         out autoDelete do not count; delete those you are done with",
-        if whose == "you" { "have" } else { "has" },
-        if whose == "you" { "you" } else { "it" },
-        counted.join(", ")
+        "your line already has {most} sessions under its top chat, {top}{coming}. Helpers whose answer reached their caller \
+         and that wait out autoDelete do not count; {}",
+        free_first(r, caller, &counted)
     ))
+}
+
+/// What a caller refused a place is to free: of the sessions that take the
+/// places (`counted`), those under it, the only ones it can delete. One below
+/// the top of its line hears that the rest are its top chat's to free, which
+/// is told (`refused_a_place`).
+pub(in crate::agents) fn free_first(r: &Registry, caller: &str, counted: &[String]) -> String {
+    let own: Vec<&str> = counted.iter().filter(|id| is_descendant(r, caller, id)).map(String::as_str).collect();
+    let own = if own.is_empty() { "none of them is under you".to_string() } else { format!("yours: {}", own.join(", ")) };
+    let top = top_of(r, caller);
+    if top == caller {
+        return format!("delete one first ({own})");
+    }
+    format!("delete one of yours you are done with first ({own}). The rest are not yours to free; {top}, at the top of your line, is told")
+}
+
+/// A session below the top of its line refused a place: its top chat, the only
+/// one that can free every place, hears of it once with its next notice, or
+/// alone within a while (notifier `riders_go`). Refusals until then join the
+/// one line; one after it was told starts another.
+pub(in crate::agents) fn refused_a_place(r: &mut Registry, caller: &str) {
+    let top = top_of(r, caller);
+    if top == caller || top == DEV_CALLER {
+        return;
+    }
+    let p = r.places_refused.entry(top).or_insert_with(|| PlacesRefused { since: now_ms(), who: Vec::new() });
+    if !p.who.iter().any(|w| w == caller) {
+        p.who.push(caller.to_string());
+    }
+}
+
+/// Sessions below a top chat refused a place since it was last told, and since
+/// when (`refused_a_place`).
+#[derive(Clone, Debug)]
+pub(in crate::agents) struct PlacesRefused {
+    pub(in crate::agents) since: u64,
+    pub(in crate::agents) who: Vec<String>,
+}
+
+impl PlacesRefused {
+    /// The line its top chat's notice carries.
+    pub(in crate::agents) fn line(&self) -> String {
+        format!(
+            "No place was left on your line for a helper of {} (luna_session_spawn refused, all places taken). Only you \
+             can free any of them: delete the sessions under you that are done (luna_session_delete).",
+            self.who.join(", ")
+        )
+    }
+}
+
+/// Where a caller's line stands against its cap: the places in use under its
+/// top chat, every generation and every spawn under way counted as the cap
+/// counts them (`under_cap`), of how many there are, and how many of those are
+/// under the caller itself, the only ones it can free.
+#[derive(Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Places {
+    pub in_use: usize,
+    pub of: usize,
+    pub under_you: usize,
+}
+
+pub(in crate::agents) fn places_in(r: &Registry, caller: &str, most: usize) -> Places {
+    let (counted, coming) = under_cap(r, caller, None);
+    let mine = |id: &str| id == caller || is_descendant(r, caller, id);
+    let coming_mine = r.spawns.values().filter(|s| s.helper.is_none() && !s.settled && mine(&s.caller)).count();
+    Places {
+        in_use: counted.len() + coming,
+        of: most,
+        under_you: counted.iter().filter(|id| is_descendant(r, caller, id)).count() + coming_mine,
+    }
+}
+
+/// `places_in` for `caller` now.
+pub(in crate::agents) fn places(caller: &str) -> Places {
+    let most = max_descendants();
+    places_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, most)
 }
 
 impl Drop for SpawnUnderWay {
@@ -254,6 +416,8 @@ pub struct Spawned {
     /// With `account` as a list: the one taken, and why not the ones before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_choice: Option<AccountChoice>,
+    /// Where the caller's line stands against its cap, this helper counted.
+    pub places: Places,
 }
 
 /// Starts a helper in the background on what was asked; returns once its first
@@ -272,19 +436,29 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     if params.budget_tokens == Some(0) {
         return Err("budgetTokens must be above 0".into());
     }
+    if params.budget_pct.is_some_and(|pct| pct > 100) {
+        return Err("budgetPct is a share of the context window: 0 (never) to 100".into());
+    }
     // Off the registry lock: this reads the CLI's registry from disk. A
     // helper works where its caller does, worktree and all.
     let worktree = if params.folder.is_none() { caller_worktree(caller) } else { None };
+    let most = max_descendants();
     let me = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let me = r.known.get(caller).cloned().ok_or("caller is not a registered session")?;
         // Early, before folders and logins are read; `begin` counts again.
-        cap_room(&r, caller, replaces)?;
+        if let Err(e) = cap_room(&r, caller, replaces, most) {
+            refused_a_place(&mut r, caller);
+            return Err(e);
+        }
         if params.tools.unwrap_or(false) && depth_of(&r, caller) >= MAX_TOOL_DEPTH {
             return Err("a session this deep cannot spawn sessions with tools of their own".into());
         }
         me
     };
+    // What the caller carries, then what this spawn adds: nothing a caller
+    // asks takes one off (`Constraint`).
+    let constraints = constraints_for(caller, constraints_of(&me.settings), params.constraints.as_deref())?;
     // Off the registry lock: what follows reads folders and login files,
     // and every Claude Code session's hook waits on this lock with its next
     // step behind it (activity/sample.rs `sample` has the same care).
@@ -371,14 +545,21 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     if let Some(why) = crate::pty::folder_refusal(provider, &run_in, &account.path, params.worktree.unwrap_or(false)) {
         return Err(why);
     }
-    settle_mode(&mut params, provider, (me.provider, &me.settings), &account.path, &run_in, above)?;
+    // The dev caller has no mode of its own to pass on.
+    let inherit = caller != DEV_CALLER && crate::settings::get().helper_mode == crate::settings::HelperMode::Inherit;
+    settle_mode(&mut params, provider, (me.provider, &me.settings), &account.path, &run_in, above, inherit)?;
     // A helper's CLI takes its opening prompt as it takes text sent later,
     // a command among it (`command_reach`); it is its caller's own.
     let approver = (!above).then(|| Privilege::of_caller(me.provider, &me.settings));
     command_reach(&params.prompt, caller == DEV_CALLER, true, approver)?;
     let account_choice = picked.map(|(_, choice)| choice);
     let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces)?;
-    spawn_background(caller, params, account.path, in_worktree, taken.0).map(|s| Spawned { account_choice, ..s })
+    // Counted with its helper in, as `spawn_is` has it by now.
+    spawn_background(caller, params, account.path, in_worktree, taken.0, constraints).map(|s| Spawned {
+        account_choice,
+        places: places(caller),
+        ..s
+    })
 }
 
 /// The helper a spawn came to, as soon as it is registered and before its CLI is
@@ -410,6 +591,79 @@ pub(super) fn spawn_is(request: u64, id: &str) -> Result<(), String> {
     }
     crate::background::save();
     Ok(())
+}
+
+/// The helpers' settings the window shows beside `helpersAboveCaller`: how
+/// many places a line has (`max_descendants`), the range it may be set in,
+/// the mode a helper takes when its spawn names none (privilege.rs
+/// `settle_mode`), the context share its notices speak past, and auto-handoff
+/// for leads (handoff/lead.rs).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelperSettings {
+    pub max_helpers: u32,
+    pub min: u32,
+    pub max: u32,
+    pub helper_mode: crate::settings::HelperMode,
+    /// `Settings::helper_context_pct`, 0 for off.
+    pub helper_context_pct: u32,
+    pub lead_handoff: crate::settings::LeadHandoff,
+}
+
+/// The share of a helper's context window past which notices about it say
+/// where it stands, unless the person sets otherwise: a reviewer with a small
+/// window filled to 89% before its caller thought to rotate it.
+pub const CONTEXT_PCT_DEFAULT: u32 = 50;
+
+#[tauri::command]
+pub fn helper_settings() -> HelperSettings {
+    let s = crate::settings::get();
+    HelperSettings {
+        max_helpers: s.max_helpers.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end()),
+        min: *HELPERS_RANGE.start(),
+        max: *HELPERS_RANGE.end(),
+        helper_mode: s.helper_mode,
+        helper_context_pct: s.helper_context_pct.min(100),
+        lead_handoff: crate::agents::handoff::lead_settings(),
+    }
+}
+
+/// Only what notices say: nothing a helper may do changes.
+#[tauri::command]
+pub fn set_helper_context_pct(pct: u32) -> Result<HelperSettings, String> {
+    let pct = pct.min(100);
+    crate::settings::update(|s| s.helper_context_pct = pct)?;
+    crate::log::info("agents", &format!("helpers' context told of past: {pct}%"));
+    Ok(helper_settings())
+}
+
+/// Neither of these lets a helper do more than its caller: more places are more
+/// processes under one chat, and an inherited mode is held to the caller's as
+/// any other. So no dialog, unlike `set_helpers_above_caller`.
+#[tauri::command]
+pub fn set_max_helpers(n: u32) -> Result<HelperSettings, String> {
+    let n = n.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end());
+    crate::settings::update(|s| s.max_helpers = n)?;
+    crate::log::info("agents", &format!("places on a line: {n}"));
+    Ok(helper_settings())
+}
+
+/// Auto-handoff for leads on or off, at `threshold`. No dialog either: a lead
+/// asked for a handoff goes on in a fresh conversation of its own, with no
+/// more reach than it had (handoff/lead.rs).
+#[tauri::command]
+pub fn set_lead_handoff(on: bool, threshold: u8) -> Result<HelperSettings, String> {
+    let threshold = threshold.clamp(crate::agents::handoff::THRESHOLD_MIN, crate::agents::handoff::THRESHOLD_MAX);
+    crate::settings::update(|s| s.lead_handoff = crate::settings::LeadHandoff { on, threshold })?;
+    crate::log::info("agents", &format!("auto-handoff for leads: {}, at {threshold}%", if on { "on" } else { "off" }));
+    Ok(helper_settings())
+}
+
+#[tauri::command]
+pub fn set_helper_mode(mode: crate::settings::HelperMode) -> Result<HelperSettings, String> {
+    crate::settings::update(|s| s.helper_mode = mode)?;
+    crate::log::info("agents", &format!("helpers' mode when not given: {mode:?}"));
+    Ok(helper_settings())
 }
 
 #[cfg(test)]
@@ -474,7 +728,7 @@ mod tests {
         for id in &ids {
             one(id, Some("cap-top"));
         }
-        let room = |caller: &str, except: Option<u64>| cap_room(&reg().lock().unwrap(), caller, except).is_ok();
+        let room = |caller: &str, except: Option<u64>| cap_room(&reg().lock().unwrap(), caller, except, 8).is_ok();
         assert!(room("cap-top", None) && room("cap-tools", None), "seven under it");
         // A helper's own helper takes the last place, whoever asks next.
         one("cap-grandkid", Some("cap-tools"));
@@ -490,7 +744,7 @@ mod tests {
         assert!(room("cap-top", None), "gone with its call");
         // Full again: the refusal names who holds the places.
         one("cap-grandkid", Some("cap-tools"));
-        let e = cap_room(&reg().lock().unwrap(), "cap-top", None).unwrap_err();
+        let e = cap_room(&reg().lock().unwrap(), "cap-top", None, 8).unwrap_err();
         assert!(e.contains("cap-grandkid") && e.contains("cap-kid-0") && e.contains("delete those"), "{e}");
         // One whose answer reached its caller and that waits out autoDelete holds none.
         let auto = |released| crate::agents::teardown::Auto { idle_since: Some(1), deleting: false, released };
@@ -504,6 +758,63 @@ mod tests {
         for id in ids.iter().map(String::as_str).chain(["cap-top"]) {
             forget(id);
         }
+    }
+
+    /// Below the top of its line a caller is told the places it holds and can
+    /// free, nobody else's, and the top chat hears once that it was refused.
+    #[test]
+    fn a_lead_refused_a_place_names_only_its_own_and_its_top_chat_is_told_once() {
+        let one = |id: &str, parent: Option<&str>| {
+            register(id, Provider::Claude, "C:\\no\\such\\folder", "C:\\no\\such\\account", parent, false, serde_json::json!({}));
+        };
+        one("pl-top", None);
+        for lead in ["pl-lead-a", "pl-lead-b"] {
+            one(lead, Some("pl-top"));
+        }
+        one("pl-a1", Some("pl-lead-a"));
+        one("pl-b1", Some("pl-lead-b"));
+        one("pl-b2", Some("pl-lead-b"));
+        // Five in use of six: one under lead A, two under lead B.
+        let p = places_in(&reg().lock().unwrap(), "pl-lead-a", 6);
+        assert_eq!(p, Places { in_use: 5, of: 6, under_you: 1 });
+        one("pl-a2", Some("pl-lead-a"));
+        assert_eq!(places_in(&reg().lock().unwrap(), "pl-lead-a", 6), Places { in_use: 6, of: 6, under_you: 2 });
+        assert_eq!(places_in(&reg().lock().unwrap(), "pl-top", 6), Places { in_use: 6, of: 6, under_you: 6 }, "all under the top");
+        let row = serde_json::to_value(Places { in_use: 6, of: 6, under_you: 2 }).unwrap();
+        assert_eq!(row, serde_json::json!({ "inUse": 6, "of": 6, "underYou": 2 }));
+
+        let e = cap_room(&reg().lock().unwrap(), "pl-lead-a", None, 6).unwrap_err();
+        assert!(e.contains("pl-a1") && e.contains("pl-a2") && e.contains("pl-top"), "{e}");
+        assert!(!e.contains("pl-b1") && !e.contains("pl-lead-b"), "another's are not its to free: {e}");
+        let e = cap_room(&reg().lock().unwrap(), "pl-b1", None, 6).unwrap_err();
+        assert!(e.contains("none of them is under you"), "{e}");
+        // The top chat hears of each refused below it, in one line, once.
+        {
+            let mut r = reg().lock().unwrap();
+            refused_a_place(&mut r, "pl-lead-a");
+            refused_a_place(&mut r, "pl-lead-a");
+            refused_a_place(&mut r, "pl-b1");
+            refused_a_place(&mut r, "pl-top");
+        }
+        let told = reg().lock().unwrap().places_refused.get("pl-top").cloned().unwrap();
+        assert_eq!(told.who, ["pl-lead-a", "pl-b1"], "a refusal of its own is not news to it");
+        assert!(told.line().contains("pl-lead-a, pl-b1") && told.line().contains("luna_session_delete"), "{}", told.line());
+        reg().lock().unwrap().places_refused.remove("pl-top");
+        for id in ["pl-a1", "pl-a2", "pl-b1", "pl-b2", "pl-lead-a", "pl-lead-b", "pl-top"] {
+            forget(id);
+        }
+    }
+
+    #[test]
+    fn the_places_a_person_sets_are_held_to_their_range() {
+        assert_eq!(HELPERS_DEFAULT, crate::settings::Settings::default().max_helpers);
+        assert!(HELPERS_RANGE.contains(&HELPERS_DEFAULT));
+        let read: crate::settings::Settings = serde_json::from_str(r#"{"maxHelpers": 0}"#).unwrap();
+        assert_eq!(read.max_helpers.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end()), 1, "never none");
+        let read: crate::settings::Settings = serde_json::from_str(r#"{"helperMode": "account"}"#).unwrap();
+        assert_eq!(read.helper_mode, crate::settings::HelperMode::Account);
+        let read: crate::settings::Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!((read.max_helpers, read.helper_mode), (8, crate::settings::HelperMode::Inherit), "a file of before");
     }
 
     #[test]
@@ -526,6 +837,65 @@ mod tests {
         assert_eq!(p.budget_tokens, Some(50000));
         let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "budgetTokens": 0 })).unwrap();
         assert_eq!(spawn("nobody", p).err().unwrap(), "budgetTokens must be above 0");
+    }
+
+    #[test]
+    fn constraints_add_to_the_callers_and_none_is_ever_taken_off() {
+        let one = |from: &str, text: &str| Constraint { from: from.into(), text: text.into() };
+        // A chat of the person's carries none: the first spawn's are the chain.
+        let lead = constraints_for("chat", Vec::new(), Some("  Touch nothing in src/.\n")).unwrap();
+        assert_eq!(lead, [one("chat", "Touch nothing in src/.")]);
+        // Its helper inherits them whole, its own after them.
+        let helper = constraints_for("lead", lead.clone(), Some("No network.")).unwrap();
+        assert_eq!(helper, [one("chat", "Touch nothing in src/."), one("lead", "No network.")]);
+        // A spawn that adds nothing passes them on as they are; none it asks for removes any.
+        assert_eq!(constraints_for("lead", lead.clone(), None).unwrap(), lead);
+        assert_eq!(constraints_for("lead", lead.clone(), Some("  ")).unwrap(), lead);
+        // Kept as the registry keeps them, and read back from there by a spawn of its own.
+        let settings = serde_json::json!({ "model": "x", "constraints": helper });
+        assert_eq!(constraints_of(&settings), helper);
+        assert!(constraints_of(&serde_json::json!({})).is_empty(), "a session without any");
+        assert!(constraints_of(&serde_json::json!({ "constraints": "loose text" })).is_empty(), "none it cannot read");
+    }
+
+    #[test]
+    fn constraints_are_plain_text_within_their_caps() {
+        assert!(constraints_for("c", Vec::new(), Some("ok\x1b[201~")).unwrap_err().contains("control character"));
+        assert!(constraints_for("c", Vec::new(), Some("line one\nline two\ttabbed")).is_ok(), "lines and tabs are text");
+        let big = "a".repeat(CONSTRAINT_MAX + 1);
+        assert!(constraints_for("c", Vec::new(), Some(&big)).unwrap_err().contains("one spawn may add"));
+        let full: Vec<Constraint> = (0..4).map(|i| Constraint { from: format!("s{i}"), text: "a".repeat(CONSTRAINT_MAX) }).collect();
+        assert!(constraints_for("c", full.clone(), None).is_ok(), "16 KB in all is the most");
+        assert!(constraints_for("c", full, Some("one more")).unwrap_err().contains("a chain may hold"));
+    }
+
+    #[test]
+    fn a_callers_constraints_reach_its_helper_and_the_person_taking_it_over_drops_them() {
+        let chain = vec![Constraint { from: "ct-top".into(), text: "No network.".into() }];
+        register("ct-lead", Provider::Claude, "C:\\p", "C:\\acc", Some("ct-top"), true, serde_json::json!({ "constraints": chain }));
+        let carried = constraints_of(&crate::agents::registry::settings_of("ct-lead"));
+        assert_eq!(carried, chain, "what a spawn of its own starts from");
+        // Registered again at its next start, as every turn's does: kept.
+        register("ct-lead", Provider::Claude, "C:\\p", "C:\\acc", Some("ct-top"), true, serde_json::json!({}));
+        assert_eq!(constraints_of(&crate::agents::registry::settings_of("ct-lead")), chain);
+        // The person opens it as their own chat: a chat of the person's carries none.
+        crate::agents::take_over("ct-lead", || None).unwrap();
+        assert!(constraints_of(&crate::agents::registry::settings_of("ct-lead")).is_empty());
+        forget("ct-lead");
+    }
+
+    #[test]
+    fn a_spawn_record_of_before_constraints_still_reads() {
+        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go" })).unwrap();
+        assert_eq!(p.constraints, None);
+        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "constraints": "No network." })).unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap()["constraints"], "No network.", "kept with a spawn under way");
+        let spec: crate::background::Spec = serde_json::from_value(serde_json::json!({
+            "provider": "claude", "accountPath": "a", "folder": "f", "worktree": false, "model": null, "effort": "low",
+            "mode": "default", "autoReview": false, "tools": true, "hooksUnasked": false
+        }))
+        .expect("a helpers.json of before still reads");
+        assert!(spec.constraints.is_empty() && spec.tools, "with none, a lead all the same");
     }
 
     #[test]

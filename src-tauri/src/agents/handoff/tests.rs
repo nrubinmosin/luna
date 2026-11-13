@@ -198,11 +198,11 @@ fn notices_and_sends_wait_while_a_handoff_is_under_way() {
     schedule("hohw-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
     assert!(crate::agents::notifier::notice_waits("hohw-me"), "the notifier holds what it has for the chat");
     // Text another session sends goes in after, into the new conversation.
-    let sent = crate::agents::send("hohw-sender", "hohw-me", "the build is green", false).unwrap();
+    let sent = crate::agents::send("hohw-sender", "hohw-me", "the build is green", false, None, true).unwrap();
     assert!(sent.held && !sent.started);
     assert!(crate::agents::held::is_held("hohw-sender", "hohw-me"));
     // A command is still refused as one, held or not.
-    assert!(crate::agents::send("hohw-sender", "hohw-me", "/exit", false).is_err());
+    assert!(crate::agents::send("hohw-sender", "hohw-me", "/exit", false, None, true).is_err());
     finish("hohw-me", 1, Ended::Done, &String::new);
     assert!(!crate::agents::notifier::notice_waits("hohw-me"), "released once it is through");
     reg().lock().unwrap().held.retain(|h| h.id != "hohw-me");
@@ -268,6 +268,58 @@ fn a_failure_line_with_the_continuation_goes_only_into_the_conversation_the_rese
     assert_eq!(as_told("hocont-me", "Your helper h1 answered."), "Your helper h1 answered.");
     reg().lock().unwrap().news.retain(|(c, _)| c != "hocont-me");
     done_with(&["hocont-me"], &dir);
+}
+
+/// Seen live: the switch gave up at 60 s, the CLI took the prompt in at 88 s,
+/// and the failure line typed minutes later handed the conversation, already
+/// at work on it, the whole prompt again. Now the line is looked at against
+/// the conversation it was made for first: its prompt there, the line is
+/// dropped untyped and the handoff is on record as through.
+#[test]
+fn a_failure_line_whose_prompt_went_in_late_is_dropped_and_the_handoff_through() {
+    chat("holate-me", Some(70));
+    let (dir, file) = scratch_file("late");
+    schedule("holate-me", Provider::Claude, &file.to_string_lossy(), before()).unwrap();
+    let typed_at = now_ms() - 61_000;
+    store::change("holate-me", |r| {
+        let s = r.switch.as_mut().unwrap();
+        s.opened = Some("new".into());
+        s.phase = Phase::Prompting { at: typed_at };
+    })
+    .unwrap();
+    let why = "the new conversation did not take Luna's prompt within 60 s";
+    finish("holate-me", 1, Ended::Failed { why: why.into(), reset: true }, &|| facts::prompt_opening(1) + " PROMPT");
+    let line = reg().lock().unwrap().news.iter().find(|(c, _)| c == "holate-me").map(|(_, l)| l.clone()).unwrap();
+    set_conversation_for_test("holate-me", Some("new"));
+    let transcript = dir.join("new.jsonl");
+    std::fs::write(&transcript, "{\"type\":\"queue-operation\",\"operation\":\"enqueue\"}\n").unwrap();
+    crate::agents::read::transcripts().lock().unwrap().insert("holate-me".into(), transcript.clone());
+    assert!(!withheld("holate-me", &line), "not in yet: the line goes in");
+    let taken = format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"<pasted_content id=\\\"1\\\">\\n{} PROMPT\"}}}}\n",
+        facts::prompt_opening(1)
+    );
+    // In a conversation other than the one the reset opened, it is none of this.
+    let theirs = dir.join("theirs.jsonl");
+    std::fs::write(&theirs, &taken).unwrap();
+    crate::agents::read::transcripts().lock().unwrap().insert("holate-me".into(), theirs);
+    assert!(!withheld("holate-me", &line));
+    std::fs::write(&transcript, taken).unwrap();
+    crate::agents::read::transcripts().lock().unwrap().insert("holate-me".into(), transcript.clone());
+    assert!(withheld("holate-me", &line), "in late: never typed again");
+    // Not typed by the notifier either, whatever its look made of it.
+    crate::pty::fake_terminal_for_test("holate-me", true);
+    crate::agents::notifier::deliver_news_for_test("holate-me", vec![(line.clone(), line.clone())], Box::new(|| {}));
+    assert_eq!(crate::pty::fake_terminal_of("holate-me").0, "", "nothing typed");
+    assert!(taken_late("holate-me", &line));
+    let r = store::records()["holate-me"].clone();
+    assert!(r.past.iter().any(|p| p.n == 1 && p.done && p.why.is_none()), "{:?}", r.past);
+    assert!(r.continued.is_empty() && r.fresh);
+    assert!(!taken_late("holate-me", &line), "once");
+    crate::agents::read::transcripts().lock().unwrap().remove("holate-me");
+    crate::pty::fake_terminal_for_test("holate-me", false);
+    reg().lock().unwrap().news.retain(|(c, _)| c != "holate-me");
+    done_with(&["holate-me"], &dir);
 }
 
 /// A move under way keeps the chat from a handoff: a call whose file was
@@ -455,6 +507,7 @@ fn hand_off_now_is_refused_where_the_chat_cannot_answer_saying_why() {
     register("honow-plain", Provider::Claude, "C:/p", ACC, None, false, json!({}));
     register("honow-ro", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({ "sandbox": "read-only" }));
     register("honow-plan", Provider::Claude, "C:/p", ACC, None, true, json!({ "permissionMode": "plan" }));
+    register("honow-dontask", Provider::Claude, "C:/p", ACC, None, true, json!({ "permissionMode": "dontAsk" }));
     let refused = |id: &str| now_refusal(id).unwrap_or_default();
     for id in ["honow-kid", "honow-plain", DEV_CALLER] {
         assert!(refused(id).contains("started with Luna's tools"), "{id}: {}", refused(id));
@@ -462,6 +515,7 @@ fn hand_off_now_is_refused_where_the_chat_cannot_answer_saying_why() {
     }
     assert!(refused("honow-ro").contains("read-only sandbox"), "{}", refused("honow-ro"));
     assert!(refused("honow-plan").contains("plan mode"), "{}", refused("honow-plan"));
+    assert!(refused("honow-dontask").contains("don't-ask mode"), "{}", refused("honow-dontask"));
     // Its CLI's own jobs cannot cross.
     crate::activity::subagents_for_test("honow-me", 1);
     assert!(refused("honow-me").contains("own jobs running"), "{}", refused("honow-me"));
@@ -493,7 +547,7 @@ fn hand_off_now_is_refused_where_the_chat_cannot_answer_saying_why() {
     assert!(refused("honow-me").contains("handoff 1 of this chat is under way"), "{}", refused("honow-me"));
     assert!(open_manual("honow-me").is_err());
     finish("honow-me", 1, Ended::Done, &String::new);
-    done_with(&["honow-me", "honow-kid", "honow-plain", "honow-ro", "honow-plan"], &dir);
+    done_with(&["honow-me", "honow-kid", "honow-plain", "honow-ro", "honow-plan", "honow-dontask"], &dir);
 }
 
 #[test]
@@ -756,8 +810,12 @@ fn nobody_but_a_persons_chat_with_luna_tools_hears_of_it() {
         assert!(r["result"].get("isError").is_none(), "{caller} {name}: {r}");
         r["result"]["content"][0]["text"].as_str().unwrap_or("").to_string()
     };
+    // A helper of its own reads no row above it at all (ADR-0025).
+    let up = json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": { "name": "luna_session_get", "arguments": { "id": "hoaud-me" } } });
+    let r = crate::mcp::handle("hoaud-kid", &up.to_string()).unwrap();
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap_or("").contains("not under you"), "{r}");
     for (caller, name, args) in [
-        ("hoaud-kid", "luna_session_get", json!({ "id": "hoaud-me" })),
         ("hoaud-tools", "luna_session_get", json!({ "id": "hoaud-me", "scope": "all" })),
         ("hoaud-tools", "luna_session_list", json!({ "ids": ["hoaud-me"], "scope": "all" })),
     ] {
@@ -1612,41 +1670,41 @@ fn queued(id: &str) -> Vec<String> {
 /// notice queued for the notifier, which holds it behind a draft as any.
 #[test]
 fn turning_it_on_past_the_threshold_asks_as_soon_as_the_chat_is_at_rest() {
-    chat("honow-me", None);
-    listed("honow-me");
+    chat("hoon-me", None);
+    listed("hoon-me");
     let mut b = Beat::default();
-    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), Some((4, None)), "a turn's end not looked at yet");
-    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), None, "looked at: nothing until the next turn's end");
-    set_auto_handoff("honow-me".into(), Some(70)).unwrap();
-    let mark = check_due("honow-me");
+    assert_eq!(to_look(&mut b, "hoon-me", turn(true, 4)), Some((4, None)), "a turn's end not looked at yet");
+    assert_eq!(to_look(&mut b, "hoon-me", turn(true, 4)), None, "looked at: nothing until the next turn's end");
+    set_auto_handoff("hoon-me".into(), Some(70)).unwrap();
+    let mark = check_due("hoon-me");
     assert!(mark.is_some(), "on: to be looked at now");
-    assert_eq!(to_look(&mut b, "honow-me", turn(false, 4)), None, "mid-turn: not at rest yet");
-    assert_eq!(check_due("honow-me"), mark, "the mark waits");
-    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), Some((4, mark)), "at rest: looked at, at the same turn");
-    look_at("honow-me", 70, &reading("conv-live", 75), 4, mark);
-    assert_eq!(check_due("honow-me"), None, "its look over");
-    let asked = store::records()["honow-me"].asked.clone().unwrap();
+    assert_eq!(to_look(&mut b, "hoon-me", turn(false, 4)), None, "mid-turn: not at rest yet");
+    assert_eq!(check_due("hoon-me"), mark, "the mark waits");
+    assert_eq!(to_look(&mut b, "hoon-me", turn(true, 4)), Some((4, mark)), "at rest: looked at, at the same turn");
+    look_at("hoon-me", 70, &reading("conv-live", 75), 4, mark);
+    assert_eq!(check_due("hoon-me"), None, "its look over");
+    let asked = store::records()["hoon-me"].asked.clone().unwrap();
     assert_eq!((asked.kind, asked.conversation.as_deref(), asked.turns), (store::AskKind::Auto, Some("conv-live"), Some(4)));
-    assert_eq!(queued("honow-me"), [facts::notice(75, 70, false, true)], "through the notifier, as at a turn's end");
-    assert_eq!(to_look(&mut b, "honow-me", turn(true, 4)), None, "once");
+    assert_eq!(queued("hoon-me"), [facts::notice(75, 70, false, true)], "through the notifier, as at a turn's end");
+    assert_eq!(to_look(&mut b, "hoon-me", turn(true, 4)), None, "once");
     // On again at another threshold while its ask is open: looked at again,
     // and the conversation, told already, is not asked a second time.
-    set_auto_handoff("honow-me".into(), Some(60)).unwrap();
-    let again = check_due("honow-me");
+    set_auto_handoff("hoon-me".into(), Some(60)).unwrap();
+    let again = check_due("hoon-me");
     assert!(again.is_some() && again != mark);
-    look_at("honow-me", 60, &reading("conv-live", 75), 4, mark);
-    assert_eq!(check_due("honow-me"), again, "an old look lets go of its own mark only");
-    look_at("honow-me", 60, &reading("conv-live", 75), 4, again);
-    assert_eq!((check_due("honow-me"), queued("honow-me").len()), (None, 1));
+    look_at("hoon-me", 60, &reading("conv-live", 75), 4, mark);
+    assert_eq!(check_due("hoon-me"), again, "an old look lets go of its own mark only");
+    look_at("hoon-me", 60, &reading("conv-live", 75), 4, again);
+    assert_eq!((check_due("hoon-me"), queued("hoon-me").len()), (None, 1));
     // Under its threshold: told nothing, the mark let go all the same.
-    store::change("honow-me", |r| (r.asked, r.told) = (None, None)).unwrap();
-    reg().lock().unwrap().news.retain(|(c, _)| c != "honow-me");
-    set_auto_handoff("honow-me".into(), Some(80)).unwrap();
-    let low = check_due("honow-me");
-    look_at("honow-me", 80, &reading("conv-live", 75), 4, low);
-    assert_eq!((check_due("honow-me"), open_ask("honow-me"), queued("honow-me").len()), (None, None, 0));
-    forget_session("honow-me");
-    set_conversation_for_test("honow-me", None);
+    store::change("hoon-me", |r| (r.asked, r.told) = (None, None)).unwrap();
+    reg().lock().unwrap().news.retain(|(c, _)| c != "hoon-me");
+    set_auto_handoff("hoon-me".into(), Some(80)).unwrap();
+    let low = check_due("hoon-me");
+    look_at("hoon-me", 80, &reading("conv-live", 75), 4, low);
+    assert_eq!((check_due("hoon-me"), open_ask("hoon-me"), queued("hoon-me").len()), (None, None, 0));
+    forget_session("hoon-me");
+    set_conversation_for_test("hoon-me", None);
 }
 
 /// The look turning auto-handoff on asks for waits while the chat cannot be

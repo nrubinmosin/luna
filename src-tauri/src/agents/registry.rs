@@ -4,11 +4,11 @@
 
 use crate::agents::handover::taken_over_error;
 use crate::agents::held::Held;
-use crate::agents::notifier::lines::NoticeTurn;
+use crate::agents::notifier::lines::{NoticeTurn, Woken};
 use crate::agents::notifier::usage::QuotaTold;
-use crate::agents::owed::{Owed, Receipt};
+use crate::agents::owed::{Owed, Receipt, Requests};
 use crate::agents::persist::CHATS_FROZEN;
-use crate::agents::spawn::{under_cap, SpawnTaken, MAX_DESCENDANTS};
+use crate::agents::spawn::{free_first, max_descendants, refused_a_place, under_cap, PlacesRefused, SpawnTaken};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -104,6 +104,9 @@ pub(super) struct Registry {
     /// typed into it, and has not been shown a turn past `baseline` since.
     /// The notifier tells the caller when the answer comes.
     pub(super) owed: HashMap<(String, String), Owed>,
+    /// Each caller's requests to each session, by (caller, session) (owed.rs
+    /// `Requests`): which one an answer is to.
+    pub(super) requests: HashMap<(String, String), Requests>,
     /// `wait` calls in flight, by (caller, session).
     pub(super) waits: HashMap<(String, String), u32>,
     /// Sessions a `wait_many` in flight will answer for, by (caller, session):
@@ -131,6 +134,14 @@ pub(super) struct Registry {
     pub(super) notices_held: HashMap<String, usize>,
     /// The turns Luna's notices started, by the session they went into.
     pub(super) notice_turns: HashMap<String, Vec<NoticeTurn>>,
+    /// Leads Luna has told their delegates finished (lines.rs `wake_lead`), by id.
+    pub(super) woken: HashMap<String, Woken>,
+    /// What each lead was last seen waiting on (lines.rs `note_delegates`):
+    /// what its wake names.
+    pub(super) delegates: HashMap<String, Vec<String>>,
+    /// The share of its context window each helper past its level was last
+    /// read at (notifier usage.rs `budget_news`): the rider on its notices.
+    pub(super) context_seen: HashMap<String, u64>,
     /// When each turn-end notice went, by (caller, session), within
     /// BREAKER_WINDOW_MS.
     pub(super) notice_times: HashMap<(String, String), Vec<u64>>,
@@ -143,6 +154,13 @@ pub(super) struct Registry {
     pub(super) quota_told: HashMap<(String, String, String), QuotaTold>,
     /// Lines for a caller's next notice that no debt brings: by caller.
     pub(super) news: Vec<(String, String)>,
+    /// Sessions refused a place on a line since its top chat was last told, by
+    /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
+    pub(super) places_refused: HashMap<String, PlacesRefused>,
+    /// Leads under a session that went on in a fresh conversation since it
+    /// was last told, by that session (handoff/lead.rs `handed_off`): a line
+    /// that rides with its notices.
+    pub(super) handed_off: HashMap<String, crate::agents::handoff::HandedOff>,
     /// What Luna applied to each session's latest start, a helper's latest
     /// turn (applied.rs), with the account and folder it ran on: what the
     /// window's "What Luna applied" shows.
@@ -177,6 +195,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             groups: HashMap::new(),
             answered: HashMap::new(),
             owed: HashMap::new(),
+            requests: HashMap::new(),
             waits: HashMap::new(),
             reserved: HashMap::new(),
             receipts: HashMap::new(),
@@ -187,11 +206,16 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             held: Vec::new(),
             notices_held: HashMap::new(),
             notice_turns: HashMap::new(),
+            woken: HashMap::new(),
+            delegates: HashMap::new(),
+            context_seen: HashMap::new(),
             notice_times: HashMap::new(),
             stopped: HashMap::new(),
             exits: HashMap::new(),
             quota_told: HashMap::new(),
             news: Vec::new(),
+            places_refused: HashMap::new(),
+            handed_off: HashMap::new(),
             applied: HashMap::new(),
         })
     });
@@ -238,7 +262,8 @@ pub fn register(
     // core's, kept across every start.
     let mut settings = settings;
     if let Some(k) = &previous {
-        for key in CORE_SETTINGS {
+        // And what a Codex helper taken over still carries (handover.rs).
+        for key in CORE_SETTINGS.into_iter().chain([crate::agents::handover::STARTED_WITH]) {
             if let Some(v) = k.settings.get(key) {
                 settings[key] = v.clone();
             }
@@ -391,8 +416,10 @@ pub fn settings_of(id: &str) -> serde_json::Value {
 
 /// What a helper's settings hold that its CLI is not started with: `register` keeps
 /// them across every start, and ties across cores. `resumeOnRestart`, a budget with
-/// where it stands (`budget_news`), and `connectors` (`Spec::connectors`).
-const CORE_SETTINGS: [&str; 5] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "connectors"];
+/// where it stands (`budget_news`), `connectors` (`Spec::connectors`) and
+/// `constraints` (agents/spawn `Constraint`), which a spawn of its own passes on.
+const CORE_SETTINGS: [&str; 7] =
+    ["resumeOnRestart", "budgetTokens", "budgetPct", "budgetBreach", "budgetTold", "connectors", "constraints"];
 
 /// Whether a helper was spawned with `resumeOnRestart`.
 pub fn resumes_on_restart(id: &str) -> bool {
@@ -461,14 +488,54 @@ pub(super) fn authorize(caller: &str, target: &str) -> Result<Known, String> {
 }
 
 /// Reading a session and waiting on it reach any session but the caller's
-/// own: the transcript is on disk for anyone `luna_session_list` names it to, and
-/// a caller that typed into a session has to be able to collect the answer.
+/// own for a person's chat: the transcript is on disk for anyone
+/// `luna_session_list` names it to, and a caller that typed into a session has
+/// to be able to collect the answer. A helper reaches only what is under it
+/// (`persons_chat_in`).
 pub(super) fn authorize_view(caller: &str, target: &str) -> Result<Known, String> {
     if caller == target {
         return Err("that is your own session".into());
     }
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_session_list lists them"))
+    let known = r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_session_list lists them"))?;
+    beneath(&r, caller, target, "read or wait on")?;
+    Ok(known)
+}
+
+/// Whether `id` is a person's chat, or the dev caller standing in for the
+/// person: the only callers whose reach goes past the sessions under them
+/// (`scope: "all"`), and that may notify the person or arm the PC's power. A
+/// helper (one with a parent, or run in the background), an orphan and a
+/// session Luna does not know reach only their own: a prompt injected into a
+/// helper deep in a tree stays in that tree.
+pub(super) fn persons_chat_in(r: &Registry, id: &str) -> bool {
+    id == DEV_CALLER || r.known.get(id).is_some_and(|k| k.parent.is_none() && !k.orphan && k.settings["background"] != true)
+}
+
+/// `persons_chat_in`, for the tools.
+pub fn is_persons_chat(id: &str) -> bool {
+    persons_chat_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), id)
+}
+
+/// What a helper hears when it reaches past the sessions under it.
+fn not_under_you(id: &str, verb: &str) -> String {
+    format!(
+        "session {id} is not under you: a helper can {verb} only its own helpers and theirs. What is for anyone else goes \
+         in your reply to the session that spawned you"
+    )
+}
+
+/// A helper's reach: `target` is under it. A person's chat goes by its scope
+/// (`in_scope`), checked before this.
+fn beneath(r: &Registry, caller: &str, target: &str, verb: &str) -> Result<(), String> {
+    if persons_chat_in(r, caller) || is_descendant(r, caller, target) {
+        return Ok(());
+    }
+    // One the person took from it says so, as `in_scope` does.
+    if r.taken_over.get(target).is_some_and(|from| from == caller) {
+        return Err(taken_over_error(target));
+    }
+    Err(not_under_you(target, verb))
 }
 
 /// Whether `id` is the caller's: spawned by it, directly or through a helper.
@@ -476,14 +543,24 @@ pub(super) fn is_mine(caller: &str, id: &str) -> bool {
     is_descendant(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, id)
 }
 
-/// Whether a call's `scope` says `all`: past the caller's own (`mine`, the default).
-pub fn scope_all(scope: Option<&str>) -> Result<bool, String> {
+/// Whether a call's `scope` says `all`: past the caller's own (`mine`, the
+/// default). Only a person's chat may say it (`persons_chat_in`).
+pub fn scope_all(caller: &str, scope: Option<&str>) -> Result<bool, String> {
+    scope_all_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, scope)
+}
+
+pub(super) fn scope_all_in(r: &Registry, caller: &str, scope: Option<&str>) -> Result<bool, String> {
     match scope {
         None | Some("mine") => Ok(false),
-        Some("all") => Ok(true),
+        Some("all") if persons_chat_in(r, caller) => Ok(true),
+        Some("all") => Err(SCOPE_ALL_REFUSED.into()),
         Some(other) => Err(format!("unknown scope {other:?}; use mine (the default) or all")),
     }
 }
+
+/// A helper's `scope: "all"`, refused in every tool.
+pub(super) const SCOPE_ALL_REFUSED: &str =
+    "scope \"all\" is for a person's chats: a helper reaches only the sessions under it (its own helpers and theirs). Leave scope out";
 
 /// Whether `id` is the caller or one of its own: what `scope` `mine` reaches.
 pub fn own_or_self(caller: &str, id: &str) -> bool {
@@ -498,16 +575,20 @@ pub fn is_known(id: &str) -> bool {
 /// What a read, a wait or a send may reach, by its `scope`: the caller's own
 /// helpers and theirs, unless it says `all`. Text read off or typed into a
 /// session no one asked it to touch is the reach a prompt injection wants, so
-/// going past its own takes an argument that says so. An unknown session, or
-/// the caller itself, is left to the tool's own refusal, which says more.
+/// going past its own takes an argument that says so, and only a person's chat
+/// may say it (`scope_all_in`). An unknown session, or the caller itself, is
+/// left to the tool's own refusal, which says more.
 pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Result<(), String> {
-    let all = scope_all(scope)?;
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let all = scope_all_in(&r, caller, scope)?;
     if all || caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
         return Ok(());
     }
     if r.taken_over.get(id).is_some_and(|from| from == caller) {
         return Err(taken_over_error(id));
+    }
+    if !persons_chat_in(&r, caller) {
+        return Err(not_under_you(id, verb));
     }
     Err(format!(
         "session {id} is not one you spawned; to {verb} a session that is not yours (the user's own chats, another's \
@@ -515,13 +596,16 @@ pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Resu
     ))
 }
 
-/// Text may go to any session Luna runs, the user's own chats included —
-/// that is how one session passes a message to another — but not back into
-/// the caller's own composer.
+/// Text from a person's chat may go to any session Luna runs, the user's own
+/// chats included — that is how one session passes a message to another — but
+/// not back into the caller's own composer. A helper's goes only to the
+/// sessions under it (`beneath`).
 pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String> {
     if caller == target {
         return Err("that is your own session".into());
     }
+    // Read before the registry is held: the settings are a file of their own.
+    let most = max_descendants();
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     // `reap` has let the lock go to remove it: text taken now would start a
     // turn that goes with it, and a question nobody hears the end of.
@@ -529,16 +613,18 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
         return Err(format!("{target} is being deleted (autoDelete, idle since its answer); spawn a helper again for more"));
     }
     let known = r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_session_list lists them"))?;
+    beneath(&r, caller, target, "send to or answer")?;
     // A helper that only waits out autoDelete holds no place under its chat's
     // cap (`under_cap`); text sets it to work, and in a place again: one there
     // must be, taken here under the lock the cap is counted under.
     if r.auto.get(target).is_some_and(|a| a.released) {
         let (counted, coming) = under_cap(&r, target, None);
-        if counted.len() + coming >= MAX_DESCENDANTS {
+        if counted.len() + coming >= most {
+            refused_a_place(&mut r, caller);
             return Err(format!(
-                "{target} has given its answer and holds no place among the {MAX_DESCENDANTS} its chat may have at work; \
-                 they are taken ({}), so text that would set it to work again is refused: delete one first",
-                counted.join(", ")
+                "{target} has given its answer and holds no place among the {most} its line may have at work; they are \
+                 taken, so text that would set it to work again is refused: {}",
+                free_first(&r, caller, &counted)
             ));
         }
     }
@@ -605,12 +691,17 @@ mod tests {
         assert!(authorize("b", "a").is_err(), "not upwards");
         assert!(authorize("a", "x").is_err(), "not the user's own chats");
         assert!(authorize("a", "a").is_err(), "not itself");
-        assert!(authorize_send("a", "x").is_ok(), "text may go to the user's own chats");
-        assert!(authorize_send("b", "a").is_ok(), "and upwards");
+        assert!(authorize_send("a", "x").is_ok(), "a person's chat's text may go to the user's own chats");
         assert!(authorize_send("a", "a").is_err(), "but not into its own composer");
         assert!(authorize_send("a", "nobody").is_err());
-        assert!(authorize_view("b", "a").is_ok(), "a session written to can be read and waited on");
+        assert!(authorize_view("a", "x").is_ok(), "a session written to can be read and waited on");
         assert!(authorize_view("a", "a").is_err(), "but not one's own");
+        // A helper reaches only what is under it: not upwards, not sideways.
+        assert!(authorize_send("b", "c").is_ok() && authorize_view("b", "c").is_ok(), "its own helper");
+        for target in ["a", "x"] {
+            assert!(authorize_send("b", target).err().unwrap().contains("not under you"), "{target}");
+            assert!(authorize_view("b", target).err().unwrap().contains("not under you"), "{target}");
+        }
         let r = reg().lock().unwrap();
         assert_eq!(depth_of(&r, "c"), 2);
         let mut d = descendants(&r, "a");
@@ -660,13 +751,30 @@ mod tests {
         // Its own, by default or said.
         assert_eq!(in_scope("sc-me", "sc-kid", None, "read"), Ok(()));
         assert_eq!(in_scope("sc-me", "sc-grand", Some("mine"), "read"), Ok(()));
-        // A person's chat, another chat's helper, and upwards: only when told.
-        for (caller, id) in [("sc-me", "sc-chat"), ("sc-me", "sc-theirs"), ("sc-kid", "sc-me")] {
-            let e = in_scope(caller, id, None, "send to").unwrap_err();
-            assert!(e.contains("not one you spawned") && e.contains("scope: \"all\""), "{caller} -> {id}: {e}");
-            assert!(in_scope(caller, id, Some("mine"), "read").is_err());
-            assert_eq!(in_scope(caller, id, Some("all"), "read"), Ok(()));
+        // From a person's chat, another chat and another chat's helper: only when told.
+        for id in ["sc-chat", "sc-theirs"] {
+            let e = in_scope("sc-me", id, None, "send to").unwrap_err();
+            assert!(e.contains("not one you spawned") && e.contains("scope: \"all\""), "{id}: {e}");
+            assert!(in_scope("sc-me", id, Some("mine"), "read").is_err());
+            assert_eq!(in_scope("sc-me", id, Some("all"), "read"), Ok(()));
         }
+        // A helper: its own, and nothing past it, told or not, in every verb.
+        assert_eq!(in_scope("sc-kid", "sc-grand", None, "read"), Ok(()));
+        for id in ["sc-me", "sc-chat", "sc-theirs"] {
+            for verb in ["read", "wait on", "send to", "answer"] {
+                let e = in_scope("sc-kid", id, None, verb).unwrap_err();
+                assert!(e.contains("not under you") && !e.contains("scope: \"all\""), "{id}: {e}");
+                assert_eq!(in_scope("sc-kid", id, Some("all"), verb).unwrap_err(), SCOPE_ALL_REFUSED);
+            }
+        }
+        assert_eq!(scope_all("sc-kid", Some("all")).unwrap_err(), SCOPE_ALL_REFUSED, "nor even of its own");
+        assert_eq!(scope_all("sc-me", Some("all")), Ok(true));
+        assert_eq!(scope_all(DEV_CALLER, Some("all")), Ok(true), "the dev caller stands in for the person");
+        // A session run in the background with no parent left is no person's chat.
+        register("sc-alone", Provider::Claude, "C:\\p", account, None, true, serde_json::json!({ "background": true }));
+        assert!(!is_persons_chat("sc-alone") && is_persons_chat("sc-me") && !is_persons_chat("sc-kid"));
+        assert!(!is_persons_chat("sc-nobody"), "nor is one Luna does not know");
+        forget("sc-alone");
         // An unknown session and itself are the tool's to refuse, in its words.
         assert_eq!(in_scope("sc-me", "sc-nobody", None, "read"), Ok(()));
         assert_eq!(in_scope("sc-me", "sc-me", None, "read"), Ok(()));

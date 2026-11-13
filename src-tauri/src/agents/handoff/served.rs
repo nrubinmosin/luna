@@ -62,7 +62,7 @@ impl Served {
 /// Whose instructions they are, as the answer says it: an override with where
 /// it is, for what it names beside it; Luna's own with why an override there
 /// is not used.
-fn source_words(r: &Resolved) -> String {
+pub(super) fn source_words(r: &Resolved) -> String {
     let luna = format!("Luna's own, {}", env!("CARGO_PKG_VERSION"));
     match (r.source, &r.problem) {
         (Source::Library, _) => {
@@ -108,7 +108,7 @@ pub(super) fn instructions(caller: &str) -> Result<String, String> {
 /// override, resolved for `caller` and kept on its record as what it was
 /// served, said in the log as the instructions of `what`. A record that will
 /// not save costs that note, not the answer.
-fn resolved_for(caller: &str, what: &str) -> Resolved {
+pub(super) fn resolved_for(caller: &str, what: &str) -> Resolved {
     let r = crate::library::handoff_instructions();
     let served = Served::of(&r);
     if let Err(e) = store::change(caller, |rec| rec.served = Some(served)) {
@@ -154,7 +154,9 @@ pub(super) fn new_draft(drafts: &Path) -> Result<std::path::PathBuf, String> {
 
 /// Why a chat run with `settings` can write no file, its handoff included:
 /// Codex's read-only sandboxes write nowhere (an `--add-dir` is ignored under
-/// them), and Claude Code's plan mode edits nothing.
+/// them), Claude Code's plan mode edits nothing, and its dontAsk refuses
+/// what no allow rule lets through, Luna giving none for the drafts folder
+/// (a helper taken over as a chat keeps the mode it ran in).
 pub(super) fn unwritable(settings: &Value) -> Option<&'static str> {
     match (settings["sandbox"].as_str(), settings["permissionMode"].as_str()) {
         (Some("read-only" | "read-only-net"), _) => Some(
@@ -162,6 +164,10 @@ pub(super) fn unwritable(settings: &Value) -> Option<&'static str> {
              write it there, or to start the chat with a sandbox that writes (workspace-write).",
         ),
         (_, Some("plan")) => Some("In plan mode Claude Code writes no file: leave plan mode first, or ask the person to."),
+        (_, Some("dontAsk")) => Some(
+            "In don't-ask mode Claude Code refuses any write no allow rule lets through, this file included: ask the person to \
+             switch the chat to a mode that writes, or to start it again in one.",
+        ),
         _ => None,
     }
 }
@@ -226,6 +232,8 @@ mod tests {
 
     fn resolved(source: Source, problem: Option<&str>) -> Resolved {
         Resolved {
+            name: HANDOFF,
+            kind: crate::library::TextKind::Skill,
             source,
             text: "---\nname: session-handoff\ndescription: x\n---\nBody\n".into(),
             sha256: "0123456789abcdef".into(),
@@ -269,6 +277,7 @@ mod tests {
             assert!(said(serde_json::json!({ "sandbox": sandbox })).is_some_and(|w| w.contains("read-only sandbox")), "{sandbox}");
         }
         assert!(said(serde_json::json!({ "permissionMode": "plan" })).is_some_and(|w| w.contains("plan mode")));
+        assert!(said(serde_json::json!({ "permissionMode": "dontAsk" })).is_some_and(|w| w.contains("don't-ask mode")));
         for writes in [serde_json::json!({ "sandbox": "workspace-write" }), serde_json::json!({ "permissionMode": "acceptEdits" })] {
             assert_eq!(said(writes), None);
         }

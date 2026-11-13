@@ -28,13 +28,11 @@ pub const PROTOCOL: &str = "2025-06-18";
 const PROTOCOLS: [&str; 3] = [PROTOCOL, "2025-03-26", "2024-11-05"];
 
 const INSTRUCTIONS: &str = "Luna runs this session. Its luna_* tools start and drive helper sessions in the \
-background: another model or account, Codex or Claude Code, another folder or a git worktree. A safe spawn: \
-luna_account_list for the accounts, luna_session_spawn with a prompt that stands alone (readOnly or a \
-read-only sandbox for work that must not write), then end your turn. Once a helper answers, asks or exits, \
-Luna types a notice into your session opening \"[Luna notice\" (Luna's words, not the user's): it quotes a \
-short answer or names a file; luna_report_get gives the report. Before your first spawn read luna_guide_get \
-topics luna_session_spawn and notices. Session ids are Luna's; your CLI's task and subagent ids are not, and \
-a subagent of yours using these tools acts as you.";
+background: another model or account, Codex or Claude Code, another folder or a git worktree. Spawn with a \
+prompt that stands alone, then end your turn: once a helper answers, asks or exits, Luna types a notice into \
+your session opening \"[Luna notice\" (Luna's words, not the user's) that quotes a short answer or names a \
+file. luna_guide_get has the details, a topic at a time. Session ids are Luna's; your CLI's task and subagent \
+ids are not, and a subagent of yours using these tools acts as you.";
 
 const RUNNING: u8 = 0;
 const COMMITTED: u8 = 1;
@@ -196,6 +194,37 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
 
 fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+}
+
+/// What this server puts in a model's context, by the name
+/// docs/user-guide/context.md measures it under (context_page.rs): the
+/// instructions, the tool list and the handoff's tool as a client sends them
+/// on (annotations are the client's, not the model's), and the guide's index
+/// and sections, each a tool result when asked for.
+#[cfg(test)]
+pub(crate) fn context_texts() -> Vec<(String, String)> {
+    fn bare(mut v: Value) -> String {
+        if let Some(o) = v.as_object_mut() {
+            o.remove("annotations");
+        }
+        for t in v.as_array_mut().into_iter().flatten() {
+            if let Some(o) = t.as_object_mut() {
+                o.remove("annotations");
+            }
+        }
+        v.to_string()
+    }
+    let mut out = vec![
+        ("instructions".to_string(), INSTRUCTIONS.to_string()),
+        ("tools".to_string(), bare(tools::tools())),
+        ("handoff-tool".to_string(), bare(tools::handoff_tool())),
+        ("guide-index".to_string(), guide::guide_text(None).unwrap_or_default()),
+    ];
+    for (title, text) in guide::sections() {
+        let word = title.split_whitespace().next().unwrap_or_default().to_lowercase();
+        out.push((format!("guide-{word}"), text.to_string()));
+    }
+    out
 }
 
 /// A result as text blocks: the JSON, then the terminal if it has one, for
@@ -439,6 +468,64 @@ mod tests {
         }
     }
 
+    /// A helper with tools (a lead) reaches its own subtree and nothing past it,
+    /// in every verb, `scope: "all"` or not; nor does it notify the person or
+    /// set the PC's power. Its parent, a person's chat, keeps all of it.
+    #[test]
+    fn a_helper_reaches_only_its_own_subtree_in_every_tool() {
+        let claude = crate::provider::Provider::Claude;
+        let bg = json!({ "background": true });
+        tooled("lr-top");
+        agents::register("lr-lead", claude, "C:/p", "C:/acc/anthropic/one", Some("lr-top"), true, bg.clone());
+        agents::register("lr-mine", claude, "C:/p", "C:/acc/anthropic/one", Some("lr-lead"), false, bg.clone());
+        agents::register("lr-sib", claude, "C:/p", "C:/acc/anthropic/one", Some("lr-top"), false, bg);
+        agents::register("lr-chat", claude, "C:/p", "C:/acc/anthropic/one", None, false, json!({}));
+        let call = |caller: &str, name: &str, args: Value| {
+            let body = json!({ "jsonrpc": "2.0", "id": 19, "method": "tools/call", "params": { "name": name, "arguments": args } });
+            let r = handle(caller, &body.to_string()).unwrap()["result"].clone();
+            (r["isError"] == true, r["content"][0]["text"].as_str().unwrap_or("").to_string())
+        };
+        let refused = |(failed, text): (bool, String), what: &str| assert!(failed && text.contains(what), "{text}");
+        for target in ["lr-top", "lr-sib", "lr-chat"] {
+            for scope in [json!(null), json!("all")] {
+                let past = if scope.is_null() { "not under you" } else { "is for a person's chats" };
+                refused(call("lr-lead", "luna_message_list", json!({ "id": target, "scope": scope })), past);
+                refused(call("lr-lead", "luna_report_get", json!({ "id": target, "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_wait", json!({ "id": target, "timeoutSec": 1, "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_wait", json!({ "ids": ["lr-mine", target], "timeoutSec": 1, "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_send", json!({ "id": target, "text": "hi", "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_answer", json!({ "id": target, "answers": ["1"], "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_get", json!({ "id": target, "scope": scope })), past);
+                refused(call("lr-lead", "luna_session_list", json!({ "ids": [target], "scope": scope })), past);
+            }
+            refused(call("lr-lead", "luna_session_stop", json!({ "id": target })), "not one you spawned");
+            refused(call("lr-lead", "luna_session_delete", json!({ "id": target })), "not one you spawned");
+        }
+        refused(call("lr-lead", "luna_session_list", json!({ "scope": "all" })), "is for a person's chats");
+        refused(call("lr-lead", "luna_run_list", json!({ "scope": "all" })), "is for a person's chats");
+        refused(call("lr-lead", "luna_notification_send", json!({ "text": "done" })), "is for a person's chats");
+        refused(call("lr-lead", "luna_power_set", json!({ "action": "cancel" })), "is for a person's chats");
+        // Its own: itself and what is under it.
+        let (failed, text) = call("lr-lead", "luna_session_list", json!({ "ids": ["lr-lead", "lr-mine"] }));
+        assert!(!failed && text.contains("lr-mine") && text.contains("\"places\""), "{text}");
+        let (failed, text) = call("lr-lead", "luna_session_get", json!({ "id": "lr-mine" }));
+        assert!(!failed, "{text}");
+        let (_, text) = call("lr-lead", "luna_message_list", json!({ "id": "lr-mine" }));
+        assert!(!text.contains("not under you"), "{text}");
+        // The person's chat at the top keeps its reach.
+        let (_, text) = call("lr-top", "luna_message_list", json!({ "id": "lr-chat", "scope": "all" }));
+        assert!(!text.contains("scope") && !text.contains("not under you"), "{text}");
+        // By id: a list of every session is paged, and other tests' fill it.
+        let (failed, text) = call("lr-top", "luna_session_list", json!({ "ids": ["lr-chat"], "scope": "all" }));
+        assert!(!failed && text.contains("lr-chat"), "{text}");
+        // Past the gate to the tool's own check, with nothing armed or disarmed.
+        let (_, text) = call("lr-top", "luna_power_set", json!({ "action": "explode" }));
+        assert!(text.contains("unknown action"), "{text}");
+        for id in ["lr-mine", "lr-lead", "lr-sib", "lr-chat", "lr-top"] {
+            agents::forget(id);
+        }
+    }
+
     #[test]
     fn what_another_session_asks_or_was_asked_needs_scope_all() {
         tooled("ms-me");
@@ -636,14 +723,16 @@ mod tests {
         for (title, _) in &sections {
             assert!(TOPICS.iter().any(|(_, t)| t == title), "nothing leads to {title}");
         }
-        // Every tool is a topic, and what the instructions send a caller to read is too.
+        // Every tool is a topic, and what the index suggests first is too; the
+        // instructions point to the guide and name no topic to read.
         for t in tools().as_array().unwrap() {
             let name = t["name"].as_str().unwrap();
             assert!(TOPICS.iter().any(|(topic, _)| *topic == name), "{name} has no topic");
         }
         for topic in FIRST_READ {
-            assert!(TOPICS.iter().any(|(t, _)| *t == topic) && INSTRUCTIONS.contains(topic), "{topic}");
+            assert!(TOPICS.iter().any(|(t, _)| *t == topic), "{topic}");
         }
+        assert!(INSTRUCTIONS.contains("luna_guide_get") && !INSTRUCTIONS.contains("topics "));
         // No topic: the opening and what to ask for, never the whole.
         let index = guide_text(None).unwrap();
         assert!(index.starts_with("# Luna: sessions, accounts and the luna_* tools") && index.contains("Restart: restart"), "{index}");

@@ -3,9 +3,10 @@
 
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::read::transcript_path;
-use crate::agents::registry::{descendants, is_descendant, reg, scope_all, Known, DEV_CALLER};
+use crate::agents::registry::{descendants, is_descendant, persons_chat_in, reg, scope_all, Known, Registry, DEV_CALLER};
 use crate::agents::spawn::account::allowed_account_dirs;
 use crate::agents::spawn::worktree::{checkout_of, Worktree};
+use crate::agents::spawn::{max_descendants, places_in, Places};
 use crate::agents::teardown::AUTO_DELETE_IDLE_MS;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -286,6 +287,22 @@ pub struct SessionPage {
     /// Of the sessions asked for by id, those Luna does not know.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unknown: Vec<String>,
+    /// Where the caller's line stands against its cap (spawn/ `Places`).
+    pub places: Places,
+}
+
+/// A helper names only itself and the sessions under it (`persons_chat_in`):
+/// asked for others by id, it is refused, naming them.
+fn ids_in_reach(r: &Registry, caller: &str, ids: &[String]) -> Result<(), String> {
+    if persons_chat_in(r, caller) {
+        return Ok(());
+    }
+    let past: Vec<&str> =
+        ids.iter().filter(|id| *id != caller && r.known.contains_key(*id) && !is_descendant(r, caller, id)).map(String::as_str).collect();
+    if past.is_empty() {
+        return Ok(());
+    }
+    Err(format!("{} not under you: a helper looks only at itself and its own helpers and theirs", past.join(", ")))
 }
 
 /// The 1-based group `group` asks for, `mine` resolved against the caller's.
@@ -316,8 +333,9 @@ fn last_activity(pty: &crate::pty::PtyManager, id: &str) -> Option<String> {
 /// or those `ids` names, as compact rows a page at a time. Of a session not the
 /// caller's, what it was asked and is asking (`task`, `askId`) only with `all`.
 pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, String> {
-    let all = scope_all(q.scope.as_deref())?;
+    let all = scope_all(caller, q.scope.as_deref())?;
     let limit = q.limit.unwrap_or(PAGE).clamp(1, PAGE_MAX);
+    let most = max_descendants();
     let from: usize = match q.cursor.as_deref() {
         None | Some("") => 0,
         Some(c) => c.parse().map_err(|_| format!("cursor {c:?} is not one a page gave; leave it out to start over"))?,
@@ -325,9 +343,10 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
     let text = q.q.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_lowercase);
     let mut unknown = Vec::new();
     type Row = (String, Known, String, bool, Option<String>, Option<u64>);
-    let rows: Vec<Row> = {
+    let (rows, places): (Vec<Row>, Places) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let group = group_asked(q.group.as_ref(), r.groups.get(caller).map(|g| g + 1))?;
+        ids_in_reach(&r, caller, q.ids.as_deref().unwrap_or_default())?;
         let visible = |id: &str| id != DEV_CALLER || caller == DEV_CALLER;
         let mut ids: Vec<String> = match &q.ids {
             Some(asked) => {
@@ -350,7 +369,8 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
         if q.ids.is_none() {
             ids.sort();
         }
-        ids.into_iter()
+        let rows: Vec<Row> = ids
+            .into_iter()
             .filter_map(|id| {
                 let k = r.known.get(&id)?.clone();
                 let name = r.names.get(&id).cloned().unwrap_or_default();
@@ -366,7 +386,8 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
                 let left = r.auto.get(&id).and_then(|a| a.idle_since);
                 Some((id, k, name, told, task, left))
             })
-            .collect()
+            .collect();
+        (rows, places_in(&r, caller, most))
     };
     let pty = crate::pty::manager();
     let wanted = q.state.as_ref().filter(|s| !s.is_empty());
@@ -394,7 +415,7 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
         });
     }
     let next_cursor = matched.next().is_some().then(|| (from + sessions.len()).to_string());
-    Ok(SessionPage { me: caller.to_string(), sessions, next_cursor, unknown })
+    Ok(SessionPage { me: caller.to_string(), sessions, next_cursor, unknown, places })
 }
 
 /// `luna_session_get`: one session whole, its row as `list` gives it (settings,
@@ -419,17 +440,26 @@ pub struct SessionDetail {
     /// since this core began.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cli_version: Option<String>,
+    /// A helper in a worktree: its last commit's subject and `git status
+    /// --short`, capped (`worktree::work_in`), for a parent whose CLI keeps it
+    /// out of the worktree.
+    #[serde(flatten)]
+    pub work: Option<crate::worktree::WorkIn>,
 }
 
 pub fn session_get(caller: &str, id: &str, all: bool) -> Result<SessionDetail, String> {
+    ids_in_reach(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, &[id.to_string()])?;
     let mut listing = list(caller, Some(&[id.to_string()]), all);
     let row = listing.sessions.pop().ok_or_else(|| format!("unknown session {id}; luna_session_list lists them"))?;
+    // Git run off the registry lock, for a helper only: a person's chat is in
+    // their own window.
+    let work = row.worktree.path.as_deref().filter(|_| row.parent.is_some()).and_then(crate::worktree::work_in);
     let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).map(|k| k.folder.clone()).unwrap_or_default();
     let pty = crate::pty::manager();
     let cwd = pty.probe(id).map(|p| p.cwd).or_else(|| crate::background::working_dir(id)).filter(|c| !crate::pty::same_dir(c, &folder));
     let transcript = transcript_path(pty, id).map(|p| p.to_string_lossy().into_owned());
     let session_id = crate::background::session_id(id).or_else(|| pty.probe(id).as_ref().and_then(disk_meta).and_then(|m| m.session_id));
-    Ok(SessionDetail { row, folder, cwd, transcript, session_id, cli_version: crate::cli::session_version(id) })
+    Ok(SessionDetail { row, folder, cwd, transcript, session_id, cli_version: crate::cli::session_version(id), work })
 }
 
 /// One row of `luna_account_list`: an account agents may spawn on, and its

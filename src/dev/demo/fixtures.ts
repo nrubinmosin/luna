@@ -697,20 +697,37 @@ export const LIBRARY: LibraryOverviewDto = {
   isDefault: true,
   found: true,
   instructions: [
-    { name: 'main', description: 'Working with me', problem: null, accounts: ['all'], audience: 'chats' },
+    {
+      name: 'leading',
+      description: 'Splitting work among helpers',
+      problem: null,
+      accounts: ['claude'],
+      audience: ['lead'],
+      perSession: true
+    },
+    {
+      name: 'main',
+      description: 'Working with me',
+      problem: null,
+      accounts: ['all'],
+      audience: ['chat'],
+      perSession: false
+    },
     {
       name: 'terse',
       description: '',
       problem: 'Blank: laid out nowhere until it has something in it',
       accounts: [],
-      audience: 'both'
+      audience: 'every',
+      perSession: false
     },
     {
       name: 'work',
       description: 'At work: the monorepo, its CI and who reviews what',
       problem: null,
       accounts: ['claude/work'],
-      audience: 'both'
+      audience: 'every',
+      perSession: false
     }
   ],
   noInstructions: ['codex/team'],
@@ -722,21 +739,21 @@ export const LIBRARY: LibraryOverviewDto = {
       description: 'Hand a finished change to a model of the other CLI through Luna and fold its findings back in.',
       problem: null,
       accounts: ['claude'],
-      audience: 'chats'
+      audience: ['chat']
     },
     {
       name: 'migrations',
       description: '',
       problem: 'The front matter has no description',
       accounts: ['claude'],
-      audience: 'both'
+      audience: 'every'
     },
     {
       name: 'release-notes',
       description: 'Write the release notes from the commits since the last tag, in the house style.',
       problem: null,
       accounts: [],
-      audience: 'both'
+      audience: 'every'
     }
   ],
   accounts: [
@@ -822,12 +839,30 @@ export const LIBRARY: LibraryOverviewDto = {
   system: [
     {
       name: 'session-handoff',
+      kind: 'skill',
       state: 'luna',
       version: '0.12.0',
       sha256: '3054a9e14c774f592c9c2fed08da4ff7eb38befdb00321184f3d1b324c8aedd9',
       path: 'C:\\Users\\me\\AppData\\Local\\luna\\library\\system\\session-handoff\\SKILL.md',
       problem: null
-    }
+    },
+    ...(
+      [
+        ['role-chat', 'role', 'luna', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'],
+        ['role-lead', 'role', 'luna', '6f1ed002ab5595859014ebf0951522d9bf6f1e1d5b4d6a7c0a0c3e2b2a1a9f8e'],
+        ['role-helper', 'role', 'library', '2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae'],
+        ['note-lead', 'note', 'luna', 'fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9'],
+        ['note-helper', 'note', 'luna', 'fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9']
+      ] as const
+    ).map(([name, kind, state, sha256]) => ({
+      name,
+      kind,
+      state,
+      version: '0.12.0',
+      sha256,
+      path: `C:\\Users\\me\\AppData\\Local\\luna\\library\\system\\${name}\\TEXT.md`,
+      problem: null
+    }))
   ]
 };
 // The same library with an override of the handoff's instructions in place,
@@ -841,14 +876,15 @@ export const LIBRARY_SYSTEM: LibraryOverviewDto = {
       name: 'session-handoff',
       description: '',
       problem:
-        "session-handoff is the name of Luna's system skill for handoffs: no skill of that name is laid out, so that no session without Auto-handoff hears of it. Your own text for it is the override, under System skills",
+        "session-handoff is the name of Luna's system skill for handoffs: no skill of that name is laid out, so that no session without Auto-handoff hears of it. Your own text for it is the override, under System texts",
       accounts: ['all'],
-      audience: 'both'
+      audience: 'every'
     }
   ],
   system: [
     {
       name: 'session-handoff',
+      kind: 'skill',
       state: 'library',
       version: '0.12.0',
       sha256: '9b1de07c55a2f4e8a6c3d1b0e9f8a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0',
@@ -1095,6 +1131,7 @@ export const APPLIED = {
   handoff: {
     instructions: {
       name: 'session-handoff',
+      kind: 'skill',
       state: 'luna',
       version: '0.12.0',
       sha256: '4f2a9c81d03be7a65c1f0e2d9b8a7c6e5d4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b',

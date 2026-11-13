@@ -1,29 +1,48 @@
-import { librarySetAudience, type Audience, type LibraryEntry, type LibraryOverviewDto } from '../../ipc/library';
-import { Segmented } from '../../shared/ui/Segmented';
+import {
+  librarySetAudience,
+  type Audience,
+  type LibraryEntry,
+  type LibraryOverviewDto,
+  type Role
+} from '../../ipc/library';
 
-const AUDIENCES = ['both', 'chats', 'helpers'] as const;
+const ROLES: readonly Role[] = ['chat', 'lead', 'helper'];
 
 /** The column's heading, over a picker per row. */
-export const AUDIENCE_TITLE = 'Whose sessions each is for — your own chats, the helpers other sessions start, or both';
-const LABELS: Record<Audience, string> = { both: 'Both', chats: 'Chats', helpers: 'Helpers' };
+export const AUDIENCE_TITLE =
+  'Whose sessions each is for — your own chats, leads (helpers started with Luna’s tools), helpers — every one ticked: all of them';
+const LABELS: Record<Role, string> = { chat: 'Chats', lead: 'Leads', helper: 'Helpers' };
+const WHOSE: Record<Role, string> = {
+  chat: 'your own chats',
+  lead: 'leads, the helpers started with Luna’s tools',
+  helper: 'helpers started without them'
+};
 
-/** What each choice does to a session of the other kind (library/audience.rs). Codex has no way to leave its
- *  account's AGENTS.md out of one session: instructions say there whose they are instead. */
-function hints(what: string, instructions: boolean): Record<Audience, string> {
-  const worded = (whose: string) =>
-    instructions ? `\nThe copies say they are for ${whose} only, as Codex reads its AGENTS.md in every session` : '';
-  return {
-    both: `Your own chats and the helpers other sessions start both get ${what}`,
-    chats: `Only your own chats get ${what}: Luna keeps it from helpers${worded('your chats')}`,
-    helpers: `Only the helpers other sessions start get ${what}: Luna keeps it from your own chats${worded('helpers')}`
-  };
+/** The roles an audience takes. */
+export function rolesOf(audience: Audience): Role[] {
+  return audience === 'every' ? [...ROLES] : audience;
+}
+
+/** The audience of these roles: every session's when it takes them all. */
+export function audienceOf(roles: readonly Role[]): Audience {
+  const kept = ROLES.filter(r => roles.includes(r));
+  return kept.length === ROLES.length ? 'every' : kept;
+}
+
+/** What ticking a role does (library/audience.rs). An entry for every session goes into the accounts it is for;
+ *  one for some roles only reaches their sessions as Luna starts them, never through an account. */
+function hint(role: Role, on: boolean, last: boolean, instructions: boolean): string {
+  if (on && last) return `Only ${WHOSE[role]} get it: tick another role to add it`;
+  const how = instructions
+    ? '\nFor some roles only, it is given to each such session as Luna starts it, never put into an account'
+    : '';
+  return on ? `Keep it from ${WHOSE[role]}${how}` : `Give it to ${WHOSE[role]} too${how}`;
 }
 
 /**
- * Whose sessions a skill or instructions file is for: the person's own chats,
- * the helpers other sessions start, or both. A helper is briefed by an agent,
- * not the person, so what is written for the person's chat only costs it
- * context.
+ * Whose sessions a skill or instructions file is for: the person's own chats, leads, helpers, or every session.
+ * A session briefed by an agent, not the person, gets nothing from what is written for the person's chat but
+ * cost and confusion; a lead needs what a helper without tools does not.
  */
 export function AudiencePicker({
   entry,
@@ -34,20 +53,40 @@ export function AudiencePicker({
   audience: Audience;
   act: (p: Promise<LibraryOverviewDto | null>) => Promise<boolean>;
 }) {
-  const skill = 'skill' in entry;
-  const what = 'skill' in entry ? `the ${entry.skill} skill` : `the ${entry.instructions} instructions`;
+  const instructions = !('skill' in entry);
+  const on = rolesOf(audience);
+  const flip = (role: Role) => {
+    const next = on.includes(role) ? on.filter(r => r !== role) : [...on, role];
+    // Nobody's would be an entry no session gets.
+    if (next.length === 0) return;
+    void act(librarySetAudience(entry, audienceOf(next)));
+  };
   return (
     <div className="library-audience">
-      <Segmented
-        items={AUDIENCES}
-        value={audience}
-        labels={LABELS}
-        hints={hints(what, !skill)}
-        height={20}
-        onPick={v => {
-          if (v !== audience) void act(librarySetAudience(entry, v));
-        }}
-      />
+      <div className="seg" role="group" aria-label="Whose sessions it is for">
+        {ROLES.map(role => {
+          const checked = on.includes(role);
+          return (
+            <div
+              key={role}
+              role="checkbox"
+              aria-checked={checked}
+              title={hint(role, checked, checked && on.length === 1, instructions)}
+              tabIndex={0}
+              onClick={() => flip(role)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  flip(role);
+                }
+              }}
+              style={{ height: 20 }}
+            >
+              {LABELS[role]}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

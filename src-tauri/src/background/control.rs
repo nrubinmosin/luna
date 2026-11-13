@@ -12,6 +12,11 @@ pub(super) fn end_leftovers(id: &str, job: Option<&crate::procs::Job>) {
     }
 }
 
+/// What a turn stopped by `luna_session_stop` or the window ends on: its caller
+/// hears it was stopped, and a lead's handoff it scheduled does not go on
+/// (switch.rs `LeadView::stopped`).
+pub(crate) const STOPPED_BY_STOP: &str = "it was stopped, by luna_session_stop or from the window";
+
 /// Stops the turn in progress; the conversation stays for the next one. Between
 /// turns there is no turn to stop, and what its turns left running is what is
 /// left of it to stop: that is ended, and what went is returned by name.
@@ -21,7 +26,7 @@ pub fn kill(id: &str) -> Vec<String> {
         let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
         // Whoever is owed the turn hears it was stopped, not an exit code.
         if e.run.is_some() {
-            e.error = Some("it was stopped, by luna_session_stop or from the window".into());
+            e.error = Some(STOPPED_BY_STOP.into());
         }
         let job = e.job.clone().filter(|_| e.run.is_none() && e.left_running && !e.ending_left);
         // Only the Stop that takes the ending on sets the mark, and only it
@@ -50,6 +55,8 @@ pub fn kill(id: &str) -> Vec<String> {
         std::thread::sleep(std::time::Duration::from_millis(100));
         still = crate::procs::left_in(&job);
     }
+    #[cfg(test)]
+    tests::while_ending(id);
     let next = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return ended };
@@ -70,15 +77,26 @@ pub fn kill(id: &str) -> Vec<String> {
         );
     }
     if let Some(text) = next {
-        save();
-        if run_turn(id, &text).is_err() {
-            if let Some(e) = lock().entries.get_mut(id) {
-                e.in_flight.clear();
-            }
-        }
+        run_waited(id, &text);
     }
     changed();
     ended
+}
+
+/// The turn on `text`, a batch of what waited that was reserved for it. One
+/// that cannot start keeps that text as undelivered, for its senders to hear
+/// of with their next notice, as a turn cut short does: it waited through a
+/// hold or a stop already, and what will not start (its folder gone, its CLI
+/// missing) is often what stopped the turn before.
+fn run_waited(id: &str, text: &str) {
+    save();
+    if run_turn(id, text).is_err() {
+        if let Some(e) = lock().entries.get_mut(id) {
+            let batch = std::mem::take(&mut e.in_flight);
+            e.undelivered.extend(batch);
+        }
+        save();
+    }
 }
 
 /// Whether anything its turns left still holds the machine (`Leftover::holds`):
@@ -300,7 +318,9 @@ pub fn claim_delete(id: &str) -> Result<DeleteClaim, String> {
 }
 
 /// What waited while helper `id` was held (`Entry::held_back`) goes on once it is
-/// not: the turn on what was sent meanwhile, or the resume a restart left it.
+/// not: the turn on what was sent meanwhile (`run_waited`: a lead's handoff
+/// given up may be what will not start, switch.rs `revert_switch`), or the
+/// resume a restart left it.
 pub(super) fn go_on(id: &str) {
     let next = {
         let mut r = lock();
@@ -312,14 +332,7 @@ pub(super) fn go_on(id: &str) {
     };
     let next = next.and_then(|res| settle_batch(id, res)).map(|b| b.text);
     match next {
-        Some(text) => {
-            save();
-            if run_turn(id, &text).is_err() {
-                if let Some(e) = lock().entries.get_mut(id) {
-                    e.in_flight.clear();
-                }
-            }
-        }
+        Some(text) => run_waited(id, &text),
         // A `resumeOnRestart` helper a restart left to go on, which the hold kept
         // back: it goes on now, if nothing else has taken it up.
         None if crate::agents::resumes_on_restart(id) => resume(id),
@@ -338,7 +351,7 @@ pub fn remove(id: &str) -> Option<String> {
     for sub in ["hooks", "mcp"] {
         let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{}.json", crate::paths::id_file_name(id))));
     }
-    crate::pty::claude_instructions_dir(id, None);
+    let _ = crate::pty::claude_instructions_dir(id, None);
     changed();
     let e = e?;
     crate::agents::undelivered_left(id, &e.undelivered);
@@ -597,6 +610,47 @@ mod tests {
         assert!(lock().entries.get("stopping").unwrap().ending_left, "still the first stop's");
         assert_eq!(send("stopping", "and this", None), Ok(Placed::Queued), "still queued");
         lock().entries.remove("stopping");
+    }
+
+    /// A stop between turns ends what its turns left, and what was sent
+    /// meanwhile goes in as the next turn; one that cannot start (its folder
+    /// gone) keeps it as undelivered for its sender, never dropped.
+    #[cfg(windows)]
+    #[test]
+    fn what_waited_on_a_stop_between_turns_is_kept_if_its_turn_cannot_start() {
+        let kids = Kids(vec![idler(30)]);
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 1;
+        e.job = Some(job_of(&kids.0[0]));
+        e.left_running = true;
+        e.spec.folder = "C:\\luna-no-such-folder".into();
+        lock().entries.insert("stop-kept".into(), e);
+        // Sent while the stop ends what its turns left: it queues for after.
+        let send_now = || assert_eq!(send("stop-kept", "from its parent", None), Ok(Placed::Queued));
+        WHILE_ENDING.lock().unwrap().push(("stop-kept".into(), Box::new(send_now)));
+        assert!(kill("stop-kept").iter().any(|n| n.eq_ignore_ascii_case("ping.exe")));
+        let e = lock().entries.remove("stop-kept").unwrap();
+        assert!(e.log.iter().any(|l| l.starts_with("could not start the turn")), "{:?}", e.log);
+        assert!(e.queue.is_empty() && e.in_flight.is_empty());
+        assert_eq!(e.undelivered, ["from its parent"], "kept for its sender");
+        drop(kids);
+    }
+
+    type WhileEnding = (String, Box<dyn FnOnce() + Send>);
+
+    /// What a test runs in a stop between turns of helper `id`, once, after
+    /// it has ended what its turns left and before it looks at what was sent
+    /// meanwhile (`kill`).
+    static WHILE_ENDING: Mutex<Vec<WhileEnding>> = Mutex::new(Vec::new());
+
+    pub(super) fn while_ending(id: &str) {
+        let run = {
+            let mut w = WHILE_ENDING.lock().unwrap_or_else(|e| e.into_inner());
+            w.iter().position(|(i, _)| i == id).map(|i| w.remove(i).1)
+        };
+        if let Some(run) = run {
+            run();
+        }
     }
 
     /// Long idle, its leftovers hold nothing, and an idle helper with only them
