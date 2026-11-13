@@ -56,9 +56,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   spawn's result and in `luna_session_list`: `inUse` of `of` on your line, `underYou` of them. A
   refusal names the ones you can delete; below the top, the top chat is told, as only it can
   free the rest. A helper given `tools: true` gets these tools too; its own helpers get none.
-- `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper is told it
-  is one, not the chat of the person its instructions name (operator, user): Claude Code in its
-  system prompt and after its first prompt, Codex in Luna's note on its prompts.
+- `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper is told its
+  role in its instructions (Claude Code: memory; Codex: developer instructions), and a note after
+  its task (Claude Code: the first; Codex: every one) says the task is from an agent, not a person.
 
 ## Accounts and models
 - An account is a signed-in login of one provider: an Anthropic account runs Claude Code
@@ -135,8 +135,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   stops on a prompt or exits, Luna types one line into your chat starting with
   `[Luna notice, not typed by the user]`. A short answer (up to 300 characters) is quoted whole.
   A longer one is in a file the notice names, its report first: the message its CLI marked as
-  the turn's final answer, else the longest of its last turn (the notice then says it was picked
-  by length); then its last message, then the rest in order. The notice quotes the report's
+  the turn's final answer, else the longest of its last turn (`reportGuessed` in reads); then its last message, then the rest in order. The notice quotes the report's
   first line (`It begins: "…"`), not of a turn that stopped on an error, which it says.
 - A notice comes when your chat is between turns and nobody types in it. A subagent of yours in
   the background does not hold it back; another helper of yours ending within 20 s may, so that
@@ -243,6 +242,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - Before anything that stops Luna's core or the PC: `luna_session_list` for helpers at work; they
   lose their turns. To turn the PC off use `luna_power_set`, not a `shutdown` command: it fires
   once Luna is quiet for `quietSec`, CLIs closed first; `cancel` disarms. `drain`: till then
-  agents' spawns and sends are refused and answers take only a pending ask. After `restart` Luna
+  agents' spawns and sends are refused and answers take only a pending ask. It returns `busy` and
+  `waitingForAPerson`, the sessions it waits on. After `restart` Luna
   starts at the next sign-in; that takes a person.
 - `luna_guide_get` with no topic gives the topics; each tool's name is one.

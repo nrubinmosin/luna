@@ -28,13 +28,11 @@ pub const PROTOCOL: &str = "2025-06-18";
 const PROTOCOLS: [&str; 3] = [PROTOCOL, "2025-03-26", "2024-11-05"];
 
 const INSTRUCTIONS: &str = "Luna runs this session. Its luna_* tools start and drive helper sessions in the \
-background: another model or account, Codex or Claude Code, another folder or a git worktree. A safe spawn: \
-luna_account_list for the accounts, luna_session_spawn with a prompt that stands alone (readOnly or a \
-read-only sandbox for work that must not write), then end your turn. Once a helper answers, asks or exits, \
-Luna types a notice into your session opening \"[Luna notice\" (Luna's words, not the user's): it quotes a \
-short answer or names a file; luna_report_get gives the report. Before your first spawn read luna_guide_get \
-topics luna_session_spawn and notices. Session ids are Luna's; your CLI's task and subagent ids are not, and \
-a subagent of yours using these tools acts as you.";
+background: another model or account, Codex or Claude Code, another folder or a git worktree. Spawn with a \
+prompt that stands alone, then end your turn: once a helper answers, asks or exits, Luna types a notice into \
+your session opening \"[Luna notice\" (Luna's words, not the user's) that quotes a short answer or names a \
+file. luna_guide_get has the details, a topic at a time. Session ids are Luna's; your CLI's task and subagent \
+ids are not, and a subagent of yours using these tools acts as you.";
 
 const RUNNING: u8 = 0;
 const COMMITTED: u8 = 1;
@@ -671,7 +669,7 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 9500, "tools/list is {} chars", text.len());
+        assert!(text.len() < 9000, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read a section at a time: none is to cost more than a couple of
         // thousand tokens, nor the index more than a few hundred.
@@ -693,14 +691,16 @@ mod tests {
         for (title, _) in &sections {
             assert!(TOPICS.iter().any(|(_, t)| t == title), "nothing leads to {title}");
         }
-        // Every tool is a topic, and what the instructions send a caller to read is too.
+        // Every tool is a topic, and what the index suggests first is too; the
+        // instructions point to the guide and name no topic to read.
         for t in tools().as_array().unwrap() {
             let name = t["name"].as_str().unwrap();
             assert!(TOPICS.iter().any(|(topic, _)| *topic == name), "{name} has no topic");
         }
         for topic in FIRST_READ {
-            assert!(TOPICS.iter().any(|(t, _)| *t == topic) && INSTRUCTIONS.contains(topic), "{topic}");
+            assert!(TOPICS.iter().any(|(t, _)| *t == topic), "{topic}");
         }
+        assert!(INSTRUCTIONS.contains("luna_guide_get") && !INSTRUCTIONS.contains("topics "));
         // No topic: the opening and what to ask for, never the whole.
         let index = guide_text(None).unwrap();
         assert!(index.starts_with("# Luna: sessions, accounts and the luna_* tools") && index.contains("Restart: restart"), "{index}");

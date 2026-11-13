@@ -33,7 +33,8 @@ pub(super) const TOPICS: [(&str, &str); 19] = [
     ("luna_guide_get", "Working with helpers"),
 ];
 
-/// The topics to read before a first spawn, as the instructions name them.
+/// The topics the index suggests before a first spawn. The instructions only
+/// point to the guide: a caller reads what it needs, when it needs it.
 pub(super) const FIRST_READ: [&str; 2] = ["luna_session_spawn", "notices"];
 
 /// The guide's sections, by title, each with its text (its `## ` line included).

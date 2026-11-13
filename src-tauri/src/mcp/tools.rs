@@ -46,7 +46,7 @@ pub(super) fn tools() -> Value {
     json!([
         {
             "name": "luna_session_list",
-            "description": "Your sessions as compact rows (state, askId, turnsEnded, task, lastActivityAt); scope all: every one; ids: those (others' task, askId: scope all). Filters: state, provider, account, group (a number, I=1, or \"mine\"), q (name, folder, account, id). limit (50); nextCursor goes in cursor. places.",
+            "description": "Your sessions as compact rows; scope all: every one; ids: those (others' task, askId: scope all). Filters: state, provider, account, group (a number, I=1, or \"mine\"), q (name, folder, account, id). limit (50); nextCursor goes in cursor. places.",
             "inputSchema": s(json!({
                 "scope": scope, "ids": strings, "state": strings, "provider": provider, "account": string,
                 "group": { "anyOf": [{ "type": "integer" }, { "type": "string" }] }, "q": string, "limit": count, "cursor": string
@@ -61,7 +61,7 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: your mode or nearest below (modeFrom), else the account's defaults (luna_account_get). Returns id, settings, turnsEnded, sameFolder, worktree, accountChoice, places.",
+            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: your mode or nearest below (modeFrom), else the account's defaults (luna_account_get).",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,
@@ -89,7 +89,7 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_send",
-            "description": "Send a prompt to a session you spawned (scope all: any, opened \"[From session <you> via Luna]\"), read as its user's. Returns stateBefore, queued (it was working), joined (a Claude helper takes it at its next tool), held (a user's draft: typed in later), started, turnsEnded.",
+            "description": "Send a prompt to a session you spawned (scope all: any, opened \"[From session <you> via Luna]\"), read as its user's.",
             "inputSchema": s(json!({
                 "id": string, "text": string,
                 "interrupt": { "type": "boolean", "description": "stop its turn first (yours only)" },
@@ -156,7 +156,7 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_run_list",
-            "description": "Past spawns, newest first, deleted helpers too: id, at, ended, how, name, account, prompt and last reply (cut), transcript. Yours and your helpers'; scope all: everyone's. q searches names and prompts; limit (10).",
+            "description": "Past spawns, newest first, deleted helpers too, with prompt, last reply and transcript. Yours and your helpers'; scope all: everyone's. q searches names and prompts; limit (10).",
             "inputSchema": s(json!({ "q": string, "limit": count, "scope": scope }), &[]),
             "annotations": reads
         },
@@ -174,7 +174,7 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_power_set",
-            "description": "Person's chats, when the user asked: shut down, restart, hibernate or sleep the PC once Luna is quiet for quietSec (default: the user's), CLIs closed first; cancel disarms. drain: till then agents' spawns and sends are refused. Returns busy, waitingForAPerson.",
+            "description": "Person's chats, when the user asked: shut down, restart, hibernate or sleep the PC once Luna is quiet for quietSec (default: the user's), CLIs closed first; cancel disarms. drain: till then agents' spawns and sends are refused.",
             "inputSchema": s(json!({
                 "action": { "type": "string", "enum": ["shutdown", "restart", "hibernate", "sleep", "cancel"] },
                 "quietSec": count, "drain": flag
