@@ -901,6 +901,11 @@ pub async fn ensure_codex_session(
             }
             Err(why) => applied.push(crate::applied::Item::RoleLayersOff.with(why)),
         }
+        // A helper the person took over: the thread it resumes keeps the
+        // developer message it was started with (agents/handover.rs).
+        if let Some(carried) = crate::agents::carried_into(&id, resume.as_deref()) {
+            applied.push(crate::applied::Item::RoleLayersKept.with(format!("this conversation still carries {carried}")));
+        }
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
         Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied, reserved: Some(reserved) })
     })

@@ -52,7 +52,7 @@ pub use handoff::{
     move_build_from_records, move_cancel, move_confirm, move_facts, move_list, move_prepare, move_preview, move_step, set_auto_handoff,
     HandoffAsk, HandoffAsked, HandoffMark,
 };
-pub use handover::{opening_lapsed, take_over};
+pub use handover::{carried_into, opening_lapsed, started_in, take_over};
 pub use held::held_count;
 #[cfg(test)]
 pub(crate) use list::stopped_model;

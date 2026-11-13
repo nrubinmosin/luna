@@ -108,6 +108,8 @@ items! {
         "What Luna gives Codex in developer_instructions may not be all the session gets: a config layer Luna could not read, or one that comes above the command line.";
     RoleLayersOff = "role.layers-off", UserAction,
         "This chat starts without its role layers: on Codex, with its config's own developer_instructions they do not fit on the command line (shorten the library's instructions for its role, or its role's text); on Claude Code, Luna could not write the file it reads them from.";
+    RoleLayersKept = "role.layers-kept", Runtime,
+        "You took this Codex conversation over from an agent: codex resume keeps the developer message its thread was started with, so it still has the role and constraints it was given as a helper, and a chat's role layers do not reach it until Codex compacts its context. Luna no longer counts it a helper: no helper it starts inherits them. Start a new chat for one without them.";
     Constraints = "constraints", UserAction,
         "What the agents that started this session asked it, and every session under it, to keep to, word for word: the last of its role layers. Text it is told, not a permission it lacks.";
     HelperHeadless = "helper.headless", Runtime,
