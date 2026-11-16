@@ -10,13 +10,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
-- Bringing an idle session into view, or any change to the panes' layout (a
-  new chat, a split dragged, the window resized), no longer shows it as
-  printing in the power chip nor holds the PC awake for about a minute and a
-  half: what a session prints within a second of Luna resizing its terminal
-  is taken for the CLI's redraw and no longer counts as output, nor starts a
+- Bringing an idle session into view, moving the focus between panes, or
+  any change to the panes' layout (a new chat, a split dragged, the window
+  resized), no longer shows it as printing in the power chip nor holds the PC
+  awake for about a minute and a half: what a session prints within a second
+  of Luna resizing its terminal, or of the focus moving into or out of it, is
+  taken for the CLI's redraw and no longer counts as output, nor starts a
   power-off's quiet window over. A turn at work still counts, and so does
-  what a session prints in answer to keys, clicks or focus in its terminal.
+  what a session prints in answer to keys, a paste or clicks in its terminal.
 
 ## [0.18.2] - 2026-11-13
 

@@ -215,7 +215,7 @@ pub(super) fn agents_at_work(t: &Track) -> Option<String> {
 
 /// How long ago a session last printed, by its work stamp
 /// (`ActivityProbe::work_output_ms`), not every byte: the repaint a resize
-/// from Luna brings on is no work of the session's.
+/// or a focus report from Luna brings on is no work of the session's.
 fn output_age(p: &crate::pty::ActivityProbe, now: u64) -> u64 {
     now.saturating_sub(p.work_output_ms)
 }
@@ -504,11 +504,11 @@ mod tests {
     }
 
     /// What the reader does with a read at `at` (`pty::reader_stamp`): the
-    /// work stamp moves only for output that is not a resize's repaint. One
+    /// work stamp moves only for output that is not a nudge's repaint. One
     /// clock stands here for both of the reader's: the window's and the
     /// work stamp's.
-    fn read_at(work_output_ms: &mut u64, at: u64, last_resize_ms: u64) {
-        if let Some(stamp) = crate::pty::reader_stamp(at, at, last_resize_ms) {
+    fn read_at(work_output_ms: &mut u64, at: u64, last_nudge_ms: u64) {
+        if let Some(stamp) = crate::pty::reader_stamp(at, at, last_nudge_ms) {
             *work_output_ms = stamp;
         }
     }
@@ -540,7 +540,7 @@ mod tests {
         let nudged = 600_000;
         read_at(&mut work, nudged + 20, nudged);
         read_at(&mut work, nudged + 90, nudged + 60);
-        read_at(&mut work, nudged + 60 + crate::pty::RESIZE_REPAINT_MS, nudged + 60);
+        read_at(&mut work, nudged + 60 + crate::pty::REPAINT_WINDOW_MS, nudged + 60);
         assert_eq!(work, 1_000);
         let fresh = output_fresh(output_age(&probe(nudged + 90, work), nudged + 5_000));
         assert!(!fresh);
@@ -566,7 +566,7 @@ mod tests {
         let mut work = 1_000;
         let resized = 600_000;
         read_at(&mut work, resized + 300, resized);
-        let printed = resized + crate::pty::RESIZE_REPAINT_MS + 1;
+        let printed = resized + crate::pty::REPAINT_WINDOW_MS + 1;
         read_at(&mut work, printed, resized);
         assert_eq!(work, printed);
         let p = probe(printed, work);
