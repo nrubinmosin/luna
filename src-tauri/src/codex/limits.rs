@@ -109,8 +109,10 @@ pub fn plan_label(plan_type: &str) -> Option<String> {
 /// token and the refresh token that renews it, neither blank, as `codex
 /// doctor` judges a ChatGPT login ("ChatGPT auth is missing a refresh
 /// token"). The exception is `auth_mode: "chatgptAuthTokens"`, tokens a host
-/// application hands Codex: Codex stores those with an empty refresh token
-/// and never refreshes them itself, so the access token alone is the login.
+/// application hands Codex, with an empty refresh token Codex never uses:
+/// there the access token alone is the login. Codex 0.169.0 keeps those in
+/// memory and writes no such `auth.json`, but its loader would take one, so
+/// one found here is read the way Codex would read it.
 pub(crate) fn chatgpt_login(auth: &Value) -> bool {
     let token = |key: &str| auth["tokens"][key].as_str().is_some_and(|t| !t.trim().is_empty());
     let external = auth["auth_mode"].as_str() == Some("chatgptAuthTokens");
@@ -707,8 +709,9 @@ mod tests {
     }
 
     /// Tokens a host application supplied (`auth_mode: "chatgptAuthTokens"`)
-    /// come with an empty refresh token, as Codex 0.169.0 writes them: the
-    /// access token alone is the login there, and only there.
+    /// come with an empty refresh token, as Codex 0.169.0 builds them (in
+    /// memory; this `auth.json` is what its loader would take): the access
+    /// token alone is the login there, and only there.
     #[test]
     fn supplied_tokens_need_no_refresh_token() {
         use serde_json::json;
