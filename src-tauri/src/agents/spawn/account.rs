@@ -17,9 +17,10 @@ pub(in crate::agents) fn allowed_account_dirs() -> Vec<crate::accounts::AccountI
 }
 
 /// Whether an account folder holds a login its CLI can start on: Claude
-/// Code's OAuth refresh token, or Codex's ChatGPT tokens or API key, none of
-/// them blank. A helper sent to an account nobody signed in to sits on a
-/// login screen; one whose tokens the CLI blanked after a refused refresh
+/// Code's OAuth refresh token by the panel's rule (`oauth::signed_in`), or
+/// Codex's ChatGPT tokens or API key, none of them blank. A helper sent to an
+/// account nobody signed in to sits on a login screen; one whose tokens the
+/// CLI blanked after a refused refresh, or whose refresh token has run out,
 /// does too.
 pub(in crate::agents) fn signed_in(provider: Provider, account_path: &str) -> bool {
     let read = |file: &str| {
@@ -28,7 +29,7 @@ pub(in crate::agents) fn signed_in(provider: Provider, account_path: &str) -> bo
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
     };
     match provider {
-        Provider::Claude => read(".credentials.json").is_some_and(|v| crate::claude::oauth::refresh_token(&v["claudeAiOauth"]).is_some()),
+        Provider::Claude => read(".credentials.json").is_some_and(|v| crate::claude::oauth::signed_in(&v["claudeAiOauth"])),
         Provider::Codex => read("auth.json").is_some_and(|v| codex_login(&v)),
     }
 }
@@ -260,8 +261,9 @@ mod tests {
         assert_eq!(choice.why, "the first in the list signed in; its usage is not known yet");
     }
 
-    /// Tokens the CLI blanked, or a file left with blanks, are no login: a
-    /// helper sent there would sit on a login screen.
+    /// Tokens the CLI blanked, a file left with blanks, or a refresh token
+    /// past its end are no login: a helper sent there would sit on a login
+    /// screen.
     #[test]
     fn blank_tokens_are_not_signed_in() {
         let dir = std::env::temp_dir().join(format!("luna-spawn-signed-{}", std::process::id()));
@@ -276,6 +278,9 @@ mod tests {
         assert!(!claude(r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}"#));
         assert!(!claude(r#"{"claudeAiOauth":{"refreshToken":"  "}}"#));
         assert!(!claude(r#"{"claudeAiOauth":{"accessToken":"at"}}"#));
+        // A refresh token past its end is no login either, as the panel says.
+        assert!(!claude(r#"{"claudeAiOauth":{"refreshToken":"rt","refreshTokenExpiresAt":1}}"#));
+        assert!(claude(r#"{"claudeAiOauth":{"refreshToken":"rt","refreshTokenExpiresAt":99999999999999}}"#));
         let codex = |body: &str| {
             std::fs::write(dir.join("auth.json"), body).unwrap();
             signed_in(Provider::Codex, &p)

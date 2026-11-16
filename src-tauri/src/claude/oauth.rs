@@ -53,8 +53,16 @@ fn read(account_path: &str) -> Option<Value> {
 /// leaves `refreshToken: ""` behind once the server has turned the token
 /// down, and a blank one can only be turned down again: either way only a
 /// new login helps. A token with text in it is used as it is, untrimmed.
-pub(crate) fn refresh_token(oauth: &Value) -> Option<&str> {
+fn refresh_token(oauth: &Value) -> Option<&str> {
     oauth["refreshToken"].as_str().filter(|t| !t.trim().is_empty())
+}
+
+/// Whether a `claudeAiOauth` is a login: a refresh token (`refresh_token`)
+/// not past its `refreshTokenExpiresAt`. While it lives, a new access token
+/// can be minted without the user doing anything. The panel's row and the
+/// helpers' account choice both go by this.
+pub(crate) fn signed_in(oauth: &Value) -> bool {
+    refresh_token(oauth).is_some() && oauth["refreshTokenExpiresAt"].as_u64().map(|ms| now_ms() < ms).unwrap_or(true)
 }
 
 fn expired(oauth: &Value) -> bool {
