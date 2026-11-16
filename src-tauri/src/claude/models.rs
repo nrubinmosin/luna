@@ -1271,13 +1271,16 @@ mod tests {
         let (exe, args): (&str, &[&str]) = ("ping", &["-n", "3", "127.0.0.1"]);
         #[cfg(not(windows))]
         let (exe, args): (&str, &[&str]) = ("sleep", &["2"]);
+        // Before it starts, so its run of about two seconds lies after this.
+        let begun = Instant::now();
         let (mut asked, stdin) = started(exe, args, true);
         asked.child.stdin = stdin;
         let pid = asked.child.id();
-        let begun = Instant::now();
         let answer = initialize(asked, (), P.count().unwrap(), Duration::from_millis(300), Duration::from_secs(20));
         assert!(answer.is_none(), "no answer");
-        assert!(crate::procs::alive(pid), "not taken down when the ask gave up");
+        // Gone already only if this thread was held up past its own exit.
+        let alive = crate::procs::alive(pid);
+        assert!(alive || begun.elapsed() >= Duration::from_secs(1), "not taken down when the ask gave up");
         assert!(P.wait(Duration::from_secs(15)), "done within the grace");
         assert!(begun.elapsed() >= Duration::from_secs(1), "it left by itself, not at the give-up");
         assert!(gone_soon(pid));
@@ -1292,12 +1295,17 @@ mod tests {
         let (mut asked, stdin) = started(exe, args, true);
         asked.child.stdin = stdin;
         let pid = asked.child.id();
-        let grace = Duration::from_millis(800);
-        assert!(initialize(asked, (), P.count().unwrap(), Duration::from_millis(200), grace).is_none());
-        let gave_up = Instant::now();
-        assert!(crate::procs::alive(pid), "not taken down when the ask gave up");
-        assert!(P.wait(Duration::from_secs(15)), "done just past the grace");
-        assert!(gave_up.elapsed() >= grace - Duration::from_millis(50), "not taken down before the grace was out");
+        let (within, grace) = (Duration::from_millis(200), Duration::from_millis(800));
+        // Taken before the call: the ask waits `within` from a moment after
+        // this, and the grace starts after that wait, so the sweep cannot
+        // come sooner than both from here, however the threads are run.
+        let begun = Instant::now();
+        assert!(initialize(asked, (), P.count().unwrap(), within, grace).is_none());
+        // Gone already only if this thread was held up past the grace.
+        let alive = crate::procs::alive(pid);
+        assert!(alive || begun.elapsed() >= within + grace, "not taken down when the ask gave up");
+        assert!(P.wait(Duration::from_secs(30)), "done past the grace");
+        assert!(begun.elapsed() >= within + grace, "not taken down before the grace was out");
         assert!(gone_soon(pid));
     }
 
