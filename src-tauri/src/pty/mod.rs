@@ -295,19 +295,26 @@ mod tests {
     #[test]
     fn the_reader_stamps_wall_time_for_work_alone() {
         let wall = 1_700_000_000_000;
+        assert_eq!(reader_stamp(wall, 5_000, 5_000), None, "read as the nudge is stamped");
         assert_eq!(reader_stamp(wall, 5_400, 5_000), None);
+        assert_eq!(reader_stamp(wall, 5_000 + REPAINT_WINDOW_MS, 5_000), None, "the window's last ms");
         assert_eq!(reader_stamp(wall, 5_000 + REPAINT_WINDOW_MS + 1, 5_000), Some(wall));
+        assert_eq!(reader_stamp(wall, 4_997, 5_000), None, "stamped after the read");
         assert_eq!(reader_stamp(wall, 0, NEVER_NUDGED), Some(wall), "never nudged");
         assert_eq!(reader_stamp(wall, 5_000, NEVER_NUDGED), Some(wall), "never nudged");
     }
 
-    /// The reader thread's own clocks: a nudge the writer stamped just now
-    /// hides what is read now, and a session never nudged counts at once.
+    /// The reader thread's wrapper reads the monotonic clock itself, so only
+    /// what no pause of the test thread can change is asserted here: a
+    /// session never nudged counts at once, with the wall time it was given,
+    /// and a stamp the clock has not reached yet (the writer stamping while
+    /// the reader reads) hides the read. The window's edges are
+    /// `reader_stamp`'s, tested above on explicit clocks.
     #[test]
     fn the_reader_judges_the_window_on_the_monotonic_clock() {
-        assert_eq!(reader_stamp_now(now_ms(), mono_ms()), None);
         let wall = now_ms();
         assert_eq!(reader_stamp_now(wall, NEVER_NUDGED), Some(wall));
+        assert_eq!(reader_stamp_now(wall, mono_ms() + 3_600_000), None);
     }
 
     /// Only a write of focus reports and nothing else is a nudge: one or
