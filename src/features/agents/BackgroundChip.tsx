@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { backgroundDelete, backgroundKill, backgroundMove, type BackgroundHelperDto } from '../../ipc/agents';
+import { backgroundDelete, backgroundKill, backgroundMoveTargets, type BackgroundHelperDto } from '../../ipc/agents';
 import { Icon } from '../../shared/ui/icons';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { HoverPopover } from '../../shared/ui/HoverPopover';
@@ -190,7 +190,7 @@ function Helpers({
 }) {
   const [watching, setWatching] = useState<string | null>(null);
   const [handing, setHanding] = useState<BackgroundHelperDto | null>(null);
-  const [moving, setMoving] = useState<BackgroundHelperDto | null>(null);
+  const [moving, setMoving] = useState<{ helper: BackgroundHelperDto; to?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const nameOf = useNameOf();
   const watched = helpers.find(h => h.id === watching);
@@ -213,8 +213,8 @@ function Helpers({
               setHanding(h);
               close();
             }}
-            onMove={h => {
-              setMoving(h);
+            onMove={(helper, to) => {
+              setMoving({ helper, to });
               close();
             }}
             error={error}
@@ -223,7 +223,9 @@ function Helpers({
         )}
       </HoverPopover>
       {watched && <HelperView helper={watched} onClose={() => setWatching(null)} />}
-      {moving && <MoveHelperDialog helper={moving} nameOf={nameOf} onClose={() => setMoving(null)} />}
+      {moving && (
+        <MoveHelperDialog helper={moving.helper} prefer={moving.to} nameOf={nameOf} onClose={() => setMoving(null)} />
+      )}
       {handing && (
         <ConfirmDialog
           title={`Open "${helperName(handing)}" as your chat?`}
@@ -251,6 +253,43 @@ function Helpers({
   );
 }
 
+/** For each helper that chats were refused a write into, the chats it may move
+ *  to now (agents/reparent.rs `move_targets`): the row offers only those, as
+ *  the core would refuse the rest. Asked again as the helpers or the chats that
+ *  asked change. */
+function useMoveOffers(helpers: BackgroundHelperDto[]): Record<string, ReadonlySet<string>> {
+  const asked = helpers
+    .filter(h => h.suggested?.length)
+    .map(h => `${h.id} ${suggestedChats(h).join(' ')}`)
+    .join('\n');
+  const [offers, setOffers] = useState<Record<string, ReadonlySet<string>>>({});
+  useEffect(() => {
+    if (!asked) return;
+    let live = true;
+    void Promise.all(
+      asked.split('\n').map(line => {
+        const [id = ''] = line.split(' ');
+        return backgroundMoveTargets(id).then(
+          (t): [string, ReadonlySet<string>] => [
+            id,
+            new Set(t.blocked ? [] : t.targets.filter(x => x.ok).map(x => x.id))
+          ],
+          (e): [string, ReadonlySet<string>] => {
+            logWarn('agents', `listing where a helper may move failed: ${String(e)}`);
+            return [id, new Set()];
+          }
+        );
+      })
+    ).then(rows => {
+      if (live) setOffers(Object.fromEntries(rows));
+    });
+    return () => {
+      live = false;
+    };
+  }, [asked]);
+  return offers;
+}
+
 /** The list itself: Working and Idle tabs over the rows, which scroll under them. */
 export function HelperPanel({
   helpers,
@@ -263,13 +302,15 @@ export function HelperPanel({
   helpers: BackgroundHelperDto[];
   onWatch: (id: string) => void;
   onOpen: (h: BackgroundHelperDto) => void;
-  onMove: (h: BackgroundHelperDto) => void;
+  /** Opens the Move dialog, on chat `to` if the row offered it. */
+  onMove: (h: BackgroundHelperDto, to?: string) => void;
   error: string | null;
   setError: (e: string | null) => void;
 }) {
   const now = useNow(15_000);
   const nameOf = useNameOf();
   const listed = new Set(helpers.map(h => h.id));
+  const offers = useMoveOffers(helpers.filter(h => !(h.parent && listed.has(h.parent))));
   // The tab picked, if any; else whichever has work in it, as helpers come and go.
   const [picked, setPicked] = useState<HelperTab | null>(null);
   const tab = picked ?? defaultTab(helpers);
@@ -366,18 +407,21 @@ export function HelperPanel({
                   Move to chat…
                 </button>
               </div>
-              {suggestedChats(h).map(chat => (
-                <button
-                  key={chat}
-                  className="helper-link"
-                  title={`"${nameOf(chat)}" tried to send to it or answer it and was refused, not being above it. Moves it there, with the helpers under it.`}
-                  onClick={act('moving a helper', async () => {
-                    await backgroundMove(h.id, chat);
-                  })}
-                >
-                  Move to {nameOf(chat)}?
-                </button>
-              ))}
+              {/* Only a chat it may go to now; a click opens the Move dialog on
+                  it, so a link that shows up under the pointer moves nothing. */}
+              {!under &&
+                suggestedChats(h)
+                  .filter(chat => offers[h.id]?.has(chat))
+                  .map(chat => (
+                    <button
+                      key={chat}
+                      className="helper-link"
+                      title={`"${nameOf(chat)}" tried to send to it or answer it and was refused, not being above it. Move it there, with the helpers under it?`}
+                      onClick={() => onMove(h, chat)}
+                    >
+                      Move to {nameOf(chat)}?
+                    </button>
+                  ))}
               <div style={{ display: 'flex', gap: 6 }}>
                 <button
                   className="slim"

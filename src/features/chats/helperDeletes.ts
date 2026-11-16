@@ -8,6 +8,7 @@
  * chat is deleted, and none of them is deleted.
  */
 import type { AtStakeDto, BackgroundHelperDto, MoveTargetsDto } from '../../ipc/agents';
+import { suggestedChats } from '../agents/ownership';
 
 /** What the person ticked. */
 export interface HelperChoices {
@@ -88,12 +89,13 @@ export function helperMoves(
 }
 
 /** The chat a helper's picker starts on: the latest that was refused a write
- *  into it, else one waiting on it, if it may move there. Never moved unless
- *  the person confirms the dialog. */
-export function preselectPass(h: BackgroundHelperDto, targets: MoveTargetsDto | undefined): string | null {
-  if (!targets || targets.blocked) return null;
+ *  into it, else one waiting on it, if it may move there. Taken once, when its
+ *  targets come in (DeleteChatDialog), so it never changes under the person's
+ *  eyes; never moved unless the person confirms the dialog. */
+export function preselectPass(h: BackgroundHelperDto | undefined, targets: MoveTargetsDto | undefined): string | null {
+  if (!h || !targets || targets.blocked) return null;
   const ok = new Set(targets.targets.filter(t => t.ok).map(t => t.id));
-  const asked = [...(h.suggested ?? []).map(s => s.chat).reverse(), ...(h.watchedBy ?? [])];
+  const asked = [...suggestedChats(h), ...(h.watchedBy ?? [])];
   return asked.find(c => ok.has(c)) ?? null;
 }
 
@@ -102,16 +104,21 @@ export function preselectPass(h: BackgroundHelperDto, targets: MoveTargetsDto | 
 export function helperDeletes(
   lines: HelperLine[],
   c: HelperChoices,
-  moving: ReadonlySet<string> = new Set()
+  moving: ReadonlySet<string> = new Set(),
+  shown?: ReadonlySet<string>
 ): HelperDelete[] {
   if (!c.withHelpers) return [];
-  return lines
-    .filter(l => !moving.has(l.id))
-    .filter(l => !l.working || c.stopWorking)
-    .map(l => ({
-      id: l.id,
-      dropWorktree: c.dropWorktree,
-      stopWorking: !!l.working && c.stopWorking,
-      dropUnsaved: c.dropWorktree && !!l.unsaved && c.dropUnsaved
-    }));
+  return (
+    lines
+      .filter(l => !moving.has(l.id))
+      // Only what the dialog listed: a helper spawned under the chat since was never shown.
+      .filter(l => !shown || shown.has(l.id))
+      .filter(l => !l.working || c.stopWorking)
+      .map(l => ({
+        id: l.id,
+        dropWorktree: c.dropWorktree,
+        stopWorking: !!l.working && c.stopWorking,
+        dropUnsaved: c.dropWorktree && !!l.unsaved && c.dropUnsaved
+      }))
+  );
 }

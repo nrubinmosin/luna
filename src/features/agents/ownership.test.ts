@@ -40,6 +40,8 @@ describe('whose a helper is, as its row says', () => {
     expect(managedLine(row('h', { top: 'chat-a' }), nameOf)).toBe('managed by chat Release');
     expect(managedLine(row('h', { parent: 'lead-1', top: 'chat-a' }), nameOf)).toBe('managed by Lead · chat Release');
     expect(managedLine(row('h', { parent: null, top: null }), nameOf)).toBeNull();
+    // Its chat deleted and the helper above it left alone: no chat, never the helper called one.
+    expect(managedLine(row('h', { parent: 'lead-1', top: null }), nameOf)).toBe('managed by Lead · no chat above it');
   });
 
   it('adds the chats watching it and the person’s last move, from the row’s fields, the helper’s own chat last', () => {
@@ -58,6 +60,8 @@ describe('whose a helper is, as its row says', () => {
     expect(ownershipLine(row('h', { parent: null }), nameOf, now)).toBe('');
     const kid = row('h', { parent: 'lead-1', top: 'chat-a', watchedBy: ['chat-b'] });
     expect(ownershipLine(kid, nameOf, now)).toBe('managed by Lead · chat Release · watched by Docs');
+    const left = row('h', { parent: 'lead-1', watchedBy: ['chat-b'] });
+    expect(ownershipLine(left, nameOf, now)).toBe('managed by Lead · no chat above it · watched by Docs');
   });
 
   it('offers the chats refused a write into it, the latest first, each once', () => {
@@ -69,5 +73,13 @@ describe('whose a helper is, as its row says', () => {
     });
     expect(suggestedChats(h)).toEqual(['chat-c', 'chat-b']);
     expect(suggestedChats(row('h'))).toEqual([]);
+    // B asked, then C, then B again: the core moved B's time on in place.
+    const again = row('h', {
+      suggested: [
+        { chat: 'chat-b', atMs: 3 },
+        { chat: 'chat-c', atMs: 2 }
+      ]
+    });
+    expect(suggestedChats(again)).toEqual(['chat-b', 'chat-c']);
   });
 });

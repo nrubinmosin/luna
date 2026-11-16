@@ -19,10 +19,11 @@ export function namer(chats: { id: string; name: string }[], helpers: Background
   return id => names.get(id) ?? id;
 }
 
-/** "managed by <parent> · chat <top>", the parent and the top one chat: "managed by chat <top>". */
+/** "managed by <parent> · chat <top>", the parent and the top one chat: "managed by chat <top>".
+ *  A line whose chat was deleted, the helper above left alone, has no top: "no chat above it". */
 export function managedLine(h: BackgroundHelperDto, nameOf: NameOf): string | null {
   if (!h.parent) return null;
-  if (!h.top) return `managed by ${nameOf(h.parent)}`;
+  if (!h.top) return `managed by ${nameOf(h.parent)} · no chat above it`;
   if (h.top === h.parent) return `managed by chat ${nameOf(h.top)}`;
   return `managed by ${nameOf(h.parent)} · chat ${nameOf(h.top)}`;
 }
@@ -42,10 +43,12 @@ export function ownershipLine(h: BackgroundHelperDto, nameOf: NameOf, now: numbe
   const watched = h.watchedBy?.length ? `watched by ${h.watchedBy.map(nameOf).join(', ')}` : null;
   const managed = managedLine(h, nameOf);
   const marks = [watched, movedLine(h, nameOf, now)];
-  return (h.top && h.parent !== h.top ? [managed, ...marks] : [...marks, managed]).filter(Boolean).join(' · ');
+  return (h.parent && h.parent !== h.top ? [managed, ...marks] : [...marks, managed]).filter(Boolean).join(' · ');
 }
 
-/** The chats it could move to on a click, the latest refused first, each once. */
+/** The chats refused a write into it, the latest refused first, each once: by
+ *  when, as the core moves a chat's time on in place when it asks again. */
 export function suggestedChats(h: BackgroundHelperDto): string[] {
-  return [...new Set((h.suggested ?? []).map(s => s.chat).reverse())];
+  const latest = [...(h.suggested ?? [])].sort((a, b) => b.atMs - a.atMs);
+  return [...new Set(latest.map(s => s.chat))];
 }

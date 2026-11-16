@@ -20,7 +20,7 @@ import {
   HELPER_TRANSCRIPT,
   HANDOFF_FILE,
   AT_STAKE,
-  MOVE_TARGETS,
+  moveTargets,
   APPLIED,
   BROWSERS,
   MOVE_PREVIEW,
@@ -85,7 +85,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'background_at_stake') {
     return (args.ids as string[]).map(id => AT_STAKE[id] ?? { id }) as unknown as T;
   }
-  if (cmd === 'background_move_targets') return MOVE_TARGETS as unknown as T;
+  if (cmd === 'background_move_targets') return moveTargets(args.id as string) as unknown as T;
   if (cmd === 'applied_by_luna') return APPLIED as unknown as T;
   if (cmd === 'handoff_file') return HANDOFF_FILE as unknown as T;
   if (cmd === 'move_prepare' || cmd === 'move_build_from_records') return MOVE_PREVIEW as unknown as T;

@@ -159,7 +159,12 @@ its row's chip.
   `stopWorking`, and keeps a worktree with unsaved work unless `dropUnsaved`
   (agents/teardown.rs `delete_by_user`). A chat's Delete dialog asks first what
   each of its helpers has at stake (`background_at_stake`: its turn, its
-  worktree and the work in it) and offers each as a box of its own.
+  worktree and the work in it) and offers each as a box of its own. It names
+  the chat (`ofChat`): a helper whose line hangs from another chat by then
+  (moved there from another window while the dialog's moves ran) is refused,
+  checked under the delete's hold, which a move waits on; one with no chat
+  above it still goes, as the chat's own going leaves its helpers so and may
+  come first.
 - **Move** (`background_move`) moves a helper, with its line, to another of
   the person's chats ([agents](agents.md#rights)); `background_move_targets`
   says per chat whether it may go there and why not. While it moves, its

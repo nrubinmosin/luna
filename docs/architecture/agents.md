@@ -300,10 +300,12 @@ against the helper the line moves with (`movable_root`: the helper itself, or
 for a helper's helper the chat's own helper above it), and that row offers it
 ("Move to <chat>?"); the refusal names the same helper. A move or the
 helper's going clears it. A refused read or wait, or a helper refused, records nothing. The
-rows (`background_helpers`) carry `top`, `watchedBy` (the person's chats with
-a `wait` in flight on it that are not above it, `Registry::waits`), `moved`
-and `suggested`; the window asks `background_move_targets` for each chat's
-verdict before it offers a move.
+rows (`background_helpers`) carry `top` (the person's chat the line hangs
+from; none when its top is a helper whose chat was deleted, `ownership_of`),
+`watchedBy` (the person's chats with a `wait` in flight on it that are not
+above it, `Registry::waits`), `moved` and `suggested`; the window asks
+`background_move_targets` for each chat's verdict before it offers a move,
+and shows "Move to <chat>?" only for a chat that may take it now.
 
 **Deleted.** Every delete of a helper, an agent's, the person's or `reap`'s,
 first holds it (`background::claim_delete`): no turn starts and it cannot be
@@ -698,7 +700,10 @@ The person's Delete on a helper, or on a chat with its helpers ticked
 left running) unless told to stop it, and keeps a worktree with unsaved work
 (`worktree::unsaved_work`) unless told to drop it, saying so
 (`UserDeleted::worktree_kept`). The dialog asks the core what each has at stake
-first (`at_stake`) and offers each as a box of its own.
+first (`at_stake`) and offers each as a box of its own. From a chat's dialog
+it names that chat (`of_chat`) and refuses a helper whose line hangs from
+another chat by then, asked under the delete's hold (`claim_delete`), which a
+move's `claim_move` waits on.
 
 Before any delete `remove` writes a `left` line to `agents.jsonl` (transcript
 path, worktree, last message, cut to 400 characters by `history`).
