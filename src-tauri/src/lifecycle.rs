@@ -244,6 +244,8 @@ pub fn note_exit(reason: Option<String>) {
             crate::claude::models::wait_for_asks();
         }
         None => {
+            // The model asks the install's wait stopped may start again.
+            crate::claude::models::not_leaving();
             if !NOTED.swap(false, Ordering::SeqCst) {
                 return;
             }
