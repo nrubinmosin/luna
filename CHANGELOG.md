@@ -8,6 +8,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Text and answers go into a helper only from the sessions above it: its
+  chat, and a lead it works under. Another of your chats, even with
+  `scope: "all"`, can still read a helper that is not its own and wait on
+  it, but no longer send to it or answer its questions; it is told whose the
+  helper is and that you can move the helper to it. A helper with no chat
+  takes text from no agent. Your chats still send to and answer one another
+  (ADR-0028).
+
 ## [0.18.2] - 2026-11-13
 
 Luna now installs Codex 0.169.0, and Settings no longer offers a CLI version
