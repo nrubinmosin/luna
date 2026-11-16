@@ -170,7 +170,12 @@ its row's chip.
   says per chat whether it may go there and why not. While it moves, its
   record is held (`claim_move`, `moving`, part of `held_back`): no turn starts,
   not even at a turn's end with text queued, sends queue, and neither an
-  opening as a chat nor a delete begins; the turn after it starts with the new
+  opening as a chat nor a delete begins. A turn claimed before it whose
+  command is made starts, the move waiting for its process
+  (`Run::starting`); one whose command is not made yet starts nothing, its
+  batch back at the head of the queue for after the move (`Run::overtaken`,
+  run.rs `overtaken`). The spec's parent is set only from a later change of
+  the registry's than the one it has (`set_parent`). The turn after it starts with the new
   parent and a note in its prompt (`stdin_with`'s `moved`), told for good once
   a turn's model has answered it (`Run::moved`). Each row carries `top`, `watchedBy`, `moved` and
   `suggested` for the window's "managed by", "watched by", "moved from" and

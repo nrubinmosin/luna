@@ -22,7 +22,7 @@ fn helper(id: &str, parent: &str, provider: Provider) {
     let account = if provider == Provider::Codex { "C:/acc/openai/two" } else { ACCOUNT };
     register(id, provider, "C:/p", account, Some(parent), false, settings);
     crate::background::idle_for_test(id, provider, 2, false);
-    crate::background::set_parent(id, Some(parent.to_string()));
+    crate::background::set_parent_for_test(id, Some(parent.to_string()));
 }
 
 fn owes(caller: &str, id: &str) -> bool {
@@ -310,8 +310,88 @@ fn a_chat_gone_as_a_helper_moves_to_it_is_owed_nothing_and_named_nowhere() {
     assert!(mover.join().unwrap().unwrap().owed);
     assert_eq!(parent_of(&h), None);
     assert_eq!(crate::background::told_parent_for_test(&h), None, "its next turn names no chat that is gone");
+    let note = move_note(&h).expect("the move is still to be told").text;
+    assert!(note.contains("which has gone since: no chat is above you now"), "{note}");
+    assert!(!note.contains("you answer to that chat now"), "it names no gone chat as its own: {note}");
     assert!(!owes(&b, &h));
     clean(&[&h, &a]);
+}
+
+/// A chat's going that changed the registry before a move of its helper, and
+/// writes the helper's next parent after it, leaves the move's: the record its
+/// next turn starts from follows the registry whichever writes last.
+#[test]
+fn a_chats_going_written_after_a_move_of_its_helper_leaves_the_moves_parent() {
+    let [a, b, h] = ["a", "b", "h"].map(|s| format!("rpf-{s}"));
+    chat(&a, true, "bypassPermissions");
+    chat(&b, true, "bypassPermissions");
+    helper(&h, &a, Provider::Codex);
+    let stop = stop_at("forgotten", &a);
+    let forgetting = {
+        let a = a.clone();
+        std::thread::spawn(move || forget(&a))
+    };
+    stop.wait();
+    assert_eq!(parent_of(&h), None, "the registry has let it go");
+    move_helper(&h, &b).unwrap();
+    assert_eq!(crate::background::told_parent_for_test(&h).as_deref(), Some(b.as_str()));
+    stop.go();
+    forgetting.join().unwrap();
+    assert_eq!(parent_of(&h).as_deref(), Some(b.as_str()));
+    assert_eq!(crate::background::told_parent_for_test(&h).as_deref(), Some(b.as_str()), "the late write of the chat's going lost");
+    clean(&[&h, &b]);
+}
+
+/// A turn whose start was reserved before a move and whose command is made after
+/// the move held the helper does not start: what it was to start on waits for
+/// the turn after the move, under the new chat, with the move's note, and the
+/// command text the old chat queued is judged then, against the new owner.
+#[test]
+fn a_turn_reserved_before_a_move_starts_after_it_on_what_the_new_chat_allows() {
+    let [a, b, h] = ["a", "b", "h"].map(|s| format!("rpo-{s}"));
+    chat(&a, true, "bypassPermissions");
+    chat(&b, true, "bypassPermissions");
+    helper(&h, &a, Provider::Claude);
+    crate::background::in_turn_for_test(&h);
+    for text in ["/compact", "plain"] {
+        assert_eq!(crate::background::send(&h, text, Some(&a)).unwrap(), crate::background::Placed::Queued);
+    }
+    assert!(crate::agents::command_reach_now(&a, &h, "/compact").is_ok(), "its chat may send it a command");
+    crate::background::reserved_for_test(&h);
+    move_helper(&h, &b).unwrap();
+    assert!(!crate::background::launch_for_test(&h), "the reserved turn does not start");
+    assert_eq!(crate::background::queued_for_test(&h), ["/compact", "plain"], "its batch waits, first in the queue");
+    assert_eq!(crate::background::told_parent_for_test(&h).as_deref(), Some(b.as_str()));
+    assert!(move_note(&h).unwrap().text.contains("you answer to that chat now"));
+    assert_eq!(crate::background::settled_for_test(&h).as_deref(), Some("plain"), "the old chat's command is dropped");
+    assert!(news_for(&a).iter().any(|l| l.contains("did not go in when its turn came")), "{:?}", news_for(&a));
+    clean(&[&h, &a, &b]);
+}
+
+/// A turn whose command is made before a move holds the helper starts as made:
+/// the move waits for its process, so the turn goes on as one begun before the
+/// move, and nothing changes hands under its start.
+#[test]
+fn a_move_waits_for_a_turn_whose_command_is_made() {
+    let [a, b, h] = ["a", "b", "h"].map(|s| format!("rpw-{s}"));
+    chat(&a, true, "bypassPermissions");
+    chat(&b, true, "bypassPermissions");
+    helper(&h, &a, Provider::Codex);
+    crate::background::in_turn_for_test(&h);
+    assert_eq!(crate::background::send(&h, "plain", Some(&a)).unwrap(), crate::background::Placed::Queued);
+    crate::background::reserved_for_test(&h);
+    assert!(crate::background::launch_for_test(&h), "made before any move");
+    let mover = {
+        let (h, b) = (h.clone(), b.clone());
+        std::thread::spawn(move || move_helper(&h, &b))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!mover.is_finished(), "the move waits for the turn's process");
+    assert_eq!(parent_of(&h).as_deref(), Some(a.as_str()), "and has changed nothing");
+    crate::background::launch_failed_for_test(&h);
+    mover.join().unwrap().unwrap();
+    assert_eq!(parent_of(&h).as_deref(), Some(b.as_str()));
+    clean(&[&h, &a, &b]);
 }
 
 /// A turn that ends while the move holds the helper starts nothing of what is

@@ -71,6 +71,11 @@ pub(super) struct Registry {
     /// (`WriteRefused::NotAbove`), by helper: what the window offers to move it
     /// to. In memory only, until the helper moves or goes.
     pub(super) suggested: HashMap<String, Vec<Suggested>>,
+    /// Counts every change of a helper's parent made here (a move, a chat's
+    /// going): the helper's background record takes a parent only from a change
+    /// later than the one it has (background/ `set_parent`), so the last change
+    /// here is the one its next turn starts with, whichever is written there last.
+    pub(super) parent_changes: u64,
     /// How many times each session's ownership has changed hands, counted once
     /// what was queued for it has been taken back out (handover.rs): a send that
     /// put text in before that owes nothing of the person's chat after it
@@ -196,6 +201,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             taken_over: HashMap::new(),
             moved: HashMap::new(),
             suggested: HashMap::new(),
+            parent_changes: 0,
             handovers: HashMap::new(),
             worktrees_before: HashMap::new(),
             worktrees_left: HashMap::new(),
@@ -1064,7 +1070,7 @@ mod tests {
         register("tp-parent", Provider::Claude, "C:\\p", account, Some("tp-grand"), true, background.clone());
         register("tp-kid", Provider::Claude, "C:\\p", account, Some("tp-parent"), false, background);
         crate::background::take_up_for_test("tp-kid", "C:\\p", 1, &[], None);
-        crate::background::set_parent("tp-kid", Some("tp-parent".into()));
+        crate::background::set_parent_for_test("tp-kid", Some("tp-parent".into()));
 
         forget("tp-parent");
         assert_eq!(crate::background::told_parent_for_test("tp-kid").as_deref(), Some("tp-grand"), "a background helper's next turn");

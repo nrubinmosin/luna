@@ -138,12 +138,20 @@ send and answer into a helper holds shared from its first check
 spawn from registering its helper to its caller's debt; then the helpers
 between turns (`background::claim_move`), so no turn starts until the move is
 through, not even at a turn's end with text queued, and the next one starts
-under the new parent; and the checks, the change and the new chat's debt in
+under the new parent. A turn already claimed when the move claims the helper
+either has its command made, and the move waits for its process and lets it
+go on as one begun before the move, or has not, and does not start: its batch
+goes back to the queue for the turn after the move, its command text judged
+then against the new owner (`Run::starting`, `Run::overtaken`). Then the checks, the change and the new chat's debt in
 one hold of the registry, where the line is looked at again: if it is not the
 line the holds were taken on (a helper spawned under it, one gone), nothing
 changes and the move takes its holds again on the line as it is, so no session
 moves unheld or out from under a delete. The exclusive hold goes before the
-claim is let go, which may start a turn. A send, an answer or a spawn the old
+claim is let go, which may start a turn. The helper's background record takes
+its new parent then, from that change: every change of a helper's parent in the
+registry (a move, a chat's going) is counted, and the record keeps a parent
+only from a change later than the one it has, so it follows the registry
+whichever of a move and a chat's going writes it last. A send, an answer or a spawn the old
 chat had checked is in, debt and all, before the move closes that debt; one
 that comes after is checked against the new parent. A background send does
 not go through the notifier's `going_into` hold, so the hand-off alone would
@@ -153,7 +161,10 @@ not have been enough.
 next turn is started with `LUNA_PARENT_ID` naming the new chat, as after a
 `pass_up`, and with a note in its prompt that the person moved it and to which
 chat (`move_note`; background/command.rs `stdin_with`), until a turn's model
-has answered a prompt that carried it, for the move it told of: Claude
+has answered a prompt that carried it, for the move it told of. The note
+names whom it answers to now, its parent at that turn, not the move's chat
+alone: a chat moved to and gone since is named as gone, with no chat above the
+helper. Claude
 Code has its role note in its first prompt only, so this note is how a later
 turn learns it, and Codex has it beside its role note, which it gets every
 turn. Text queued before the move still goes in: into a Claude Code helper's

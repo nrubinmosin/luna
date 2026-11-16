@@ -347,8 +347,24 @@ impl Drop for MoveClaim {
 /// running goes on. Refused, naming the helper, while one is being opened as a
 /// chat, deleted, moved already, or is between a lead's handoff and its fresh
 /// start (`held_back`). An id with no helper record is passed over.
+///
+/// A turn whose command is made but whose process is not up yet (`Run::starting`)
+/// is let start first, up to LAUNCH_WAIT: it goes on under the parent of before,
+/// as one already running does. One claimed whose command is not made yet is
+/// `overtaken`: it does not start, and what it was to start on waits for the move
+/// to let go (run.rs `spawn_turn`).
 pub fn claim_move(ids: &[String]) -> Result<MoveClaim, String> {
+    let deadline = std::time::Instant::now() + LAUNCH_WAIT;
     let mut r = lock();
+    loop {
+        let starting = |id: &String| r.entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.starting && run.pid.is_none());
+        let Some(id) = ids.iter().find(|id| starting(id)).cloned() else { break };
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(format!("{id} is starting a turn and its process is not up yet; not moved. Try again in a moment"));
+        }
+        r = reg().1.wait_timeout(r, left).map_or_else(|e| e.into_inner().0, |(r, _)| r);
+    }
     if let Some(why) = claim_move_check(&r, ids) {
         return Err(why);
     }
@@ -356,11 +372,17 @@ pub fn claim_move(ids: &[String]) -> Result<MoveClaim, String> {
     for id in ids {
         if let Some(e) = r.entries.get_mut(id) {
             e.moving = true;
+            if let Some(run) = e.run.as_mut().filter(|run| run.pid.is_none()) {
+                run.overtaken = true;
+            }
             held.push(id.clone());
         }
     }
     Ok(MoveClaim(held))
 }
+
+/// How long a move waits for a turn whose command is made to have its process.
+const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Why the helpers of `ids` cannot be moved now (`claim_move`'s refusal), for
 /// the window's list of targets; None if nothing holds them back.
@@ -432,7 +454,11 @@ pub(super) fn go_on(id: &str) {
 pub fn remove(id: &str) -> Option<String> {
     let made = removable_worktree(id);
     kill(id);
-    let e = lock().entries.remove(id);
+    let e = {
+        let mut r = lock();
+        r.parent_changes.remove(id);
+        r.entries.remove(id)
+    };
     reg().1.notify_all();
     // What each of its turns was started with, as a chat's go when it is deleted.
     for sub in ["hooks", "mcp"] {
