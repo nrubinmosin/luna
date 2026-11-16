@@ -4,7 +4,7 @@
 
 use super::control::end_leftovers;
 use super::screen::{as_key_events, cursor_at, render_screen, Modes};
-use super::{is_work_output, manager, mono_ms, now_ms, Input, Session, NEVER_RESIZED};
+use super::{manager, mono_ms, now_ms, reader_stamp_now, Input, Session, NEVER_RESIZED};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
@@ -416,9 +416,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                     Ok(n) => {
                         let now = now_ms();
                         last_output_ms.store(now, Ordering::Relaxed);
-                        let resized = Some(last_resize_ms.load(Ordering::Relaxed)).filter(|&at| at != NEVER_RESIZED);
-                        if is_work_output(mono_ms(), resized) {
-                            work_output_ms.store(now, Ordering::Relaxed);
+                        if let Some(at) = reader_stamp_now(now, last_resize_ms.load(Ordering::Relaxed)) {
+                            work_output_ms.store(at, Ordering::Relaxed);
                         }
                         modes.lock().unwrap_or_else(|e| e.into_inner()).feed(&chunk[..n]);
                         let pieces = split_dsr(&mut carry, &chunk[..n]);
