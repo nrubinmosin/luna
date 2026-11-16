@@ -216,20 +216,17 @@ impl Tree {
         let mut child = cmd.spawn()?;
         // Not let run outside its job: what it started there could outlive
         // the run with nothing to end it. Still suspended, it has started
-        // nothing.
+        // nothing; one that will not resume would only run out the deadline.
         #[cfg(windows)]
         {
-            match job_for(child.id()) {
-                Ok(job) => {
-                    crate::procs::resume(child.id());
-                    Ok(Tree { child, job })
-                }
-                Err(e) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    Err(std::io::Error::other(format!("no job of its own to run in: {e}")))
-                }
-            }
+            let why = match job_for(child.id()) {
+                Ok(job) if crate::procs::resume(child.id()) => return Ok(Tree { child, job }),
+                Ok(_) => "it would not resume in its job".to_string(),
+                Err(e) => format!("no job of its own to run in: {e}"),
+            };
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(std::io::Error::other(why))
         }
         #[cfg(not(windows))]
         Ok(Tree { child })
