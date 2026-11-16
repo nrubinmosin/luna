@@ -8,6 +8,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- Asking Claude Code for an account's models no longer risks signing the
+  account out: the CLI renews a token close to expiry as it starts and saves
+  the new one only after it has answered, and Luna killed it at the answer.
+  It now gets up to 10 seconds to exit by itself first (#75).
+
 ## [0.18.2] - 2026-11-13
 
 Luna now installs Codex 0.169.0, and Settings no longer offers a CLI version

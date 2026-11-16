@@ -366,6 +366,40 @@ fn codex_an_over_privileged_spawn_is_refused() {
     an_over_privileged_spawn_is_refused(Provider::Codex);
 }
 
+/// Claude Code renews a token within five minutes of expiry as it starts, and
+/// saves the new one only after it has answered `initialize`
+/// (docs/cli-compatibility.md, 2.1.325): the model ask, run on the account
+/// with its `expiresAt` set two minutes ahead, leaves the renewed tokens on
+/// disk and the account signed in, rather than killing the CLI between the
+/// server's rotation and the save (issue #75). Credentials are read by field
+/// and never shown.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn claude_the_model_ask_leaves_a_renewed_token_saved() {
+    let Some(live) = live(Provider::Claude) else { return };
+    let cred = live.account.join(".credentials.json");
+    let oauth = || -> Value {
+        let text = std::fs::read_to_string(&cred).expect("the test account's .credentials.json");
+        serde_json::from_str::<Value>(&text).expect("its JSON")["claudeAiOauth"].clone()
+    };
+    let signed_in = |o: &Value| ["accessToken", "refreshToken"].iter().all(|k| o[k].as_str().is_some_and(|t| !t.is_empty()));
+    assert!(signed_in(&oauth()), "the test account is not signed in");
+    let near = crate::throttle::now_ms() + 120_000;
+    let mut whole: Value = serde_json::from_str(&std::fs::read_to_string(&cred).unwrap()).unwrap();
+    whole["claudeAiOauth"]["expiresAt"] = json!(near);
+    std::fs::write(&cred, serde_json::to_vec(&whole).unwrap()).unwrap();
+
+    let path = live.account.to_string_lossy().into_owned();
+    let found = crate::claude::models::from_cli(&path);
+    assert!(found.as_ref().is_some_and(|(models, signed_in)| *signed_in && !models.is_empty()), "the ask answered signed in");
+    // The CLI leaves behind the answer, holding the account's lock until it is gone.
+    drop(crate::account_settings::rewriting_claude_config(&path, crate::claude::models::ASK_WAIT).expect("the ask let go"));
+    let after = oauth();
+    assert!(signed_in(&after), "the account is signed out after the ask");
+    let renewed_until = after["expiresAt"].as_u64().unwrap_or_default();
+    assert!(renewed_until > near + 30 * 60_000, "the renewed token was not saved");
+}
+
 /// What a Codex session in each of Luna's sandboxes can read of Luna's
 /// `core/`, tried in Codex's own sandbox runner (`codex sandbox`, which needs
 /// no login, so no account either) with the overrides a session is given.
