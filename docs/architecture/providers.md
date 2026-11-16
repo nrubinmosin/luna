@@ -227,11 +227,17 @@ supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
   --output-format stream-json --verbose --safe-mode --strict-mcp-config
   --no-session-persistence` in an empty folder of Luna's, `claude-models-cwd`:
   no hook, plugin, skill, CLAUDE.md, MCP server or project setting of the
-  account's loads; one `control_request` line; its process tree taken down
-  once it has answered or after 20 s: no prompt, no turn). It holds the
-  account's own lock in `claude-config-locks/` while it runs, since the CLI
-  rewrites `.claude.json` as it starts; Luna's writes of that file (a trust
-  mark, a recommended key) take the same lock and wait up to 25 s, and
+  account's loads; one `control_request` line: no prompt, no turn). Once it
+  has answered, its stdin is closed and it gets 10 s to exit by itself
+  (`EXIT_GRACE`), on a thread of its own while the answer is used: the CLI
+  may be renewing the account's token then, and saves the rotated tokens
+  after its answer, so a kill at the answer could leave the account signed
+  out (docs/cli-compatibility.md, 2.1.325). Its process tree is taken down
+  only past that, or when it has not answered in 20 s. It holds the
+  account's own lock in `claude-config-locks/` until it is gone, since the
+  CLI rewrites `.claude.json` as it starts and exits; Luna's writes of that
+  file (a trust mark, a recommended key) take the same lock and wait up to
+  35 s, and
   nothing else, settings.json or another account, waits on it
   and kept per account in `claude-models.json` in the data folder for six
   hours → the four aliases. A stale catalog or answer is returned at once and

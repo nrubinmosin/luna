@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -243,13 +243,25 @@ fn initialize_request(request_id: &str) -> String {
     serde_json::json!({ "type": "control_request", "request_id": request_id, "request": { "subtype": "initialize" } }).to_string()
 }
 
-/// How long the CLI gets to answer: it starts, reads the account, may renew
-/// its token, and answers before any turn.
+/// How long the CLI gets to answer: it starts, reads the account and answers
+/// before any turn.
 const ASK_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long the CLI gets to leave by itself once it has answered and its
+/// stdin is closed, before it is taken down. Its answer does not wait for
+/// the token renewal it starts at startup when the token is within five
+/// minutes of expiry: seen on 2.1.323 and 2.1.325, the renewed tokens were
+/// saved 0.5–0.7 s after the answer and the CLI out 1.0–1.2 s after it, so
+/// a kill at the answer could land after the server had rotated the refresh
+/// token and before the new one was on disk, and leave the account signed
+/// out (issue #75). On its way out the CLI itself waits for a renewal still
+/// running, within a startup budget of about 8.5 s; this is past that.
+const EXIT_GRACE: Duration = Duration::from_secs(10);
+
 /// How long a write of the account's `.claude.json` waits out an ask
-/// (account_settings `rewriting_claude_config`): longer than one can take.
-pub(crate) const ASK_WAIT: Duration = Duration::from_secs(25);
+/// (account_settings `rewriting_claude_config`): longer than one can take,
+/// its answer and its exit (`ASK_TIMEOUT` and `EXIT_GRACE`).
+pub(crate) const ASK_WAIT: Duration = Duration::from_secs(35);
 
 /// The arguments of the ask. `--safe-mode` (Claude Code 2.1.322) starts with
 /// the account's hooks, plugins, skills, CLAUDE.md, MCP servers, custom
@@ -276,15 +288,40 @@ pub(crate) const ASK_ARGS: [&str; 9] = [
 /// settings, CLAUDE.md or `.mcp.json` is in reach (paths.rs `OWN_NAMES`).
 const ASK_CWD: &str = "claude-models-cwd";
 
+/// Closes the process's stdin and gives it `grace` to exit by itself, then
+/// takes it down (`end`). Whether it exited by itself.
+fn let_go(mut child: Child, stdin: Option<ChildStdin>, grace: Duration) -> bool {
+    drop(stdin);
+    let deadline = Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => break,
+        }
+    }
+    end(&mut child);
+    false
+}
+
+/// Takes the process down with its tree, and reaps it.
+fn end(child: &mut Child) {
+    // The tree, not only the CLI: what it started outlives a plain kill.
+    crate::pty::kill_tree(Some(child.id()));
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Claude Code started headless on the account (`ASK_ARGS`), asked
-/// `initialize` and stopped once it has answered: no prompt is sent, so no
-/// turn runs and no conversation is written. It is taken down with whatever
-/// it started, answered or not.
-fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
+/// `initialize` and let go once it has answered: no prompt is sent, so no
+/// turn runs and no conversation is written. Answered, it gets `EXIT_GRACE`
+/// to leave by itself; unanswered, or past that, it is taken down with
+/// whatever it started.
+pub(crate) fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     // The window runs this too, and a window run as administrator runs no CLI.
     crate::elevation::guard().ok()?;
     // Held while it runs, so the sweep does not take its directory meanwhile.
-    let (exe, _on_version) = crate::cli::launch(Provider::Claude, None).ok()?;
+    let (exe, on_version) = crate::cli::launch(Provider::Claude, None).ok()?;
     let cwd = crate::paths::data_dir().join(ASK_CWD);
     if let Err(e) = crate::secret::private_dir(&cwd) {
         crate::log::warn("claude-models", &format!("not asking Claude Code for its models: {}: {e}", cwd.display()));
@@ -298,7 +335,7 @@ fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     // accounts' files are not the CLI's to touch here and never wait. The
     // core's account-in-use table is not the gate: this runs in the window,
     // which does not see it.
-    let _rewriting = match crate::account_settings::rewriting_claude_config(account_path, ASK_WAIT) {
+    let rewriting = match crate::account_settings::rewriting_claude_config(account_path, ASK_WAIT) {
         Ok(held) => held,
         Err(e) => {
             crate::log::warn("claude-models", &format!("not asking Claude Code for its models: {e}"));
@@ -336,20 +373,34 @@ fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     let id = request_id.clone();
     std::thread::spawn(move || {
         let Some(out) = stdout else { return };
+        let mut tx = Some(tx);
+        // Read to the end, past the answer: a CLI still on its way out must
+        // not meet a closed pipe.
         for line in std::io::BufReader::new(out).lines() {
             let Ok(line) = line else { break };
             if line.contains("\"control_response\"") {
-                let _ = tx.send(parse_initialize(&line, &id));
-                return;
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send(parse_initialize(&line, &id));
+                }
             }
         }
     });
     let answer = asked.ok().and_then(|_| rx.recv_timeout(ASK_TIMEOUT).ok());
-    drop(stdin);
-    // The tree, not only the CLI: what it started outlives a plain kill.
-    crate::pty::kill_tree(Some(child.id()));
-    let _ = child.kill();
-    let _ = child.wait();
+    if answer.is_some() {
+        // Answered, it may still be saving a renewed token (`EXIT_GRACE`):
+        // it leaves by itself, behind, and the answer is used meanwhile.
+        // What the ask holds is held until it is gone.
+        let held = (on_version, rewriting);
+        std::thread::spawn(move || {
+            let _held = held;
+            if !let_go(child, stdin, EXIT_GRACE) {
+                crate::log::warn("claude-models", "Claude Code did not exit after answering initialize; taken down");
+            }
+        });
+    } else {
+        drop(stdin);
+        end(&mut child);
+    }
     match answer {
         Some(Some(found)) => Some(found),
         Some(None) => {
@@ -824,6 +875,43 @@ mod tests {
         assert!(matches!(choose_under(Some(catalog()), Some(answer(fresh - 10, "r1")), "", fresh), Known::Current(m) if m.len() == 7));
         // Under restrictions the raw catalog is not offered.
         assert_eq!(choose_under(Some(catalog()), None, "r1", fresh), Known::Nothing);
+    }
+
+    /// A process with its stdin piped: `reads` one that reads it to the end
+    /// and exits, otherwise one that ignores it and sits there for a minute.
+    fn stand_in(reads: bool) -> (Child, Option<ChildStdin>) {
+        #[cfg(windows)]
+        let (exe, args): (&str, &[&str]) = if reads { ("sort", &[]) } else { ("ping", &["-n", "60", "127.0.0.1"]) };
+        #[cfg(not(windows))]
+        let (exe, args): (&str, &[&str]) = if reads { ("cat", &[]) } else { ("sleep", &["60"]) };
+        let mut cmd = Command::new(exe);
+        cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut child = cmd.spawn().unwrap();
+        let stdin = child.stdin.take();
+        (child, stdin)
+    }
+
+    #[test]
+    fn a_cli_let_go_leaves_by_itself_once_its_stdin_closes() {
+        let (child, stdin) = stand_in(true);
+        let started = Instant::now();
+        assert!(let_go(child, stdin, Duration::from_secs(10)), "it exits on its own");
+        assert!(started.elapsed() < Duration::from_secs(5), "not held for the whole grace");
+    }
+
+    #[test]
+    fn a_cli_let_go_that_stays_is_taken_down_after_the_grace() {
+        let (child, stdin) = stand_in(false);
+        let started = Instant::now();
+        let grace = Duration::from_millis(500);
+        assert!(!let_go(child, stdin, grace), "it had to be taken down");
+        // Reaped on return, so down already, and not long after the grace.
+        assert!(started.elapsed() >= grace && started.elapsed() < Duration::from_secs(15));
     }
 
     #[test]
