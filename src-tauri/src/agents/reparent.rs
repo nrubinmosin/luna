@@ -180,7 +180,10 @@ pub struct Ownership {
 pub fn ownership_of(id: &str) -> Ownership {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let Some(k) = r.known.get(id) else { return Ownership::default() };
-    let top = k.parent.as_ref().map(|_| top_of(&r, id));
+    // A line whose top is a helper (its chat deleted, the helper above it
+    // left alone) hangs from no chat. A top not running under Luna is no
+    // helper either: every helper is a session it knows.
+    let top = k.parent.as_ref().map(|_| top_of(&r, id)).filter(|t| persons_chat_in(&r, t) || !r.known.contains_key(t));
     let mut watched_by: Vec<String> = r
         .waits
         .keys()

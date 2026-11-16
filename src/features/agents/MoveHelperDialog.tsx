@@ -9,15 +9,19 @@ import { suggestedChats, type NameOf } from './ownership';
  * The person's chats a helper may move to, with why not where it may not
  * (agents/reparent.rs `move_targets`): one picked and Move clicked moves it,
  * with the helpers under it; nothing moves before. A refusal stays in the
- * dialog, nothing changed.
+ * dialog, nothing changed, and the dialog stays open until the move is
+ * through, so a refusal is never missed. `prefer`: the chat its row's "Move
+ * to <chat>?" offered, picked to start with if it may go there.
  */
 export function MoveHelperDialog({
   helper,
   nameOf,
+  prefer,
   onClose
 }: {
   helper: BackgroundHelperDto;
   nameOf: NameOf;
+  prefer?: string;
   onClose: () => void;
 }) {
   const [targets, setTargets] = useState<MoveTargetsDto | null>(null);
@@ -41,11 +45,14 @@ export function MoveHelperDialog({
   // Its own chat aside: the core lists it, as not one to move to.
   const list = (targets?.targets ?? []).filter(t => t.id !== helper.parent);
   // A chat that asked for it is picked to start with; Move is still the person's.
-  const ok = new Set(list.filter(t => t.ok).map(t => t.id));
-  const picked = chosen ?? suggestedChats(helper).find(c => ok.has(c)) ?? null;
+  // Held back, it has nothing to pick: the chats are not shown then.
+  const blocked = !!targets?.blocked;
+  const ok = new Set(blocked ? [] : list.filter(t => t.ok).map(t => t.id));
+  const picked =
+    (chosen && ok.has(chosen) ? chosen : null) ?? [prefer, ...suggestedChats(helper)].find(c => c && ok.has(c)) ?? null;
 
   const move = () => {
-    if (!picked || busy) return;
+    if (!picked || busy || blocked) return;
     setBusy(true);
     setRefused(null);
     backgroundMove(helper.id, picked)
@@ -116,9 +123,10 @@ export function MoveHelperDialog({
       }
       confirmLabel={busy ? 'Moving…' : 'Move'}
       danger={false}
-      confirmDisabled={!picked || busy}
+      confirmDisabled={!picked || busy || blocked}
       onConfirm={move}
-      onCancel={onClose}
+      // Not while it moves: closed, a refusal would go unseen.
+      onCancel={busy ? () => {} : onClose}
     />
   );
 }

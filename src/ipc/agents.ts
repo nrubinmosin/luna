@@ -154,9 +154,17 @@ export const backgroundPromoted = (id: string, error: string | null) =>
 /** Stops the turn it is on, or between turns what its turns left running; the conversation stays. */
 export const backgroundKill = (id: string) => call<void>('background_kill', { id });
 /** Deletes it, the worktree it made too unless `dropWorktree` is false. A helper at work is refused
- *  unless `stopWorking`, and a worktree with unsaved work is kept unless `dropUnsaved`. */
-export const backgroundDelete = (id: string, { dropWorktree = true, stopWorking = false, dropUnsaved = false } = {}) =>
-  call<HelperDeletedDto>('background_delete', { id, dropWorktree, stopWorking, dropUnsaved }, {});
+ *  unless `stopWorking`, and a worktree with unsaved work is kept unless `dropUnsaved`; with `ofChat`,
+ *  one that hangs from another chat by now is refused too. */
+export const backgroundDelete = (
+  id: string,
+  {
+    dropWorktree = true,
+    stopWorking = false,
+    dropUnsaved = false,
+    ofChat = null
+  }: { dropWorktree?: boolean; stopWorking?: boolean; dropUnsaved?: boolean; ofChat?: string | null } = {}
+) => call<HelperDeletedDto>('background_delete', { id, dropWorktree, stopWorking, dropUnsaved, ofChat }, {});
 /** Moves the helper, with the helpers under it, to the person's chat `to`; rejects with why not,
  *  nothing changed. */
 export const backgroundMove = (id: string, to: string) => call<HelperMovedDto>('background_move', { id, to });

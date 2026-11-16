@@ -117,5 +117,20 @@ describe('passing a chat’s helpers to another chat as it is deleted', () => {
     expect(preselectPass(row('h', 'idle', { suggested: [{ chat: 'bare', atMs: 1 }] }), targets)).toBeNull();
     expect(preselectPass(asked, { blocked: 'held back', targets: targets.targets })).toBeNull();
     expect(preselectPass(asked, undefined)).toBeNull();
+    expect(preselectPass(undefined, targets)).toBeNull();
+    // By when it asked, not where in the list: the core moves a chat's time on
+    // in place when it asks again.
+    const again = row('h', 'idle', {
+      suggested: [
+        { chat: 'docs', atMs: 5 },
+        { chat: 'ops', atMs: 2 }
+      ]
+    });
+    expect(preselectPass(again, targets)).toBe('docs');
+  });
+
+  it('deletes only what the dialog showed, of what is left', () => {
+    const lines = helperLines([row('shown', 'idle'), row('spawned since', 'idle')], null);
+    expect(helperDeletes(lines, all, new Set(), new Set(['shown'])).map(d => d.id)).toEqual(['shown']);
   });
 });

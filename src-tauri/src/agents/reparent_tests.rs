@@ -479,3 +479,47 @@ fn a_refused_write_from_a_chat_suggests_moving_the_helper_there() {
     assert!(asked().is_empty(), "a chat gone is offered no more");
     clean(&[&h, &sib, &a, &c]);
 }
+
+/// A line left with no chat (its chat deleted, the helper above it left alone)
+/// has no top: a helper is never named as the chat it hangs from.
+#[test]
+fn a_line_left_with_no_chat_hangs_from_no_chat() {
+    let [a, h, g] = ["a", "h", "g"].map(|s| format!("nt-{s}"));
+    chat(&a, true, "bypassPermissions");
+    helper(&h, &a, Provider::Claude);
+    helper(&g, &h, Provider::Claude);
+    assert_eq!(ownership_of(&g).top.as_deref(), Some(a.as_str()));
+    forget(&a);
+    assert_eq!(ownership_of(&h).top, None, "parentless");
+    assert_eq!(ownership_of(&g).top, None, "under a helper with no chat");
+    reg().lock().unwrap().auto.remove(&h);
+    clean(&[&g, &h]);
+}
+
+/// A chat's Delete dialog deletes only what still hangs from it: a helper moved
+/// to another chat meanwhile (from another window) is refused and stays; one
+/// its chat's going left with no chat, which may come first, still goes.
+#[test]
+fn a_chats_delete_spares_a_helper_moved_to_another_chat_meanwhile() {
+    use crate::agents::teardown::delete_by_user;
+    let [a, b, h, g, k] = ["a", "b", "h", "g", "k"].map(|s| format!("dl-{s}"));
+    chat(&a, true, "bypassPermissions");
+    chat(&b, true, "bypassPermissions");
+    set_name(&b, "Release");
+    helper(&h, &a, Provider::Claude);
+    helper(&g, &h, Provider::Codex);
+    helper(&k, &a, Provider::Claude);
+    move_helper(&h, &b).unwrap();
+    for id in [&h, &g] {
+        let e = delete_by_user(id, false, false, false, Some(&a)).unwrap_err();
+        assert!(e.contains(&format!("no longer under chat {a}")) && e.contains(&format!("chat \"Release\" ({b}) now")), "{e}");
+        assert!(crate::background::has(id) && reg().lock().unwrap().known.contains_key(id.as_str()), "nothing was touched");
+    }
+    // Its chat gone first: the helper it left has no chat, and goes.
+    forget(&a);
+    delete_by_user(&k, false, false, false, Some(&a)).unwrap();
+    assert!(!reg().lock().unwrap().known.contains_key(&k));
+    // From the helper list, with no chat named: as before.
+    delete_by_user(&g, false, false, false, None).unwrap();
+    clean(&[&h, &b]);
+}

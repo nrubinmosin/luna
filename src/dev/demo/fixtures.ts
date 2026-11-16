@@ -1046,20 +1046,35 @@ export const BACKGROUND: BackgroundHelperDto[] = [
   }
 ];
 
-// The person's chats a helper of the first chat may move to (agents/reparent.rs
-// `move_targets`): the first is its own, and one runs without Luna's tools.
-export const MOVE_TARGETS: MoveTargetsDto = {
-  targets: [
-    { id: 'demo-1', ok: false, why: 'demo-bg-1 is a helper of chat "Updater offered a build its own version" already' },
-    { id: 'demo-2', ok: true },
-    {
-      id: 'demo-3',
-      ok: false,
-      why: 'chat "Why does the tray icon vanish after resume?" (demo-3) runs without Luna\'s tools, so it could not send to demo-bg-1, wait on it or answer it: turn Luna\'s tools on for it first'
-    },
-    { id: 'demo-4', ok: true }
-  ]
-};
+// The person's chats helper `id` may move to (agents/reparent.rs
+// `move_targets`): its own chat is one it is under already, and one chat runs
+// without Luna's tools. A helper's helper moves only with the one above it.
+export function moveTargets(id: string): MoveTargetsDto {
+  const h = BACKGROUND.find(b => b.id === id);
+  const above = h?.parent ? BACKGROUND.find(b => b.id === h.parent) : undefined;
+  if (above) {
+    return {
+      blocked: `${id} is a helper of "${above.name}" (${above.id}), itself a helper under chat demo-1: only a chat's own helper moves, with the helpers under it. Move ${above.id} and ${id} goes with it`,
+      targets: []
+    };
+  }
+  const already = (chat: string) =>
+    h?.parent === chat
+      ? `${id} is a helper of chat "${CHATS.find(c => c.id === chat)?.name ?? chat}" (${chat}) already`
+      : null;
+  return {
+    targets: [
+      { id: 'demo-1', ok: !already('demo-1'), why: already('demo-1') ?? undefined },
+      { id: 'demo-2', ok: true },
+      {
+        id: 'demo-3',
+        ok: false,
+        why: `chat "Why does the tray icon vanish after resume?" (demo-3) runs without Luna's tools, so it could not send to ${id}, wait on it or answer it: turn Luna's tools on for it first`
+      },
+      { id: 'demo-4', ok: !already('demo-4'), why: already('demo-4') ?? undefined }
+    ]
+  };
+}
 
 // What the working helper has said so far, as its read-only view shows it.
 export const HELPER_TRANSCRIPT: HelperTranscriptDto = {

@@ -188,7 +188,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "background_promoted" => call!(res args, crate::background::background_promoted, id: String, error: Option<String>),
         "background_kill" => call!(ok args, crate::background::background_kill, id: String),
         "background_delete" => call!(res args, crate::background::background_delete,
-            id: String, drop_worktree: Option<bool>, stop_working: Option<bool>, drop_unsaved: Option<bool>),
+            id: String, drop_worktree: Option<bool>, stop_working: Option<bool>, drop_unsaved: Option<bool>, of_chat: Option<String>),
         "background_at_stake" => call!(ok args, crate::background::background_at_stake, ids: Vec<String>),
         "background_move" => call!(res args, crate::background::background_move, id: String, to: String),
         "background_move_targets" => call!(ok args, crate::background::background_move_targets, id: String),

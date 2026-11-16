@@ -23,10 +23,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - In the helper list each helper says who manages it and which chat its line
   hangs from, which of your other chats waits on it and where you moved it
   from; Move to chat… lists your chats, grays out the ones it may not go to with why,
-  and moves it on your click; a chat refused a write into it shows as "Move to
-  <chat>?" under it. Deleting a chat offers to pass each of its helpers to
-  another chat, a chat that asked for it or waits on it picked to start with;
-  the moves come first, and a refused one stops the delete, saying why.
+  and moves it on your click; a chat refused a write into it, that it may move
+  to, shows as "Move to <chat>?" under it, which opens the same dialog on that
+  chat. Deleting a chat offers to pass each of its helpers to another chat, a
+  chat that asked for it or waits on it picked to start with and kept; the
+  moves come first, a refused one stops the delete, saying why, and a helper
+  moved to another chat meanwhile is not deleted.
 
 ### Changed
 

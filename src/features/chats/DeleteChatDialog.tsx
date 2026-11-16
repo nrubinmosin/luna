@@ -45,16 +45,18 @@ function Box({
   id,
   checked,
   onChange,
+  disabled = false,
   children
 }: {
   id: string;
   checked: boolean;
   onChange: (on: boolean) => void;
+  disabled?: boolean;
   children: ReactNode;
 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 'var(--fs-4)', color: 'var(--dim)' }}>
-      <input type="checkbox" id={id} checked={checked} onChange={e => onChange(e.target.checked)} />
+      <input type="checkbox" id={id} checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} />
       {/* xp.css makes every label inline-flex, which chops a wrapping label
           into unwrappable flex columns around a <code> child; block restores
           normal text flow. */}
@@ -115,6 +117,11 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
       live = false;
     };
   }, [ids]);
+  // The person's pick per helper ('' for none). Each starts, once its targets
+  // are in, on a chat that asked for it or waits on it then, and stays so: a
+  // wait ending or a chat asking later never flips a helper between passed
+  // and left behind the person's back. Moved only on Delete.
+  const [picked, setPicked] = useState<Record<string, string>>({});
   // Where each of its own helpers may go, asked once the list is known.
   const [targets, setTargets] = useState<Record<string, MoveTargetsDto>>({});
   useEffect(() => {
@@ -131,15 +138,27 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
         )
       )
     ).then(rows => {
-      if (live) setTargets(Object.fromEntries(rows));
+      if (!live) return;
+      setTargets(Object.fromEntries(rows));
+      const now = useBackground.getState().helpers;
+      setPicked(p => {
+        const next = { ...p };
+        for (const [id, t] of rows)
+          next[id] ??=
+            preselectPass(
+              now.find(h => h.id === id),
+              t
+            ) ?? '';
+        return next;
+      });
     });
     return () => {
       live = false;
     };
   }, [own]);
-  // The person's pick per helper ('' for none); until then, a chat that asked
-  // for it or waits on it. Moved only on Delete.
-  const [picked, setPicked] = useState<Record<string, string>>({});
+  // Delete waits for where its own helpers may go: until then neither the
+  // pickers nor what Delete would do with each is shown.
+  const looking = own.split('\n').some(id => id && !targets[id]);
   const [busy, setBusy] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
   const nameOf = useNameOf();
@@ -155,7 +174,7 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
   const lines = helperLines(helpers, stake);
   const passing: Record<string, string> = {};
   for (const h of helpers) {
-    const to = picked[h.id] ?? preselectPass(h, targets[h.id]);
+    const to = picked[h.id];
     if (to) passing[h.id] = to;
   }
   const moving = movingWith(lines, passing);
@@ -165,7 +184,10 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
   const unsaved = left.filter(l => l.unsaved);
 
   const doDelete = async () => {
-    if (busy) return;
+    if (busy || looking) return;
+    // What the person saw and ticked; the controls stay frozen while the moves run.
+    const shown = new Set(lines.map(l => l.id));
+    const choices = { withHelpers, dropWorktree, stopWorking, dropUnsaved };
     // The moves first, one by one: a refusal stops here, with nothing deleted.
     const moves = helperMoves(lines, passing);
     if (moves.length > 0) {
@@ -188,8 +210,18 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
       }
     }
     onClose();
-    for (const d of helperDeletes(lines, { withHelpers, dropWorktree, stopWorking, dropUnsaved }, moving)) {
-      void backgroundDelete(d.id, d)
+    // What is left to delete, looked at again after the moves: a helper another
+    // window moved elsewhere meanwhile is this chat's no more. The rows may not
+    // show a move just made yet, so what was passed stays out by its own list,
+    // and the core refuses one that hangs from another chat by now (`ofChat`).
+    const now = useBackground.getState().helpers;
+    const still = helperLines(
+      now.filter(h => rootOf(h, now) === chat.id),
+      stake
+    );
+    const passed = new Set([...moving, ...movingWith(still, passing)]);
+    for (const d of helperDeletes(still, choices, passed, shown)) {
+      void backgroundDelete(d.id, { ...d, ofChat: chat.id })
         .then(r => {
           if (r.worktreeKept)
             logWarn('agents', `helper ${d.id} deleted, its worktree kept for its unsaved work: ${r.worktreeKept}`);
@@ -242,14 +274,21 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
           {lines.length > 0 && (
             <ul className="helper-stakes" style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 'var(--fs-3)' }}>
               {lines.map(l => {
+                const t = targets[l.id];
                 // The chat going is no chat to pass it to.
-                const to = (targets[l.id]?.blocked ? [] : (targets[l.id]?.targets ?? [])).filter(x => x.id !== chat.id);
+                const to = (t?.blocked ? [] : (t?.targets ?? [])).filter(x => x.id !== chat.id);
+                const not = to.filter(x => !x.ok);
                 const goesWith = !passing[l.id] && moving.has(l.id) && l.parent ? nameOf(l.parent) : null;
                 return (
                   <li key={l.id}>
                     <b>{l.name}</b>: {l.working ?? 'done'}
                     {l.unsaved && <> · its worktree holds {l.unsaved}</>}
                     {goesWith && <> · goes with {goesWith}</>}
+                    {t?.blocked && (
+                      <div className="pass-blocked" style={{ color: 'var(--wait)' }}>
+                        Cannot be passed to a chat now: {t.blocked}
+                      </div>
+                    )}
                     {to.length > 0 && (
                       <div>
                         <select
@@ -262,13 +301,28 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
                         >
                           <option value="">Pass to chat…</option>
                           {to.map(x => (
-                            <option key={x.id} value={x.id} disabled={!x.ok} title={x.why}>
-                              {x.ok
-                                ? `Pass to ${clip(nameOf(x.id), 48)}`
-                                : clip(`${nameOf(x.id)}: ${x.why ?? 'not possible'}`, 72)}
+                            <option key={x.id} value={x.id} disabled={!x.ok}>
+                              {x.ok ? `Pass to ${clip(nameOf(x.id), 48)}` : `${clip(nameOf(x.id), 40)} (not possible)`}
                             </option>
                           ))}
                         </select>
+                        {/* An option's line is cut, and Chromium shows no tooltip on
+                            one: each why in full, folded away until asked for. */}
+                        {not.length > 0 && (
+                          <details className="pass-why">
+                            <summary>
+                              Why not{' '}
+                              {not.length === 1 && not[0]
+                                ? `"${clip(nameOf(not[0].id), 40)}"`
+                                : `the other ${not.length} chats`}
+                            </summary>
+                            {not.map(x => (
+                              <div key={x.id}>
+                                {nameOf(x.id)}: {x.why ?? 'not possible'}
+                              </div>
+                            ))}
+                          </details>
+                        )}
                       </div>
                     )}
                   </li>
@@ -288,7 +342,7 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
           <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {((chat.worktree && !sharedWith) ||
               (withHelpers && helpers.some(h => h.worktree && !moving.has(h.id)))) && (
-              <Box id={`drop-worktree-${chat.id}`} checked={dropWorktree} onChange={setDropWorktree}>
+              <Box id={`drop-worktree-${chat.id}`} checked={dropWorktree} onChange={setDropWorktree} disabled={busy}>
                 {ui(chat.provider).branchPrefix ? (
                   <>
                     Delete the worktree and its throwaway <code>{ui(chat.provider).branchPrefix}…</code> branch too,
@@ -300,21 +354,22 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
               </Box>
             )}
             {left.length > 0 && (
-              <Box id={`drop-helpers-${chat.id}`} checked={withHelpers} onChange={setWithHelpers}>
+              <Box id={`drop-helpers-${chat.id}`} checked={withHelpers} onChange={setWithHelpers} disabled={busy}>
                 Also delete the {left.length} helper{left.length > 1 ? 's' : ''} its agent runs
-                {moving.size > 0 && ' that you do not pass to a chat'}. Left alone, each answers to no chat from then on
-                and deletes itself half an hour after it is done.
+                {moving.size > 0 && ' that you do not pass to a chat'}. Left alone, the chat's own helpers answer to no
+                chat from then on, and each deletes itself half an hour after it is done and no helper of its own is
+                left; the helpers under one stay under it.
               </Box>
             )}
             {withHelpers && working.length > 0 && (
-              <Box id={`stop-working-${chat.id}`} checked={stopWorking} onChange={setStopWorking}>
+              <Box id={`stop-working-${chat.id}`} checked={stopWorking} onChange={setStopWorking} disabled={busy}>
                 Also stop and delete the {working.length === 1 ? 'one' : working.length} still working (
                 {list(working.map(l => l.name))}). Left unticked, {working.length === 1 ? 'it finishes' : 'they finish'}{' '}
                 first.
               </Box>
             )}
             {withHelpers && dropWorktree && unsaved.length > 0 && (
-              <Box id={`drop-unsaved-${chat.id}`} checked={dropUnsaved} onChange={setDropUnsaved}>
+              <Box id={`drop-unsaved-${chat.id}`} checked={dropUnsaved} onChange={setDropUnsaved} disabled={busy}>
                 Also delete the worktree{unsaved.length > 1 ? 's' : ''} of {list(unsaved.map(l => l.name))}, with the
                 uncommitted work in {unsaved.length > 1 ? 'them' : 'it'}. Left unticked,{' '}
                 {unsaved.length > 1 ? 'they stay' : 'it stays'} on disk.
@@ -324,7 +379,7 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
         )
       }
       confirmLabel={busy ? 'Moving…' : 'Delete'}
-      confirmDisabled={busy}
+      confirmDisabled={busy || looking}
       onConfirm={() => void doDelete()}
       // Not while the moves run: the delete they lead to would go on unseen.
       onCancel={busy ? () => {} : onClose}
