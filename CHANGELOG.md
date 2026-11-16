@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- Clicking an idle session, or any change to the panes' layout (a new chat,
+  a split dragged, the window resized), no longer shows it as printing in the
+  power chip nor holds the PC awake for about a minute and a half: the
+  redraw a CLI does after Luna resizes its terminal no longer counts as
+  output, and no longer starts a power-off's quiet window over.
+
 ## [0.18.2] - 2026-11-13
 
 Luna now installs Codex 0.169.0, and Settings no longer offers a CLI version

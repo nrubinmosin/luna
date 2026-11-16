@@ -213,6 +213,19 @@ pub(super) fn agents_at_work(t: &Track) -> Option<String> {
     }
 }
 
+/// Whether a session's output is recent enough to count as work. Its work
+/// output (`ActivityProbe::work_output_ms`), not every byte: the repaint a
+/// resize from Luna brings on is no work of the session's.
+fn output_fresh(now: u64, work_output_ms: u64) -> bool {
+    now.saturating_sub(work_output_ms) < OUTPUT_FRESH_MS
+}
+
+/// A session is busy while its model works, while something under it holds
+/// the machine, or while it has printed lately.
+fn at_work(model_busy: bool, holding: &[String], printed: bool) -> bool {
+    model_busy || !holding.is_empty() || printed
+}
+
 /// One pass over every live session, plus the background helpers as they
 /// stand (`helpers`), which keep no track here. Called by the sampler thread;
 /// public so a test can drive it with probes of its own.
@@ -294,7 +307,7 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
             if !gone_quiet.is_empty() {
                 let_go.push((p.id.clone(), gone_quiet));
             }
-            t.output_fresh = now.saturating_sub(p.last_output_ms) < OUTPUT_FRESH_MS;
+            t.output_fresh = output_fresh(now, p.work_output_ms);
 
             // A turn "ends" for an agent when the model stops, not when its
             // background jobs do: `wait` wants the reply, and the children are
@@ -309,7 +322,7 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
             }
             t.was_busy = model_busy;
 
-            let busy = model_busy || !holding.is_empty() || t.output_fresh;
+            let busy = at_work(model_busy, &holding, t.output_fresh);
             // Only a waiting session is asked: the hook's word if one came, else
             // the transcript's last line.
             let waiting = t.turn == Turn::Waiting;
@@ -323,7 +336,7 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
                 stalled: t.failed.filter(|_| waiting),
                 hook: t.hook,
                 disk: t.disk,
-                output_age_ms: now.saturating_sub(p.last_output_ms),
+                output_age_ms: now.saturating_sub(p.work_output_ms),
             });
         }
     }
@@ -482,6 +495,53 @@ mod tests {
         assert_eq!(t.agents.len(), 1, "a registry just gone idle may not have caught up");
         combine(&mut t, Some(Turn::Idle), 1_000 + STALE_HOOK_MS + 1);
         assert!(t.agents.is_empty());
+    }
+
+    /// What the reader does with a read at `at`: the work stamp moves only
+    /// for output that is not a resize's repaint.
+    fn read_at(work_output_ms: &mut u64, at: u64, last_resize_ms: u64) {
+        if crate::pty::is_work_output(at, last_resize_ms) {
+            *work_output_ms = at;
+        }
+    }
+
+    /// A click on an idle session nudges its pty a row smaller and back, 60 ms
+    /// apart, and the CLI repaints after each: no work, so the session stays
+    /// idle and holds nothing awake.
+    #[test]
+    fn a_repaint_after_a_resize_is_no_work() {
+        let mut work = 1_000;
+        let nudged = 600_000;
+        read_at(&mut work, nudged + 20, nudged);
+        read_at(&mut work, nudged + 90, nudged + 60);
+        read_at(&mut work, nudged + 60 + crate::pty::RESIZE_REPAINT_MS, nudged + 60);
+        assert_eq!(work, 1_000);
+        let fresh = output_fresh(nudged + 5_000, work);
+        assert!(!fresh);
+        assert!(!at_work(false, &[], fresh));
+    }
+
+    /// Output once the window after a resize is over is the session's own,
+    /// and keeps it busy for OUTPUT_FRESH_MS.
+    #[test]
+    fn output_after_the_resize_window_is_work() {
+        let mut work = 1_000;
+        let resized = 600_000;
+        read_at(&mut work, resized + 300, resized);
+        let printed = resized + crate::pty::RESIZE_REPAINT_MS + 1;
+        read_at(&mut work, printed, resized);
+        assert_eq!(work, printed);
+        assert!(at_work(false, &[], output_fresh(printed + 5_000, work)));
+        assert!(!at_work(false, &[], output_fresh(printed + OUTPUT_FRESH_MS, work)));
+    }
+
+    /// A turn at work, or a process under it that holds the machine, keeps a
+    /// session busy whatever its output did.
+    #[test]
+    fn a_turn_or_its_procs_stay_busy_through_a_repaint() {
+        assert!(at_work(true, &[], false));
+        assert!(at_work(false, &["node.exe (pid 4)".to_string()], false));
+        assert!(at_work(true, &[], output_fresh(600_000, 1_000)));
     }
 
     #[test]

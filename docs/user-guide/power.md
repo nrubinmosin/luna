@@ -70,7 +70,8 @@ Busy is measured from three signals per session:
    by a turn. What the CLI brings up with itself (MCP servers, its shell) counts
    only while it moves; a program with a window of its own (a browser a login
    opened) not at all.
-3. **Recent output.**
+3. **Recent output.** Not the redraw a session does when its pane is shown or
+   resized: clicking an idle session leaves it idle.
 
 A background helper's leftovers between turns count the same way. Deleting a chat
 or helper, or quitting Luna, ends what it left running, windowed programs aside;
