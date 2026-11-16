@@ -241,11 +241,9 @@ pub fn note_exit(reason: Option<String>) {
             // On Windows the install ends the process with exit(0), past the
             // event loop's end where Luna's other ways out wait for it.
             #[cfg(windows)]
-            crate::claude::models::wait_for_asks();
+            crate::claude::models::wait_for_asks_before_install();
         }
         None => {
-            // The model asks the install's wait stopped may start again.
-            crate::claude::models::not_leaving();
             if !NOTED.swap(false, Ordering::SeqCst) {
                 return;
             }

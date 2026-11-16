@@ -246,7 +246,11 @@ supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
   tray Restart; an update's install on Windows; Windows' Restart Manager
   closing it) starts no more asks, has one still waiting for its answer stop
   waiting and take its 10 s at once, and waits for every ask's sweep, up to
-  12 s (`wait_for_asks`); a failed install takes that back. A Windows
+  12 s (`wait_for_asks`). Before an install the asks are refused only while
+  that wait lasts (`wait_for_asks_before_install`): the install may never
+  come (a page reloaded meanwhile, or one that fails), and nothing would
+  then let them start again; an ask started between the wait's end and the
+  install's end of the process is not waited for. A Windows
   shutdown or sign-out does not wait: the OS ends the CLI with the rest. A
   launch of Luna during that wait is handed to the instance on its way out
   (the single-instance check) and comes to nothing; a tray Restart avoids it

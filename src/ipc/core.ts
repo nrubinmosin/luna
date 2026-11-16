@@ -28,7 +28,7 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   // Reads a transcript's ends and asks git, each bounded; 30 s in all.
   move_prepare: 35_000,
   // An update's install waits for a Claude Code model ask's grace and sweep
-  // first, up to 12 s (claude/models.rs `wait_for_asks`).
+  // first, up to 12 s (claude/models.rs `wait_for_asks_before_install`).
   note_exit: 13_000
 };
 
