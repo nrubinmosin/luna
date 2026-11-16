@@ -245,40 +245,61 @@ put on `autoDelete` counted, as the move switches that off). In this order:
    one going in is in first, none starts after.
 2. Whose the helpers are, alone (`registry::ownership_changing`). Every send
    and answer into a helper holds it shared from `authorize_send` to the debt
-   it leaves (`delivery::send`, `answer::answer`), so one checked against the
-   old chat has its debt in before the move goes on, and one after is checked
-   against the new chat. A background send never takes the notifier's
-   `going_into`, which is why the hand-off alone would not do.
+   it leaves (`delivery::send`, `answer::answer`), and a spawn from its
+   `register` to its caller's debt (`spawn/background.rs`, past its wait for
+   the worktree queue), so one checked against the old chat has its debt in
+   before the move goes on, and one after is checked against the new chat; a
+   helper is never started under the parent it had before a move. A
+   background send never takes the notifier's `going_into`, which is why the
+   hand-off alone would not do.
 3. The helpers between turns (`background::claim_move`, `Entry::moving`, part
-   of `held_back`): no turn starts until the move is through, so the next one
-   starts with `LUNA_PARENT_ID` naming the new chat; one running goes on. A
-   helper being opened as a chat, deleted, moved, or between a lead's handoff
-   and its fresh start refuses the move; while it moves it refuses those.
-4. One hold of the registry checks it all again and changes it: the parent,
-   the orphan mark, an `autoDelete` `pass_up` switched on (`Auto::by_pass_up`),
-   and the old chat's debts, requests, receipts, seen counts, delivery floors,
-   answer marks and breaker counts on every moved session. It records `moved`
-   (`Moved`: from, to, when, whether a turn has been told), which its ties keep.
-5. Then the background spec's parent; the new chat owed the helper's answer at
-   its count now if it is in a turn, has text queued or holds an ask; the old
-   chat's one line in `news`, with how many of its messages are still queued;
-   the save and the rows' event.
+   of `held_back`): no turn starts until the move is through, a turn's end
+   included (`turn_over` leaves the queue to `go_on`), so the next one starts
+   with `LUNA_PARENT_ID` naming the new chat and its queued command text is
+   judged against the new owner; one running goes on. A helper being opened
+   as a chat, deleted, moved, or between a lead's handoff and its fresh start
+   refuses the move; while it moves it refuses those. Under this claim the
+   helper's work and its turn count are read in one look
+   (`background::work_and_count`), so a turn ending meanwhile cannot leave the
+   new chat owed an end already past.
+4. One hold of the registry checks it all again and changes it. The line is
+   looked at afresh there: one that differs from the line the holds were
+   taken on (a helper spawned under it since, one gone) changes nothing, and
+   the move takes its holds again on the line as it is now, up to three times
+   (`move_line`), so no session moves unheld and none a delete holds. Then the
+   parent, the orphan mark, an `autoDelete` `pass_up` switched on
+   (`Auto::by_pass_up`), and the old chat's debts, requests, receipts, seen
+   counts, delivery floors, answer marks and breaker counts on every moved
+   session; the new chat owed the helper's answer at its count now if it is in
+   a turn, has text queued or holds an ask (`owed::owe_in`), so a chat going
+   meanwhile (`forget`, decided in a hold of the same lock) takes that debt
+   with it; the old chat's one line in `news`, with how many of its messages
+   are still queued. It records `moved` (`Moved`: from, to, when, whether a
+   turn has been told), which its ties keep.
+5. Then the exclusive hold on whose the helpers are goes, before anything
+   that may start a turn; the background spec's parent is set, and set again
+   to what the registry says if a chat's going passed the helper on
+   meanwhile; the claim and the hand-off go; the save and the rows' event.
 
 From then on the old chat's send, answer, stop, delete, and read or wait
 without `scope: "all"` on any moved session are refused naming the new chat
 (`moved_away`, `moved_error`): a wait in flight sees it at its next look. Its
 waits with `scope: "all"` go on. The helper's next turn gets a note in its
-prompt that the person moved it and to which chat (`move_note`, once; then
-`move_told`), on both CLIs: Claude Code has its role note in its first prompt
-only, Codex beside it every turn. Text queued before the move goes in as
+prompt that the person moved it and to which chat (`move_note`), until a
+turn's model has answered a prompt that carried it (`move_told`, from
+`turn_over` once the turn `acted`, and only if that move is still the last:
+the turn's `Run::moved` names it), on both CLIs: Claude Code has its role note
+in its first prompt only, Codex beside it every turn. Text queued before the move goes in as
 queued: a Claude Code turn running takes it on stdin at a tool boundary, a
 Codex helper at its next turn; command-led text from the old chat is dropped
 at delivery and the old chat told (`settle_batch`, `queued_refused`).
 
 A person's chat refused a write into a helper by the write rule (`NotAbove`)
-is recorded with when (`Registry::suggested`, in memory, `asked_to_move`), and
-the helper's row offers it ("Move to <chat>?"); a move or the helper's going
-clears it. A refused read or wait, or a helper refused, records nothing. The
+is recorded with when (`Registry::suggested`, in memory, `asked_to_move`)
+against the helper the line moves with (`movable_root`: the helper itself, or
+for a helper's helper the chat's own helper above it), and that row offers it
+("Move to <chat>?"); the refusal names the same helper. A move or the
+helper's going clears it. A refused read or wait, or a helper refused, records nothing. The
 rows (`background_helpers`) carry `top`, `watchedBy` (the person's chats with
 a `wait` in flight on it that are not above it, `Registry::waits`), `moved`
 and `suggested`; the window asks `background_move_targets` for each chat's

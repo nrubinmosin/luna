@@ -75,7 +75,9 @@ which the live suite drives helpers through.
 helper is (its parent and the chat at the top, by window name with id), that
 only the sessions above it send to it or answer it, that it may still read
 and wait on it with `scope: "all"`, and that the person can move the helper
-to this chat in Luna's window ("Move to chat…" in the helper's menu). A helper
+to this chat in Luna's window ("Move to chat…" on its row in the helper list;
+for a helper's helper, the chat's own helper above it, which takes it along).
+A helper
 refused hears `not_under_you` as before and nothing of a move, which it cannot
 ask the person for. A former parent of a helper the person took over hears the
 takeover's words (`taken_over_error`), as before.
@@ -83,12 +85,13 @@ takeover's words (`taken_over_error`), as before.
 **No agent-callable adopt tool. The person moves a helper.** An agent tool
 that re-parents would be the same steering in two calls: an injected chat
 adopts, then writes. Instead the person moves a helper, with everything under
-it, to another of their chats from the window ("Move to chat…" on the helper,
-or a choice in a chat's delete dialog). Only the helper's parent changes, so
-its subtree follows, and its id, worktree, settings and constraints stay. A
-write refused for want of this records the chat that wanted the helper, and
-the helper's row offers the person "Move to <that chat>?"; only the person's
-click moves it.
+it, to another of their chats from the window ("Move to chat…" on the
+helper's row in the helper list, or a choice in a chat's delete dialog). Only
+the helper's parent changes, so its subtree follows, and its id, worktree,
+settings and constraints stay. A write refused for want of this records the
+chat that wanted the helper against the helper that would move (a helper's
+helper's against the chat's own helper above it), and that helper's row offers
+the person "Move to <that chat>?"; only the person's click moves it.
 
 **What a move does.** One window command, `background_move` (agents/reparent.rs
 `move_helper`), never an MCP tool. It moves a helper that is a direct child of
@@ -131,19 +134,26 @@ In one move:
 so a notice about one of them going in is in before the debts change; then
 whose the helpers are, alone (`registry.rs` `ownership_changing`), which every
 send and answer into a helper holds shared from its first check
-(`authorize_send`) to the debt it leaves (`owe_from_at`, `owe_from`); then the
-helpers between turns (`background::claim_move`), so no turn starts until the
-move is through and the next one starts under the new parent; and the checks
-and the change in one hold of the registry. A send or an answer the old chat
-had checked is in, debt and all, before the move closes that debt; one that
-comes after is checked against the new parent. A background send does not go
-through the notifier's `going_into` hold, so the hand-off alone would not have
-been enough.
+(`authorize_send`) to the debt it leaves (`owe_from_at`, `owe_from`), and a
+spawn from registering its helper to its caller's debt; then the helpers
+between turns (`background::claim_move`), so no turn starts until the move is
+through, not even at a turn's end with text queued, and the next one starts
+under the new parent; and the checks, the change and the new chat's debt in
+one hold of the registry, where the line is looked at again: if it is not the
+line the holds were taken on (a helper spawned under it, one gone), nothing
+changes and the move takes its holds again on the line as it is, so no session
+moves unheld or out from under a delete. The exclusive hold goes before the
+claim is let go, which may start a turn. A send, an answer or a spawn the old
+chat had checked is in, debt and all, before the move closes that debt; one
+that comes after is checked against the new parent. A background send does
+not go through the notifier's `going_into` hold, so the hand-off alone would
+not have been enough.
 
 **Each CLI, moved mid-turn or between turns.** The CLI is not restarted. Its
 next turn is started with `LUNA_PARENT_ID` naming the new chat, as after a
 `pass_up`, and with a note in its prompt that the person moved it and to which
-chat (`move_note`, given once; background/command.rs `stdin_with`): Claude
+chat (`move_note`; background/command.rs `stdin_with`), until a turn's model
+has answered a prompt that carried it, for the move it told of: Claude
 Code has its role note in its first prompt only, so this note is how a later
 turn learns it, and Codex has it beside its role note, which it gets every
 turn. Text queued before the move still goes in: into a Claude Code helper's
@@ -188,10 +198,12 @@ saves the helper but leaves it with no one to tell.
   reading, and must cover the moved sessions' privilege and have their places.
   Its negative tests are in `agents/reparent_tests.rs`, the ordering against a
   send and an answer included.
-- Every write into a helper takes a shared hold that a move takes alone: a
-  move waits for sends and answers in flight (a background send starts the
-  helper's turn under it, an answer waits out its settle), and sends wait for
-  the moment a move takes.
+- Every write into a helper, and every spawn until its caller is owed, takes a
+  shared hold that a move takes alone: a move waits for sends, answers and
+  spawns in flight (a background send starts the helper's turn under it, an
+  answer waits out its settle, a spawn starts its helper's CLI), and they wait
+  for the moment a move takes. A spawn waits for its worktree queue before it
+  takes the hold, so no worktree wait holds a move up.
 - Nothing here depends on the helper's CLI: the parent link, the check and
   the refusal live in Luna's registry, and a Codex helper is refused as a
   Claude Code one is.

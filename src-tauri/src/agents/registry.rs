@@ -8,7 +8,7 @@ use crate::agents::notifier::lines::{NoticeTurn, Woken};
 use crate::agents::notifier::usage::QuotaTold;
 use crate::agents::owed::{Owed, Receipt, Requests};
 use crate::agents::persist::CHATS_FROZEN;
-use crate::agents::reparent::{asked_to_move, moved_away, moved_error, Moved, Suggested};
+use crate::agents::reparent::{asked_to_move, movable_root, moved_away, moved_error, Moved, Suggested};
 use crate::agents::spawn::{free_first, max_descendants, refused_a_place, under_cap, PlacesRefused, SpawnTaken};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
@@ -729,7 +729,9 @@ pub(super) fn named(r: &Registry, id: &str) -> String {
 
 /// What a person's chat hears when it writes into a helper not under it:
 /// whose the helper is, what is still open to it, and the person's way to
-/// hand it over. Never told to a helper, which cannot ask the person for it.
+/// hand it over: a move of the helper its line moves with (reparent.rs
+/// `movable_root`), it or the one above it under its chat. Never told to a
+/// helper, which cannot ask the person for it.
 fn not_above(r: &Registry, id: &str) -> String {
     let whose = match r.known.get(id).and_then(|k| k.parent.clone()) {
         None => "has no chat above it, so no session sends to it or answers it".to_string(),
@@ -743,10 +745,17 @@ fn not_above(r: &Registry, id: &str) -> String {
             format!("is a helper of {of}: only the sessions above it send to it or answer it")
         }
     };
-    format!(
-        "session {id} {whose}. You may still read it and wait on it, with scope: \"all\". For it to answer to this \
-         chat, the person can move it here in Luna's window (\"Move to chat…\" in the helper's menu)"
-    )
+    let root = movable_root(r, id);
+    let way = if root == id {
+        "the person can move it here in Luna's window (\"Move to chat…\" on its row in the helper list)".to_string()
+    } else {
+        format!(
+            "the person can move {} here in Luna's window, and {id} goes with it (\"Move to chat…\" on that helper's \
+             row in the helper list)",
+            named(r, &root)
+        )
+    };
+    format!("session {id} {whose}. You may still read it and wait on it, with scope: \"all\". For it to answer to this chat, {way}")
 }
 
 /// Text from a person's chat may go to the user's other chats — that is how
@@ -1012,6 +1021,12 @@ mod tests {
         }
         let e = authorize_send("wr-other", "wr-grand").err().unwrap();
         assert!(e.contains("helper of \"Release lead\" (wr-lead), under chat \"Docs\" (wr-top)"), "{e}");
+        // A helper's helper moves only with the chat's own helper above it: the
+        // way named is that one's.
+        assert!(e.contains("move \"Release lead\" (wr-lead) here in Luna's window, and wr-grand goes with it"), "{e}");
+        assert!(e.contains("\"Move to chat…\" on that helper's row in the helper list"), "{e}");
+        let e = authorize_send("wr-other", "wr-lead").err().unwrap();
+        assert!(e.contains("move it here in Luna's window (\"Move to chat…\" on its row in the helper list)"), "{e}");
         // A helper, a sibling's or anything else past its own: as ever, and never
         // pointed at the person.
         for (caller, id) in [("wr-sib", "wr-lead"), ("wr-sib", "wr-grand"), ("wr-lead", "wr-sib"), ("wr-theirs", "wr-grand")] {

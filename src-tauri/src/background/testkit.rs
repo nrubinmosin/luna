@@ -506,3 +506,16 @@ pub(crate) fn codex_in_turn_for_test(id: &str, account: &str, thread: &str, star
 pub(crate) fn turn_over_for_test(id: &str, code: Option<i32>) {
     turn_over(id, code);
 }
+
+/// Its turn's prompt told it of move `moved` (agents/reparent.rs `move_note`),
+/// and its model has answered it or not, for the tests of when that is told.
+#[cfg(test)]
+pub(crate) fn carried_move_for_test(id: &str, moved: crate::agents::Moved, acted: bool) {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    if e.run.is_none() {
+        claim(e);
+    }
+    e.run.as_mut().unwrap().moved = Some(moved);
+    e.observed.acted = acted;
+}

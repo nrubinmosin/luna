@@ -298,7 +298,8 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // too, as it resets the folder's DACL.
     let handoff = handoff_dir(id, &spec);
     // A move to another chat it has not been told of (agents/reparent.rs): off
-    // the lock, which nothing may hold while it takes the registry's.
+    // the lock, which nothing may hold while it takes the registry's. Told for
+    // good only once the turn's model has answered it (events.rs `turn_over`).
     let moved = crate::agents::move_note(id);
     let (args, dir, envs, applied, provider, on_stdin, line, account) = {
         let r = lock();
@@ -318,11 +319,14 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             envs,
             applied,
             e.spec.provider,
-            stdin_with(e, prompt, texts.note.as_deref(), moved.as_deref()),
+            stdin_with(e, prompt, texts.note.as_deref(), moved.as_ref().map(|m| m.text.as_str())),
             line,
             e.spec.account_path.clone(),
         )
     };
+    // The move this prompt tells of, if it does: a prompt that is a slash
+    // command takes no note.
+    let carried = moved.filter(|m| on_stdin.contains(&m.text)).map(|m| m.of);
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
     }
@@ -429,10 +433,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // This turn's, for the window's "What Luna applied"; not under this
     // module's lock, which nothing may hold while it takes the registry's.
     crate::agents::set_applied(id, applied, &account, &dir);
-    // Told only if it went in: a prompt that is a slash command takes no note.
-    if moved.as_deref().is_some_and(|m| on_stdin.contains(m)) {
-        crate::agents::move_told(id);
-    }
     let pid = Some(child.id());
     // Into the helper's job before it has had time to start anything. What is
     // waited for here is not waited for with every helper's lock held.
@@ -499,7 +499,12 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             Some(e) => {
                 let claude = provider == Provider::Claude;
                 let opening_line = line.clone();
-                e.run = Some(Run { feed: claude.then_some(feed), line: claude.then_some(line), ..Run::claimed(pid, started_ms) });
+                e.run = Some(Run {
+                    feed: claude.then_some(feed),
+                    line: claude.then_some(line),
+                    moved: carried,
+                    ..Run::claimed(pid, started_ms)
+                });
                 e.observed.begin_turn();
                 e.error = None;
                 e.cut_short = false;

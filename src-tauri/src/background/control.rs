@@ -386,14 +386,17 @@ fn claim_move_check(r: &Registry, ids: &[String]) -> Option<String> {
     })
 }
 
-/// Whether a parent has an answer to come from helper `id` as it stands: a turn
-/// running, text queued or on its way in, or a question or permission it holds.
-/// What a helper moved to another chat owes that chat (agents/reparent.rs).
-pub fn has_work(id: &str) -> bool {
-    lock()
-        .entries
-        .get(id)
-        .is_some_and(|e| e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty() || e.switch_waits())
+/// Whether a parent has an answer to come from helper `id` as it stands (a turn
+/// running, text queued or on its way in, or a question or permission it
+/// holds), and the turns it has ended: what a helper moved to another chat owes
+/// that chat, and from which turn (agents/reparent.rs). One look, as a turn
+/// ending between two would leave the work read as to come and its end counted
+/// as past, a debt no turn ever answers. None with no helper by that id.
+pub fn work_and_count(id: &str) -> Option<(bool, u32)> {
+    lock().entries.get(id).map(|e| {
+        let work = e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty() || e.switch_waits();
+        (work, e.turns_ended)
+    })
 }
 
 /// How many messages `from` has queued for helper `id` that its CLI has not had yet.
