@@ -715,9 +715,7 @@ mod tests {
     #[test]
     fn supplied_tokens_need_no_refresh_token() {
         use serde_json::json;
-        let supplied = |access: &str| {
-            json!({ "auth_mode": "chatgptAuthTokens", "tokens": { "access_token": access, "refresh_token": "", "account_id": "acc" } })
-        };
+        let supplied = |access: &str| json!({ "auth_mode": "chatgptAuthTokens", "tokens": { "access_token": access, "refresh_token": "", "account_id": "acc" } });
         assert!(chatgpt_login(&supplied("at")));
         assert!(!chatgpt_login(&supplied(" ")), "a blank access token is no login in any mode");
         assert!(!chatgpt_login(&json!({ "auth_mode": "chatgpt", "tokens": { "access_token": "at", "refresh_token": "" } })));
