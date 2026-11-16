@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::boundary::{AccountPath, OrEmpty};
@@ -288,35 +288,220 @@ pub(crate) const ASK_ARGS: [&str; 9] = [
 /// settings, CLAUDE.md or `.mcp.json` is in reach (paths.rs `OWN_NAMES`).
 const ASK_CWD: &str = "claude-models-cwd";
 
-/// Closes the process's stdin and gives it `grace` to exit by itself, then
-/// takes it down (`end`). Whether it exited by itself.
-fn let_go(mut child: Child, stdin: Option<ChildStdin>, grace: Duration) -> bool {
-    drop(stdin);
-    let deadline = Instant::now() + grace;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return true,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            _ => break,
-        }
-    }
-    end(&mut child);
-    false
+/// The ask's CLI and all it starts: a Job Object of its own on Windows, its
+/// own process group on Unix, so what it leaves behind is found once it has
+/// exited, when no parent links lead there any more. Unlike the probe's
+/// (cli/probe.rs), the job is not ended by Luna's own exit: a CLI saving a
+/// renewed token goes on (and Luna's exit waits for it, `wait_for_asks`).
+struct Asked {
+    child: Child,
+    #[cfg(windows)]
+    job: crate::procs::KillJob,
 }
 
-/// Takes the process down with its tree, and reaps it.
-fn end(child: &mut Child) {
-    // The tree, not only the CLI: what it started outlives a plain kill.
-    crate::pty::kill_tree(Some(child.id()));
-    let _ = child.kill();
-    let _ = child.wait();
+impl Asked {
+    fn spawn(mut cmd: Command) -> std::io::Result<Asked> {
+        // Suspended until it is in its job: what it starts at once would
+        // otherwise be born outside it.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000 | 0x0000_0004); // CREATE_NO_WINDOW | CREATE_SUSPENDED
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut child = cmd.spawn()?;
+        // Not let run outside its job: what it started there would have
+        // nothing to end it once the CLI is gone. Still suspended, it has
+        // started nothing.
+        #[cfg(windows)]
+        {
+            let job = crate::procs::KillJob::untied().and_then(|job| job.assign(child.id()).map(|_| job));
+            match job {
+                Ok(job) => {
+                    crate::procs::resume(child.id());
+                    Ok(Asked { child, job })
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    Err(std::io::Error::other(format!("no job of its own to run in: {e}")))
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        Ok(Asked { child })
+    }
+
+    /// Whether the CLI has exited. On Unix it is left unreaped, so its pid,
+    /// which is its group's id, goes to no other process before `sweep`.
+    fn exited(&mut self) -> std::io::Result<bool> {
+        #[cfg(unix)]
+        {
+            // SAFETY: a zeroed siginfo_t is a valid one for waitid to fill,
+            // asked of a child of this process; WNOWAIT leaves it a zombie.
+            unsafe {
+                let mut info: libc::siginfo_t = std::mem::zeroed();
+                let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+                if libc::waitid(libc::P_PID, self.child.id(), &mut info, flags) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Not exited yet, it is left as it was: no signal in it.
+                Ok(info.si_signo != 0)
+            }
+        }
+        #[cfg(not(unix))]
+        self.child.try_wait().map(|status| status.is_some())
+    }
+
+    /// Ends whatever is left of the tree, the CLI too if it is still there,
+    /// and reaps it. Its stdout reaches its end then: whatever held it is gone.
+    fn sweep(mut self) {
+        // Every member, what the CLI left behind as it exited among them.
+        #[cfg(windows)]
+        self.job.end();
+        #[cfg(unix)]
+        {
+            // While the CLI runs, the walk finds what left its group (a
+            // session of its own); the group, what outlived the CLI.
+            crate::pty::kill_tree(Some(self.child.id()));
+            // SAFETY: a plain signal to the group this CLI leads, whose id is
+            // still its own: the CLI is not reaped yet.
+            unsafe {
+                libc::killpg(self.child.id() as i32, libc::SIGKILL);
+            }
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Closes the CLI's stdin and gives it `grace` to exit by itself, then takes
+/// down what is left of its tree (`Asked::sweep`), the CLI too if it is
+/// still there. Whether it exited by itself.
+fn let_go(mut asked: Asked, stdin: Option<ChildStdin>, grace: Duration) -> bool {
+    drop(stdin);
+    let deadline = Instant::now() + grace;
+    let by_itself = loop {
+        match asked.exited() {
+            Ok(true) => break true,
+            Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => break false,
+        }
+    };
+    asked.sweep();
+    by_itself
+}
+
+/// The model asks whose CLI may still be running, for Luna's own exit to
+/// wait on (`wait_for_asks`): one left running behind Luna would not be
+/// taken down if it stayed, nor what it leaves, and the account's lock and
+/// the CLI version would be let go under it.
+struct Pending {
+    count: Mutex<usize>,
+    done: Condvar,
+}
+
+/// One ask counted in its `Pending` while it lives.
+struct Counted(&'static Pending);
+
+impl Pending {
+    const fn new() -> Pending {
+        Pending { count: Mutex::new(0), done: Condvar::new() }
+    }
+
+    fn count(&'static self) -> Counted {
+        *self.count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        Counted(self)
+    }
+
+    /// Waits up to `within` for every ask counted to be done; whether they are.
+    fn wait(&self, within: Duration) -> bool {
+        let count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+        let (count, _) = self.done.wait_timeout_while(count, within, |n| *n > 0).unwrap_or_else(|e| e.into_inner());
+        *count == 0
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        *self.0.count.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        self.0.done.notify_all();
+    }
+}
+
+static PENDING: Pending = Pending::new();
+
+/// For Luna's ways out (the end of the event loop, an update's install):
+/// waits up to `EXIT_GRACE`, the time an ask's CLI gets to leave by itself,
+/// for the model asks still running to be done. Whether none is left.
+pub fn wait_for_asks() -> bool {
+    let started = Instant::now();
+    let done = PENDING.wait(EXIT_GRACE);
+    if !done {
+        crate::log::warn("claude-models", "leaving with a model ask still running");
+    } else if started.elapsed() > Duration::from_millis(100) {
+        crate::log::warn("claude-models", &format!("waited {} ms for a model ask to be done", started.elapsed().as_millis()));
+    }
+    done
+}
+
+/// Asks the CLI `initialize` and waits up to `within` for its answer: the
+/// answer as read, or None when it gave none. Either way it is let go
+/// (`let_go`, given `grace`) on a thread of its own, holding `held` and
+/// counted (`pending`) until it is gone.
+fn initialize<H: Send + 'static>(
+    mut asked: Asked,
+    held: H,
+    pending: Counted,
+    within: Duration,
+    grace: Duration,
+) -> Option<Option<(Vec<ClaudeModel>, bool)>> {
+    let request_id = format!("luna-models-{}", crate::throttle::now_ms());
+    let mut stdin = asked.child.stdin.take();
+    let sent = match stdin.as_mut() {
+        Some(s) => writeln!(s, "{}", initialize_request(&request_id)).and_then(|_| s.flush()),
+        None => Err(std::io::ErrorKind::BrokenPipe.into()),
+    };
+    let stdout = asked.child.stdout.take();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let Some(out) = stdout else { return };
+        let mut tx = Some(tx);
+        // Read to the end, past the answer: a CLI still on its way out must
+        // not meet a closed pipe. The end comes with the sweep at the latest.
+        for line in std::io::BufReader::new(out).lines() {
+            let Ok(line) = line else { break };
+            if line.contains("\"control_response\"") {
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send(parse_initialize(&line, &request_id));
+                }
+            }
+        }
+    });
+    let answer = sent.ok().and_then(|_| rx.recv_timeout(within).ok());
+    // Answered or not, it may be saving a renewed token (`EXIT_GRACE`): it
+    // leaves by itself, behind, and the answer is used meanwhile. What the
+    // ask holds is held until it is gone, and it is counted until then.
+    std::thread::spawn(move || {
+        if !let_go(asked, stdin, grace) {
+            crate::log::warn("claude-models", "Claude Code did not exit after the initialize ask; taken down");
+        }
+        drop(held);
+        drop(pending);
+    });
+    answer
 }
 
 /// Claude Code started headless on the account (`ASK_ARGS`), asked
-/// `initialize` and let go once it has answered: no prompt is sent, so no
-/// turn runs and no conversation is written. Answered, it gets `EXIT_GRACE`
-/// to leave by itself; unanswered, or past that, it is taken down with
-/// whatever it started.
+/// `initialize` and let go: no prompt is sent, so no turn runs and no
+/// conversation is written. Answered or not, it gets `EXIT_GRACE` to leave
+/// by itself once its stdin is closed, on a thread of its own; then what is
+/// left of its tree is taken down.
 pub(crate) fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     // The window runs this too, and a window run as administrator runs no CLI.
     crate::elevation::guard().ok()?;
@@ -350,57 +535,14 @@ pub(crate) fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     crate::pty::clean_env(&mut cmd);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    // A group of its own, so the tree it leaves can be taken down with it.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    let mut child = cmd.spawn().ok()?;
-    let request_id = format!("luna-models-{}", crate::throttle::now_ms());
-    let mut stdin = child.stdin.take();
-    let asked = match stdin.as_mut() {
-        Some(s) => writeln!(s, "{}", initialize_request(&request_id)).and_then(|_| s.flush()),
-        None => Err(std::io::ErrorKind::BrokenPipe.into()),
-    };
-    let stdout = child.stdout.take();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let id = request_id.clone();
-    std::thread::spawn(move || {
-        let Some(out) = stdout else { return };
-        let mut tx = Some(tx);
-        // Read to the end, past the answer: a CLI still on its way out must
-        // not meet a closed pipe.
-        for line in std::io::BufReader::new(out).lines() {
-            let Ok(line) = line else { break };
-            if line.contains("\"control_response\"") {
-                if let Some(tx) = tx.take() {
-                    let _ = tx.send(parse_initialize(&line, &id));
-                }
-            }
+    let asked = match Asked::spawn(cmd) {
+        Ok(asked) => asked,
+        Err(e) => {
+            crate::log::warn("claude-models", &format!("not asking Claude Code for its models: {e}"));
+            return None;
         }
-    });
-    let answer = asked.ok().and_then(|_| rx.recv_timeout(ASK_TIMEOUT).ok());
-    if answer.is_some() {
-        // Answered, it may still be saving a renewed token (`EXIT_GRACE`):
-        // it leaves by itself, behind, and the answer is used meanwhile.
-        // What the ask holds is held until it is gone.
-        let held = (on_version, rewriting);
-        std::thread::spawn(move || {
-            let _held = held;
-            if !let_go(child, stdin, EXIT_GRACE) {
-                crate::log::warn("claude-models", "Claude Code did not exit after answering initialize; taken down");
-            }
-        });
-    } else {
-        drop(stdin);
-        end(&mut child);
-    }
+    };
+    let answer = initialize(asked, (on_version, rewriting), PENDING.count(), ASK_TIMEOUT, EXIT_GRACE);
     match answer {
         Some(Some(found)) => Some(found),
         Some(None) => {
@@ -877,41 +1019,144 @@ mod tests {
         assert_eq!(choose_under(Some(catalog()), None, "r1", fresh), Known::Nothing);
     }
 
+    /// `exe` started as the ask starts the CLI (`Asked::spawn`), its stdin
+    /// piped and its stdout piped too where `out`.
+    fn started(exe: &str, args: &[&str], out: bool) -> (Asked, Option<ChildStdin>) {
+        let mut cmd = Command::new(exe);
+        cmd.args(args).stdin(Stdio::piped()).stdout(if out { Stdio::piped() } else { Stdio::null() }).stderr(Stdio::null());
+        let mut asked = Asked::spawn(cmd).unwrap();
+        let stdin = asked.child.stdin.take();
+        (asked, stdin)
+    }
+
     /// A process with its stdin piped: `reads` one that reads it to the end
     /// and exits, otherwise one that ignores it and sits there for a minute.
-    fn stand_in(reads: bool) -> (Child, Option<ChildStdin>) {
+    fn stand_in(reads: bool) -> (Asked, Option<ChildStdin>) {
         #[cfg(windows)]
         let (exe, args): (&str, &[&str]) = if reads { ("sort", &[]) } else { ("ping", &["-n", "60", "127.0.0.1"]) };
         #[cfg(not(windows))]
         let (exe, args): (&str, &[&str]) = if reads { ("cat", &[]) } else { ("sleep", &["60"]) };
-        let mut cmd = Command::new(exe);
-        cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        started(exe, args, false)
+    }
+
+    /// Whether `pid` is gone within a few seconds.
+    fn gone_soon(pid: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if !crate::procs::alive(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
-        let mut child = cmd.spawn().unwrap();
-        let stdin = child.stdin.take();
-        (child, stdin)
+        false
     }
 
     #[test]
     fn a_cli_let_go_leaves_by_itself_once_its_stdin_closes() {
-        let (child, stdin) = stand_in(true);
+        let (asked, stdin) = stand_in(true);
         let started = Instant::now();
-        assert!(let_go(child, stdin, Duration::from_secs(10)), "it exits on its own");
+        assert!(let_go(asked, stdin, Duration::from_secs(10)), "it exits on its own");
         assert!(started.elapsed() < Duration::from_secs(5), "not held for the whole grace");
     }
 
     #[test]
     fn a_cli_let_go_that_stays_is_taken_down_after_the_grace() {
-        let (child, stdin) = stand_in(false);
+        let (asked, stdin) = stand_in(false);
+        let pid = asked.child.id();
         let started = Instant::now();
         let grace = Duration::from_millis(500);
-        assert!(!let_go(child, stdin, grace), "it had to be taken down");
+        assert!(!let_go(asked, stdin, grace), "it had to be taken down");
         // Reaped on return, so down already, and not long after the grace.
         assert!(started.elapsed() >= grace && started.elapsed() < Duration::from_secs(15));
+        assert!(gone_soon(pid));
+    }
+
+    /// What it left behind as it exited is taken down with it: a CLI's
+    /// hooks may start processes of their own, and one holding its stdout
+    /// would keep the ask's reader waiting for the end.
+    #[test]
+    fn what_a_cli_left_running_as_it_exited_is_taken_down() {
+        // A parent that starts a child sitting there for a minute, on the
+        // parent's stdout, says its pid and exits.
+        #[cfg(windows)]
+        let (exe, args): (&str, &[&str]) = (
+            "powershell",
+            &[
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$p = Start-Process -FilePath ping -ArgumentList '-n','60','127.0.0.1' -NoNewWindow -PassThru; 'pid ' + $p.Id",
+            ],
+        );
+        #[cfg(not(windows))]
+        let (exe, args): (&str, &[&str]) = ("sh", &["-c", "sleep 60 & echo \"pid $!\""]);
+        let (mut asked, stdin) = started(exe, args, true);
+        let out = asked.child.stdout.take().unwrap();
+        let (said, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if let Some(pid) = line.trim().strip_prefix("pid ").and_then(|p| p.parse::<u32>().ok()) {
+                    let _ = said.send(Some(pid));
+                }
+            }
+            // The end: nothing holds its stdout any more.
+            let _ = said.send(None);
+        });
+        let child = heard.recv_timeout(Duration::from_secs(60)).unwrap().expect("the parent says its child's pid");
+        assert!(crate::procs::alive(child), "its child runs");
+        assert!(let_go(asked, stdin, Duration::from_secs(30)), "the parent exits on its own");
+        assert!(gone_soon(child), "what it left running is taken down");
+        assert_eq!(heard.recv_timeout(Duration::from_secs(5)), Ok(None), "its stdout reaches its end");
+    }
+
+    /// An ask the CLI did not answer in time is let go as an answered one
+    /// is: it may be saving a renewed token all the same. Still running when
+    /// the ask gives up, it leaves by itself behind, counted until then.
+    #[test]
+    fn an_unanswered_ask_gets_the_grace_too() {
+        static P: Pending = Pending::new();
+        // Never answers, and leaves by itself in about two seconds.
+        #[cfg(windows)]
+        let (exe, args): (&str, &[&str]) = ("ping", &["-n", "3", "127.0.0.1"]);
+        #[cfg(not(windows))]
+        let (exe, args): (&str, &[&str]) = ("sleep", &["2"]);
+        let (mut asked, stdin) = started(exe, args, true);
+        asked.child.stdin = stdin;
+        let pid = asked.child.id();
+        let begun = Instant::now();
+        let answer = initialize(asked, (), P.count(), Duration::from_millis(300), Duration::from_secs(20));
+        assert!(answer.is_none(), "no answer");
+        assert!(crate::procs::alive(pid), "not taken down when the ask gave up");
+        assert!(P.wait(Duration::from_secs(15)), "done within the grace");
+        assert!(begun.elapsed() >= Duration::from_secs(1), "it left by itself, not at the give-up");
+        assert!(gone_soon(pid));
+    }
+
+    /// One that stays past the grace, unanswered, is taken down then.
+    #[test]
+    fn an_unanswered_ask_that_stays_is_taken_down_after_the_grace() {
+        static P: Pending = Pending::new();
+        let (mut asked, stdin) = stand_in(false);
+        asked.child.stdin = stdin;
+        let pid = asked.child.id();
+        assert!(initialize(asked, (), P.count(), Duration::from_millis(200), Duration::from_millis(500)).is_none());
+        assert!(P.wait(Duration::from_secs(15)), "done just past the grace");
+        assert!(gone_soon(pid));
+    }
+
+    #[test]
+    fn luna_s_exit_waits_for_the_asks_still_counted() {
+        static P: Pending = Pending::new();
+        assert!(P.wait(Duration::ZERO), "none counted: nothing to wait for");
+        let counted = P.count();
+        assert!(!P.wait(Duration::from_millis(100)), "one counted holds it");
+        let begun = Instant::now();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(counted);
+        });
+        assert!(P.wait(Duration::from_secs(10)), "done once it is");
+        assert!(begun.elapsed() >= Duration::from_millis(250) && begun.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

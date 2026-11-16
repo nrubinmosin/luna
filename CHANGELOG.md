@@ -10,10 +10,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
-- Asking Claude Code for an account's models no longer risks signing the
-  account out: the CLI renews a token close to expiry as it starts and saves
-  the new one only after it has answered, and Luna killed it at the answer.
-  It now gets up to 10 seconds to exit by itself first (#75).
+- Asking Claude Code for an account's models no longer kills the CLI while
+  it may be saving a renewed token, which could sign the account out: the
+  CLI renews a token close to expiry as it starts and saves the new one only
+  after it has answered, and Luna killed it at the answer. Answered or not,
+  it now gets up to 10 seconds to exit by itself first, what it leaves
+  running is taken down after, and Luna waits for that when it quits or
+  restarts. A CLI that hangs past those 10 seconds while saving can still
+  be cut (#75).
 
 ## [0.18.2] - 2026-11-13
 
