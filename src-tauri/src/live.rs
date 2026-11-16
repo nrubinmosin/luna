@@ -373,9 +373,17 @@ fn codex_an_over_privileged_spawn_is_refused() {
 /// disk and the account signed in, rather than killing the CLI between the
 /// server's rotation and the save (issue #75). Credentials are read by field
 /// and never shown.
+///
+/// Only with `LUNA_LIVE_RENEW=1` too (live-tests.ps1 `-Renew`): it rotates the
+/// account's refresh token, and on a clone made with its source's login
+/// (test-accounts.ps1 `-WithCredentials`) that leaves the source signed out.
 #[test]
-#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+#[ignore = "live: needs LUNA_LIVE=1, LUNA_LIVE_RENEW=1 and a signed-in test account"]
 fn claude_the_model_ask_leaves_a_renewed_token_saved() {
+    if std::env::var("LUNA_LIVE_RENEW").as_deref() != Ok("1") {
+        eprintln!("skipped: LUNA_LIVE_RENEW is not 1 (the test renews the account's token; see live-tests.ps1 -Renew)");
+        return;
+    }
     let Some(live) = live(Provider::Claude) else { return };
     let cred = live.account.join(".credentials.json");
     let oauth = || -> Value {
