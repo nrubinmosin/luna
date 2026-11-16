@@ -13,6 +13,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Claude Code 2.1.325 is on the known-good list, so the default channel
   installs it.
 
+### Security
+
+- Claude Code below 2.1.325 no longer runs: the list's `minSafe` rises to it,
+  and 2.1.323 leaves the list. 2.1.325 fixes a security issue in how
+  zstd-compressed responses are decoded, and Bash permission checks where
+  some compound commands ran without asking, an allow rule could run another
+  program than the one it names, and some deny and ask rules did not apply;
+  Luna's helpers run in `auto` and under allow rules. A version below it
+  already current, held by "Use" or kept for rolling back is not started,
+  the hold is dropped and the next pass installs 2.1.325; Settings refuses
+  going back below it.
+
 ## [0.18.2] - 2026-11-13
 
 Luna now installs Codex 0.169.0, and Settings no longer offers a CLI version
