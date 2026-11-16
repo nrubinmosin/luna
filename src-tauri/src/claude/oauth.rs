@@ -35,7 +35,8 @@ pub enum Outcome {
     Fresh,
     /// A CLI holds the lock: it is renewing the token this very moment.
     Busy,
-    /// The server refused the refresh token. Only a new login helps.
+    /// The server refused the refresh token, or there is none to send. Only a
+    /// new login helps.
     Rejected,
     Failed(String),
 }
@@ -46,6 +47,14 @@ fn creds_path(account_path: &str) -> PathBuf {
 
 fn read(account_path: &str) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(creds_path(account_path)).ok()?).ok()
+}
+
+/// The stored refresh token, or None when it is absent or blank. Claude Code
+/// leaves `refreshToken: ""` behind once the server has turned the token
+/// down, and a blank one can only be turned down again: either way only a
+/// new login helps. A token with text in it is used as it is, untrimmed.
+pub(crate) fn refresh_token(oauth: &Value) -> Option<&str> {
+    oauth["refreshToken"].as_str().filter(|t| !t.trim().is_empty())
 }
 
 fn expired(oauth: &Value) -> bool {
@@ -140,17 +149,26 @@ fn exchange(oauth: &Value, refresh_token: &str) -> Result<Value, Exchange> {
         .send_json(body);
     match resp {
         Ok(r) => r.into_json().map_err(|e| Exchange::Failed(e.to_string())),
-        Err(ureq::Error::Status(code, r)) => {
-            let body: Value = r.into_json().unwrap_or(Value::Null);
-            let err = body["error"].as_str().unwrap_or("");
-            if err == "invalid_grant" {
-                Err(Exchange::Rejected)
-            } else {
-                Err(Exchange::Failed(format!("{code} {err}").trim().to_string()))
-            }
-        }
+        Err(ureq::Error::Status(code, r)) => Err(refusal(code, &r.into_json().unwrap_or(Value::Null))),
         Err(e) => Err(Exchange::Failed(e.to_string())),
     }
+}
+
+/// What an error answer from the token endpoint means, by the CLI's own test
+/// before it gives a refresh token up: a 400 or 401 whose `error` (a string,
+/// or an object's `type`) is `invalid_grant` — the token is invalid, expired
+/// or revoked (RFC 6749 §5.2). The exception is an account on hold, which
+/// the server tells with `error_description: "account_on_hold"`: a new login
+/// does not lift that, so it is not called a sign-out. Anything else — a
+/// 429, a 5xx, a 400 of another kind — may pass, and is tried again later.
+fn refusal(code: u16, body: &Value) -> Exchange {
+    let err = body["error"].as_str().or_else(|| body["error"]["type"].as_str()).unwrap_or("");
+    let on_hold = body["error_description"].as_str() == Some("account_on_hold");
+    if matches!(code, 400 | 401) && err == "invalid_grant" && !on_hold {
+        return Exchange::Rejected;
+    }
+    let why = if on_hold { "account on hold" } else { err };
+    Exchange::Failed(format!("{code} {why}").trim().to_string())
 }
 
 /// The stored `claudeAiOauth` with the new tokens folded in. Fields the
@@ -218,9 +236,8 @@ fn write_via(path: &Path, tmp: &Path, text: &str) -> Result<(), String> {
 /// hold after a recent failure — it is a person asking, not the poller.
 pub fn refresh(account_path: &str, force: bool) -> Outcome {
     let Some(v) = read(account_path) else { return Outcome::Failed("no credentials".into()) };
-    let Some(rt) = v["claudeAiOauth"]["refreshToken"].as_str() else {
-        return Outcome::Failed("no refresh token".into());
-    };
+    // No token to post is the same as one turned down, and asks nothing.
+    let Some(rt) = refresh_token(&v["claudeAiOauth"]) else { return Outcome::Rejected };
     if dead().lock().unwrap().contains(rt) {
         return Outcome::Rejected;
     }
@@ -243,9 +260,8 @@ pub fn refresh(account_path: &str, force: bool) -> Outcome {
     if !expired(oauth) {
         return Outcome::Fresh;
     }
-    let Some(rt) = oauth["refreshToken"].as_str().map(str::to_owned) else {
-        return Outcome::Failed("no refresh token".into());
-    };
+    // A CLI may have given the token up meanwhile, and blanked it.
+    let Some(rt) = refresh_token(oauth).map(str::to_owned) else { return Outcome::Rejected };
 
     let fail = |e: String| {
         crate::log::warn("oauth", &format!("token refresh failed for {account_path}: {e}"));
@@ -311,6 +327,55 @@ mod tests {
         assert_eq!(next["refreshToken"], "rt-old");
         assert_eq!(next["scopes"], json!(["user:inference"]));
         assert!(renewed(&stored, &json!({"expires_in": 60})).is_none());
+    }
+
+    /// Error bodies in the RFC 6749 §5.2 shape the token endpoint answers in,
+    /// and the object shape the CLI reads `error` from as well.
+    #[test]
+    fn only_a_bad_grant_is_a_sign_out() {
+        let rejected = |code, body: Value| matches!(refusal(code, &body), Exchange::Rejected);
+        let failed = |code, body: Value| match refusal(code, &body) {
+            Exchange::Failed(why) => why,
+            Exchange::Rejected => panic!("{code} {body} taken as a sign-out"),
+        };
+        let grant = json!({ "error": "invalid_grant", "error_description": "Refresh token not found or invalid" });
+        assert!(rejected(400, grant.clone()));
+        assert!(rejected(401, grant.clone()));
+        assert!(rejected(400, json!({ "error": { "type": "invalid_grant", "message": "Refresh token expired" } })));
+
+        // The same words under another status are no verdict on the token.
+        assert_eq!(failed(500, grant.clone()), "500 invalid_grant");
+        assert_eq!(failed(429, grant), "429 invalid_grant");
+        // A request the server could not read, not a token it turned down.
+        let unread = json!({ "error": "invalid_request", "error_description": "refresh_token is required" });
+        assert_eq!(failed(400, unread), "400 invalid_request");
+        assert_eq!(failed(401, json!({ "error": "invalid_client" })), "401 invalid_client");
+        assert_eq!(failed(502, Value::Null), "502");
+        // A new login does not lift a hold, so the row must not ask for one.
+        let hold = json!({ "error": "invalid_grant", "error_description": "account_on_hold" });
+        assert_eq!(failed(400, hold), "400 account on hold");
+    }
+
+    /// What Claude Code leaves after the server turned its refresh token
+    /// down, as #76 found it: nothing to post, so no request and no lock.
+    #[test]
+    fn a_blank_or_missing_refresh_token_is_rejected_without_asking() {
+        let root = std::env::temp_dir().join(format!("luna-oauth-blank-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let acct = root.to_string_lossy().into_owned();
+        for oauth in [
+            json!({ "accessToken": "", "refreshToken": "", "expiresAt": 0 }),
+            json!({ "accessToken": "", "refreshToken": " \t", "expiresAt": 0 }),
+            json!({ "accessToken": "old", "expiresAt": 1 }),
+        ] {
+            std::fs::write(creds_path(&acct), json!({ "claudeAiOauth": oauth }).to_string()).unwrap();
+            assert!(matches!(refresh(&acct, true), Outcome::Rejected), "{oauth}");
+            assert!(!root.join(".oauth_refresh.lock").exists());
+        }
+        assert_eq!(refresh_token(&json!({ "refreshToken": "rt-1" })), Some("rt-1"));
+        assert_eq!(refresh_token(&json!({ "refreshToken": 7 })), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

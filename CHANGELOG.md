@@ -8,6 +8,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- A Claude Code account whose login the CLI had cleared (empty tokens in
+  `.credentials.json`) no longer shows as signed in with "token refresh
+  failed" and no way back: it shows signed out with its **Sign in** button,
+  and Luna no longer sends a refresh with an empty token. A refresh the
+  server turns down as `invalid_grant` signs the account out the same way;
+  an account on hold, or any other refused refresh, stays a failed refresh.
+  A Codex account with an empty token in `auth.json` reads as signed out
+  too, and neither is picked for a helper.
+
 ## [0.18.2] - 2026-11-13
 
 Luna now installs Codex 0.169.0, and Settings no longer offers a CLI version
