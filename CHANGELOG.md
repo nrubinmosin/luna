@@ -17,7 +17,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   of Luna resizing its terminal, or of the focus moving into or out of it, is
   taken for the CLI's redraw and no longer counts as output, nor starts a
   power-off's quiet window over. A turn at work still counts, and so does
-  what a session prints in answer to keys, a paste or clicks in its terminal.
+  what a session prints in answer to keys, a paste or clicks in its terminal
+  once that second has passed (a click that moves the focus starts one).
 
 ## [0.18.2] - 2026-11-13
 
