@@ -87,6 +87,12 @@ struct Session {
     /// a quiet screen mid-turn is how an approval prompt is told apart from
     /// work in progress.
     last_output_ms: Arc<AtomicU64>,
+    /// `last_output_ms` without the repaints a resize brought on
+    /// (`is_work_output`): what the activity sampler counts as the session
+    /// printing. A click on an idle session refits its pane and nudges its
+    /// size, and the repaint that followed held the PC awake as if the
+    /// session were at work.
+    work_output_ms: Arc<AtomicU64>,
     pid: Option<u32>,
     cwd: String,
     spawned_at_ms: u128,
@@ -145,6 +151,19 @@ pub fn manager() -> &'static PtyManager {
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// How long after a resize a session's output is taken for the repaint it
+/// brought on. A CLI redraws its screen within a frame or two of a resize;
+/// a pane's repaint nudge is two resizes 60 ms apart, and the window runs
+/// from the second. Real output that lands inside it goes uncounted for that
+/// long only: the first read after it counts.
+pub(crate) const RESIZE_REPAINT_MS: u64 = 1_000;
+
+/// Whether output read at `now` is the session's own, rather than the repaint
+/// of a resize Luna applied at `last_resize_ms` (0: never).
+pub(crate) fn is_work_output(now: u64, last_resize_ms: u64) -> bool {
+    now.saturating_sub(last_resize_ms) > RESIZE_REPAINT_MS
 }
 
 /// Whether two paths name the same folder, slashes and a trailing separator
@@ -208,5 +227,19 @@ mod tests {
     fn a_login_session_is_told_by_its_folder() {
         assert!(same_dir("C:\\acc\\anthropic\\one\\", "C:/acc/anthropic/one"));
         assert!(!same_dir("C:\\p", "C:\\acc\\anthropic\\one"));
+    }
+
+    /// The repaint a resize brings on is not the session's output; what comes
+    /// after the window is, and so is all of it when no resize was made.
+    #[test]
+    fn output_just_after_a_resize_is_its_repaint() {
+        let resized = 100_000;
+        assert!(!is_work_output(resized, resized));
+        assert!(!is_work_output(resized + 400, resized));
+        assert!(!is_work_output(resized + RESIZE_REPAINT_MS, resized));
+        assert!(is_work_output(resized + RESIZE_REPAINT_MS + 1, resized));
+        assert!(is_work_output(resized, 0), "never resized");
+        // A clock stepped back reads as just resized, not as work.
+        assert!(!is_work_output(resized - 5_000, resized));
     }
 }

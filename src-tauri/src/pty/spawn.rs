@@ -4,7 +4,7 @@
 
 use super::control::end_leftovers;
 use super::screen::{as_key_events, cursor_at, render_screen, Modes};
-use super::{manager, now_ms, Input, Session};
+use super::{is_work_output, manager, now_ms, Input, Session};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
@@ -283,10 +283,14 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let input_tx = Arc::new(input_tx);
     let replies = Arc::downgrade(&input_tx);
     let size = Arc::new(Mutex::new((INITIAL_ROWS, INITIAL_COLS)));
+    // When the writer last applied a resize, for the reader to tell the
+    // repaint that follows from the session's own output (`work_output_ms`).
+    let last_resize_ms = Arc::new(AtomicU64::new(0));
     {
         let id = id.clone();
         let master = pair.master;
         let size_slot = Arc::clone(&size);
+        let last_resize_ms = Arc::clone(&last_resize_ms);
         std::thread::spawn(move || {
             // A broken pipe stays broken: say so once, then keep the master
             // alive for the session's own teardown rather than closing the pty
@@ -304,9 +308,14 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                     }
                     Input::Bytes(_) => {}
                     Input::Resize(size) => {
+                        // Stamped on both sides of the resize: ConPTY may
+                        // redraw while the call is still stalled on a busy
+                        // child, and the CLI's own repaint follows its end.
+                        last_resize_ms.store(now_ms(), Ordering::Relaxed);
                         if let Err(e) = master.resize(size) {
                             crate::log::warn("pty", &format!("resize of {id} failed: {e}"));
                         }
+                        last_resize_ms.store(now_ms(), Ordering::Relaxed);
                         if let Ok(mut s) = size_slot.lock() {
                             *s = (size.rows, size.cols);
                         }
@@ -322,6 +331,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let modes = Arc::new(Mutex::new(Modes::default()));
     let alive = Arc::new(AtomicBool::new(true));
     let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
+    let work_output_ms = Arc::new(AtomicU64::new(now_ms()));
 
     {
         let id = id.clone();
@@ -329,6 +339,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         let modes = Arc::clone(&modes);
         let alive = Arc::clone(&alive);
         let last_output_ms = Arc::clone(&last_output_ms);
+        let last_resize_ms = Arc::clone(&last_resize_ms);
+        let work_output_ms = Arc::clone(&work_output_ms);
         let child = Arc::clone(&child);
         let size = Arc::clone(&size);
 
@@ -401,7 +413,11 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        last_output_ms.store(now_ms(), Ordering::Relaxed);
+                        let now = now_ms();
+                        last_output_ms.store(now, Ordering::Relaxed);
+                        if is_work_output(now, last_resize_ms.load(Ordering::Relaxed)) {
+                            work_output_ms.store(now, Ordering::Relaxed);
+                        }
                         modes.lock().unwrap_or_else(|e| e.into_inner()).feed(&chunk[..n]);
                         let pieces = split_dsr(&mut carry, &chunk[..n]);
                         let last = pieces.len() - 1;
@@ -523,6 +539,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             modes,
             alive,
             last_output_ms,
+            work_output_ms,
             pid,
             cwd,
             spawned_at_ms,

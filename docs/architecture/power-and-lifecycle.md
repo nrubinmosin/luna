@@ -43,7 +43,17 @@ Every 5 s `activity/` combines three signals per session:
    caught). What the CLI starts in its first 30 s (`STARTUP_MS`: MCP servers,
    its shell) is furniture; a program with a visible window of its own, and
    everything under it, is the user's and left out.
-3. **Output** over the last 30 s.
+3. **Output** over the last 30 s, by the session's work stamp
+   (`work_output_ms`), not its raw one (`last_output_ms`). A fullscreen CLI
+   repaints only on input or a resize, so a pane that mounts or changes size
+   resizes the pty (the refit, and `nudgeRepaint`'s row less and back); the
+   repaint that follows is Luna's doing. The writer thread stamps when it
+   applies each resize (before and after the call: ConPTY may redraw while it
+   stalls), and the reader moves the work stamp only for output more than
+   `RESIZE_REPAINT_MS` (1 s) after that. Real output inside the window goes
+   uncounted for that second only. The raw stamp still moves on every byte,
+   for what wants any output at all: the screen cache's key, Codex's
+   working/still status, the agents' reads.
 
 Rules between hooks and registry: the registry beats an "idle" from a hook; a
 hook's "waiting" beats the registry's "busy" (a permission prompt is inside a
