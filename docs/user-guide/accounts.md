@@ -14,7 +14,9 @@ per account. A fresh Codex account gets a `config.toml` with
 `check_for_update_on_startup = false`: Luna updates that CLI itself.
 
 - **Sign in** with the button on a fresh account's row: it runs `claude`, or
-  `codex login`, in a modal.
+  `codex login`, in a modal. An account whose login has run out (the server
+  turned its refresh token down, or the CLI cleared its tokens) shows signed
+  out with the same button.
 - **Rename** with the pencil beside the name: the folder is renamed and every
   chat on it, the agents' list, the settings parent and what Skills &
   instructions knows of its copies follow. Not while a chat

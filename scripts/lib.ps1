@@ -256,16 +256,19 @@ function Use-BuildLock([scriptblock]$Body) {
 
 # Whether an account folder holds a login its CLI can start on, by the rule
 # Luna's own spawns go by (agents/spawn/account.rs `signed_in`): Claude Code's
-# OAuth refresh token, or Codex's ChatGPT tokens or API key. $Provider is the
-# accounts folder's name for it, anthropic or openai.
+# OAuth refresh token, or Codex's ChatGPT access and refresh tokens or API key,
+# none of them blank (Claude Code blanks its tokens once a refresh is refused).
+# $Provider is the accounts folder's name for it, anthropic or openai.
 function Test-AccountSignedIn([string]$Provider, [string]$Path) {
     $file = if ($Provider -eq 'anthropic') { '.credentials.json' } else { 'auth.json' }
     $json = try { Get-Content -LiteralPath (Join-Path $Path $file) -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable } catch { $null }
     if (-not $json) { return $false }
+    $text = { param($Value) $Value -is [string] -and $Value.Trim() -ne '' }
     if ($Provider -eq 'anthropic') {
-        return $json.claudeAiOauth -is [hashtable] -and $json.claudeAiOauth.refreshToken -is [string]
+        return $json.claudeAiOauth -is [hashtable] -and (& $text $json.claudeAiOauth.refreshToken)
     }
-    ($json.tokens -is [hashtable]) -or ($json.OPENAI_API_KEY -is [string] -and [bool]$json.OPENAI_API_KEY)
+    $tokens = $json.tokens
+    ($tokens -is [hashtable] -and (& $text $tokens.access_token) -and (& $text $tokens.refresh_token)) -or (& $text $json.OPENAI_API_KEY)
 }
 
 # Whether $Path is a junction or symlink (any reparse point), not following it.
