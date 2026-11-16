@@ -231,11 +231,18 @@ pub fn exiting(reason: &str) {
 }
 
 /// For the frontend's own way out — the updater ends the process from inside
-/// its install call — and to take it back when that install fails.
-#[tauri::command]
+/// its install call — and to take it back when that install fails. Off the
+/// event loop: the way out waits for a model ask still running.
+#[tauri::command(async)]
 pub fn note_exit(reason: Option<String>) {
     match reason {
-        Some(r) => exiting(&r),
+        Some(r) => {
+            exiting(&r);
+            // On Windows the install ends the process with exit(0), past the
+            // event loop's end where Luna's other ways out wait for it.
+            #[cfg(windows)]
+            crate::claude::models::wait_for_asks();
+        }
         None => {
             if !NOTED.swap(false, Ordering::SeqCst) {
                 return;
