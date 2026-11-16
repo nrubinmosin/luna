@@ -9,6 +9,9 @@
 #   -ClaudeAccount or -CodexAccount alone    that provider's tests only
 #   -NoBuild                                  run what test-build\live-tests holds
 #   -TimeoutS 240                             the most one test waits on its CLI
+#   -Renew                                    also the test that has Claude Code renew the
+#                                             account's token (LUNA_LIVE_RENEW): not on a clone
+#                                             made -WithCredentials, whose source it signs out
 #
 # An account is a name in test-build/accounts/<anthropic|openai>/ (make one with
 # scripts/test-accounts.ps1 clone, then sign it in). Each is checked before
@@ -25,7 +28,8 @@ param(
     [string]$ClaudeAccount,
     [string]$CodexAccount,
     [switch]$NoBuild,
-    [int]$TimeoutS = 240
+    [int]$TimeoutS = 240,
+    [switch]$Renew
 )
 . "$PSScriptRoot/lib.ps1"
 
@@ -88,6 +92,8 @@ Write-Warning 'the live tests spend the quota of the accounts named, a few short
 $saved = @{}
 $set = @{ LUNA_LIVE = '1'; LUNA_LIVE_TIMEOUT_S = "$TimeoutS"; PATH = (($runs.CliDir | Select-Object -Unique) + $env:PATH) -join [IO.Path]::PathSeparator }
 foreach ($r in $runs) { $set[$r.Var] = $r.Account; $set[$r.CliVar] = $r.Cli }
+# Empty unsets it, so a value left in this shell does not turn the test on.
+$set['LUNA_LIVE_RENEW'] = if ($Renew) { '1' } else { '' }
 $passed = 0; $failed = @()
 Push-Location -LiteralPath $dir
 try {
