@@ -87,11 +87,10 @@ struct Session {
     /// a quiet screen mid-turn is how an approval prompt is told apart from
     /// work in progress.
     last_output_ms: Arc<AtomicU64>,
-    /// `last_output_ms` without the repaints a resize brought on
-    /// (`is_work_output`): what the activity sampler counts as the session
-    /// printing. A click on an idle session refits its pane and nudges its
-    /// size, and the repaint that followed held the PC awake as if the
-    /// session were at work.
+    /// `last_output_ms` without the repaints Luna's own resizes bring on
+    /// (`reader_stamp`): what the activity sampler counts as the session
+    /// printing. A pane shown, refit or nudged resizes the pty, and the
+    /// CLI's redraw that follows is Luna's doing, not the session at work.
     work_output_ms: Arc<AtomicU64>,
     pid: Option<u32>,
     cwd: String,
@@ -175,12 +174,28 @@ pub(crate) const RESIZE_REPAINT_MS: u64 = 1_000;
 /// Whether output read at `now` is the session's own, rather than the repaint
 /// of the resize Luna last applied at `last_resize` (None: never). Both on
 /// `mono_ms`'s clock, so a wall clock set back cannot stretch the window.
-pub(crate) fn is_work_output(now: u64, last_resize: Option<u64>) -> bool {
+fn is_work_output(now: u64, last_resize: Option<u64>) -> bool {
     last_resize.is_none_or(|at| now.saturating_sub(at) > RESIZE_REPAINT_MS)
 }
 
 /// What `Session`'s resize stamp holds before the first resize.
 const NEVER_RESIZED: u64 = u64::MAX;
+
+/// What the reader stores as the work stamp (`Session::work_output_ms`) for
+/// output read at `now_wall` (`now_ms`) and `now_mono` (`mono_ms`), the
+/// writer's resize stamp being `last_resize` as it holds it (`NEVER_RESIZED`
+/// before the first): `now_wall`, or None for a resize's repaint. The window
+/// is judged on the monotonic clock; the stamp is wall-clock time, as the
+/// sampler compares it with its own now.
+pub(crate) fn reader_stamp(now_wall: u64, now_mono: u64, last_resize: u64) -> Option<u64> {
+    let resized = Some(last_resize).filter(|&at| at != NEVER_RESIZED);
+    is_work_output(now_mono, resized).then_some(now_wall)
+}
+
+/// `reader_stamp` for output the reader thread has just read at `now_wall`.
+fn reader_stamp_now(now_wall: u64, last_resize: u64) -> Option<u64> {
+    reader_stamp(now_wall, mono_ms(), last_resize)
+}
 
 /// Whether two paths name the same folder, slashes and a trailing separator
 /// aside — and case, where the file system ignores it.
@@ -259,6 +274,27 @@ mod tests {
         // The writer stamped a resize after the reader took its time: that
         // read is the resize's too.
         assert!(!is_work_output(resized - 3, Some(resized)));
+    }
+
+    /// The reader stores wall time for the session's own output and nothing
+    /// for a resize's repaint, judged on the monotonic clock alone; before
+    /// the first resize, every read is the session's own.
+    #[test]
+    fn the_reader_stamps_wall_time_for_work_alone() {
+        let wall = 1_700_000_000_000;
+        assert_eq!(reader_stamp(wall, 5_400, 5_000), None);
+        assert_eq!(reader_stamp(wall, 5_000 + RESIZE_REPAINT_MS + 1, 5_000), Some(wall));
+        assert_eq!(reader_stamp(wall, 0, NEVER_RESIZED), Some(wall), "never resized");
+        assert_eq!(reader_stamp(wall, 5_000, NEVER_RESIZED), Some(wall), "never resized");
+    }
+
+    /// The reader thread's own clocks: a resize the writer stamped just now
+    /// hides what is read now, and a session never resized counts at once.
+    #[test]
+    fn the_reader_judges_the_window_on_the_resize_clock() {
+        assert_eq!(reader_stamp_now(now_ms(), mono_ms()), None);
+        let wall = now_ms();
+        assert_eq!(reader_stamp_now(wall, NEVER_RESIZED), Some(wall));
     }
 
     /// The clock the window runs on only moves forward.

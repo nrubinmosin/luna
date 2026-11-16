@@ -213,11 +213,16 @@ pub(super) fn agents_at_work(t: &Track) -> Option<String> {
     }
 }
 
-/// Whether a session's output is recent enough to count as work. Its work
-/// output (`ActivityProbe::work_output_ms`), not every byte: the repaint a
-/// resize from Luna brings on is no work of the session's.
-fn output_fresh(now: u64, work_output_ms: u64) -> bool {
-    now.saturating_sub(work_output_ms) < OUTPUT_FRESH_MS
+/// How long ago a session last printed, by its work stamp
+/// (`ActivityProbe::work_output_ms`), not every byte: the repaint a resize
+/// from Luna brings on is no work of the session's.
+fn output_age(p: &crate::pty::ActivityProbe, now: u64) -> u64 {
+    now.saturating_sub(p.work_output_ms)
+}
+
+/// Whether output `age` ms old is recent enough to count as work.
+fn output_fresh(age: u64) -> bool {
+    age < OUTPUT_FRESH_MS
 }
 
 /// A session is busy while its model works, while something under it holds
@@ -307,7 +312,8 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
             if !gone_quiet.is_empty() {
                 let_go.push((p.id.clone(), gone_quiet));
             }
-            t.output_fresh = output_fresh(now, p.work_output_ms);
+            let age = output_age(p, now);
+            t.output_fresh = output_fresh(age);
 
             // A turn "ends" for an agent when the model stops, not when its
             // background jobs do: `wait` wants the reply, and the children are
@@ -336,7 +342,7 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
                 stalled: t.failed.filter(|_| waiting),
                 hook: t.hook,
                 disk: t.disk,
-                output_age_ms: now.saturating_sub(p.work_output_ms),
+                output_age_ms: age,
             });
         }
     }
@@ -497,12 +503,31 @@ mod tests {
         assert!(t.agents.is_empty());
     }
 
-    /// What the reader does with a read at `at`: the work stamp moves only
-    /// for output that is not a resize's repaint. One clock stands here for
-    /// both of the reader's: the window's and the work stamp's.
+    /// What the reader does with a read at `at` (`pty::reader_stamp`): the
+    /// work stamp moves only for output that is not a resize's repaint. One
+    /// clock stands here for both of the reader's: the window's and the
+    /// work stamp's.
     fn read_at(work_output_ms: &mut u64, at: u64, last_resize_ms: u64) {
-        if crate::pty::is_work_output(at, Some(last_resize_ms)) {
-            *work_output_ms = at;
+        if let Some(stamp) = crate::pty::reader_stamp(at, at, last_resize_ms) {
+            *work_output_ms = stamp;
+        }
+    }
+
+    /// A probe of a session that printed `last_output_ms` and
+    /// `work_output_ms` as given.
+    fn probe(last_output_ms: u64, work_output_ms: u64) -> crate::pty::ActivityProbe {
+        crate::pty::ActivityProbe {
+            id: "chat-repaint".into(),
+            provider: crate::provider::Provider::Claude,
+            pid: None,
+            cwd: String::new(),
+            spawned_at_ms: 0,
+            resume: None,
+            account_path: String::new(),
+            last_output_ms,
+            work_output_ms,
+            job: None,
+            asking: false,
         }
     }
 
@@ -517,9 +542,21 @@ mod tests {
         read_at(&mut work, nudged + 90, nudged + 60);
         read_at(&mut work, nudged + 60 + crate::pty::RESIZE_REPAINT_MS, nudged + 60);
         assert_eq!(work, 1_000);
-        let fresh = output_fresh(nudged + 5_000, work);
+        let fresh = output_fresh(output_age(&probe(nudged + 90, work), nudged + 5_000));
         assert!(!fresh);
         assert!(!at_work(false, &[], fresh));
+    }
+
+    /// The sampler goes by a session's work stamp, not its raw one: bytes a
+    /// moment ago, all of them a resize's repaint, leave it idle.
+    #[test]
+    fn a_probe_that_only_repainted_is_not_printing() {
+        let now = 600_000;
+        let p = probe(now - 100, now - OUTPUT_FRESH_MS - 1_000);
+        assert_eq!(output_age(&p, now), OUTPUT_FRESH_MS + 1_000);
+        assert!(!output_fresh(output_age(&p, now)));
+        assert!(!at_work(false, &[], output_fresh(output_age(&p, now))));
+        assert!(output_fresh(output_age(&probe(now - 100, now - 100), now)), "its own output counts");
     }
 
     /// Output once the window after a resize is over is the session's own,
@@ -532,8 +569,9 @@ mod tests {
         let printed = resized + crate::pty::RESIZE_REPAINT_MS + 1;
         read_at(&mut work, printed, resized);
         assert_eq!(work, printed);
-        assert!(at_work(false, &[], output_fresh(printed + 5_000, work)));
-        assert!(!at_work(false, &[], output_fresh(printed + OUTPUT_FRESH_MS, work)));
+        let p = probe(printed, work);
+        assert!(at_work(false, &[], output_fresh(output_age(&p, printed + 5_000))));
+        assert!(!at_work(false, &[], output_fresh(output_age(&p, printed + OUTPUT_FRESH_MS))));
     }
 
     /// A turn at work, or a process under it that holds the machine, keeps a
@@ -542,7 +580,7 @@ mod tests {
     fn a_turn_or_its_procs_stay_busy_through_a_repaint() {
         assert!(at_work(true, &[], false));
         assert!(at_work(false, &["node.exe (pid 4)".to_string()], false));
-        assert!(at_work(true, &[], output_fresh(600_000, 1_000)));
+        assert!(at_work(true, &[], output_fresh(output_age(&probe(599_900, 1_000), 600_000))));
     }
 
     #[test]
