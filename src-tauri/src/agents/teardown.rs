@@ -31,6 +31,10 @@ pub(super) struct Auto {
     /// `idle_since`, the autoDelete clock, which a read starts over without
     /// any work resuming.
     pub(super) released: bool,
+    /// Switched on by `pass_up`, its chat gone and nobody left above it, not
+    /// asked for at its spawn: a move under a chat switches it off again
+    /// (reparent.rs), as that chat is there to answer to.
+    pub(super) by_pass_up: bool,
 }
 
 /// What a helper has at stake in a delete, as the person's Delete dialog lists it:
@@ -445,6 +449,11 @@ pub fn forget(id: &str) {
     r.spawns.retain(|_, s| s.caller != id);
     r.tasks.remove(id);
     r.taken_over.retain(|chat, from| chat != id && from != id);
+    r.moved.remove(id);
+    r.suggested.remove(id);
+    for asked in r.suggested.values_mut() {
+        asked.retain(|s| s.chat != id);
+    }
     r.worktrees_before.remove(id);
     r.worktrees_left.remove(id);
     r.borrowed.remove(id);
@@ -495,7 +504,7 @@ fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> Vec<(String, Optio
         k.parent = up.clone();
         k.orphan = up.is_none();
         if k.orphan {
-            auto.entry(kid.clone()).or_default();
+            auto.entry(kid.clone()).or_insert_with(|| Auto { by_pass_up: true, ..Auto::default() });
         }
         moved.push((kid.clone(), up.clone()));
     }
@@ -704,7 +713,7 @@ mod tests {
             false,
             serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }),
         );
-        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), deleting: false, released: true };
+        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), released: true, ..Auto::default() };
         reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
         reap_these(pty, vec![kid.to_string()]);
         assert!(reg().lock().unwrap().known.contains_key(kid), "the breach would go with it");

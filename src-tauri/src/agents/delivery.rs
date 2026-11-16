@@ -9,7 +9,7 @@ use crate::agents::held::{hold, words};
 use crate::agents::owed::{owe_from, owe_from_at, seen, Asked};
 use crate::agents::privilege::{command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{authorize_send, is_mine, label, reg};
+use crate::agents::registry::{authorize_send, is_mine, label, ownership_steady, reg};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::Serialize;
@@ -303,6 +303,9 @@ pub(super) fn as_sent(caller: &str, id: &str, text: &str) -> String {
 /// for a status word or a report (notifier lines.rs `worth_waking`). Both are
 /// a helper's debt's; a chat's has neither.
 pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&str>, reply: bool) -> Result<Sent, String> {
+    // Into a helper: whose it is stays as checked here until the debt below is
+    // in, or a move of it to another chat waits (reparent.rs). A chat never moves.
+    let _steady = crate::background::has(id).then(ownership_steady);
     authorize_send(caller, id)?;
     let mine = is_mine(caller, id);
     if interrupt && !mine {

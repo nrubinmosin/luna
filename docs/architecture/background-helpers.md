@@ -25,7 +25,7 @@ owed by the person's chats, outlive a core restart.
 | `background/events.rs` | the CLIs' JSON streams and a turn's end |
 | `background/control.rs` | kill, interrupt, leftovers |
 | `background/ask.rs` | log as screen, transcript, held asks |
-| `background/rows.rs` | `agent://background` rows, the read-only view (`background_transcript`), the person's delete (`background_delete`, `background_at_stake`), opening one as a chat |
+| `background/rows.rs` | `agent://background` rows, the read-only view (`background_transcript`), the person's delete (`background_delete`, `background_at_stake`), the person's move to another chat (`background_move`, `background_move_targets`), opening one as a chat |
 | `background/persist.rs` | `helpers.json` across cores |
 | `agents/persist.rs`, `agents/held.rs` | chat ties, text held for the person's chats |
 | `agents/handover.rs` | a helper opened as a chat, handed over to the person |
@@ -160,6 +160,15 @@ its row's chip.
   (agents/teardown.rs `delete_by_user`). A chat's Delete dialog asks first what
   each of its helpers has at stake (`background_at_stake`: its turn, its
   worktree and the work in it) and offers each as a box of its own.
+- **Move** (`background_move`) moves a helper, with its line, to another of
+  the person's chats ([agents](agents.md#rights)); `background_move_targets`
+  says per chat whether it may go there and why not. While it moves, its
+  record is held (`claim_move`, `moving`, part of `held_back`): no turn starts,
+  sends queue, and neither an opening as a chat nor a delete begins; the turn
+  after it starts with the new parent and a note in its prompt
+  (`stdin_with`'s `moved`). Each row carries `top`, `watchedBy`, `moved` and
+  `suggested` for the window's "managed by", "watched by", "moved from" and
+  "Move to <chat>?".
 
 ## Opened as a chat: handed over
 

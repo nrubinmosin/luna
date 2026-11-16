@@ -313,8 +313,92 @@ pub fn claim_delete(id: &str) -> Result<DeleteClaim, String> {
     if e.deleting {
         return Err(format!("{id} is being deleted already"));
     }
+    if e.moving {
+        return Err(format!("the person is moving {id} to another chat; try again once that is through"));
+    }
     e.deleting = true;
     Ok(DeleteClaim { id: id.to_string(), held: true })
+}
+
+/// A move's hold on the helpers it moves (`claim_move`), let go when dropped.
+pub struct MoveClaim(Vec<String>);
+
+impl Drop for MoveClaim {
+    fn drop(&mut self) {
+        let mut held = Vec::new();
+        {
+            let mut r = lock();
+            for id in &self.0 {
+                if let Some(e) = r.entries.get_mut(id) {
+                    e.moving = false;
+                    held.push(id.clone());
+                }
+            }
+        }
+        for id in held {
+            go_on(&id);
+        }
+    }
+}
+
+/// Holds every helper of `ids` for a move to another chat (agents/reparent.rs),
+/// all or none: no turn starts on any of them meanwhile, so the next one starts
+/// under its new parent, and none is opened as a chat or deleted under it. A turn
+/// running goes on. Refused, naming the helper, while one is being opened as a
+/// chat, deleted, moved already, or is between a lead's handoff and its fresh
+/// start (`held_back`). An id with no helper record is passed over.
+pub fn claim_move(ids: &[String]) -> Result<MoveClaim, String> {
+    let mut r = lock();
+    if let Some(why) = claim_move_check(&r, ids) {
+        return Err(why);
+    }
+    let mut held = Vec::new();
+    for id in ids {
+        if let Some(e) = r.entries.get_mut(id) {
+            e.moving = true;
+            held.push(id.clone());
+        }
+    }
+    Ok(MoveClaim(held))
+}
+
+/// Why the helpers of `ids` cannot be moved now (`claim_move`'s refusal), for
+/// the window's list of targets; None if nothing holds them back.
+pub fn move_held_back(ids: &[String]) -> Option<String> {
+    claim_move_check(&lock(), ids)
+}
+
+fn claim_move_check(r: &Registry, ids: &[String]) -> Option<String> {
+    ids.iter().find_map(|id| {
+        let e = r.entries.get(id)?;
+        let why = if e.promoting {
+            "the person is opening it as a chat of their own"
+        } else if e.deleting {
+            "it is being deleted"
+        } else if e.moving {
+            "it is being moved already"
+        } else if e.switch_waits() {
+            "it is handing off to a fresh conversation"
+        } else {
+            return None;
+        };
+        Some(format!("{id} is held back ({why}); not moved"))
+    })
+}
+
+/// Whether a parent has an answer to come from helper `id` as it stands: a turn
+/// running, text queued or on its way in, or a question or permission it holds.
+/// What a helper moved to another chat owes that chat (agents/reparent.rs).
+pub fn has_work(id: &str) -> bool {
+    lock()
+        .entries
+        .get(id)
+        .is_some_and(|e| e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty() || e.switch_waits())
+}
+
+/// How many messages `from` has queued for helper `id` that its CLI has not had yet.
+pub fn queued_from(id: &str, from: &str) -> usize {
+    lock().entries.get(id).map_or(0, |e| e.queue.iter().chain(&e.in_flight).filter(|q| q.from.as_deref() == Some(from)).count())
 }
 
 /// What waited while helper `id` was held (`Entry::held_back`) goes on once it is

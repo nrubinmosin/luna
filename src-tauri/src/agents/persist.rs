@@ -59,6 +59,12 @@ pub struct Ties {
     /// See `Registry::tasks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// Its `autoDelete` was switched on by its chat's going (`Auto::by_pass_up`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_delete_passed_up: bool,
+    /// The person's last move of it to another chat (reparent.rs `Moved`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved: Option<crate::agents::reparent::Moved>,
 }
 
 pub fn ties_of(id: &str) -> Option<Ties> {
@@ -82,6 +88,8 @@ pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         worktrees_before: r.worktrees_before.get(id).cloned(),
         worktrees_left: r.worktrees_left.get(id).cloned().unwrap_or_default(),
         task: r.tasks.get(id).cloned(),
+        auto_delete_passed_up: r.auto.get(id).is_some_and(|a| a.by_pass_up),
+        moved: r.moved.get(id).cloned(),
     })
 }
 
@@ -110,7 +118,10 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     }
     // Its idle time counts afresh: nobody has had the chance to look at it.
     if ties.auto_delete {
-        r.auto.insert(id.to_string(), Auto::default());
+        r.auto.insert(id.to_string(), Auto { by_pass_up: ties.auto_delete_passed_up, ..Auto::default() });
+    }
+    if let Some(moved) = ties.moved {
+        r.moved.insert(id.to_string(), moved);
     }
     for (caller, baseline, cursor) in ties.owed {
         let o = told_job_went(&ties.told_pending, &caller, baseline, cursor).unwrap_or_else(|| Owed::from(baseline, cursor));

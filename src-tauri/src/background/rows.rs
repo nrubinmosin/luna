@@ -34,6 +34,19 @@ pub struct Row {
     pub last_activity_ms: Option<u64>,
     /// The first line of what it was spawned on (agents/ `task_of`).
     pub task: Option<String>,
+    /// The chat at the top of its line, `parent` managing it ("managed by
+    /// <parent> · chat <top>"); None with no chat above it.
+    pub top: Option<String>,
+    /// The person's chats waiting on it now that are not above it ("watched by").
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub watched_by: Vec<String>,
+    /// The person's last move of it to another chat ("moved from <from>, <when>").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moved: Option<crate::agents::Moved>,
+    /// The person's chats refused a write into it, the latest last: "Move to
+    /// <chat>?" (`background_move`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub suggested: Vec<crate::agents::Suggested>,
 }
 
 /// Every helper, for the window.
@@ -50,23 +63,30 @@ pub fn background_helpers() -> Vec<Row> {
         })
         .collect();
     ids.into_iter()
-        .map(|(id, spec, started_ms, turn_started_ms, left_running, promoting, last_activity_ms)| Row {
-            parent: crate::agents::parent_of(&id),
-            name: crate::agents::chat_name(&id).unwrap_or_default(),
-            state: crate::agents::state_of(&id).0,
-            ask: ask(&id),
-            provider: spec.provider,
-            account: std::path::Path::new(&spec.account_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-            model: spec.model,
-            effort: spec.effort,
-            worktree: spec.worktree,
-            started_ms,
-            turn_started_ms,
-            left_running,
-            promoting,
-            last_activity_ms,
-            task: crate::agents::task_of(&id),
-            id,
+        .map(|(id, spec, started_ms, turn_started_ms, left_running, promoting, last_activity_ms)| {
+            let owner = crate::agents::ownership_of(&id);
+            Row {
+                parent: crate::agents::parent_of(&id),
+                name: crate::agents::chat_name(&id).unwrap_or_default(),
+                state: crate::agents::state_of(&id).0,
+                ask: ask(&id),
+                provider: spec.provider,
+                account: std::path::Path::new(&spec.account_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                model: spec.model,
+                effort: spec.effort,
+                worktree: spec.worktree,
+                started_ms,
+                turn_started_ms,
+                left_running,
+                promoting,
+                last_activity_ms,
+                task: crate::agents::task_of(&id),
+                top: owner.top,
+                watched_by: owner.watched_by,
+                moved: owner.moved,
+                suggested: owner.suggested,
+                id,
+            }
         })
         .collect()
 }
@@ -220,6 +240,10 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         if e.deleting {
             return Err("it is being deleted".into());
         }
+        // A move to another chat has it for a moment (agents/reparent.rs).
+        if e.moving {
+            return Err("it is being moved to another chat; open it once that is through".into());
+        }
         // Its handoff would start a conversation the person's chat does not
         // have, or resume one it has let go of (switch.rs).
         if let Some(s) = &e.switch {
@@ -363,6 +387,21 @@ pub fn background_delete(
     drop_unsaved: Option<bool>,
 ) -> Result<crate::agents::UserDeleted, String> {
     crate::agents::delete_by_user(&id, drop_worktree.unwrap_or(true), stop_working.unwrap_or(false), drop_unsaved.unwrap_or(false))
+}
+
+/// The person moves the helper, with the helpers under it, to chat `to`: from
+/// its menu ("Move to chat…") or its row's "Move to <chat>?" (agents/reparent.rs).
+/// Err, with nothing changed, says why not.
+#[tauri::command]
+pub fn background_move(id: String, to: String) -> Result<crate::agents::HelperMoved, String> {
+    crate::agents::move_helper(&id, &to)
+}
+
+/// The chats helper `id` may move to, each with why not where it may not, for
+/// its menu to gray out (agents/reparent.rs `MoveTargets`).
+#[tauri::command]
+pub fn background_move_targets(id: String) -> crate::agents::MoveTargets {
+    crate::agents::move_targets(&id)
 }
 
 /// What each helper named has at stake in a delete (agents/teardown.rs `AtStake`),

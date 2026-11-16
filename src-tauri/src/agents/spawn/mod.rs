@@ -747,7 +747,7 @@ mod tests {
         let e = cap_room(&reg().lock().unwrap(), "cap-top", None, 8).unwrap_err();
         assert!(e.contains("cap-grandkid") && e.contains("cap-kid-0") && e.contains("delete those"), "{e}");
         // One whose answer reached its caller and that waits out autoDelete holds none.
-        let auto = |released| crate::agents::teardown::Auto { idle_since: Some(1), deleting: false, released };
+        let auto = |released| crate::agents::teardown::Auto { idle_since: Some(1), released, ..Default::default() };
         reg().lock().unwrap().auto.insert("cap-kid-0".into(), auto(true));
         assert!(room("cap-top", None), "a finished helper is no place taken");
         // At work again, or not autoDelete, it counts.
