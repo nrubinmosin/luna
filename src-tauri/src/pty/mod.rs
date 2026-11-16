@@ -210,6 +210,22 @@ fn only_focus_reports(bytes: &[u8]) -> bool {
     !bytes.is_empty() && bytes.chunks(3).all(|r| r == b"\x1b[I" || r == b"\x1b[O")
 }
 
+/// Writes input to the pty, a nudge (`only_focus_reports`, judged before any
+/// rewriting) stamped into `last_nudge` on both sides of the write as a
+/// resize is: the CLI may redraw before a writer descheduled after the write
+/// gets to stamp it, and the stamp after covers a write stalled on a busy
+/// child.
+fn write_input(writer: &mut impl std::io::Write, bytes: &[u8], nudge: bool, last_nudge: &AtomicU64) -> std::io::Result<()> {
+    if nudge {
+        last_nudge.store(mono_ms(), Ordering::Relaxed);
+    }
+    writer.write_all(bytes).and_then(|()| writer.flush())?;
+    if nudge {
+        last_nudge.store(mono_ms(), Ordering::Relaxed);
+    }
+    Ok(())
+}
+
 /// Whether two paths name the same folder, slashes and a trailing separator
 /// aside — and case, where the file system ignores it.
 pub fn same_dir(a: &str, b: &str) -> bool {
@@ -339,6 +355,43 @@ mod tests {
         assert!(!only_focus_reports(b"\x1bOI"), "SS3, not CSI");
         assert!(!only_focus_reports(b"\x1b[1I"), "a parameter");
         assert!(!only_focus_reports(b"I\x1b[O"));
+    }
+
+    /// A pty end that notes the nudge stamp as each write reaches it.
+    struct SeesStamp<'a> {
+        stamp: &'a AtomicU64,
+        seen: Vec<u64>,
+        written: Vec<u8>,
+    }
+
+    impl std::io::Write for SeesStamp<'_> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.seen.push(self.stamp.load(Ordering::Relaxed));
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A nudge is stamped before its bytes reach the pty, so a redraw read
+    /// before the writer comes back to stamp it is still the nudge's; other
+    /// input leaves the stamp as it was.
+    #[test]
+    fn a_nudge_is_stamped_before_its_bytes_are_written() {
+        let stamp = AtomicU64::new(NEVER_NUDGED);
+        let mut pty = SeesStamp { stamp: &stamp, seen: Vec::new(), written: Vec::new() };
+        write_input(&mut pty, b"a", false, &stamp).unwrap();
+        assert_eq!(pty.seen, [NEVER_NUDGED]);
+        assert_eq!(stamp.load(Ordering::Relaxed), NEVER_NUDGED, "a key is no nudge");
+
+        let before = mono_ms();
+        write_input(&mut pty, b"\x1b[I", true, &stamp).unwrap();
+        let at_write = pty.seen[1];
+        assert!(at_write != NEVER_NUDGED && at_write >= before, "stamped before the write");
+        assert!(stamp.load(Ordering::Relaxed) >= at_write, "and again after it");
+        assert_eq!(pty.written, b"a\x1b[I");
     }
 
     /// The clock the window runs on only moves forward.

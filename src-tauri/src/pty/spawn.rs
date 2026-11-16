@@ -4,12 +4,12 @@
 
 use super::control::end_leftovers;
 use super::screen::{as_key_events, cursor_at, render_screen, Modes};
-use super::{manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, Input, Session, NEVER_NUDGED};
+use super::{manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, Session, NEVER_NUDGED};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -302,16 +302,14 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                     Input::Bytes(chunk) if writable => {
                         // Focus moving into or out of a pane shown already
                         // makes the CLI redraw as a resize does, and is no
-                        // work of the session's: stamped once written. A key,
-                        // a click or a paste, alone or beside one, is not.
+                        // work of the session's: a nudge. A key, a click or a
+                        // paste, alone or beside one, is not.
                         let focus = only_focus_reports(&chunk);
                         // Key events only where ConPTY reads them (see `as_key_events`).
                         let chunk = if cfg!(windows) && provider == Provider::Codex { as_key_events(&chunk) } else { chunk };
-                        if let Err(e) = writer.write_all(&chunk).and_then(|()| writer.flush()) {
+                        if let Err(e) = write_input(&mut writer, &chunk, focus, &last_nudge_ms) {
                             crate::log::warn("pty", &format!("write to {id} failed: {e}"));
                             writable = false;
-                        } else if focus {
-                            last_nudge_ms.store(mono_ms(), Ordering::Relaxed);
                         }
                     }
                     Input::Bytes(_) => {}

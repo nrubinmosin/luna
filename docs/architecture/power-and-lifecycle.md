@@ -51,9 +51,10 @@ Every 5 s `activity/` combines three signals per session:
    as focus moves into or out of a pane whose CLI turned focus reporting on
    (`?1004`, one of `KEPT_MODES`), so moving between two panes already shown
    sends both CLIs one. The repaint that follows is Luna's doing. The writer
-   thread stamps each nudge (a resize before and after the call: ConPTY may
-   redraw while it stalls; a write once it is done, and only one of focus
-   reports alone, `only_focus_reports`), and the reader moves the work stamp
+   thread stamps each nudge before and after passing it on (a resize: ConPTY
+   may redraw while the call stalls; a write of focus reports alone,
+   `only_focus_reports`, in `write_input`: the CLI may redraw before a
+   descheduled writer gets back to it), and the reader moves the work stamp
    only for output more than `REPAINT_WINDOW_MS` (1 s) after that. The window
    runs on a monotonic clock (`mono_ms`), so a wall clock set back cannot
    stretch it; the work stamp itself is wall-clock time, as the sampler
@@ -64,11 +65,13 @@ Every 5 s `activity/` combines three signals per session:
    the same. The window is a heuristic: a repaint that ConPTY or the CLI
    delivers more than 1 s after its nudge (a heavily loaded machine) still
    counts as output, and so does an idle CLI's redraw of its own (a status
-   line whose text changed). Output a CLI writes in answer to the person's
-   input still counts: keys, a paste, a mouse report (a click or a wheel in a
-   CLI that turned mouse reporting on), and a write that carries a focus
-   report beside any of them. How soon each CLI repaints is in [CLI
-   compatibility](../cli-compatibility.md). The raw stamp still moves on every
+   line whose text changed). The person's input (keys, a paste, a mouse
+   report: a click or a wheel in a CLI that turned mouse reporting on) is no
+   nudge, but neither does it close the window: what a CLI writes in answer
+   counts once the window has passed. A click that moves the focus sends its
+   `ESC [ I` as a write of its own (xterm.js's `onData`), so the answer to
+   that click within the window is left out too. How soon each CLI repaints
+   is in [CLI compatibility](../cli-compatibility.md). The raw stamp still moves on every
    byte, for what wants any output at all: the screen cache's key, Codex's
    working/still status, the agents' reads.
 
