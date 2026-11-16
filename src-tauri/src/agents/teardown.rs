@@ -465,7 +465,7 @@ pub fn forget(id: &str) {
     let spawned = gone.as_ref().is_some_and(|k| k.parent.is_some() || k.orphan);
     let auto = r.auto.remove(id);
     r.known.remove(id);
-    let moved = pass_up(&mut r, id, gone.and_then(|k| k.parent));
+    let (moved, change) = pass_up(&mut r, id, gone.and_then(|k| k.parent));
     r.tokens.retain(|_, chat| chat != id);
     r.seen.retain(|(who, chat), _| who != id && chat != id);
     r.delivery_floors.retain(|(who, chat), _| who != id && chat != id);
@@ -509,8 +509,12 @@ pub fn forget(id: &str) {
         crate::agentlog::ended(id, if auto.is_some_and(|a| a.deleting) { "auto-deleted" } else { "deleted" });
     }
     let handed = !moved.is_empty();
+    #[cfg(test)]
+    super::test_support::reached("forgotten", id);
+    // Off the registry's lock: a move of one of them since, counted after this
+    // change, keeps the parent it gave (`set_parent`).
     for (helper, parent) in moved {
-        crate::background::set_parent(&helper, parent);
+        crate::background::set_parent(&helper, parent, change);
     }
     if handed {
         crate::background::changed();
@@ -521,8 +525,11 @@ pub fn forget(id: &str) {
 }
 
 /// `id`'s helpers pass to `up`, or with no `up` stand alone (see `forget`).
-/// Returns each with whom it answers to now.
-fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> Vec<(String, Option<String>)> {
+/// Returns each with whom it answers to now, and the count of parent changes
+/// this one is (`Registry::parent_changes`).
+fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (Vec<(String, Option<String>)>, u64) {
+    r.parent_changes += 1;
+    let change = r.parent_changes;
     let Registry { known, auto, .. } = r;
     let mut moved = Vec::new();
     for (kid, k) in known.iter_mut().filter(|(_, k)| k.parent.as_deref() == Some(id)) {
@@ -533,7 +540,7 @@ fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> Vec<(String, Optio
         }
         moved.push((kid.clone(), up.clone()));
     }
-    moved
+    (moved, change)
 }
 
 #[cfg(test)]
@@ -654,7 +661,7 @@ mod tests {
         register("og-other", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
         owe_from("og-mid", "og-low", 0, 0);
         assert!(authorize("og-top", "og-low").is_ok());
-        let moved = pass_up(&mut reg().lock().unwrap(), "og-nobody", Some("og-top".into()));
+        let (moved, _) = pass_up(&mut reg().lock().unwrap(), "og-nobody", Some("og-top".into()));
         assert!(moved.is_empty(), "nobody's helpers, nothing moved");
 
         // A helper in the middle goes: its helper is the top chat's directly,

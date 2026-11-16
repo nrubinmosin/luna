@@ -60,6 +60,15 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
 /// lead goes back to once the switch is given up (`revert_switch`).
 pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     let started = spawn_turn(id, prompt);
+    // Overtaken by a move: its batch is queued again, for when the move lets go
+    // (`go_on`, which does nothing while it holds; its claim's release then does).
+    if let Ok(false) = started {
+        reg().1.notify_all();
+        save();
+        go_on(id);
+        return Ok(());
+    }
+    let started = started.map(|_| ());
     if let Err(err) = &started {
         if let Some(e) = lock().entries.get_mut(id) {
             if e.run.as_ref().is_some_and(|r| r.pid.is_none()) {
@@ -279,7 +288,8 @@ fn stops_background(line: &str) -> bool {
     line.starts_with("Background tasks still running") && line.contains("; stopping them.")
 }
 
-fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
+/// Ok(false): it was `overtaken` by a move of the person's, and starts nothing.
+fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // Nothing runs as administrator.
     crate::elevation::guard()?;
     settle_worktree(id);
@@ -302,15 +312,23 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // good only once the turn's model has answered it (events.rs `turn_over`).
     let moved = crate::agents::move_note(id);
     let (args, dir, envs, applied, provider, on_stdin, line, account) = {
-        let r = lock();
+        let mut r = lock();
         if r.closed {
             return Err("Luna is stopping".into());
         }
-        let e = r.entries.get(id).ok_or("no such helper")?;
+        let e = r.entries.get_mut(id).ok_or("no such helper")?;
         if e.run.as_ref().is_some_and(|run| run.stopped) {
             return Err(STOPPED.into());
         }
+        if overtaken(e) {
+            return Ok(false);
+        }
         let (args, dir, envs, applied) = command_with(e, id, &texts, handoff.as_ref())?;
+        // Made: from here it starts as made, and a move waits for its process.
+        if let Some(run) = e.run.as_mut() {
+            run.starting = true;
+        }
+        let e = &*e;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
         (
@@ -520,6 +538,8 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             return Err(why.into());
         }
     }
+    // A move waiting for this process (`Run::starting`) goes on.
+    reg().1.notify_all();
     crate::log::info(
         "background",
         &format!("{} turn started, pid {pid:?}: {} {}", crate::agents::label(id), provider.as_str(), args_for_log(id, &args)),
@@ -530,7 +550,30 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         abandon(child, pid);
         turn_over(id, None);
     }
-    Ok(())
+    Ok(true)
+}
+
+/// A move of the person's held the helper after its run was claimed for a turn
+/// and before the turn's command is made (`Run::overtaken`): what the turn was to
+/// start on is back at the head of the queue and the claim given up, for the turn
+/// after the move (control.rs `go_on`), with what it is to start on reserved and
+/// its command text judged again, against the parent the move left. A turn on
+/// text that is no batch has no queue to wait in and starts as claimed: an
+/// `interrupt` and a spawn's first turn are claimed and started under the hold
+/// on whose the helpers are (agents/registry.rs `ownership_steady`), which a
+/// move cannot take meanwhile; a `resume` with nothing undelivered carries no
+/// sender's text, and goes on as a turn begun before the move does, told of it
+/// at its next turn.
+pub(super) fn overtaken(e: &mut Entry) -> bool {
+    if !e.run.as_ref().is_some_and(|run| run.overtaken && run.pid.is_none()) || e.in_flight.is_empty() {
+        return false;
+    }
+    let behind = std::mem::take(&mut e.queue);
+    e.queue = std::mem::take(&mut e.in_flight);
+    e.queue.extend(behind);
+    e.run = None;
+    note(e, "its turn waits for the person's move to another chat");
+    true
 }
 
 /// A turn's arguments as the log keeps them. The chat's hook and guard URLs

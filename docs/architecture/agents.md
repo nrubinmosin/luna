@@ -256,7 +256,15 @@ put on `autoDelete` counted, as the move switches that off). In this order:
    of `held_back`): no turn starts until the move is through, a turn's end
    included (`turn_over` leaves the queue to `go_on`), so the next one starts
    with `LUNA_PARENT_ID` naming the new chat and its queued command text is
-   judged against the new owner; one running goes on. A helper being opened
+   judged against the new owner; one running goes on. A turn claimed but
+   not yet started is let start first if its command is made
+   (`Run::starting`: the move waits for its process, up to 15 s, and it goes
+   on as one begun before the move); if not, it is `Run::overtaken` and starts
+   nothing: its batch goes back to the head of the queue for `go_on` after the
+   move, which reserves it again and judges its command text against the new
+   owner. A turn on text that is no batch (an interrupt, a spawn's first) is
+   claimed and started under `ownership_steady`, which the move waits on. A
+   helper being opened
    as a chat, deleted, moved, or between a lead's handoff and its fresh start
    refuses the move; while it moves it refuses those. Under this claim the
    helper's work and its turn count are read in one look
@@ -277,15 +285,21 @@ put on `autoDelete` counted, as the move switches that off). In this order:
    are still queued. It records `moved` (`Moved`: from, to, when, whether a
    turn has been told), which its ties keep.
 5. Then the exclusive hold on whose the helpers are goes, before anything
-   that may start a turn; the background spec's parent is set, and set again
-   to what the registry says if a chat's going passed the helper on
-   meanwhile; the claim and the hand-off go; the save and the rows' event.
+   that may start a turn; the background spec's parent is set from the
+   change (`background::set_parent`): every change of a helper's parent in the
+   registry, a move's or a chat's going's (`pass_up`), is counted
+   (`Registry::parent_changes`), and the spec takes a parent only from a
+   change later than the one it has, so a chat's going that changed the
+   registry before the move but writes the spec after it loses; the claim and
+   the hand-off go; the save and the rows' event.
 
 From then on the old chat's send, answer, stop, delete, and read or wait
 without `scope: "all"` on any moved session are refused naming the new chat
 (`moved_away`, `moved_error`): a wait in flight sees it at its next look. Its
 waits with `scope: "all"` go on. The helper's next turn gets a note in its
-prompt that the person moved it and to which chat (`move_note`), until a
+prompt that the person moved it and to which chat (`move_note`), naming
+whom it answers to at that turn, its parent then (a chat moved to and gone
+since is named as gone, and no chat as above it), until a
 turn's model has answered a prompt that carried it (`move_told`, from
 `turn_over` once the turn `acted`, and only if that move is still the last:
 the turn's `Run::moved` names it), on both CLIs: Claude Code has its role note

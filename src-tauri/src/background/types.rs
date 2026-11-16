@@ -35,8 +35,8 @@ pub struct Spec {
     #[serde(default)]
     pub agent: Option<String>,
     /// The session it answers to, for what it is told of itself: who started it
-    /// until that one is deleted (`set_parent`). Here and not looked up:
-    /// `command_for` runs under this module's lock.
+    /// until that one is deleted or the person moves it (`set_parent`). Here
+    /// and not looked up: `command_for` runs under this module's lock.
     #[serde(default)]
     pub parent: Option<String>,
     /// Keeps the MCP servers and connectors of its account, as spawned with
@@ -277,6 +277,15 @@ pub(super) struct Run {
     /// (agents/reparent.rs `move_note`): told for good once its model has
     /// answered that prompt (`turn_over`), and only if it is still the last move.
     pub(super) moved: Option<crate::agents::Moved>,
+    /// Claimed with no process yet, its command made (run.rs `spawn_turn`):
+    /// from here it starts as made, and a move of the person's waits for its
+    /// process rather than change its parent under it (control.rs `claim_move`).
+    pub(super) starting: bool,
+    /// A move of the person's held the helper after this run was claimed and
+    /// before its command was made: what it was to start on was reserved, and
+    /// its command text judged, against the parent of before, so it does not
+    /// start; the batch goes back to the queue for the turn after the move.
+    pub(super) overtaken: bool,
 }
 
 impl Run {
@@ -294,6 +303,8 @@ impl Run {
             watched: Vec::new(),
             claim,
             moved: None,
+            starting: false,
+            overtaken: false,
         }
     }
 }

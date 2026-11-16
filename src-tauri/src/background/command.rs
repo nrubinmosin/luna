@@ -728,8 +728,9 @@ mod tests {
             let mut e = entry(provider);
             e.spec.parent = Some("old".into());
             e.session = Some("s-1".into());
+            lock().parent_changes.remove("moved");
             lock().entries.insert("moved".into(), e);
-            set_parent("moved", Some("new".into()));
+            set_parent("moved", Some("new".into()), 1);
             let r = lock();
             let e = &r.entries["moved"];
             let (args, _, envs, _) = command_for(e, "moved").unwrap();
@@ -742,7 +743,7 @@ mod tests {
             }
             drop(r);
             // With nobody to answer to, it hears no note; its role stays.
-            set_parent("moved", None);
+            set_parent("moved", None, 2);
             let e = lock().entries.remove("moved").unwrap();
             let (args, _, envs, _) = command_for(&e, "moved").unwrap();
             assert!(!envs.iter().any(|(k, _)| *k == "LUNA_PARENT_ID"));

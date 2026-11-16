@@ -31,7 +31,7 @@ use crate::agents::owed::owe_in;
 use crate::agents::privilege::{helpers_above_caller, holds_over};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{
-    descendants, is_descendant, label, named, ownership_changing, parent_of, persons_chat_in, reg, top_of, Registry, DEV_CALLER,
+    descendants, is_descendant, label, named, ownership_changing, persons_chat_in, reg, top_of, Registry, DEV_CALLER,
 };
 use crate::agents::spawn::{max_descendants, under_cap};
 use crate::throttle::now_ms;
@@ -135,20 +135,34 @@ pub struct MoveNote {
 }
 
 /// The note a moved helper's next turn is given, until a turn's model has
-/// answered a prompt that carried it (`move_told`).
+/// answered a prompt that carried it (`move_told`). Whom it answers to is its
+/// parent now, not the move's chat: that chat may have gone since (`forget`),
+/// leaving it with the one above that chat or with none.
 pub fn move_note(id: &str) -> Option<MoveNote> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let m = r.moved.get(id).filter(|m| !m.told)?;
+    let parent = r.known.get(id)?.parent.as_deref();
     let from = match &m.from {
         Some(from) => format!("from chat {}", named(&r, from)),
         None => "from no chat (the one above you had gone)".to_string(),
     };
-    let text = format!(
-        "The person moved you, in Luna's window, {from} to chat {}: you answer to that chat now. Your answers, \
-         reports and questions go to it, and only it and the sessions above you send to you.",
-        named(&r, &m.to)
-    );
-    Some(MoveNote { text, of: m.clone() })
+    let to = named(&r, &m.to);
+    let now = match parent {
+        Some(p) if p == m.to => format!(
+            "to chat {to}: you answer to that chat now. Your answers, reports and questions go to it, and only it and \
+             the sessions above you send to you."
+        ),
+        Some(p) => format!(
+            "to chat {to}, which has gone since: you answer to {} now. Your answers, reports and questions go to it, \
+             and only it and the sessions above you send to you.",
+            named(&r, p)
+        ),
+        None => format!(
+            "to chat {to}, which has gone since: no chat is above you now, so no agent sends to you or hears your \
+             answers. The person sees your work in Luna's window."
+        ),
+    };
+    Some(MoveNote { text: format!("The person moved you, in Luna's window, {from} {now}"), of: m.clone() })
 }
 
 /// A turn's model has answered a prompt that told it of move `of`: no turn
@@ -381,33 +395,31 @@ fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usi
                 a.idle_since = None;
             }
         }
-        Ok(Some(HelperMoved { id: id.to_string(), from, to: to.to_string(), sessions, auto_delete_off: auto_off, owed }))
+        let moved = HelperMoved { id: id.to_string(), from, to: to.to_string(), sessions, auto_delete_off: auto_off, owed };
+        Ok(Some((moved, r.parent_changes)))
     })();
     #[cfg(test)]
     super::test_support::reached("move changed", id);
     // Whose they are is settled: the writes waiting on it go on, and the
     // claim's release below, which may start a turn (`go_on`), comes after.
     drop(owners);
-    if let Ok(Some(_)) = &changed {
+    if let Ok(Some((_, change))) = &changed {
         // The parent its next turn is started with, before the claim lets one
-        // start. A chat gone meanwhile (`forget`) has passed it on in the
-        // registry, and set this too: what the registry says now stands,
-        // whichever of the two set it last.
-        crate::background::set_parent(id, Some(to.to_string()));
-        let now = parent_of(id);
-        if now.as_deref() != Some(to) {
-            crate::background::set_parent(id, now);
-        }
+        // start. A chat's going (`forget`) passes it on in the registry and
+        // writes it here too, after its own hold of the registry: whichever of
+        // the two writes last, the one that changed the registry last stands.
+        crate::background::set_parent(id, Some(to.to_string()), *change);
     }
     drop(claim);
     drop(holds);
-    changed
+    changed.map(|done| done.map(|(moved, _)| moved))
 }
 
 /// The one hold in which `id`'s line changes chat; `queued`: how many messages
 /// the old chat has queued for it. Returns whether an `autoDelete` `pass_up` had
 /// switched on went off.
 fn change(r: &mut Registry, id: &str, from: Option<&str>, sessions: &[String], to: &str, queued: usize) -> bool {
+    r.parent_changes += 1;
     if let Some(k) = r.known.get_mut(id) {
         k.parent = Some(to.to_string());
         k.orphan = false;
