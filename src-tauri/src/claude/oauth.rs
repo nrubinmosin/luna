@@ -358,21 +358,27 @@ mod tests {
 
     /// What Claude Code leaves after the server turned its refresh token
     /// down, as #76 found it: nothing to post, so no request and no lock.
+    /// The lock is held as a CLI would hold it: `refresh` reaching for it
+    /// would answer Busy, and the exchange comes only after it.
     #[test]
     fn a_blank_or_missing_refresh_token_is_rejected_without_asking() {
         let root = std::env::temp_dir().join(format!("luna-oauth-blank-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join(".oauth_refresh.lock")).unwrap();
         let acct = root.to_string_lossy().into_owned();
+        let with = |oauth: &Value| std::fs::write(creds_path(&acct), json!({ "claudeAiOauth": oauth }).to_string()).unwrap();
+        // The seam holds: a token to post goes for the lock and finds it taken.
+        with(&json!({ "accessToken": "old", "refreshToken": "rt-live", "expiresAt": 1 }));
+        assert!(matches!(refresh(&acct, true), Outcome::Busy));
         for oauth in [
             json!({ "accessToken": "", "refreshToken": "", "expiresAt": 0 }),
             json!({ "accessToken": "", "refreshToken": " \t", "expiresAt": 0 }),
             json!({ "accessToken": "old", "expiresAt": 1 }),
         ] {
-            std::fs::write(creds_path(&acct), json!({ "claudeAiOauth": oauth }).to_string()).unwrap();
+            with(&oauth);
             assert!(matches!(refresh(&acct, true), Outcome::Rejected), "{oauth}");
-            assert!(!root.join(".oauth_refresh.lock").exists());
         }
+        assert!(root.join(".oauth_refresh.lock").is_dir(), "the CLI's lock is left as it was");
         assert_eq!(refresh_token(&json!({ "refreshToken": "rt-1" })), Some("rt-1"));
         assert_eq!(refresh_token(&json!({ "refreshToken": 7 })), None);
         let _ = std::fs::remove_dir_all(&root);
