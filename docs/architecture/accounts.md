@@ -88,15 +88,19 @@ The answer is judged as the CLI judges it (`refusal`): a 400 or 401 saying
 answer is a failed refresh, tried again after 5 minutes. The temp file is
 created 0600.
 
-Signed in means a refresh token that is not blank (`oauth::refresh_token`),
-not past its `refreshTokenExpiresAt`. On `invalid_grant` the CLI blanks its
-tokens (`refreshToken: ""`, `accessToken: ""`, `expiresAt: 0`), so that file
-reads as signed out, offers Sign in, and no refresh is posted with it. A
-Codex `auth.json` is signed in by the same measure: both of its ChatGPT tokens
-there and not blank (`codex::limits::chatgpt_login`). The exception is
-`auth_mode: "chatgptAuthTokens"`, tokens a host application gave Codex: they
-come with an empty refresh token that Codex never uses, so there a non-blank
-access token is the login.
+Signed in means a refresh token that is not blank, not past its
+`refreshTokenExpiresAt` (`oauth::signed_in`): the panel's row and the choice of
+an account for a helper or a moved chat (`agents/spawn/account.rs`
+`signed_in`) both go by it, and `scripts/lib.ps1` `Test-AccountSignedIn` by
+the same rule. On `invalid_grant` the CLI blanks its tokens
+(`refreshToken: ""`, `accessToken: ""`, `expiresAt: 0`), so that file reads as
+signed out, offers Sign in, and no refresh is posted with it. A Codex
+`auth.json` is signed in by the same measure: both of its ChatGPT tokens there
+and not blank (`codex::limits::chatgpt_login`). The exception is
+`auth_mode: "chatgptAuthTokens"`, tokens a host application gives Codex, with
+an empty refresh token Codex never uses: there a non-blank access token is the
+login. Codex 0.169.0 keeps such tokens in memory and writes no `auth.json` for
+them, but its loader would take one, so Luna reads one the same way.
 
 Codex is left alone: its token lives 10 days, it refreshes itself, and the
 server rejects a reused refresh token, so a refresh beside a live Codex would

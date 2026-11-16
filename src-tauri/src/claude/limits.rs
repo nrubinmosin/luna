@@ -119,17 +119,11 @@ fn read_token(account_path: &str) -> Result<Token, String> {
     Ok(Token { access, expired })
 }
 
-/// Being signed in is about the *refresh* token: while it lives, a new access
-/// token can be minted without the user doing anything. A blank one is none
-/// (`oauth::refresh_token`): it is what the CLI leaves once the server has
-/// turned the token down.
+/// Being signed in is about the *refresh* token (`oauth::signed_in`). A blank
+/// one is none: it is what the CLI leaves once the server has turned the
+/// token down.
 fn signed_in(account_path: &str) -> bool {
-    read_json(&Path::new(account_path).join(".credentials.json"))
-        .map(|v| {
-            let o = &v["claudeAiOauth"];
-            oauth::refresh_token(o).is_some() && o["refreshTokenExpiresAt"].as_u64().map(|ms| now_ms() < ms).unwrap_or(true)
-        })
-        .unwrap_or(false)
+    read_json(&Path::new(account_path).join(".credentials.json")).is_some_and(|v| oauth::signed_in(&v["claudeAiOauth"]))
 }
 
 fn plan_from_tier(tier: &str) -> Option<String> {
