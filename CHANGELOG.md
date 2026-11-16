@@ -19,8 +19,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   without places for it, a lead or a helper, or while the helper is being
   opened, deleted or handing off. A helper's row says which chat is at the top
   of its line, which other chats wait on it, where it was moved from, and
-  which chats were refused a write into it (ADR-0028). The menu and the row's
-  "Move to <chat>?" come with the window's part.
+  which chats were refused a write into it (ADR-0028).
+- In the helper list each helper says who manages it and which chat its line
+  hangs from, which of your other chats waits on it and where you moved it
+  from; Move to chat… lists your chats, grays out the ones it may not go to with why,
+  and moves it on your click; a chat refused a write into it shows as "Move to
+  <chat>?" under it. Deleting a chat offers to pass each of its helpers to
+  another chat, a chat that asked for it or waits on it picked to start with;
+  the moves come first, and a refused one stops the delete, saying why.
 
 ### Changed
 

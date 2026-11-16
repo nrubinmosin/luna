@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { backgroundDelete, backgroundKill, type BackgroundHelperDto } from '../../ipc/agents';
+import { backgroundDelete, backgroundKill, backgroundMove, type BackgroundHelperDto } from '../../ipc/agents';
 import { Icon } from '../../shared/ui/icons';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { HoverPopover } from '../../shared/ui/HoverPopover';
@@ -23,6 +23,9 @@ import {
   type HelperTab
 } from './helperSummary';
 import { HelperPill } from './HelperPill';
+import { MoveHelperDialog } from './MoveHelperDialog';
+import { ownershipLine, suggestedChats } from './ownership';
+import { useNameOf } from './useNameOf';
 import './helpers.css';
 
 /** How long a chip glows after a helper of its chat was spawned. */
@@ -172,8 +175,8 @@ function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: s
 }
 
 /** A face that opens the helpers' list, with what the list opens: a helper
- *  watched, or the question before opening one as a chat. Kept here, not in
- *  the list: the list closes as they open, and they go on. */
+ *  watched, the question before opening one as a chat, or where to move one.
+ *  Kept here, not in the list: the list closes as they open, and they go on. */
 function Helpers({
   helpers,
   what,
@@ -187,7 +190,9 @@ function Helpers({
 }) {
   const [watching, setWatching] = useState<string | null>(null);
   const [handing, setHanding] = useState<BackgroundHelperDto | null>(null);
+  const [moving, setMoving] = useState<BackgroundHelperDto | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const nameOf = useNameOf();
   const watched = helpers.find(h => h.id === watching);
   return (
     <>
@@ -208,12 +213,17 @@ function Helpers({
               setHanding(h);
               close();
             }}
+            onMove={h => {
+              setMoving(h);
+              close();
+            }}
             error={error}
             setError={setError}
           />
         )}
       </HoverPopover>
       {watched && <HelperView helper={watched} onClose={() => setWatching(null)} />}
+      {moving && <MoveHelperDialog helper={moving} nameOf={nameOf} onClose={() => setMoving(null)} />}
       {handing && (
         <ConfirmDialog
           title={`Open "${helperName(handing)}" as your chat?`}
@@ -246,16 +256,20 @@ export function HelperPanel({
   helpers,
   onWatch,
   onOpen,
+  onMove,
   error,
   setError
 }: {
   helpers: BackgroundHelperDto[];
   onWatch: (id: string) => void;
   onOpen: (h: BackgroundHelperDto) => void;
+  onMove: (h: BackgroundHelperDto) => void;
   error: string | null;
   setError: (e: string | null) => void;
 }) {
   const now = useNow(15_000);
+  const nameOf = useNameOf();
+  const listed = new Set(helpers.map(h => h.id));
   // The tab picked, if any; else whichever has work in it, as helpers come and go.
   const [picked, setPicked] = useState<HelperTab | null>(null);
   const tab = picked ?? defaultTab(helpers);
@@ -300,6 +314,9 @@ export function HelperPanel({
           // Between turns, what its turns left running is what there is to stop.
           const left = h.state === 'background' ? (h.leftRunning ?? []) : [];
           const activity = activityLine(h, now);
+          const marks = ownershipLine(h, nameOf, now);
+          // A helper's helper moves only with the chat's own helper above it (agents/reparent.rs `check_source`).
+          const under = h.parent && listed.has(h.parent) ? h.parent : null;
           return (
             <div key={h.id} className="helper-row" data-helper={h.id} data-asking={asking ? 'yes' : 'no'}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
@@ -329,6 +346,38 @@ export function HelperPanel({
                   {line}
                 </div>
               )}
+              {/* Whose it is, and the way to make it another chat's: a link on
+                  that line, not a fifth button, which the row has no room for. */}
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+                <span style={{ ...ONE_LINE, flex: '1 1 auto' }} title={marks} data-testid="helper-marks">
+                  {marks}
+                </span>
+                <button
+                  className="helper-link"
+                  style={{ flex: 'none' }}
+                  disabled={!!under}
+                  title={
+                    under
+                      ? `It moves with "${nameOf(under)}", the helper above it`
+                      : 'Move it, with the helpers under it, to another of your chats'
+                  }
+                  onClick={() => onMove(h)}
+                >
+                  Move to chat…
+                </button>
+              </div>
+              {suggestedChats(h).map(chat => (
+                <button
+                  key={chat}
+                  className="helper-link"
+                  title={`"${nameOf(chat)}" tried to send to it or answer it and was refused, not being above it. Moves it there, with the helpers under it.`}
+                  onClick={act('moving a helper', async () => {
+                    await backgroundMove(h.id, chat);
+                  })}
+                >
+                  Move to {nameOf(chat)}?
+                </button>
+              ))}
               <div style={{ display: 'flex', gap: 6 }}>
                 <button
                   className="slim"
