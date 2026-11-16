@@ -44,25 +44,28 @@ Every 5 s `activity/` combines three signals per session:
    its shell) is furniture; a program with a visible window of its own, and
    everything under it, is the user's and left out.
 3. **Output** over the last 30 s, by the session's work stamp
-   (`work_output_ms`), not its raw one (`last_output_ms`). A fullscreen CLI
-   repaints only on input or a resize, so a pane that mounts or changes size
-   resizes the pty (the refit, and `nudgeRepaint`'s row less and back); the
-   repaint that follows is Luna's doing. The writer thread stamps when it
-   applies each resize (before and after the call: ConPTY may redraw while it
-   stalls), and the reader moves the work stamp only for output more than
-   `RESIZE_REPAINT_MS` (1 s) after that. The window runs on a monotonic clock
-   (`mono_ms`), so a wall clock set back cannot stretch it; the work stamp
-   itself is wall-clock time, as the sampler compares it with now. Each resize
-   starts the window over: while a split is dragged nothing the session
-   prints counts until 1 s after the last resize, and a short burst of real
-   output wholly inside the window is never counted. A turn at work, or a
+   (`work_output_ms`), not its raw one (`last_output_ms`). A pane that mounts,
+   refits or changes size resizes the pty (the refit, and `nudgeRepaint`'s row
+   less and back); the repaint that follows is Luna's doing. The writer thread
+   stamps when it applies each resize (before and after the call: ConPTY may
+   redraw while it stalls), and the reader moves the work stamp only for output
+   more than `RESIZE_REPAINT_MS` (1 s) after that. The window runs on a
+   monotonic clock (`mono_ms`), so a wall clock set back cannot stretch it; the
+   work stamp itself is wall-clock time, as the sampler compares it with now.
+   Each resize starts the window over: while a split is dragged nothing the
+   session prints counts until 1 s after the last resize, and a short burst of
+   real output wholly inside the window is never counted. A turn at work, or a
    process under it, keeps the session busy all the same. The window is a
-   heuristic: a repaint that ConPTY or the CLI delivers more than 1 s after
-   its resize (a heavily loaded machine) still counts as output, and so does
-   an idle CLI's redraw of its own (a status line whose text changed). How
-   soon each CLI repaints is in [CLI compatibility](../cli-compatibility.md).
-   The raw stamp still moves on every byte, for what wants any output at all:
-   the screen cache's key, Codex's working/still status, the agents' reads.
+   heuristic: a repaint that ConPTY or the CLI delivers more than 1 s after its
+   resize (a heavily loaded machine) still counts as output, and so does an
+   idle CLI's redraw of its own (a status line whose text changed). Only
+   resizes are covered: output a CLI writes in answer to input Luna forwards
+   (keys, or the focus and mouse reports xterm.js sends for the modes the CLI
+   turned on, `KEPT_MODES`) still counts, so a click into a pane already shown,
+   which resizes nothing, counts if the CLI redraws on it. How soon each CLI
+   repaints is in [CLI compatibility](../cli-compatibility.md). The raw stamp
+   still moves on every byte, for what wants any output at all: the screen
+   cache's key, Codex's working/still status, the agents' reads.
 
 Rules between hooks and registry: the registry beats an "idle" from a hook; a
 hook's "waiting" beats the registry's "busy" (a permission prompt is inside a
