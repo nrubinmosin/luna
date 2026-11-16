@@ -85,13 +85,16 @@ mod tests {
     }
 
     /// Minimums a security fix set; a list may raise them, never lower them.
-    /// Claude Code 2.1.323: before it, `--permission-mode auto` (which Luna
-    /// spawns and inherits) could start in a mode that allows more when auto
-    /// mode was unavailable (docs/cli-compatibility.md).
+    /// Claude Code 2.1.325 fixed a security issue in how zstd-compressed
+    /// responses are decoded, and some compound Bash commands running without
+    /// asking or under an allow rule for another program; before 2.1.323,
+    /// `--permission-mode auto` (which Luna spawns and inherits) could start
+    /// in a mode that allows more when auto mode was unavailable
+    /// (docs/cli-compatibility.md).
     #[test]
     fn the_shipped_minimums_stay_at_or_above_their_security_fixes() {
         let shipped = parse(SHIPPED).unwrap();
-        assert!(super::super::version_cmp(&shipped.claude.min_safe, "2.1.323").is_ge(), "{}", shipped.claude.min_safe);
+        assert!(super::super::version_cmp(&shipped.claude.min_safe, "2.1.325").is_ge(), "{}", shipped.claude.min_safe);
         assert!(super::super::version_cmp(&shipped.codex.min_safe, "0.167.0").is_ge(), "{}", shipped.codex.min_safe);
     }
 

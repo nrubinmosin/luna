@@ -160,8 +160,8 @@ mod tests {
     #[test]
     fn a_signed_release_below_min_safe_is_refused() {
         let root = scratch("min-safe");
-        let refused = accept_manifest(&root, "2.1.323", MANIFEST, SIG, "2.1.319").unwrap_err();
-        assert!(refused.contains("refusing 2.1.319: older than 2.1.323"), "{refused}");
+        let refused = accept_manifest(&root, "2.1.325", MANIFEST, SIG, "2.1.319").unwrap_err();
+        assert!(refused.contains("refusing 2.1.319: older than 2.1.325"), "{refused}");
         let _ = fs::remove_dir_all(&root);
     }
 }
