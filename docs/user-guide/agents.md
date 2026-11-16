@@ -110,11 +110,15 @@ hooks run unasked.
     notice names the file it is in. Luna asks before it does this. If Luna
     cannot finish opening it (the window closed midway and stays closed), the
     helper goes back to its agent after 15 minutes, and the agent is told.
-  - **Move to chat…**: it goes, with every helper under it, to another of
-    your chats, which manages it from then on. Only a chat's own helper (or one
-    whose chat is gone) moves, and only to a chat with Luna's tools that runs
-    at least at its privilege and has places for it and its helpers; the menu
-    grays out the others and says why. It may be in the middle of a turn: the
+  - **Move to chat…** (a link at the end of the line that says who manages
+    it): it goes, with every helper under it, to another of your chats, which
+    manages it from then on. The dialog lists your chats; you pick one and
+    click Move, and a chat that asked for it is picked to start with. Only a
+    chat's own helper (or one whose chat is gone) moves: a helper's helper has
+    the link grayed out and goes along with the helper above it. It moves
+    only to a chat with Luna's tools that runs at least at its privilege and
+    has places for it and its helpers; the dialog grays out the others and
+    says why under each. A refused move says why and changes nothing. It may be in the middle of a turn: the
     turn goes on, and its next turn is told which chat it answers to. Its
     conversation, worktree, settings and constraints stay; text queued for it
     still goes in. The new chat is owed the answer it is at work on, if any.
@@ -123,14 +127,18 @@ hooks run unasked.
     and only reads it and waits on it the way it would another chat's helper
     (`scope: "all"`). A helper left with no chat, set to delete itself once
     idle, no longer does once moved to a chat.
-  - **Move to <chat>?** shows when one of your chats tried to send to it or
-    answer it and was refused for not being above it: one click moves it
-    there, as above. Nothing moves until you click.
+  - **Move to <chat>?** shows under its line, as a link, when one of your
+    chats tried to send to it or answer it and was refused for not being above
+    it: one click moves it there, as above; a refusal shows under the list.
+    Nothing moves until you click.
   - **Stop** and **Delete**; Delete waits while it is at work, and keeps a
     worktree that holds uncommitted work.
-- Each helper's line says who manages it (`managed by <parent> · chat
-  <top>`), which of your other chats is waiting on it (`watched by`), and
-  where you last moved it from, and when.
+- Each helper's line says which of your other chats is waiting on it
+  (`watched by <chat>`), where you last moved it from, and how long ago
+  (`moved from <chat>, 5m ago`), and who manages it: `managed by chat <top>`
+  last for a chat's own helper, `managed by <parent> · chat <top>` first for a
+  helper's helper. The whole line shows on hover, and the helper's read-only
+  view says the same above its conversation.
 - Each of your chats has a number of places for the sessions under it, its
   helpers' helpers included: 8 unless you change it in Settings → Agents &
   trust → Helpers (1 to 32). A helper whose answer reached its caller and that
@@ -388,10 +396,18 @@ not as a notice of its own.
   as `worktreeLeft`. Your own Delete asks you instead.
 - Deleting a chat by hand lists its helpers with what each is doing and what its
   worktree holds, and leaves them alone unless you tick the box to take them
-  along. Even then a helper still at work (in a turn, on a question, a job it
-  left running) is stopped only if you also tick that, and a worktree with
-  uncommitted work goes only if you tick that too; Luna checks both again as it
-  deletes. Helpers an agent deletes are gone (transcript aside); what they
+  along. A helper left alone answers to no chat from then on and deletes itself
+  half an hour after it is done. Even then a helper still at work (in a turn, on
+  a question, a job it left running) is stopped only if you also tick that, and
+  a worktree with uncommitted work goes only if you tick that too; Luna checks
+  both again as it deletes. Each of the chat's own helpers also has **Pass to
+  chat…**, a list of your other chats (the ones it may not go to grayed out):
+  a helper passed on moves there with the helpers under it, as Move to chat…
+  does, and
+  is neither left nor deleted. A chat that tried to send to it, or waits on
+  it, is picked to start with; nothing moves until you click Delete. The moves
+  are made first: if one is refused, nothing is deleted, and the dialog says
+  which helper and why. Helpers an agent deletes are gone (transcript aside); what they
   spawned passes to that agent. A helper with no parent is listed under
   "Helpers with no chat" and goes half an hour after it is done.
 - Every spawn is recorded in `agents.jsonl` (when, by whom, where, account,
