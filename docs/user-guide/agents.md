@@ -40,10 +40,16 @@ tools.
 - A send may ask for no reply (`expectReply: false`): the helper's answer then
   wakes the agent only for a status word or a report.
 - An agent reads, waits on, sends text to and answers its own helpers. One of
-  your own chats reaches your other chats and other chats' helpers only by
-  saying so (`scope: "all"`), and what it sends them, an answer typed in as a
+  your own chats reads and waits on your other chats and other chats' helpers
+  only by saying so (`scope: "all"`). It sends text to and answers only your
+  other chats that way, and what it sends them, an answer typed in as a
   message too, arrives opened `[From session <id> via Luna]`, so that chat
-  knows the words are not yours. A helper, even one given Luna's tools, reaches
+  knows the words are not yours. Another chat's helper takes text and answers
+  only from the sessions above it (its chat, and a lead it works under): a
+  chat that tries is refused, told whose the helper is and that you can move
+  the helper to it in Luna's window. A helper with no chat takes text from no
+  agent. A chat that writes to another is told when the answer to its text
+  comes, as a parent is. A helper, even one given Luna's tools, reaches
   only the helpers under it: never your chats, its own parent or another
   chat's helpers, and it cannot send desktop notifications or set the PC's
   power. What it has for anyone else goes in its answer. Only its own helpers

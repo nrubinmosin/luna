@@ -62,6 +62,14 @@ pub fn hold_for_test(id: &str) {
     lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, answer: None });
 }
 
+/// It stops on a question its model asked (`AskUserQuestion`), held the same way.
+#[cfg(test)]
+pub fn hold_question_for_test(id: &str) {
+    let q = crate::agents::AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+    let ask = Ask::question(vec![q], false);
+    lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, answer: None });
+}
+
 /// `luna_session_stop`: what was queued is dropped.
 #[cfg(test)]
 pub fn killed_for_test(id: &str) {

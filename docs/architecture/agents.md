@@ -122,10 +122,10 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `luna_session_list`, `luna_session_get` | the caller's own; from a person's chat, with `scope: "all"` every session of this launch, and with `ids` any session's row, as metadata: another's `ask`, `askId` and `task` only with `scope: "all"`. A helper names only itself and its subtree (`ids_in_reach`) |
 | `luna_run_list` | the caller's spawns and its helpers' (by owner now, else the recorded lineage); everyone's with `scope: "all"`, from a person's chat |
 | `luna_message_list`, `luna_report_get` | its descendants; from a person's chat with `scope: "all"` any session but its own |
-| `luna_session_send` | its descendants; from a person's chat with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
+| `luna_session_send` | its descendants; from a person's chat with `scope: "all"` the person's other chats too, the text opened `[From session <id> via Luna]` (`as_sent`), never another's helper (`write_reach`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
 | `luna_session_wait` | its descendants; from a person's chat with `scope: "all"` any session but its own |
 | `luna_session_stop`, `luna_session_delete` | descendants only, never one the person is opening as a chat (`promoting`) |
-| `luna_session_answer` to a model's question | its descendants; from a person's chat with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`) |
+| `luna_session_answer` to a model's question | its descendants; from a person's chat with `scope: "all"` the person's other chats too, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`), never another's helper (`write_reach`) |
 | `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, at the caller's privilege |
 | `luna_session_spawn` | a background helper at no more privilege than the caller, never in or above the data dir; a Codex one never with an approval that asks a person |
 | `luna_notification_send`, `luna_power_set` | a person's chat only (`persons_chat_only`): a helper's word reaches the person through the chat above it |
@@ -144,6 +144,23 @@ person or set the PC's power. A helper, a lead with tools included, is refused
 session not under it, its parent and the person's chats among them, saying
 that what is for anyone else goes in its reply. A prompt injected into a
 helper deep in a tree stays in that tree.
+
+**Writes into a helper come from above it**
+([ADR-0028](../adr/0028-writes-into-a-helper-come-from-above.md)). Text and
+answers go into a helper only from its ancestors: its parent, a lead between,
+the chat at the top. `registry.rs` `write_reach` decides it, for the tool's
+gate (`in_scope`, for the `send to` and `answer` verbs) and for the write
+itself (`authorize_send`), and says why it refuses (`WriteRefused`): a
+person's chat writing into another's helper (`NotAbove`) hears whose the
+helper is, that it may still read and wait on it with `scope: "all"`, and that
+the person can move it to that chat in the window; a helper hears
+`not_under_you`; a former parent hears the takeover's words. A person's chat
+still writes to the person's other chats with `scope: "all"` (R1), and the dev
+caller anywhere. A helper with no chat above it (an orphan, one run in the
+background with no parent) takes no agent's writes. Whoever writes into a
+session is owed its answer, not only its parent: a send or an answer makes a
+debt for the caller (`owed.rs` `owe`), and the notice names the session as one
+"which you wrote to" (notifier `run`).
 
 Every call's arguments are held to its tool's schema first (`arguments_fit`):
 an unknown key is refused naming those the tool takes, a value of the wrong

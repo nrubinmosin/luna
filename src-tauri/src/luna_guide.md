@@ -36,9 +36,11 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   Times are UTC ISO. A helper in a worktree adds `lastCommit` (its subject) and `status` (`git
   status --short`, 20 lines, `statusMore` the rest): your CLI may keep you out of that worktree.
 - Another session's `task`, `askId` and `ask` come only with `scope: "all"`. Without it, you
-  read, wait on, send to and answer only sessions you spawned and theirs; with it, any session
-  but your own, and your text reaches it opened `[From session <your id> via Luna]`. You stop,
-  interrupt and delete only your own.
+  read, wait on, send to and answer only sessions you spawned and theirs; with it, you read and
+  wait on any session but your own, and send to and answer the user's other chats, your text
+  opened `[From session <your id> via Luna]`. Another's helper takes text and answers only
+  from the sessions above it: you are refused, told whose it is; the user can move it to your
+  chat in Luna's window. You stop, interrupt and delete only your own.
 - `scope: "all"` is a person's chat's only. A helper (a session with a parent) reaches only
   itself and the sessions under it, in every tool: what is for anyone else goes in its reply.
   Nor does it notify the person or set the PC's power.
@@ -187,10 +189,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   `luna_session_answer` an option's number counts from 1. Pass `askId`, so your answer cannot
   land on the next one; a stale or unknown id is refused, and so is no id with several held. It
   returns `state`, `ask` and, for a user's chat, the `screen` after it.
-- `allow`: your helpers only, true only for what you run unasked (never plan/default). Others'
-  (`scope: "all"`): a question its model asked, nothing else. No control chars. Text or a prompt
-  starting with `/` or `!` (a CLI command, a shell as you) goes only at full access into your
-  own helpers.
+- `allow`: your helpers only, true only for what you run unasked (never plan/default). The
+  user's other chats (`scope: "all"`): a question their model asked, nothing else. No control
+  chars. Text or a prompt starting with `/` or `!` (a CLI command, a shell as you) goes only at
+  full access into your own helpers.
 - A Claude Code helper's questions and permission prompts come to you this way, one at a time.
   A Codex helper's are in its reply.
 - `luna_session_send` to a working session is `queued`: a Claude Code helper takes it at its next

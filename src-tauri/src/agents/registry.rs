@@ -576,12 +576,20 @@ pub fn is_known(id: &str) -> bool {
 /// helpers and theirs, unless it says `all`. Text read off or typed into a
 /// session no one asked it to touch is the reach a prompt injection wants, so
 /// going past its own takes an argument that says so, and only a person's chat
-/// may say it (`scope_all_in`). An unknown session, or the caller itself, is
-/// left to the tool's own refusal, which says more.
+/// may say it (`scope_all_in`). A write (`WRITE_VERBS`) into a helper goes only
+/// from above it, `all` or not (`write_reach`). An unknown session, or the
+/// caller itself, is left to the tool's own refusal, which says more.
 pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Result<(), String> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let all = scope_all_in(&r, caller, scope)?;
-    if all || caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
+    if caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
+        return Ok(());
+    }
+    let writes = WRITE_VERBS.contains(&verb);
+    if writes {
+        write_reach(&r, caller, id).map_err(|why| write_refusal(&r, &why, id, verb))?;
+    }
+    if all {
         return Ok(());
     }
     if r.taken_over.get(id).is_some_and(|from| from == caller) {
@@ -590,16 +598,101 @@ pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Resu
     if !persons_chat_in(&r, caller) {
         return Err(not_under_you(id, verb));
     }
-    Err(format!(
-        "session {id} is not one you spawned; to {verb} a session that is not yours (the user's own chats, another's \
-         helpers) pass scope: \"all\""
-    ))
+    // Past the write check, a write here is into another of the person's chats.
+    let past = if writes && persons_chat_in(&r, id) {
+        "another of the user's chats"
+    } else {
+        "a session that is not yours (the user's own chats, another's helpers)"
+    };
+    Err(format!("session {id} is not one you spawned; to {verb} {past} pass scope: \"all\""))
 }
 
-/// Text from a person's chat may go to any session Luna runs, the user's own
-/// chats included — that is how one session passes a message to another — but
-/// not back into the caller's own composer. A helper's goes only to the
-/// sessions under it (`beneath`).
+/// The verbs `in_scope` is asked for that write into a session: what
+/// `luna_session_send` and `luna_session_answer` pass it.
+const WRITE_VERBS: [&str; 2] = ["send to", "answer"];
+
+/// Why a write into a session (text sent, an answer) is refused (`write_reach`).
+#[derive(Debug, PartialEq)]
+pub(super) enum WriteRefused {
+    /// A person's chat writing into a helper not under it: a helper takes text
+    /// and answers only from the sessions above it. The refusal points the chat
+    /// to the person, who may move the helper under it (ADR-0028).
+    NotAbove,
+    /// A helper (or an orphan, or one run in the background) writing past the
+    /// sessions under it.
+    NotUnderYou,
+    /// A helper the person took from the caller as a chat of their own.
+    TakenOver,
+}
+
+/// Whether `caller` may write into `target`: send it text or answer what it
+/// asks (ADR-0028). Into a person's chat a person's chat may (R1), as may the
+/// sessions above a helper into it (its parent, a lead between, the chat at
+/// the top), and the dev caller, which stands in for the person, anywhere.
+/// Nobody else: not a sibling, not another chat or its helpers, and nobody
+/// into a helper with no chat above it. One check for every place a write is
+/// decided: the tool's gate (`in_scope`), the write itself (`authorize_send`),
+/// and wherever ownership can change under a write and it is asked again.
+pub(super) fn write_reach(r: &Registry, caller: &str, target: &str) -> Result<(), WriteRefused> {
+    if caller == DEV_CALLER || is_descendant(r, caller, target) {
+        return Ok(());
+    }
+    if r.taken_over.get(target).is_some_and(|from| from == caller) {
+        return Err(WriteRefused::TakenOver);
+    }
+    if !persons_chat_in(r, caller) {
+        return Err(WriteRefused::NotUnderYou);
+    }
+    if persons_chat_in(r, target) {
+        return Ok(());
+    }
+    Err(WriteRefused::NotAbove)
+}
+
+/// What a caller is told of a refused write into `id`; `verb` as `in_scope`'s.
+pub(super) fn write_refusal(r: &Registry, why: &WriteRefused, id: &str, verb: &str) -> String {
+    match why {
+        WriteRefused::NotUnderYou => not_under_you(id, verb),
+        WriteRefused::TakenOver => taken_over_error(id),
+        WriteRefused::NotAbove => not_above(r, id),
+    }
+}
+
+/// A session as a refusal names it: by its name in the window, if it has
+/// one, with its id.
+fn named(r: &Registry, id: &str) -> String {
+    match r.names.get(id).map(|n| n.trim()).filter(|n| !n.is_empty()) {
+        Some(n) => format!("\"{n}\" ({id})"),
+        None => id.to_string(),
+    }
+}
+
+/// What a person's chat hears when it writes into a helper not under it:
+/// whose the helper is, what is still open to it, and the person's way to
+/// hand it over. Never told to a helper, which cannot ask the person for it.
+fn not_above(r: &Registry, id: &str) -> String {
+    let whose = match r.known.get(id).and_then(|k| k.parent.clone()) {
+        None => "has no chat above it, so no session sends to it or answers it".to_string(),
+        Some(parent) => {
+            let top = top_of(r, id);
+            let of = if parent == top {
+                format!("chat {}", named(r, &top))
+            } else {
+                format!("{}, under chat {}", named(r, &parent), named(r, &top))
+            };
+            format!("is a helper of {of}: only the sessions above it send to it or answer it")
+        }
+    };
+    format!(
+        "session {id} {whose}. You may still read it and wait on it, with scope: \"all\". For it to answer to this \
+         chat, the person can move it here in Luna's window (\"Move to chat…\" in the helper's menu)"
+    )
+}
+
+/// Text from a person's chat may go to the user's other chats — that is how
+/// one session passes a message to another — and into a helper only from the
+/// sessions above it (`write_reach`); never back into the caller's own
+/// composer. A helper's goes only to the sessions under it.
 pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String> {
     if caller == target {
         return Err("that is your own session".into());
@@ -613,7 +706,7 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
         return Err(format!("{target} is being deleted (autoDelete, idle since its answer); spawn a helper again for more"));
     }
     let known = r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_session_list lists them"))?;
-    beneath(&r, caller, target, "send to or answer")?;
+    write_reach(&r, caller, target).map_err(|why| write_refusal(&r, &why, target, "send to or answer"))?;
     // A helper that only waits out autoDelete holds no place under its chat's
     // cap (`under_cap`); text sets it to work, and in a place again: one there
     // must be, taken here under the lock the cap is counted under.
@@ -751,12 +844,26 @@ mod tests {
         // Its own, by default or said.
         assert_eq!(in_scope("sc-me", "sc-kid", None, "read"), Ok(()));
         assert_eq!(in_scope("sc-me", "sc-grand", Some("mine"), "read"), Ok(()));
-        // From a person's chat, another chat and another chat's helper: only when told.
+        // From a person's chat, another chat and another chat's helper are read
+        // and waited on only when told.
         for id in ["sc-chat", "sc-theirs"] {
-            let e = in_scope("sc-me", id, None, "send to").unwrap_err();
-            assert!(e.contains("not one you spawned") && e.contains("scope: \"all\""), "{id}: {e}");
-            assert!(in_scope("sc-me", id, Some("mine"), "read").is_err());
-            assert_eq!(in_scope("sc-me", id, Some("all"), "read"), Ok(()));
+            for verb in ["read", "wait on"] {
+                let e = in_scope("sc-me", id, None, verb).unwrap_err();
+                assert!(e.contains("not one you spawned") && e.contains("scope: \"all\""), "{id}: {e}");
+                assert!(in_scope("sc-me", id, Some("mine"), verb).is_err());
+                assert_eq!(in_scope("sc-me", id, Some("all"), verb), Ok(()));
+            }
+        }
+        // Another chat is written to when told; another chat's helper never, told
+        // or not: only the sessions above it write into it.
+        for verb in ["send to", "answer"] {
+            let e = in_scope("sc-me", "sc-chat", None, verb).unwrap_err();
+            assert!(e.contains("another of the user's chats") && e.contains("scope: \"all\""), "{e}");
+            assert_eq!(in_scope("sc-me", "sc-chat", Some("all"), verb), Ok(()));
+            for scope in [None, Some("mine"), Some("all")] {
+                let e = in_scope("sc-me", "sc-theirs", scope, verb).unwrap_err();
+                assert!(e.contains("only the sessions above it") && e.contains("chat sc-chat"), "{verb}: {e}");
+            }
         }
         // A helper: its own, and nothing past it, told or not, in every verb.
         assert_eq!(in_scope("sc-kid", "sc-grand", None, "read"), Ok(()));
@@ -781,6 +888,88 @@ mod tests {
         assert!(in_scope("sc-me", "sc-kid", Some("everything"), "read").unwrap_err().contains("unknown scope"));
         assert!(own_or_self("sc-me", "sc-me") && own_or_self("sc-me", "sc-grand") && !own_or_self("sc-me", "sc-theirs"));
         for id in ["sc-grand", "sc-kid", "sc-theirs", "sc-chat", "sc-me"] {
+            forget(id);
+        }
+    }
+
+    /// Writes into a helper (ADR-0028): only the sessions above it, by `in_scope`
+    /// and `authorize_send` alike; reads and waits as before.
+    #[test]
+    fn writes_into_a_helper_go_only_from_above_it() {
+        let (account, none) = ("C:/acc/anthropic/one", serde_json::json!({}));
+        let background = serde_json::json!({ "background": true });
+        register("wr-top", Provider::Claude, "C:/p", account, None, true, none.clone());
+        register("wr-lead", Provider::Claude, "C:/p", account, Some("wr-top"), true, background.clone());
+        register("wr-grand", Provider::Codex, "C:/p", "C:/acc/openai/two", Some("wr-lead"), false, background.clone());
+        register("wr-sib", Provider::Claude, "C:/p", account, Some("wr-top"), false, background.clone());
+        register("wr-other", Provider::Claude, "C:/p", account, None, true, none.clone());
+        register("wr-theirs", Provider::Claude, "C:/p", account, Some("wr-other"), true, background.clone());
+        // No chat above either: one whose chat was deleted, one run on its own.
+        register("wr-orphan", Provider::Claude, "C:/p", account, None, false, background.clone());
+        reg().lock().unwrap().known.get_mut("wr-orphan").unwrap().orphan = true;
+        register("wr-alone", Provider::Codex, "C:/p", "C:/acc/openai/two", None, false, background);
+        set_name("wr-top", "Docs");
+        set_name("wr-lead", "Release lead");
+        // The tool's gate for both verbs, with scope "all" where the caller may
+        // say it, then the write's own check.
+        let writes = |caller: &str, id: &str| -> Vec<Result<(), String>> {
+            let scope = is_persons_chat(caller).then_some("all");
+            let gate = ["send to", "answer"].map(|verb| in_scope(caller, id, scope, verb));
+            gate.into_iter().chain([authorize_send(caller, id).map(|_| ())]).collect()
+        };
+        let allowed = |caller: &str, id: &str| {
+            let all = writes(caller, id);
+            assert!(all.iter().all(Result::is_ok), "{caller} -> {id}: {all:?}");
+        };
+        let refused = |caller: &str, id: &str| -> Vec<String> {
+            writes(caller, id).into_iter().map(|w| w.err().unwrap_or_else(|| panic!("{caller} -> {id}"))).collect()
+        };
+        // The parent, a lead between and the chat at the top.
+        allowed("wr-lead", "wr-grand");
+        allowed("wr-top", "wr-grand");
+        allowed("wr-top", "wr-lead");
+        // A person's chat to another of the person's chats, either way (R1).
+        allowed("wr-other", "wr-top");
+        allowed("wr-top", "wr-other");
+        // Another chat, into this one's helpers: named whose they are, with what
+        // is open to it and the person's way to hand one over.
+        for id in ["wr-lead", "wr-grand", "wr-sib"] {
+            for e in refused("wr-other", id) {
+                assert!(e.contains("only the sessions above it") && e.contains("\"Docs\" (wr-top)"), "{id}: {e}");
+                assert!(e.contains("read it and wait on it, with scope: \"all\"") && e.contains("Move to chat…"), "{e}");
+            }
+            for verb in ["read", "wait on"] {
+                assert_eq!(in_scope("wr-other", id, Some("all"), verb), Ok(()), "{id}: {verb}");
+            }
+            assert!(authorize_view("wr-other", id).is_ok(), "{id}");
+        }
+        let e = authorize_send("wr-other", "wr-grand").err().unwrap();
+        assert!(e.contains("helper of \"Release lead\" (wr-lead), under chat \"Docs\" (wr-top)"), "{e}");
+        // A helper, a sibling's or anything else past its own: as ever, and never
+        // pointed at the person.
+        for (caller, id) in [("wr-sib", "wr-lead"), ("wr-sib", "wr-grand"), ("wr-lead", "wr-sib"), ("wr-theirs", "wr-grand")] {
+            for e in refused(caller, id) {
+                assert!(e.contains("not under you"), "{caller} -> {id}: {e}");
+                assert!(!e.contains("Move to chat"), "{e}");
+            }
+            assert!(authorize_send(caller, id).err().unwrap().contains("not under you"));
+        }
+        // A helper with no chat above it takes no agent's writes.
+        for id in ["wr-orphan", "wr-alone"] {
+            for caller in ["wr-top", "wr-other"] {
+                for e in refused(caller, id) {
+                    assert!(e.contains("has no chat above it") && e.contains("Move to chat…"), "{caller} -> {id}: {e}");
+                }
+                assert_eq!(in_scope(caller, id, Some("all"), "read"), Ok(()));
+            }
+            for caller in ["wr-lead", "wr-sib", "wr-theirs"] {
+                assert!(authorize_send(caller, id).err().unwrap().contains("not under you"), "{caller} -> {id}");
+            }
+            assert_eq!(write_reach(&reg().lock().unwrap(), "wr-top", id), Err(WriteRefused::NotAbove));
+        }
+        // The dev caller stands in for the person, as the live suite needs.
+        assert!(authorize_send(DEV_CALLER, "wr-grand").is_ok() && authorize_send(DEV_CALLER, "wr-orphan").is_ok());
+        for id in ["wr-grand", "wr-lead", "wr-sib", "wr-theirs", "wr-orphan", "wr-alone", "wr-other", "wr-top"] {
             forget(id);
         }
     }
