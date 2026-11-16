@@ -441,9 +441,23 @@ struct Pending {
 
 struct Asks {
     running: usize,
-    /// Luna is on its way out: no ask starts, and one still waiting for its
-    /// answer stops waiting and goes into its grace at once.
+    /// Luna is on its way out for good (`wait_for_asks`): no ask starts any
+    /// more, and one still waiting for its answer stops waiting and goes
+    /// into its grace at once.
     leaving: bool,
+    /// Waits for an update's install under way (`wait_for_asks_before_install`):
+    /// the same while they last, and over once they return, so a reload or
+    /// an install that never comes back cannot leave the asks refused.
+    installing: usize,
+}
+
+/// One wait for an update's install counted in its `Pending` while it lasts.
+struct Installing<'a>(&'a Pending);
+
+impl Drop for Installing<'_> {
+    fn drop(&mut self) {
+        self.0.lock().installing -= 1;
+    }
 }
 
 /// One ask counted in its `Pending` while it lives.
@@ -458,17 +472,17 @@ const EXIT_WAIT: Duration = Duration::from_secs(12);
 
 impl Pending {
     const fn new() -> Pending {
-        Pending { state: Mutex::new(Asks { running: 0, leaving: false }), done: Condvar::new() }
+        Pending { state: Mutex::new(Asks { running: 0, leaving: false, installing: 0 }), done: Condvar::new() }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Asks> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The ask counted, or None once Luna is leaving: it is not to start.
+    /// The ask counted, or None while Luna is leaving: it is not to start.
     fn count(&'static self) -> Option<Counted> {
         let mut asks = self.lock();
-        if asks.leaving {
+        if asks.leaving() {
             return None;
         }
         asks.running += 1;
@@ -476,7 +490,7 @@ impl Pending {
     }
 
     fn leaving(&self) -> bool {
-        self.lock().leaving
+        self.lock().leaving()
     }
 
     /// Waits up to `within` for every ask counted to be done; whether they are.
@@ -493,9 +507,19 @@ impl Pending {
         self.wait(within)
     }
 
-    /// Luna stays after all (an update's install that failed).
-    fn stay(&self) {
-        self.lock().leaving = false;
+    /// An update's install is next: as `leave` while this waits, after
+    /// which asks start again, whether the install then ends Luna or not.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn before_install(&self, within: Duration) -> bool {
+        self.lock().installing += 1;
+        let _installing = Installing(self);
+        self.wait(within)
+    }
+}
+
+impl Asks {
+    fn leaving(&self) -> bool {
+        self.leaving || self.installing > 0
     }
 }
 
@@ -508,25 +532,36 @@ impl Drop for Counted {
 
 static PENDING: Pending = Pending::new();
 
-/// For Luna's ways out (the end of the event loop, an update's install,
-/// Windows' Restart Manager): starts no more model asks, has those waiting
-/// for an answer stop and take their grace now, and waits for all to be
-/// done, so a few seconds past `EXIT_GRACE` at most (`EXIT_WAIT`). Whether
-/// none is left.
+/// For the ways out that end Luna whatever happens (the end of the event
+/// loop, Windows' Restart Manager): starts no more model asks, has those
+/// waiting for an answer stop and take their grace now, and waits for all
+/// to be done, so a few seconds past `EXIT_GRACE` at most (`EXIT_WAIT`).
+/// Whether none is left.
 pub fn wait_for_asks() -> bool {
+    logged_wait(|| PENDING.leave(EXIT_WAIT))
+}
+
+/// `wait_for_asks` for an update's install, which the frontend starts once
+/// this returns and which may not come: a page reloaded meanwhile (a DPI
+/// correction, the watchdog's recovery) never installs, nor says it stays.
+/// So the asks are refused only while this waits, never left refused. An
+/// ask started in the moment between this and the install's end of the
+/// process is not waited for, a residual taken as it is. Windows only: the
+/// install ends the process there alone.
+#[cfg(windows)]
+pub fn wait_for_asks_before_install() -> bool {
+    logged_wait(|| PENDING.before_install(EXIT_WAIT))
+}
+
+fn logged_wait(wait: impl FnOnce() -> bool) -> bool {
     let started = Instant::now();
-    let done = PENDING.leave(EXIT_WAIT);
+    let done = wait();
     if !done {
         crate::log::warn("claude-models", "leaving with a model ask still running");
     } else if started.elapsed() > Duration::from_millis(100) {
         crate::log::warn("claude-models", &format!("waited {} ms for a model ask to be done", started.elapsed().as_millis()));
     }
     done
-}
-
-/// Takes `wait_for_asks` back when Luna does not leave after all.
-pub fn not_leaving() {
-    PENDING.stay();
 }
 
 /// Asks the CLI `initialize` and waits up to `within` for its answer, or
@@ -1266,37 +1301,92 @@ mod tests {
         assert!(gone_soon(pid));
     }
 
-    /// Luna's exit does not wait out an ask's wait for its answer: the ask
-    /// stops waiting and takes its grace at once, its CLI is swept at the
-    /// end of that grace, and the exit's wait returns only then. No ask
-    /// starts after, until Luna stays after all.
-    #[test]
-    fn luna_s_exit_has_an_unanswered_ask_take_its_grace_now_and_waits_for_its_sweep() {
-        static P: Pending = Pending::new();
-        assert!(P.wait(Duration::ZERO), "none counted: nothing to wait for");
+    /// The wait for an ask's answer: far longer than any bound below, so
+    /// an ask that did not stop at Luna's exit fails them, slow runner or not.
+    const ANSWER_WAIT: Duration = Duration::from_secs(600);
+
+    /// An unanswered ask's sitter started and its `initialize` run on a
+    /// thread of its own, counted in `p`: its CLI's pid, and what the ask
+    /// says once it stops waiting (no answer, and when).
+    fn asking(p: &'static Pending, grace: Duration) -> (u32, std::sync::mpsc::Receiver<(bool, Instant)>) {
         let (exe, args) = sitter();
         let (mut asked, stdin) = started(exe, args, true);
         asked.child.stdin = stdin;
         let pid = asked.child.id();
-        let counted = P.count().unwrap();
-        let grace = Duration::from_millis(800);
+        let counted = p.count().unwrap();
         let (gave_up, heard) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let answer = initialize(asked, (), counted, Duration::from_secs(60), grace);
+            let answer = initialize(asked, (), counted, ANSWER_WAIT, grace);
             let _ = gave_up.send((answer.is_none(), Instant::now()));
         });
+        (pid, heard)
+    }
+
+    /// Waits for `p`'s install wait, run on another thread, to have begun.
+    fn installing(p: &Pending) {
+        while p.lock().installing == 0 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Luna's exit does not wait out an ask's wait for its answer: the ask
+    /// stops waiting and takes its grace at once, its CLI is swept at the
+    /// end of that grace, and the exit's wait returns only then. No ask
+    /// starts after.
+    #[test]
+    fn luna_s_exit_has_an_unanswered_ask_take_its_grace_now_and_waits_for_its_sweep() {
+        static P: Pending = Pending::new();
+        assert!(P.wait(Duration::ZERO), "none counted: nothing to wait for");
+        let grace = Duration::from_millis(800);
+        let (pid, heard) = asking(&P, grace);
         assert!(!P.wait(Duration::from_millis(300)), "the ask waiting for its answer holds the exit");
+        // The ask sees Luna leave only after this, so its grace, which starts
+        // then, ends no sooner than `grace` from here.
         let left = Instant::now();
-        assert!(P.leave(Duration::from_secs(10)), "done within the exit's wait");
+        assert!(P.leave(Duration::from_secs(60)), "done within the exit's wait");
         let waited = left.elapsed();
         assert!(!crate::procs::alive(pid), "swept before the wait returned");
-        let (none, at) = heard.recv_timeout(Duration::from_secs(1)).expect("the ask stopped waiting");
+        let (none, at) = heard.recv_timeout(Duration::from_secs(30)).expect("the ask stopped waiting");
         assert!(none, "no answer");
-        assert!(at.duration_since(left) < Duration::from_millis(600), "it stopped waiting at the exit, not after 60 s");
-        assert!(waited >= grace && waited < Duration::from_secs(5), "swept at the end of the grace: {waited:?}");
-        assert!(P.count().is_none(), "no ask starts while Luna leaves");
-        P.stay();
-        assert!(P.count().is_some(), "and they start again once it stays");
+        assert!(at.duration_since(left) < ANSWER_WAIT / 10, "it stopped waiting at the exit, not at its own end");
+        assert!(waited >= grace && waited < ANSWER_WAIT / 10, "swept at the end of the grace: {waited:?}");
+        assert!(P.count().is_none(), "no ask starts once Luna leaves");
+    }
+
+    /// Before an update's install the same wait is had, and asks start again
+    /// once it returns: an install that never comes (a page reloaded
+    /// meanwhile) must not leave every model ask refused until a restart.
+    #[test]
+    fn the_wait_before_an_install_lets_asks_start_again_once_it_returns() {
+        static P: Pending = Pending::new();
+        let grace = Duration::from_millis(800);
+        let (pid, heard) = asking(&P, grace);
+        assert!(!P.wait(Duration::from_millis(300)), "the ask waiting for its answer holds the install");
+        let began = Instant::now();
+        let waiting = std::thread::spawn(|| P.before_install(Duration::from_secs(60)));
+        installing(&P);
+        assert!(P.count().is_none(), "no ask starts while the install waits");
+        assert!(waiting.join().unwrap(), "done within the wait");
+        let waited = began.elapsed();
+        assert!(!crate::procs::alive(pid), "swept before the wait returned");
+        let (none, _) = heard.recv_timeout(Duration::from_secs(30)).expect("the ask stopped waiting");
+        assert!(none, "no answer");
+        assert!(waited >= grace && waited < ANSWER_WAIT / 10, "swept at the end of the grace: {waited:?}");
+        assert!(P.count().is_some(), "asks start again once the wait is over");
+    }
+
+    /// A way out for good during that wait stays one: the install's wait
+    /// ending does not let asks start under an exit.
+    #[test]
+    fn an_exit_during_the_wait_before_an_install_stays() {
+        static P: Pending = Pending::new();
+        let _ask = asking(&P, Duration::from_millis(800));
+        let waiting = std::thread::spawn(|| P.before_install(Duration::from_secs(60)));
+        installing(&P);
+        assert!(P.leave(Duration::from_secs(60)), "done within the exit's wait");
+        assert!(waiting.join().unwrap(), "and within the install's");
+        assert_eq!(P.lock().installing, 0, "the install's wait is over");
+        assert!(P.count().is_none(), "no ask starts once Luna leaves");
     }
 
     /// A CLI that cannot be had in a job of its own, or will not resume in
