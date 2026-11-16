@@ -153,18 +153,34 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// Milliseconds on a clock that never steps back, counted from the first time
+/// this process read it. For spans between two moments of this process only
+/// (the resize window below); a wall-clock stamp is `now_ms`.
+fn mono_ms() -> u64 {
+    static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    BASE.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
 /// How long after a resize a session's output is taken for the repaint it
-/// brought on. A CLI redraws its screen within a frame or two of a resize;
-/// a pane's repaint nudge is two resizes 60 ms apart, and the window runs
-/// from the second. Real output that lands inside it goes uncounted for that
-/// long only: the first read after it counts.
+/// brought on. A CLI redraws its screen within a frame or two of a resize
+/// (Codex's reflow within about 225 ms, docs/cli-compatibility.md); a pane's
+/// repaint nudge is two resizes 60 ms apart. Each resize starts the window
+/// over, so while a split is dragged nothing the session prints counts until
+/// 1 s after the last resize, and a short burst of real output wholly inside
+/// the window is never counted; a turn at work, or a process under it, still
+/// keeps the session busy. A heuristic: a repaint delivered more than 1 s
+/// after its resize (a machine under heavy load) still counts as output.
 pub(crate) const RESIZE_REPAINT_MS: u64 = 1_000;
 
 /// Whether output read at `now` is the session's own, rather than the repaint
-/// of a resize Luna applied at `last_resize_ms` (0: never).
-pub(crate) fn is_work_output(now: u64, last_resize_ms: u64) -> bool {
-    now.saturating_sub(last_resize_ms) > RESIZE_REPAINT_MS
+/// of the resize Luna last applied at `last_resize` (None: never). Both on
+/// `mono_ms`'s clock, so a wall clock set back cannot stretch the window.
+pub(crate) fn is_work_output(now: u64, last_resize: Option<u64>) -> bool {
+    last_resize.is_none_or(|at| now.saturating_sub(at) > RESIZE_REPAINT_MS)
 }
+
+/// What `Session`'s resize stamp holds before the first resize.
+const NEVER_RESIZED: u64 = u64::MAX;
 
 /// Whether two paths name the same folder, slashes and a trailing separator
 /// aside — and case, where the file system ignores it.
@@ -234,12 +250,22 @@ mod tests {
     #[test]
     fn output_just_after_a_resize_is_its_repaint() {
         let resized = 100_000;
-        assert!(!is_work_output(resized, resized));
-        assert!(!is_work_output(resized + 400, resized));
-        assert!(!is_work_output(resized + RESIZE_REPAINT_MS, resized));
-        assert!(is_work_output(resized + RESIZE_REPAINT_MS + 1, resized));
-        assert!(is_work_output(resized, 0), "never resized");
-        // A clock stepped back reads as just resized, not as work.
-        assert!(!is_work_output(resized - 5_000, resized));
+        assert!(!is_work_output(resized, Some(resized)));
+        assert!(!is_work_output(resized + 400, Some(resized)));
+        assert!(!is_work_output(resized + RESIZE_REPAINT_MS, Some(resized)));
+        assert!(is_work_output(resized + RESIZE_REPAINT_MS + 1, Some(resized)));
+        assert!(is_work_output(0, None), "never resized");
+        assert!(is_work_output(resized, None), "never resized");
+        // The writer stamped a resize after the reader took its time: that
+        // read is the resize's too.
+        assert!(!is_work_output(resized - 3, Some(resized)));
+    }
+
+    /// The clock the window runs on only moves forward.
+    #[test]
+    fn the_resize_clock_never_steps_back() {
+        let a = mono_ms();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(mono_ms() >= a + 5);
     }
 }

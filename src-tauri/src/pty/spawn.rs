@@ -4,7 +4,7 @@
 
 use super::control::end_leftovers;
 use super::screen::{as_key_events, cursor_at, render_screen, Modes};
-use super::{is_work_output, manager, now_ms, Input, Session};
+use super::{is_work_output, manager, mono_ms, now_ms, Input, Session, NEVER_RESIZED};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
@@ -283,9 +283,10 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let input_tx = Arc::new(input_tx);
     let replies = Arc::downgrade(&input_tx);
     let size = Arc::new(Mutex::new((INITIAL_ROWS, INITIAL_COLS)));
-    // When the writer last applied a resize, for the reader to tell the
-    // repaint that follows from the session's own output (`work_output_ms`).
-    let last_resize_ms = Arc::new(AtomicU64::new(0));
+    // When the writer last applied a resize, on `mono_ms`'s clock, for the
+    // reader to tell the repaint that follows from the session's own output
+    // (`work_output_ms`).
+    let last_resize_ms = Arc::new(AtomicU64::new(NEVER_RESIZED));
     {
         let id = id.clone();
         let master = pair.master;
@@ -311,11 +312,11 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                         // Stamped on both sides of the resize: ConPTY may
                         // redraw while the call is still stalled on a busy
                         // child, and the CLI's own repaint follows its end.
-                        last_resize_ms.store(now_ms(), Ordering::Relaxed);
+                        last_resize_ms.store(mono_ms(), Ordering::Relaxed);
                         if let Err(e) = master.resize(size) {
                             crate::log::warn("pty", &format!("resize of {id} failed: {e}"));
                         }
-                        last_resize_ms.store(now_ms(), Ordering::Relaxed);
+                        last_resize_ms.store(mono_ms(), Ordering::Relaxed);
                         if let Ok(mut s) = size_slot.lock() {
                             *s = (size.rows, size.cols);
                         }
@@ -415,7 +416,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                     Ok(n) => {
                         let now = now_ms();
                         last_output_ms.store(now, Ordering::Relaxed);
-                        if is_work_output(now, last_resize_ms.load(Ordering::Relaxed)) {
+                        let resized = Some(last_resize_ms.load(Ordering::Relaxed)).filter(|&at| at != NEVER_RESIZED);
+                        if is_work_output(mono_ms(), resized) {
                             work_output_ms.store(now, Ordering::Relaxed);
                         }
                         modes.lock().unwrap_or_else(|e| e.into_inner()).feed(&chunk[..n]);

@@ -498,9 +498,10 @@ mod tests {
     }
 
     /// What the reader does with a read at `at`: the work stamp moves only
-    /// for output that is not a resize's repaint.
+    /// for output that is not a resize's repaint. One clock stands here for
+    /// both of the reader's: the window's and the work stamp's.
     fn read_at(work_output_ms: &mut u64, at: u64, last_resize_ms: u64) {
-        if crate::pty::is_work_output(at, last_resize_ms) {
+        if crate::pty::is_work_output(at, Some(last_resize_ms)) {
             *work_output_ms = at;
         }
     }
