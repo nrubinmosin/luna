@@ -157,6 +157,11 @@ struct Entry {
     /// what the delete went by (whose it is, that it is idle, its worktree) still
     /// holds when it removes it. Text sent queues, and goes with it.
     deleting: bool,
+    /// The person is moving it, with the helpers under it, to another chat
+    /// (`claim_move`, agents/reparent.rs), for the moment that takes: no turn
+    /// starts meanwhile, so the next one starts under its new parent, and it is
+    /// neither opened as a chat nor deleted. Text sent meanwhile queues.
+    moving: bool,
     /// The window's word that its row is made is being acted on (rows.rs
     /// `background_promoted`): a second word, a retry whose first answer was
     /// lost, hands nothing over again.
@@ -172,7 +177,7 @@ struct Entry {
 impl Entry {
     /// Something has it held between turns: no turn starts until it lets go.
     fn held_back(&self) -> bool {
-        self.promoting || self.deleting || self.switch_waits()
+        self.promoting || self.deleting || self.moving || self.switch_waits()
     }
 
     /// Between turns with its handoff not yet through: the switch is the next

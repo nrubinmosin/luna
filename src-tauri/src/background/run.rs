@@ -33,6 +33,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         promoting: false,
         promoting_since: 0,
         deleting: false,
+        moving: false,
         handing: false,
         observed: Observed::default(),
         switch: None,
@@ -296,6 +297,9 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // A lead's drafts folder, made private before its CLI runs: off the lock
     // too, as it resets the folder's DACL.
     let handoff = handoff_dir(id, &spec);
+    // A move to another chat it has not been told of (agents/reparent.rs): off
+    // the lock, which nothing may hold while it takes the registry's.
+    let moved = crate::agents::move_note(id);
     let (args, dir, envs, applied, provider, on_stdin, line, account) = {
         let r = lock();
         if r.closed {
@@ -308,7 +312,16 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         let (args, dir, envs, applied) = command_with(e, id, &texts, handoff.as_ref())?;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
-        (args, dir, envs, applied, e.spec.provider, stdin_with(e, prompt, texts.note.as_deref()), line, e.spec.account_path.clone())
+        (
+            args,
+            dir,
+            envs,
+            applied,
+            e.spec.provider,
+            stdin_with(e, prompt, texts.note.as_deref(), moved.as_deref()),
+            line,
+            e.spec.account_path.clone(),
+        )
     };
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
@@ -416,6 +429,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // This turn's, for the window's "What Luna applied"; not under this
     // module's lock, which nothing may hold while it takes the registry's.
     crate::agents::set_applied(id, applied, &account, &dir);
+    // Told only if it went in: a prompt that is a slash command takes no note.
+    if moved.as_deref().is_some_and(|m| on_stdin.contains(m)) {
+        crate::agents::move_told(id);
+    }
     let pid = Some(child.id());
     // Into the helper's job before it has had time to start anything. What is
     // waited for here is not waited for with every helper's lock held.

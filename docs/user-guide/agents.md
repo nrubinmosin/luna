@@ -110,8 +110,27 @@ hooks run unasked.
     notice names the file it is in. Luna asks before it does this. If Luna
     cannot finish opening it (the window closed midway and stays closed), the
     helper goes back to its agent after 15 minutes, and the agent is told.
+  - **Move to chat…**: it goes, with every helper under it, to another of
+    your chats, which manages it from then on. Only a chat's own helper (or one
+    whose chat is gone) moves, and only to a chat with Luna's tools that runs
+    at least at its privilege and has places for it and its helpers; the menu
+    grays out the others and says why. It may be in the middle of a turn: the
+    turn goes on, and its next turn is told which chat it answers to. Its
+    conversation, worktree, settings and constraints stay; text queued for it
+    still goes in. The new chat is owed the answer it is at work on, if any.
+    The old chat hears once that you moved it and that nothing more is owed by
+    it; from then on it can no longer send to it, answer it, stop or delete it,
+    and only reads it and waits on it the way it would another chat's helper
+    (`scope: "all"`). A helper left with no chat, set to delete itself once
+    idle, no longer does once moved to a chat.
+  - **Move to <chat>?** shows when one of your chats tried to send to it or
+    answer it and was refused for not being above it: one click moves it
+    there, as above. Nothing moves until you click.
   - **Stop** and **Delete**; Delete waits while it is at work, and keeps a
     worktree that holds uncommitted work.
+- Each helper's line says who manages it (`managed by <parent> · chat
+  <top>`), which of your other chats is waiting on it (`watched by`), and
+  where you last moved it from, and when.
 - Each of your chats has a number of places for the sessions under it, its
   helpers' helpers included: 8 unless you change it in Settings → Agents &
   trust → Helpers (1 to 32). A helper whose answer reached its caller and that

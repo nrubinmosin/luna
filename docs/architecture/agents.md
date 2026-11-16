@@ -33,6 +33,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/delivery.rs` | `luna_session_send`, typing into a chat's terminal (`TypingInto`, `type_text`, the draft put aside) |
 | `agents/held.rs` | text held for a person's draft (`hold`, `deliver_held`) and text a core went in the middle of typing (`reconcile_held`) |
 | `agents/handover.rs` | a helper the person opens as a chat, handed over for good (`take_over`) |
+| `agents/reparent.rs` | the person's move of a helper, with its line, to another chat (`move_helper`, `move_targets`), the chats refused a write into it (`asked_to_move`), what a row says of whose it is (`ownership_of`) |
 | `agents/answer.rs`, `wait.rs`, `list.rs` | `luna_session_answer`, `luna_session_wait`, `luna_session_list` / `luna_session_list` |
 | `agents/teardown.rs` | kill, delete, the person's guarded delete (`delete_by_user`, `at_stake`), `reap` (autoDelete), `forget` |
 | `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
@@ -228,6 +229,60 @@ chat's replace a helper's. A row the window could not make leaves everything as 
 (`agentlog::TAKEN_OVER`): a history's lineage goes by each link's owner now
 while the core knows it, and past a gone link by the spawner its run records,
 never past such a run (`mcp.rs` `runs_in_scope`).
+
+**Moved.** The person moves a helper, with every helper under it, to another
+of their chats from the window (`background_move`, `reparent::move_helper`;
+[ADR-0028](../adr/0028-writes-into-a-helper-come-from-above.md)); no tool
+does. Only its parent changes, so its line follows; its id, worktree,
+settings and constraints stay. It moves only a direct child of a person's chat
+or a helper with no chat above it, only to a person's chat with Luna's tools,
+not in its own line, whose privilege covers every moved session's
+(`privilege::holds_over`, `helpersAboveCaller` aside) and whose line has their
+places and their spawns under way (`under_cap`, with a helper `pass_up` had
+put on `autoDelete` counted, as the move switches that off). In this order:
+
+1. The notifier's hand-off on each moved session (`hand_off`): a notice about
+   one going in is in first, none starts after.
+2. Whose the helpers are, alone (`registry::ownership_changing`). Every send
+   and answer into a helper holds it shared from `authorize_send` to the debt
+   it leaves (`delivery::send`, `answer::answer`), so one checked against the
+   old chat has its debt in before the move goes on, and one after is checked
+   against the new chat. A background send never takes the notifier's
+   `going_into`, which is why the hand-off alone would not do.
+3. The helpers between turns (`background::claim_move`, `Entry::moving`, part
+   of `held_back`): no turn starts until the move is through, so the next one
+   starts with `LUNA_PARENT_ID` naming the new chat; one running goes on. A
+   helper being opened as a chat, deleted, moved, or between a lead's handoff
+   and its fresh start refuses the move; while it moves it refuses those.
+4. One hold of the registry checks it all again and changes it: the parent,
+   the orphan mark, an `autoDelete` `pass_up` switched on (`Auto::by_pass_up`),
+   and the old chat's debts, requests, receipts, seen counts, delivery floors,
+   answer marks and breaker counts on every moved session. It records `moved`
+   (`Moved`: from, to, when, whether a turn has been told), which its ties keep.
+5. Then the background spec's parent; the new chat owed the helper's answer at
+   its count now if it is in a turn, has text queued or holds an ask; the old
+   chat's one line in `news`, with how many of its messages are still queued;
+   the save and the rows' event.
+
+From then on the old chat's send, answer, stop, delete, and read or wait
+without `scope: "all"` on any moved session are refused naming the new chat
+(`moved_away`, `moved_error`): a wait in flight sees it at its next look. Its
+waits with `scope: "all"` go on. The helper's next turn gets a note in its
+prompt that the person moved it and to which chat (`move_note`, once; then
+`move_told`), on both CLIs: Claude Code has its role note in its first prompt
+only, Codex beside it every turn. Text queued before the move goes in as
+queued: a Claude Code turn running takes it on stdin at a tool boundary, a
+Codex helper at its next turn; command-led text from the old chat is dropped
+at delivery and the old chat told (`settle_batch`, `queued_refused`).
+
+A person's chat refused a write into a helper by the write rule (`NotAbove`)
+is recorded with when (`Registry::suggested`, in memory, `asked_to_move`), and
+the helper's row offers it ("Move to <chat>?"); a move or the helper's going
+clears it. A refused read or wait, or a helper refused, records nothing. The
+rows (`background_helpers`) carry `top`, `watchedBy` (the person's chats with
+a `wait` in flight on it that are not above it, `Registry::waits`), `moved`
+and `suggested`; the window asks `background_move_targets` for each chat's
+verdict before it offers a move.
 
 **Deleted.** Every delete of a helper, an agent's, the person's or `reap`'s,
 first holds it (`background::claim_delete`): no turn starts and it cannot be
@@ -636,6 +691,9 @@ path, worktree, last message, cut to 400 characters by `history`).
 | Two models answering each other | breaker after 12 notices in 15 min |
 | Core dies mid-turn | debts, ties and queues restored from disk; callers told "cut short" ([background helpers](background-helpers.md#outliving-the-core)) |
 | Window gone while opening a helper as a chat | the next window settles it by whether its row exists (`settleOpenings`) |
+| A move refused (no tools, its own line, a lead, privilege, places, held back, not a chat's own helper) | nothing changed; the refusal names why, and `background_move_targets` says it per chat beforehand |
+| A move waits on a send or an answer in flight into a helper, or on a notice about it going in | it goes on once that is in, the debt it left closed; a notice still going in after 120 s refuses the move (`hand_off`) |
+| Core dies between a move and the helper's next turn | its ties keep the move and that no turn has been told; the next core's first turn of it is |
 | A chat's CLI draws a dialog differently | not recognized: it waits for the person |
 
 ## Testing without a second Luna

@@ -445,6 +445,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         promoting: s.promoting_since.is_some(),
         promoting_since: s.promoting_since.unwrap_or(0),
         deleting: false,
+        moving: false,
         handing: false,
         observed: s.observed,
         switch: s.switch,
