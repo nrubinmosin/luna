@@ -94,6 +94,11 @@ $set = @{ LUNA_LIVE = '1'; LUNA_LIVE_TIMEOUT_S = "$TimeoutS"; PATH = (($runs.Cli
 foreach ($r in $runs) { $set[$r.Var] = $r.Account; $set[$r.CliVar] = $r.Cli }
 # Empty unsets it, so a value left in this shell does not turn the test on.
 $set['LUNA_LIVE_RENEW'] = if ($Renew) { '1' } else { '' }
+# Without -Renew the renewal test is filtered out, not run: run, it would
+# return at once and count as passed.
+$renewTest = 'live::claude_the_model_ask_leaves_a_renewed_token_saved'
+$skips = @()
+if ($ClaudeAccount -and -not $Renew) { $skips = @('--skip', $renewTest) }
 $passed = 0; $failed = @()
 Push-Location -LiteralPath $dir
 try {
@@ -104,7 +109,7 @@ try {
     foreach ($exe in $exes) {
         # Only the ignored tests, of the providers asked for, one at a time:
         # a burst of turns at once is a burst on the account's limits.
-        & $exe.FullName --ignored --test-threads=1 @($runs.Prefix) 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable lines | Out-Host
+        & $exe.FullName --ignored --test-threads=1 @($runs.Prefix) @skips 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable lines | Out-Host
         if ($LASTEXITCODE) { $failed += $exe.Name }
         foreach ($line in $lines) {
             if ($line -match '^test result: \w+\. (\d+) passed') { $passed += [int]$Matches[1] }
@@ -116,4 +121,5 @@ try {
 }
 if ($failed) { throw "live tests failed in $($failed -join ', '); the helpers' log is $dir\luna.log" }
 if (-not $passed) { throw 'no live test ran' }
-Write-Host "live tests: $passed passed" -ForegroundColor Green
+$skipped = if ($skips) { ", 1 skipped (${renewTest}: run with -Renew)" } else { '' }
+Write-Host "live tests: $passed passed$skipped" -ForegroundColor Green
