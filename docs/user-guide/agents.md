@@ -128,8 +128,9 @@ hooks run unasked.
     (`scope: "all"`). A helper left with no chat, set to delete itself once
     idle, no longer does once moved to a chat.
   - **Move to <chat>?** shows under its line, as a link, when one of your
-    chats tried to send to it or answer it and was refused for not being above
-    it: one click moves it there, as above; a refusal shows under the list.
+    chats tried to send to it or answer it, or a helper under it, and was
+    refused for not being above it: one click moves it there, as above, with
+    the helpers under it; a refusal shows under the list.
     Nothing moves until you click.
   - **Stop** and **Delete**; Delete waits while it is at work, and keeps a
     worktree that holds uncommitted work.

@@ -390,7 +390,8 @@ pub fn background_delete(
 }
 
 /// The person moves the helper, with the helpers under it, to chat `to`: from
-/// its menu ("Move to chat…") or its row's "Move to <chat>?" (agents/reparent.rs).
+/// the "Move to chat…" link on its row or the row's "Move to <chat>?"
+/// (agents/reparent.rs).
 /// Err, with nothing changed, says why not.
 #[tauri::command]
 pub fn background_move(id: String, to: String) -> Result<crate::agents::HelperMoved, String> {
@@ -398,7 +399,7 @@ pub fn background_move(id: String, to: String) -> Result<crate::agents::HelperMo
 }
 
 /// The chats helper `id` may move to, each with why not where it may not, for
-/// its menu to gray out (agents/reparent.rs `MoveTargets`).
+/// the Move dialog to gray out (agents/reparent.rs `MoveTargets`).
 #[tauri::command]
 pub fn background_move_targets(id: String) -> crate::agents::MoveTargets {
     crate::agents::move_targets(&id)

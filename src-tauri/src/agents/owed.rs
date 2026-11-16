@@ -409,7 +409,29 @@ fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64
     if caller == DEV_CALLER {
         return true;
     }
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let owed = owe_in(&mut reg().lock().unwrap_or_else(|e| e.into_inner()), caller, id, baseline, cursor, handovers, asked);
+    // A spawn's or a question's: a core killed now must not forget either.
+    if owed {
+        crate::background::save();
+    }
+    owed
+}
+
+/// `owe` in a hold of the registry its caller has, for a debt that must be in
+/// with what else that hold changes (reparent.rs `move_helper`); saved by the
+/// caller once the hold is let go.
+pub(super) fn owe_in(
+    r: &mut Registry,
+    caller: &str,
+    id: &str,
+    baseline: u32,
+    cursor: u64,
+    handovers: Option<u64>,
+    asked: Option<&Asked>,
+) -> bool {
+    if caller == DEV_CALLER {
+        return true;
+    }
     if handovers.is_some_and(|n| r.handovers.get(id).copied().unwrap_or(0) != n) {
         return false;
     }
@@ -452,9 +474,6 @@ fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64
         requests.made += 1;
         requests.open.push(Request { n: requests.made, key: a.key.map(str::to_owned), head: request_head(a.text) });
     }
-    drop(r);
-    // A spawn's or a question's: a core killed now must not forget either.
-    crate::background::save();
     true
 }
 

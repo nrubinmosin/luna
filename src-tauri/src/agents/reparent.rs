@@ -1,7 +1,8 @@
 //! The person moves a helper, with the helpers under it, to another chat
-//! (ADR-0028): from the helper's menu in the window ("Move to chat…"), or from
-//! the "Move to B?" its row offers once chat B was refused a write into it
-//! (`asked_to_move`). No agent may: it is a window command, not a tool.
+//! (ADR-0028): from the "Move to chat…" link on its row in the window's helper
+//! list, or from the "Move to B?" its row offers once chat B was refused a
+//! write into it or a helper under it (`asked_to_move`). No agent may: it is a
+//! window command, not a tool.
 //!
 //! Only the helper's parent changes, so everything under it follows; ids,
 //! worktrees, settings and constraints stay. What its old chat was owed by it
@@ -16,18 +17,21 @@
 //! The order is what keeps it whole: the notifier's hold on every session
 //! that moves (`hand_off`), so a notice about one going in is in before the
 //! debts change and none starts until they have; whose the helpers are held
-//! alone (`ownership_changing`), so a send or an answer checked against the old
-//! chat has left its debt before, or is checked against the new one after;
-//! the helpers held between turns (`claim_move`), so the next turn starts
-//! under its new parent; and the checks and the change in one hold of the
-//! registry, where a spawn counts its places.
+//! alone (`ownership_changing`), so a send, an answer or a spawn checked
+//! against the old chat has left its debt before, or is checked against the
+//! new one after; the helpers held between turns (`claim_move`), so the next
+//! turn starts under its new parent and none is deleted meanwhile; and the
+//! checks, the change and the new chat's debt in one hold of the registry,
+//! where a spawn counts its places and a chat's going is decided. The line is
+//! looked at again in that hold: one that has changed since the holds were
+//! taken (a helper spawned under it, one gone) is held again as it is now.
 
 use crate::agents::notifier::hand_off;
-use crate::agents::owed::{owe_from, seen};
+use crate::agents::owed::owe_in;
 use crate::agents::privilege::{helpers_above_caller, holds_over};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{
-    descendants, is_descendant, label, named, ownership_changing, persons_chat_in, reg, top_of, Registry, DEV_CALLER,
+    descendants, is_descendant, label, named, ownership_changing, parent_of, persons_chat_in, reg, top_of, Registry, DEV_CALLER,
 };
 use crate::agents::spawn::{max_descendants, under_cap};
 use crate::throttle::now_ms;
@@ -41,7 +45,8 @@ pub struct Moved {
     pub from: Option<String>,
     pub to: String,
     pub at_ms: u64,
-    /// A turn of its own has been told (`move_note`).
+    /// A turn's model has answered a prompt that told it of this move
+    /// (`move_note`, `move_told`).
     #[serde(default)]
     pub told: bool,
 }
@@ -56,14 +61,17 @@ pub struct Suggested {
 }
 
 /// Chat `chat` asked to write into helper `id` and was refused for not being
-/// above it: the window may offer to move `id` there. Only for a person's chat;
-/// a helper refused has no such way. Whether it is new, for the rows to be told.
+/// above it: the window may offer to move it there, which is to move the
+/// helper its line moves with (`movable_root`), `id` itself or the one above
+/// it under the chat. Only for a person's chat; a helper refused has no such
+/// way. Whether it is new, for the rows to be told.
 pub(super) fn asked_to_move(r: &mut Registry, chat: &str, id: &str) -> bool {
     if chat == DEV_CALLER || !persons_chat_in(r, chat) || !r.known.contains_key(id) {
         return false;
     }
+    let root = movable_root(r, id);
     let now = now_ms();
-    let asked = r.suggested.entry(id.to_string()).or_default();
+    let asked = r.suggested.entry(root).or_default();
     match asked.iter_mut().find(|s| s.chat == chat) {
         Some(s) => {
             s.at_ms = now;
@@ -74,6 +82,20 @@ pub(super) fn asked_to_move(r: &mut Registry, chat: &str, id: &str) -> bool {
             true
         }
     }
+}
+
+/// The helper the person moves for `id` to move: `id` if it is a chat's own
+/// helper or has no chat above it, else the helper above it that is, which
+/// takes it along (`check_source`).
+pub(super) fn movable_root(r: &Registry, id: &str) -> String {
+    let mut root = id.to_string();
+    for _ in 0..16 {
+        match r.known.get(&root).and_then(|k| k.parent.clone()) {
+            Some(p) if !persons_chat_in(r, &p) => root = p,
+            _ => break,
+        }
+    }
+    root
 }
 
 /// The helper moved away from `caller` that `target` is, or is under, if the
@@ -103,26 +125,42 @@ pub(super) fn moved_error(r: &Registry, id: &str, root: &str) -> String {
     )
 }
 
-/// The line a moved helper's next turn is given (background/command.rs
-/// `stdin_with`), until a turn has had it (`move_told`).
-pub fn move_note(id: &str) -> Option<String> {
+/// What a moved helper's next turn is told of its move (`move_note`).
+pub struct MoveNote {
+    /// The line its prompt is given (background/command.rs `stdin_with`).
+    pub text: String,
+    /// The move it tells of, as it stood: what `move_told` marks, if it is
+    /// still the last.
+    pub of: Moved,
+}
+
+/// The note a moved helper's next turn is given, until a turn's model has
+/// answered a prompt that carried it (`move_told`).
+pub fn move_note(id: &str) -> Option<MoveNote> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let m = r.moved.get(id).filter(|m| !m.told)?;
     let from = match &m.from {
         Some(from) => format!("from chat {}", named(&r, from)),
         None => "from no chat (the one above you had gone)".to_string(),
     };
-    Some(format!(
+    let text = format!(
         "The person moved you, in Luna's window, {from} to chat {}: you answer to that chat now. Your answers, \
          reports and questions go to it, and only it and the sessions above you send to you.",
         named(&r, &m.to)
-    ))
+    );
+    Some(MoveNote { text, of: m.clone() })
 }
 
-/// A turn started with `move_note` in its prompt: none after it is given it again.
-pub fn move_told(id: &str) {
-    if let Some(m) = reg().lock().unwrap_or_else(|e| e.into_inner()).moved.get_mut(id) {
-        m.told = true;
+/// A turn's model has answered a prompt that told it of move `of`: no turn
+/// after is told it again. A move made since, which that prompt did not tell
+/// of, stays to be told.
+pub fn move_told(id: &str, of: &Moved) {
+    {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        match r.moved.get_mut(id) {
+            Some(m) if m == of => m.told = true,
+            _ => return,
+        }
     }
     crate::background::save();
 }
@@ -186,23 +224,21 @@ fn check_source(r: &Registry, id: &str) -> Result<(Option<String>, Vec<String>),
     }
     if let Some(parent) = k.parent.as_deref().filter(|p| !persons_chat_in(r, p)) {
         let top = top_of(r, id);
-        let mut root = id.to_string();
-        while let Some(p) = r.known.get(&root).and_then(|k| k.parent.clone()).filter(|p| *p != top) {
-            root = p;
-        }
+        let under = if persons_chat_in(r, &top) { format!("under chat {}", named(r, &top)) } else { "with no chat above it".into() };
         return Err(format!(
-            "{id} is a helper of {}, itself a helper under chat {}: only a chat's own helper moves, with the helpers \
-             under it. Move {root} and {id} goes with it",
+            "{id} is a helper of {}, itself a helper {under}: only a chat's own helper moves, with the helpers under it. \
+             Move {} and {id} goes with it",
             named(r, parent),
-            named(r, &top)
+            movable_root(r, id)
         ));
-    }
-    if r.auto.get(id).is_some_and(|a| a.deleting) {
-        return Err(format!("{id} is being deleted (autoDelete, idle since its answer); not moved"));
     }
     let mut sessions = descendants(r, id);
     sessions.sort();
     sessions.insert(0, id.to_string());
+    // Taken for deletion by autoDelete: going, and not to be moved under it.
+    if let Some(s) = sessions.iter().find(|s| r.auto.get(*s).is_some_and(|a| a.deleting)) {
+        return Err(format!("{s} is being deleted (autoDelete, idle since its answer); not moved"));
+    }
     Ok((k.parent.clone(), sessions))
 }
 
@@ -261,6 +297,10 @@ fn check_target(r: &Registry, id: &str, from: Option<&str>, sessions: &[String],
     Ok(())
 }
 
+/// How many times a move takes its holds again on a line that changed under
+/// them (`move_line`) before it gives up.
+const LINE_TRIES: usize = 3;
+
 /// The person moves helper `id`, with every helper under it, to chat `to`. Err,
 /// with nothing changed, naming why: `id` held back, not a chat's own helper or
 /// one with none; `to` inside its line, no chat of the person's, without Luna's
@@ -268,60 +308,103 @@ fn check_target(r: &Registry, id: &str, from: Option<&str>, sessions: &[String],
 pub fn move_helper(id: &str, to: &str) -> Result<HelperMoved, String> {
     // Read before the registry is held: the settings are a file of their own.
     let (most, above) = (max_descendants(), helpers_above_caller());
-    let (_, first) = check_source(&reg().lock().unwrap_or_else(|e| e.into_inner()), id)?;
+    for _ in 0..LINE_TRIES {
+        let line = check_source(&reg().lock().unwrap_or_else(|e| e.into_inner()), id)?;
+        let Some(moved) = move_line(id, to, &line, most, above)? else { continue };
+        crate::background::save();
+        crate::background::changed();
+        crate::log::warn(
+            "agents",
+            &format!(
+                "the person moved {} with {} under it from {} to {}{}",
+                label(id),
+                moved.sessions.len() - 1,
+                moved.from.as_deref().unwrap_or("no chat"),
+                label(to),
+                if moved.auto_delete_off { "; its autoDelete from its chat's going is off" } else { "" }
+            ),
+        );
+        return Ok(moved);
+    }
+    Err(format!("the helpers under {id} kept changing as it was being moved (spawned or deleted meanwhile); not moved. Try again"))
+}
+
+/// One try at the move, holding `line` (its chat and its sessions, `id` first)
+/// as it was looked at before the holds. Ok(None), with nothing changed: the
+/// line is another by the time the registry is held, and the holds are not on
+/// all of it (a helper spawned under it meanwhile, which a delete may hold).
+fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usize, above: bool) -> Result<Option<HelperMoved>, String> {
+    let (from_then, first) = line;
     let mut holds = Vec::new();
-    for s in &first {
+    for s in first {
         holds.push(hand_off(s)?);
     }
-    let _owners = ownership_changing();
-    let claim = crate::background::claim_move(&first)?;
-    // Off the registry's lock: the transcript is read, the helper's record locked.
-    let (cursor, work) = (transcript_end(id), crate::background::has_work(id));
-    let baseline = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
-    let (from, sessions, auto_off, news) = {
+    // Read before the writes into helpers wait on the move: the transcript is a
+    // file. Taken early, what the new chat is owed may begin a little before the
+    // move, never after what the helper is at work on.
+    let cursor = transcript_end(id);
+    let owners = ownership_changing();
+    let claim = match crate::background::claim_move(first) {
+        Ok(claim) => claim,
+        Err(why) => {
+            drop(owners);
+            return Err(why);
+        }
+    };
+    // In one look, with no turn able to start: whether it is at work and the
+    // turns it has ended, which the new chat's debt counts from.
+    let (work, baseline) = crate::background::work_and_count(id).unwrap_or_default();
+    // What the old chat still has queued for it, which it hears of; its sends
+    // wait on `owners` meanwhile.
+    let queued = from_then.as_deref().map_or(0, |from| crate::background::queued_from(id, from));
+    #[cfg(test)]
+    super::test_support::reached("move held", id);
+    let changed = (|| {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let (from, sessions) = check_source(&r, id)?;
+        if sessions != *first {
+            return Ok(None);
+        }
         check_target(&r, id, from.as_deref(), &sessions, to, most, above)?;
-        let (auto_off, news) = change(&mut r, id, from.as_deref(), &sessions, to);
-        (from, sessions, auto_off, news)
-    };
-    crate::background::set_parent(id, Some(to.to_string()));
-    let owed = work && to != DEV_CALLER;
-    if owed {
-        owe_from(to, id, baseline, cursor);
-        seen(to, id, baseline);
-    }
-    if let Some((from, line)) = news {
-        let queued = crate::background::queued_from(id, &from);
-        let queued = match queued {
-            0 => String::new(),
-            1 => " The message you had queued for it still goes in, at its next turn if not this one.".to_string(),
-            n => format!(" The {n} messages you had queued for it still go in, at its next turn if not this one."),
-        };
-        reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((from, format!("{line}{queued}")));
+        let auto_off = change(&mut r, id, from.as_deref(), &sessions, to, if from == *from_then { queued } else { 0 });
+        // The answer it is at work on is the new chat's, owed in this hold: the
+        // chat's going (`forget`) is decided under it too, and takes the debt
+        // with it rather than leave it owed to nobody.
+        let owed = work && to != DEV_CALLER;
+        if owed {
+            owe_in(&mut r, to, id, baseline, cursor, None, None);
+            r.seen.insert((to.to_string(), id.to_string()), baseline);
+            if let Some(a) = r.auto.get_mut(id) {
+                a.idle_since = None;
+            }
+        }
+        Ok(Some(HelperMoved { id: id.to_string(), from, to: to.to_string(), sessions, auto_delete_off: auto_off, owed }))
+    })();
+    #[cfg(test)]
+    super::test_support::reached("move changed", id);
+    // Whose they are is settled: the writes waiting on it go on, and the
+    // claim's release below, which may start a turn (`go_on`), comes after.
+    drop(owners);
+    if let Ok(Some(_)) = &changed {
+        // The parent its next turn is started with, before the claim lets one
+        // start. A chat gone meanwhile (`forget`) has passed it on in the
+        // registry, and set this too: what the registry says now stands,
+        // whichever of the two set it last.
+        crate::background::set_parent(id, Some(to.to_string()));
+        let now = parent_of(id);
+        if now.as_deref() != Some(to) {
+            crate::background::set_parent(id, now);
+        }
     }
     drop(claim);
     drop(holds);
-    crate::background::save();
-    crate::background::changed();
-    crate::log::warn(
-        "agents",
-        &format!(
-            "the person moved {} with {} under it from {} to {}{}",
-            label(id),
-            sessions.len() - 1,
-            from.as_deref().unwrap_or("no chat"),
-            label(to),
-            if auto_off { "; its autoDelete from its chat's going is off" } else { "" }
-        ),
-    );
-    Ok(HelperMoved { id: id.to_string(), from, to: to.to_string(), sessions, auto_delete_off: auto_off, owed })
+    changed
 }
 
-/// The one hold in which `id`'s line changes chat. Returns whether an
-/// `autoDelete` `pass_up` had switched on went off, and the old chat with the
-/// line it is to hear, if it had one.
-fn change(r: &mut Registry, id: &str, from: Option<&str>, sessions: &[String], to: &str) -> (bool, Option<(String, String)>) {
+/// The one hold in which `id`'s line changes chat; `queued`: how many messages
+/// the old chat has queued for it. Returns whether an `autoDelete` `pass_up` had
+/// switched on went off.
+fn change(r: &mut Registry, id: &str, from: Option<&str>, sessions: &[String], to: &str, queued: usize) -> bool {
     if let Some(k) = r.known.get_mut(id) {
         k.parent = Some(to.to_string());
         k.orphan = false;
@@ -342,7 +425,7 @@ fn change(r: &mut Registry, id: &str, from: Option<&str>, sessions: &[String], t
             asked.retain(|a| a.chat != to);
         }
     }
-    let Some(from) = from else { return (auto_off, None) };
+    let Some(from) = from else { return auto_off };
     // What the old chat had of them: nothing more is owed, and nothing a cancel
     // could put back (owed.rs `hand_over`).
     let theirs = |key: &(String, String)| key.0 == from && sessions.contains(&key.1);
@@ -360,13 +443,19 @@ fn change(r: &mut Registry, id: &str, from: Option<&str>, sessions: &[String], t
         1 => " with the helper under it".to_string(),
         n => format!(" with the {n} helpers under it"),
     };
+    let queued = match queued {
+        0 => String::new(),
+        1 => " The message you had queued for it still goes in, at its next turn if not this one.".to_string(),
+        n => format!(" The {n} messages you had queued for it still go in, at its next turn if not this one."),
+    };
     let line = format!(
         "The person moved your helper {id}{name}{under} to chat {} in Luna's window: it answers to that chat now, no \
          longer yours to send to, answer, stop or delete, and nothing more is owed to you by it. You may still read it \
-         and wait on it, with scope: \"all\".",
+         and wait on it, with scope: \"all\".{queued}",
         named(r, to)
     );
-    (auto_off, Some((from.to_string(), line)))
+    r.news.push((from.to_string(), line));
+    auto_off
 }
 
 /// A chat the window may offer to move a helper to, and why not, if not.
@@ -379,8 +468,9 @@ pub struct MoveTarget {
     pub why: Option<String>,
 }
 
-/// Where helper `id` may move, for its menu: `blocked` says why it cannot move
-/// at all; else each of the person's chats, with why not where it may not.
+/// Where helper `id` may move, for the window's Move dialog: `blocked` says
+/// why it cannot move at all; else each of the person's chats, with why not
+/// where it may not.
 #[derive(Serialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MoveTargets {

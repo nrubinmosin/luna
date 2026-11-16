@@ -232,6 +232,8 @@ pub fn answer(
     // (reparent.rs).
     let _steady = crate::background::has(id).then(ownership_steady);
     let known = authorize_send(caller, id)?;
+    #[cfg(test)]
+    super::test_support::reached("answer checked", caller);
     // Typed in as keys: what is not plain text would be keys of its own.
     for t in answers.iter().map(String::as_str).chain(note) {
         plain_text(t)?;

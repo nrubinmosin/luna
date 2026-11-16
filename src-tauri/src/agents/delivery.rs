@@ -307,6 +307,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     // in, or a move of it to another chat waits (reparent.rs). A chat never moves.
     let _steady = crate::background::has(id).then(ownership_steady);
     authorize_send(caller, id)?;
+    #[cfg(test)]
+    super::test_support::reached("send checked", caller);
     let mine = is_mine(caller, id);
     if interrupt && !mine {
         return Err(format!(

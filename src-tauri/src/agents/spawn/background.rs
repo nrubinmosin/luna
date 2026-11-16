@@ -3,7 +3,7 @@
 
 use crate::agents::delivery::POLL;
 use crate::agents::owed::{owe_asked, shown, Asked};
-use crate::agents::registry::{chat_name, issue_token, reg, register, set_name};
+use crate::agents::registry::{chat_name, issue_token, ownership_steady, reg, register, set_name};
 use crate::agents::spawn::worktree::{helper_worktree_name, neighbors_in, worktree_of, worktree_queue, Worktree};
 use crate::agents::spawn::{spawn_is, SpawnParams, Spawned};
 use crate::agents::teardown::{forget, Auto};
@@ -260,6 +260,18 @@ pub(in crate::agents) fn spawn_background(
     spec.constraints = constraints;
     let tools = spec.tools;
     let auto_delete = params.auto_delete.unwrap_or(true);
+    // Its CLI makes its worktree as its first turn starts: one at a time per
+    // repository (`worktree_queue`), held until it has said where, its turn
+    // has ended without, or WORKTREE_WAIT is up. Waited for here, before the
+    // hold below: a wait under that hold would hold up every write into a
+    // helper behind a move waiting on it.
+    let queue = own_worktree.then(|| worktree_queue(&project));
+    let making = queue.as_ref().map(|q| q.lock().unwrap_or_else(|e| e.into_inner()));
+    // Whose it is stays as registered, from here until its caller is owed its
+    // answer: the person's move of it (or of the helper spawning it) to
+    // another chat waits, and never leaves its CLI started under the old
+    // parent or the old chat owed it again (agents/reparent.rs).
+    let steady = ownership_steady();
     let token = register(&id, provider, &run_in, &account_path, Some(caller), tools, settings.clone());
     // Claude Code asks its permissions of Luna, tools or not.
     spec.token = token.or_else(|| (provider == Provider::Claude).then(|| issue_token(&id)));
@@ -287,11 +299,6 @@ pub(in crate::agents) fn spawn_background(
         forget(&id);
         return Err(e);
     }
-    // Its CLI makes its worktree as its first turn starts: one at a time per
-    // repository (`worktree_queue`), held until it has said where, its turn
-    // has ended without, or WORKTREE_WAIT is up.
-    let queue = own_worktree.then(|| worktree_queue(&project));
-    let making = queue.as_ref().map(|q| q.lock().unwrap_or_else(|e| e.into_inner()));
     if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
         forget(&id);
         return Err(e);
@@ -313,6 +320,7 @@ pub(in crate::agents) fn spawn_background(
     let same_folder = if own_worktree { Vec::new() } else { neighbors_in(&run_in, caller, &[caller, &id]) };
     shown(caller, &id, 0);
     owe_asked(caller, &id, 0, 0, &Asked { text: &params.prompt, key: params.request_key.as_deref(), reply: true });
+    drop(steady);
     // The CLI makes its worktree as the first turn starts: worth a few
     // seconds, so the caller need not go looking for it.
     let pty = crate::pty::manager();

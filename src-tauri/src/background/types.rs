@@ -273,6 +273,10 @@ pub(super) struct Run {
     /// Which claim this is, of all this core has made: a batch reserved on it
     /// (`Reservation`) tells the claim it holds from one made after it.
     pub(super) claim: u64,
+    /// The person's move to another chat that this turn's prompt told it of
+    /// (agents/reparent.rs `move_note`): told for good once its model has
+    /// answered that prompt (`turn_over`), and only if it is still the last move.
+    pub(super) moved: Option<crate::agents::Moved>,
 }
 
 impl Run {
@@ -289,6 +293,7 @@ impl Run {
             after_result: false,
             watched: Vec::new(),
             claim,
+            moved: None,
         }
     }
 }
