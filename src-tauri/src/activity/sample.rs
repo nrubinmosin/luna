@@ -518,7 +518,7 @@ mod tests {
     fn probe(last_output_ms: u64, work_output_ms: u64) -> crate::pty::ActivityProbe {
         crate::pty::ActivityProbe {
             id: "chat-repaint".into(),
-            provider: crate::provider::Provider::Claude,
+            provider: Provider::Claude,
             pid: None,
             cwd: String::new(),
             spawned_at_ms: 0,
