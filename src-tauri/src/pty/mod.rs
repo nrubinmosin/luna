@@ -87,10 +87,11 @@ struct Session {
     /// a quiet screen mid-turn is how an approval prompt is told apart from
     /// work in progress.
     last_output_ms: Arc<AtomicU64>,
-    /// `last_output_ms` without the repaints Luna's own resizes bring on
+    /// `last_output_ms` without the repaints Luna's nudges bring on
     /// (`reader_stamp`): what the activity sampler counts as the session
-    /// printing. A pane shown, refit or nudged resizes the pty, and the
-    /// CLI's redraw that follows is Luna's doing, not the session at work.
+    /// printing. A pane shown, refit or nudged resizes the pty, focus moving
+    /// between panes sends focus reports, and the CLI's redraw that follows
+    /// is Luna's doing, not the session at work.
     work_output_ms: Arc<AtomicU64>,
     pid: Option<u32>,
     cwd: String,
@@ -154,47 +155,59 @@ fn now_ms() -> u64 {
 
 /// Milliseconds on a clock that never steps back, counted from the first time
 /// this process read it. For spans between two moments of this process only
-/// (the resize window below); a wall-clock stamp is `now_ms`.
+/// (the repaint window below); a wall-clock stamp is `now_ms`.
 fn mono_ms() -> u64 {
     static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     BASE.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
 }
 
-/// How long after a resize a session's output is taken for the repaint it
-/// brought on. A CLI redraws its screen within a frame or two of a resize
-/// (Codex's reflow within about 225 ms, docs/cli-compatibility.md); a pane's
-/// repaint nudge is two resizes 60 ms apart. Each resize starts the window
-/// over, so while a split is dragged nothing the session prints counts until
-/// 1 s after the last resize, and a short burst of real output wholly inside
-/// the window is never counted; a turn at work, or a process under it, still
-/// keeps the session busy. A heuristic: a repaint delivered more than 1 s
-/// after its resize (a machine under heavy load) still counts as output.
-pub(crate) const RESIZE_REPAINT_MS: u64 = 1_000;
+/// How long after a nudge a session's output is taken for the repaint it
+/// brought on. A nudge is what the writer passes on that makes an idle CLI
+/// redraw: a resize, or a write of focus reports alone (`only_focus_reports`).
+/// A CLI redraws its screen within a frame or two of a resize (Codex's reflow
+/// within about 225 ms, docs/cli-compatibility.md); a pane's repaint nudge is
+/// two resizes 60 ms apart. Each nudge starts the window over, so while a
+/// split is dragged nothing the session prints counts until 1 s after the
+/// last resize, and a short burst of real output wholly inside the window is
+/// never counted; a turn at work, or a process under it, still keeps the
+/// session busy. A heuristic: a repaint delivered more than 1 s after its
+/// nudge (a machine under heavy load) still counts as output.
+pub(crate) const REPAINT_WINDOW_MS: u64 = 1_000;
 
 /// Whether output read at `now` is the session's own, rather than the repaint
-/// of the resize Luna last applied at `last_resize` (None: never). Both on
-/// `mono_ms`'s clock, so a wall clock set back cannot stretch the window.
-fn is_work_output(now: u64, last_resize: Option<u64>) -> bool {
-    last_resize.is_none_or(|at| now.saturating_sub(at) > RESIZE_REPAINT_MS)
+/// of the nudge the writer last passed on at `last_nudge` (None: never). Both
+/// on `mono_ms`'s clock, so a wall clock set back cannot stretch the window.
+fn is_work_output(now: u64, last_nudge: Option<u64>) -> bool {
+    last_nudge.is_none_or(|at| now.saturating_sub(at) > REPAINT_WINDOW_MS)
 }
 
-/// What `Session`'s resize stamp holds before the first resize.
-const NEVER_RESIZED: u64 = u64::MAX;
+/// What the writer's nudge stamp holds before the first nudge.
+const NEVER_NUDGED: u64 = u64::MAX;
 
 /// What the reader stores as the work stamp (`Session::work_output_ms`) for
 /// output read at `now_wall` (`now_ms`) and `now_mono` (`mono_ms`), the
-/// writer's resize stamp being `last_resize` as it holds it (`NEVER_RESIZED`
-/// before the first): `now_wall`, or None for a resize's repaint. The window
+/// writer's nudge stamp being `last_nudge` as it holds it (`NEVER_NUDGED`
+/// before the first): `now_wall`, or None for a nudge's repaint. The window
 /// is judged on the monotonic clock; the stamp is wall-clock time, as the
 /// sampler compares it with its own now.
-pub(crate) fn reader_stamp(now_wall: u64, now_mono: u64, last_resize: u64) -> Option<u64> {
-    let resized = Some(last_resize).filter(|&at| at != NEVER_RESIZED);
-    is_work_output(now_mono, resized).then_some(now_wall)
+pub(crate) fn reader_stamp(now_wall: u64, now_mono: u64, last_nudge: u64) -> Option<u64> {
+    let nudged = Some(last_nudge).filter(|&at| at != NEVER_NUDGED);
+    is_work_output(now_mono, nudged).then_some(now_wall)
 }
 
 /// `reader_stamp` for output the reader thread has just read at `now_wall`.
-fn reader_stamp_now(now_wall: u64, last_resize: u64) -> Option<u64> {
-    reader_stamp(now_wall, mono_ms(), last_resize)
+fn reader_stamp_now(now_wall: u64, last_nudge: u64) -> Option<u64> {
+    reader_stamp(now_wall, mono_ms(), last_nudge)
+}
+
+/// Whether input bytes are focus reports and nothing else: one or more of
+/// `ESC [ I` (focus in) and `ESC [ O` (focus out), which xterm.js sends on its
+/// own when focus moves into or out of a pane whose CLI turned on focus
+/// reporting (`?1004`, kept in `KEPT_MODES`). A CLI redraws on them as on a
+/// resize, so the writer takes such a write for a nudge. Anything else in the
+/// same write (a key, a mouse report, a paste) makes it the person's input.
+fn only_focus_reports(bytes: &[u8]) -> bool {
+    !bytes.is_empty() && bytes.chunks(3).all(|r| r == b"\x1b[I" || r == b"\x1b[O")
 }
 
 /// Whether two paths name the same folder, slashes and a trailing separator
@@ -260,46 +273,70 @@ mod tests {
         assert!(!same_dir("C:\\p", "C:\\acc\\anthropic\\one"));
     }
 
-    /// The repaint a resize brings on is not the session's output; what comes
-    /// after the window is, and so is all of it when no resize was made.
+    /// The repaint a nudge brings on is not the session's output; what comes
+    /// after the window is, and so is all of it when no nudge was made.
     #[test]
-    fn output_just_after_a_resize_is_its_repaint() {
-        let resized = 100_000;
-        assert!(!is_work_output(resized, Some(resized)));
-        assert!(!is_work_output(resized + 400, Some(resized)));
-        assert!(!is_work_output(resized + RESIZE_REPAINT_MS, Some(resized)));
-        assert!(is_work_output(resized + RESIZE_REPAINT_MS + 1, Some(resized)));
-        assert!(is_work_output(0, None), "never resized");
-        assert!(is_work_output(resized, None), "never resized");
-        // The writer stamped a resize after the reader took its time: that
-        // read is the resize's too.
-        assert!(!is_work_output(resized - 3, Some(resized)));
+    fn output_just_after_a_nudge_is_its_repaint() {
+        let nudged = 100_000;
+        assert!(!is_work_output(nudged, Some(nudged)));
+        assert!(!is_work_output(nudged + 400, Some(nudged)));
+        assert!(!is_work_output(nudged + REPAINT_WINDOW_MS, Some(nudged)));
+        assert!(is_work_output(nudged + REPAINT_WINDOW_MS + 1, Some(nudged)));
+        assert!(is_work_output(0, None), "never nudged");
+        assert!(is_work_output(nudged, None), "never nudged");
+        // The writer stamped a nudge after the reader took its time: that
+        // read is the nudge's too.
+        assert!(!is_work_output(nudged - 3, Some(nudged)));
     }
 
     /// The reader stores wall time for the session's own output and nothing
-    /// for a resize's repaint, judged on the monotonic clock alone; before
-    /// the first resize, every read is the session's own.
+    /// for a nudge's repaint, judged on the monotonic clock alone; before
+    /// the first nudge, every read is the session's own.
     #[test]
     fn the_reader_stamps_wall_time_for_work_alone() {
         let wall = 1_700_000_000_000;
         assert_eq!(reader_stamp(wall, 5_400, 5_000), None);
-        assert_eq!(reader_stamp(wall, 5_000 + RESIZE_REPAINT_MS + 1, 5_000), Some(wall));
-        assert_eq!(reader_stamp(wall, 0, NEVER_RESIZED), Some(wall), "never resized");
-        assert_eq!(reader_stamp(wall, 5_000, NEVER_RESIZED), Some(wall), "never resized");
+        assert_eq!(reader_stamp(wall, 5_000 + REPAINT_WINDOW_MS + 1, 5_000), Some(wall));
+        assert_eq!(reader_stamp(wall, 0, NEVER_NUDGED), Some(wall), "never nudged");
+        assert_eq!(reader_stamp(wall, 5_000, NEVER_NUDGED), Some(wall), "never nudged");
     }
 
-    /// The reader thread's own clocks: a resize the writer stamped just now
-    /// hides what is read now, and a session never resized counts at once.
+    /// The reader thread's own clocks: a nudge the writer stamped just now
+    /// hides what is read now, and a session never nudged counts at once.
     #[test]
-    fn the_reader_judges_the_window_on_the_resize_clock() {
+    fn the_reader_judges_the_window_on_the_monotonic_clock() {
         assert_eq!(reader_stamp_now(now_ms(), mono_ms()), None);
         let wall = now_ms();
-        assert_eq!(reader_stamp_now(wall, NEVER_RESIZED), Some(wall));
+        assert_eq!(reader_stamp_now(wall, NEVER_NUDGED), Some(wall));
+    }
+
+    /// Only a write of focus reports and nothing else is a nudge: one or
+    /// several, in or out. A key, a mouse report or a paste beside one, a
+    /// sequence cut short, or nothing at all is not.
+    #[test]
+    fn a_write_of_focus_reports_alone_is_a_nudge() {
+        assert!(only_focus_reports(b"\x1b[I"));
+        assert!(only_focus_reports(b"\x1b[O"));
+        assert!(only_focus_reports(b"\x1b[O\x1b[I"));
+        assert!(only_focus_reports(b"\x1b[I\x1b[O\x1b[I\x1b[O"));
+        assert!(!only_focus_reports(b""), "empty");
+        assert!(!only_focus_reports(b"\x1b[Ia"), "a key after it");
+        assert!(!only_focus_reports(b"a\x1b[I"), "a key before it");
+        assert!(!only_focus_reports(b"\x1b[I\r"));
+        assert!(!only_focus_reports(b"\x1b[I\x1b[<0;10;5M"), "a mouse report");
+        assert!(!only_focus_reports(b"\x1b[200~\x1b[I\x1b[201~"), "a paste");
+        assert!(!only_focus_reports(b"\x1b[I\x1b["), "cut short");
+        assert!(!only_focus_reports(b"\x1b["));
+        assert!(!only_focus_reports(b"\x1b"));
+        assert!(!only_focus_reports(b"\x1b[A"), "an arrow");
+        assert!(!only_focus_reports(b"\x1bOI"), "SS3, not CSI");
+        assert!(!only_focus_reports(b"\x1b[1I"), "a parameter");
+        assert!(!only_focus_reports(b"I\x1b[O"));
     }
 
     /// The clock the window runs on only moves forward.
     #[test]
-    fn the_resize_clock_never_steps_back() {
+    fn the_monotonic_clock_never_steps_back() {
         let a = mono_ms();
         std::thread::sleep(std::time::Duration::from_millis(5));
         assert!(mono_ms() >= a + 5);

@@ -84,8 +84,8 @@ pub struct ActivityProbe {
     pub resume: Option<String>,
     pub account_path: String,
     pub last_output_ms: u64,
-    /// Its last output that was not a repaint after a resize: what counts as
-    /// it printing (`Session::work_output_ms`).
+    /// Its last output that was not a repaint after a resize or a focus
+    /// report: what counts as it printing (`Session::work_output_ms`).
     pub work_output_ms: u64,
     pub job: Option<Arc<crate::procs::Job>>,
     /// Codex only: its screen shows an approval dialog (see
