@@ -33,7 +33,7 @@ pub(in crate::agents) fn signed_in(provider: Provider, account_path: &str) -> bo
     }
 }
 
-/// Codex's ChatGPT tokens or its API key, neither blank.
+/// Codex's ChatGPT login (`chatgpt_login`) or its API key, not blank.
 fn codex_login(auth: &serde_json::Value) -> bool {
     crate::codex::limits::chatgpt_login(auth) || auth["OPENAI_API_KEY"].as_str().is_some_and(|k| !k.trim().is_empty())
 }
@@ -282,6 +282,7 @@ mod tests {
         };
         assert!(codex(r#"{"tokens":{"access_token":"at","refresh_token":"rt"}}"#));
         assert!(codex(r#"{"OPENAI_API_KEY":"sk-1","tokens":null}"#));
+        assert!(codex(r#"{"auth_mode":"chatgptAuthTokens","tokens":{"access_token":"at","refresh_token":""}}"#));
         assert!(!codex(r#"{"tokens":{"access_token":"","refresh_token":"","id_token":""}}"#));
         assert!(!codex(r#"{"OPENAI_API_KEY":" ","tokens":{}}"#));
         let _ = std::fs::remove_dir_all(&dir);

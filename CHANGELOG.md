@@ -17,7 +17,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   server turns down as `invalid_grant` signs the account out the same way;
   an account on hold, or any other refused refresh, stays a failed refresh.
   A Codex account with an empty token in `auth.json` reads as signed out
-  too, and neither is picked for a helper.
+  too (but for tokens a host application supplied, which carry no refresh
+  token), and neither is picked for a helper.
 
 ## [0.18.2] - 2026-11-13
 

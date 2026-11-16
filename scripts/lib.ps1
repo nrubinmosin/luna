@@ -258,7 +258,9 @@ function Use-BuildLock([scriptblock]$Body) {
 # Luna's own spawns go by (agents/spawn/account.rs `signed_in`): Claude Code's
 # OAuth refresh token, or Codex's ChatGPT access and refresh tokens or API key,
 # none of them blank (Claude Code blanks its tokens once a refresh is refused).
-# $Provider is the accounts folder's name for it, anthropic or openai.
+# Tokens a host application supplied (auth_mode chatgptAuthTokens) come with an
+# empty refresh token, so there the access token alone counts. $Provider is the
+# accounts folder's name for it, anthropic or openai.
 function Test-AccountSignedIn([string]$Provider, [string]$Path) {
     $file = if ($Provider -eq 'anthropic') { '.credentials.json' } else { 'auth.json' }
     $json = try { Get-Content -LiteralPath (Join-Path $Path $file) -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable } catch { $null }
@@ -268,7 +270,8 @@ function Test-AccountSignedIn([string]$Provider, [string]$Path) {
         return $json.claudeAiOauth -is [hashtable] -and (& $text $json.claudeAiOauth.refreshToken)
     }
     $tokens = $json.tokens
-    ($tokens -is [hashtable] -and (& $text $tokens.access_token) -and (& $text $tokens.refresh_token)) -or (& $text $json.OPENAI_API_KEY)
+    $external = $json.auth_mode -ceq 'chatgptAuthTokens'
+    ($tokens -is [hashtable] -and (& $text $tokens.access_token) -and ($external -or (& $text $tokens.refresh_token))) -or (& $text $json.OPENAI_API_KEY)
 }
 
 # Whether $Path is a junction or symlink (any reparse point), not following it.

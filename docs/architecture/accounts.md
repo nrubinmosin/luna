@@ -93,7 +93,10 @@ not past its `refreshTokenExpiresAt`. On `invalid_grant` the CLI blanks its
 tokens (`refreshToken: ""`, `accessToken: ""`, `expiresAt: 0`), so that file
 reads as signed out, offers Sign in, and no refresh is posted with it. A
 Codex `auth.json` is signed in by the same measure: both of its ChatGPT tokens
-there and not blank (`codex::limits::chatgpt_login`).
+there and not blank (`codex::limits::chatgpt_login`). The exception is
+`auth_mode: "chatgptAuthTokens"`, tokens a host application gave Codex: they
+come with an empty refresh token that Codex never uses, so there a non-blank
+access token is the login.
 
 Codex is left alone: its token lives 10 days, it refreshes itself, and the
 server rejects a reused refresh token, so a refresh beside a live Codex would
