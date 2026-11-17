@@ -209,8 +209,20 @@ static CHATS_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 /// written down that would have the next core take it for one that finished.
 pub(super) static CHATS_FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// What `save_chats` last wrote, and the lock its saves take in turn
+/// (`save_in_order`).
+static CHATS_LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
 pub fn freeze_chats() {
-    CHATS_FROZEN.store(true, std::sync::atomic::Ordering::SeqCst);
+    freeze(&CHATS_LAST, &CHATS_FROZEN);
+}
+
+/// Sets `frozen` under the saves' lock: a save already taking its snapshot
+/// or writing it is through before the sessions are stopped, so nothing of
+/// the stopping goes into a snapshot or onto disk after the freeze.
+fn freeze(last: &Mutex<Vec<u8>>, frozen: &std::sync::atomic::AtomicBool) {
+    let _saving = last.lock().unwrap_or_else(|e| e.into_inner());
+    frozen.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// What there is to keep of the sessions the window runs, and the rest the next
@@ -262,13 +274,12 @@ pub(super) fn chats_now() -> SavedChats {
 /// `save` keeps the beat).
 pub fn save_chats() {
     use std::sync::atomic::Ordering;
-    static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
     if !CHATS_READ.load(Ordering::SeqCst) {
         return;
     }
     let path = chat_ties_file();
     save_in_order(
-        &LAST,
+        &CHATS_LAST,
         || snapshot_unless(&CHATS_FROZEN, || serde_json::to_vec_pretty(&chats_now()).ok()),
         |bytes| match crate::secret::write_private(&path, bytes) {
             Ok(()) => true,
@@ -541,6 +552,42 @@ mod tests {
         first.join().unwrap();
         queued.join().unwrap();
         assert_eq!(*LAST.lock().unwrap(), b"before");
+    }
+
+    /// A freeze that comes while a save is taking its snapshot waits for that
+    /// save to be written: nothing goes onto disk once the freeze has
+    /// returned and the sessions are being stopped.
+    #[test]
+    fn a_freeze_waits_for_the_save_under_way() {
+        static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+        static FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let said = std::sync::Arc::new(Mutex::new(Vec::<&str>::new()));
+        let (snapping, snapped) = std::sync::mpsc::channel();
+        let save = {
+            let said = said.clone();
+            std::thread::spawn(move || {
+                save_in_order(
+                    &LAST,
+                    || {
+                        snapshot_unless(&FROZEN, || {
+                            snapping.send(()).unwrap();
+                            // Let in, the freeze returns in this time.
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                            Some(b"before".to_vec())
+                        })
+                    },
+                    |_| {
+                        said.lock().unwrap().push("written");
+                        true
+                    },
+                )
+            })
+        };
+        snapped.recv().unwrap();
+        freeze(&LAST, &FROZEN);
+        said.lock().unwrap().push("frozen");
+        save.join().unwrap();
+        assert_eq!(*said.lock().unwrap(), ["written", "frozen"]);
     }
 
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,

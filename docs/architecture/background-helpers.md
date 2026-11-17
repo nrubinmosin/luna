@@ -329,6 +329,9 @@ reported as not started again. A chat is never anyone's helper: one an earlier
 Luna saved with a parent (a visible helper) comes back with none, and none of a
 helper's settings. `save_chats` stops while sessions are being stopped
 (`freeze_chats`), so the next core does not read what quitting did to them.
+Each save takes its snapshot and writes it under one lock (`save_in_order`),
+so the newest snapshot is the one left on disk, and the freeze takes the same
+lock: a save under way is written before the stopping starts, and none after.
 
 Neither CLI continues a turn a core killed (Claude Code's `--resume` needs an
 environment variable Luna does not set; Codex's continuation lives in the daemon

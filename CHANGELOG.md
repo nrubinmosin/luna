@@ -133,6 +133,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A Claude Code chat resumed into its worktree by name keeps that worktree
   from a delete or the orphan sweep from its start, not only once its CLI has
   said where it is.
+- Stopping the sessions waits for a save of the chats' ties under way, so
+  nothing the stopping did is written after it.
 
 ## [0.18.5] - 2026-11-17
 
