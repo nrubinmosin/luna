@@ -1,6 +1,7 @@
 import { renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import * as handoffIpc from '../../ipc/handoff';
+import * as sessionsIpc from '../../ipc/sessions';
 import type { Account, Chat } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
 import { useChats } from './chats.store';
@@ -52,5 +53,36 @@ describe('useSessionWatch', () => {
     await waitFor(() => expect(useChats.getState().findChat('w1')?.handoffAsk ?? null).toBeNull());
     expect(handoffIpc.handoffAsk).toHaveBeenCalledWith('w1');
     unmount();
+  });
+
+  it('forgets the saved-title lookup of a chat no longer listed', async () => {
+    const account = { provider: 'claude', name: 'work', path: '/accounts/claude/work' } as Account;
+    const chat = {
+      id: 't1',
+      name: 'opening prompt',
+      nameSource: 'prompt',
+      sessionId: 's-1',
+      provider: 'claude',
+      account: 'work',
+      status: 'resting',
+      tools: true
+    } as Chat;
+    const listed = { folders: [{ id: 'f', path: '/repo', open: true, chats: [chat] }] };
+    const looked = vi.mocked(sessionsIpc.savedTitle);
+    looked.mockClear();
+    useAccounts.setState({ accounts: [account], loaded: true });
+    useChats.setState(listed);
+    const first = renderHook(() => useSessionWatch());
+    await waitFor(() => expect(looked).toHaveBeenCalledTimes(1));
+    first.unmount();
+    // Deleted: the next round finds it gone and lets its lookup go.
+    useChats.setState({ folders: [] });
+    renderHook(() => useSessionWatch()).unmount();
+    // Listed again (the same id, as a moved chat's row can be): looked up
+    // again, where a set that kept every id ever seen would skip it.
+    useChats.setState(listed);
+    const again = renderHook(() => useSessionWatch());
+    await waitFor(() => expect(looked).toHaveBeenCalledTimes(2));
+    again.unmount();
   });
 });

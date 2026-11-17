@@ -75,7 +75,9 @@ titles, context and drafts come from the core (`session_meta`), polled by
   of the folders or of what they show, not on every change of the store. The
   helpers' root index is built once per `agent://background` snapshot
   (`background.store` `helperRoots`). A per-chat map of this run
-  (`restarts.store`, `moveHints.store`) forgets a chat as it is deleted.
+  (`restarts.store`, `moveHints.store`) forgets a chat as it is deleted, and
+  the watcher's set of saved titles already looked up lets go of a chat no
+  longer listed at its next round.
 - **The chats on disk** (`luna.chats`) are written through
   `shared/lib/throttledStorage.ts`: a change after a quiet spell at once, then
   at most one write per 500 ms with the latest state, and what waits on

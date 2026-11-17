@@ -44,6 +44,9 @@ export function useSessionWatch() {
       const { folders } = useChats.getState();
       const { accounts } = useAccounts.getState();
       const chats = folders.flatMap(f => f.chats);
+      // The set lives as long as the page; a chat deleted leaves it here.
+      const listed = new Set(chats.map(c => c.id));
+      for (const id of titleLooked) if (!listed.has(id)) titleLooked.delete(id);
 
       // Sequential on purpose: each read touches the filesystem, and a burst of
       // them across many chats is exactly the main-thread hiccup we just fixed.
