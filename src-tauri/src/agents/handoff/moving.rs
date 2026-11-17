@@ -832,8 +832,8 @@ pub(super) fn build_within(
                 .as_ref()
                 .ok()
                 .and_then(|t| t.began.as_deref())
-                .and_then(|b| chrono::DateTime::parse_from_rfc3339(b).ok())
-                .map(|t| t.timestamp());
+                .and_then(|b| b.parse::<jiff::Timestamp>().ok())
+                .map(|t| t.as_second());
             inputs.git = gitfacts::of(&inputs.folder, since);
             let _ = tx.send(document::build(&inputs, &roots));
         })

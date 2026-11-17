@@ -65,8 +65,9 @@ fn now_ms() -> u64 {
 }
 
 fn clock(ms: u64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms as i64)
-        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+    jiff::Timestamp::from_millisecond(ms as i64)
+        .ok()
+        .map(|t| t.to_zoned(jiff::tz::TimeZone::system()).strftime("%Y-%m-%d %H:%M:%S").to_string())
         .unwrap_or_else(|| "?".into())
 }
 

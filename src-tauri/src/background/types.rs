@@ -167,8 +167,8 @@ pub struct LeftRunning {
 
 /// An instant as the rest of `luna_session_get` writes one.
 pub fn iso(ms: u64) -> Option<String> {
-    let t = chrono::DateTime::<chrono::Utc>::from_timestamp((ms / 1000) as i64, 0)?;
-    Some(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    let t = jiff::Timestamp::from_second((ms / 1000) as i64).ok()?;
+    Some(t.strftime("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
 /// What a helper's turns have shown of it. All but the last event's moment

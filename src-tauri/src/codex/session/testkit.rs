@@ -13,23 +13,23 @@ pub(super) fn rollout_bench(tag: &str) -> (PathBuf, u64) {
 
 /// A rollout saying `source`, as JSON; none for a file that says nothing.
 pub(super) fn write_rollout(root: &Path, at_ms: u64, uuid: &str, source: Option<&str>) {
-    let ts = Local.timestamp_millis_opt(at_ms as i64).single().unwrap().naive_local();
+    let ts = local_at(at_ms as i64).unwrap();
     let dir = day_dir(&root.to_string_lossy(), ts.date());
     std::fs::create_dir_all(&dir).unwrap();
-    let name = format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S"));
+    let name = format!("rollout-{}-{uuid}.jsonl", ts.strftime("%Y-%m-%dT%H-%M-%S"));
     let source = source.map(|s| format!(r#","source":{s}"#)).unwrap_or_default();
     std::fs::write(dir.join(name), format!(r#"{{"type":"session_meta","payload":{{"cwd":"E:\\p"{source}}}}}"#) + "\n").unwrap();
 }
 
 /// Where `write_rollout` puts the rollout of `uuid` begun at `at_ms`.
 pub(super) fn rollout_path(root: &Path, uuid: &str, at_ms: u64) -> PathBuf {
-    let ts = Local.timestamp_millis_opt(at_ms as i64).single().unwrap().naive_local();
-    day_dir(&root.to_string_lossy(), ts.date()).join(format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S")))
+    let ts = local_at(at_ms as i64).unwrap();
+    day_dir(&root.to_string_lossy(), ts.date()).join(format!("rollout-{}-{uuid}.jsonl", ts.strftime("%Y-%m-%dT%H-%M-%S")))
 }
 
 /// One turn event, `task_started` or an end, written at `ms`.
 pub(super) fn turn_event(kind: &str, ms: u64) -> String {
-    let at = chrono::DateTime::from_timestamp_millis(ms as i64).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let at = jiff::Timestamp::from_millisecond(ms as i64).unwrap().strftime("%Y-%m-%dT%H:%M:%S%.3fZ");
     format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n")
 }
 
@@ -51,7 +51,7 @@ pub(crate) fn cut_off_pair_for_test(root: &Path, t0: u64, parent: &str, kid: &st
     write_rollout(root, t0 + 1_000, kid, Some(&spawned_by_json(parent)));
     append(rollout_path(root, parent, t0), turn_event("task_started", t0) + &turn_event("task_complete", t0 + 4_000));
     let end = if interrupted {
-        let at = chrono::DateTime::from_timestamp_millis((t0 + 4_000) as i64).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let at = jiff::Timestamp::from_millisecond((t0 + 4_000) as i64).unwrap().strftime("%Y-%m-%dT%H:%M:%S%.3fZ");
         format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"turn_aborted\",\"reason\":\"interrupted\"}}}}\n")
     } else {
         turn_event("task_complete", t0 + 4_000)

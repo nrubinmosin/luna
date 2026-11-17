@@ -164,14 +164,14 @@ pub(super) fn spawned_by(meta: &Value) -> Option<String> {
 pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
     let own = rollout_for(live)?;
     let (_, thread) = parse_name(&own.file_name()?.to_string_lossy())?;
-    let spawned = Local.timestamp_millis_opt(live.spawned_at_ms as i64).single()?.naive_local();
+    let spawned = local_at(live.spawned_at_ms as i64)?;
     // A subagent's thread is begun after the session's process, give or take
     // the clocks, in the folder of the day it was begun: every day since the
     // spawn, for a session days old whose subagent from its first day is
     // woken now. Two weeks at most.
-    let not_before = spawned - chrono::Duration::seconds(5);
-    let today = Local::now().date_naive();
-    let days = (today - not_before.date()).num_days().clamp(0, 13) as usize + 1;
+    let not_before = spawned - 5.seconds();
+    let today = local_today();
+    let days = today.since(not_before.date()).map_or(0, |s| s.get_days()).clamp(0, 13) as usize + 1;
     let files: Vec<(String, PathBuf)> = rollouts_on(live.account_path, days_back(today, days))
         .into_iter()
         .filter(|(ts, _, _)| *ts >= not_before)
@@ -239,10 +239,10 @@ const CUT_AT_END_MS: i64 = 5_000;
 pub fn subagents_cut_at_turn_end(account_path: &str, thread: &str, since_ms: u64) -> usize {
     let Some(own) = rollout_of_thread(account_path, thread) else { return 0 };
     let Some((_, ended)) = last_turn_end(&own, since_ms as i64) else { return 0 };
-    let Some(started) = Local.timestamp_millis_opt(since_ms as i64).single().map(|t| t.naive_local()) else { return 0 };
-    let not_before = started - chrono::Duration::seconds(5);
-    let today = Local::now().date_naive();
-    let days = (today - not_before.date()).num_days().clamp(0, 13) as usize + 1;
+    let Some(started) = local_at(since_ms as i64) else { return 0 };
+    let not_before = started - 5.seconds();
+    let today = local_today();
+    let days = today.since(not_before.date()).map_or(0, |s| s.get_days()).clamp(0, 13) as usize + 1;
     let files: Vec<(String, PathBuf)> = rollouts_on(account_path, days_back(today, days))
         .into_iter()
         .filter(|(ts, _, _)| *ts >= not_before)
@@ -263,7 +263,7 @@ fn last_turn_end(path: &Path, since_ms: i64) -> Option<(bool, i64)> {
             return;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
-        let at = v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp_millis());
+        let at = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond());
         let payload = &v["payload"];
         match payload["type"].as_str() {
             Some("task_started" | "turn_started") => end = None,
@@ -293,7 +293,7 @@ impl Scan {
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         let payload = &v["payload"];
-        let at_ms = v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp_millis());
+        let at_ms = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond());
         let new = at_ms.is_none_or(|t| t >= since_ms);
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
@@ -427,7 +427,7 @@ mod tests {
         let (early, kid) = (format!("earlyp{t0}"), format!("earlyk{t0}"));
         cut_off_pair_for_test(&root, t0, &early, &kid, false);
         append(rollout_path(&root, &early, t0), turn_event("task_started", t0 + 5_000) + &turn_event("task_complete", t0 + 65_000));
-        let at = chrono::DateTime::from_timestamp_millis((t0 + 5_000) as i64).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let at = jiff::Timestamp::from_millisecond((t0 + 5_000) as i64).unwrap().strftime("%Y-%m-%dT%H:%M:%S%.3fZ");
         let aborted = format!(r#"{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"turn_aborted","reason":"interrupted"}}}}"#);
         append(rollout_path(&root, &kid, t0 + 1_000), turn_event("task_started", t0 + 4_500) + &aborted + "\n");
         assert_eq!(subagents_cut_at_turn_end(&acct, &early, t0), 0, "interrupted long before the end");
@@ -464,7 +464,7 @@ mod tests {
         let line =
             |at: &str, kind: &str| format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n");
         std::fs::write(&path, line("2026-11-01T08:00:00.000Z", "task_started")).unwrap();
-        let since = chrono::DateTime::parse_from_rfc3339("2026-11-01T09:00:00.000Z").unwrap().timestamp_millis();
+        let since = "2026-11-01T09:00:00.000Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
         let mut scan = Scan::default();
         let at = scan_rollout(&path, 0, since, &mut scan);
         assert_eq!(scan.working, Some(false));
@@ -554,7 +554,7 @@ mod tests {
             r#"{"timestamp":"2026-09-26T16:10:00.500Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2"}}"#,
         ];
         std::fs::write(&path, resumed.join("\n") + "\n").unwrap();
-        let spawned = chrono::DateTime::parse_from_rfc3339("2026-09-26T16:00:00Z").unwrap().timestamp_millis();
+        let spawned = "2026-09-26T16:00:00Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
         let count = |since: i64| {
             let mut s = Scan::default();
             scan_rollout(&path, 0, since, &mut s);

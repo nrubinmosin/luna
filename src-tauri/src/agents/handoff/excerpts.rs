@@ -221,8 +221,8 @@ pub(super) fn read_bounded(path: &Path, provider: Provider, head_max: u64, tail_
     let first_at = tail
         .iter()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .find_map(|v| v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()))
-        .map(|t| t.timestamp_millis().max(0) as u64);
+        .find_map(|v| v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()))
+        .map(|t| t.as_millisecond().max(0) as u64);
     let mut skipping = cut_front && skip.is_some_and(|s| s.starts_in_ask(first_at));
     // The skills go by what the read before the window found of the ask's
     // turn, where it read all of it: it saw the prompt that opened the turn.
@@ -1191,7 +1191,7 @@ pub(super) mod tests {
         );
         text.push('\n');
         let p = file("skip-mid", &text);
-        let typed = chrono::DateTime::parse_from_rfc3339("2026-11-10T10:02:00Z").unwrap().timestamp_millis() as u64;
+        let typed = "2026-11-10T10:02:00Z".parse::<jiff::Timestamp>().unwrap().as_millisecond() as u64;
         let opens: fn(&str) -> bool = |t| t.starts_with("[Luna move m1 request");
         let read_with = |ask| read_bounded(&p, Provider::Claude, 4 * 1024, 32 * 1024, Some(Skip { opens, ask, from_call: false })).unwrap();
         let r = read_with(Some((typed, None)));

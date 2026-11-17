@@ -8,6 +8,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Luna reads and writes its times with jiff instead of chrono, which RustSec
+  lists as unmaintained (RUSTSEC-2026-0543); times are written as before, and
+  `cargo-deny` no longer has to ignore the advisory.
+
 ## [0.18.4] - 2026-11-17
 
 Luna now installs Claude Code 2.1.325 and runs nothing older. Only the
