@@ -5,6 +5,10 @@ use super::*;
 
 /// Starts a helper on its opening prompt.
 pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
+    // Held until the helper is in the registry, where a delete asking whether
+    // its worktree is shared sees it: a helper sent into a worktree being
+    // removed is refused (`worktree::entering`).
+    let _entering = crate::worktree::entering(&[spec.folder.as_str()])?;
     let mut e = Entry {
         spec,
         started_ms: crate::throttle::now_ms(),

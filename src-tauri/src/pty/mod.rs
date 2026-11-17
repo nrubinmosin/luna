@@ -151,8 +151,75 @@ impl InputTx {
     }
 }
 
+/// How long whoever takes a session out of the map (a delete, a kill, a start
+/// over a session that exited by itself) waits for its reader thread to have
+/// said it exited (`ReaderEnd`), before the chat's id goes to anyone else.
+/// The reader is through within moments of its process ending; past this it
+/// says nothing at all.
+const READER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A session's reader thread on its way out. Its word that the session
+/// exited (`agents::session_exited`, `pty://exit`) names only the chat id:
+/// said after a respawn under that id had begun, it would mark the new
+/// session's exit in the registry and tell its pane it had ended. So whoever
+/// takes a session waits for it (`wait`), under the chat's spawn gate, and
+/// one that is not through by then says nothing.
+#[derive(Default)]
+struct ReaderEnd {
+    state: Mutex<EndState>,
+    ended: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct EndState {
+    publishing: bool,
+    done: bool,
+    /// Whoever took the session stopped waiting: nothing is to be said.
+    disowned: bool,
+}
+
+impl ReaderEnd {
+    /// Runs `publish`, the reader's word that its session exited, unless
+    /// whoever took the session has stopped waiting for it; then marks the
+    /// reader through.
+    fn finish(&self, publish: impl FnOnce()) {
+        let go = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.publishing = !s.disowned;
+            s.publishing
+        };
+        if go {
+            publish();
+        }
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (s.publishing, s.done) = (false, true);
+        self.ended.notify_all();
+    }
+
+    /// Waits up to `within` for the reader to be through, and whether it was.
+    /// Past that, a reader that has not begun to say anything never will;
+    /// one that has may still be saying it.
+    fn wait(&self, within: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + within;
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if s.done {
+                return true;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                s.disowned = !s.publishing;
+                return false;
+            }
+            s = self.ended.wait_timeout(s, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+}
+
 struct Session {
     provider: Provider,
+    /// Its reader thread on its way out (`ReaderEnd`).
+    reader_end: Arc<ReaderEnd>,
     /// Input is handed to a writer thread instead of being written inline.
     /// ConPTY stops accepting bytes while the child is not draining them, and a
     /// write that blocks used to do so while holding the session map — freezing
@@ -234,6 +301,9 @@ pub struct PtyManager {
     /// chat still cannot race into two processes, while a chat starting up no
     /// longer blocks every other pane's keystrokes.
     spawning: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// The chats deleted in this core's life, which no start brings back
+    /// (`delete`, `spawn`).
+    deleted: Mutex<std::collections::HashSet<String>>,
 }
 
 /// The one session manager this process has, whatever asks for it: a

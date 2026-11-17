@@ -639,6 +639,7 @@ pub async fn ensure_claude_session(
         if worktree && resume.is_none() && !there {
             crate::worktree::fetch_origin(&folder);
         }
+        let enters = worktree_name.as_deref().filter(|_| worktree && there).map(|name| crate::worktree::named_path(&folder, name));
         // The skills the library gives sessions in this folder and keeps from
         // them, at every start (library/folders.rs `session_args`); not to a login
         // session.
@@ -757,6 +758,7 @@ pub async fn ensure_claude_session(
             describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
             applied,
             reserved,
+            enters,
         })
     })
     .await
@@ -806,6 +808,7 @@ pub async fn ensure_codex_session(
                 describe,
                 applied,
                 reserved: None,
+                enters: None,
             });
         }
         // A folder Codex could not start in, refused before anything of the
@@ -907,7 +910,18 @@ pub async fn ensure_codex_session(
             applied.push(crate::applied::Item::RoleLayersKept.with(format!("this conversation still carries {carried}")));
         }
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
-        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied, reserved: Some(reserved) })
+        Ok(Launch {
+            provider: Provider::Codex,
+            cwd: folder,
+            account_path,
+            args,
+            envs,
+            resume,
+            describe,
+            applied,
+            reserved: Some(reserved),
+            enters: None,
+        })
     })
     .await
 }

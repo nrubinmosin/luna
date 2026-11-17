@@ -4,7 +4,10 @@
 
 use super::control::end_leftovers;
 use super::screen::{as_key_events, drawn_screen, render_screen, Drawn, Modes, Scrollback};
-use super::{manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, InputTx, Session, NEVER_NUDGED};
+use super::{
+    manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, InputTx, ReaderEnd, Session, NEVER_NUDGED,
+    READER_WAIT,
+};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
@@ -102,6 +105,10 @@ pub(super) struct Launch {
     /// The account counted as in use since before the start's library pass
     /// (`library::lay_out_for`), until the process is counted itself.
     pub(super) reserved: Option<crate::account_use::Running>,
+    /// A worktree there already that the process goes into though it is not
+    /// its `cwd`: Claude Code's by `--worktree <name>`. Held against its
+    /// removal as the `cwd` is (`worktree::entering`).
+    pub(super) enters: Option<String>,
 }
 
 impl Launch {
@@ -177,6 +184,15 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let gate = state.gate(&id);
     let _spawning = gate.lock().unwrap_or_else(|e| e.into_inner());
 
+    // A chat deleted is gone for good, whatever still asks for it: a pane
+    // that had not let go yet waited out the delete on the gate, and would
+    // otherwise start a session of a chat with no row, its registry entry,
+    // token and files cleared by the delete. Ids are never given out again.
+    if state.deleted.lock().unwrap_or_else(|e| e.into_inner()).contains(&id) {
+        crate::log::warn("pty", &format!("not starting {id}: the chat was deleted"));
+        return Err("this chat was deleted".into());
+    }
+
     // Under the gate: whoever waited here may find the session already spawned.
     let exited = {
         let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -196,18 +212,29 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         }
     };
     // A CLI that exited by itself: what it left running goes with the old
-    // session, before a new one takes the chat.
+    // session, before a new one takes the chat, and its reader has said it
+    // exited before the new one can be taken for it (`ReaderEnd`).
     if let Some(old) = exited {
         end_leftovers(&old);
+        if !old.reader_end.wait(READER_WAIT) {
+            crate::log::warn("pty", &format!("{id}'s last session did not finish exiting in {READER_WAIT:?}; starting anyway"));
+        }
     }
     // Finished here, so a test's capture holds the process as it will run.
     let launch = launch()?.finished();
+    #[cfg(test)]
+    said::note(&format!("launch {id}"));
+    // Held from here until the session is in the map, where a delete asking
+    // whether its worktree is shared sees it: a start going into a worktree
+    // being removed is refused (`worktree::entering`).
+    let into: Vec<&str> = [Some(launch.cwd.as_str()), launch.enters.as_deref()].into_iter().flatten().collect();
+    let _entering = crate::worktree::entering(&into)?;
     // A test reads what a start would run, and nothing runs (`capture`).
     #[cfg(test)]
     let Some(launch) = capture::keep(&id, launch) else {
         return Ok(String::new());
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters: _ } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -351,6 +378,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let drawn = Arc::new(Mutex::new(Drawn::default()));
     let modes = Arc::new(Mutex::new(Modes::default()));
     let alive = Arc::new(AtomicBool::new(true));
+    let reader_end = Arc::new(ReaderEnd::default());
     let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
     let work_output_ms = Arc::new(AtomicU64::new(now_ms()));
 
@@ -365,6 +393,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         let work_output_ms = Arc::clone(&work_output_ms);
         let child = Arc::clone(&child);
         let size = Arc::clone(&size);
+        let reader_end = Arc::clone(&reader_end);
 
         // The reader hands bytes to an emitter thread instead of emitting them
         // itself. A repainting TUI produces a steady stream of small reads, and
@@ -487,8 +516,11 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             // Closing the channel ends the emitter; join it so the last output
             // of the session is on its way before the exit event goes out.
             drop(tx);
-            let Ok(id) = emitter.join() else { return };
-            let code = child.lock().unwrap_or_else(|e| e.into_inner()).wait().ok().map(|st| st.exit_code());
+            let Ok(id) = emitter.join() else {
+                reader_end.finish(|| {});
+                return;
+            };
+            let code = exit_code(&child);
             drop(on_account);
             drop(on_version);
             // For the canary over a new CLI version's first sessions, with the
@@ -499,15 +531,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             });
             crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
-            // The exit names only the chat. A session already spawned under
-            // the same id since — a kill and a respawn quicker than this
-            // teardown — is the one its pane is listening to, and this exit
-            // would mark that running session dead.
-            let replaced = pm.sessions.lock().unwrap_or_else(|e| e.into_inner()).get(&id).is_some_and(|s| !Arc::ptr_eq(&s.alive, &alive));
-            if !replaced {
-                crate::agents::session_exited(&id, code);
-                crate::emit::to_ui("pty://exit", PtyExit { id: &id, code });
-            }
+            reader_exited(&id, code, &alive, &reader_end);
             // The entry stays, for as long as the chat does: its transcript, its
             // folder and its last screen are still asked for (luna_message_list, the
             // exit notice, deleting it). What only a running session needs
@@ -559,6 +583,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         id,
         Session {
             provider,
+            reader_end,
             input_tx,
             killer,
             child,
@@ -602,6 +627,58 @@ fn hand_on(tx: &std::sync::mpsc::SyncSender<Vec<u8>>, piece: Vec<u8>, behind: &m
             tx.send(piece).is_ok()
         }
         sent => sent.is_ok(),
+    }
+}
+
+/// The reader's word that session `id` (the one `alive` belongs to) exited
+/// with `code`, said through its `ReaderEnd`: nothing once whoever took the
+/// session has stopped waiting for it. The exit names only the chat. A
+/// session spawned under the same id since — after an exit of its own, or
+/// past a taker's wait — is the one its pane is listening to, and this exit
+/// would mark that running session dead.
+pub(super) fn reader_exited(id: &str, code: Option<u32>, alive: &Arc<AtomicBool>, end: &ReaderEnd) {
+    end.finish(|| {
+        let replaced = manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|s| !Arc::ptr_eq(&s.alive, alive));
+        if !replaced {
+            crate::agents::session_exited(id, code);
+            crate::emit::to_ui("pty://exit", PtyExit { id, code });
+            #[cfg(test)]
+            said::note(&format!("exit {id}"));
+        }
+    });
+}
+
+/// The child's exit code once it has exited, None if that cannot be read.
+/// Asked again and again rather than waited on: a wait holds the child's
+/// lock for as long as the process runs, and a shutdown asking whether it
+/// has exited (control.rs `shut_down`, before its kill) would wait on that
+/// lock for good where the output ended before the process did.
+fn exit_code(child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>) -> Option<u32> {
+    loop {
+        match child.lock().unwrap_or_else(|e| e.into_inner()).try_wait() {
+            Ok(Some(status)) => return Some(status.exit_code()),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// What the tests' sessions said, in order, across threads: an exit
+/// published, a start's launch built.
+#[cfg(test)]
+pub(super) mod said {
+    use std::sync::Mutex;
+
+    static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    pub(in crate::pty) fn note(what: &str) {
+        SAID.lock().unwrap_or_else(|e| e.into_inner()).push(what.to_string());
+    }
+
+    /// Where `what` was said, if it was.
+    pub(in crate::pty) fn at(what: &str) -> Option<usize> {
+        SAID.lock().unwrap_or_else(|e| e.into_inner()).iter().position(|s| s == what)
     }
 }
 

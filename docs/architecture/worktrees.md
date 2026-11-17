@@ -42,6 +42,9 @@ lose, and to sweep the ones no chat claims.
 - Deleting a chat takes its worktree and its `worktree-*` branch by default,
   unless another session or helper works in it (`worktree_shared`, asked once
   the deleted chat's session has quit, so one that went in meanwhile counts).
+  From that question to the end of the removal the worktree is held
+  (`entry.rs` `removing`): a chat or helper start on its way in, not yet
+  listed, keeps it, and one that comes during the removal is refused.
   Removal is
   `git worktree remove -f -f`, since Claude Code locks its worktree and a killed
   one does not release the lock. Only `worktree-*` branches are ever deleted.

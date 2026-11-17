@@ -38,8 +38,22 @@ pub fn to_ui<S: Serialize>(event: &str, payload: S) {
     if SHUTTING_DOWN.load(Ordering::SeqCst) {
         return;
     }
+    #[cfg(test)]
+    if let Ok(value) = serde_json::to_value(&payload) {
+        SENT.lock().unwrap_or_else(|e| e.into_inner()).push((event.to_string(), value));
+    }
     let (Some(sink), Ok(payload)) = (SINK.get(), serde_json::to_value(payload)) else { return };
     sink(event, payload);
+}
+
+/// Every event a test's code sent, sink or not.
+#[cfg(test)]
+static SENT: std::sync::Mutex<Vec<(String, serde_json::Value)>> = std::sync::Mutex::new(Vec::new());
+
+/// The payloads of `event` sent so far in this test run.
+#[cfg(test)]
+pub fn sent_for_test(event: &str) -> Vec<serde_json::Value> {
+    SENT.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(e, _)| e == event).map(|(_, v)| v.clone()).collect()
 }
 
 /// Shuts the door, then waits for the emits that were already through it.

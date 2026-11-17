@@ -115,6 +115,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Keys a session does not take are said in its pane (`[keys not delivered:
   …]`), and the core's answer to a CLI's cursor query is never refused with
   them.
+- A deleted chat is not started again by a pane that had not let go of it; a
+  session killed and started again no longer hears the old one's exit; and a
+  chat or helper starting in a worktree being removed with a deleted chat is
+  refused, saying so, or keeps it.
 
 ## [0.18.5] - 2026-11-17
 

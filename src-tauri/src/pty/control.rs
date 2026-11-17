@@ -9,13 +9,14 @@ use super::screen::{composer_keys, composer_seen, draft_after, paste_lapsed, typ
 /// composer as a key comes in: the last frames a TUI drew, not its history.
 const KEYS_LOOK_BYTES: usize = 256 * 1024;
 use super::start::claude_instructions_dir;
-use super::{manager, now_ms, Input, PtyManager, Session};
+use super::{manager, now_ms, Input, PtyManager, Session, READER_WAIT};
 use crate::provider::Provider;
 use portable_pty::PtySize;
 use serde::Serialize;
 #[cfg(windows)]
 use std::process::Command;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 #[tauri::command]
 pub fn write_session(id: String, data: String) -> Result<(), String> {
@@ -184,6 +185,8 @@ const CTRL_C_GAP: std::time::Duration = std::time::Duration::from_millis(150);
 /// exit dialog is assumed to be holding it, and between the Enters that
 /// answer one.
 const EXIT_DIALOG_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+/// How many deleted chat ids a core keeps refusing to start (`delete`).
+const DELETED_KEPT: usize = 4096;
 
 /// Asks the CLI to quit, and kills it only if it does not.
 ///
@@ -259,24 +262,28 @@ pub(super) fn end_leftovers(s: &Session) {
     }
 }
 
-/// Takes the session out of the map first and shuts it down after: the
-/// shutdown waits on the process, and waiting under the map would put every
-/// other chat's keystrokes behind it.
-///
-/// A spawn of the chat still in flight — a worktree being fetched, a helper
-/// deleted the moment it was made — is waited out under its gate: removed
-/// before that spawn put its process in the map, the session would have run
-/// on with no chat to reach it from.
-async fn take_and_shut_down(state: &PtyManager, id: &str) {
-    let session = {
-        let gate = state.gate(id);
-        let _spawning = gate.lock().unwrap_or_else(|e| e.into_inner());
-        state.sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id)
-    };
-    if let Some(s) = session {
+impl PtyManager {
+    /// Takes the session out of the map first and shuts it down after: the
+    /// shutdown waits on the process, and waiting under the map would put
+    /// every other chat's keystrokes behind it. Then waits for its reader to
+    /// have said it exited (`ReaderEnd`). Called under the chat's spawn gate,
+    /// held throughout: a spawn of the chat still in flight (a worktree being
+    /// fetched, a helper deleted the moment it was made) is waited out, as a
+    /// session removed before that spawn put its process in the map would run
+    /// on with no chat to reach it from; and a start after it waits until the
+    /// old session's exit is said, which said after the start would name the
+    /// new session. Blocks for up to `GRACE` and `READER_WAIT`.
+    fn take_and_quit(&self, id: &str) {
+        let session = self.sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+        let Some(s) = session else { return };
         // Its exit is Luna's doing, not its CLI version's.
         crate::cli::session_stopped(id);
-        let _ = tauri::async_runtime::spawn_blocking(move || shut_down(s, GRACE)).await;
+        let end = Arc::clone(&s.reader_end);
+        shut_down(s, GRACE);
+        if !end.wait(READER_WAIT) {
+            let who = crate::agents::label(id);
+            crate::log::warn("pty", &format!("{who}'s reader was not through {READER_WAIT:?} after its end; it says nothing now"));
+        }
     }
 }
 
@@ -298,10 +305,18 @@ pub async fn stop_all_sessions() -> Result<usize, String> {
     .map_err(|e| e.to_string())
 }
 
+/// Ends a chat's session, under its spawn gate (`take_and_quit`), on a
+/// thread for blocking work.
 #[tauri::command]
 pub async fn kill_session(id: String) -> Result<(), String> {
-    take_and_shut_down(manager(), &id).await;
-    Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = manager();
+        let gate = state.gate(&id);
+        let _quitting = gate.lock().unwrap_or_else(|e| e.into_inner());
+        state.take_and_quit(&id);
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Tears a chat down in one shot: resolve where the session actually lives,
@@ -466,12 +481,7 @@ impl PtyManager {
     /// started in it or moved into it itself, or a background helper sent to
     /// it or working in it, between its turns too.
     pub fn worktree_shared(&self, id: &str, wt: &str) -> bool {
-        let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
-        let wt = norm(wt);
-        let inside = |p: &str| {
-            let p = norm(p);
-            p == wt || p.starts_with(&format!("{wt}\\"))
-        };
+        let inside = |p: &str| crate::worktree::within(p, wt);
         // Probed off the session map: the disk reads below must not hold it.
         self.activity_probes().iter().filter(|p| p.id != id).any(|p| inside(&p.cwd) || p.working_dir().is_some_and(|real| inside(&real)))
             || crate::background::working_dirs(Some(id)).iter().any(|d| inside(d))
@@ -491,9 +501,22 @@ impl PtyManager {
     /// the new session's registry entry and token, removed the hooks file it
     /// had just been given and let go of its rollout. Such a spawn now waits,
     /// and starts on what the delete left.
+    ///
+    /// A chat deleted is not started again, whatever asks (`spawn`): a pane
+    /// that has not let go yet waits out the delete on the gate and is then
+    /// refused, where it would have brought back a session the delete had just
+    /// cleared away. The window never gives a chat id out twice.
     pub fn delete(&self, id: &str, folder: &str, worktree_path: Option<String>, drop_worktree: bool) -> Result<Option<String>, String> {
         let gate = self.gate(id);
         let _deleting = gate.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut deleted = self.deleted.lock().unwrap_or_else(|e| e.into_inner());
+            // Bounded: forgotten all at once past it, the oldest ids long gone.
+            if deleted.len() >= DELETED_KEPT {
+                deleted.clear();
+            }
+            deleted.insert(id.to_string());
+        }
         // Resolve before killing: once the process is gone its registry entry goes too.
         let resolved = worktree_path.filter(|p| !p.is_empty()).or_else(|| {
             let probe = self.probe(id)?;
@@ -501,15 +524,7 @@ impl PtyManager {
             crate::worktree::is_worktree_of(folder, &scwd).then_some(scwd)
         });
 
-        // Taken out of the map first and shut down after: the shutdown waits
-        // on the process, and waiting under the map would put every other
-        // chat's keystrokes behind it.
-        let session = self.sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        if let Some(s) = session {
-            // Its exit is Luna's doing, not its CLI version's.
-            crate::cli::session_stopped(id);
-            shut_down(s, GRACE);
-        }
+        self.take_and_quit(id);
         // Everything else that kept count of it, so nothing keeps the chat on
         // after it is gone: the agent registry (luna_session_list, the helper
         // limit, its token), the turn counters, a waiting cleared on it, the
@@ -529,17 +544,19 @@ impl PtyManager {
         // A helper spawned from a chat in a worktree runs in that same
         // worktree. Dropping "its" worktree would take the other chat's work
         // with it, so a worktree another session or a helper is in stays.
-        // Looked at only now, its own session gone: one that went into the
-        // worktree while this one quit counts too. One that starts there
-        // between this look and the removal does not, a window of the
-        // removal's git calls rather than of a session's shutdown.
-        let shared = drop_worktree && resolved.as_deref().is_some_and(|wt| self.worktree_shared(id, wt));
+        // Looked at only now, its own session gone, so one that went in while
+        // this one quit counts too; and held from the look to the end of the
+        // removal (`worktree::removing`), so a start that is on its way in,
+        // not yet listed where the look goes, keeps it as well, and one that
+        // comes during the removal is refused.
         match &resolved {
-            Some(wt) if drop_worktree && shared => {
-                crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it"));
-                Ok(None)
-            }
-            Some(wt) if drop_worktree => crate::worktree::remove_worktree_now(folder.to_string(), wt.clone()).map(|_| resolved.clone()),
+            Some(wt) if drop_worktree => match crate::worktree::removing(wt, || self.worktree_shared(id, wt)) {
+                Some(_removing) => crate::worktree::remove_worktree_now(folder.to_string(), wt.clone()).map(|_| resolved.clone()),
+                None => {
+                    crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it or on its way in"));
+                    Ok(None)
+                }
+            },
             Some(_) => Ok(resolved),
             None => Ok(None),
         }
@@ -572,11 +589,12 @@ impl PtyManager {
 
 #[cfg(test)]
 mod tests {
-    use super::super::spawn::{capture, spawn, Launch};
-    use super::super::InputTx;
+    use super::super::spawn::{capture, reader_exited, said, spawn, Launch};
+    use super::super::{InputTx, ReaderEnd};
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU64};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
+    use std::time::Duration;
 
     /// A CLI a test stands in for, gone once `quit` is set: by the test, or
     /// by the kill that ends a shutdown.
@@ -601,7 +619,7 @@ mod tests {
         }
         fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
             while !self.quit.load(Ordering::SeqCst) {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(10));
             }
             Ok(portable_pty::ExitStatus::with_exit_code(0))
         }
@@ -614,26 +632,57 @@ mod tests {
         }
     }
 
+    /// How a test's session takes input and goes.
+    #[derive(Clone, Copy)]
+    struct Fake {
+        /// Its writer takes what it is sent; else nothing is ever written.
+        drains: bool,
+        /// How long its reader takes, once the process is gone, to say so.
+        reader_lag: Duration,
+    }
+
+    const PROMPT: Fake = Fake { drains: true, reader_lag: Duration::ZERO };
+
     /// A session of the test's in the map as `id`, running in `cwd` until
-    /// the flag returned is set. Its input goes nowhere.
-    fn fake_session(id: &str, cwd: &str) -> Arc<AtomicBool> {
+    /// the flag returned is set, with a reader thread that then says it
+    /// exited as the real one does (`reader_exited`), `reader_lag` later.
+    fn fake_session(id: &str, cwd: &str, how: Fake) -> Arc<AtomicBool> {
         let quit = Arc::new(AtomicBool::new(false));
         let child: Box<dyn portable_pty::Child + Send + Sync> = Box::new(FakeChild { quit: Arc::clone(&quit) });
         let (input_tx, input_rx, written) = InputTx::new(id);
         std::thread::spawn(move || {
+            let mut never_written = Vec::new();
             for input in input_rx {
-                written.release(input.len());
+                if how.drains {
+                    written.release(input.len());
+                } else {
+                    never_written.push(input);
+                }
             }
         });
+        let alive = Arc::new(AtomicBool::new(true));
+        let reader_end = Arc::new(ReaderEnd::default());
+        {
+            let (id, quit, alive, end) = (id.to_string(), Arc::clone(&quit), Arc::clone(&alive), Arc::clone(&reader_end));
+            std::thread::spawn(move || {
+                while !quit.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                alive.store(false, Ordering::SeqCst);
+                std::thread::sleep(how.reader_lag);
+                reader_exited(&id, Some(0), &alive, &end);
+            });
+        }
         let session = Session {
             provider: Provider::Claude,
+            reader_end,
             input_tx: Arc::new(input_tx),
             killer: child.clone_killer(),
             child: Arc::new(Mutex::new(child)),
             scrollback: Arc::new(Mutex::new(super::super::screen::Scrollback::with_capacity(0))),
             drawn: Arc::new(Mutex::new(super::super::screen::Drawn::default())),
             modes: Arc::new(Mutex::new(super::super::screen::Modes::default())),
-            alive: Arc::new(AtomicBool::new(true)),
+            alive,
             last_output_ms: Arc::new(AtomicU64::new(now_ms())),
             work_output_ms: Arc::new(AtomicU64::new(now_ms())),
             pid: None,
@@ -655,12 +704,12 @@ mod tests {
         quit
     }
 
-    /// Until the delete has taken `id`'s session out of the map.
+    /// Until the delete or kill has taken `id`'s session out of the map.
     fn taken(id: &str) {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let until = std::time::Instant::now() + Duration::from_secs(10);
         while manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id) {
             assert!(std::time::Instant::now() < until, "{id} was never taken");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
@@ -671,30 +720,15 @@ mod tests {
         dir
     }
 
-    /// A chat spawned again under its id while its delete waits for the old
-    /// process to quit starts once the delete is through, and keeps what its
-    /// start gave it: the delete's cleanup, which goes by the id alone, came
-    /// before it rather than over it.
-    #[test]
-    fn a_spawn_while_the_chat_is_deleted_waits_and_keeps_what_its_start_gave_it() {
-        let id = "dl-respawn";
-        let dir = scratch("respawn");
-        let cwd = dir.to_string_lossy().into_owned();
-        let quit = fake_session(id, &cwd);
-        let hooks = crate::paths::data_dir().join("hooks").join(format!("{}.json", crate::paths::id_file_name(id)));
-        std::fs::create_dir_all(hooks.parent().unwrap()).unwrap();
-        let folder = cwd.clone();
-        let deleting = std::thread::spawn(move || manager().delete(id, &folder, None, false));
-        taken(id);
+    /// A start of `id` in `cwd` on another thread, captured: what it would
+    /// run is built, and nothing runs.
+    fn start(id: &'static str, cwd: String) -> std::thread::JoinHandle<Result<String, String>> {
         capture::expect(id);
-        let (written, launch_cwd) = (hooks.clone(), cwd.clone());
-        let respawn = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             tauri::async_runtime::block_on(spawn(id.into(), move || {
-                // What a start writes for its process to read.
-                std::fs::write(&written, b"{}").map_err(|e| e.to_string())?;
                 Ok(Launch {
                     provider: Provider::Claude,
-                    cwd: launch_cwd,
+                    cwd,
                     account_path: "acc".into(),
                     args: Vec::new(),
                     envs: Vec::new(),
@@ -702,18 +736,67 @@ mod tests {
                     describe: String::new(),
                     applied: Vec::new(),
                     reserved: None,
+                    enters: None,
                 })
             }))
-        });
+        })
+    }
+
+    /// A start of a chat while it is deleted waits for the delete, the old
+    /// session's exit said by then, and is refused: the chat is gone, and a
+    /// session started for it would run on with its registry entry, token and
+    /// files cleared.
+    #[test]
+    fn a_start_while_the_chat_is_deleted_waits_and_is_refused() {
+        let id = "dl-respawn";
+        let dir = scratch("respawn");
+        let cwd = dir.to_string_lossy().into_owned();
+        let quit = fake_session(id, &cwd, Fake { reader_lag: Duration::from_millis(200), ..PROMPT });
+        let folder = cwd.clone();
+        let deleting = std::thread::spawn(move || manager().delete(id, &folder, None, false));
+        taken(id);
+        let respawn = start(id, cwd);
         // Let through, the start would be done by now.
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(300));
         quit.store(true, Ordering::SeqCst);
         assert_eq!(deleting.join().unwrap(), Ok(None));
+        let refused = respawn.join().unwrap().unwrap_err();
+        assert!(refused.contains("deleted"), "{refused}");
+        assert!(capture::take(id).is_none(), "nothing of a start was built");
+        assert!(said::at(&format!("exit {id}")).is_some(), "the old session's exit was said");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A start after a kill waits for the old session's reader to have said
+    /// it exited: said after, the exit would name the new session.
+    #[test]
+    fn a_start_after_a_kill_comes_after_the_old_sessions_exit() {
+        let id = "dl-killed";
+        let dir = scratch("killed");
+        let cwd = dir.to_string_lossy().into_owned();
+        let quit = fake_session(id, &cwd, Fake { reader_lag: Duration::from_millis(300), ..PROMPT });
+        let killing = std::thread::spawn(move || tauri::async_runtime::block_on(kill_session(id.into())));
+        taken(id);
+        let respawn = start(id, cwd);
+        quit.store(true, Ordering::SeqCst);
+        killing.join().unwrap().unwrap();
         assert_eq!(respawn.join().unwrap(), Ok(String::new()));
         assert!(capture::take(id).is_some(), "the start ran");
-        assert!(hooks.exists(), "the delete's cleanup removed the hooks file of the session spawned after it");
-        let _ = std::fs::remove_file(&hooks);
+        let (exit, launch) = (said::at(&format!("exit {id}")), said::at(&format!("launch {id}")));
+        assert!(exit.is_some() && exit < launch, "the old exit was said before the start: {exit:?}, {launch:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reader that is not through in time says nothing at all: whatever it
+    /// would say is about a session that has been taken.
+    #[test]
+    fn a_reader_not_through_in_time_says_nothing() {
+        let end = ReaderEnd::default();
+        assert!(!end.wait(Duration::from_millis(20)));
+        let alive = Arc::new(AtomicBool::new(false));
+        reader_exited("dl-late", Some(1), &alive, &end);
+        assert_eq!(said::at("exit dl-late"), None);
+        assert!(end.wait(Duration::ZERO), "through all the same");
     }
 
     /// A worktree another session went into while the deleted chat's process
@@ -726,16 +809,55 @@ mod tests {
         let wt = dir.join("wt");
         std::fs::create_dir_all(&wt).unwrap();
         let (folder, wt_path) = (dir.to_string_lossy().into_owned(), wt.to_string_lossy().into_owned());
-        let quit = fake_session(id, &wt_path);
+        let quit = fake_session(id, &wt_path, PROMPT);
         let (f, w) = (folder.clone(), wt_path.clone());
         let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
         taken(id);
-        let came = fake_session(other, &wt_path);
+        let came = fake_session(other, &wt_path, PROMPT);
         quit.store(true, Ordering::SeqCst);
         assert_eq!(deleting.join().unwrap(), Ok(None), "kept, and no path given back to remove");
         assert!(wt.exists());
         came.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A start into a worktree that a delete has found free and is removing
+    /// is refused, saying so; the same start once the removal is over goes.
+    #[test]
+    fn a_start_into_a_worktree_being_removed_is_refused() {
+        let id = "dl-wt-late";
+        let dir = scratch("removing");
+        let wt = dir.join("wt").to_string_lossy().into_owned();
+        let removal = crate::worktree::removing(&wt, || manager().worktree_shared("dl-wt-owner", &wt)).expect("free");
+        let refused = start(id, format!("{wt}/sub")).join().unwrap().unwrap_err();
+        assert!(refused.contains("being removed"), "{refused}");
+        assert!(capture::take(id).is_none());
+        drop(removal);
+        assert_eq!(start(id, wt).join().unwrap(), Ok(String::new()));
+        assert!(capture::take(id).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Keys a session does not take, sent as the window sends them (a send
+    /// through `corecmd::dispatch` whose answer nobody reads), are refused,
+    /// and the window hears so once; the core's answer to a cursor query
+    /// still goes in.
+    #[test]
+    fn keys_a_session_does_not_take_reach_the_window_as_an_event() {
+        let id = "dl-stuck";
+        let quit = fake_session(id, "/nowhere", Fake { drains: false, ..PROMPT });
+        let chunk = "k".repeat(1024 * 1024);
+        let sent: Vec<bool> =
+            (0..10).map(|_| crate::corecmd::dispatch("write_session", serde_json::json!({ "id": id, "data": chunk })).is_ok()).collect();
+        assert!(sent.iter().take(8).all(|ok| *ok) && !sent[8] && !sent[9], "{sent:?}");
+        let told: Vec<_> = crate::emit::sent_for_test("pty://input-refused").into_iter().filter(|e| e["id"] == id).collect();
+        assert_eq!(told.len(), 1, "once a stretch: {told:?}");
+        assert_eq!(told[0]["waitingKb"], 8 * 1024);
+        let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(sessions[id].input_tx.reply(b"\x1b[1;1R".to_vec()).is_ok(), "a cursor answer goes whatever waits");
+        drop(sessions);
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     }
 }

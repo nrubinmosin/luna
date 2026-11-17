@@ -16,11 +16,14 @@
 //! - `named`: a worktree asked for by name, whether it is still as made, who is
 //!   in one, and what a cut-off spawn may have begun.
 //! - `inspect`: what deleting one would throw away.
+//! - `entry`: a start on its way into a worktree and a removal of it, holding
+//!   each other off.
 
 use crate::paths::{path_key as norm, path_key_loose as norm_in_use, KEY_SEP};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod entry;
 mod inspect;
 mod named;
 mod orphans;
@@ -32,6 +35,7 @@ mod testkit;
 
 // Every file of the module reaches the others' items through `use super::*`,
 // and the rest of the crate keeps its `crate::worktree::X` paths.
+pub(crate) use entry::*;
 pub(crate) use inspect::*;
 pub(crate) use named::*;
 pub(crate) use orphans::*;

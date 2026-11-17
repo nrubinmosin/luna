@@ -264,8 +264,22 @@ the command quotes `"@-"` and calls curl by full path.
   takes the session until its cleanup is done: what it clears goes by the
   chat's id alone (the registry entry and token, the hooks and MCP files, the
   Codex rollout), and would clear a session spawned under that id meanwhile.
-  Such a spawn waits for the delete. Whether the worktree is shared is asked
-  once the deleted session has quit.
+  A start of a deleted chat waits for the delete and is refused ("this chat
+  was deleted"): the window never gives a chat id out twice, and a pane that
+  had not let go would otherwise bring back a session the delete had just
+  cleared. Whether the worktree is shared is asked once the deleted session
+  has quit, and the worktree is held from that question to the end of its
+  removal (`worktree::removing`); a start or a helper on its way into a
+  worktree holds its way in (`worktree::entering`) until it is listed where
+  that question looks, so the delete keeps a worktree one is entering, and
+  one entering a worktree being removed is refused, saying so.
+- A session's exit names only its chat id. Whoever takes a session out of
+  the map (a delete, a kill, a start over a session that exited by itself)
+  waits under the gate, up to 5 s (`READER_WAIT`), for its reader thread to
+  have said it exited (`ReaderEnd`); a reader not through by then says
+  nothing. A respawn never hears the old session's exit. The reader asks
+  for the exit code by `try_wait` rather than holding the child's lock in a
+  `wait`, which a shutdown asking whether it exited would block on.
 
 ## Failure modes
 
