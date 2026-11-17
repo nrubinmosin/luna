@@ -266,15 +266,33 @@ pub fn save_chats() {
     if !CHATS_READ.load(Ordering::SeqCst) || CHATS_FROZEN.load(Ordering::SeqCst) {
         return;
     }
-    let Ok(bytes) = serde_json::to_vec_pretty(&chats_now()) else { return };
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let path = chat_ties_file();
+    save_in_order(
+        &LAST,
+        || serde_json::to_vec_pretty(&chats_now()).ok(),
+        |bytes| match crate::secret::write_private(&path, bytes) {
+            Ok(()) => true,
+            Err(e) => {
+                crate::log::warn("agents", &format!("could not save the chats' ties to {}: {e}", path.display()));
+                false
+            }
+        },
+    );
+}
+
+/// Takes a snapshot and writes it if it differs from the last one written,
+/// all under `last`: a save that took its snapshot ahead of another's and
+/// wrote behind it would leave the older one on disk (the notifier's, a
+/// handoff's and the periodic save run at once), for a core killed before
+/// the next save to restore. `write` says whether the bytes are on disk.
+fn save_in_order(last: &Mutex<Vec<u8>>, snapshot: impl FnOnce() -> Option<Vec<u8>>, write: impl FnOnce(&[u8]) -> bool) {
+    let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(bytes) = snapshot() else { return };
     if *last == bytes {
         return;
     }
-    let path = chat_ties_file();
-    match crate::secret::write_private(&path, &bytes) {
-        Ok(()) => *last = bytes,
-        Err(e) => crate::log::warn("agents", &format!("could not save the chats' ties to {}: {e}", path.display())),
+    if write(&bytes) {
+        *last = bytes;
     }
 }
 
@@ -437,6 +455,47 @@ mod tests {
     use crate::agents::teardown::forget;
     use crate::agents::test_support::{owed_chat, spawn_taken, spawns_to_myself, take_up};
     use std::collections::HashMap;
+
+    /// Of two saves at once, the one that took its snapshot later writes
+    /// later: a snapshot taken while another save is writing waits for it.
+    #[test]
+    fn a_save_snapshotted_later_is_the_one_left_on_disk() {
+        static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+        let disk = std::sync::Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let write = |disk: std::sync::Arc<Mutex<Vec<Vec<u8>>>>| {
+            move |bytes: &[u8]| {
+                disk.lock().unwrap().push(bytes.to_vec());
+                true
+            }
+        };
+        let (snapping, snapped) = std::sync::mpsc::channel();
+        let (newer_done, newer_written) = std::sync::mpsc::channel::<()>();
+        let older = {
+            let write = write(disk.clone());
+            std::thread::spawn(move || {
+                let snapshot = || {
+                    snapping.send(()).unwrap();
+                    // Let in, the newer save writes in this time.
+                    let _ = newer_written.recv_timeout(std::time::Duration::from_millis(300));
+                    Some(b"older".to_vec())
+                };
+                save_in_order(&LAST, snapshot, write);
+            })
+        };
+        snapped.recv().unwrap();
+        let newer = {
+            let write = write(disk.clone());
+            std::thread::spawn(move || {
+                save_in_order(&LAST, || Some(b"newer".to_vec()), write);
+                let _ = newer_done.send(());
+            })
+        };
+        older.join().unwrap();
+        newer.join().unwrap();
+        assert_eq!(disk.lock().unwrap().last().map(Vec::as_slice), Some(&b"newer"[..]));
+        // Unchanged since the last write: nothing written.
+        save_in_order(&LAST, || Some(b"newer".to_vec()), |_| panic!("written again"));
+    }
 
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,
     /// which is cut with the helper still there.

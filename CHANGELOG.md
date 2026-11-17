@@ -95,6 +95,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   rather than losing its registration, hooks file and Codex rollout to the
   delete's cleanup; and a worktree another session went into while the
   deleted chat was quitting is kept.
+- Two saves of the chats' ties at once (`chat-ties.json`) can no longer leave
+  the older of the two on disk.
 
 ## [0.18.5] - 2026-11-17
 
