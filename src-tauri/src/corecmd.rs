@@ -247,10 +247,10 @@ mod tests {
     use serde_json::json;
 
     /// The writes that may wait out a model ask's lock on the account's
-    /// `.claude.json` (account_settings `rewriting_claude_config`, up to 25 s)
-    /// reach the core by `core_call`, which the window runs off its own
-    /// thread, and the core answers each on a thread of its own: neither the
-    /// window nor the core's connection waits on them.
+    /// `.claude.json` (account_settings `rewriting_claude_config`, up to 35 s,
+    /// claude/models.rs `ASK_WAIT`) reach the core by `core_call`, which the
+    /// window runs off its own thread, and the core answers each on a thread
+    /// of its own: neither the window nor the core's connection waits on them.
     #[test]
     fn writes_that_may_wait_on_a_model_ask_run_off_every_shared_thread() {
         for cmd in ["apply_recommended", "claude_trust_folder"] {
