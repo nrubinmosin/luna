@@ -4,7 +4,7 @@
     {
       "id": "GHSA-fc5q-39xc-vjpf",
       "package": "picomatch",
-      "reason": "ReDoS in a pattern with repeated extglobs, every version to 4.0.7, the latest, with no fixed release yet. Only build tools pull it in (vite, directly and through tinyglobby and fdir, and vitest and typescript-eslint through tinyglobby), on glob patterns from the repo's own config; nothing of it ships in the app.",
+      "reason": "ReDoS in a pattern with repeated extglobs, every version to 4.0.7, the latest, with no fixed release yet. Only build tools pull it in (vite and vitest, directly and through tinyglobby and fdir, and typescript-eslint through tinyglobby), on glob patterns from the repo's own config; nothing of it ships in the app.",
       "expires": "2027-02-18"
     }
   ]
