@@ -206,7 +206,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - A link from a terminal is parsed before it opens and reaches the browser
   or mail app percent-encoded; one with a control character, longer than
-  8 KB, or a mail link asking to attach a file is refused, and the log gets
+  8 KB, a mail link asking to attach a file, or one that still holds a quote
+  (the parser keeps one in a host) is refused, and the log gets
   no more of a link than the scheme of one refused, and none of the system's
   error about one.
 

@@ -29,8 +29,9 @@ fn open_with<E>(link: &str, open: impl FnOnce(&str) -> Result<(), E>) -> Result<
 /// reaches a handler's command line at its `%1` is percent-encoded (a
 /// space or a quote cannot end the argument there). Refused: one that does
 /// not parse, carries a control character (the parser would drop tabs and
-/// newlines silently), runs past `MAX_LEN`, or is a mail link that asks
-/// for an attachment, which some mail apps take from the local disk.
+/// newlines silently), runs past `MAX_LEN`, is a mail link that asks for an
+/// attachment, which some mail apps take from the local disk, or still has
+/// a space or a quote once parsed.
 fn web_or_mail(link: &str) -> Result<Url, String> {
     if link.len() > MAX_LEN {
         return Err(format!("the link is longer than {MAX_LEN} bytes"));
@@ -45,17 +46,19 @@ fn web_or_mail(link: &str) -> Result<Url, String> {
             if url.query_pairs().any(|(k, _)| k.eq_ignore_ascii_case("attach") || k.eq_ignore_ascii_case("attachment")) {
                 return Err("a mail link that asks for an attachment".into());
             }
-            // A mail link's address is not percent-encoded by the parser
-            // the way a web link's path is.
-            if url.as_str().chars().any(|c| c.is_whitespace() || c == '"') {
-                return Err("a mail link with a space or a quote in it".into());
-            }
         }
         // A scheme the parser took is letters, digits, `+`, `-` and `.`
         // after a letter; a long one is named no more than a short word
         // would be, so a token shaped like one stays out.
         s if s.len() <= 32 => return Err(format!("not a web or mail link ({s}:)")),
         _ => return Err("not a web or mail link".into()),
+    }
+    // The parser percent-encodes neither a mail link's address nor a quote
+    // in a web link's host, and Windows hands the link to the handler's
+    // command line as it is (ShellExecuteExW, through the opener), where a
+    // quote would end a quoted `"%1"`.
+    if url.as_str().chars().any(|c| c.is_whitespace() || c == '"') {
+        return Err("a link with a space or a quote in it".into());
     }
     Ok(url)
 }
@@ -107,6 +110,10 @@ mod tests {
         let u = web_or_mail(r#"https://example.com/a b" --flag?q=c d"e#f g"h"#).unwrap();
         assert!(!u.as_str().contains(' ') && !u.as_str().contains('"'), "{u}");
         assert!(web_or_mail(r#"mailto:a@example.com" --flag"#).is_err());
+        // The parser keeps a quote in a host as it is.
+        let host = r#"https://a"b.example.com/"#;
+        assert!(Url::parse(host).unwrap().as_str().contains('"'));
+        assert_eq!(web_or_mail(host).unwrap_err(), "a link with a space or a quote in it");
         let mail = web_or_mail("mailto:a@example.com?subject=a b").unwrap();
         assert_eq!(mail.as_str(), "mailto:a@example.com?subject=a%20b");
     }
