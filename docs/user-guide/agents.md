@@ -234,8 +234,10 @@ hooks run unasked.
   draft wears a **draft** tag with the count of messages held, and a balloon says
   how many wait; a minute's hold is announced on the desktop.
 - `luna_session_send` to a background Claude Code helper mid-turn joins that turn at its
-  next tool boundary (a long tool or subagent delays it); if the CLI finishes
-  first, the text starts the next turn; if that fails, it returns to the sender.
+  next tool boundary (a long tool or subagent delays it), as does one to a lead
+  whose CLI has answered and stays up for its own background subagents (see
+  Notices); if the CLI finishes first, the text starts the next turn; if that
+  fails, it returns to the sender.
   After a core crash Luna looks for it in the transcript rather than send twice.
   Codex's `exec` reads its input once, so text to a background Codex helper waits
   for the next turn.
@@ -297,7 +299,12 @@ one of your own chats an agent may answer only a question its model asked
   (Claude Code moves a call past two minutes to the background). A wait the
   agent's CLI cancels or interrupts hands nothing over, and the notice comes as
   usual. A subagent the agent left working in the background does not hold the
-  notice back.
+  notice back. That goes for a Claude Code lead too, whose CLI stays up past
+  its answer while its own background subagents run: the notice goes in on its
+  stdin and it answers it at once, or right after a turn its CLI is at (one it
+  starts by itself when a subagent ends), for up to 3 hours after that answer
+  (later ones wait for its CLI to end). A Codex lead's `exec` ends with its
+  turn, its subagents interrupted, so nothing holds its notices.
 - The notice says what happened, how many messages the helper wrote, the first
   line of its report, and a file with all of them: the report (the longest
   message, or the last when all are short — but a short turn the CLI started by
