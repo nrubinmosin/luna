@@ -254,8 +254,11 @@ have spawned a lead). In this order:
    `background::kill_holding`), so a former chat never stops a turn its new
    chat started (an agent's delete asks again under its claim, which a move
    refuses); and a spawn from its
-   `register` to its caller's debt (`spawn/background.rs`, past its wait for
-   the worktree queue), so one checked against the old chat has its debt in
+   registration to its caller's debt (`spawn/background.rs`
+   `register_spawned`, past its wait for the worktree queue), which asks
+   `spawnable_at` again for the helper under that hold and refuses the spawn
+   if a move of its caller's line since put it too deep; so one checked
+   against the old chat has its debt in
    before the move goes on, and one after is checked against the new chat; a
    helper is never started under the parent it had before a move. A
    background send never takes the notifier's `going_into`, which is why the
@@ -301,7 +304,10 @@ have spawned a lead). In this order:
    change later than the one it has, so a chat's going that changed the
    registry before the move but writes the spec after it loses; the claim and
    the hand-off go (a claim given up without a move clears the `overtaken`
-   it set, `MoveClaim::moved`); the save and the rows' event.
+   it set, `MoveClaim::moved`, so a turn whose launch has not looked yet
+   starts as claimed; one whose launch saw it first has put its batch back,
+   and `go_on` starts it again under the same parent); the save and the rows'
+   event.
 
 From then on the old chat's send, answer, stop, delete, and read or wait
 without `scope: "all"` on any moved session are refused naming the new chat
@@ -747,7 +753,7 @@ path, worktree, last message, cut to 400 characters by `history`).
 | Two models answering each other | breaker after 12 notices in 15 min |
 | Core dies mid-turn | debts, ties and queues restored from disk; callers told "cut short" ([background helpers](background-helpers.md#outliving-the-core)) |
 | Window gone while opening a helper as a chat | the next window settles it by whether its row exists (`settleOpenings`) |
-| A move refused (no tools, its own line, a lead, privilege, places, deeper than a spawn reaches, held back, not a chat's own helper) | nothing changed; the refusal names why, and `background_move_targets` says it per chat beforehand |
+| A move refused (no tools, its own line, a lead, privilege, places, deeper than a spawn reaches, held back, not a chat's own helper) | nothing changed (but a turn whose launch saw the move's claim first, which starts again under the same parent once the claim goes); the refusal names why, and `background_move_targets` says it per chat beforehand |
 | A move waits on a send, an answer or a stop in flight into a helper, or on a notice about it going in | it goes on once that is in, the debt it left closed; a notice still going in after 120 s refuses the move (`hand_off`) |
 | Core dies between a move and the helper's next turn | its ties keep the move and that no turn has been told; the next core's first turn of it is |
 | A chat's CLI draws a dialog differently | not recognized: it waits for the person |

@@ -105,9 +105,12 @@ same hold of the registry a spawn counts its places in. None of them may end
 up deeper under the new chat than a spawn could have put it there (a helper
 with Luna's tools only as a chat's own helper, nothing below a helper's
 helper: `spawn::spawnable_at`), which a line grown with no chat above it, a
-lead left alone that spawned a lead, would. A helper being opened
+lead left alone that spawned a lead, would. A spawn under way below them when
+they move asks the same as it registers its helper, under the hold a move
+waits on (`register_spawned`), and is refused if it no longer fits. A helper being opened
 as a chat, being deleted, or between a lead's handoff and its fresh start is
-not moved. Every refusal names why, and nothing has changed by then; the
+not moved. Every refusal names why, and nothing has changed by then (but
+for a claimed turn's start, below); the
 window asks `background_move_targets` for the same verdict per chat, to gray
 out the ones it may not choose.
 
@@ -170,7 +173,10 @@ once its own helpers answer: that debt is put in only if the caller is still
 above the helper (`owed.rs` `owed_on_for`). A save writes every helper's ties
 from one hold of the registry (`agents::ties_of_each`), so a core that dies
 then never comes back with half a line moved. A move refused once it has
-claimed the helpers leaves a turn it overtook to start as claimed. A background send does
+claimed the helpers leaves a turn it overtook to start as claimed, unless that
+turn's launch saw the claim first (`Run::overtaken`): then its batch is back in
+the queue, and `go_on` starts it again under the same parent once the claim
+goes, a little late. A background send does
 not go through the notifier's `going_into` hold, so the hand-off alone would
 not have been enough.
 
