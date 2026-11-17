@@ -368,12 +368,15 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
         // once the text is in, which takes it back out (handover.rs).
         let handovers = handovers_of(id);
         use crate::background::Placed;
-        let (placed, interrupted) = if interrupt {
+        let (placed, interrupted, qid) = if interrupt {
             let i = crate::background::interrupt(id, text, Some(caller))?;
-            (if i.queued { Placed::Queued } else { Placed::Started }, i.stopped)
+            (if i.queued { Placed::Queued } else { Placed::Started }, i.stopped, None)
         } else {
-            (crate::background::send(id, text, Some(caller))?, false)
+            let (placed, qid) = crate::background::send_tracked(id, text, Some(caller))?;
+            (placed, false, Some(qid))
         };
+        #[cfg(test)]
+        super::test_support::reached("send placed", caller);
         let (queued, joined) = (placed != Placed::Started, placed == Placed::Joined);
         // The turn it was on ends before the one this text starts, and is
         // counted: the answer ends the turn after that. Text that joined that
@@ -386,6 +389,14 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
                 "the person took {id} over as their own chat as this was sent: the text did not go in, and your next notice \
                  says where it is"
             ));
+        }
+        // Queued, it may have gone onto the stdin of the process running
+        // since, ahead of the debt (background/events.rs `feed_queued`): the
+        // debt ends with that process then.
+        if let Some(qid) = qid.filter(|_| placed == Placed::Queued) {
+            if let Some(n) = crate::agents::moved_onto_stdin(id, &[qid]) {
+                baseline = baseline.min(n);
+            }
         }
         seen(caller, id, baseline);
         return Ok(Sent {

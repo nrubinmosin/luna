@@ -38,6 +38,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   will wake it (a helper of its own at work; on Claude Code also a
   background task or subagent), and the guide tells parents that
   a helper's "waiting" proves nothing (#77).
+- A Claude Code lead now hears of its helpers while its own background
+  subagents run. Its CLI stays up for them after its answer, and Luna used to
+  hold the lead's notices until they had all ended, which could take hours.
+  The notice now goes in on the lead's stdin and is answered at once, for up
+  to 3 hours after its answer, as long as a helper still owes it one (#73).
+  One that comes while the lead's CLI is at a turn of its own goes in when
+  that turn ends.
+  Codex leads end with their turn, so nothing held theirs back.
 
 ## [0.18.3] - 2026-11-17
 

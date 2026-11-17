@@ -251,6 +251,38 @@ pub(crate) fn watched_for_test(id: &str, watched: &[(&str, u32, u64)]) {
         .collect();
 }
 
+/// A test helper made a lead whose CLI has written its result with a
+/// background task still running, its stdin kept open for notices
+/// (events.rs `keeps_listening`): what is written to it is at the other end.
+#[cfg(test)]
+pub(crate) fn listening_for_test(id: &str) -> std::sync::mpsc::Receiver<String> {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    e.spec.tools = true;
+    let lines = feeding(e);
+    let run = e.run.as_mut().unwrap();
+    run.background_tasks = 1;
+    run.after_result = true;
+    run.listening_since = Some(crate::throttle::now_ms());
+    lines
+}
+
+/// An event of its Claude Code process, as the reader of its stdout takes it
+/// (run.rs `take_event`), its queue moved onto stdin told to the debts.
+#[cfg(test)]
+pub(crate) fn claude_event_for_test(id: &str, v: &Value) {
+    let moved = {
+        let mut r = lock();
+        let e = r.entries.get_mut(id).expect("a test helper");
+        let drained = e.run.as_ref().map_or(0, |run| run.drained.len());
+        on_claude_event(e, v);
+        drained_since(e, drained)
+    };
+    if !moved.is_empty() {
+        crate::agents::moved_onto_stdin(id, &moved);
+    }
+}
+
 /// A test helper in a turn whose CLI has written its result (`waits_on_background`).
 #[cfg(test)]
 pub(crate) fn after_result_for_test(id: &str) {

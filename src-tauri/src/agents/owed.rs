@@ -85,6 +85,11 @@ pub(super) struct Owed {
     /// wrote up to there waits in its report, and is no word on their end
     /// (lines.rs `wake_lead`).
     pub(super) held_to: Option<u64>,
+    /// The count it was put past before its text, queued for a background
+    /// helper, went onto the stdin of the process running instead
+    /// (`moved_onto_stdin`): a wait going by that count, as the send
+    /// returned it, goes by `baseline` (wait.rs).
+    pub(super) moved_from: Option<u32>,
     /// For each of the debts this one took in, the last `SINCE_KEPT`, oldest
     /// first: the asks that came after that debt stood (`Since::rev`), which a
     /// notice built on it may be telling of as they come (`owe`). Once that
@@ -138,6 +143,7 @@ impl Owed {
             no_reply: false,
             by_send: false,
             held_to: None,
+            moved_from: None,
             since: [None; SINCE_KEPT],
         }
     }
@@ -545,6 +551,29 @@ pub fn retried(id: &str, callers: &[String], turns_ended: u32) {
         let floor = r.delivery_floors.entry(key).or_default();
         *floor = (*floor).max(turns_ended);
     }
+}
+
+/// Text queued for a background helper `id`, by `Queued::id`, went onto the
+/// stdin of its running process instead (background/events.rs `feed_queued`):
+/// its sender's debt, put past this process as it queued, ends with this
+/// process now, as one for a line that joined it does. Not while more of that
+/// sender's text is queued still (`moved_onto_stdin_at`). Under this lock,
+/// which goes before the background one: the send that queued it either has
+/// its debt in already, or moves it here itself once in (delivery.rs `send`);
+/// and a line that goes untaken with the process is put past it again
+/// (`retried`) only after this. The count it ends past, if moved.
+pub fn moved_onto_stdin(id: &str, qids: &[String]) -> Option<u32> {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let mut moved = None;
+    for qid in qids {
+        let Some((from, turns_ended)) = crate::background::moved_onto_stdin_at(id, qid) else { continue };
+        moved = Some(turns_ended);
+        if let Some(o) = from.and_then(|caller| r.owed.get_mut(&(caller, id.to_string()))).filter(|o| o.baseline > turns_ended) {
+            o.moved_from = Some(o.baseline);
+            o.baseline = turns_ended;
+        }
+    }
+    moved
 }
 
 /// Whether a turn end at `turns_ended` answers a question typed in mid-turn

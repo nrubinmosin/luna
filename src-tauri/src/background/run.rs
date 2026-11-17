@@ -210,6 +210,7 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     let Some(e) = r.entries.get_mut(id) else { return false };
     e.observed.event_ms = crate::throttle::now_ms();
     let unnamed = e.session.is_none();
+    let drained = e.run.as_ref().map_or(0, |run| run.drained.len());
     let landed = match provider {
         Provider::Claude => on_claude_event(e, v),
         Provider::Codex => {
@@ -218,7 +219,13 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
         }
     };
     let named = unnamed && e.session.is_some();
+    let moved = drained_since(e, drained);
     drop(r);
+    // Moved from its queue onto this process's stdin: its senders are owed
+    // by this process now, under the registry's lock, which goes first.
+    if !moved.is_empty() {
+        crate::agents::moved_onto_stdin(id, &moved);
+    }
     // At once: a core killed now would take it up as one that never got started,
     // and start its work over; or hand back as undelivered what the model has.
     if named || landed {
