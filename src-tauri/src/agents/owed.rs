@@ -559,7 +559,8 @@ pub fn retried(id: &str, callers: &[String], turns_ended: u32) {
 /// process now, as one for a line that joined it does. Not while more of that
 /// sender's text is queued still (`moved_onto_stdin_at`). Under this lock,
 /// which goes before the background one: the send that queued it either has
-/// its debt in already, or moves it here itself once in (delivery.rs `send`);
+/// its debt in already, or moves it here itself once in (delivery.rs `send`),
+/// the move kept for it past the process's end (background `Entry::drained`);
 /// and a line that goes untaken with the process is put past it again
 /// (`retried`) only after this. The count it ends past, if moved.
 pub fn moved_onto_stdin(id: &str, qids: &[String]) -> Option<u32> {
