@@ -161,6 +161,11 @@ another program's and is left alone.
 
 ## Keep-awake and "when done"
 
+- **The chip's state** (`power://state`) goes to the window only when it
+  differs from the last one sent (`power::publish`), as the window sees it: a
+  session's `hook`, `disk` and `output_age_ms` are for the log alone and left
+  out of the comparison (`SessionActivity`'s `PartialEq`), or the screen's age
+  would send it again at every sample.
 - **Keep awake:** `PowerSetRequest(SystemRequired)` with a reason visible in
   `powercfg /requests` while busy > 0, released 60 s after quiet. `waiting` does
   not hold the machine but blocks shutdown; stalled does neither. While the rule
