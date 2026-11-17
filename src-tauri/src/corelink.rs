@@ -18,6 +18,7 @@
 
 mod v1;
 
+use crate::backlog::Backlog;
 use crate::corecmd;
 use crate::endpoint::Stream;
 use crate::ipc::{self, Discovery, Event, Found, Hello, Req, Res, Welcome};
@@ -71,14 +72,6 @@ struct Conn {
 /// otherwise have the window hold whatever is typed at it.
 const OUT_MAX: usize = 8 * 1024 * 1024;
 
-/// The bytes handed to a connection's writer and not written yet, and
-/// whether frames are being refused until it has written them all.
-#[derive(Default)]
-struct Backlog {
-    bytes: AtomicU64,
-    refusing: AtomicBool,
-}
-
 impl Conn {
     /// A connection writing to `stream` from a thread of its own.
     fn over(stream: impl Write + Send + 'static) -> Arc<Conn> {
@@ -106,22 +99,15 @@ impl Conn {
     /// larger than the bound.
     fn send(&self, frame: Vec<u8>) -> Result<(), String> {
         let len = frame.len() as u64;
-        let waiting = self.backlog.bytes.load(Ordering::SeqCst);
-        if waiting == 0 {
-            self.backlog.refusing.store(false, Ordering::SeqCst);
-        }
-        if self.backlog.refusing.load(Ordering::SeqCst) || (waiting > 0 && waiting + len > self.max as u64) {
-            if !self.backlog.refusing.swap(true, Ordering::SeqCst) {
-                crate::log::warn(
-                    "core",
-                    &format!("the core is not taking input: {} KB waiting to be written; refusing more", waiting / 1024),
-                );
+        if let Err(refused) = self.backlog.reserve_in_order(len, self.max as u64) {
+            let kb = refused.waiting / 1024;
+            if refused.first {
+                crate::log::warn("core", &format!("the core is not taking input: {kb} KB waiting to be written; refusing more"));
             }
-            return Err(format!("the core is not taking input: {} KB waiting to be written", waiting / 1024));
+            return Err(format!("the core is not taking input: {kb} KB waiting to be written"));
         }
-        self.backlog.bytes.fetch_add(len, Ordering::SeqCst);
         self.out.send(frame).map_err(|_| {
-            self.backlog.bytes.fetch_sub(len, Ordering::SeqCst);
+            self.backlog.release(len);
             "the core is not reachable".to_string()
         })
     }
@@ -142,7 +128,7 @@ fn writer(mut stream: impl Write, frames: std::sync::mpsc::Receiver<Vec<u8>>, co
             }
             return;
         }
-        backlog.bytes.fetch_sub(frame.len() as u64, Ordering::SeqCst);
+        backlog.release(frame.len() as u64);
     }
 }
 
@@ -771,7 +757,7 @@ mod tests {
         *open.0.lock().unwrap() = true;
         open.1.notify_all();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while conn.backlog.bytes.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < deadline {
+        while conn.backlog.waiting() > 0 && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
         conn.send(b"eeee".to_vec()).unwrap();

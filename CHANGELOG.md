@@ -109,6 +109,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the older of the two on disk.
 - The window looks for a resting chat's saved title only under an account
   folder of Luna's, as its other commands that take one do.
+- Writers at once can no longer queue more between them than a byte bound
+  lets through, and one page log line longer than its 1 MB bound is written
+  when nothing else waits.
 
 ## [0.18.5] - 2026-11-17
 

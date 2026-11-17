@@ -61,28 +61,24 @@ struct Window {
 #[derive(Clone)]
 struct Outbox {
     tx: SyncSender<Vec<u8>>,
-    /// Bytes queued and not written; the connection's writer takes off what
-    /// it has written.
-    waiting: Arc<AtomicU64>,
+    /// Bytes queued and not written; the connection's writer gives back
+    /// what it has written.
+    waiting: Arc<crate::backlog::Backlog>,
 }
 
 impl Outbox {
     /// A queue of `frames` and the end its writer reads.
     fn new(frames: usize) -> (Outbox, std::sync::mpsc::Receiver<Vec<u8>>) {
         let (tx, rx) = sync_channel(frames);
-        (Outbox { tx, waiting: Arc::new(AtomicU64::new(0)) }, rx)
+        (Outbox { tx, waiting: Arc::default() }, rx)
     }
 
     fn try_send(&self, frame: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
         let len = frame.len() as u64;
-        let waiting = self.waiting.load(Ordering::SeqCst);
-        if waiting > 0 && waiting + len > QUEUE_BYTES {
+        if self.waiting.reserve(len, QUEUE_BYTES).is_err() {
             return Err(TrySendError::Full(frame));
         }
-        self.waiting.fetch_add(len, Ordering::SeqCst);
-        self.tx.try_send(frame).inspect_err(|_| {
-            self.waiting.fetch_sub(len, Ordering::SeqCst);
-        })
+        self.tx.try_send(frame).inspect_err(|_| self.waiting.release(len))
     }
 }
 
@@ -436,7 +432,7 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
             if out.write_all(&frame).and_then(|()| out.flush()).is_err() {
                 break;
             }
-            waiting.fetch_sub(frame.len() as u64, Ordering::SeqCst);
+            waiting.release(frame.len() as u64);
         }
         out.shutdown();
     });
@@ -555,7 +551,7 @@ mod tests {
         assert!(tx.try_send(vec![0; half]).is_ok());
         assert!(matches!(tx.try_send(vec![0; 1]), Err(TrySendError::Full(_))));
         let written = rx.recv().unwrap();
-        tx.waiting.fetch_sub(written.len() as u64, Ordering::SeqCst);
+        tx.waiting.release(written.len() as u64);
         assert!(tx.try_send(vec![0; 1]).is_ok());
         let (alone, _rx) = Outbox::new(QUEUE);
         assert!(alone.try_send(vec![0; QUEUE_BYTES as usize + 1]).is_ok(), "one frame alone may be larger");

@@ -167,22 +167,22 @@ enum PageLine {
 /// the writer last said so.
 #[derive(Default)]
 struct PageBacklog {
-    bytes: std::sync::atomic::AtomicU64,
+    bytes: crate::backlog::Backlog,
     refused: std::sync::atomic::AtomicU64,
 }
 
-/// Hands one line to the writer: refused past `max` bytes waiting, written
-/// in place where the writer could not be started.
+/// Hands one line to the writer: refused past `max` bytes waiting (one line
+/// alone, nothing else waiting, goes whatever its length), written in place
+/// where the writer could not be started.
 fn hand_over(tx: &std::sync::mpsc::Sender<PageLine>, backlog: &PageBacklog, max: u64, line: Line) -> Result<(), String> {
     use std::sync::atomic::Ordering::SeqCst;
     let len = line.len();
-    if backlog.bytes.load(SeqCst) + len > max {
+    if backlog.bytes.reserve(len, max).is_err() {
         backlog.refused.fetch_add(1, SeqCst);
         return Err("the log's writer is behind: line not written".into());
     }
-    backlog.bytes.fetch_add(len, SeqCst);
     if let Err(std::sync::mpsc::SendError(PageLine::Line(l))) = tx.send(PageLine::Line(line)) {
-        backlog.bytes.fetch_sub(len, SeqCst);
+        backlog.bytes.release(len);
         write_at(&l.at, l.level, &l.source, &l.message);
     }
     Ok(())
@@ -196,7 +196,7 @@ fn write_page_lines(rx: std::sync::mpsc::Receiver<PageLine>, backlog: &PageBackl
         match item {
             PageLine::Line(l) => {
                 put(&l.at, l.level, &l.source, &l.message);
-                backlog.bytes.fetch_sub(l.len(), SeqCst);
+                backlog.bytes.release(l.len());
                 let refused = backlog.refused.swap(0, SeqCst);
                 if refused > 0 {
                     put(&stamp(), "WARN", "log", &format!("{refused} of the page's lines were not written: the log's writer was behind"));
@@ -214,10 +214,14 @@ fn write_page_lines(rx: std::sync::mpsc::Receiver<PageLine>, backlog: &PageBackl
 /// process. Nothing to wait for where no line has come.
 pub fn flush_page_lines(within: std::time::Duration) {
     let Some((tx, _)) = PAGE.get() else { return };
+    flush(tx, within);
+}
+
+/// `flush_page_lines` on the writer `tx` feeds: whether all was written in
+/// time.
+fn flush(tx: &std::sync::mpsc::Sender<PageLine>, within: std::time::Duration) -> bool {
     let (done, wait) = std::sync::mpsc::channel();
-    if tx.send(PageLine::Flush(done)).is_ok() {
-        let _ = wait.recv_timeout(within);
-    }
+    tx.send(PageLine::Flush(done)).is_ok() && wait.recv_timeout(within).is_ok()
 }
 
 /// A panic in a worker thread would otherwise vanish silently.
@@ -263,15 +267,20 @@ mod tests {
         hand_over(&tx, &backlog, 20, line("t1", "first")).unwrap();
         hand_over(&tx, &backlog, 20, line("t2", "secnd")).unwrap();
         assert!(hand_over(&tx, &backlog, 20, line("t3", "third")).unwrap_err().contains("behind"));
+        // A flush the writer cannot answer in time gives up rather than hold
+        // the way out.
+        assert!(!flush(&tx, std::time::Duration::from_millis(100)), "answered with the writer held");
         drop(held);
-        let (done, wait) = std::sync::mpsc::channel();
-        tx.send(PageLine::Flush(done)).unwrap();
-        wait.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(flush(&tx, std::time::Duration::from_secs(5)));
         let got = written.lock().unwrap().clone();
         assert_eq!(got.len(), 3, "{got:?}");
         assert_eq!(got[0], ("t1".to_string(), "first".to_string()));
         assert!(got[1].1.contains("1 of the page's lines were not written"), "{got:?}");
         assert_eq!(got[2], ("t2".to_string(), "secnd".to_string()));
+        // With nothing waiting, one line longer than the bound goes.
+        hand_over(&tx, &backlog, 20, line("t4", &"x".repeat(40))).unwrap();
+        assert!(flush(&tx, std::time::Duration::from_secs(5)));
+        assert_eq!(written.lock().unwrap().last().map(|(at, _)| at.clone()), Some("t4".to_string()));
         drop(tx);
         writer.join().unwrap();
     }
