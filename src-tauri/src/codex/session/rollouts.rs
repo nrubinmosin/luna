@@ -150,11 +150,11 @@ fn rollout_where(account_path: &str, is: impl Fn(&str) -> bool) -> Option<PathBu
 pub fn rollout_of_thread(account_path: &str, id: &str) -> Option<PathBuf> {
     static FOUND: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
     let found = FOUND.get_or_init(Default::default);
-    if let Some(p) = found.lock().ok()?.get(id).filter(|p| p.is_file()) {
+    if let Some(p) = found.lock().unwrap_or_else(|e| e.into_inner()).get(id).filter(|p| p.is_file()) {
         return Some(p.clone());
     }
     let path = rollout_by_id(account_path, id)?;
-    let mut found = found.lock().ok()?;
+    let mut found = found.lock().unwrap_or_else(|e| e.into_inner());
     if found.len() >= KEPT_LOOKUPS {
         found.clear();
     }
@@ -184,12 +184,8 @@ pub fn release(chat_id: &str) {
     if let Ok(mut m) = claims().lock() {
         m.remove(chat_id);
     }
-    if let Ok(mut m) = turn_counts().lock() {
-        m.remove(chat_id);
-    }
-    if let Ok(mut m) = children().lock() {
-        m.remove(chat_id);
-    }
+    turn_counts().lock().unwrap_or_else(|e| e.into_inner()).remove(chat_id);
+    children().lock().unwrap_or_else(|e| e.into_inner()).remove(chat_id);
 }
 
 /// Whether a rollout's cwd is this folder, or a worktree of it: under `--worktree`
@@ -214,7 +210,7 @@ fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
     static MISSED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     let key = format!("{account_path}\n{thread}");
     let found = FOUND.get_or_init(Default::default);
-    if let Some(p) = found.lock().ok()?.get(&key).filter(|p| p.is_file()) {
+    if let Some(p) = found.lock().unwrap_or_else(|e| e.into_inner()).get(&key).filter(|p| p.is_file()) {
         return Some(p.clone());
     }
     let mut recent = rollouts_on(account_path, days_back(local_today(), 2)).into_iter().filter(|(_, id, _)| id.starts_with(thread));
@@ -222,12 +218,12 @@ fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
         return recent.next().is_none().then_some(p);
     }
     let missed = MISSED.get_or_init(Default::default);
-    if missed.lock().ok()?.contains(&key) {
+    if missed.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
         return None;
     }
     match rollout_where(account_path, |id| id.starts_with(thread)) {
         Some(p) => {
-            let mut found = found.lock().ok()?;
+            let mut found = found.lock().unwrap_or_else(|e| e.into_inner());
             if found.len() >= KEPT_LOOKUPS {
                 found.clear();
             }
@@ -235,7 +231,7 @@ fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
             Some(p)
         }
         None => {
-            let mut missed = missed.lock().ok()?;
+            let mut missed = missed.lock().unwrap_or_else(|e| e.into_inner());
             if missed.len() >= KEPT_LOOKUPS {
                 missed.clear();
             }

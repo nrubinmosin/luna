@@ -63,8 +63,8 @@ pub(super) fn tracked(live: &Live) -> Option<Scan> {
 
 /// `tracked`, the chat on the rollout at `path` now.
 pub(super) fn tracked_at(live: &Live, path: PathBuf) -> Option<Scan> {
-    let tracker = Arc::clone(turn_counts().lock().ok()?.entry(live.chat_id.to_string()).or_default());
-    let mut tracker = tracker.lock().ok()?;
+    let tracker = Arc::clone(turn_counts().lock().unwrap_or_else(|e| e.into_inner()).entry(live.chat_id.to_string()).or_default());
+    let mut tracker = tracker.lock().unwrap_or_else(|e| e.into_inner());
     let entry = tracker.get_or_insert_with(|| TurnCount { path: path.clone(), offset: 0, scan: Scan::default(), before: HashMap::new() });
     let since = live.spawned_at_ms as i64;
     if entry.path != path {
@@ -121,8 +121,8 @@ pub fn turns_completed(live: &Live) -> Option<u32> {
 /// read: the one the turn count comes from, so it goes with the turn counted,
 /// and the session may have exited since.
 pub fn last_failure(chat_id: &str) -> Option<String> {
-    let tracker = Arc::clone(turn_counts().lock().ok()?.get(chat_id)?);
-    let failed = tracker.lock().ok()?.as_ref()?.scan.failed.clone();
+    let tracker = Arc::clone(turn_counts().lock().unwrap_or_else(|e| e.into_inner()).get(chat_id)?);
+    let failed = tracker.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.scan.failed.clone();
     failed
 }
 
@@ -185,8 +185,8 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
         .map(|(_, id, p)| (id, p))
         .collect();
     let listed: std::collections::HashSet<&PathBuf> = files.iter().map(|(_, p)| p).collect();
-    let seen = Arc::clone(children().lock().ok()?.entry(live.chat_id.to_string()).or_default());
-    let mut seen = seen.lock().ok()?;
+    let seen = Arc::clone(children().lock().unwrap_or_else(|e| e.into_inner()).entry(live.chat_id.to_string()).or_default());
+    let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
     seen.parent_of.retain(|p, _| listed.contains(p));
     seen.read.retain(|p, _| listed.contains(p));
     for (_, path) in &files {
