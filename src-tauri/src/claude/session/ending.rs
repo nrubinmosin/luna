@@ -338,8 +338,8 @@ fn open_calls(text: &str) -> Vec<Call> {
         let content = &v["message"]["content"];
         match v["type"].as_str() {
             Some("assistant") => {
-                let Some(at) = v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()) else { continue };
-                let at = at.timestamp_millis().max(0) as u64;
+                let Some(at) = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()) else { continue };
+                let at = at.as_millisecond().max(0) as u64;
                 for b in content.as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use") {
                     let input = &b["input"];
                     let name = b["name"].as_str().unwrap_or("");
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn a_command_is_due_by_its_own_timeout() {
         let at = "2026-11-04T15:10:00.000Z";
-        let start = chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp_millis() as u64;
+        let start = at.parse::<jiff::Timestamp>().unwrap().as_millisecond() as u64;
         let call = |id: &str, name: &str, input: &str| {
             format!(
                 r#"{{"type":"assistant","timestamp":"{at}","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}"#

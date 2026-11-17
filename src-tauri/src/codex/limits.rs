@@ -167,7 +167,8 @@ fn note_length(minutes: Option<i64>) {
 }
 
 fn iso(secs: Option<i64>) -> Option<String> {
-    chrono::DateTime::from_timestamp(secs?, 0).map(|t| t.to_rfc3339())
+    let t = jiff::Timestamp::from_second(secs?).ok()?;
+    Some(t.to_zoned(jiff::tz::TimeZone::UTC).strftime("%Y-%m-%dT%H:%M:%S%:z").to_string())
 }
 
 /// One window of the `wham/usage` response; none without its share, which
@@ -283,7 +284,7 @@ fn from_newest_known(out: &mut CodexLimits, account_path: &str) {
     let remembered = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
     let rollout = super::session::latest_rate_limits(account_path).and_then(|(snapshot, ts)| {
         let (windows, plan) = windows_from_rollout(&snapshot);
-        let at = chrono::DateTime::parse_from_rfc3339(&ts).ok().map(|t| t.timestamp_millis().max(0) as u64);
+        let at = ts.parse::<jiff::Timestamp>().ok().map(|t| t.as_millisecond().max(0) as u64);
         (!windows.is_empty()).then_some((at, windows, plan))
     });
     let rollout = match (remembered, rollout) {
@@ -317,7 +318,7 @@ pub(crate) fn known_reading(account_path: &str, own: Option<&Path>) -> Option<cr
 fn timed(snapshots: Vec<(Value, String)>) -> Vec<(Value, Option<u64>)> {
     snapshots
         .into_iter()
-        .map(|(snapshot, ts)| (snapshot, chrono::DateTime::parse_from_rfc3339(&ts).ok().map(|t| t.timestamp_millis().max(0) as u64)))
+        .map(|(snapshot, ts)| (snapshot, ts.parse::<jiff::Timestamp>().ok().map(|t| t.as_millisecond().max(0) as u64)))
         .collect()
 }
 
@@ -618,16 +619,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("luna-codex-limits-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":1}"#);
-        let today = chrono::Local::now();
-        let day = dir.join("sessions").join(today.format("%Y/%m/%d").to_string());
+        let today = jiff::Zoned::now();
+        let day = dir.join("sessions").join(today.strftime("%Y/%m/%d").to_string());
         std::fs::create_dir_all(&day).unwrap();
         let auth = serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig"), "refresh_token": "rt" } });
         std::fs::write(dir.join("auth.json"), auth.to_string()).unwrap();
-        let at = chrono::DateTime::from_timestamp_millis((now_ms() - ago) as i64).unwrap().to_rfc3339();
+        let at = jiff::Timestamp::from_millisecond((now_ms() - ago) as i64).unwrap().to_string();
         let line = serde_json::json!({ "timestamp": at, "type": "event_msg", "payload": { "type": "token_count", "info": null, "rate_limits": {
             "primary": { "used_percent": 40, "window_minutes": 300, "resets_at": null },
             "secondary": { "used_percent": 96, "window_minutes": 10080, "resets_at": null } } } });
-        let name = format!("rollout-{}-limits-test.jsonl", today.format("%Y-%m-%dT%H-%M-%S"));
+        let name = format!("rollout-{}-limits-test.jsonl", today.strftime("%Y-%m-%dT%H-%M-%S"));
         std::fs::write(day.join(name), format!("{line}\n")).unwrap();
         let path = dir.to_string_lossy().into_owned();
         (dir, path)

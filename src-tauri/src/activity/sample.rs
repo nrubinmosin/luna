@@ -63,7 +63,7 @@ pub(super) fn limit_at(chat_id: &str, provider: Provider) -> Option<(&'static st
         Provider::Codex => {
             let path = crate::codex::session::rollout_for(&codex_live(&p))?;
             let (kind, at) = crate::codex::session::limit_at_in(&crate::pty::tail(&path, 256 * 1024)?)?;
-            let at = at.and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok()).map(|t| t.timestamp_millis().max(0) as u64);
+            let at = at.and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond().max(0) as u64);
             Some((kind, at))
         }
     }

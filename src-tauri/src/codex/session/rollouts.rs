@@ -11,7 +11,7 @@ fn sessions_dir(account_path: &str) -> PathBuf {
 
 /// `rollout-2026-09-17T14-03-22-<uuid>.jsonl` → (local time, uuid). A name
 /// with a `_<rollout id>` suffix (after a `/revert`) still names the thread.
-pub fn parse_name(file_name: &str) -> Option<(NaiveDateTime, String)> {
+pub fn parse_name(file_name: &str) -> Option<(DateTime, String)> {
     let rest = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
     // "YYYY-MM-DDTHH-MM-SS" is 19 chars, then '-' then the uuid. Any file
     // in the folder is looked at, so the cut must land on a char boundary.
@@ -19,7 +19,7 @@ pub fn parse_name(file_name: &str) -> Option<(NaiveDateTime, String)> {
         return None;
     }
     let (ts, id) = rest.split_at(19);
-    let ts = NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H-%M-%S").ok()?;
+    let ts = DateTime::strptime("%Y-%m-%dT%H-%M-%S", ts).ok()?;
     let id = id.strip_prefix('-')?;
     let id = id.split('_').next()?.to_string();
     (!id.is_empty()).then_some((ts, id))
@@ -33,12 +33,12 @@ pub(super) fn first_line(path: &Path) -> Option<Value> {
     serde_json::from_str(&line).ok()
 }
 
-pub(super) fn day_dir(account_path: &str, day: NaiveDate) -> PathBuf {
+pub(super) fn day_dir(account_path: &str, day: Date) -> PathBuf {
     sessions_dir(account_path).join(day.year().to_string()).join(format!("{:02}", day.month())).join(format!("{:02}", day.day()))
 }
 
 /// Rollout files written on the given days, newest first.
-pub(super) fn rollouts_on(account_path: &str, days: impl Iterator<Item = NaiveDate>) -> Vec<(NaiveDateTime, String, PathBuf)> {
+pub(super) fn rollouts_on(account_path: &str, days: impl Iterator<Item = Date>) -> Vec<(DateTime, String, PathBuf)> {
     let mut out = vec![];
     for day in days {
         let Ok(entries) = std::fs::read_dir(day_dir(account_path, day)) else { continue };
@@ -53,8 +53,61 @@ pub(super) fn rollouts_on(account_path: &str, days: impl Iterator<Item = NaiveDa
     out
 }
 
-pub(super) fn days_back(from: NaiveDate, n: usize) -> impl Iterator<Item = NaiveDate> {
-    (0..n as i64).filter_map(move |i| from.checked_sub_days(chrono::Days::new(i as u64)))
+pub(super) fn days_back(from: Date, n: usize) -> impl Iterator<Item = Date> {
+    (0..n as i64).filter_map(move |i| from.checked_sub(i.days()).ok())
+}
+
+/// Today on the wall clock Codex names its day folders by (`local_at`).
+pub(super) fn local_today() -> Date {
+    local_at(jiff::Timestamp::now().as_millisecond()).map_or_else(|| jiff::Zoned::now().date(), |t| t.date())
+}
+
+/// The instant `ms` on the wall clock Codex names its rollouts by: the `time`
+/// crate's local offset. On Windows that asks the OS, which follows its own
+/// settings (daylight saving turned off included) and ignores `TZ`, where
+/// jiff's system zone reads `TZ` first and maps the Windows zone to IANA
+/// rules; so there the OS is asked here too.
+pub(super) fn local_at(ms: i64) -> Option<DateTime> {
+    let t = jiff::Timestamp::from_millisecond(ms).ok()?;
+    #[cfg(windows)]
+    {
+        windows_local(t)
+    }
+    #[cfg(not(windows))]
+    {
+        Some(t.to_zoned(jiff::tz::TimeZone::system()).datetime())
+    }
+}
+
+#[cfg(windows)]
+fn windows_local(t: jiff::Timestamp) -> Option<DateTime> {
+    use windows::Win32::Foundation::SYSTEMTIME;
+    use windows::Win32::System::Time::SystemTimeToTzSpecificLocalTime;
+    let u = t.to_zoned(jiff::tz::TimeZone::UTC).datetime();
+    let utc = SYSTEMTIME {
+        wYear: u16::try_from(u.year()).ok()?,
+        wMonth: u.month() as u16,
+        wDayOfWeek: 0,
+        wDay: u.day() as u16,
+        wHour: u.hour() as u16,
+        wMinute: u.minute() as u16,
+        wSecond: u.second() as u16,
+        wMilliseconds: u.millisecond() as u16,
+    };
+    let mut local = SYSTEMTIME::default();
+    // SAFETY: both point to live SYSTEMTIMEs; no zone given means the current one.
+    unsafe { SystemTimeToTzSpecificLocalTime(None, &utc, &mut local) }.ok()?;
+    let millis = i32::from(local.wMilliseconds) * 1_000_000;
+    DateTime::new(
+        local.wYear as i16,
+        local.wMonth as i8,
+        local.wDay as i8,
+        local.wHour as i8,
+        local.wMinute as i8,
+        local.wSecond as i8,
+        millis + u.subsec_nanosecond() % 1_000_000,
+    )
+    .ok()
 }
 
 /// The rollout of a thread, by id, wherever it was written. Walks day
@@ -154,8 +207,7 @@ fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
     if let Some(p) = found.lock().ok()?.get(&key).filter(|p| p.is_file()) {
         return Some(p.clone());
     }
-    let mut recent =
-        rollouts_on(account_path, days_back(Local::now().date_naive(), 2)).into_iter().filter(|(_, id, _)| id.starts_with(thread));
+    let mut recent = rollouts_on(account_path, days_back(local_today(), 2)).into_iter().filter(|(_, id, _)| id.starts_with(thread));
     if let Some((_, _, p)) = recent.next() {
         return recent.next().is_none().then_some(p);
     }
@@ -229,10 +281,10 @@ pub(super) fn rollout_on(live: &Live, thread: Option<String>) -> Option<PathBuf>
         return Some(found);
     }
 
-    let spawned = Local.timestamp_millis_opt(live.spawned_at_ms as i64).single().map(|t| t.naive_local())?;
+    let spawned = local_at(live.spawned_at_ms as i64)?;
     // Codex writes the file right after start; allow the clock to disagree
     // by a few seconds either way.
-    let not_before = spawned - chrono::Duration::seconds(5);
+    let not_before = spawned - 5.seconds();
     let taken: Vec<PathBuf> =
         claims().lock().map(|m| m.iter().filter(|(k, _)| *k != live.chat_id).map(|(_, v)| v.clone()).collect()).unwrap_or_default();
     let ours = |cwd: &str| in_folder(cwd, live.cwd);
@@ -242,8 +294,8 @@ pub(super) fn rollout_on(live: &Live, thread: Option<String>) -> Option<PathBuf>
     // moment now: told apart by the file, they stay told apart after a helper
     // is deleted or the core restarts, and with no list of ids to keep.
     let meta_fits = |v: &Value| v["payload"]["source"] == "cli" && v["payload"]["cwd"].as_str().is_some_and(ours);
-    let today = Local::now().date_naive();
-    let mut candidates: Vec<(NaiveDateTime, PathBuf)> = rollouts_on(live.account_path, days_back(today, 2))
+    let today = local_today();
+    let mut candidates: Vec<(DateTime, PathBuf)> = rollouts_on(live.account_path, days_back(today, 2))
         .into_iter()
         .filter(|(ts, _, p)| *ts >= not_before && !taken.contains(p))
         .filter(|(_, _, p)| first_line(p).is_some_and(|v| meta_fits(&v)))
@@ -254,7 +306,7 @@ pub(super) fn rollout_on(live: &Live, thread: Option<String>) -> Option<PathBuf>
     // the second the session started or later goes first: one from just
     // before it is a chat started a moment earlier that has not claimed its
     // own yet.
-    let started = spawned.with_nanosecond(0).unwrap_or(spawned);
+    let started = spawned.with().subsec_nanosecond(0).build().unwrap_or(spawned);
     candidates.sort_by_key(|(ts, _)| (*ts < started, *ts));
     let (_, found) = candidates.into_iter().next()?;
 
@@ -326,10 +378,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Now on the wall clock is what the OS makes of it, `TZ` or not: here by
+    /// FileTimeToLocalFileTime, which applies the zone's offset of the moment.
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_wall_clock_is_the_os_one() {
+        use windows::Win32::Foundation::FILETIME;
+        use windows::Win32::Storage::FileSystem::FileTimeToLocalFileTime;
+        let ms = jiff::Timestamp::now().as_millisecond();
+        // FILETIME: 100 ns ticks since 1601-01-01 UTC.
+        let ticks = (ms + 11_644_473_600_000) as u64 * 10_000;
+        let utc = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+        let mut local = FILETIME::default();
+        unsafe { FileTimeToLocalFileTime(&utc, &mut local) }.unwrap();
+        let local_ticks = (u64::from(local.dwHighDateTime) << 32) | u64::from(local.dwLowDateTime);
+        let wall_ms = (local_ticks / 10_000) as i64 - 11_644_473_600_000;
+        let os = jiff::Timestamp::from_millisecond(wall_ms).unwrap().to_zoned(jiff::tz::TimeZone::UTC).datetime();
+        assert_eq!(local_at(ms), Some(os));
+    }
+
     #[test]
     fn parses_rollout_names() {
         let (ts, id) = parse_name("rollout-2026-09-17T14-03-22-0192a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b.jsonl").unwrap();
-        assert_eq!(ts.to_string(), "2026-09-17 14:03:22");
+        assert_eq!(ts.to_string(), "2026-09-17T14:03:22");
         assert_eq!(id, "0192a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b");
         let (_, id) = parse_name("rollout-2026-09-17T14-03-22-abc_def.jsonl").unwrap();
         assert_eq!(id, "abc");
@@ -346,10 +417,10 @@ mod tests {
         // A rollout appears a second after its chat starts; chat b starts two
         // seconds after chat a.
         let write = |at_ms: u64, uuid: &str| {
-            let ts = Local.timestamp_millis_opt(at_ms as i64).single().unwrap().naive_local();
+            let ts = local_at(at_ms as i64).unwrap();
             let dir = day_dir(&acct, ts.date());
             std::fs::create_dir_all(&dir).unwrap();
-            let name = format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S"));
+            let name = format!("rollout-{}-{uuid}.jsonl", ts.strftime("%Y-%m-%dT%H-%M-%S"));
             std::fs::write(dir.join(name), format!("{}\n", r#"{"type":"session_meta","payload":{"cwd":"E:\\p","source":"cli"}}"#)).unwrap();
         };
         write(t0 + 1_000, "aaaa");
@@ -425,12 +496,12 @@ mod tests {
         let acct = root.to_string_lossy().into_owned();
         let chat = format!("chat-follow-{t0}");
         let (a, b) = (format!("aaaa{t0}"), format!("bbbb{t0}"));
-        let at = |ms: u64| chrono::DateTime::from_timestamp_millis(ms as i64).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let at = |ms: u64| jiff::Timestamp::from_millisecond(ms as i64).unwrap().strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
         let turn =
             |ms: u64| format!("{{\"timestamp\":\"{}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\"}}}}\n", at(ms));
         let file = |uuid: &str, ms: u64| {
-            let ts = Local.timestamp_millis_opt(ms as i64).single().unwrap().naive_local();
-            day_dir(&acct, ts.date()).join(format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S")))
+            let ts = local_at(ms as i64).unwrap();
+            day_dir(&acct, ts.date()).join(format!("rollout-{}-{uuid}.jsonl", ts.strftime("%Y-%m-%dT%H-%M-%S")))
         };
         let (fa, fb) = (file(&a, t0 + 1_000), file(&b, t0 + 5_000));
         std::fs::create_dir_all(fa.parent().unwrap()).unwrap();
