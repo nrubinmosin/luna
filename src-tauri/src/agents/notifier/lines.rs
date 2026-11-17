@@ -678,8 +678,10 @@ const NOTHING_RUNNING: &str = " Nothing of its own is running: it will not go on
 /// sends it: no job or subagent its turns left (`children_busy`); no answer
 /// owed to it by anyone else, a helper of its own or a session it wrote to,
 /// whose notice would wake it; no `luna_session_wait` of its out; nothing
-/// queued, held or reserved for it, and no line such as a wake waiting to go
-/// in. What its words say it waits on does not count: only what Luna sees run.
+/// queued, held or reserved for it, and no line waiting to go in, one queued
+/// (`news`) or one the notifier has for it by itself (`lines_coming`: a
+/// usage window, a context past its level). What its words say it waits on
+/// does not count: only what Luna sees run.
 fn runs_nothing(id: &str, caller: &str, ts: Option<crate::activity::TurnState>) -> bool {
     if !ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy) {
         return false;
@@ -692,6 +694,7 @@ fn runs_nothing(id: &str, caller: &str, ts: Option<crate::activity::TurnState>) 
         && !r.waits.keys().chain(r.reserved.keys()).any(|(c, _)| c == id)
         && !r.held.iter().any(|h| h.id == id)
         && !r.news.iter().any(|(c, _)| c == id)
+        && !r.lines_coming.contains(id)
 }
 
 /// What a notice says of a helper whose CLI stopped what its last turn left in
@@ -2226,8 +2229,10 @@ mod tests {
     /// Issue #77: a lead ended its turn on "Gate is running; waiting." with no
     /// gate started, and its parent read "finished its turn" as work going on.
     /// Its parent's notice says when nothing of its own runs, on either CLI's
-    /// transcript, and not while a job, a helper of its own, a session it wrote
-    /// to, a wait or a line for it is still to come, nor to a caller not its parent.
+    /// transcript, and not to a caller not its parent, nor where a line is
+    /// coming that wakes it, nor where its CLI cut its background work off
+    /// (`runs_nothing_is_false_for_whatever_would_start_the_session` has the
+    /// rest of what stops it).
     #[test]
     fn a_turn_ended_with_nothing_running_says_so_to_its_parent() {
         for provider in [Provider::Claude, Provider::Codex] {
@@ -2240,8 +2245,8 @@ mod tests {
                 ),
             };
             let tag = provider.as_str();
-            let [top, id, low, other] = ["top", "lead", "low", "other"].map(|s| format!("nx-{tag}-{s}"));
-            let (top, id, low, other) = (top.as_str(), id.as_str(), low.as_str(), other.as_str());
+            let [top, id, other] = ["top", "lead", "other"].map(|s| format!("nx-{tag}-{s}"));
+            let (top, id, other) = (top.as_str(), id.as_str(), other.as_str());
             let (known, path) = lead_on(provider, top, id, 1, false, &said);
             let pty = crate::pty::manager();
             let o = held(Owed::from(0, 0), 1, REPLY_GRACE_MS);
@@ -2255,44 +2260,95 @@ mod tests {
             // Only its parent is told to send to it.
             let to_other = says(other).unwrap_or_else(|| panic!("{tag}: a caller not its parent still hears"));
             assert!(!to_other.contains(NOTHING_RUNNING), "{tag}: {to_other}");
-            let quiet = |what: &str| {
-                let line = says(top).unwrap_or_default();
-                assert!(!line.contains(NOTHING_RUNNING), "{tag}, {what}: {line}");
-            };
-            // What would wake it, each in turn.
-            register(other, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
-            owe_from(id, other, 0, 0);
-            quiet("a session it wrote to owes it an answer");
-            reg().lock().unwrap().owed.remove(&(id.to_string(), other.to_string()));
-            reg().lock().unwrap().waits.insert((id.to_string(), other.to_string()), 0);
-            quiet("a wait of its is out");
-            reg().lock().unwrap().waits.remove(&(id.to_string(), other.to_string()));
-            reg().lock().unwrap().news.push((id.to_string(), "a line for it".to_string()));
-            quiet("a line waits to go into it");
-            reg().lock().unwrap().news.retain(|(c, _)| c != id);
-            assert!(says(top).unwrap_or_default().contains(NOTHING_RUNNING), "{tag}: as before once all that is gone");
-            // A helper of its own owes it an answer: no notice yet, and none saying that.
-            register(low, provider, "C:\\p", "C:\\acc\\x\\one", Some(id), false, serde_json::json!({ "background": true }));
-            owe_from(id, low, 0, 0);
-            quiet("a helper of its own owes it");
-            reg().lock().unwrap().owed.remove(&(id.to_string(), low.to_string()));
-            // A job its turn left in the background.
-            crate::background::left_for_test(id, &[("bash.exe", 4242, 0)]);
-            quiet("a job it left runs");
-            crate::background::left_for_test(id, &[]);
-            // A turn at work, as a Claude Code `-p` one is while its subagents run.
-            crate::background::set_running_for_test(id);
-            quiet("its turn runs");
-            crate::background::idle_for_test(id, provider, 1, false);
+            // A line the notifier has for it, as an account's usage window is:
+            // the turn that wakes it starts without a send of its parent's.
+            reg().lock().unwrap().lines_coming.insert(id.to_string());
+            let line = says(top).unwrap_or_default();
+            assert!(line.contains("finished its turn") && !line.contains(NOTHING_RUNNING), "{tag}, a line is coming: {line}");
+            reg().lock().unwrap().lines_coming.remove(id);
+            assert!(says(top).unwrap_or_default().contains(NOTHING_RUNNING), "{tag}: as before once it is said");
             // Its CLI cut its background work off: that line says how it goes on.
             crate::background::background_stopped_for_test(id, &[top]);
             let cut = says(top).unwrap_or_default();
             assert!(!cut.contains(NOTHING_RUNNING) && STOPPED_LINES.iter().any(|l| cut.contains(l)), "{tag}: {cut}");
             crate::background::gone_for_test(id);
-            for s in [id, top, low, other] {
+            for s in [id, top, other] {
                 forget(s);
             }
             let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// `runs_nothing` itself, one branch at a time: each would keep the
+    /// session going or start its next turn, and with it no sentence that
+    /// nothing will. The notice's own verdict stops some of these earlier, so
+    /// they are put to the check directly.
+    #[test]
+    fn runs_nothing_is_false_for_whatever_would_start_the_session() {
+        use crate::activity::{Turn, TurnState};
+        use crate::agents::held::Held;
+        let (top, id, other) = ("rn-top", "rn-lead", "rn-other");
+        let state = |turn, children_busy| Some(TurnState { turn, busy: turn == Turn::Busy, turns_ended: 1, children_busy });
+        let idle = state(Turn::Idle, false);
+        let account = "C:\\acc\\anthropic\\one";
+        for s in [top, other] {
+            register(s, Provider::Claude, "C:\\p", account, None, false, serde_json::json!({}));
+        }
+        register(id, Provider::Claude, "C:\\p", account, Some(top), true, serde_json::json!({ "background": true }));
+        let fresh = || crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        let key = |c: &str| (id.to_string(), c.to_string());
+        let stops = |what: &str| assert!(!runs_nothing(id, top, idle), "{what}");
+        fresh();
+        assert!(runs_nothing(id, top, idle), "nothing at all");
+        assert!(!runs_nothing(id, top, None), "no state: not known to be idle");
+        assert!(!runs_nothing(id, top, state(Turn::Busy, false)), "a turn runs");
+        assert!(!runs_nothing(id, top, state(Turn::Idle, true)), "a job or subagent its turns left runs");
+        // What its record in the background holds for it.
+        crate::background::set_running_for_test(id);
+        stops("a process of its own runs");
+        fresh();
+        crate::background::queue_for_test(id, "queued");
+        stops("text is queued for its next turn");
+        crate::background::start_queued_for_test(id);
+        stops("text is in flight");
+        fresh();
+        crate::background::hold_for_test(id);
+        stops("it holds on a permission");
+        fresh();
+        assert!(runs_nothing(id, top, idle));
+        // What the registry holds for it.
+        reg().lock().unwrap().held.push(Held {
+            caller: other.into(),
+            id: id.into(),
+            text: "x".into(),
+            since: 0,
+            told: false,
+            going_in: None,
+        });
+        stops("text held back for a draft");
+        reg().lock().unwrap().held.retain(|h| h.id != id);
+        reg().lock().unwrap().waits.insert(key(other), 0);
+        stops("a wait of its is out");
+        reg().lock().unwrap().waits.remove(&key(other));
+        reg().lock().unwrap().reserved.insert(key(other), 0);
+        stops("a wait_many reserves a session's notice");
+        reg().lock().unwrap().reserved.remove(&key(other));
+        reg().lock().unwrap().news.push((id.into(), "a line for it".into()));
+        stops("a line queued to go into it");
+        reg().lock().unwrap().news.retain(|(c, _)| c != id);
+        reg().lock().unwrap().lines_coming.insert(id.into());
+        stops("a usage or context line the notifier has for it");
+        reg().lock().unwrap().lines_coming.remove(id);
+        owe_from(id, other, 0, 0);
+        stops("an answer owed to it by a session it wrote to");
+        reg().lock().unwrap().owed.remove(&key(other));
+        owe_from(id, top, 0, 0);
+        assert!(runs_nothing(id, top, idle), "an answer owed to it by the caller is the caller's to send");
+        reg().lock().unwrap().owed.remove(&key(top));
+        assert!(runs_nothing(id, top, idle));
+        crate::background::gone_for_test(id);
+        for s in [id, top, other] {
+            forget(s);
         }
     }
 }

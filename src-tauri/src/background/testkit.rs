@@ -52,6 +52,13 @@ pub fn set_running_for_test(id: &str) {
     lock().entries.get_mut(id).unwrap().run = Some(Run::claimed(None, 0));
 }
 
+/// Text queued for its next turn with no turn running, as `turn_over` leaves
+/// it for a moment.
+#[cfg(test)]
+pub fn queue_for_test(id: &str, text: &str) {
+    lock().entries.get_mut(id).unwrap().queue.push(Queued::from(text));
+}
+
 /// A turn begins on what is queued, as `turn_over` starts the next.
 #[cfg(test)]
 pub fn start_queued_for_test(id: &str) {
