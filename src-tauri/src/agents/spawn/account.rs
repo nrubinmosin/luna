@@ -17,8 +17,11 @@ pub(in crate::agents) fn allowed_account_dirs() -> Vec<crate::accounts::AccountI
 }
 
 /// Whether an account folder holds a login its CLI can start on: Claude
-/// Code's OAuth refresh token, or Codex's ChatGPT tokens or API key. A
-/// helper sent to an account nobody signed in to sits on a login screen.
+/// Code's OAuth refresh token by the panel's rule (`oauth::signed_in`), or
+/// Codex's ChatGPT tokens or API key, none of them blank. A helper sent to an
+/// account nobody signed in to sits on a login screen; one whose tokens the
+/// CLI blanked after a refused refresh, or whose refresh token has run out,
+/// does too.
 pub(in crate::agents) fn signed_in(provider: Provider, account_path: &str) -> bool {
     let read = |file: &str| {
         std::fs::read_to_string(std::path::Path::new(account_path).join(file))
@@ -26,11 +29,14 @@ pub(in crate::agents) fn signed_in(provider: Provider, account_path: &str) -> bo
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
     };
     match provider {
-        Provider::Claude => read(".credentials.json").is_some_and(|v| v["claudeAiOauth"]["refreshToken"].is_string()),
-        Provider::Codex => {
-            read("auth.json").is_some_and(|v| v["tokens"].is_object() || v["OPENAI_API_KEY"].as_str().is_some_and(|k| !k.is_empty()))
-        }
+        Provider::Claude => read(".credentials.json").is_some_and(|v| crate::claude::oauth::signed_in(&v["claudeAiOauth"])),
+        Provider::Codex => read("auth.json").is_some_and(|v| codex_login(&v)),
     }
+}
+
+/// Codex's ChatGPT login (`chatgpt_login`) or its API key, not blank.
+fn codex_login(auth: &serde_json::Value) -> bool {
+    crate::codex::limits::chatgpt_login(auth) || auth["OPENAI_API_KEY"].as_str().is_some_and(|k| !k.trim().is_empty())
 }
 
 /// How a list of accounts came down to one.
@@ -253,6 +259,43 @@ mod tests {
         assert_eq!(choice.skipped.len(), 2);
         assert_eq!(choice.skipped[1].why, "not signed in");
         assert_eq!(choice.why, "the first in the list signed in; its usage is not known yet");
+    }
+
+    /// Tokens the CLI blanked, a file left with blanks, or a refresh token
+    /// past its end are no login: a helper sent there would sit on a login
+    /// screen.
+    #[test]
+    fn blank_tokens_are_not_signed_in() {
+        let dir = std::env::temp_dir().join(format!("luna-spawn-signed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.to_string_lossy().into_owned();
+        let claude = |body: &str| {
+            std::fs::write(dir.join(".credentials.json"), body).unwrap();
+            signed_in(Provider::Claude, &p)
+        };
+        assert!(claude(r#"{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt","expiresAt":1}}"#));
+        assert!(!claude(r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}"#));
+        assert!(!claude(r#"{"claudeAiOauth":{"refreshToken":"  "}}"#));
+        assert!(!claude(r#"{"claudeAiOauth":{"accessToken":"at"}}"#));
+        // A refresh token past its end is no login either, as the panel says.
+        assert!(!claude(r#"{"claudeAiOauth":{"refreshToken":"rt","refreshTokenExpiresAt":1}}"#));
+        assert!(claude(r#"{"claudeAiOauth":{"refreshToken":"rt","refreshTokenExpiresAt":99999999999999}}"#));
+        // Luna's own refresh turned down: the file it leaves is no login to
+        // the core either, read afresh.
+        assert!(claude(r#"{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt-refused","expiresAt":1,"scopes":[]}}"#));
+        assert!(crate::claude::oauth::refused_for_test(&p));
+        assert!(!signed_in(Provider::Claude, &p));
+        let codex = |body: &str| {
+            std::fs::write(dir.join("auth.json"), body).unwrap();
+            signed_in(Provider::Codex, &p)
+        };
+        assert!(codex(r#"{"tokens":{"access_token":"at","refresh_token":"rt"}}"#));
+        assert!(codex(r#"{"OPENAI_API_KEY":"sk-1","tokens":null}"#));
+        assert!(codex(r#"{"auth_mode":"chatgptAuthTokens","tokens":{"access_token":"at","refresh_token":""}}"#));
+        assert!(!codex(r#"{"tokens":{"access_token":"","refresh_token":"","id_token":""}}"#));
+        assert!(!codex(r#"{"OPENAI_API_KEY":" ","tokens":{}}"#));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

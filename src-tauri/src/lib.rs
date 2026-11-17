@@ -433,6 +433,9 @@ pub fn run() {
             if let tauri::RunEvent::Exit = &event {
                 // Every way out that names itself has done so by now.
                 lifecycle::exiting("the event loop ended");
+                // A Claude Code model ask may still be saving a renewed
+                // token; its cleanup runs only while Luna does.
+                claude::models::wait_for_asks();
             }
             if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
                 emit::stop();

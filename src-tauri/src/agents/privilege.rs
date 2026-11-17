@@ -269,6 +269,19 @@ fn cap(
     ))
 }
 
+/// `cap` for a helper already running, moved under another chat (reparent.rs):
+/// the chat's privilege covers what the helper runs in, as a spawn of the chat
+/// would have had to. A helper whose mode Luna cannot read counts as the most,
+/// the other way from a caller's. Err: the two, as the refusal names them.
+pub(super) fn holds_over(chat: (Provider, &serde_json::Value), helper: (Provider, &serde_json::Value)) -> Result<(), (String, String)> {
+    let has = Privilege::of_caller(chat.0, chat.1);
+    let wants = Privilege::of_session(helper.0, helper.1).unwrap_or(Privilege { reach: Reach::Full, net: true });
+    if has.covers(wants) {
+        return Ok(());
+    }
+    Err((wants.label(), has.label()))
+}
+
 /// The helper modes on the scale, highest first, each as Luna starts one:
 /// what `inherited` picks from where the caller's own does not carry over.
 /// Claude's `default` stands for its rung (`dontAsk` is on it too): it asks,

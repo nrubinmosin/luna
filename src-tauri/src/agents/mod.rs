@@ -37,6 +37,7 @@ mod persist;
 pub(crate) mod privilege;
 mod read;
 mod registry;
+mod reparent;
 mod said;
 pub(crate) mod spawn;
 mod teardown;
@@ -45,7 +46,7 @@ mod test_support;
 mod wait;
 
 pub use answer::answer;
-pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion};
+pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion, AskSource};
 pub use delivery::{notes_dir, send};
 pub use handoff::{
     asked_of, handoff, handoff_ask, handoff_ask_of, handoff_file, handoff_now, handoff_transcript, mark_of, move_ask,
@@ -61,8 +62,8 @@ pub use lost::undelivered_left;
 #[cfg(test)]
 pub(crate) use notifier::riders_go;
 pub use notifier::{notify, NOTICE_TAG};
-pub use owed::{callers_owed, resumed, retried};
-pub use persist::{freeze_chats, restore_chats, save_chats, take_up_spawns, tie_back, ties_of, Ties};
+pub use owed::{callers_owed, moved_onto_stdin, resumed, retried};
+pub use persist::{freeze_chats, restore_chats, save_chats, take_up_spawns, tie_back, ties_of_each, Ties};
 pub(crate) use privilege::{command_prefix, command_reach_now};
 pub use read::{read, report_get, Message};
 pub(crate) use registry::mint;
@@ -72,6 +73,7 @@ pub use registry::{
     applied_of, caller_of, chat_name, chat_names, has_tools, in_scope, is_known, is_persons_chat, label, owes_answer, own_or_self,
     parent_of, register, register_dev_caller, resumes_on_restart, scope_all, session_exited, set_applied, settings_of, task_of, DEV_CALLER,
 };
+pub use reparent::{move_helper, move_note, move_targets, move_told, ownership_of, HelperMoved, MoveTargets, Moved, Suggested};
 pub use spawn::account::account_usage;
 pub use spawn::worktree::{name_to_go_on, report_codex_worktrees};
 pub use spawn::{spawn, Constraint, SpawnParams};

@@ -83,3 +83,27 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* "Move to chat…" beside a helper's marks and "Move to <chat>?" under them:
+   read as links, not buttons of its row (BackgroundChip.tsx). */
+[data-app] button.helper-link {
+  justify-self: start;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--accent);
+  font-size: var(--fs-1);
+  text-align: left;
+  text-decoration: underline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-app] button.helper-link:disabled {
+  color: var(--faint);
+  text-decoration: none;
+}

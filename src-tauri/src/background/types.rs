@@ -35,8 +35,8 @@ pub struct Spec {
     #[serde(default)]
     pub agent: Option<String>,
     /// The session it answers to, for what it is told of itself: who started it
-    /// until that one is deleted (`set_parent`). Here and not looked up:
-    /// `command_for` runs under this module's lock.
+    /// until that one is deleted or the person moves it (`set_parent`). Here
+    /// and not looked up: `command_for` runs under this module's lock.
     #[serde(default)]
     pub parent: Option<String>,
     /// Keeps the MCP servers and connectors of its account, as spawned with
@@ -266,6 +266,13 @@ pub(super) struct Run {
     /// nothing since: the process is up only for what the turn left in the
     /// background (`waits_on_background`).
     pub(super) after_result: bool,
+    /// How many background tasks (subagents, shells, monitors) its CLI says
+    /// it has running, from its last `background_tasks_changed`.
+    pub(super) background_tasks: usize,
+    /// Since when a lead's stdin has been kept open past a `result` for the
+    /// notices its helpers owe it, while its own background tasks run
+    /// (events.rs `keeps_listening`); None once it is closed as ever.
+    pub(super) listening_since: Option<u64>,
     /// The processes in its job, as sampled while it waits so (rows.rs
     /// `activity`): what tells a subagent's long command at work from a
     /// watcher that does nothing, where its stream says nothing of either.
@@ -273,6 +280,31 @@ pub(super) struct Run {
     /// Which claim this is, of all this core has made: a batch reserved on it
     /// (`Reservation`) tells the claim it holds from one made after it.
     pub(super) claim: u64,
+    /// The person's move to another chat that this turn's prompt told it of
+    /// (agents/reparent.rs `move_note`): told for good once its model has
+    /// answered that prompt (`turn_over`), and only if it is still the last move.
+    pub(super) moved: Option<crate::agents::Moved>,
+    /// Claimed with no process yet, its command made (run.rs `spawn_turn`):
+    /// from here it starts as made, and a move of the person's waits for its
+    /// process rather than change its parent under it (control.rs `claim_move`).
+    pub(super) starting: bool,
+    /// A move of the person's held the helper after this run was claimed and
+    /// before its command was made: what it was to start on was reserved, and
+    /// its command text judged, against the parent of before, so it does not
+    /// start; the batch goes back to the queue for the turn after the move.
+    pub(super) overtaken: bool,
+}
+
+/// Text moved from a helper's queue onto the stdin of its running process
+/// (events.rs `feed_queued`): whose answer that process owes now
+/// (agents/owed.rs `moved_onto_stdin`).
+pub(super) struct Drained {
+    /// Its `Queued::id`.
+    pub(super) id: String,
+    /// Its sender.
+    pub(super) from: Option<String>,
+    /// The helper's turn count while that process ran: its end goes past it.
+    pub(super) turns_ended: u32,
 }
 
 impl Run {
@@ -287,8 +319,13 @@ impl Run {
             line: None,
             result_failed: false,
             after_result: false,
+            background_tasks: 0,
+            listening_since: None,
             watched: Vec::new(),
             claim,
+            moved: None,
+            starting: false,
+            overtaken: false,
         }
     }
 }
@@ -377,6 +414,8 @@ pub(super) struct Held {
     pub(super) ask: Ask,
     /// The tool input as the CLI sent it, returned with the answer.
     pub(super) input: Value,
+    /// The call's id, by which its stream-json message says who made it.
+    pub(super) tool_use_id: Option<String>,
     pub(super) answer: Option<Value>,
 }
 

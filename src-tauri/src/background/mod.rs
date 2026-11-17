@@ -67,6 +67,13 @@ const LOG_CHARS: usize = 300;
 /// CLI is told nobody answered. Under the MCP call timeout the CLIs are given
 /// (pty/start.rs `MCP_TOOL_TIMEOUT_MS`).
 const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// Tool calls kept with who made them (`Entry::calls`): more than a turn's
+/// subagents ask about at once.
+const CALLS: usize = 64;
+/// How many of what was moved onto stdin a helper keeps past the process that
+/// took it (`Entry::drained`): the sends that may still be looking for theirs
+/// are the few in flight in this moment, not one per process.
+const DRAINED_KEPT: usize = 16;
 
 struct Entry {
     spec: Spec,
@@ -90,10 +97,21 @@ struct Entry {
     /// Text that joined the running turn on stdin, until the CLI says it took
     /// it in. One killed before that has not kept it, whatever the pipe took.
     fed: Vec<Queued>,
+    /// What was moved from its queue onto its running process's stdin
+    /// (events.rs `feed_queued`), oldest first: all of it while that process
+    /// runs, the last DRAINED_KEPT once it is gone (`turn_over`). A send
+    /// whose debt goes in only after its text was moved, taken in and
+    /// answered, and the process gone, still finds what it is owed by there
+    /// (`moved_onto_stdin_at`). Not saved: a core gone takes the send with it.
+    drained: Vec<Drained>,
     log: VecDeque<String>,
     /// What it is held on, oldest first: parallel subagents and tool calls ask
     /// at once, and the first still unanswered is the one shown.
     held: VecDeque<Held>,
+    /// Its latest tool calls by id, with who made them, the helper itself or
+    /// a subagent of it, as its stream-json messages say: a permission call
+    /// names only the id. The newest `CALLS`.
+    calls: VecDeque<(String, crate::agents::AskSource)>,
     /// The CLI could not run or quit on an error before saying anything.
     error: Option<String>,
     /// Its last turn was stopped by the core going, not ended by the CLI:
@@ -157,6 +175,11 @@ struct Entry {
     /// what the delete went by (whose it is, that it is idle, its worktree) still
     /// holds when it removes it. Text sent queues, and goes with it.
     deleting: bool,
+    /// The person is moving it, with the helpers under it, to another chat
+    /// (`claim_move`, agents/reparent.rs), for the moment that takes: no turn
+    /// starts meanwhile, so the next one starts under its new parent, and it is
+    /// neither opened as a chat nor deleted. Text sent meanwhile queues.
+    moving: bool,
     /// The window's word that its row is made is being acted on (rows.rs
     /// `background_promoted`): a second word, a retry whose first answer was
     /// lost, hands nothing over again.
@@ -172,7 +195,7 @@ struct Entry {
 impl Entry {
     /// Something has it held between turns: no turn starts until it lets go.
     fn held_back(&self) -> bool {
-        self.promoting || self.deleting || self.switch_waits()
+        self.promoting || self.deleting || self.moving || self.switch_waits()
     }
 
     /// Between turns with its handoff not yet through: the switch is the next
@@ -191,12 +214,24 @@ struct Registry {
     asked: HashMap<u64, String>,
     /// The core is leaving (`stop_all`): no turn starts from here on.
     closed: bool,
+    /// Which of the agents registry's parent changes each helper's
+    /// `Spec::parent` was last set from (`set_parent`).
+    parent_changes: HashMap<String, u64>,
 }
 
 fn reg() -> &'static (Mutex<Registry>, Condvar) {
     static R: OnceLock<(Mutex<Registry>, Condvar)> = OnceLock::new();
     R.get_or_init(|| {
-        (Mutex::new(Registry { entries: HashMap::new(), next_serial: 1, asked: HashMap::new(), closed: false }), Condvar::new())
+        (
+            Mutex::new(Registry {
+                entries: HashMap::new(),
+                next_serial: 1,
+                asked: HashMap::new(),
+                closed: false,
+                parent_changes: HashMap::new(),
+            }),
+            Condvar::new(),
+        )
     })
 }
 
@@ -425,12 +460,22 @@ fn stop(e: &mut Entry) -> Option<u32> {
 }
 
 /// It has passed to another parent, or with none stands alone (agents/teardown.rs
-/// `pass_up`): what its next turn is told. One running now has its environment
-/// and system prompt already.
-pub fn set_parent(id: &str, parent: Option<String>) {
-    if let Some(e) = lock().entries.get_mut(id) {
-        e.spec.parent = parent;
+/// `pass_up`), or the person moved it (agents/reparent.rs): what its next turn is
+/// told. One running now has its environment and system prompt already. `change`
+/// is the agents registry's count of parent changes (`parent_changes`) as of the
+/// one this is: a change counted before the one written here already comes too
+/// late, as a chat's going written after a move it came before would otherwise
+/// leave the moved helper's next turn with no parent.
+pub fn set_parent(id: &str, parent: Option<String>, change: u64) {
+    let mut r = lock();
+    let Registry { entries, parent_changes, .. } = &mut *r;
+    let Some(e) = entries.get_mut(id) else { return };
+    let last = parent_changes.entry(id.to_string()).or_default();
+    if change < *last {
+        return;
     }
+    *last = change;
+    e.spec.parent = parent;
 }
 
 #[cfg(test)]

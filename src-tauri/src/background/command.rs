@@ -48,7 +48,7 @@ pub(super) fn handoff_dir(id: &str, s: &Spec) -> Option<Result<std::path::PathBu
 /// `stdin_with` on the note its role is served now.
 #[cfg(test)]
 pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
-    stdin_with(e, prompt, crate::library::role_texts(role_of(&e.spec)).note.as_deref())
+    stdin_with(e, prompt, crate::library::role_texts(role_of(&e.spec)).note.as_deref(), None)
 }
 
 /// The arguments and working directory of the next turn, `texts` its role's
@@ -248,11 +248,13 @@ pub(super) fn command_with(
             // Its stdin closes with each turn's result (events.rs), and from then
             // `claude -p` waits only so long for what the turn left in the
             // background before it stops it, subagents and their uncommitted
-            // work included (2.1.319+, 10 min by default). The turn is the
-            // helper's until then: one that waits that long is told to the
-            // parent as a turn gone quiet, with what it waits on
-            // (agents/notifier `QUIET_TURN_MS`), and ends with
-            // `luna_session_stop`. Set always, over anything inherited.
+            // work included (2.1.319+, 10 min by default). A lead's may stay
+            // open past the result for its helpers' notices, for as long
+            // again at most (events.rs `LISTEN_MS`): this counts from its
+            // close, not before. The turn is the helper's until then: one that
+            // waits that long is told to the parent as a turn gone quiet, with
+            // what it waits on (agents/notifier `QUIET_TURN_MS`), and ends
+            // with `luna_session_stop`. Set always, over anything inherited.
             envs.push((BG_WAIT_CEILING_ENV, BG_WAIT_CEILING_MS.into()));
             applied.push(Item::HelperBackgroundWait.with(format!("{BG_WAIT_CEILING_ENV}={BG_WAIT_CEILING_MS}")));
         }
@@ -436,11 +438,23 @@ fn profile_deny(args: &[String]) -> Option<(String, String)> {
 /// goes back to the caller as what it asked, nor in what `luna_message_list`
 /// gives back (`message_of` in codex/session/read.rs and
 /// claude/session/transcript.rs). A helper whose parent is gone is told none.
-pub(super) fn stdin_with(e: &Entry, prompt: &str, note: Option<&str>) -> String {
-    match (&e.spec.parent, note, e.spec.provider) {
-        (Some(_), Some(note), Provider::Codex) => crate::pty::helper_prompt(note, prompt),
-        (Some(_), Some(note), Provider::Claude) if e.session.is_none() => crate::pty::helper_prompt(note, prompt),
-        _ => prompt.to_string(),
+/// `moved`: the line of a move to another chat its turns have not been told
+/// of (agents/reparent.rs `move_note`), in the same note, on either CLI and
+/// whatever turn this is: its environment names its new parent, its prompt
+/// alone tells the model.
+pub(super) fn stdin_with(e: &Entry, prompt: &str, note: Option<&str>, moved: Option<&str>) -> String {
+    let role = match (&e.spec.parent, note, e.spec.provider) {
+        (Some(_), Some(note), Provider::Codex) => Some(note.to_string()),
+        (Some(_), Some(note), Provider::Claude) if e.session.is_none() => Some(note.to_string()),
+        _ => None,
+    };
+    let note = match (role, moved) {
+        (Some(role), Some(moved)) => Some(format!("{role} {moved}")),
+        (role, moved) => role.or(moved.map(str::to_owned)),
+    };
+    match note {
+        Some(note) => crate::pty::helper_prompt(&note, prompt),
+        None => prompt.to_string(),
     }
 }
 
@@ -716,8 +730,9 @@ mod tests {
             let mut e = entry(provider);
             e.spec.parent = Some("old".into());
             e.session = Some("s-1".into());
+            lock().parent_changes.remove("moved");
             lock().entries.insert("moved".into(), e);
-            set_parent("moved", Some("new".into()));
+            set_parent("moved", Some("new".into()), 1);
             let r = lock();
             let e = &r.entries["moved"];
             let (args, _, envs, _) = command_for(e, "moved").unwrap();
@@ -730,12 +745,30 @@ mod tests {
             }
             drop(r);
             // With nobody to answer to, it hears no note; its role stays.
-            set_parent("moved", None);
+            set_parent("moved", None, 2);
             let e = lock().entries.remove("moved").unwrap();
             let (args, _, envs, _) = command_for(&e, "moved").unwrap();
             assert!(!envs.iter().any(|(k, _)| *k == "LUNA_PARENT_ID"));
             assert!(layers_of(provider, &args).is_some());
             assert_eq!(stdin_text(&e, "go on"), "go on");
+        }
+    }
+
+    /// A helper the person moved to another chat is told so in the prompt of its
+    /// next turn, whatever turn that is, on either CLI: its role note, where it
+    /// has one, and the move in one note.
+    #[test]
+    fn a_moved_helpers_next_turn_is_told_its_new_chat() {
+        let moved = "The person moved you, in Luna's window, from chat a to chat b";
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut e = entry(provider);
+            e.spec.parent = Some("b".into());
+            e.session = Some("s-1".into());
+            let line = stdin_with(&e, "go on", Some("the role note"), Some(moved));
+            assert_eq!(line.matches("[A note, not part of the task: ").count(), 1, "{line}");
+            assert!(line.starts_with("go on") && line.contains(moved), "{line}");
+            assert_eq!(line.contains("the role note"), provider == Provider::Codex, "Claude Code has its role note on its first turn only");
+            assert_eq!(stdin_with(&e, "/review", Some("the role note"), Some(moved)), "/review", "not into a command's arguments");
         }
     }
 
@@ -903,6 +936,13 @@ mod tests {
         assert_eq!(args[..3], ["exec", "resume", "t-1"]);
         assert!(args.contains(&crate::codex::launch::HOOKS_UNASKED.to_string()), "every turn, resumes too");
         assert!(args.iter().any(|a| a.starts_with("projects={") && a.contains("trust_level")), "trusted for the run");
+    }
+
+    /// A lead's stdin kept open for notices is bounded as long as the CLI's
+    /// own wait, which counts only once it is closed.
+    #[test]
+    fn a_lead_listens_past_its_result_no_longer_than_the_cli_waits() {
+        assert_eq!(BG_WAIT_CEILING_MS.parse::<u64>().unwrap(), LISTEN_MS);
     }
 
     #[test]

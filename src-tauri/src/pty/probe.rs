@@ -84,6 +84,9 @@ pub struct ActivityProbe {
     pub resume: Option<String>,
     pub account_path: String,
     pub last_output_ms: u64,
+    /// Its last output that was not a repaint after a resize or a focus
+    /// report: what counts as it printing (`Session::work_output_ms`).
+    pub work_output_ms: u64,
     pub job: Option<Arc<crate::procs::Job>>,
     /// Codex only: its screen shows an approval dialog (see
     /// `codex::session::asks`). Filled in by the activity sampler, which
@@ -122,6 +125,7 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
         resume: s.resume.clone(),
         account_path: s.account_path.clone(),
         last_output_ms: s.last_output_ms.load(Ordering::Relaxed),
+        work_output_ms: s.work_output_ms.load(Ordering::Relaxed),
         job: s.job.clone(),
         asking: false,
     }

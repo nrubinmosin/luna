@@ -4,6 +4,8 @@ import type { BackgroundHelperDto } from '../../ipc/agents';
 import { Icon } from '../../shared/ui/icons';
 import type { Provider } from '../../shared/types';
 import { useHelperTranscript, type HelperTranscript } from './helperTranscript';
+import { ownershipLine } from './ownership';
+import { useNameOf } from './useNameOf';
 
 /** Who said a message, as a person reads it. */
 const ROLE: Record<string, string> = { user: 'Asked', assistant: 'Said' };
@@ -15,6 +17,9 @@ const ROLE: Record<string, string> = { user: 'Asked', assistant: 'Said' };
  */
 export function HelperView({ helper, onClose }: { helper: BackgroundHelperDto; onClose: () => void }) {
   const t = useHelperTranscript(helper.id);
+  const nameOf = useNameOf();
+  // eslint-disable-next-line react-hooks/purity -- a move's age as of this render, which comes with every row update
+  const marks = ownershipLine(helper, nameOf, Date.now());
   const status = t.error
     ? `no longer a helper: ${t.error}`
     : t.loading
@@ -30,6 +35,13 @@ export function HelperView({ helper, onClose }: { helper: BackgroundHelperDto; o
       status={status}
       t={t}
       onClose={onClose}
+      header={
+        marks && (
+          <div style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)' }} data-testid="helper-view-marks">
+            {marks}
+          </div>
+        )
+      }
     />
   );
 }

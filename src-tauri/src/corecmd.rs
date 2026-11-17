@@ -46,6 +46,8 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("background_kill", Lane::Call),
     ("background_delete", Lane::Call),
     ("background_at_stake", Lane::Call),
+    ("background_move", Lane::Call),
+    ("background_move_targets", Lane::Call),
     ("background_transcript", Lane::Call),
     ("chat_names", Lane::Call),
     ("account_usage", Lane::Call),
@@ -186,8 +188,10 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "background_promoted" => call!(res args, crate::background::background_promoted, id: String, error: Option<String>),
         "background_kill" => call!(ok args, crate::background::background_kill, id: String),
         "background_delete" => call!(res args, crate::background::background_delete,
-            id: String, drop_worktree: Option<bool>, stop_working: Option<bool>, drop_unsaved: Option<bool>),
+            id: String, drop_worktree: Option<bool>, stop_working: Option<bool>, drop_unsaved: Option<bool>, of_chat: Option<String>),
         "background_at_stake" => call!(ok args, crate::background::background_at_stake, ids: Vec<String>),
+        "background_move" => call!(res args, crate::background::background_move, id: String, to: String),
+        "background_move_targets" => call!(ok args, crate::background::background_move_targets, id: String),
         "background_transcript" => call!(res args, crate::background::background_transcript,
             id: String, since: Option<u64>, file: Option<String>),
         "chat_names" => call!(ok args, agents::chat_names,
@@ -247,10 +251,10 @@ mod tests {
     use serde_json::json;
 
     /// The writes that may wait out a model ask's lock on the account's
-    /// `.claude.json` (account_settings `rewriting_claude_config`, up to 25 s)
-    /// reach the core by `core_call`, which the window runs off its own
-    /// thread, and the core answers each on a thread of its own: neither the
-    /// window nor the core's connection waits on them.
+    /// `.claude.json` (account_settings `rewriting_claude_config`, up to 35 s,
+    /// claude/models.rs `ASK_WAIT`) reach the core by `core_call`, which the
+    /// window runs off its own thread, and the core answers each on a thread
+    /// of its own: neither the window nor the core's connection waits on them.
     #[test]
     fn writes_that_may_wait_on_a_model_ask_run_off_every_shared_thread() {
         for cmd in ["apply_recommended", "claude_trust_folder"] {

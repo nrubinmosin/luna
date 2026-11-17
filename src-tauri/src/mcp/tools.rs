@@ -89,7 +89,7 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_send",
-            "description": "Send a prompt to a session you spawned (scope all: any, opened \"[From session <you> via Luna]\"), read as its user's.",
+            "description": "Send a prompt to a session you spawned (scope all: also the user's other chats, opened \"[From session <you> via Luna]\"; never another's helper), read as its user's.",
             "inputSchema": s(json!({
                 "id": string, "text": string,
                 "interrupt": { "type": "boolean", "description": "stop its turn first (yours only)" },
@@ -100,7 +100,7 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_answer",
-            "description": "Answer what a session waits on (state question or waiting; askId from its row): answers, one per question (an option's number or label, or your own words); allow true/false for your helper's permission, note: why not. Another's model question: scope all.",
+            "description": "Answer what a session waits on (state question or waiting; askId from its row): answers, one per question (an option's number or label, or your own words); allow true/false for your helper's permission, note: why not. Another chat's model question: scope all; never another's helper.",
             "inputSchema": s(json!({ "id": string, "askId": string, "answers": strings, "allow": flag, "note": string, "scope": scope }), &["id"]),
             "annotations": acts
         },

@@ -37,13 +37,24 @@ tools.
   `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`. Once they are all done and
   it has said nothing, Luna wakes the lead itself, once, and its parent hears
   what came of that, or that it seems stuck.
+- When a helper or lead ends a turn with nothing of its own running (no job,
+  subagent or helper of its own still at it, no handoff of its own under way,
+  nothing waiting to go into it, a usage or context notice included),
+  its agent's notice adds "Nothing of its own is running: it will not go on
+  unless you send to it", whatever its last words said it was waiting for.
 - A send may ask for no reply (`expectReply: false`): the helper's answer then
   wakes the agent only for a status word or a report.
 - An agent reads, waits on, sends text to and answers its own helpers. One of
-  your own chats reaches your other chats and other chats' helpers only by
-  saying so (`scope: "all"`), and what it sends them, an answer typed in as a
+  your own chats reads and waits on your other chats and other chats' helpers
+  only by saying so (`scope: "all"`). It sends text to and answers only your
+  other chats that way, and what it sends them, an answer typed in as a
   message too, arrives opened `[From session <id> via Luna]`, so that chat
-  knows the words are not yours. A helper, even one given Luna's tools, reaches
+  knows the words are not yours. Another chat's helper takes text and answers
+  only from the sessions above it (its chat, and a lead it works under): a
+  chat that tries is refused, told whose the helper is and that you can move
+  the helper to it in Luna's window. A helper with no chat takes text from no
+  agent. A chat that writes to another is told when the answer to its text
+  comes, as a parent is. A helper, even one given Luna's tools, reaches
   only the helpers under it: never your chats, its own parent or another
   chat's helpers, and it cannot send desktop notifications or set the PC's
   power. What it has for anyone else goes in its answer. Only its own helpers
@@ -104,8 +115,43 @@ hooks run unasked.
     notice names the file it is in. Luna asks before it does this. If Luna
     cannot finish opening it (the window closed midway and stays closed), the
     helper goes back to its agent after 15 minutes, and the agent is told.
+  - **Move to chat…** (a link at the end of the line that says who manages
+    it): it goes, with every helper under it, to another of your chats, which
+    manages it from then on. The dialog lists your chats; you pick one and
+    click Move, and a chat that asked for it is picked to start with. Only a
+    chat's own helper (or one whose chat is gone) moves: a helper's helper has
+    the link grayed out and goes along with the helper above it. It moves
+    only to a chat with Luna's tools that runs at least at its privilege and
+    has places for it and its helpers, and where none of them would sit
+    deeper than a helper that chat spawned could (a helper with Luna's tools
+    only as the chat's own helper); the dialog grays out the others and
+    says why under each. A refused move says why and changes nothing. It may be in the middle of a turn: the
+    turn goes on, and its next turn is told which chat it answers to. Its
+    conversation, worktree, settings and constraints stay; text queued for it
+    still goes in, except what the old chat queued that its CLI would read as
+    a command (`/`, `!`), which the old chat is told of. The new chat is owed the answer it is at work on, if any.
+    The old chat hears once that you moved it and that nothing more is owed by
+    it; from then on it can no longer send to it, answer it, stop or delete it,
+    and only reads it and waits on it the way it would another chat's helper
+    (`scope: "all"`). A helper left with no chat that was set to delete itself
+    once idle only because its chat was deleted no longer does once moved to
+    a chat; one started to delete itself still does.
+  - **Move to <chat>?** shows under its line, as a link, when one of your
+    chats tried to send to it or answer it, or a helper under it, and was
+    refused for not being above it, and only if it may move there now (the
+    chat has Luna's tools, the privilege and the places). The link opens the
+    Move dialog with that chat picked; it moves when you click Move, as
+    above, with the helpers under it. The dialog stays open until the move
+    is through, and a refusal shows in it.
   - **Stop** and **Delete**; Delete waits while it is at work, and keeps a
     worktree that holds uncommitted work.
+- Each helper's line says which of your other chats is waiting on it
+  (`watched by <chat>`), where you last moved it from, and how long ago
+  (`moved from <chat>, 5m ago`), and who manages it: `managed by chat <top>`
+  last for a chat's own helper, `managed by <parent> · chat <top>` first for a
+  helper's helper, `managed by <parent> · no chat above it` for one under a
+  helper whose chat was deleted. The whole line shows on hover, and the helper's read-only
+  view says the same above its conversation.
 - Each of your chats has a number of places for the sessions under it, its
   helpers' helpers included: 8 unless you change it in Settings → Agents &
   trust → Helpers (1 to 32). A helper whose answer reached its caller and that
@@ -188,8 +234,10 @@ hooks run unasked.
   draft wears a **draft** tag with the count of messages held, and a balloon says
   how many wait; a minute's hold is announced on the desktop.
 - `luna_session_send` to a background Claude Code helper mid-turn joins that turn at its
-  next tool boundary (a long tool or subagent delays it); if the CLI finishes
-  first, the text starts the next turn; if that fails, it returns to the sender.
+  next tool boundary (a long tool or subagent delays it), as does one to a lead
+  whose CLI has answered and stays up for its own background subagents (see
+  Notices); if the CLI finishes first, the text starts the next turn; if that
+  fails, it returns to the sender.
   After a core crash Luna looks for it in the transcript rather than send twice.
   Codex's `exec` reads its input once, so text to a background Codex helper waits
   for the next turn.
@@ -213,7 +261,14 @@ A Claude Code helper puts its questions and permission prompts to Luna instead
 of a screen, so its agent answers them. Each has an `id` in `ask`, which
 `luna_session_answer` takes as `askId`, so an answer cannot land on the next prompt; an
 id it never had is refused as unknown, and without one an answer is taken only
-when a single prompt is held. A Codex helper has nobody to ask and says what it
+when a single prompt is held. The command up for permission is shown whole, up
+to 8 KB, and marked where it is cut (`ask.detailCut` counts what is left out);
+that is one field of the call, the command, path or URL, so a file's new
+content or a subagent's prompt is not in it. A notice quotes only its start,
+marked where shortened, line breaks shown as `⏎`, and `luna_session_get` has
+the rest. Where Claude Code says
+so, `ask.source` tells whether the helper itself asks or one of its subagents
+does. A Codex helper has nobody to ask and says what it
 would have asked in its reply, unless it runs with `approval: auto-review`. In
 one of your own chats an agent may answer only a question its model asked
 (`scope: "all"`); a permission there is yours.
@@ -244,7 +299,12 @@ one of your own chats an agent may answer only a question its model asked
   (Claude Code moves a call past two minutes to the background). A wait the
   agent's CLI cancels or interrupts hands nothing over, and the notice comes as
   usual. A subagent the agent left working in the background does not hold the
-  notice back.
+  notice back. That goes for a Claude Code lead too, whose CLI stays up past
+  its answer while its own background subagents run: the notice goes in on its
+  stdin and it answers it at once, or right after a turn its CLI is at (one it
+  starts by itself when a subagent ends), for up to 3 hours after that answer
+  (later ones wait for its CLI to end). A Codex lead's `exec` ends with its
+  turn, its subagents interrupted, so nothing holds its notices.
 - The notice says what happened, how many messages the helper wrote, the first
   line of its report, and a file with all of them: the report (the longest
   message, or the last when all are short — but a short turn the CLI started by
@@ -363,10 +423,25 @@ not as a notice of its own.
   as `worktreeLeft`. Your own Delete asks you instead.
 - Deleting a chat by hand lists its helpers with what each is doing and what its
   worktree holds, and leaves them alone unless you tick the box to take them
-  along. Even then a helper still at work (in a turn, on a question, a job it
-  left running) is stopped only if you also tick that, and a worktree with
-  uncommitted work goes only if you tick that too; Luna checks both again as it
-  deletes. Helpers an agent deletes are gone (transcript aside); what they
+  along. Left alone, each of the chat's own helpers answers to no chat from
+  then on and deletes itself half an hour after it is done and no helper of
+  its own is left; the helpers under it stay under it, and go only when
+  deleted or, if they were started to delete themselves, once done. With the
+  box ticked, a helper still at work (in a turn, on a question, a job it left
+  running) is stopped only if you also tick that, and a worktree with
+  uncommitted work goes only if you tick that too; Luna checks both again as
+  it deletes. Each of the chat's own helpers also has **Pass to chat…**, a list
+  of your other chats (the ones it may not go to grayed out, with why under
+  "Why not"): a helper passed on moves there with the helpers under it, as
+  Move to chat… does, and is neither left nor deleted. A chat that tried to
+  send to it, or waits on it, when the dialog opens is picked to start with,
+  and stays picked until you change it; a helper that cannot move now says
+  why instead. Nothing moves until you confirm the dialog (Delete, or Enter),
+  and Delete waits until Luna has looked where each may go. The moves are
+  made first, and the dialog's choices are frozen while they run: if one is
+  refused, nothing is deleted, and the dialog says which helper and why, and
+  which moved already. Only the helpers the dialog listed are deleted, and
+  none that was moved to another chat meanwhile. Helpers an agent deletes are gone (transcript aside); what they
   spawned passes to that agent. A helper with no parent is listed under
   "Helpers with no chat" and goes half an hour after it is done.
 - Every spawn is recorded in `agents.jsonl` (when, by whom, where, account,

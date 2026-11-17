@@ -26,7 +26,10 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   orphan_worktrees: 10_000,
   remove_orphan_worktrees: 30_000,
   // Reads a transcript's ends and asks git, each bounded; 30 s in all.
-  move_prepare: 35_000
+  move_prepare: 35_000,
+  // An update's install waits for a Claude Code model ask's grace and sweep
+  // first, up to 12 s (claude/models.rs `wait_for_asks_before_install`).
+  note_exit: 13_000
 };
 
 // What the core answers (corecmd.rs): everything that touches the running
@@ -52,6 +55,8 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'background_kill',
   'background_delete',
   'background_at_stake',
+  'background_move',
+  'background_move_targets',
   'background_transcript',
   'set_keep_awake',
   'arm_power_off',

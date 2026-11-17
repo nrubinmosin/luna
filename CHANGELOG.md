@@ -8,6 +8,127 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.18.4] - 2026-11-17
+
+Luna now installs Claude Code 2.1.325 and runs nothing older. Only the
+sessions above a helper send to it or answer it, and you can move a helper to
+another of your chats from the window. A lead hears of its helpers while its
+own background subagents run, a parent is told plainly when a helper's turn
+left nothing running, and a helper's permission request reaches its parent
+whole. An idle session no longer holds the PC awake when it comes into view,
+asking for an account's models no longer signs it out, and an account whose
+login is gone shows signed out everywhere, with Sign in.
+
+### Security
+
+- Claude Code below 2.1.325 no longer runs: the list's `minSafe` rises to it,
+  and 2.1.323 leaves the list. 2.1.325 fixes a security issue in how
+  zstd-compressed responses are decoded, and Bash permission checks where
+  some compound commands ran without asking, an allow rule could run another
+  program than the one it names, and some deny and ask rules did not apply;
+  Luna's helpers run in `auto` and under allow rules. A version below it
+  already current, held by "Use" or kept for rolling back is not started,
+  the hold is dropped and the next pass installs 2.1.325; Settings refuses
+  going back below it.
+
+### Added
+
+- The core moves a helper, with the helpers under it, to another of your
+  chats on the window's word (`background_move`), never an agent's: the old
+  chat is told once and owed nothing more by it, its later sends, answers,
+  stops and deletes on it are refused naming the new chat, and the helper's
+  next turn is told which chat it answers to. The move is refused, saying
+  why, for a chat without Luna's tools, one below the helper's privilege or
+  without places for it, one under which a helper would sit deeper than a
+  spawn could put it, a lead or a helper, or while the helper is being
+  opened, deleted or handing off. A helper's row says which chat is at the top
+  of its line, which other chats wait on it, where it was moved from, and
+  which chats were refused a write into it (ADR-0028).
+- In the helper list each helper says who manages it and which chat its line
+  hangs from, which of your other chats waits on it and where you moved it
+  from; Move to chat… lists your chats, grays out the ones it may not go to with why,
+  and moves it on your click; a chat refused a write into it, that it may move
+  to, shows as "Move to <chat>?" under it, which opens the same dialog on that
+  chat. Deleting a chat offers to pass each of its helpers to another chat, a
+  chat that asked for it or waits on it picked to start with and kept; the
+  moves come first, a refused one stops the delete, saying why, and a helper
+  moved to another chat meanwhile is not deleted.
+
+### Changed
+
+- Claude Code 2.1.325 is on the known-good list, so the default channel
+  installs it.
+- Text and answers go into a helper only from the sessions above it: its
+  chat, and a lead it works under. Another of your chats, even with
+  `scope: "all"`, can still read a helper that is not its own and wait on
+  it, but no longer send to it or answer its questions; it is told whose the
+  helper is and that you can move the helper to it. A helper with no chat
+  takes text from no agent. Your chats still send to and answer one another
+  (ADR-0028).
+
+### Fixed
+
+- A helper's permission request reaches its parent whole: `ask.detail` in
+  `luna_session_get` keeps the command (or path, or URL) up to 8 KB, where it
+  was cut to 400 characters with no mark, and past 8 KB ends with `…` and how
+  many characters were left out. The notice quotes only its start, marked where
+  shortened and pointing to `luna_session_get`. `ask.source` says whether the
+  helper itself asks or one of its subagents, where Claude Code says so. A
+  Codex approval on a terminal's screen is read from every row its command is
+  drawn on, down to its own options, not the first alone, and says so where the
+  screen holds only part of the command. `ask.detailCut` counts the characters
+  left out, and the notice shows a line break as `⏎`, not a space.
+- A helper or lead that ends its turn with nothing of its own running (no
+  job, subagent or helper of its own at work, no handoff of its own under
+  way, nothing, a usage or context line included, on its way into it)
+  no longer reads as busy: its parent's notice says "Nothing of its own is
+  running: it will not go on unless you send to it", whatever its last words
+  said it was waiting for, on Claude Code and Codex alike. The lead's role
+  text tells it never to end a turn saying it is waiting unless something
+  will wake it (a helper of its own at work; on Claude Code also a
+  background task or subagent), and the guide tells parents that
+  a helper's "waiting" proves nothing (#77).
+- A Claude Code lead now hears of its helpers while its own background
+  subagents run. Its CLI stays up for them after its answer, and Luna used to
+  hold the lead's notices until they had all ended, which could take hours.
+  The notice now goes in on the lead's stdin and is answered at once, for up
+  to 3 hours after its answer, as long as a helper still owes it one (#73).
+  One that comes while the lead's CLI is at a turn of its own goes in when
+  that turn ends.
+  Codex leads end with their turn, so nothing held theirs back.
+- Bringing an idle session into view, moving the focus between panes, or
+  any change to the panes' layout (a new chat, a split dragged, the window
+  resized), no longer shows it as printing in the power chip nor holds the PC
+  awake for about a minute and a half: what a session prints within a second
+  of Luna resizing its terminal, or of the focus moving into or out of it, is
+  taken for the CLI's redraw and no longer counts as output, nor starts a
+  power-off's quiet window over. A turn at work still counts, and so does
+  what a session prints in answer to keys, a paste or clicks in its terminal
+  once that second has passed (a click that moves the focus starts one).
+- Asking Claude Code for an account's models no longer kills the CLI while
+  it may be saving a renewed token, which could sign the account out: the
+  CLI renews a token close to expiry as it starts and saves the new one only
+  after it has answered, and Luna killed it at the answer. Answered or not,
+  it now gets up to 10 seconds to exit by itself first, what it leaves
+  running is taken down after, and Luna waits for that, 12 seconds at
+  most, when it quits, restarts, installs an update or is closed by
+  Windows' Restart Manager. A CLI that hangs past those 10 seconds while
+  saving can still be cut (#75).
+- A Claude Code account whose login is gone no longer shows as signed in
+  with "token refresh failed" and no way back: it shows signed out with its
+  **Sign in** button, whether the CLI cleared its tokens in
+  `.credentials.json` or the server turned down Luna's own refresh as
+  `invalid_grant` (#76). On such a refusal Luna clears the tokens in
+  `.credentials.json` as Claude Code does, under the CLI's locks and only if
+  the file still holds the refused token, so helpers and moved chats no
+  longer go to it, it stays signed out after a restart, and the refused
+  token is not sent again; a file Luna cannot replace is left as it was, and
+  its row says so. Luna no longer sends a refresh with an empty token. An
+  account on hold, or any other refused refresh, stays a failed refresh. A
+  Codex account with an empty token in `auth.json` reads as signed out too,
+  and neither is picked for a helper; nor is a Claude Code account whose
+  refresh token has run out.
+
 ## [0.18.2] - 2026-11-13
 
 Luna now installs Codex 0.169.0, and Settings no longer offers a CLI version
@@ -1238,7 +1359,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.2...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.4...HEAD
+[0.18.4]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.4
 [0.18.2]: https://github.com/nrubinmosin/luna/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/nrubinmosin/luna/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/nrubinmosin/luna/compare/v0.17.0...v0.18.0
