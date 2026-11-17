@@ -15,7 +15,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   clears its tokens in `.credentials.json` as Claude Code does, under the
   CLI's locks and only if the file still holds the refused token, so helpers
   and moved chats no longer go to it and Sign in shows. Until now only the
-  Accounts panel knew, until Luna restarted (#76).
+  Accounts panel knew, until Luna restarted (#76). A file Luna cannot replace
+  is left as it was, its row says so, and the refused token is not sent
+  again.
 
 ## [0.18.3] - 2026-11-17
 

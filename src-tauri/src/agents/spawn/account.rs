@@ -284,7 +284,7 @@ mod tests {
         // Luna's own refresh turned down: the file it leaves is no login to
         // the core either, read afresh.
         assert!(claude(r#"{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt-refused","expiresAt":1,"scopes":[]}}"#));
-        assert!(crate::claude::oauth::refused_for_test(&p, "rt-refused"));
+        assert!(crate::claude::oauth::refused_for_test(&p));
         assert!(!signed_in(Provider::Claude, &p));
         let codex = |body: &str| {
             std::fs::write(dir.join("auth.json"), body).unwrap();
