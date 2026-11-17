@@ -529,13 +529,14 @@ mod tests {
         // The seam holds: a token to post goes for the lock and finds it taken.
         with(&json!({ "accessToken": "old", "refreshToken": "rt-live", "expiresAt": 1 }));
         assert!(matches!(refresh(&acct, true), Outcome::Busy));
-        for oauth in [
-            json!({ "accessToken": "", "refreshToken": "", "expiresAt": 0 }),
-            json!({ "accessToken": "", "refreshToken": " \t", "expiresAt": 0 }),
-            json!({ "accessToken": "old", "expiresAt": 1 }),
+        // The message names the case, not the JSON, which CodeQL reads as a logged token.
+        for (case, oauth) in [
+            ("blank", json!({ "accessToken": "", "refreshToken": "", "expiresAt": 0 })),
+            ("whitespace", json!({ "accessToken": "", "refreshToken": " \t", "expiresAt": 0 })),
+            ("missing", json!({ "accessToken": "old", "expiresAt": 1 })),
         ] {
             with(&oauth);
-            assert!(matches!(refresh(&acct, true), Outcome::Rejected { unsaved: None }), "{oauth}");
+            assert!(matches!(refresh(&acct, true), Outcome::Rejected { unsaved: None }), "{case} refresh token");
         }
         assert!(root.join(".oauth_refresh.lock").is_dir(), "the CLI's lock is left as it was");
         assert_eq!(refresh_token(&json!({ "refreshToken": "rt-1" })), Some("rt-1"));
