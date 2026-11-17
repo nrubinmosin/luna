@@ -260,10 +260,20 @@ pub(crate) fn listening_for_test(id: &str) -> std::sync::mpsc::Receiver<String> 
     lines
 }
 
-/// An event of its Claude Code process, as the reader of its stdout takes it.
+/// An event of its Claude Code process, as the reader of its stdout takes it
+/// (run.rs `take_event`), its queue moved onto stdin told to the debts.
 #[cfg(test)]
 pub(crate) fn claude_event_for_test(id: &str, v: &Value) {
-    on_claude_event(lock().entries.get_mut(id).expect("a test helper"), v);
+    let moved = {
+        let mut r = lock();
+        let e = r.entries.get_mut(id).expect("a test helper");
+        let drained = e.run.as_ref().map_or(0, |run| run.drained.len());
+        on_claude_event(e, v);
+        drained_since(e, drained)
+    };
+    if !moved.is_empty() {
+        crate::agents::moved_onto_stdin(id, &moved);
+    }
 }
 
 /// A test helper in a turn whose CLI has written its result (`waits_on_background`).

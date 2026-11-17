@@ -117,7 +117,16 @@ owed by the person's chats, outlive a core restart.
   as a command, which waits for the next process and its sender's reach
   asked again (`settle_batch`); what is sent meanwhile queues behind it, not
   past it. Such a notice marks no turn either (`send_marked` says it was
-  queued for that stdin). With stdin open the CLI never goes by itself, and
+  queued for that stdin). A send moved so is answered within this process,
+  not the next one its debt was put past as it queued: the move is kept
+  (`Run::drained`) and the debt brought back to this process
+  (`agents/owed.rs` `moved_onto_stdin`), by the event's reader under the
+  registry's lock or, when the move came between the text queuing and its
+  debt going in, by the send itself (`send_tracked` gives it the text's id).
+  Not while more of that sender's text is still queued, which the next
+  process answers. A wait going by the count the send returned goes by the
+  debt's (`Owed::moved_from`), and a line that goes untaken with the process
+  is put past it again (`retried`). With stdin open the CLI never goes by itself, and
   its own ceiling does not count, so Luna closes stdin once the last task
   ends (`background_tasks_changed` with none), at a `result` with none left,
   when nothing is owed to the lead any more between its CLI's turns (the
@@ -126,7 +135,9 @@ owed by the person's chats, outlive a core restart.
   handoff (what it is sent waits for the conversation after it, and the
   switch for the process to go), or after 3 hours (`LISTEN_MS`, as long as
   the CLI's own ceiling, which counts from there). None of these but the
-  3 hours closes it while a line written to it is still to be taken in.
+  3 hours closes it while a line written to it is still to be taken in, a
+  `result` included (`holds_untaken`): that `result` is of a turn the CLI
+  started by itself, and the line's own turn's `result` is the one judged.
   What it was given before then it still runs, then goes; what it never took
   starts the next turn, as for any joined text (`sort_out_untaken`), and a
   core gone meanwhile settles it against the transcript like any fed line
