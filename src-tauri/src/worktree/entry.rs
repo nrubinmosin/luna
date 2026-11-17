@@ -3,9 +3,10 @@
 //! worktree (`PtyManager::worktree_shared`), and a start that had not yet
 //! put its session where that question looks (the session map, the helper
 //! registry) went into the worktree as it was removed. Now a start holds its
-//! way in (`entering`) from before it starts until it is listed, a delete
-//! holds the worktree (`removing`) from its question until the removal is
-//! over, and neither is let in while the other holds: the delete keeps a
+//! way in (`entering`) from before it starts until it is listed, and whatever
+//! removes a worktree (a chat's delete, a helper's, the sweep of orphans)
+//! holds it (`removing`) from its question until the removal is over, and
+//! neither is let in while the other holds: the delete keeps a
 //! worktree a start is on its way into, and a start into a worktree being
 //! removed fails, saying so.
 

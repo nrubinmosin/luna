@@ -44,7 +44,9 @@ lose, and to sweep the ones no chat claims.
   the deleted chat's session has quit, so one that went in meanwhile counts).
   From that question to the end of the removal the worktree is held
   (`entry.rs` `removing`): a chat or helper start on its way in, not yet
-  listed, keeps it, and one that comes during the removal is refused.
+  listed, keeps it, and one that comes during the removal is refused. A
+  helper's delete with `dropWorktree` and the orphan sweep hold each worktree
+  they remove the same way, the sweep asking again whether anyone is in it.
   Removal is
   `git worktree remove -f -f`, since Claude Code locks its worktree and a killed
   one does not release the lock. Only `worktree-*` branches are ever deleted.

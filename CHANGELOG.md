@@ -127,6 +127,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   counts against the 16 MB a helper may have waiting.
 - A resting chat's saved title is looked for in the next round when a round
   stopped before it.
+- A helper's delete with its worktree and the sweep of orphan worktrees keep
+  a worktree a chat or helper is starting in, and refuse a start into one
+  they are removing, as a chat's delete does.
 
 ## [0.18.5] - 2026-11-17
 

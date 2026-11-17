@@ -139,10 +139,16 @@ pub async fn remove_orphan_worktrees(
         let orphans: Vec<String> = orphan_worktrees_now(folder.clone(), in_use, account_paths, live)?.iter().map(|p| norm(p)).collect();
         let mut result = SweepResult { removed: vec![], failed: vec![] };
         for path in paths {
-            if !orphans.contains(&norm(&path)) {
+            // Held from the look to the end of its removal, as a chat's delete
+            // holds its worktree (`removing`): a session or helper on its way
+            // in, or in it since the orphans were listed, keeps it, and one
+            // that comes meanwhile is refused.
+            let held =
+                orphans.contains(&norm(&path)).then(|| removing(&path, || crate::pty::manager().worktree_shared("", &path))).flatten();
+            let Some(_removing) = held else {
                 result.failed.push(SweepFailure { path, error: "in use again — left alone".into() });
                 continue;
-            }
+            };
             match remove_worktree_now(folder.clone(), path.clone()) {
                 Ok(()) => result.removed.push(path),
                 Err(error) => {
