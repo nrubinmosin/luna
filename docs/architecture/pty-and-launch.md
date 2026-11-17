@@ -33,9 +33,9 @@ How a session is started, what it is started with, and how its terminal is run.
 | --- | --- |
 | `pty/mod.rs` | the session map, `PtyManager`, `manager()` (the one per process) |
 | `pty/start.rs` | `ensure_claude_session` / `ensure_codex_session`: what a start settles under the chat's spawn gate, then the command line |
-| `pty/spawn.rs` | the shared spawn, scrollback, `pty://output` / `pty://exit`, cursor queries answered |
+| `pty/spawn.rs` | the shared spawn, scrollback (`Scrollback`), `pty://output` / `pty://exit`, cursor queries answered |
 | `pty/control.rs` | write, resize, keys, kill, quitting the way a person would, delete, orphans |
-| `pty/screen.rs` | the screen replayed (`vt100`), composer and draft, terminal modes and title, Codex key events on Windows; `SessionMeta` |
+| `pty/screen.rs` | the screen drawn (`vt100`) and kept per session (`Drawn`), composer and draft, terminal modes and title, Codex key events on Windows; `SessionMeta` |
 | `pty/probe.rs` | `ActivityProbe::working_dir()`, `session_meta` by provider, tails, sweep of hook and MCP files |
 | `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and guard, the helper's system prompt line and settings (`claude_helper_args`, `HelperSettings`, used by `background/command.rs`) |
 | `codex/launch.rs` | Codex's arguments and environment, approval and sandbox overrides, `read-only-net`, the guard, Luna's MCP server |
@@ -196,6 +196,17 @@ the command quotes `"@-"` and calls curl by full path.
   until the terminal answers `ESC[6n`, ConPTY lets out nothing. A helper with no
   pane would hang. The core cuts each `ESC[6n` out of the stream and answers
   with the cursor position per `vt100`; the query never reaches the scrollback.
+- **The screen is drawn once and caught up.** The scrollback counts every byte
+  ever written to it (`Scrollback::written`, the output's generation). Each
+  session keeps one `vt100` terminal (`Drawn`) drawn to a generation at a size;
+  a look at the screen (the activity sampler's Codex dialog check every 5 s,
+  `has_draft`, `at_prompt`, `composer`, `luna_session_get`'s screen, a cursor
+  query) feeds it only what was written since. It is drawn anew from the whole
+  scrollback when the pty's size changed or what was written since has been
+  trimmed off already. Locks: `Drawn`, then the scrollback, held only to copy
+  out the new bytes; a look copies nothing under the session map. Both CLIs go
+  through it. Kept, the terminal has seen output from before where the
+  scrollback starts now, as a pane that stayed attached has.
 - **Input to Codex as key presses.** ConPTY turns each character into a key
   press on the console's layout, and a character the layout lacks (on a Russian
   layout brackets, `< > ' ~ @ # $ ^ & |`, backtick, dashes) never reached Codex.

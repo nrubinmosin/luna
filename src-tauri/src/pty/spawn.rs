@@ -3,12 +3,11 @@
 //! its cursor queries and notice when it has gone.
 
 use super::control::end_leftovers;
-use super::screen::{as_key_events, cursor_at, render_screen, Modes};
+use super::screen::{as_key_events, drawn_screen, render_screen, Drawn, Modes, Scrollback};
 use super::{manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, Session, NEVER_NUDGED};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
-use std::collections::VecDeque;
 use std::io::Read;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -175,13 +174,20 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // Under the gate: whoever waited here may find the session already spawned.
     let exited = {
         let mut sessions = state.sessions.lock().unwrap();
-        if let Some(s) = sessions.get(&id) {
-            if s.alive.load(Ordering::SeqCst) {
-                let mut buf = s.scrollback.lock().unwrap();
-                return Ok(String::from_utf8_lossy(buf.make_contiguous()).into_owned());
-            }
+        match sessions.get(&id) {
+            Some(s) if s.alive.load(Ordering::SeqCst) => Err(Arc::clone(&s.scrollback)),
+            _ => Ok(sessions.remove(&id)),
         }
-        sessions.remove(&id)
+    };
+    // Its scrollback, up to two megabytes, copied out once the session map
+    // is let go: every other chat's keys go through the map. The gate still
+    // holds the session in place.
+    let exited = match exited {
+        Ok(exited) => exited,
+        Err(scrollback) => {
+            let bytes = scrollback.lock().unwrap_or_else(|e| e.into_inner()).all();
+            return Ok(String::from_utf8_lossy(&bytes).into_owned());
+        }
     };
     // A CLI that exited by itself: what it left running goes with the old
     // session, before a new one takes the chat.
@@ -333,7 +339,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
 
     // Sized once for the cap: grown by doubling, a deque settles at twice
     // what it holds, and drain never gives the slack back.
-    let scrollback = Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_CAP + SCROLLBACK_SLACK + 8192)));
+    let scrollback = Arc::new(Mutex::new(Scrollback::with_capacity(SCROLLBACK_CAP + SCROLLBACK_SLACK + 8192)));
+    let drawn = Arc::new(Mutex::new(Drawn::default()));
     let modes = Arc::new(Mutex::new(Modes::default()));
     let alive = Arc::new(AtomicBool::new(true));
     let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
@@ -342,6 +349,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     {
         let id = id.clone();
         let scrollback = Arc::clone(&scrollback);
+        let drawn = Arc::clone(&drawn);
         let modes = Arc::clone(&modes);
         let alive = Arc::clone(&alive);
         let last_output_ms = Arc::clone(&last_output_ms);
@@ -436,11 +444,13 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                                 // in one go per overshoot keeps it off the hot path.
                                 // Before the append, so it never outgrows the
                                 // capacity it was made with.
-                                if sb.len() + piece.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
-                                    let excess = (sb.len() + piece.len() - SCROLLBACK_CAP).min(sb.len());
-                                    sb.drain(..excess);
+                                let kept = sb.bytes.len();
+                                if kept + piece.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
+                                    let excess = (kept + piece.len() - SCROLLBACK_CAP).min(kept);
+                                    sb.bytes.drain(..excess);
                                 }
-                                sb.extend(piece.iter().copied());
+                                sb.bytes.extend(piece.iter().copied());
+                                sb.written += piece.len() as u64;
                                 drop(sb);
                                 if tx.send(piece).is_err() {
                                     break 'read;
@@ -448,10 +458,10 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                             }
                             if i < last {
                                 // A query followed this piece: answer with where the
-                                // cursor stands after it, as a terminal would.
-                                let bytes = scrollback.lock().unwrap().make_contiguous().to_vec();
-                                let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
-                                let (row, col) = cursor_at(&bytes, rows, cols);
+                                // cursor stands after it, as a terminal would. The
+                                // screen kept is caught up with the output since.
+                                let size = *size.lock().unwrap_or_else(|e| e.into_inner());
+                                let (row, col) = drawn_screen(&drawn, &scrollback, size, |s| s.cursor_position());
                                 if let Some(input) = replies.upgrade() {
                                     let _ = input.send(Input::Bytes(format!("\x1b[{};{}R", row + 1, col + 1).into_bytes()));
                                 }
@@ -472,7 +482,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             // screen it left for what it said as it went.
             crate::cli::session_ended(&id, code.is_some_and(|c| c != 0), || {
                 let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
-                last_screen(scrollback.lock().unwrap_or_else(|e| e.into_inner()).make_contiguous(), rows, cols)
+                last_screen(&scrollback.lock().unwrap_or_else(|e| e.into_inner()).last(LAST_SCREEN), rows, cols)
             });
             crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
@@ -491,14 +501,12 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             // goes now — the writer thread and the pty with it, and all but the
             // tail of the scrollback — or a CLI that quit on its own held
             // megabytes and a console host until Luna restarted.
-            let mut sessions = pm.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(s) = sessions.get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
+            if let Some(s) = pm.sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
                 s.input_tx = Arc::new(std::sync::mpsc::channel().0);
-                let mut sb = s.scrollback.lock().unwrap_or_else(|e| e.into_inner());
-                let excess = sb.len().saturating_sub(EXITED_TAIL);
-                sb.drain(..excess);
-                sb.shrink_to_fit();
             }
+            // This session's own output, with the session map let go: a look
+            // drawing its screen anew holds `drawn` for as long as that takes.
+            let_go_of_output(&scrollback, &drawn);
         });
     }
 
@@ -542,6 +550,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             killer,
             child,
             scrollback,
+            drawn,
             modes,
             alive,
             last_output_ms,
@@ -598,6 +607,18 @@ pub(crate) fn finish_spec(envs: &mut Vec<(&'static str, String)>, applied: &mut 
     }
     applied.push(Item::Cwd.with(format!("cwd {cwd}")));
     applied.push(Item::InheritedCleared.with(format!("unset {}", removed_env().join(", "))));
+}
+
+/// What an exited session keeps of its output: the tail of the scrollback
+/// (`EXITED_TAIL`), its screen drawn again from that if anyone looks.
+fn let_go_of_output(scrollback: &Mutex<Scrollback>, drawn: &Mutex<Drawn>) {
+    {
+        let mut sb = scrollback.lock().unwrap_or_else(|e| e.into_inner());
+        let excess = sb.bytes.len().saturating_sub(EXITED_TAIL);
+        sb.bytes.drain(..excess);
+        sb.bytes.shrink_to_fit();
+    }
+    *drawn.lock().unwrap_or_else(|e| e.into_inner()) = Drawn::default();
 }
 
 /// The screen a CLI left as it exited, drawn from the end of its output: what
@@ -674,6 +695,28 @@ mod tests {
         // A held-back escape that turns out to be something else goes through.
         assert_eq!(split_dsr(&mut carry, b"\x1b"), vec![b"".to_vec()]);
         assert_eq!(split_dsr(&mut carry, b"[31m"), vec![b"\x1b[31m".to_vec()]);
+    }
+
+    /// An exited session keeps the tail of its output, and its kept screen
+    /// goes: drawn again, it is drawn from that tail.
+    #[test]
+    fn an_exited_sessions_output_is_cut_to_its_tail_and_its_screen_let_go() {
+        let scrollback = Mutex::new(Scrollback::with_capacity(16));
+        let drawn = Mutex::new(Drawn::default());
+        {
+            let mut sb = scrollback.lock().unwrap();
+            let out = b"x".repeat(EXITED_TAIL * 2);
+            sb.bytes.extend(out.iter().copied());
+            sb.written = out.len() as u64;
+        }
+        drawn_screen(&drawn, &scrollback, (5, 20), |_| ());
+        assert_eq!(drawn.lock().unwrap().replays(), 1);
+        let_go_of_output(&scrollback, &drawn);
+        assert_eq!(scrollback.lock().unwrap().bytes.len(), EXITED_TAIL);
+        assert_eq!(scrollback.lock().unwrap().written, (EXITED_TAIL * 2) as u64, "the generation goes on");
+        assert_eq!(drawn.lock().unwrap().replays(), 0, "the screen kept is gone");
+        drawn_screen(&drawn, &scrollback, (5, 20), |_| ());
+        assert_eq!(drawn.lock().unwrap().replays(), 1, "and drawn again from the tail");
     }
 
     #[test]

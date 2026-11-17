@@ -47,8 +47,8 @@ pub(crate) use start::{
 
 use crate::provider::Provider;
 use portable_pty::{ChildKiller, PtySize};
-use screen::Modes;
-use std::collections::{HashMap, VecDeque};
+use screen::{Drawn, Modes, Scrollback};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -79,7 +79,9 @@ struct Session {
     /// For asking whether the process is still there without blocking on it;
     /// the reader thread shares it to collect the exit code.
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
-    scrollback: Arc<Mutex<VecDeque<u8>>>,
+    scrollback: Arc<Mutex<Scrollback>>,
+    /// Its screen as last drawn from that output (see `Drawn`).
+    drawn: Arc<Mutex<Drawn>>,
     /// The terminal modes the CLI has switched, whole-session — see `Modes`.
     modes: Arc<Mutex<Modes>>,
     alive: Arc<AtomicBool>,
@@ -121,7 +123,7 @@ struct Session {
     /// The last keys went to a dialog, not the composer (`composer_keys`).
     keys_dialog: Arc<AtomicBool>,
     /// The screen's word on the draft, for the keys and output it was read
-    /// at (see `has_draft`): reading it replays the scrollback.
+    /// at (see `has_draft`): reading it draws the screen.
     draft_seen: Arc<Mutex<(u64, bool)>>,
     /// A person's keys, kept back while Luna types into the composer around
     /// their draft (see `hold_keys`); None the rest of the time.

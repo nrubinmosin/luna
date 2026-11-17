@@ -54,6 +54,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Quit or Restart window from the tray, or an update, writes what waits
   first and every change after it at once. Chats stored by an earlier Luna
   load as before.
+- A session's screen is caught up with its new output rather than drawn again
+  from up to 2 MB of it each time something looks at it.
 - The power chip's state goes to the window only when it changes, not at
   every sample.
 - The window's commands that only read files run off its main thread, and

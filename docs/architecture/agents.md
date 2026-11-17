@@ -487,8 +487,9 @@ person's. `send` into a session on a blocking dialog refuses.
   MCP result past 25,000 tokens): from `since` it keeps the oldest messages
   that fit and moves the cursor to where they end; with `last` the newest;
   `leftOut` counts the rest.
-- `screen` is the pty scrollback run through `vt100` at the pty's size: the last
-  40 lines a person would see.
+- `screen` is the pty's output drawn by `vt100` at the pty's size, the
+  terminal kept per session (`pty::Drawn`): the last 40 lines a person would
+  see.
 - `wait(turn_done)` counts busy→idle transitions (`activity` `turns_ended`) and
   returns everything said past the debt's transcript offset, report first;
   past `MAX_TEXT` it names a file with the whole answer. `wait_many` (`ids`,

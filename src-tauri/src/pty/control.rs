@@ -52,10 +52,7 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
     // dialog (a digit that picks an option) does not, looked at on the
     // screen's last stretch where a key would start a draft.
     let (keys, dialog) = composer_keys(s.keys_draft.load(Ordering::Relaxed), s.keys_dialog.load(Ordering::Relaxed), &data, || {
-        let bytes: Vec<u8> = {
-            let sb = s.scrollback.lock().unwrap_or_else(|e| e.into_inner());
-            sb.range(sb.len().saturating_sub(KEYS_LOOK_BYTES)..).copied().collect()
-        };
+        let bytes = s.scrollback.lock().unwrap_or_else(|e| e.into_inner()).last(KEYS_LOOK_BYTES);
         let (rows, cols) = *s.size.lock().unwrap_or_else(|e| e.into_inner());
         !composer_seen(&bytes, rows, cols, s.provider)
     });
