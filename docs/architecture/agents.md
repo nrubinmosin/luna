@@ -441,7 +441,35 @@ Tool answers carry one `state` (`state_of`: `working`, `waiting`, `question`,
 background helper's held call; for Claude Code the tool its hooks name
 (`PreToolUse` for `AskUserQuestion`, `PermissionRequest`), else a held tool call
 in the transcript; for Codex the rollout's open question or an approval its
-screen shows.
+screen shows (`codex_command_on`): the dialog is found by its last `1. ` row
+that has a `2. ` row below it, and its command by the `$ ` row right under the
+heading "Would you like to run the following command?", read down to those
+options, so a `1. ` line of the command (a heredoc's) does not end it and an
+earlier `$ ` row on the screen does not start it. A command the screen does
+not hold whole (its end not drawn, its start off the top, two dialogs on it)
+says so in the detail, in square brackets.
+
+A permission's `detail` is the one input field that says what the tool would
+do (a command, a path, a URL), whole up to `DETAIL_MAX` (8 KB), past it cut on
+a character's boundary and ending in `… [N more characters cut]`, with the
+count also in `detailCut` (absent when whole, so a command that itself ends in
+such words is told from a cut one) (`Ask::permission`, for both CLIs): a
+parent allows what it reads there, so it is never cut without a mark. It is
+one field, not the input: a `Write`'s content, a `Task`'s prompt and an MCP
+tool's other arguments are not in it. The notice line (`Ask::line`) quotes 200
+characters of it, each line's whitespace runs made one space and each line
+break shown as `⏎`, and marks a longer one
+`[shortened; luna_session_get's ask.detail has it whole]`. Invisible
+characters that are not whitespace (zero-width ones, a braille blank) are not
+collapsed, so padding made of them can still push the end out of the 200; the
+mark is there then too. Where Claude Code
+says who made the call, `source` names it: `{by: "session"}`, or
+`{by: "subagent", agentId, agentType}` for a native subagent whose call the
+session's own transcript does not hold. A terminal's comes from the
+`PermissionRequest` hook's `agent_id` / `agent_type`; a background helper's
+`luna_permission` call names only its `tool_use_id`, matched to the stream
+message that made the call (`background::events::made_calls`), whichever comes
+in first. A Codex screen names nobody.
 
 A helper's ask is answered on its record (`background::answer`), checked against
 the very ask it lands on; asks carry an opaque `id`, which `luna_session_answer` takes

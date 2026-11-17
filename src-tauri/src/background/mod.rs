@@ -67,6 +67,9 @@ const LOG_CHARS: usize = 300;
 /// CLI is told nobody answered. Under the MCP call timeout the CLIs are given
 /// (pty/start.rs `MCP_TOOL_TIMEOUT_MS`).
 const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// Tool calls kept with who made them (`Entry::calls`): more than a turn's
+/// subagents ask about at once.
+const CALLS: usize = 64;
 
 struct Entry {
     spec: Spec,
@@ -94,6 +97,10 @@ struct Entry {
     /// What it is held on, oldest first: parallel subagents and tool calls ask
     /// at once, and the first still unanswered is the one shown.
     held: VecDeque<Held>,
+    /// Its latest tool calls by id, with who made them, the helper itself or
+    /// a subagent of it, as its stream-json messages say: a permission call
+    /// names only the id. The newest `CALLS`.
+    calls: VecDeque<(String, crate::agents::AskSource)>,
     /// The CLI could not run or quit on an error before saying anything.
     error: Option<String>,
     /// Its last turn was stopped by the core going, not ended by the CLI:
