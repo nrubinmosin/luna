@@ -119,12 +119,16 @@ owed by the person's chats, outlive a core restart.
   past it. Such a notice marks no turn either (`send_marked` says it was
   queued for that stdin). A send moved so is answered within this process,
   not the next one its debt was put past as it queued: the move is kept
-  (`Run::drained`) and the debt brought back to this process
-  (`agents/owed.rs` `moved_onto_stdin`), by the event's reader under the
-  registry's lock or, when the move came between the text queuing and its
-  debt going in, by the send itself (`send_tracked` gives it the text's id).
-  Not while more of that sender's text is still queued, which the next
-  process answers. A wait going by the count the send returned goes by the
+  with that process's count (`Entry::drained`) and the debt brought back to
+  this process (`agents/owed.rs` `moved_onto_stdin`), by the event's reader
+  under the registry's lock or, when the move came between the text queuing
+  and its debt going in, by the send itself (`send_tracked` gives it the
+  text's id). The last `DRAINED_KEPT` moves outlive their process, so a send
+  whose text was taken in and answered, and the process gone, before its
+  debt went in still finds it; a line the process never took in loses its
+  move as it goes (`sort_out_untaken`). Not while more of that sender's text waits
+  for a later process (queued, or with that one gone, started on or fed to
+  the next), which answers it. A wait going by the count the send returned goes by the
   debt's (`Owed::moved_from`), and a line that goes untaken with the process
   is put past it again (`retried`). With stdin open the CLI never goes by itself, and
   its own ceiling does not count, so Luna closes stdin once the last task

@@ -15,6 +15,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         queue: Vec::new(),
         in_flight: Vec::new(),
         fed: Vec::new(),
+        drained: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
         calls: VecDeque::new(),
@@ -210,7 +211,7 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     let Some(e) = r.entries.get_mut(id) else { return false };
     e.observed.event_ms = crate::throttle::now_ms();
     let unnamed = e.session.is_none();
-    let drained = e.run.as_ref().map_or(0, |run| run.drained.len());
+    let drained = e.drained.len();
     let landed = match provider {
         Provider::Claude => on_claude_event(e, v),
         Provider::Codex => {

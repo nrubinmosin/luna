@@ -391,8 +391,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
             ));
         }
         // Queued, it may have gone onto the stdin of the process running
-        // since, ahead of the debt (background/events.rs `feed_queued`): the
-        // debt ends with that process then.
+        // since, ahead of the debt (background/events.rs `feed_queued`), and
+        // that process be over already: the debt ends with that process then.
         if let Some(qid) = qid.filter(|_| placed == Placed::Queued) {
             if let Some(n) = crate::agents::moved_onto_stdin(id, &[qid]) {
                 baseline = baseline.min(n);
