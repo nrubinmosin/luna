@@ -266,6 +266,13 @@ pub(super) struct Run {
     /// nothing since: the process is up only for what the turn left in the
     /// background (`waits_on_background`).
     pub(super) after_result: bool,
+    /// How many background tasks (subagents, shells, monitors) its CLI says
+    /// it has running, from its last `background_tasks_changed`.
+    pub(super) background_tasks: usize,
+    /// Since when a lead's stdin has been kept open past a `result` for the
+    /// notices its helpers owe it, while its own background tasks run
+    /// (events.rs `keeps_listening`); None once it is closed as ever.
+    pub(super) listening_since: Option<u64>,
     /// The processes in its job, as sampled while it waits so (rows.rs
     /// `activity`): what tells a subagent's long command at work from a
     /// watcher that does nothing, where its stream says nothing of either.
@@ -300,6 +307,8 @@ impl Run {
             line: None,
             result_failed: false,
             after_result: false,
+            background_tasks: 0,
+            listening_since: None,
             watched: Vec::new(),
             claim,
             moved: None,

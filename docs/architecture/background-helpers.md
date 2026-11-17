@@ -94,6 +94,28 @@ owed by the person's chats, outlive a core restart.
   told. The quiet notice of a turn that has answered and waits on its
   background work is told once per turn apart from the plain quiet one
   (`Owed::told_background_wait`).
+- A Claude Code lead whose CLI stays up past its result for its own
+  background tasks hears of its helpers meanwhile (issue #73). At a `result`
+  with tasks running (the last `background_tasks_changed` event lists some),
+  a lead's stdin stays open (`events.rs` `keeps_listening`,
+  `Run::listening_since`), and the notifier counts it as ready for a notice
+  between its CLI's turns (`takes_notices`). The notice joins on stdin
+  (`Placed::Joined`, as a `send` mid-turn does), and the CLI takes it at once
+  and answers it in a turn of its own with its own `result`, the background
+  work running on (2.1.325). That is no Luna turn: the process is one turn,
+  counted at its exit as ever, so the notice marks no turn as one on a
+  notice (`notice_turn`), and the lead's parent hears of the turn as it would
+  of any other. A notice that finds the lead mid-turn, or one of its CLI's
+  own turns on a task's end, waits for the next look. With stdin open the CLI
+  never goes by itself, and its own ceiling does not count, so Luna closes
+  stdin once the last task ends (`background_tasks_changed` with none), at a
+  `result` with none left, when nothing is owed to the lead any more between
+  its CLI's turns (the notifier's look, `listen_only_while_owed`), or after
+  3 hours (`LISTEN_MS`, as long as the CLI's own ceiling, which counts from
+  there). What it was given before then it still runs, then goes; what it
+  never took starts the next turn, as for any joined text. A helper without
+  Luna's tools has no helpers to owe it, and keeps the close at its first
+  result.
 - A Codex helper's `exec` has no such ceiling: it reads its prompt from stdin
   once and runs one turn, and 0.167.2 has no variable or config key for how
   long it holds on after it, so Luna sets none. It does not wait for the

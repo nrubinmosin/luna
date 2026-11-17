@@ -166,7 +166,9 @@ pub enum Placed {
     /// It waits for the turn after the one running.
     Queued,
     /// It is on the stdin of the turn running, which ends once that has answered
-    /// it (Claude Code, at its next tool boundary).
+    /// it (Claude Code, at its next tool boundary), or of a lead's CLI kept up
+    /// past its answer by its own background tasks (events.rs `listening`),
+    /// which answers it in a turn of its own as it takes it in.
     Joined,
 }
 
@@ -187,6 +189,11 @@ fn join(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
     }
     note(e, &format!("joined the turn: {}", one_line(&q.text)));
     e.fed.push(q);
+    // At work on a turn again, as the CLI is once it has the line: nothing
+    // closes this stdin under it before that turn's own `result`.
+    if let Some(run) = e.run.as_mut().filter(|run| run.listening_since.is_some()) {
+        run.after_result = false;
+    }
     Ok(())
 }
 
@@ -225,9 +232,10 @@ pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<Placed, String> 
 /// A notice with budget lines in it, or none. It was aimed at a helper found
 /// idle, and if a turn has begun since, it waits for that turn's end: what it
 /// reports is what the next turn is to act on, and it starts one by itself.
-/// Whether it was queued.
-pub fn send_marked(id: &str, text: &str, from: Option<&str>, budget: Vec<BudgetMark>) -> Result<bool, String> {
-    send_as(id, Queued::new(from.map(str::to_owned), text.to_string(), budget), false).map(|placed| placed != Placed::Started)
+/// Or at a lead found taking notices on stdin while its own background tasks
+/// run (events.rs `listening`), which it joins while it still does.
+pub fn send_marked(id: &str, text: &str, from: Option<&str>, budget: Vec<BudgetMark>) -> Result<Placed, String> {
+    send_as(id, Queued::new(from.map(str::to_owned), text.to_string(), budget), false)
 }
 
 fn send_as(id: &str, q: Queued, may_join: bool) -> Result<Placed, String> {
@@ -239,6 +247,7 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<Placed, String> {
         if !e.held.is_empty() {
             return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_session_answer"));
         }
+        let may_join = may_join || listening(e);
         place(e, q, may_join)
     };
     if placed != Placed::Started || marked {
@@ -262,7 +271,7 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<Placed, String> {
 pub enum MarkStands {
     /// In none of what it holds: never given, or dropped with the rest of a queue.
     Nothing,
-    /// Queued, or with a turn starting on it.
+    /// Queued, with a turn starting on it, or on the stdin of one running.
     Coming,
     /// Kept undelivered: it will not reach the parent by itself.
     Undelivered,
@@ -276,7 +285,7 @@ pub fn budget_mark(parent: &str, helper: &str) -> MarkStands {
     let holds = |batch: &[Queued]| batch.iter().any(|q| q.budget.iter().any(|m| m.id == helper));
     if e.budgets_landed.iter().any(|h| h == helper) {
         MarkStands::Landed
-    } else if holds(&e.queue) || holds(&e.in_flight) {
+    } else if holds(&e.queue) || holds(&e.in_flight) || holds(&e.fed) {
         MarkStands::Coming
     } else if holds(&e.undelivered) {
         MarkStands::Undelivered

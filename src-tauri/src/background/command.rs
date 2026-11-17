@@ -248,11 +248,13 @@ pub(super) fn command_with(
             // Its stdin closes with each turn's result (events.rs), and from then
             // `claude -p` waits only so long for what the turn left in the
             // background before it stops it, subagents and their uncommitted
-            // work included (2.1.319+, 10 min by default). The turn is the
-            // helper's until then: one that waits that long is told to the
-            // parent as a turn gone quiet, with what it waits on
-            // (agents/notifier `QUIET_TURN_MS`), and ends with
-            // `luna_session_stop`. Set always, over anything inherited.
+            // work included (2.1.319+, 10 min by default). A lead's may stay
+            // open past the result for its helpers' notices, for as long
+            // again at most (events.rs `LISTEN_MS`): this counts from its
+            // close, not before. The turn is the helper's until then: one that
+            // waits that long is told to the parent as a turn gone quiet, with
+            // what it waits on (agents/notifier `QUIET_TURN_MS`), and ends
+            // with `luna_session_stop`. Set always, over anything inherited.
             envs.push((BG_WAIT_CEILING_ENV, BG_WAIT_CEILING_MS.into()));
             applied.push(Item::HelperBackgroundWait.with(format!("{BG_WAIT_CEILING_ENV}={BG_WAIT_CEILING_MS}")));
         }
@@ -934,6 +936,13 @@ mod tests {
         assert_eq!(args[..3], ["exec", "resume", "t-1"]);
         assert!(args.contains(&crate::codex::launch::HOOKS_UNASKED.to_string()), "every turn, resumes too");
         assert!(args.iter().any(|a| a.starts_with("projects={") && a.contains("trust_level")), "trusted for the run");
+    }
+
+    /// A lead's stdin kept open for notices is bounded as long as the CLI's
+    /// own wait, which counts only once it is closed.
+    #[test]
+    fn a_lead_listens_past_its_result_no_longer_than_the_cli_waits() {
+        assert_eq!(BG_WAIT_CEILING_MS.parse::<u64>().unwrap(), LISTEN_MS);
     }
 
     #[test]
