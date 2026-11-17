@@ -35,7 +35,8 @@ import { uiHeartbeat } from '../ipc/agents';
 import { onNotify, onOpenChat } from '../ipc/events';
 import { keepKeyboardHome, peekFromNotice } from '../features/panes/navigate';
 import { notify } from '../shared/lib/notify';
-import { allChats, useChats } from '../features/chats/chats.store';
+import { useChats } from '../features/chats/chats.store';
+import type { Folder } from '../shared/types';
 import { usePanes } from '../features/panes/panes.store';
 
 /** How far in from the window's left edge the pointer brings a hidden
@@ -184,11 +185,17 @@ export function App() {
   // A chat listed in a group the title bar does not offer could never be
   // reached; whatever put it there, the group is made rather than the chat
   // lost.
+  // Only when the folders change, not on every other change to the chats.
   useEffect(() => {
-    const cover = () =>
-      usePanes.getState().coverGroup(Math.max(0, ...allChats(useChats.getState().folders).map(c => c.group)));
-    cover();
-    return useChats.subscribe(cover);
+    const cover = (folders: Folder[]) => {
+      let top = 0;
+      for (const f of folders) for (const c of f.chats) if (c.group > top) top = c.group;
+      usePanes.getState().coverGroup(top);
+    };
+    cover(useChats.getState().folders);
+    return useChats.subscribe((s, prev) => {
+      if (s.folders !== prev.folders) cover(s.folders);
+    });
   }, []);
 
   // Tells the Rust side the page is alive; a window that goes quiet while on

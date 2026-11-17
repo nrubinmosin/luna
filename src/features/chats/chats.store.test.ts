@@ -1,0 +1,149 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Chat, Folder } from '../../shared/types';
+import { useRestarts } from '../panes/restarts.store';
+import { foldersOfGroup, useChats } from './chats.store';
+import { useMoveHints } from './moveHints.store';
+
+// The chats store reaches the terminals; xterm cannot run in jsdom.
+vi.mock('../panes/terminals', () => ({
+  startSession: vi.fn(),
+  focusTerminal: vi.fn(),
+  forget: vi.fn(),
+  forgetAll: vi.fn()
+}));
+
+const chat = (id: string, more: Partial<Chat> = {}): Chat =>
+  ({
+    id,
+    name: id,
+    status: 'resting',
+    context: 0,
+    account: 'work',
+    group: 0,
+    worktree: false,
+    provider: 'claude',
+    model: 'Opus',
+    effort: 'high',
+    perm: 'Bypass',
+    ...more
+  }) as Chat;
+
+const seed = (...folders: Folder[]) => useChats.setState({ folders });
+const folder = (id: string, chats: Chat[]): Folder => ({ id, path: `/${id}`, open: true, chats });
+const saved = () =>
+  JSON.parse(localStorage.getItem('luna.chats') ?? 'null') as {
+    state: { folders: Folder[] };
+    version: number;
+  } | null;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('chats store: a set that changes nothing', () => {
+  it('leaves the state as it was', () => {
+    seed(folder('a', [chat('c1', { status: 'working', sessionId: 's', worktreePath: '/w', context: 0.5 })]));
+    const before = useChats.getState();
+    const s = useChats.getState();
+    s.setStatus('c1', 'working');
+    s.setSessionId('c1', 's');
+    s.setWorktreePath('c1', '/w');
+    s.setContext('c1', 0.5, null, null);
+    s.setModelSeen('c1', 'gpt');
+    s.setStatus('missing', 'waiting');
+    expect(useChats.getState()).toBe(before);
+  });
+
+  it('changes only the folder the chat is in', () => {
+    const other = folder('b', [chat('c2')]);
+    seed(folder('a', [chat('c1')]), other);
+    useChats.getState().setStatus('c1', 'waiting');
+    const now = useChats.getState().folders;
+    expect(now[0]!.chats[0]!.status).toBe('waiting');
+    expect(now[1]).toBe(other);
+  });
+});
+
+describe('chats store: one group of the folders', () => {
+  it('gives back the same folder objects while the folders are unchanged', () => {
+    seed(folder('a', [chat('c1'), chat('c2', { group: 1 })]), folder('b', [chat('c3')]));
+    const first = foldersOfGroup(useChats.getState().folders, 0);
+    useChats.getState().setStatus('c3', 'working');
+    const second = foldersOfGroup(useChats.getState().folders, 0);
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).not.toBe(first[1]);
+    expect(second[0]!.chats.map(c => c.id)).toEqual(['c1']);
+    expect(foldersOfGroup(useChats.getState().folders, 1).map(f => f.id)).toEqual(['a']);
+  });
+});
+
+describe('chats store: persistence', () => {
+  it('stores a chat without its context, its status kept', () => {
+    vi.useFakeTimers();
+    seed(folder('a', [chat('c1')]));
+    useChats.getState().setContext('c1', 0.4, 4000, 10000);
+    useChats.getState().setStatus('c1', 'waiting');
+    vi.advanceTimersByTime(1000);
+    const c = saved()!.state.folders[0]!.chats[0]!;
+    expect(c.status).toBe('waiting');
+    expect(c).not.toHaveProperty('context');
+    expect(c).not.toHaveProperty('contextTokens');
+    expect(c).not.toHaveProperty('contextWindow');
+  });
+
+  it('writes a burst of changes once, with the last of them', () => {
+    vi.useFakeTimers();
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    seed(folder('a', [chat('c1')]));
+    const writes = () => setItem.mock.calls.filter(c => c[0] === 'luna.chats').length;
+    const first = writes();
+    for (const n of ['one', 'two', 'three']) useChats.getState().renameChat('c1', n);
+    expect(writes()).toBe(first);
+    vi.advanceTimersByTime(600);
+    expect(writes()).toBe(first + 1);
+    expect(saved()!.state.folders[0]!.chats[0]!.name).toBe('three');
+    setItem.mockRestore();
+  });
+
+  it('loads chats stored with their context, and those stored without', async () => {
+    localStorage.setItem(
+      'luna.chats',
+      JSON.stringify({
+        state: {
+          folders: [
+            { ...folder('a', [chat('old', { context: 0.7 })]), picked: true },
+            {
+              id: 'b',
+              path: '/b',
+              open: true,
+              picked: true,
+              chats: [{ ...chat('new'), context: undefined }]
+            }
+          ],
+          active: 'old'
+        },
+        version: 2
+      })
+    );
+    await useChats.persist.rehydrate();
+    expect(useChats.getState().findChat('old')?.context).toBe(0.7);
+    expect(useChats.getState().findChat('new')?.context).toBe(0);
+    expect(useChats.getState().active).toBe('old');
+  });
+});
+
+describe('chats store: a chat deleted', () => {
+  it('takes what this run kept on it with it', () => {
+    seed(folder('a', [chat('c1'), chat('c2')]));
+    useRestarts.getState().bump('c1');
+    useRestarts.getState().setPending('c1', true);
+    useRestarts.getState().bump('c2');
+    useMoveHints.getState().setLimit('c1', 'usage_limit');
+    useMoveHints.getState().dismiss('c1');
+    useChats.getState().deleteChat('c1');
+    expect(useRestarts.getState().by).toEqual({ c2: 1 });
+    expect(useRestarts.getState().pending).toEqual({});
+    expect(useMoveHints.getState().limits).toEqual({});
+    expect(useMoveHints.getState().dismissed).toEqual({});
+  });
+});

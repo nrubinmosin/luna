@@ -1,8 +1,9 @@
 import { useLayoutEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { ACCENT, fmtReset, limitColor } from '../../shared/lib/format';
 import { STATUS } from '../../shared/ui/status';
 import { Icon } from '../../shared/ui/icons';
-import { allChats, useChats } from '../chats/chats.store';
+import { useChats } from '../chats/chats.store';
 import { AccountsWindow, useAccountsWindow } from '../accounts/AccountsPanel';
 import { useAccounts } from '../accounts/accounts.store';
 import { jumpToWaiting } from '../panes/navigate';
@@ -10,7 +11,7 @@ import { useNow, worstLimit } from '../accounts/limits';
 import { useUpdates } from '../updates/updates.store';
 import { canaryWarning, useCli } from '../updates/cli.store';
 import { cliUpdateNow } from '../../ipc/cli';
-import { PROVIDER_LABEL, PROVIDERS, accountKey, type Account } from '../../shared/types';
+import { PROVIDER_LABEL, PROVIDERS, accountKey, type Account, type Folder } from '../../shared/types';
 import { PowerChip } from '../power/PowerChip';
 import { useShortcuts } from '../shortcuts/ShortcutsDialog';
 import { useSettings } from '../settings/settings.store';
@@ -242,8 +243,30 @@ function AccountGlance({ account, fit, now }: { account: Account; fit: Fit; now:
  * sessions are doing, every account at a glance, and the way into the rest.
  * The clock that used to sit here is gone — Windows keeps one in the taskbar.
  */
+/** What the bar says of the chats: counts, and the names its tooltips give.
+ *  Strings and numbers, so a chat change that moves none of them (a title, a
+ *  context reading) does not render the bar. */
+function chatSummary(s: { folders: Folder[] }) {
+  let working = 0;
+  const waiting: string[] = [];
+  const background: string[] = [];
+  for (const f of s.folders)
+    for (const c of f.chats) {
+      if (c.status === 'working') working++;
+      else if (c.status === 'waiting') waiting.push(c.name);
+      else if (c.status === 'background') background.push(c.name);
+    }
+  return {
+    working,
+    waiting: waiting.join('\n'),
+    waitingN: waiting.length,
+    background: background.join('\n'),
+    backgroundN: background.length
+  };
+}
+
 export function StatusBar() {
-  const folders = useChats(s => s.folders);
+  const chats = useChats(useShallow(chatSummary));
   const accounts = useAccounts(s => s.accounts);
   const now = useNow();
   // Every window of every account, until they no longer fit; then the bar
@@ -253,24 +276,32 @@ export function StatusBar() {
   const field = useRef<HTMLDivElement>(null);
   const [fit, setFit] = useState<Fit>(0);
   const needed = useRef<number[]>([]);
+  // The step in force and the look itself, for the observer, which outlives
+  // the renders.
+  const fitNow = useRef<Fit>(0);
+  const check = useRef(() => {});
+  // One observer for the bar's life: the field changes width with the window.
   useLayoutEffect(() => {
     const el = field.current;
     if (!el) return;
-    const check = () => {
-      needed.current[fit] = el.scrollWidth;
-      if (el.scrollWidth > el.clientWidth + 1 && fit < 3) setFit((fit + 1) as Fit);
-      else if (fit > 0 && el.clientWidth >= (needed.current[fit - 1] ?? Infinity)) setFit((fit - 1) as Fit);
+    check.current = () => {
+      const at = fitNow.current;
+      needed.current[at] = el.scrollWidth;
+      if (el.scrollWidth > el.clientWidth + 1 && at < 3) setFit((at + 1) as Fit);
+      else if (at > 0 && el.clientWidth >= (needed.current[at - 1] ?? Infinity)) setFit((at - 1) as Fit);
     };
-    check();
-    const ro = new ResizeObserver(check);
+    const ro = new ResizeObserver(() => check.current());
     ro.observe(el);
     return () => ro.disconnect();
-  });
+  }, []);
+  // And a look whenever what is in it changes: the accounts, the countdowns,
+  // or the step just taken.
+  useLayoutEffect(() => {
+    fitNow.current = fit;
+    check.current();
+  }, [fit, accounts, now]);
 
-  const all = allChats(folders);
-  const working = all.filter(c => c.status === 'working').length;
-  const waiting = all.filter(c => c.status === 'waiting');
-  const background = all.filter(c => c.status === 'background');
+  const { working } = chats;
   const openAccounts = () => useAccountsWindow.getState().setOpen(true);
 
   return (
@@ -284,27 +315,25 @@ export function StatusBar() {
       </div>
       <div
         onClick={jumpToWaiting}
-        className={`sb-field${waiting.length ? ' waiting click' : ''}`}
+        className={`sb-field${chats.waitingN ? ' waiting click' : ''}`}
         title={
-          waiting.length
-            ? `Waiting for you:\n${waiting.map(c => c.name).join('\n')}\nClick to go to ${waiting.length > 1 ? 'the next one' : 'it'}`
+          chats.waitingN
+            ? `Waiting for you:\n${chats.waiting}\nClick to go to ${chats.waitingN > 1 ? 'the next one' : 'it'}`
             : 'Nothing is waiting for you'
         }
       >
-        <span className="sb-dot" style={{ background: waiting.length ? 'var(--wait)' : 'var(--faint)' }} />
-        {waiting.length} waiting
+        <span className="sb-dot" style={{ background: chats.waitingN ? 'var(--wait)' : 'var(--faint)' }} />
+        {chats.waitingN} waiting
       </div>
       {/* Not loud: nothing here asks for anyone, the work just is not over. */}
       <div
         className="sb-field"
         title={
-          background.length
-            ? `At work in the background:\n${background.map(c => c.name).join('\n')}`
-            : 'Nothing is at work in the background'
+          chats.backgroundN ? `At work in the background:\n${chats.background}` : 'Nothing is at work in the background'
         }
       >
-        <span className="sb-dot" style={{ background: background.length ? STATUS.background.color : 'var(--faint)' }} />
-        {background.length} background
+        <span className="sb-dot" style={{ background: chats.backgroundN ? STATUS.background.color : 'var(--faint)' }} />
+        {chats.backgroundN} background
       </div>
 
       <div

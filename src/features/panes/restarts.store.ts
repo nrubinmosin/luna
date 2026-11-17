@@ -12,6 +12,8 @@ interface Restarts {
   pending: Record<string, true>;
   bump: (chatId: string) => void;
   setPending: (chatId: string, on: boolean) => void;
+  /** The chat is gone: nothing more to count for it. */
+  forgetChat: (chatId: string) => void;
 }
 
 export const useRestarts = create<Restarts>()(set => ({
@@ -24,5 +26,12 @@ export const useRestarts = create<Restarts>()(set => ({
       if (on) pending[chatId] = true;
       else delete pending[chatId];
       return { pending };
+    }),
+  forgetChat: chatId =>
+    set(s => {
+      if (!(chatId in s.by) && !(chatId in s.pending)) return s;
+      const { [chatId]: _b, ...by } = s.by;
+      const { [chatId]: _p, ...pending } = s.pending;
+      return { by, pending };
     })
 }));

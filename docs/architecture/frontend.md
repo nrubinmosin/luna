@@ -9,7 +9,7 @@ list and the board; the core owns sessions
 | Path | What it holds |
 | --- | --- |
 | `main.tsx` | entry; loads xp.css, then the app-wide sheets; `?demo` in a plain browser loads the fixture |
-| `app/` | `App` (sidebar dock: pinned, or slides out from the left edge), `AppFrame` + `BoardTools` (layouts, groups, Even out, Clear, theme in the window title bar), `shell.store.ts` (theme, sidebar pin and width), `keymap.ts`, `ErrorBoundary`, `dpi.ts` |
+| `app/` | `App` (sidebar dock: pinned, or out over the board from the left edge), `AppFrame` + `BoardTools` (layouts, groups, Even out, Clear, theme in the window title bar), `shell.store.ts` (theme, sidebar pin and width), `keymap.ts`, `ErrorBoundary`, `dpi.ts` |
 | `shared/` | `types.ts`, `lib/` (format, log, notify), `ui/` (`icons.tsx` XP icons and provider badges, title bar glyphs, `ModelSelect` native `<select>`, `ConfirmDialog`, `dialogHost.ts`, `chatColors.ts`, `status.ts`) |
 | `features/chats/` | sidebar (folders, rows, drag source), `chats.store.ts`, `useSessionWatch.ts`, `worktrees.store.ts` + `WorktreesDialog`, `drafts.store.ts`, `marked.store.ts`, `OrphanSessions`, `DeleteChatDialog` |
 | `features/panes/` | the 1/2/3/4 grid (`PaneGrid`, `Pane` drop target, `Terminal`), `panes.store.ts` (boards, auto-tile `TILE_ORDER`), peek, `altPeek.ts`, `navigate.ts`, `terminals.ts`, `terminal/` |
@@ -63,6 +63,27 @@ Zustand stores, persisted to localStorage where they are UI state (chats,
 folders, boards). The page computes no session state of its own: status,
 titles, context and drafts come from the core (`session_meta`), polled by
 `useSessionWatch` and pushed by events.
+
+- **Renders follow changes.** A setter that changes nothing returns the state
+  it was given, so it notifies nobody; one that changes a chat replaces that
+  chat and its folder and leaves every other folder the same object
+  (`chats.store.ts` `editChat`). `foldersOfGroup` hands back the same view of
+  an unchanged folder, and the sidebar's `FolderSection` and `ChatRow` are
+  memoized on them, so a status change renders one row; the list numbers come
+  down from `ChatList`. Subscribers that walk the chats (the status bar's
+  counts, the core's names and groups, the groups to cover) run on a change
+  of the folders or of what they show, not on every change of the store. The
+  helpers' root index is built once per `agent://background` snapshot
+  (`background.store` `helperRoots`). A per-chat map of this run
+  (`restarts.store`, `moveHints.store`) forgets a chat as it is deleted.
+- **The chats on disk** (`luna.chats`) are written through
+  `shared/lib/throttledStorage.ts`: a change after a quiet spell at once, then
+  at most one write per 500 ms with the latest state, and what waits on
+  `pagehide`. A chat is stored without its context (`context`,
+  `contextTokens`, `contextWindow`), which the watcher reads again within
+  seconds; one stored with it still loads. Its status is kept: it is what
+  tells the watcher a waiting chat was already announced, so a new window
+  raises no second notification for it.
 
 - **Status.** `ChatStatus` is `working`, `waiting`, `background` or `resting`.
   `mapStatus` folds the CLIs' words into it and passes on `background`, the

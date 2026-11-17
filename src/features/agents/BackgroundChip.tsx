@@ -6,7 +6,7 @@ import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { HoverPopover } from '../../shared/ui/HoverPopover';
 import { logWarn } from '../../shared/lib/log';
 import { allChats, useChats } from '../chats/chats.store';
-import { rootOf, useBackground } from './background.store';
+import { helperRoots, helpersUnder, useBackground } from './background.store';
 import { openAsChat } from './bridge';
 import { HelperView } from './HelperView';
 import {
@@ -56,7 +56,7 @@ function useNow(ms: number): number {
 
 /** The helpers hanging from a chat, its helpers' helpers with them. */
 export function useHelpersOf(parentId: string): BackgroundHelperDto[] {
-  return useBackground(useShallow(s => s.helpers.filter(h => rootOf(h, s.helpers) === parentId)));
+  return useBackground(s => helpersUnder(s.helpers, parentId));
 }
 
 /**
@@ -82,10 +82,9 @@ export function LooseHelpers() {
   const helpers = useBackground(
     useShallow(s => {
       const rows = new Set(allChats(chats).map(c => c.id));
-      return s.helpers.filter(h => {
-        const root = rootOf(h, s.helpers);
-        return root === null || !rows.has(root);
-      });
+      const loose: BackgroundHelperDto[] = [];
+      for (const [root, under] of helperRoots(s.helpers)) if (root === null || !rows.has(root)) loose.push(...under);
+      return loose;
     })
   );
   if (helpers.length === 0) return null;

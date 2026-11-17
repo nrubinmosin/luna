@@ -232,8 +232,13 @@ export function useAgentBridge() {
   // whenever one changes.
   useEffect(() => {
     let last = '';
+    // The name and group each chat had at the last push: a status or context
+    // change, the most of what moves the chats, compares and goes no further.
+    let seen = new Map<string, string>();
     const push = () => {
       const chats = allChats(useChats.getState().folders);
+      if (last && chats.length === seen.size && chats.every(c => seen.get(c.id) === `${c.group} ${c.name}`)) return;
+      seen = new Map(chats.map(c => [c.id, `${c.group} ${c.name}`]));
       const names = Object.fromEntries(chats.map(c => [c.id, c.name]));
       const groups = Object.fromEntries(chats.map(c => [c.id, c.group]));
       const key = JSON.stringify([names, groups]);
@@ -246,7 +251,10 @@ export function useAgentBridge() {
       });
     };
     push();
-    const offChats = useChats.subscribe(push);
+    const offChats = useChats.subscribe((s, prev) => {
+      // A send that failed is tried again at whatever change comes next.
+      if (s.folders !== prev.folders || !last) push();
+    });
     const offCore = onCoreUp(() => {
       last = '';
       push();

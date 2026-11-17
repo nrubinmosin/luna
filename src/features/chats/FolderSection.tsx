@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { Folder } from '../../shared/types';
 import { tail2 } from '../../shared/lib/format';
 import { Chevron, ToolButton } from '../../shared/ui/icons';
@@ -9,8 +10,11 @@ import { ChatRow } from './ChatRow';
  * A folder's chats in sidebar order. Every row is a chat of the person's own:
  * the helpers a chat's agent runs are no rows, only a count on that chat's row
  * (BackgroundChip), and one opened as a chat is the person's like any other.
+ * `firstNo` is where its rows start in the numbered run (`numberedChats`).
+ * Memoized: a folder the store did not touch is the same object
+ * (`foldersOfGroup`), and does not render again.
  */
-export function FolderSection({ folder }: { folder: Folder }) {
+export const FolderSection = memo(function FolderSection({ folder, firstNo }: { folder: Folder; firstNo: number }) {
   const toggleFolder = useChats(s => s.toggleFolder);
   const t = tail2(folder.path);
 
@@ -32,11 +36,11 @@ export function FolderSection({ folder }: { folder: Folder }) {
       {/* Folded, its rows are not there at all: nothing to render while out of sight. */}
       {folder.open && (
         <div className="tp-body" style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          {folder.chats.map(chat => (
-            <ChatRow key={chat.id} chat={chat} />
+          {folder.chats.map((chat, i) => (
+            <ChatRow key={chat.id} chat={chat} listNo={firstNo + i < 9 ? firstNo + i + 1 : null} />
           ))}
         </div>
       )}
     </div>
   );
-}
+});

@@ -41,6 +41,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   spinning, and dialogs, menus, the sidebar and folders open and close at once.
   The terminals' cursors no longer blink: each blinking cursor redrew its
   terminal twice a second.
+- The window does less as chats change: a chat's status or context
+  re-renders its own row rather than the whole list, the status bar measures
+  itself only when what it shows changes, the chat list is written to disk at
+  most twice a second and without the chats' context (read again within
+  seconds), and each session's output goes to its own terminal only. Chats
+  stored by an earlier Luna load as before.
 
 ### Fixed
 

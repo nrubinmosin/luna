@@ -23,8 +23,7 @@ export const useBackground = create<BackgroundState>()(set => ({
  * with no parent at all; a chat that is gone reads the same to the caller,
  * which knows the chats.
  */
-export function rootOf(h: BackgroundHelperDto, all: BackgroundHelperDto[]): string | null {
-  const byId = new Map(all.map(x => [x.id, x]));
+function rootIn(h: BackgroundHelperDto, byId: ReadonlyMap<string, BackgroundHelperDto>): string | null {
   let parent = h.parent;
   // The core caps a line at a few generations; this only guards against a loop.
   for (let i = 0; i < 16 && parent; i++) {
@@ -34,3 +33,34 @@ export function rootOf(h: BackgroundHelperDto, all: BackgroundHelperDto[]): stri
   }
   return parent;
 }
+
+/** The helpers by what each hangs from (`rootIn`), `null` for those that hang
+ *  from nothing, each list in the snapshot's order. */
+export type HelperRoots = ReadonlyMap<string | null, BackgroundHelperDto[]>;
+
+const roots = new WeakMap<BackgroundHelperDto[], HelperRoots>();
+
+/** The root index of a snapshot of the helpers, built once per snapshot (the
+ *  core sends a new list on every change): every chat row and pane asks it on
+ *  each store change, and walking all the helpers for each was quadratic. */
+export function helperRoots(all: BackgroundHelperDto[]): HelperRoots {
+  let index = roots.get(all);
+  if (index) return index;
+  const byId = new Map(all.map(x => [x.id, x]));
+  const built = new Map<string | null, BackgroundHelperDto[]>();
+  for (const h of all) {
+    const root = rootIn(h, byId);
+    const list = built.get(root);
+    if (list) list.push(h);
+    else built.set(root, [h]);
+  }
+  roots.set(all, (index = built));
+  return index;
+}
+
+const NONE: BackgroundHelperDto[] = [];
+
+/** The helpers hanging from `parentId`, its helpers' helpers with them: the
+ *  same array for as long as the snapshot is the same. */
+export const helpersUnder = (all: BackgroundHelperDto[], parentId: string): BackgroundHelperDto[] =>
+  helperRoots(all).get(parentId) ?? NONE;

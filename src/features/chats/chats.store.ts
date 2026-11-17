@@ -10,9 +10,12 @@ import type {
   HandoffMark,
   NameSource
 } from '../../shared/types';
+import { throttledStorage } from '../../shared/lib/throttledStorage';
 import { useNewChat } from '../new-chat/newchat.store';
 import { usePanes } from '../panes/panes.store';
+import { useRestarts } from '../panes/restarts.store';
 import { forget } from '../panes/terminals';
+import { useMoveHints } from './moveHints.store';
 
 interface ChatsState {
   /**
@@ -79,11 +82,30 @@ interface ChatsState {
   folderOf: (chatId: string) => Folder | null;
 }
 
+/** Each folder's one-group view, kept while the folder is the same object:
+ *  the sidebar's sections are memoized on it, so a change to one chat
+ *  re-renders the one folder it is in. */
+const groupViews = new WeakMap<Folder, Map<GroupId, Folder>>();
+
 /** Folders holding chats of one group, with only that group's chats in them.
  *  A folder with nothing in this group is not shown: it stays in the launch
- *  list, which is the new-chat dialog's business, not the sidebar's. */
-export const foldersOfGroup = (folders: Folder[], group: GroupId): Folder[] =>
-  folders.map(f => ({ ...f, chats: f.chats.filter(c => c.group === group) })).filter(f => f.chats.length > 0);
+ *  list, which is the new-chat dialog's business, not the sidebar's. A folder
+ *  unchanged since the last call comes back as the same object. */
+export const foldersOfGroup = (folders: Folder[], group: GroupId): Folder[] => {
+  const out: Folder[] = [];
+  for (const f of folders) {
+    let views = groupViews.get(f);
+    if (!views) groupViews.set(f, (views = new Map<GroupId, Folder>()));
+    let view = views.get(group);
+    if (!view) {
+      const chats = f.chats.filter(c => c.group === group);
+      view = chats.length === f.chats.length ? f : { ...f, chats };
+      views.set(group, view);
+    }
+    if (view.chats.length > 0) out.push(view);
+  }
+  return out;
+};
 
 /**
  * One group's chats in the order the sidebar lists them, folded-away folders
@@ -144,6 +166,44 @@ interface Spawned {
   childrenOpen?: boolean;
 }
 
+/**
+ * `folders` with chat `chatId` replaced by what `edit` makes of it. Where that
+ * is the chat itself, or there is no such chat, the same array comes back, so
+ * a setter that changes nothing changes no state and renders nothing; the
+ * folders it does not touch stay the same objects.
+ */
+function editChat(folders: Folder[], chatId: string, edit: (c: Chat) => Chat): Folder[] {
+  for (let i = 0; i < folders.length; i++) {
+    const f = folders[i]!;
+    const j = f.chats.findIndex(c => c.id === chatId);
+    if (j < 0) continue;
+    const next = edit(f.chats[j]!);
+    if (next === f.chats[j]) return folders;
+    const chats = f.chats.slice();
+    chats[j] = next;
+    const out = folders.slice();
+    out[i] = { ...f, chats };
+    return out;
+  }
+  return folders;
+}
+
+/** A set that edits one chat: no new state where the edit changes nothing. */
+const onChat =
+  (chatId: string, edit: (c: Chat) => Chat) =>
+  (s: ChatsState): ChatsState | Pick<ChatsState, 'folders'> => {
+    const folders = editChat(s.folders, chatId, edit);
+    return folders === s.folders ? s : { folders };
+  };
+
+/** What a stored chat leaves out: its context, which the session watcher
+ *  reads again within seconds and which moved with every turn. Its status
+ *  stays: that is what tells the watcher a chat already waiting was already
+ *  announced, so a new window does not notify of it again. */
+const withoutContext = ({ context: _c, contextTokens: _t, contextWindow: _w, ...c }: Chat) => c;
+
+type Persisted = Pick<ChatsState, 'folders' | 'active' | 'guardNotice'>;
+
 let seq = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
 
@@ -198,6 +258,9 @@ export const useChats = create<ChatsState>()(
         // And its terminal, which would otherwise sit in the warm set holding
         // listeners for a session that is being killed as this runs.
         forget(chatId);
+        // And what this run of the window kept on it.
+        useRestarts.getState().forgetChat(chatId);
+        useMoveHints.getState().forgetChat(chatId);
         set(s => ({
           // The folder stays behind on purpose, empty or not — it is a place
           // you launch chats from, and having to browse for it again after
@@ -226,13 +289,7 @@ export const useChats = create<ChatsState>()(
 
       setActive: chatId => set({ active: chatId }),
 
-      setStatus: (chatId, status) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, status } : c))
-          }))
-        })),
+      setStatus: (chatId, status) => set(onChat(chatId, c => (c.status === status ? c : { ...c, status }))),
 
       setName: (chatId, name, source) => {
         // The watcher offers every chat its title every few seconds; most of
@@ -248,30 +305,13 @@ export const useChats = create<ChatsState>()(
       },
 
       setWorktreePath: (chatId, path) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId && c.worktreePath !== path ? { ...c, worktreePath: path } : c))
-          }))
-        })),
+        set(onChat(chatId, c => (c.worktreePath === path ? c : { ...c, worktreePath: path }))),
 
       setSessionId: (chatId, sessionId) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId && c.sessionId !== sessionId ? { ...c, sessionId } : c))
-          }))
-        })),
+        set(onChat(chatId, c => (c.sessionId === sessionId ? c : { ...c, sessionId }))),
 
       setModelSeen: (chatId, model) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c =>
-              c.id === chatId && c.provider === 'codex' && c.modelSeen !== model ? { ...c, modelSeen: model } : c
-            )
-          }))
-        })),
+        set(onChat(chatId, c => (c.provider === 'codex' && c.modelSeen !== model ? { ...c, modelSeen: model } : c))),
 
       guardNotice: [],
       dismissGuardNotice: () => set({ guardNotice: [] }),
@@ -353,14 +393,13 @@ export const useChats = create<ChatsState>()(
         })),
 
       setContext: (chatId, context, tokens, window) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c =>
-              c.id === chatId ? { ...c, context, contextTokens: tokens, contextWindow: window } : c
-            )
-          }))
-        })),
+        set(
+          onChat(chatId, c =>
+            c.context === context && (c.contextTokens ?? null) === tokens && (c.contextWindow ?? null) === window
+              ? c
+              : { ...c, context, contextTokens: tokens, contextWindow: window }
+          )
+        ),
 
       renameAccount: (provider, from, to) =>
         set(s => ({
@@ -404,12 +443,19 @@ export const useChats = create<ChatsState>()(
     }),
     {
       name: 'luna.chats',
+      partialize: (s): Persisted => ({ folders: s.folders, active: s.active, guardNotice: s.guardNotice }),
+      storage: throttledStorage<Persisted>(v =>
+        JSON.stringify({
+          ...v,
+          state: { ...v.state, folders: v.state.folders.map(f => ({ ...f, chats: f.chats.map(withoutContext) })) }
+        })
+      ),
       // Chats gained a provider and per-provider settings; what was stored
       // before has neither, and a row that cannot say which CLI it runs is
       // not worth carrying over.
       version: 2,
       migrate: (persisted, version) =>
-        version < 2 ? { folders: [], active: null } : (persisted as Partial<ChatsState>),
+        version < 2 ? { folders: [], active: null, guardNotice: [] } : (persisted as Persisted),
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<ChatsState>;
         const guarded = decideGuard(p.folders ?? []);
@@ -427,7 +473,10 @@ export const useChats = create<ChatsState>()(
               ...f,
               // A chat an earlier Luna nested under the chat whose agent spawned
               // it is the person's own now (agents/handover.rs): a top-level row.
-              chats: stored.map(({ parentId: _p, childrenOpen: _o, ...c }) => named({ ...c, group: c.group ?? 0 })),
+              // Stored without its context: none until the watcher reads it.
+              chats: stored.map(({ parentId: _p, childrenOpen: _o, ...c }) =>
+                named({ ...c, group: c.group ?? 0, context: c.context ?? 0 })
+              ),
               // Stored before folders said who launched there. A top-level chat,
               // a start kept from the dialog or the dialog's last folder is a
               // person's doing; an empty folder cannot say, and is let go as an
