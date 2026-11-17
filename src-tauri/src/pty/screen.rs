@@ -743,7 +743,7 @@ impl Modes {
 pub fn session_modes(id: String) -> String {
     let state = manager();
     let modes = {
-        let sessions = state.sessions.lock().unwrap();
+        let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
             Some(s) => Arc::clone(&s.modes),
             None => return String::new(),

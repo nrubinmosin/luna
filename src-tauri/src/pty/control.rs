@@ -20,7 +20,7 @@ use std::sync::atomic::Ordering;
 #[tauri::command]
 pub fn write_session(id: String, data: String) -> Result<(), String> {
     let state = manager();
-    let sessions = state.sessions.lock().unwrap();
+    let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let s = sessions.get(&id).ok_or("no such session")?;
     if let Some(held) = s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         held.push(data);
@@ -141,7 +141,7 @@ pub(crate) fn fake_terminal_of(id: &str) -> (String, bool) {
 #[tauri::command]
 pub fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
     let state = manager();
-    let sessions = state.sessions.lock().unwrap();
+    let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let s = sessions.get(&id).ok_or("no such session")?;
     s.input_tx
         .send(Input::Resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }))
@@ -356,7 +356,7 @@ pub struct OrphanSession {
 pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, String> {
     let state = manager();
     let candidates: Vec<Probe> = {
-        let sessions = state.sessions.lock().unwrap();
+        let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.iter().filter(|(id, s)| !known.contains(id) && s.alive.load(Ordering::SeqCst)).map(|(id, s)| probe_of(id, s)).collect()
     };
     if candidates.is_empty() {

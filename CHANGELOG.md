@@ -89,6 +89,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - The chats' status dots, and the status bar's, show in Windows' contrast
   themes, in the theme's colors, a background chat's as a ring: they were
   not drawn there at all.
+- A panic in the core while it held its list of sessions no longer makes
+  every later keystroke, resize, reattach and start panic too.
 
 ## [0.18.5] - 2026-11-17
 

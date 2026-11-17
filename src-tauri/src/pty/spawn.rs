@@ -173,7 +173,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
 
     // Under the gate: whoever waited here may find the session already spawned.
     let exited = {
-        let mut sessions = state.sessions.lock().unwrap();
+        let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
             Some(s) if s.alive.load(Ordering::SeqCst) => Err(Arc::clone(&s.scrollback)),
             _ => Ok(sessions.remove(&id)),
@@ -437,7 +437,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                         let last = pieces.len() - 1;
                         for (i, piece) in pieces.into_iter().enumerate() {
                             if !piece.is_empty() {
-                                let mut sb = scrollback.lock().unwrap();
+                                let mut sb = scrollback.lock().unwrap_or_else(|e| e.into_inner());
                                 // Trimming to the cap on every read used to move the
                                 // whole two megabytes each time; a deque drops from
                                 // the front without touching the rest, and trimming
@@ -542,7 +542,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         });
     }
 
-    state.sessions.lock().unwrap().insert(
+    state.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(
         id,
         Session {
             provider,
