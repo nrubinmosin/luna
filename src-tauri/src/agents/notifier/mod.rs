@@ -373,6 +373,7 @@ pub(super) fn notifier() {
         // come back has nothing to be told in.
         let mut by_caller: std::collections::BTreeMap<String, Vec<(String, Known, Owed, String)>> = Default::default();
         let mut gave_up: Vec<(String, String)> = Vec::new();
+        let owed_to: std::collections::HashSet<String>;
         {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let Registry { owed, known, names, .. } = &mut *r;
@@ -398,7 +399,11 @@ pub(super) fn notifier() {
                 };
                 by_caller.entry(caller.clone()).or_default().push((id.clone(), k.clone(), *o, who));
             }
+            owed_to = owed.keys().map(|(caller, _)| caller.clone()).collect();
         }
+        // A lead's stdin kept open past its answer for notices goes once it
+        // has none to come (background/events.rs `keeps_listening`).
+        crate::background::listen_only_while_owed(&owed_to);
         for (caller, id) in gave_up {
             crate::log::warn(
                 "agents",
@@ -529,7 +534,10 @@ pub(super) fn notifier() {
                 drafts.remove(&caller);
             }
             let looks = idle_looks.entry(caller.clone()).or_default();
-            *looks = if ready_for_notice(pty, &caller) { *looks + 1 } else { 0 };
+            // Or a lead kept up by its own background tasks, which takes the
+            // notice on stdin then (background/events.rs `listening`).
+            let ready = ready_for_notice(pty, &caller) || crate::background::takes_notices(&caller);
+            *looks = if ready { *looks + 1 } else { 0 };
             if *looks < NOTIFY_IDLE_LOOKS {
                 continue;
             }
@@ -907,13 +915,19 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
     #[cfg(test)]
     tests::between_check_and_typing(caller);
     // The turn it starts: the next, or for a background caller that has begun
-    // one since the look, the one after that.
+    // one since the look, the one after that. A background caller whose turn
+    // runs on and took it on stdin (`Placed::Joined`) answers it within that
+    // turn, which is no turn on a notice: it is not marked as one.
     let background = crate::background::has(caller);
+    let mut joined = false;
     let (typed, turn) = if background {
         // A background parent's own record says when these have arrived (`budget_news`).
         let marks = budget_lines.iter().map(|n| crate::background::BudgetMark { id: n.id.clone(), line: n.line.clone() }).collect();
         match crate::background::send_marked(caller, text, None, marks) {
-            Ok(queued) => (Ok(Some(true)), baseline + 1 + u32::from(queued)),
+            Ok(placed) => {
+                joined = placed == crate::background::Placed::Joined;
+                (Ok(Some(true)), baseline + 1 + u32::from(placed == crate::background::Placed::Queued))
+            }
             Err(e) => (Err(e), 0),
         }
     } else {
@@ -962,8 +976,9 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
         Ok(None) => {}
         Ok(Some(started)) => {
             let held = held_for.map_or(String::new(), |d| format!("; held {} s for company", d.as_secs()));
+            let into = if joined { "; into its running turn, on stdin" } else { "" };
             if started {
-                crate::log::info("agents", &format!("notice to {} about {about}{held}", label(caller)));
+                crate::log::info("agents", &format!("notice to {} about {about}{held}{into}", label(caller)));
             } else {
                 crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn{held}", label(caller)));
             }
@@ -985,7 +1000,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             }
             // A turn it did not start stays unmarked: at worst the caller hears
             // of a turn once too often, never misses one.
-            if started {
+            if started && !joined {
                 let told_of: Vec<String> = settled.iter().map(|(id, _, _)| id.clone()).collect();
                 let wake = news_lines.iter().any(|(_, line)| is_wake(line));
                 notice_turn(&mut r, caller, turn, &told_of, wake);
@@ -1573,6 +1588,41 @@ mod tests {
                 crate::background::gone_for_test(s);
                 forget(s);
             }
+        }
+    }
+
+    /// Issue #73: a lead whose CLI is kept up by its own background subagents
+    /// past its answer hears of its helper then, on stdin, not once they end.
+    /// The notice is answered within the lead's running turn, which is not
+    /// marked as one on a notice: its parent hears of that turn as ever.
+    #[test]
+    fn a_lead_kept_up_by_its_own_background_work_hears_of_its_helper_on_stdin() {
+        let (a, id) = ("ln-lead", "ln-helper");
+        register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({ "background": true }));
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, serde_json::json!({ "background": true }));
+        crate::background::test_helper(a, "C:\\acc", None, true);
+        let lines = crate::background::listening_for_test(a);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        assert!(crate::background::takes_notices(a));
+        owe_from(a, id, 0, 0);
+        let key = (a.to_string(), id.to_string());
+        let told = reg().lock().unwrap().owed[&key];
+        let text = format!("{NOTICE_TAG} {id} answered");
+        deliver_notice(
+            crate::pty::manager(),
+            a,
+            &text,
+            Notice { settled: vec![(id.to_string(), Settled::Answered, told)], ..Notice::default() },
+        );
+        let line: serde_json::Value = serde_json::from_str(&lines.try_recv().expect("on its stdin")).unwrap();
+        assert_eq!(line["message"]["content"].as_str(), Some(text.as_str()));
+        assert!(crate::background::queued_for_test(a).is_empty(), "not held for its next process");
+        assert!(!reg().lock().unwrap().owed.contains_key(&key), "told");
+        assert!(!reg().lock().unwrap().notice_turns.contains_key(a), "no turn of its marked as one on a notice");
+        assert!(!crate::background::takes_notices(a), "at work on it");
+        for s in [id, a] {
+            crate::background::gone_for_test(s);
+            forget(s);
         }
     }
 

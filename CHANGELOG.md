@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- A Claude Code lead now hears of its helpers while its own background
+  subagents run. Its CLI stays up for them after its answer, and Luna used to
+  hold the lead's notices until they had all ended, which could take hours.
+  The notice now goes in on the lead's stdin and is answered at once, for up
+  to 3 hours after its answer, as long as a helper still owes it one (#73).
+  Codex leads end with their turn, so nothing held theirs back.
+
 ## [0.18.3] - 2026-11-17
 
 Luna now installs Claude Code 2.1.325 and runs nothing older. Only the
