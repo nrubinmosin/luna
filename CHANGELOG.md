@@ -8,6 +8,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Luna builds on Rust 1.100.0, Node 26.13.1 (the current LTS) and pnpm 12.21.0,
+  and its npm packages are each at their latest release: among them xterm.js 6
+  with its WebGL and fit addons (the WebGL addon had been made for 6 and run on
+  5.5), Vite 8 and TypeScript 6. TypeScript stays on 6, as typescript-eslint
+  does not support 7 yet.
+- The terminals look and type as they did: the scrollbar xterm.js 6 draws of
+  its own is hidden, as the old one was, and Alt with an arrow key still sends
+  what Ctrl with it sends, which xterm.js 6 leaves to the app.
+
+### Fixed
+
+- A chat terminal whose graphics context the WebView takes away (too many
+  open at once) goes back to drawing without WebGL instead of staying blank,
+  and closing a terminal no longer fails inside the WebGL addon.
+
 ## [0.18.5] - 2026-11-17
 
 Luna no longer depends on chrono, which RustSec now lists as unmaintained:

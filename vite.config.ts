@@ -4,6 +4,10 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  // xp.css has a rule whose selector puts more after a ::before, which the CSS
+  // minifier refuses outright; a browser drops that rule as invalid anyway.
+  // Recovering, the minifier drops it too, with a warning.
+  css: { lightningcss: { errorRecovery: true } },
   server: {
     port: 1420,
     strictPort: true,

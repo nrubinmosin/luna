@@ -694,7 +694,7 @@ mod tests {
 
     /// What build.rs leaves beside the exe, read when this build was compiled:
     /// the file the release publishes in `latest.json` without running the exe.
-    const LEFT_BESIDE_THE_EXE: &str = include_str!(concat!(env!("OUT_DIR"), "/../../../core-fingerprint.txt"));
+    const LEFT_BESIDE_THE_EXE: &str = include_str!(env!("LUNA_CORE_FP_FILE"));
 
     #[test]
     fn the_flag_reports_the_fingerprint_left_beside_the_exe() {

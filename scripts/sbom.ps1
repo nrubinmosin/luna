@@ -67,7 +67,7 @@ cp sbom.json /out/luna-$version-cargo.cdx.json
           -v "${RepoRoot}:/app:ro" `
           -v "${Out}:/out" `
           -v luna-corepack:/corepack `
-          (Get-NodeImage) `
+          (Get-FrontendImage) `
           bash -c (ConvertTo-BashScript @"
 set -e
 mkdir /work

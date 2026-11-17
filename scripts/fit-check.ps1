@@ -82,7 +82,7 @@ Use-BuildLock {
           -e FIT_SIZES=$($Sizes -join ',') `
           @fontArgs `
           -v "${RepoRoot}:/app" `
-          -v luna-node-modules:/app/node_modules `
+          -v "${NodeModulesVolume}:/app/node_modules" `
           -w /app `
           $image `
           bash -c $cmd

@@ -104,9 +104,12 @@ titles, context and drafts come from the core (`session_meta`), polled by
   switching chats costs no `ensure_session`, reset and redraw. The three most
   recently put away keep their subscriptions; older ones are evicted. Returning
   is a refit plus a nudge to redraw.
-- `terminal/`: `theme.ts`, `links.ts`, `keys.ts` (clipboard keys), `scrollback.ts`
-  (the replayed tail), `sizing.ts` (fit and repaint), `pty.ts` (the gated pty
-  sender), `webgl.ts`, `title.ts` (a title from what is typed), `safely.ts`.
+- `terminal/`: `theme.ts`, `links.ts`, `keys.ts` (clipboard keys, Alt+arrow
+  sent as Ctrl+arrow as xterm did before 6), `scrollback.ts` (the replayed
+  tail), `sizing.ts` (fit and repaint), `pty.ts` (the gated pty sender),
+  `webgl.ts` (the webgl renderer; a context lost for good disposes the addon,
+  which puts the DOM renderer back, and the pane is repainted), `title.ts` (a
+  title from what is typed), `safely.ts`.
 - Shortcuts are claimed in the capture phase (`app/keymap.ts`), otherwise xterm
   swallows them; everything unclaimed goes to the CLI. Escape is never claimed.
 

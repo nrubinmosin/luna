@@ -88,9 +88,13 @@ body {
 .xterm .xterm-viewport {
   background: transparent !important;
 }
-/* xterm gives its viewport overflow-y: scroll unconditionally. The terminal
-   has no scrollbar at all: the viewport still scrolls (wheel, shift+PgUp, and
-   xterm's own scrollToBottom), it is only never painted. */
+/* The terminal has no scrollbar at all: it still scrolls (wheel, shift+PgUp,
+   and xterm's own scrollToBottom), the bar is only never painted. xterm draws
+   its own, VS Code's, beside the rows; and it gives its viewport
+   overflow-y: scroll unconditionally. */
+.xterm .xterm-scrollable-element > .scrollbar {
+  display: none;
+}
 .xterm .xterm-viewport {
   scrollbar-width: none;
 }

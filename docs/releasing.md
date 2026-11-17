@@ -114,7 +114,7 @@ from a cold target folder, so it takes as long as a first build. `-Local -DryRun
 builds, signs and composes without uploading; `-Local -SkipBuild` signs and uploads what
 the last build of the same commit left.
 
-What remains on this path: the Docker volumes the builds share (`luna-node-modules`, the
+What remains on this path: the Docker volumes the builds share (`luna-node-modules-pnpm<major>`, the
 cargo registry, the xwin and Tauri caches) are written by every build, a development
 build's included, so code that ran in one build can plant something the next build
 runs. That reaches the next installer, which then gets signed, but not the key, which

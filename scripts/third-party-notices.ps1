@@ -91,7 +91,7 @@ cp -r "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" "$(rustc 
               -v "${Source}:/app:ro" `
               -v "${stage}:/out" `
               -v luna-corepack:/corepack `
-              (Get-NodeImage) `
+              (Get-FrontendImage) `
               bash -c (ConvertTo-BashScript ($handBack + @'
 set -e
 mkdir /work

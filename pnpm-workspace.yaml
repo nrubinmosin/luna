@@ -1,0 +1,6 @@
+# pnpm's settings for the repo: pnpm reads none from package.json since 11.
+allowBuilds:
+  # Its install script only checks the platform binary it already ships. Vite
+  # installs it as an optional peer it does not use to build, and pnpm
+  # refuses an install that leaves a package's build scripts undecided.
+  esbuild: false

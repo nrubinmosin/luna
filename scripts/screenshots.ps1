@@ -104,7 +104,7 @@ Use-BuildLock {
           -e SHOT_SCENES=$sceneList `
           @fontArgs `
           -v "${RepoRoot}:/app" `
-          -v luna-node-modules:/app/node_modules `
+          -v "${NodeModulesVolume}:/app/node_modules" `
           -w /app `
           $image `
           bash -c $cmd

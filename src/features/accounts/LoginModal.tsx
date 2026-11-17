@@ -1,13 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import type { Account } from '../../shared/types';
 import { killSession, resizeSession, writeSession } from '../../ipc/sessions';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
-import { logWarn } from '../../shared/lib/log';
 import { safely } from '../panes/terminal/safely';
+import { loadWebgl } from '../panes/terminal/webgl';
 import { dark, themeFor, TERM_FONT_FAMILY, TERM_FONT_SIZE } from '../panes/terminal/theme';
 import { useAccounts } from './accounts.store';
 import { ui } from '../providers';
@@ -35,37 +34,7 @@ export function LoginModal({ account }: { account: Account }) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
-    let webgl: WebglAddon | null = null;
-    let ctxLossSub: { dispose(): void } | null = null;
-    // Same story as the chat terminals (see Terminal.tsx): dispose through the
-    // AddonManager's idempotent wrapper so term.dispose() skips the addon, and
-    // swallow the known-benign TypeError the addon's own teardown throws after
-    // its renderer is already gone.
-    const disposeWebgl = () => {
-      const addon = webgl;
-      webgl = null;
-      if (!addon) return;
-      safely(() => ctxLossSub?.dispose());
-      ctxLossSub = null;
-      try {
-        addon.dispose();
-      } catch (e) {
-        // A throw escaping a React effect cleanup takes the root down, so even
-        // the unexpected case only gets logged.
-        if (!(e instanceof TypeError)) {
-          logWarn('terminal', `webgl dispose failed: ${(e as Error)?.stack ?? String(e)}`);
-        }
-      }
-    };
-    try {
-      webgl = new WebglAddon();
-      ctxLossSub = webgl.onContextLoss(disposeWebgl);
-      term.loadAddon(webgl);
-    } catch (e) {
-      // Slower, and otherwise invisible: the terminal still draws.
-      logWarn('terminal', `webgl renderer unavailable, using the DOM renderer: ${(e as Error)?.message ?? String(e)}`);
-      webgl = null;
-    }
+    const disposeWebgl = loadWebgl(term);
 
     let disposed = false;
     const unlisteners: Array<() => void> = [];

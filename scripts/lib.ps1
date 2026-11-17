@@ -64,26 +64,36 @@ function Get-BaseImages {
     }
 }
 
-# The Node image the frontend steps run in: the Windows image's own Node stage,
-# so the one pin (tag and digest, which Dependabot moves) serves both.
+# The official Node image the Windows image starts from, as pinned (tag and
+# digest, which Dependabot moves): for what needs node alone, such as the
+# release's signer.
 function Get-NodeImage {
     $node = Get-BaseImages | Where-Object { $_.File -eq 'docker/windows-build.Dockerfile' -and $_.Repo -eq 'node' }
     if (@($node).Count -ne 1) { throw 'docker/windows-build.Dockerfile should have one FROM node: line' }
     $node.Ref
 }
 
-# Builds one of the toolchain images in docker/ and returns the image to run.
-# The tag is a hash of what the image is built from, the Dockerfile: every
-# checkout on the machine shares Docker, and under a plain name a checkout with
-# another Dockerfile, building in between, would have this one run in its image.
-function Build-Image([string]$Name, [string]$Dockerfile) {
+# The image the frontend's pnpm runs in: the Windows image's own Node stage,
+# that image with corepack added, so the one pin serves both. Built here, as
+# Node no longer ships corepack.
+function Get-FrontendImage {
+    Build-Image luna-node windows-build.Dockerfile -Target node
+}
+
+# Builds one of the toolchain images in docker/ (or one stage of it, -Target)
+# and returns the image to run. The tag is a hash of what the image is built
+# from, the Dockerfile: every checkout on the machine shares Docker, and under a
+# plain name a checkout with another Dockerfile, building in between, would have
+# this one run in its image.
+function Build-Image([string]$Name, [string]$Dockerfile, [string]$Target) {
     $file = Join-Path $RepoRoot "docker/$Dockerfile"
     $text = (Get-Content $file -Raw) -replace "`r`n", "`n"
     $sha = [Security.Cryptography.SHA256]::Create()
     $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))[0..5] | ForEach-Object { $_.ToString('x2') })
     $image = "${Name}:$hash"
+    $stage = if ($Target) { @('--target', $Target) } else { @() }
     Invoke-Checked "docker build of $image" {
-        docker build -t $image -f $file (Join-Path $RepoRoot 'docker') | Out-Host
+        docker build -t $image @stage -f $file (Join-Path $RepoRoot 'docker') | Out-Host
     }
     $image
 }
@@ -95,10 +105,22 @@ function ConvertTo-BashScript([string]$Script) {
     $Script -replace "`r`n", "`n"
 }
 
+# The node_modules volume the builds install into, which every checkout on the
+# machine shares (hence Use-BuildLock): one per pnpm major, the one
+# package.json's packageManager names. Without a TTY a pnpm refuses to clear a
+# node_modules another major laid out, so checkouts on two majors sharing one
+# volume would fail each other's installs.
+function Get-NodeModulesVolume {
+    $manager = (Get-Content (Join-Path $RepoRoot 'package.json') -Raw | ConvertFrom-Json).packageManager
+    if ($manager -notmatch '^pnpm@(\d+)\.') { throw "package.json should name pnpm@x.y.z as its packageManager, not '$manager'" }
+    "luna-node-modules-pnpm$($Matches[1])"
+}
+$NodeModulesVolume = Get-NodeModulesVolume
+
 # The named volumes the Windows toolchain image (windows-build.Dockerfile) caches
 # into. Every checkout on the machine shares them, hence Use-BuildLock.
 $WinBuildVolumes = @(
-    '-v', 'luna-node-modules:/app/node_modules',
+    '-v', "${NodeModulesVolume}:/app/node_modules",
     '-v', 'luna-xwin-cache:/xwin-cache',
     '-v', 'luna-cargo-registry:/usr/local/cargo/registry',
     '-v', 'luna-tauri-cache:/root/.cache/tauri'
@@ -222,16 +244,22 @@ function Assert-ToolchainPins {
             $problems += "$($base.File) has $($base.Line), not node:$node-* (.node-version)"
         }
     }
+    # corepack, installed by version in each image that runs pnpm.
+    $corepack = @(Select-String -Path (Join-Path $RepoRoot 'docker/*.Dockerfile') -Pattern 'corepack@(\S+)' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
+    if ($corepack.Count -ne 1) {
+        $problems += "docker/*.Dockerfile install corepack at $(if ($corepack) { $corepack -join ' and ' } else { 'no version' }), not at one"
+    }
     if ($problems) {
         throw "the toolchain pins disagree: $($problems -join '; ')"
     }
-    Write-Host "Rust $rust, Node $node, base images pinned by digest"
+    Write-Host "Rust $rust, Node $node, corepack $($corepack[0]), base images pinned by digest"
 }
 
 # Runs $Body as the only Luna build on this machine, from any checkout: the named
 # volumes are shared, and two builds setting up the MSVC CRT in luna-xwin-cache at
 # once break each other ("Failed to setup MSVC CRT"), as two pnpm installs into
-# luna-node-modules would. The Linux volumes are linux-check's own, but the
+# the node_modules volume would. The Linux volumes are linux-check's own, but the
 # machine's CPU and Docker's disk are not. Off Windows a named mutex reaches only
 # the user's own processes; the Linux check adds a lock of its own for that.
 function Use-BuildLock([scriptblock]$Body) {

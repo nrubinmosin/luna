@@ -48,21 +48,25 @@ fn build_stamp() -> String {
 /// written from the same value the binary is stamped with, so the two cannot
 /// differ; a test holds `--core-fingerprint` to it (coreproc.rs).
 ///
-/// Cargo gives a build script only OUT_DIR, `<profile>/build/luna-<hash>/out`,
-/// and asks it to keep its writes there; the profile folder is the one place a
-/// script outside cargo can find without cargo's JSON, which `tauri build` does
-/// not pass on. A layout of another shape gets a warning and no file, and the
-/// release then stops on the missing file rather than publishing a guess.
+/// Cargo gives a build script only OUT_DIR, `<profile>/build/<pkg>/<hash>/out`
+/// since 1.100 (`<profile>/build/<pkg>-<hash>/out` before), and asks it to keep
+/// its writes there; the profile folder is the one place a script outside
+/// cargo can find without cargo's JSON, which `tauri build` does not pass on.
+/// A layout of another shape gets a warning and no file, and the release then
+/// stops on the missing file rather than publishing a guess. The file's path
+/// goes to the crate as `LUNA_CORE_FP_FILE`, for that test.
 fn leave_core_fingerprint(fp: &str) {
     let Some(out) = std::env::var_os("OUT_DIR").map(std::path::PathBuf::from) else { return };
-    let mut up = out.ancestors().skip(2);
-    match (up.next(), up.next()) {
-        (Some(build), Some(profile)) if build.file_name().is_some_and(|n| n == "build") => {
-            if let Err(e) = std::fs::write(profile.join("core-fingerprint.txt"), fp) {
-                println!("cargo:warning=cannot write {}: {e}", profile.join("core-fingerprint.txt").display());
+    let build = out.ancestors().skip(2).take(2).find(|a| a.file_name().is_some_and(|n| n == "build"));
+    match build.and_then(|b| b.parent()) {
+        Some(profile) => {
+            let file = profile.join("core-fingerprint.txt");
+            match std::fs::write(&file, fp) {
+                Ok(()) => println!("cargo:rustc-env=LUNA_CORE_FP_FILE={}", file.display()),
+                Err(e) => println!("cargo:warning=cannot write {}: {e}", file.display()),
             }
         }
-        _ => println!("cargo:warning=OUT_DIR {} is not <profile>/build/<pkg>/out; no core-fingerprint.txt", out.display()),
+        None => println!("cargo:warning=OUT_DIR {} is not <profile>/build/<pkg>/[<hash>/]out; no core-fingerprint.txt", out.display()),
     }
 }
 

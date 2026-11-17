@@ -26,7 +26,7 @@ import { ensureClaudeSession, ensureCodexSession, killSession } from '../../ipc/
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
 import { claude } from '../providers';
-import { attachClipboardKeys } from './terminal/keys';
+import { attachKeys } from './terminal/keys';
 import { linkHandler } from './terminal/links';
 import { ptySender } from './terminal/pty';
 import { safely } from './terminal/safely';
@@ -170,7 +170,7 @@ function create(spec: TermSpec): Entry {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(host);
-  attachClipboardKeys(term);
+  attachKeys(term);
   const bufferSub = pinToBottom(term);
 
   let disposed = false;
@@ -214,8 +214,8 @@ function create(spec: TermSpec): Entry {
     safely(stopTheme);
     safely(() => bufferSub.dispose());
     unlisteners.forEach(u => safely(u));
-    // Drop the webgl context before the terminal: disposing it afterwards
-    // hits already-freed renderer state and throws.
+    // The webgl addon before the terminal, so its context goes now, through
+    // the call that loaded it (webgl.ts), rather than with the terminal.
     disposeWebgl();
     safely(() => term.dispose());
     host.remove();

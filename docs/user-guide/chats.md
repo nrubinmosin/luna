@@ -423,6 +423,8 @@ double-click on its name; a name you set is never overwritten.
   their absolute paths typed into the prompt.
 - Ctrl+C over a selection copies it; with nothing selected it interrupts the CLI.
   Selecting alone copies nothing.
+- Alt with an arrow key sends what Ctrl with it sends: Alt+Left and Alt+Right
+  move a word, where the CLI's input takes such a move.
 - A link opens in your browser, chosen in Settings → Links: a default, and one
   per account or per project folder. Shift+click lists every browser, can
   remember the pick for that chat, and copies the link. Order: the chat's pick,

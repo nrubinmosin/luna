@@ -11,15 +11,19 @@ in [testing.md](testing.md); cutting a release is in [releasing.md](releasing.md
 | --- | --- |
 | Rust | `src-tauri/rust-toolchain.toml` and the images' `FROM rust:<version>` |
 | Node | `.node-version` and the images' `FROM node:<version>` |
-| pnpm | `packageManager` in `package.json` (via corepack) |
+| pnpm | `packageManager` in `package.json`, run by corepack; its settings in `pnpm-workspace.yaml` |
+| corepack | `corepack@<version>` in `docker/windows-build.Dockerfile` and `docker/screenshots.Dockerfile` (Node ships without it from 25 on) |
 | cargo-xwin, NSIS | `docker/windows-build.Dockerfile` |
 | Rust nightly, cargo-fuzz (fuzzing only) | `docker/fuzz.Dockerfile` and `src-tauri/fuzz/rust-toolchain.toml`; `scripts/fuzz.ps1` fails when the two disagree |
 
 The gate fails when the pins disagree. Every `FROM` names its image by tag and
-digest; the gate's frontend steps run in the Windows image's Node stage, so one
-pin serves both. Images are tagged by a hash of what they are built from
-(`scripts/lib.ps1`), which also holds the shared plumbing: the
-one-build-at-a-time mutex, the build stamp, the docker runs.
+digest; the gate's frontend steps run in the Windows image's Node stage, built
+as an image of its own (`Get-FrontendImage`), so one pin serves both. Images are
+tagged by a hash of what they are built from (`scripts/lib.ps1`), which also
+holds the shared plumbing: the one-build-at-a-time mutex, the build stamp, the
+docker runs. The builds install the frontend's packages into a Docker volume
+every checkout shares, one per pnpm major (`luna-node-modules-pnpm<major>`): a
+pnpm without a terminal refuses to clear what another major laid out.
 
 ## First clone
 

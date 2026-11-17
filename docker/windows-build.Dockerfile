@@ -4,17 +4,24 @@
 # Usage:  see scripts/build-windows.ps1
 #
 # Every version is pinned: Rust here and in src-tauri/rust-toolchain.toml, Node
-# here and in the repo's .node-version, cargo-xwin below. The gate checks that
-# the pins agree (scripts/gate.ps1), and the digests hold each tag to one build.
+# here and in the repo's .node-version, corepack and cargo-xwin below. The gate
+# checks that the pins agree (scripts/gate.ps1), and the digests hold each tag
+# to one build.
 
 # Node comes from the official image of the exact version, not from a distro or
 # NodeSource channel that moves under the same name. The gate's frontend steps
-# run in this same image (scripts/lib.ps1 Get-NodeImage).
-FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS node
+# run in this stage alone (scripts/lib.ps1 Get-FrontendImage).
+FROM node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS node
+
+# Node ships without corepack from 25 on. It comes from npm at an exact
+# version, the same as docker/screenshots.Dockerfile's, and runs the pnpm
+# package.json's packageManager names.
+RUN npm install --global --no-fund --no-audit --no-update-notifier corepack@0.36.0 \
+    && corepack enable
 
 # Trixie for NSIS 3.11: the tauri 2.12 installer script includes
 # Win\RestartManager.nsh, which bookworm's NSIS 3.08 does not ship.
-FROM rust:1.99.1-trixie@sha256:8a4e90c7946b74626488b1446f712c0fe0ed1a596cbd3d871684bc9c5433ae07
+FROM rust:1.100.0-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nsis lld llvm clang curl ca-certificates \
