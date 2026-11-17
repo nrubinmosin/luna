@@ -277,8 +277,8 @@ must not undo (a spawn, a conversation named, a delete, a question, a
 handover), the registry is written to `<data>/helpers.json` when changed, one
 save at a time. It holds the spec without its token, the session id, the
 worktree, the turn count, queued text with each sender (`Queued`; a `send` or
-`interrupt` past 16 MB queued for the helper is refused, saying why,
-`room_for`), and the
+`interrupt` past 16 MB waiting for the helper, queued or joined on its stdin
+and not yet taken in, is refused, saying why, `room_for`), and the
 agent ties (`agents::Ties`: parent, name, settings, debts, counts shown, all
 helpers' read in one hold of the agent registry, `ties_of_each`, so a save
 never keeps a line half moved); the

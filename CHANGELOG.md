@@ -123,6 +123,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   notifier no longer drops it as one that no ask stands for.
 - A save of the chats' ties waiting behind another as the sessions are
   stopped no longer writes over what was saved before.
+- Text joined to a helper's running turn on a stdin its CLI does not read
+  counts against the 16 MB a helper may have waiting.
 
 ## [0.18.5] - 2026-11-17
 

@@ -264,10 +264,14 @@ pub fn send_marked(id: &str, text: &str, from: Option<&str>, budget: Vec<BudgetM
 /// `helpers.json`, written whole at each change.
 const QUEUED_MAX: usize = 16 * 1024 * 1024;
 
-/// Whether `text` may join what is queued for helper `id`: refused, with the
-/// reason, past `QUEUED_MAX`. Text into an empty queue always may.
+/// Whether `text` may join what waits for helper `id`: refused, with the
+/// reason, past `QUEUED_MAX`. What waits is its queue and what joined its
+/// running turn on stdin that its CLI has not taken in yet (`Entry::fed`,
+/// let go as the CLI echoes it): a CLI that stopped reading its stdin would
+/// otherwise have every send join a turn that never takes them. Text when
+/// nothing waits always may.
 pub(super) fn room_for(id: &str, e: &Entry, text: &str) -> Result<(), String> {
-    let queued: usize = e.queue.iter().map(|q| q.text.len()).sum();
+    let queued: usize = e.queue.iter().chain(&e.fed).map(|q| q.text.len()).sum();
     if queued > 0 && queued + text.len() > QUEUED_MAX {
         crate::log::warn("background", &format!("refused text for {id}: {} KB queued for it already", queued / 1024));
         return Err(format!(
@@ -408,6 +412,24 @@ mod tests {
         e.queue.push("z".into());
         let refused = room_for("bq-room", &e, "w").unwrap_err();
         assert!(refused.contains("queued already"), "{refused}");
+    }
+
+    /// Text that joined a running turn on a stdin its CLI does not read
+    /// counts until the CLI takes it: past the bound a send is refused, and
+    /// once the CLI has taken it in there is room again.
+    #[test]
+    fn text_joined_on_a_stdin_never_read_counts_against_the_bound() {
+        let mut e = entry(Provider::Claude);
+        let _unread = feeding(&mut e);
+        let big = "j".repeat(QUEUED_MAX / 2);
+        for _ in 0..2 {
+            room_for("bq-fed", &e, &big).unwrap();
+            assert_eq!(place(&mut e, big.as_str().into(), true), Placed::Joined);
+        }
+        assert!(e.queue.is_empty() && e.fed.len() == 2);
+        assert!(room_for("bq-fed", &e, "one more").unwrap_err().contains("queued already"));
+        e.fed.clear();
+        assert!(room_for("bq-fed", &e, "one more").is_ok(), "taken in: room again");
     }
 
     #[test]
