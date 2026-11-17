@@ -629,7 +629,11 @@ turn, stopped on a prompt (once per stop) or exited.
   stays open while its background subagents work, and `codex exec`
   interrupts its subagents as the turn ends), no answer owed to it by anyone
   but that parent, no `wait` of its out, nothing queued, held or reserved for
-  it (background `work_and_count`) and no line such as a wake queued for it.
+  it (background `work_and_count`) and no line waiting to go in: one queued
+  for it (a wake), or one the notifier has for it at its latest look and
+  types in unasked (`lines_coming`: an account's usage window past a level, a
+  helper's context past its level, a spawn a core's going cut off, a refused
+  place, a handoff), as each starts a turn of its own.
   What it wrote does not count: a lead ended a turn on "Gate is running;
   waiting." with no gate started, and its parent read that as work under way
   (issue #77). Not with a cut-off line, which already says a send has it

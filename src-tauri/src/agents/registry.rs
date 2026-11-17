@@ -167,6 +167,11 @@ pub(super) struct Registry {
     pub(super) quota_told: HashMap<(String, String, String), QuotaTold>,
     /// Lines for a caller's next notice that no debt brings: by caller.
     pub(super) news: Vec<(String, String)>,
+    /// The callers the notifier has a line of its own for at its latest look
+    /// (a usage window, a helper's context, a spawn cut off, a refused place, a
+    /// handoff) that it types in without being asked: each wakes its caller, so
+    /// none of them is told that nothing will (lines.rs `runs_nothing`).
+    pub(super) lines_coming: std::collections::HashSet<String>,
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
     pub(super) places_refused: HashMap<String, PlacesRefused>,
@@ -230,6 +235,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             exits: HashMap::new(),
             quota_told: HashMap::new(),
             news: Vec::new(),
+            lines_coming: Default::default(),
             places_refused: HashMap::new(),
             handed_off: HashMap::new(),
             applied: HashMap::new(),
