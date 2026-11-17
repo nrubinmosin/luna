@@ -505,10 +505,6 @@ pub(super) fn notifier() {
         for caller in handed.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
-        // Said once its caller is ready for it, wherever the pass gets to with
-        // it first: until then it is coming (`runs_nothing`).
-        reg().lock().unwrap_or_else(|e| e.into_inner()).lines_coming =
-            (quota.keys().chain(budget.keys())).chain(spawns.keys()).chain(places.keys()).chain(handed.keys()).cloned().collect();
         idle_looks.retain(|c, _| by_caller.contains_key(c));
         drafts.retain(|c, _| by_caller.contains_key(c));
         company_since.retain(|c, _| by_caller.contains_key(c));
