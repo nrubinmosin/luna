@@ -56,7 +56,7 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
   AI attribution (`Co-Authored-By:`, the robot emoji, "Generated with ...").
   Merges, reverts and the release bump `Luna X.Y.Z` keep git's own form; a
   `fixup!`, `squash!` or `amend!` passes the hook and fails CI. CI checks every
-  pushed commit the same way, Dependabot's for attribution only. By hand:
+  pushed commit the same way. By hand:
   `sh scripts/check-commit-msg.sh FILE` or `--range A..B`; the check's own tests
   are `scripts/check-commit-msg.test.sh`, a step of the gate.
 

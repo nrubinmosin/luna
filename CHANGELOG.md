@@ -78,7 +78,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Dependabot opens no more pull requests: the crates, npm packages, pinned
   Actions and Docker images move by hand, in the project's own commits through
   the gate, and Dependabot only alerts on advisories
-  ([ADR-0029](docs/adr/0029-dependencies-move-by-hand.md)).
+  ([ADR-0029](docs/adr/0029-dependencies-move-by-hand.md)). The commit-message
+  check holds every commit to the rules, with no exemption for Dependabot's.
 
 ### Removed
 
