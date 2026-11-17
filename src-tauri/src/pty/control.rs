@@ -478,12 +478,16 @@ impl PtyManager {
     }
 
     /// Whether a session other than `id` is in this worktree: a running one
-    /// started in it or moved into it itself, or a background helper sent to
-    /// it or working in it, between its turns too.
+    /// started in it or into it (`Session::enters`: Claude Code's registry
+    /// says so only once the CLI is up) or moved into it itself, or a
+    /// background helper sent to it or working in it, between its turns too.
     pub fn worktree_shared(&self, id: &str, wt: &str) -> bool {
         let inside = |p: &str| crate::worktree::within(p, wt);
         // Probed off the session map: the disk reads below must not hold it.
-        self.activity_probes().iter().filter(|p| p.id != id).any(|p| inside(&p.cwd) || p.working_dir().is_some_and(|real| inside(&real)))
+        self.activity_probes()
+            .iter()
+            .filter(|p| p.id != id)
+            .any(|p| inside(&p.cwd) || p.enters.as_deref().is_some_and(inside) || p.working_dir().is_some_and(|real| inside(&real)))
             || crate::background::working_dirs(Some(id)).iter().any(|d| inside(d))
     }
 
@@ -687,6 +691,7 @@ mod tests {
             work_output_ms: Arc::new(AtomicU64::new(now_ms())),
             pid: None,
             cwd: cwd.to_string(),
+            enters: None,
             spawned_at_ms: now_ms() as u128,
             resume: None,
             account_path: String::new(),
@@ -814,6 +819,32 @@ mod tests {
         let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
         taken(id);
         let came = fake_session(other, &wt_path, PROMPT);
+        quit.store(true, Ordering::SeqCst);
+        assert_eq!(deleting.join().unwrap(), Ok(None), "kept, and no path given back to remove");
+        assert!(wt.exists());
+        came.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session started into a worktree by name, its `cwd` the project
+    /// (Claude Code's `--worktree <name>`), keeps that worktree from another
+    /// chat's delete from its start on: Claude Code's registry says where it
+    /// went only once the CLI has come up.
+    #[test]
+    fn a_worktree_a_session_was_started_into_is_kept_from_its_start() {
+        let (id, other) = ("dl-wt-before", "dl-wt-named");
+        let dir = scratch("named");
+        let wt = dir.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let (folder, wt_path) = (dir.to_string_lossy().into_owned(), wt.to_string_lossy().into_owned());
+        let came = fake_session(other, &folder, PROMPT);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(other).unwrap().enters = Some(wt_path.clone());
+        assert!(super::super::live_cwds().contains(&wt_path), "in use to the orphan sweep too");
+        let quit = fake_session(id, &wt_path, PROMPT);
+        let (f, w) = (folder.clone(), wt_path.clone());
+        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
+        taken(id);
         quit.store(true, Ordering::SeqCst);
         assert_eq!(deleting.join().unwrap(), Ok(None), "kept, and no path given back to remove");
         assert!(wt.exists());

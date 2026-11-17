@@ -47,6 +47,9 @@ lose, and to sweep the ones no chat claims.
   listed, keeps it, and one that comes during the removal is refused. A
   helper's delete with `dropWorktree` and the orphan sweep hold each worktree
   they remove the same way, the sweep asking again whether anyone is in it.
+  A Claude Code chat started into a worktree by name (`--worktree <name>`
+  from the project folder) is in it from its start (`Session::enters`), not
+  only once its registry says so.
   Removal is
   `git worktree remove -f -f`, since Claude Code locks its worktree and a killed
   one does not release the lock. Only `worktree-*` branches are ever deleted.

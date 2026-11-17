@@ -130,6 +130,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A helper's delete with its worktree and the sweep of orphan worktrees keep
   a worktree a chat or helper is starting in, and refuse a start into one
   they are removing, as a chat's delete does.
+- A Claude Code chat resumed into its worktree by name keeps that worktree
+  from a delete or the orphan sweep from its start, not only once its CLI has
+  said where it is.
 
 ## [0.18.5] - 2026-11-17
 

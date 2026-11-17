@@ -105,9 +105,11 @@ pub(super) struct Launch {
     /// The account counted as in use since before the start's library pass
     /// (`library::lay_out_for`), until the process is counted itself.
     pub(super) reserved: Option<crate::account_use::Running>,
-    /// A worktree there already that the process goes into though it is not
-    /// its `cwd`: Claude Code's by `--worktree <name>`. Held against its
-    /// removal as the `cwd` is (`worktree::entering`).
+    /// A worktree the process goes into though it is not its `cwd`: Claude
+    /// Code's by `--worktree <name>`, there already or made again. Held against its
+    /// removal as the `cwd` is (`worktree::entering`) until the session is in
+    /// the map, and kept there with it (`Session::enters`) for as long as it
+    /// runs.
     pub(super) enters: Option<String>,
 }
 
@@ -234,7 +236,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let Some(launch) = capture::keep(&id, launch) else {
         return Ok(String::new());
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters: _ } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -595,6 +597,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             work_output_ms,
             pid,
             cwd,
+            enters,
             spawned_at_ms,
             resume,
             account_path,

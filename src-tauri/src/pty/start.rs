@@ -639,7 +639,9 @@ pub async fn ensure_claude_session(
         if worktree && resume.is_none() && !there {
             crate::worktree::fetch_origin(&folder);
         }
-        let enters = worktree_name.as_deref().filter(|_| worktree && there).map(|name| crate::worktree::named_path(&folder, name));
+        // The worktree it goes into by name, there already or made again: in
+        // use from the start (`Launch::enters`), not once its registry says so.
+        let enters = worktree_name.as_deref().filter(|_| worktree).map(|name| crate::worktree::named_path(&folder, name));
         // The skills the library gives sessions in this folder and keeps from
         // them, at every start (library/folders.rs `session_args`); not to a login
         // session.

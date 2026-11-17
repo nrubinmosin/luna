@@ -272,7 +272,11 @@ the command quotes `"@-"` and calls curl by full path.
   removal (`worktree::removing`); a start or a helper on its way into a
   worktree holds its way in (`worktree::entering`) until it is listed where
   that question looks, so the delete keeps a worktree one is entering, and
-  one entering a worktree being removed is refused, saying so.
+  one entering a worktree being removed is refused, saying so. A Claude Code
+  chat started into a worktree by name runs in the project folder, and its
+  registry says where it went only once the CLI is up: its session keeps
+  that worktree (`Session::enters`) from the start, for the sharing check
+  and the orphan sweep (`live_cwds`).
 - A session's exit names only its chat id. Whoever takes a session out of
   the map (a delete, a kill, a start over a session that exited by itself)
   waits under the gate, up to 5 s (`READER_WAIT`), for its reader thread to

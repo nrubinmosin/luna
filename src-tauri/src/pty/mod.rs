@@ -257,6 +257,11 @@ struct Session {
     work_output_ms: Arc<AtomicU64>,
     pid: Option<u32>,
     cwd: String,
+    /// The worktree it was started into though that is not its `cwd`
+    /// (`Launch::enters`): in it from the start for whoever asks whether a
+    /// worktree is in use, where Claude Code's registry says so only once the
+    /// CLI has come up.
+    enters: Option<String>,
     spawned_at_ms: u128,
     /// The session id this was resumed with, if any: Codex is found on disk
     /// by it.

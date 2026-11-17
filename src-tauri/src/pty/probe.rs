@@ -80,6 +80,9 @@ pub struct ActivityProbe {
     pub provider: Provider,
     pub pid: Option<u32>,
     pub cwd: String,
+    /// The worktree it was started into, where that is not its `cwd`
+    /// (`Session::enters`).
+    pub enters: Option<String>,
     pub spawned_at_ms: u128,
     pub resume: Option<String>,
     pub account_path: String,
@@ -121,6 +124,7 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
         provider: s.provider,
         pid: s.pid,
         cwd: s.cwd.clone(),
+        enters: s.enters.clone(),
         spawned_at_ms: s.spawned_at_ms,
         resume: s.resume.clone(),
         account_path: s.account_path.clone(),
@@ -141,7 +145,7 @@ pub fn live_cwds() -> Vec<String> {
         .into_iter()
         .flat_map(|p| {
             let moved = p.working_dir();
-            [Some(p.cwd), moved].into_iter().flatten()
+            [Some(p.cwd), p.enters, moved].into_iter().flatten()
         })
         .collect();
     cwds.extend(crate::background::working_dirs(None));
