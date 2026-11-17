@@ -621,6 +621,19 @@ turn, stopped on a prompt (once per stop) or exited.
   ([handoff](handoff.md#leads)) is not woken, its parent waiting on, and as
   the fresh one starts a wake queued or given in the one it leaves is dropped
   (`lead_goes_fresh`): the opening says where its delegates stand.
+- **Nothing running.** A helper's or lead's turn end told to its parent as
+  "finished its turn" adds "Nothing of its own is running: it will not go on
+  unless you send to it." (`NOTHING_RUNNING`) when nothing would start its
+  next turn (`runs_nothing`): idle with nothing its turns left
+  (`children_busy`: what its job holds, both CLIs; a Claude Code `-p` turn
+  stays open while its background subagents work, and `codex exec`
+  interrupts its subagents as the turn ends), no answer owed to it by anyone
+  but that parent, no `wait` of its out, nothing queued, held or reserved for
+  it (background `work_and_count`) and no line such as a wake queued for it.
+  What it wrote does not count: a lead ended a turn on "Gate is running;
+  waiting." with no gate started, and its parent read that as work under way
+  (issue #77). Not with a cut-off line, which already says a send has it
+  carry on, nor to a caller that is not its parent.
 - **Requests.** Each (caller, session) numbers the caller's requests (owed.rs
   `Requests`: a spawn 1, each send one more, with its `requestKey`), and a
   debt covers those made since the last one settled. With more than one,

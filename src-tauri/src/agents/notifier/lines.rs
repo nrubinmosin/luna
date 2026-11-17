@@ -628,7 +628,9 @@ pub(in crate::agents) fn notice_line(
         }
         // Too short a turn for a notice of its own in between.
         let resumed = if o.resumed { " Luna's core stopped it on the way and it resumed automatically." } else { "" };
-        return Some((Some(format!("{who} finished its turn{reply}.{stopped}{lost}{resumed}{unsure}")), Settled::Answered));
+        // A cut-off line already says a send has it carry on.
+        let idle = if parent && stopped.is_empty() && alive && runs_nothing(id, caller, ts) { NOTHING_RUNNING } else { "" };
+        return Some((Some(format!("{who} finished its turn{reply}.{idle}{stopped}{lost}{resumed}{unsure}")), Settled::Answered));
     }
     // A turn gone quiet is told once, and once more if it then answers and
     // goes quiet again only waiting on its background work: the first notice
@@ -663,6 +665,33 @@ pub(in crate::agents) fn notice_line(
         }
     }
     standing_line(pty, who, id, k, o)
+}
+
+/// What a parent's notice adds when its helper or lead ended a turn with
+/// nothing left to go on with (`runs_nothing`). A lead ended its turn on
+/// "Gate is running; waiting." with no gate started, and its parent, told only
+/// that it finished its turn, read that as work under way for ten hours.
+const NOTHING_RUNNING: &str = " Nothing of its own is running: it will not go on unless you send to it.";
+
+/// Whether session `id`, its turn state `ts`, is between turns with nothing
+/// that would start its next turn or that it waits on, beside what `caller`
+/// sends it: no job or subagent its turns left (`children_busy`); no answer
+/// owed to it by anyone else, a helper of its own or a session it wrote to,
+/// whose notice would wake it; no `luna_session_wait` of its out; nothing
+/// queued, held or reserved for it, and no line such as a wake waiting to go
+/// in. What its words say it waits on does not count: only what Luna sees run.
+fn runs_nothing(id: &str, caller: &str, ts: Option<crate::activity::TurnState>) -> bool {
+    if !ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy) {
+        return false;
+    }
+    if crate::background::work_and_count(id).is_some_and(|(work, _)| work) {
+        return false;
+    }
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    !r.owed.keys().any(|(c, h)| c == id && h != caller)
+        && !r.waits.keys().chain(r.reserved.keys()).any(|(c, _)| c == id)
+        && !r.held.iter().any(|h| h.id == id)
+        && !r.news.iter().any(|(c, _)| c == id)
 }
 
 /// What a notice says of a helper whose CLI stopped what its last turn left in
@@ -2192,5 +2221,78 @@ mod tests {
         crate::background::gone_for_test("in-s");
         forget("in-s");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Issue #77: a lead ended its turn on "Gate is running; waiting." with no
+    /// gate started, and its parent read "finished its turn" as work going on.
+    /// Its parent's notice says when nothing of its own runs, on either CLI's
+    /// transcript, and not while a job, a helper of its own, a session it wrote
+    /// to, a wait or a line for it is still to come, nor to a caller not its parent.
+    #[test]
+    fn a_turn_ended_with_nothing_running_says_so_to_its_parent() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let said = match provider {
+                Provider::Claude => said_line("Gate is running for the final fixes; waiting."),
+                Provider::Codex => format!(
+                    "{}\n",
+                    serde_json::json!({ "type": "response_item", "payload": { "type": "message", "role": "assistant",
+                        "content": [{ "type": "output_text", "text": "Gate is running for the final fixes; waiting." }] } })
+                ),
+            };
+            let tag = provider.as_str();
+            let [top, id, low, other] = ["top", "lead", "low", "other"].map(|s| format!("nx-{tag}-{s}"));
+            let (top, id, low, other) = (top.as_str(), id.as_str(), low.as_str(), other.as_str());
+            let (known, path) = lead_on(provider, top, id, 1, false, &said);
+            let pty = crate::pty::manager();
+            let o = held(Owed::from(0, 0), 1, REPLY_GRACE_MS);
+            let says = |caller: &str| match notice_line(pty, caller, "Your helper", id, &known, o) {
+                Some((Some(line), _)) => Some(line),
+                _ => None,
+            };
+            let plain = says(top).unwrap_or_else(|| panic!("{tag}: its turn is over"));
+            assert!(plain.contains("finished its turn with 1 message since you asked: \"Gate is running"), "{tag}: {plain}");
+            assert!(plain.contains(NOTHING_RUNNING), "{tag}: {plain}");
+            // Only its parent is told to send to it.
+            let to_other = says(other).unwrap_or_else(|| panic!("{tag}: a caller not its parent still hears"));
+            assert!(!to_other.contains(NOTHING_RUNNING), "{tag}: {to_other}");
+            let quiet = |what: &str| {
+                let line = says(top).unwrap_or_default();
+                assert!(!line.contains(NOTHING_RUNNING), "{tag}, {what}: {line}");
+            };
+            // What would wake it, each in turn.
+            register(other, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
+            owe_from(id, other, 0, 0);
+            quiet("a session it wrote to owes it an answer");
+            reg().lock().unwrap().owed.remove(&(id.to_string(), other.to_string()));
+            reg().lock().unwrap().waits.insert((id.to_string(), other.to_string()), 0);
+            quiet("a wait of its is out");
+            reg().lock().unwrap().waits.remove(&(id.to_string(), other.to_string()));
+            reg().lock().unwrap().news.push((id.to_string(), "a line for it".to_string()));
+            quiet("a line waits to go into it");
+            reg().lock().unwrap().news.retain(|(c, _)| c != id);
+            assert!(says(top).unwrap_or_default().contains(NOTHING_RUNNING), "{tag}: as before once all that is gone");
+            // A helper of its own owes it an answer: no notice yet, and none saying that.
+            register(low, provider, "C:\\p", "C:\\acc\\x\\one", Some(id), false, serde_json::json!({ "background": true }));
+            owe_from(id, low, 0, 0);
+            quiet("a helper of its own owes it");
+            reg().lock().unwrap().owed.remove(&(id.to_string(), low.to_string()));
+            // A job its turn left in the background.
+            crate::background::left_for_test(id, &[("bash.exe", 4242, 0)]);
+            quiet("a job it left runs");
+            crate::background::left_for_test(id, &[]);
+            // A turn at work, as a Claude Code `-p` one is while its subagents run.
+            crate::background::set_running_for_test(id);
+            quiet("its turn runs");
+            crate::background::idle_for_test(id, provider, 1, false);
+            // Its CLI cut its background work off: that line says how it goes on.
+            crate::background::background_stopped_for_test(id, &[top]);
+            let cut = says(top).unwrap_or_default();
+            assert!(!cut.contains(NOTHING_RUNNING) && STOPPED_LINES.iter().any(|l| cut.contains(l)), "{tag}: {cut}");
+            crate::background::gone_for_test(id);
+            for s in [id, top, low, other] {
+                forget(s);
+            }
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }

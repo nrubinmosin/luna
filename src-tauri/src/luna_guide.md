@@ -153,6 +153,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   need your parent to see now with one. Once all of it is done and you have said nothing, Luna
   wakes you once ("Your delegates have finished: …"); say nothing then either, and your parent
   hears you seem stuck.
+- A helper writing that it is waiting proves nothing: its row's `state` (`idle` or `background`)
+  and what it has running count. A turn-end notice says "Nothing of its own is running" when
+  nothing would wake it: it goes on only once you send to it.
 - Past 12 turn-end notices about one session in 15 minutes Luna stops telling you of its turns
   and jobs (the last says so; its prompts and questions still come) until a person types into
   either chat; waits and reads still work.

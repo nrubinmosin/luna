@@ -8,6 +8,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- A helper or lead that ends its turn with nothing of its own running (no
+  job, subagent or helper of its own at work, nothing on its way into it)
+  no longer reads as busy: its parent's notice says "Nothing of its own is
+  running: it will not go on unless you send to it", whatever its last words
+  said it was waiting for, on Claude Code and Codex alike. The lead's role
+  text tells it never to end a turn saying it is waiting unless a helper or
+  background task of its own will wake it, and the guide tells parents that
+  a helper's "waiting" proves nothing (#77).
+
 ## [0.18.3] - 2026-11-17
 
 Luna now installs Claude Code 2.1.325 and runs nothing older. Only the
