@@ -9,6 +9,17 @@ pub fn told_parent_for_test(id: &str) -> Option<String> {
     lock().entries.get(id)?.spec.parent.clone()
 }
 
+/// Its next turn's parent, as a spawn sets it: no change of the registry's
+/// written before.
+#[cfg(test)]
+pub fn set_parent_for_test(id: &str, parent: Option<String>) {
+    let mut r = lock();
+    r.parent_changes.remove(id);
+    if let Some(e) = r.entries.get_mut(id) {
+        e.spec.parent = parent;
+    }
+}
+
 /// Text that never reached a helper, by whom, for the tests of who hears of it.
 /// A notice with `mark` in it, given to a helper as `send_marked` does, the part
 /// that starts a CLI aside. Returns whether it was queued.
@@ -23,10 +34,16 @@ pub fn queued_for_test(id: &str) -> Vec<String> {
     lock().entries.get(id).map(|e| e.queue.iter().map(|q| q.text.clone()).collect()).unwrap_or_default()
 }
 
-/// Being opened as a chat by the person, or not.
+/// Being opened as a chat by the person, or not: an opening that never lapses.
+/// Tests run side by side, and one that lapses openings (`lapse_openings`, by
+/// way of `activity`) at the real time would take back one begun at 0, the
+/// default, past PROMOTE_TIMEOUT_MS since.
 #[cfg(test)]
 pub fn promoting_for_test(id: &str, on: bool) {
-    lock().entries.get_mut(id).unwrap().promoting = on;
+    let mut r = lock();
+    let e = r.entries.get_mut(id).unwrap();
+    e.promoting = on;
+    e.promoting_since = u64::MAX;
 }
 
 /// A turn of its runs.
@@ -59,6 +76,14 @@ pub fn turn_ended_for_test(id: &str) {
 #[cfg(test)]
 pub fn hold_for_test(id: &str) {
     let ask = Ask::from_claude_tool("Bash", &json!({ "command": "x" }));
+    lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, answer: None });
+}
+
+/// It stops on a question its model asked (`AskUserQuestion`), held the same way.
+#[cfg(test)]
+pub fn hold_question_for_test(id: &str) {
+    let q = crate::agents::AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+    let ask = Ask::question(vec![q], false);
     lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, answer: None });
 }
 
@@ -232,6 +257,54 @@ pub(crate) fn gone_for_test(id: &str) {
     lock().entries.remove(id);
 }
 
+/// Its turn is over and what was queued is reserved for the next, as
+/// `turn_over` reserves it, the turn's command not made yet.
+#[cfg(test)]
+pub(crate) fn reserved_for_test(id: &str) {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    claim(e);
+    reserve(e);
+}
+
+/// The reserved turn's command is about to be made (run.rs `spawn_turn`):
+/// whether it is made, and the turn starting, or `overtaken` by a move.
+#[cfg(test)]
+pub(crate) fn launch_for_test(id: &str) -> bool {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    if overtaken(e) {
+        return false;
+    }
+    if let Some(run) = e.run.as_mut() {
+        run.starting = true;
+    }
+    true
+}
+
+/// The turn whose command was made could not start, as `run_turn` gives one up.
+#[cfg(test)]
+pub(crate) fn launch_failed_for_test(id: &str) {
+    if let Some(e) = lock().entries.get_mut(id) {
+        e.run = None;
+    }
+    reg().1.notify_all();
+}
+
+/// What is queued reserved and its senders asked, as the next turn's start
+/// does (`go_on`): the text that turn would start on, the claim left in place
+/// and no CLI started.
+#[cfg(test)]
+pub(crate) fn settled_for_test(id: &str) -> Option<String> {
+    let res = {
+        let mut r = lock();
+        let e = r.entries.get_mut(id).expect("a test helper");
+        claim(e);
+        reserve(e)
+    };
+    settle_batch(id, res).map(|b| b.text)
+}
+
 /// The helper in a turn with no process, so nothing real can be killed.
 #[cfg(test)]
 pub(crate) fn in_turn_for_test(id: &str) {
@@ -305,6 +378,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         promoting: false,
         promoting_since: 0,
         deleting: false,
+        moving: false,
         handing: false,
         observed: Observed::default(),
         switch: None,
@@ -368,6 +442,7 @@ pub(super) fn entry(provider: Provider) -> Entry {
         promoting: false,
         promoting_since: 0,
         deleting: false,
+        moving: false,
         handing: false,
         observed: Observed::default(),
         switch: None,
@@ -495,4 +570,17 @@ pub(crate) fn codex_in_turn_for_test(id: &str, account: &str, thread: &str, star
 #[cfg(test)]
 pub(crate) fn turn_over_for_test(id: &str, code: Option<i32>) {
     turn_over(id, code);
+}
+
+/// Its turn's prompt told it of move `moved` (agents/reparent.rs `move_note`),
+/// and its model has answered it or not, for the tests of when that is told.
+#[cfg(test)]
+pub(crate) fn carried_move_for_test(id: &str, moved: crate::agents::Moved, acted: bool) {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    if e.run.is_none() {
+        claim(e);
+    }
+    e.run.as_mut().unwrap().moved = Some(moved);
+    e.observed.acted = acted;
 }

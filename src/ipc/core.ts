@@ -55,6 +55,8 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'background_kill',
   'background_delete',
   'background_at_stake',
+  'background_move',
+  'background_move_targets',
   'background_transcript',
   'set_keep_awake',
   'arm_power_off',

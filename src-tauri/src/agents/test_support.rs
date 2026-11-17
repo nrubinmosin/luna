@@ -90,3 +90,47 @@ pub(super) fn spawn_taken(request: u64, caller: &str, helper: Option<&str>, resu
 pub(super) fn tooled(id: &str) {
     register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
 }
+
+/// A place in production code a test may stop a call at (`stop_at`), to put
+/// something of its own between two of the call's steps: the call stops at
+/// `reached` with the same point and session, until the test lets it go.
+#[allow(clippy::type_complexity)]
+static STOPS: Mutex<Vec<(&'static str, String, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = Mutex::new(Vec::new());
+
+/// A test's hold on a call stopped at a point (`stop_at`).
+pub(super) struct Stop {
+    reached: std::sync::mpsc::Receiver<()>,
+    go: std::sync::mpsc::Sender<()>,
+}
+
+impl Stop {
+    /// Until the call is at the point.
+    pub(super) fn wait(&self) {
+        self.reached.recv_timeout(std::time::Duration::from_secs(20)).expect("the call never reached the point");
+    }
+
+    /// The call goes on (as it does when the hold is dropped).
+    pub(super) fn go(self) {
+        let _ = self.go.send(());
+    }
+}
+
+/// The next call to reach `point` for session `who` stops there.
+pub(super) fn stop_at(point: &'static str, who: &str) -> Stop {
+    let (tell, reached) = std::sync::mpsc::channel();
+    let (go, wait) = std::sync::mpsc::channel();
+    STOPS.lock().unwrap().push((point, who.to_string(), tell, wait));
+    Stop { reached, go }
+}
+
+/// Production code at `point` for session `who`: stops there if a test asked.
+pub(super) fn reached(point: &str, who: &str) {
+    let found = {
+        let mut stops = STOPS.lock().unwrap_or_else(|e| e.into_inner());
+        stops.iter().position(|(p, w, ..)| *p == point && w == who).map(|i| stops.remove(i))
+    };
+    if let Some((_, _, tell, wait)) = found {
+        let _ = tell.send(());
+        let _ = wait.recv();
+    }
+}

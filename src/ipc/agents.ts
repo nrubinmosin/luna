@@ -35,6 +35,56 @@ export interface BackgroundHelperDto {
   lastActivityMs: number | null;
   /** The first line of what it was spawned on. */
   task: string | null;
+  /** The chat at the top of its line, `parent` managing it: "managed by <parent> · chat <top>". Null with no chat above it. */
+  top?: string | null;
+  /** The person's chats waiting on it now that are not above it: "watched by <chat>". */
+  watchedBy?: string[];
+  /** The person's last move of it to another chat: "moved from <from>, <when>". */
+  moved?: HelperMoveDto;
+  /** The person's chats refused a write into it, the latest last: "Move to <chat>?" (`backgroundMove`). */
+  suggested?: MoveSuggestionDto[];
+}
+
+/** The person's last move of a helper to another chat (agents/reparent.rs `Moved`). */
+export interface HelperMoveDto {
+  /** The chat it was under; null for one that had no chat above it. */
+  from: string | null;
+  to: string;
+  atMs: number;
+  /** A turn of its own has been told of it. */
+  told: boolean;
+}
+
+/** A chat of the person's refused a write into the helper, and when it last was (agents/reparent.rs `Suggested`). */
+export interface MoveSuggestionDto {
+  chat: string;
+  atMs: number;
+}
+
+/** What the person's move did (agents/reparent.rs `HelperMoved`). */
+export interface HelperMovedDto {
+  id: string;
+  from: string | null;
+  to: string;
+  /** Every session that moved: the helper and those under it. */
+  sessions: string[];
+  /** The autoDelete its chat's going had switched on is off again. */
+  autoDeleteOff?: boolean;
+  /** It was at work: the new chat is owed its answer. */
+  owed?: boolean;
+}
+
+/** A chat a helper may move to, and why not where it may not (agents/reparent.rs `MoveTarget`). */
+export interface MoveTargetDto {
+  id: string;
+  ok: boolean;
+  why?: string;
+}
+
+/** Where a helper may move: `blocked` says why it cannot move at all (agents/reparent.rs `MoveTargets`). */
+export interface MoveTargetsDto {
+  blocked?: string;
+  targets: MoveTargetDto[];
 }
 
 /** A background helper to be handed over to the person as a chat of their own (`backgroundPromote`):
@@ -104,9 +154,23 @@ export const backgroundPromoted = (id: string, error: string | null) =>
 /** Stops the turn it is on, or between turns what its turns left running; the conversation stays. */
 export const backgroundKill = (id: string) => call<void>('background_kill', { id });
 /** Deletes it, the worktree it made too unless `dropWorktree` is false. A helper at work is refused
- *  unless `stopWorking`, and a worktree with unsaved work is kept unless `dropUnsaved`. */
-export const backgroundDelete = (id: string, { dropWorktree = true, stopWorking = false, dropUnsaved = false } = {}) =>
-  call<HelperDeletedDto>('background_delete', { id, dropWorktree, stopWorking, dropUnsaved }, {});
+ *  unless `stopWorking`, and a worktree with unsaved work is kept unless `dropUnsaved`; with `ofChat`,
+ *  one that hangs from another chat by now is refused too. */
+export const backgroundDelete = (
+  id: string,
+  {
+    dropWorktree = true,
+    stopWorking = false,
+    dropUnsaved = false,
+    ofChat = null
+  }: { dropWorktree?: boolean; stopWorking?: boolean; dropUnsaved?: boolean; ofChat?: string | null } = {}
+) => call<HelperDeletedDto>('background_delete', { id, dropWorktree, stopWorking, dropUnsaved, ofChat }, {});
+/** Moves the helper, with the helpers under it, to the person's chat `to`; rejects with why not,
+ *  nothing changed. */
+export const backgroundMove = (id: string, to: string) => call<HelperMovedDto>('background_move', { id, to });
+/** The person's chats the helper may move to, each with why not where it may not. */
+export const backgroundMoveTargets = (id: string) =>
+  call<MoveTargetsDto>('background_move_targets', { id }, { targets: [] });
 /** What each helper has at stake in a delete, looked at now. */
 export const backgroundAtStake = (ids: string[]) => call<AtStakeDto[]>('background_at_stake', { ids }, []);
 /** A helper's conversation from `since` on, read-only (`file`: the one `since` was a cursor into). */

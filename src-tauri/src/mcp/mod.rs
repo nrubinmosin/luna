@@ -562,6 +562,64 @@ mod tests {
         }
     }
 
+    /// Another chat's helper is read and waited on with scope "all", but neither
+    /// sent to nor answered, a question its model asked or a permission alike,
+    /// and what it holds stays held (ADR-0028).
+    #[test]
+    fn another_chats_helper_is_written_into_only_from_above_it() {
+        tooled("wh-me");
+        tooled("wh-chat");
+        let claude = crate::provider::Provider::Claude;
+        let background = json!({ "background": true });
+        agents::register("wh-asks", claude, "C:/p", "C:/acc/anthropic/one", Some("wh-chat"), false, background.clone());
+        agents::register("wh-holds", claude, "C:/p", "C:/acc/anthropic/one", Some("wh-chat"), false, background);
+        crate::background::take_up_for_test("wh-asks", "C:/p", 1, &[], None);
+        crate::background::take_up_for_test("wh-holds", "C:/p", 1, &[], None);
+        crate::background::set_running_for_test("wh-asks");
+        crate::background::set_running_for_test("wh-holds");
+        crate::background::hold_question_for_test("wh-asks");
+        crate::background::hold_for_test("wh-holds");
+        let call = |name: &str, args: Value| {
+            let body = json!({ "jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": { "name": name, "arguments": args } });
+            let r = handle("wh-me", &body.to_string()).unwrap()["result"].clone();
+            (r["isError"] == true, r["content"][0]["text"].as_str().unwrap_or("").to_string())
+        };
+        let above = |(failed, text): (bool, String)| {
+            assert!(failed && text.contains("only the sessions above it") && text.contains("chat wh-chat"), "{text}");
+            assert!(text.contains("Move to chat…"), "{text}");
+        };
+        for scope in [json!(null), json!("all")] {
+            above(call("luna_session_send", json!({ "id": "wh-asks", "text": "I run this now", "scope": scope })));
+            above(call("luna_session_answer", json!({ "id": "wh-asks", "answers": ["2"], "scope": scope })));
+            above(call("luna_session_answer", json!({ "id": "wh-holds", "allow": true, "scope": scope })));
+            above(call("luna_session_answer", json!({ "id": "wh-holds", "allow": false, "scope": scope })));
+        }
+        // Past the tool's gate, the write's own check says the same.
+        for (id, answers, allow) in [("wh-asks", vec!["2".to_string()], None), ("wh-holds", vec![], Some(true))] {
+            let e = agents::answer("wh-me", id, None, &answers, allow, None, false).err().unwrap();
+            assert!(e.contains("only the sessions above it"), "{e}");
+        }
+        let e = agents::send("wh-me", "wh-asks", "I run this now", false, None, true).err().unwrap();
+        assert!(e.contains("only the sessions above it"), "{e}");
+        // What each holds is still there, for its own chat.
+        for (id, kind) in [("wh-asks", "question"), ("wh-holds", "permission")] {
+            let (failed, text) = call("luna_session_get", json!({ "id": id, "scope": "all" }));
+            let v: Value = serde_json::from_str(&text).unwrap();
+            assert!(!failed && v["ask"]["kind"] == kind, "{text}");
+        }
+        assert!(crate::background::queued_for_test("wh-asks").is_empty(), "nothing went in");
+        // Reading it and waiting on it stay open.
+        let (failed, text) = call("luna_message_list", json!({ "id": "wh-asks", "scope": "all" }));
+        assert!(!text.contains("above it") && !text.contains("scope"), "{failed} {text}");
+        assert_eq!(agents::in_scope("wh-me", "wh-asks", Some("all"), "wait on"), Ok(()));
+        for id in ["wh-asks", "wh-holds"] {
+            crate::background::remove(id);
+        }
+        for id in ["wh-asks", "wh-holds", "wh-chat", "wh-me"] {
+            agents::forget(id);
+        }
+    }
+
     #[test]
     fn past_spawns_are_the_callers_own_unless_scope_all() {
         tooled("hs-me");
