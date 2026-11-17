@@ -1821,7 +1821,7 @@ mod tests {
     /// Settings to hide the "Use" and "Mark good" this would refuse.
     #[test]
     fn a_version_below_the_minimum_is_flagged() {
-        let root = scratch("below");
+        let root = scratch("flagged");
         update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
         update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
         let known = known_good::Entry { min_safe: "1.5.0".into(), known_good: vec![] };
