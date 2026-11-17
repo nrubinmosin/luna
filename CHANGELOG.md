@@ -10,57 +10,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [0.18.4] - 2026-11-17
 
-A lead now hears of its helpers while its own background subagents run, and
-a parent is told plainly when a helper's turn left nothing running. A
-helper's permission request reaches its parent whole, and an account whose
-sign-in the server refused stays signed out everywhere.
-
-### Fixed
-
-- A helper's permission request reaches its parent whole: `ask.detail` in
-  `luna_session_get` keeps the command (or path, or URL) up to 8 KB, where it
-  was cut to 400 characters with no mark, and past 8 KB ends with `…` and how
-  many characters were left out. The notice quotes only its start, marked where
-  shortened and pointing to `luna_session_get`. `ask.source` says whether the
-  helper itself asks or one of its subagents, where Claude Code says so. A
-  Codex approval on a terminal's screen is read from every row its command is
-  drawn on, down to its own options, not the first alone, and says so where the
-  screen holds only part of the command. `ask.detailCut` counts the characters
-  left out, and the notice shows a line break as `⏎`, not a space.
-- A Claude Code account whose sign-in the server turned down on Luna's own
-  token refresh now stays signed out everywhere and after a restart: Luna
-  clears its tokens in `.credentials.json` as Claude Code does, under the
-  CLI's locks and only if the file still holds the refused token, so helpers
-  and moved chats no longer go to it and Sign in shows. Until now only the
-  Accounts panel knew, until Luna restarted (#76). A file Luna cannot replace
-  is left as it was, its row says so, and the refused token is not sent
-  again.
-- A helper or lead that ends its turn with nothing of its own running (no
-  job, subagent or helper of its own at work, no handoff of its own under
-  way, nothing, a usage or context line included, on its way into it)
-  no longer reads as busy: its parent's notice says "Nothing of its own is
-  running: it will not go on unless you send to it", whatever its last words
-  said it was waiting for, on Claude Code and Codex alike. The lead's role
-  text tells it never to end a turn saying it is waiting unless something
-  will wake it (a helper of its own at work; on Claude Code also a
-  background task or subagent), and the guide tells parents that
-  a helper's "waiting" proves nothing (#77).
-- A Claude Code lead now hears of its helpers while its own background
-  subagents run. Its CLI stays up for them after its answer, and Luna used to
-  hold the lead's notices until they had all ended, which could take hours.
-  The notice now goes in on the lead's stdin and is answered at once, for up
-  to 3 hours after its answer, as long as a helper still owes it one (#73).
-  One that comes while the lead's CLI is at a turn of its own goes in when
-  that turn ends.
-  Codex leads end with their turn, so nothing held theirs back.
-
-## [0.18.3] - 2026-11-17
-
 Luna now installs Claude Code 2.1.325 and runs nothing older. Only the
 sessions above a helper send to it or answer it, and you can move a helper to
-another of your chats from the window. An idle session no longer holds the PC awake
-when it comes into view, and asking for an account's models no longer signs
-it out.
+another of your chats from the window. A lead hears of its helpers while its
+own background subagents run, a parent is told plainly when a helper's turn
+left nothing running, and a helper's permission request reaches its parent
+whole. An idle session no longer holds the PC awake when it comes into view,
+asking for an account's models no longer signs it out, and an account whose
+login is gone shows signed out everywhere, with Sign in.
 
 ### Security
 
@@ -111,6 +68,34 @@ it out.
 
 ### Fixed
 
+- A helper's permission request reaches its parent whole: `ask.detail` in
+  `luna_session_get` keeps the command (or path, or URL) up to 8 KB, where it
+  was cut to 400 characters with no mark, and past 8 KB ends with `…` and how
+  many characters were left out. The notice quotes only its start, marked where
+  shortened and pointing to `luna_session_get`. `ask.source` says whether the
+  helper itself asks or one of its subagents, where Claude Code says so. A
+  Codex approval on a terminal's screen is read from every row its command is
+  drawn on, down to its own options, not the first alone, and says so where the
+  screen holds only part of the command. `ask.detailCut` counts the characters
+  left out, and the notice shows a line break as `⏎`, not a space.
+- A helper or lead that ends its turn with nothing of its own running (no
+  job, subagent or helper of its own at work, no handoff of its own under
+  way, nothing, a usage or context line included, on its way into it)
+  no longer reads as busy: its parent's notice says "Nothing of its own is
+  running: it will not go on unless you send to it", whatever its last words
+  said it was waiting for, on Claude Code and Codex alike. The lead's role
+  text tells it never to end a turn saying it is waiting unless something
+  will wake it (a helper of its own at work; on Claude Code also a
+  background task or subagent), and the guide tells parents that
+  a helper's "waiting" proves nothing (#77).
+- A Claude Code lead now hears of its helpers while its own background
+  subagents run. Its CLI stays up for them after its answer, and Luna used to
+  hold the lead's notices until they had all ended, which could take hours.
+  The notice now goes in on the lead's stdin and is answered at once, for up
+  to 3 hours after its answer, as long as a helper still owes it one (#73).
+  One that comes while the lead's CLI is at a turn of its own goes in when
+  that turn ends.
+  Codex leads end with their turn, so nothing held theirs back.
 - Bringing an idle session into view, moving the focus between panes, or
   any change to the panes' layout (a new chat, a split dragged, the window
   resized), no longer shows it as printing in the power chip nor holds the PC
@@ -129,15 +114,20 @@ it out.
   most, when it quits, restarts, installs an update or is closed by
   Windows' Restart Manager. A CLI that hangs past those 10 seconds while
   saving can still be cut (#75).
-- A Claude Code account whose login the CLI had cleared (empty tokens in
-  `.credentials.json`) no longer shows as signed in with "token refresh
-  failed" and no way back: it shows signed out with its **Sign in** button,
-  and Luna no longer sends a refresh with an empty token. A refresh the
-  server turns down as `invalid_grant` signs the account out the same way;
-  an account on hold, or any other refused refresh, stays a failed refresh.
-  A Codex account with an empty token in `auth.json` reads as signed out
-  too, and neither is picked for a helper; nor is a Claude Code account
-  whose refresh token has run out.
+- A Claude Code account whose login is gone no longer shows as signed in
+  with "token refresh failed" and no way back: it shows signed out with its
+  **Sign in** button, whether the CLI cleared its tokens in
+  `.credentials.json` or the server turned down Luna's own refresh as
+  `invalid_grant` (#76). On such a refusal Luna clears the tokens in
+  `.credentials.json` as Claude Code does, under the CLI's locks and only if
+  the file still holds the refused token, so helpers and moved chats no
+  longer go to it, it stays signed out after a restart, and the refused
+  token is not sent again; a file Luna cannot replace is left as it was, and
+  its row says so. Luna no longer sends a refresh with an empty token. An
+  account on hold, or any other refused refresh, stays a failed refresh. A
+  Codex account with an empty token in `auth.json` reads as signed out too,
+  and neither is picked for a helper; nor is a Claude Code account whose
+  refresh token has run out.
 
 ## [0.18.2] - 2026-11-13
 
@@ -1370,8 +1360,7 @@ fixes below.
   usage limits, worktrees, the updater.
 
 [Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.4...HEAD
-[0.18.4]: https://github.com/nrubinmosin/luna/compare/v0.18.3...v0.18.4
-[0.18.3]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.3
+[0.18.4]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.4
 [0.18.2]: https://github.com/nrubinmosin/luna/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/nrubinmosin/luna/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/nrubinmosin/luna/compare/v0.17.0...v0.18.0
