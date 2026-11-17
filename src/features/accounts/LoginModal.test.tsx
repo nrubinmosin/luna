@@ -26,6 +26,7 @@ vi.mock('@xterm/xterm', () => ({
 }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class {} }));
 vi.mock('../panes/terminal/webgl', () => ({ loadWebgl: () => () => {} }));
+vi.mock('../panes/terminal/keys', () => ({ attachLoginKeys() {} }));
 vi.mock('../panes/terminal/ptyRoutes', () => ({ routePty: () => ({ ready: login.ready, unroute() {} }) }));
 vi.mock('../../ipc/sessions', () => ({
   killSession: vi.fn(() => Promise.resolve()),
