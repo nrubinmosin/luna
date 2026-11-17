@@ -535,12 +535,45 @@ mod pin_tests {
         assert_eq!(named("[Luna move 3fa9c2, not typed by the user] This chat goes on from…"), None, "nor a move's line");
         assert_eq!(named("Fix the updater"), Some("Fix the updater".into()), "a person's first prompt names it");
     }
+
+    /// `saved_title` reads nothing under a folder that is no account of
+    /// Luna's: its account path is refused as the page's arguments are read,
+    /// though a transcript with a title lies there to be found.
+    #[test]
+    fn a_saved_title_is_not_looked_for_outside_lunas_accounts() {
+        let root = std::env::temp_dir().join(format!("luna-saved-title-elsewhere-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("projects").join("E--p");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sid = "4d1f0e2a-9b7c-4c1e-8f3a-2b6d5e7f9a10";
+        std::fs::write(dir.join(format!("{sid}.jsonl")), format!(r#"{{"type":"ai-title","aiTitle":"Planted","sessionId":"{sid}"}}"#))
+            .unwrap();
+        let acct = root.to_string_lossy().into_owned();
+        assert!(crate::claude::session::saved_title(&acct, sid).is_some(), "there to be read, were the path let through");
+        type Arg = crate::boundary::OrEmpty<crate::boundary::AccountPath>;
+        let refused = serde_json::from_value::<Arg>(serde_json::json!(acct));
+        assert!(refused.is_err_and(|e| e.to_string().contains("account folder")), "the command's account path takes only Luna's");
+        let none = serde_json::from_value::<Arg>(serde_json::json!("")).unwrap();
+        assert_eq!(tauri::async_runtime::block_on(saved_title(Provider::Claude, none, sid.into())), None, "and no path is no title");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 /// The CLI's title for a session that is not running, by its id — how a chat
-/// restored from an earlier run picks up the title its CLI gave it.
+/// restored from an earlier run picks up the title its CLI gave it. The
+/// account path is held to an account folder of Luna's as it is read
+/// (`boundary::AccountPath`), before anything under it is; a chat with none
+/// has no title saved anywhere.
 #[tauri::command]
-pub async fn saved_title(provider: Provider, account_path: String, session_id: String) -> Option<CliTitle> {
+pub async fn saved_title(
+    provider: Provider,
+    account_path: crate::boundary::OrEmpty<crate::boundary::AccountPath>,
+    session_id: String,
+) -> Option<CliTitle> {
+    let account_path = account_path.into_string();
+    if account_path.is_empty() {
+        return None;
+    }
     tauri::async_runtime::spawn_blocking(move || match provider {
         Provider::Claude => crate::claude::session::saved_title(&account_path, &session_id),
         Provider::Codex => crate::codex::session::thread_title(&account_path, &session_id),

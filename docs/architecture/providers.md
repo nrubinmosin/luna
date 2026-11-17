@@ -322,7 +322,9 @@ transcript `projects/<cwd>/<sid>.jsonl`.
   A registry name with `nameSource: auto`, and the second `ai-title` written
   after a plan is accepted (the plan's handle, repeated by `agent-name`), are not
   titles. Both are rewritten into the tail, so they are read with the context.
-  `saved_title` finds a transcript by session id once per launch.
+  `saved_title` finds a transcript by session id once per launch; the window's
+  command of that name takes its account path as an `AccountPath`
+  (`boundary.rs`), for Codex's thread titles too.
 - `reading.rs`: `read_transcript`, all of the above of a transcript's bytes
   alone, by the same per-line functions the file-based readers call.
 

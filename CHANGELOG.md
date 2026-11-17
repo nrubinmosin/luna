@@ -101,6 +101,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   deleted chat was quitting is kept.
 - Two saves of the chats' ties at once (`chat-ties.json`) can no longer leave
   the older of the two on disk.
+- The window looks for a resting chat's saved title only under an account
+  folder of Luna's, as its other commands that take one do.
 
 ## [0.18.5] - 2026-11-17
 
