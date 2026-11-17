@@ -70,7 +70,17 @@ Busy is measured from three signals per session:
    by a turn. What the CLI brings up with itself (MCP servers, its shell) counts
    only while it moves; a program with a window of its own (a browser a login
    opened) not at all.
-3. **Recent output.**
+3. **Recent output.** Not the redraw a session does when Luna shows its pane,
+   refits it or resizes it, or when the focus moves into or out of its
+   terminal: bringing an idle session into view, or moving between two panes
+   already shown, leaves it idle. What it prints within a second of such a
+   change is taken for that redraw, so while you drag a split, output counts
+   only from a second after you stop. What it prints in answer to what you
+   send its terminal (keys, a paste, a click or a scroll the CLI reads) counts
+   once that second has passed; a click that moves the focus starts one, so
+   the answer to that click is left out. A turn at work, or a process under
+   it, keeps the session busy all the same. On a heavily loaded machine a
+   redraw that comes later than that second can still count.
 
 A background helper's leftovers between turns count the same way. Deleting a chat
 or helper, or quitting Luna, ends what it left running, windowed programs aside;
