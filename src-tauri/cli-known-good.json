@@ -1,7 +1,7 @@
 {
   "claude": {
-    "minSafe": "2.1.323",
-    "knownGood": ["2.1.323"]
+    "minSafe": "2.1.325",
+    "knownGood": ["2.1.325"]
   },
   "codex": {
     "minSafe": "0.167.0",
