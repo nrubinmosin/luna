@@ -231,9 +231,19 @@ pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool) -> Placed {
     Placed::Started
 }
 
-/// Text for the helper: the next turn now, into the one running, or after it.
+/// `send_tracked` without the id, for the tests.
+#[cfg(test)]
 pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<Placed, String> {
-    send_as(id, Queued::new(from.map(str::to_owned), text.to_string(), Vec::new()), true).map(|(placed, _)| placed)
+    send_tracked(id, text, from).map(|(placed, _)| placed)
+}
+
+/// Text for the helper: the next turn now, into the one running, or after it.
+/// With the text's own id (`Queued::id`): what tells whether text queued went
+/// onto the running process's stdin after all (events.rs `moved_onto_stdin_at`).
+pub fn send_tracked(id: &str, text: &str, from: Option<&str>) -> Result<(Placed, String), String> {
+    let q = Queued::new(from.map(str::to_owned), text.to_string(), Vec::new());
+    let qid = q.id.clone();
+    send_as(id, q, true).map(|(placed, _)| (placed, qid))
 }
 
 /// A notice with budget lines in it, or none. It was aimed at a helper found

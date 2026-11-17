@@ -67,13 +67,24 @@ pub(super) const LISTEN_MS: u64 = 10_800_000;
 /// owed to the lead any more (`listen_only_while_owed`). Only a lead has Luna
 /// helpers to owe it, and not one whose turn has scheduled a handoff: what it
 /// is sent waits for the conversation after it (`place`), and the switch for
-/// this process to go.
+/// this process to go. Each of those closes waits for the lines written to it
+/// to be taken in (`holds_untaken`); only LISTEN_MS does not.
 fn keeps_listening(e: &Entry, now: u64) -> bool {
     e.spec.tools
         && e.switch.is_none()
         && e.run.as_ref().is_some_and(|run| {
             run.background_tasks > 0 && run.feed.is_some() && run.listening_since.is_none_or(|since| now.saturating_sub(since) < LISTEN_MS)
         })
+}
+
+/// Whether a stdin kept open for notices (`keeps_listening`) has a line
+/// written to it that its CLI is yet to take in, short of LISTEN_MS: then a
+/// `result` is of a turn the CLI started by itself, and leaves it open.
+fn holds_untaken(e: &Entry, now: u64) -> bool {
+    !e.fed.is_empty()
+        && e.run
+            .as_ref()
+            .is_some_and(|run| run.feed.is_some() && run.listening_since.is_some_and(|since| now.saturating_sub(since) < LISTEN_MS))
 }
 
 /// Its stdin's end: what it was given it still runs, then goes.
@@ -139,7 +150,10 @@ pub(super) fn listen_while_owed(e: &mut Entry, owed: bool, now: u64) {
 /// it, which would otherwise wait for its process to go however long its
 /// background tasks run. Text its CLI would read as a command stays for the
 /// next process, its sender asked again then (queue.rs `settle_batch`), and
-/// what came after it with it. Whether any went.
+/// what came after it with it. Whether any went. What went is kept in
+/// `Run::drained`: its senders' answers end this process now, not the next
+/// one their debts were put past as it queued (agents/owed.rs
+/// `moved_onto_stdin`).
 pub(super) fn feed_queued(e: &mut Entry) -> bool {
     if !listening(e) {
         return false;
@@ -147,13 +161,39 @@ pub(super) fn feed_queued(e: &mut Entry) -> bool {
     let mut fed = false;
     while e.queue.first().is_some_and(|q| crate::agents::command_prefix(&q.text).is_none()) {
         let q = e.queue.remove(0);
+        let moved = (q.id.clone(), q.from.clone());
         if let Err(q) = write_line(e, q) {
             e.queue.insert(0, q);
             break;
         }
+        if let Some(run) = e.run.as_mut() {
+            run.drained.push(moved);
+        }
         fed = true;
     }
     fed
+}
+
+/// The ids of what `feed_queued` has moved onto the stdin of the process
+/// running now, past the first `from` of them: what an event moved, `from`
+/// being their count before it.
+pub(super) fn drained_since(e: &Entry, from: usize) -> Vec<String> {
+    e.run.as_ref().map(|run| run.drained.iter().skip(from).map(|(qid, _)| qid.clone()).collect()).unwrap_or_default()
+}
+
+/// Of text queued for `id`, by `Queued::id`: whether it went onto the stdin
+/// of the process running now instead (`feed_queued`). If so, its sender and
+/// the count that process ends past, as for a line that joined it; None too
+/// while more of that sender's text waits in the queue, which only the next
+/// process answers.
+pub fn moved_onto_stdin_at(id: &str, qid: &str) -> Option<(Option<String>, u32)> {
+    let r = lock();
+    let e = r.entries.get(id)?;
+    let (_, from) = e.run.as_ref()?.drained.iter().find(|(d, _)| d == qid)?;
+    if e.queue.iter().any(|q| q.from == *from) {
+        return None;
+    }
+    Some((from.clone(), e.turns_ended))
 }
 
 /// What an event of a Claude Code turn says of the helper; whether a message of
@@ -258,21 +298,27 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
             // a lead whose own background tasks keep its CLI up anyway, which
             // takes its helpers' notices on stdin meanwhile (`keeps_listening`),
             // and what was queued for it while it was at work (`feed_queued`).
+            // Nor while a line written to that stdin is still to be taken in
+            // (`holds_untaken`): this `result` is of a turn the CLI started by
+            // itself, and the line's own turn is yet to come.
             let now = crate::throttle::now_ms();
             let keeps = keeps_listening(e, now);
+            let untaken = !keeps && holds_untaken(e, now);
             let mut began = false;
             let earlier_failed = e.run.as_mut().is_some_and(|run| {
                 run.after_result = true;
                 if keeps {
                     began = run.listening_since.is_none();
                     run.listening_since.get_or_insert(now);
-                } else {
+                } else if !untaken {
                     stop_listening(run);
                 }
                 std::mem::replace(&mut run.result_failed, !ok)
             });
             if began {
                 note(e, "its background tasks run on: its stdin stays open for its helpers' notices");
+            } else if untaken {
+                note(e, "a line written to it is still to be taken in: its stdin stays open");
             }
             if ok {
                 note(e, &format!("turn done in {secs:.0}s"));
@@ -864,6 +910,55 @@ mod tests {
         event(result());
         assert!(!open(&lines), "at its result, the tasks over");
         lock().entries.remove(id);
+    }
+
+    /// Second review of issue #73, in this order: a notice joins a listening
+    /// lead, its last task ends while the line is untaken, and then its CLI
+    /// writes the `result` of a turn of its own. Neither closes stdin under
+    /// the line; its own turn's `result` does, and LISTEN_MS does regardless.
+    #[test]
+    fn a_result_of_the_clis_own_turn_leaves_stdin_open_under_an_untaken_line() {
+        let tasks =
+            |n: usize| json!({ "type": "system", "subtype": "background_tasks_changed", "tasks": vec![json!({ "task_id": "t" }); n] });
+        let result = json!({ "type": "result", "subtype": "success", "duration_ms": 10 });
+        let assistant = json!({ "type": "assistant", "message": { "model": "claude-haiku", "content": [] }, "parent_tool_use_id": null });
+        // What was written aside: whether the far end still takes more.
+        let open = |lines: &std::sync::mpsc::Receiver<String>| loop {
+            if let Err(e) = lines.try_recv() {
+                break e != std::sync::mpsc::TryRecvError::Disconnected;
+            }
+        };
+        for too_long in [false, true] {
+            let mut e = entry(Provider::Claude);
+            e.spec.tools = true;
+            let lines = feeding(&mut e);
+            on_claude_event(&mut e, &tasks(1));
+            on_claude_event(&mut e, &result);
+            assert!(listening(&e));
+            assert_eq!(place(&mut e, "[Luna notice] your helper answered".into(), true), Placed::Joined);
+            let uuid = e.fed[0].id.clone();
+            on_claude_event(&mut e, &tasks(0));
+            assert!(open(&lines), "its last task over, the line untaken");
+            if too_long {
+                e.run.as_mut().unwrap().listening_since = Some(crate::throttle::now_ms().saturating_sub(LISTEN_MS));
+            }
+            // The CLI's own turn on the task's end, before the line.
+            on_claude_event(&mut e, &json!({ "type": "system", "subtype": "task_notification" }));
+            on_claude_event(&mut e, &assistant);
+            on_claude_event(&mut e, &result);
+            if too_long {
+                assert!(!open(&lines), "LISTEN_MS closes it all the same");
+                continue;
+            }
+            assert!(open(&lines), "the CLI's own result does not close it under the line");
+            assert!(!listening(&e), "nor does another notice join behind the line as if at rest");
+
+            // The line taken and answered: its result closes it.
+            assert!(on_claude_event(&mut e, &json!({ "type": "command_lifecycle", "command_uuid": uuid, "state": "started" })));
+            on_claude_event(&mut e, &assistant);
+            on_claude_event(&mut e, &result);
+            assert!(!open(&lines), "at the result of the line's own turn, the tasks over");
+        }
     }
 
     /// What was queued for a lead goes onto its stdin at the `result` that

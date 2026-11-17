@@ -1684,6 +1684,72 @@ mod tests {
         }
     }
 
+    /// Review of issue #73: a parent's send queued behind a notice for a lead
+    /// whose CLI is at a turn of its own goes onto its stdin with the notice
+    /// at that turn's `result`, and is
+    /// answered within that process. Its debt, put past the process as the
+    /// text queued, is that process's from then: once it ends, the answer is
+    /// told, with no process after it. Through the send itself, with its debt
+    /// in before the move, and with the move between the text queuing and
+    /// its debt going in.
+    #[test]
+    fn a_send_moved_from_a_leads_queue_onto_its_stdin_is_owed_by_its_process() {
+        use crate::agents::notifier::lines::{verdict, Verdict};
+        use crate::agents::test_support::stop_at;
+        let event = |id: &str, v: serde_json::Value| crate::background::claude_event_for_test(id, &v);
+        for race in [false, true] {
+            let (p, a) = if race { ("lmr-parent", "lmr-lead") } else { ("lm-parent", "lm-lead") };
+            register(p, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
+            register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(p), true, serde_json::json!({ "background": true }));
+            crate::background::test_helper(a, "C:\\acc", None, true);
+            let lines = crate::background::listening_for_test(a);
+            // Its CLI takes up a task's end in a turn of its own, and a notice
+            // that finds it so waits for that turn's end; the send behind it.
+            event(a, serde_json::json!({ "type": "system", "subtype": "task_notification" }));
+            let notice = crate::background::send_marked(a, "[Luna notice] a helper answered", None, Vec::new()).unwrap();
+            assert_eq!(notice, (crate::background::Placed::Queued, true));
+            let ended = crate::activity::turn_state(a).unwrap().turns_ended;
+            let at_result = || {
+                event(
+                    a,
+                    serde_json::json!({ "type": "assistant", "message": { "model": "claude-haiku", "content": [] }, "parent_tool_use_id": null }),
+                );
+                event(a, serde_json::json!({ "type": "result", "subtype": "success", "duration_ms": 10 }));
+            };
+            let key = (p.to_string(), a.to_string());
+            if race {
+                let stop = stop_at("send placed", p);
+                let sending = std::thread::spawn(move || crate::agents::send(p, a, "the build is green", false, None, true));
+                stop.wait();
+                // Moved before its debt is in.
+                at_result();
+                stop.go();
+                let sent = sending.join().unwrap().unwrap();
+                assert!(sent.queued && sent.turns_ended == ended, "the count it is answered past: this process's");
+            } else {
+                let sent = crate::agents::send(p, a, "the build is green", false, None, true).unwrap();
+                assert!(sent.queued && !sent.joined);
+                assert_eq!(reg().lock().unwrap().owed[&key].baseline, ended + 1, "past this process, as queued");
+                at_result();
+            }
+            assert!(lines.try_recv().expect("the notice, on its stdin").contains("a helper answered"));
+            let line = lines.try_recv().expect("then the send");
+            assert!(line.contains("the build is green"), "{line}");
+            let o = reg().lock().unwrap().owed[&key];
+            assert_eq!(o.baseline, ended, "race {race}: owed by this process");
+            assert_eq!(o.moved_from, Some(ended + 1), "for a wait going by the count the send returned first");
+            // It takes the line in and answers; its tasks over, the process ends.
+            crate::background::test_turn_ended(a);
+            let ts = crate::activity::turn_state(a).unwrap();
+            assert_eq!(verdict(&o, ts.turns_ended, Some(ts.turn), false, true), Verdict::TurnOver, "race {race}");
+            reg().lock().unwrap().owed.remove(&key);
+            crate::background::gone_for_test(a);
+            for s in [a, p] {
+                forget(s);
+            }
+        }
+    }
+
     /// Live on 13 November: a chat sent `expectReply: false` a second before
     /// the notice of its helper's last answer had settled that debt. The send
     /// took the debt in, and the helper's "ok" came back as "answering your
