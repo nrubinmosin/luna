@@ -125,6 +125,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   stopped no longer writes over what was saved before.
 - Text joined to a helper's running turn on a stdin its CLI does not read
   counts against the 16 MB a helper may have waiting.
+- A resting chat's saved title is looked for in the next round when a round
+  stopped before it.
 
 ## [0.18.5] - 2026-11-17
 

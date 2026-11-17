@@ -86,7 +86,6 @@ export function useSessionWatch() {
           // A chat restored from an earlier run may still wear the opening
           // prompt it was named after; the CLI's title is on disk by now.
           if (fresh.sessionId && fresh.nameSource !== 'user' && !titleLooked.has(chat.id)) {
-            titleLooked.add(chat.id);
             titles.push({ id: chat.id, accountPath });
           }
           continue;
@@ -134,6 +133,9 @@ export function useSessionWatch() {
         if (stopped) return;
         const fresh = useChats.getState().findChat(id);
         if (!fresh?.sessionId || fresh.nameSource === 'user') continue;
+        // Marked as it is looked for, not as it is listed: a round stopped
+        // before this look leaves it for the next.
+        titleLooked.add(id);
         const saved = await savedTitle(fresh.provider, accountPath, fresh.sessionId).catch(() => null);
         if (saved) useChats.getState().setName(id, saved.title, saved.renamed ? 'rename' : 'cli');
       }
