@@ -62,6 +62,32 @@ describe('chats store: a set that changes nothing', () => {
     expect(now[0]!.chats[0]!.status).toBe('waiting');
     expect(now[1]).toBe(other);
   });
+
+  it('keeps the other folders as they were for every edit of one chat, and a delete', () => {
+    const other = folder('b', [chat('c2')]);
+    seed(folder('a', [chat('c1'), chat('c3')]), other);
+    const s = useChats.getState();
+    s.setName('c1', 'a title', 'cli');
+    s.renameChat('c1', 'mine');
+    s.setGuard('c1', true);
+    s.setAutoHandoff('c1', true, 0.8);
+    s.setHandoffMark('c1', { n: 1, at: 1, state: 'underWay', previous: false });
+    s.setHandoffAsked('c1', { kind: 'manual', at: 2 } as never);
+    s.setHandoffAsk('c1', { kind: 'manual', at: 3 } as never);
+    s.setMoved('c1', { movedTo: 'c9' });
+    s.setColor('c1', '#123456');
+    s.setBrowser('c1', 'edge');
+    s.deleteChat('c3');
+    const now = useChats.getState().folders;
+    expect(now[1]).toBe(other);
+    expect(now[0]!.chats.map(c => c.id)).toEqual(['c1']);
+    expect(now[0]!.chats[0]).toMatchObject({ name: 'mine', nameSource: 'user', guard: true, color: '#123456' });
+    // The same color again is no change at all.
+    const before = useChats.getState();
+    s.setColor('c1', '#123456');
+    s.setGuard('c1', true);
+    expect(useChats.getState()).toBe(before);
+  });
 });
 
 describe('chats store: one group of the folders', () => {

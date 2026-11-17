@@ -265,7 +265,9 @@ export const useChats = create<ChatsState>()(
           // The folder stays behind on purpose, empty or not — it is a place
           // you launch chats from, and having to browse for it again after
           // clearing it out is the annoyance this list exists to remove.
-          folders: s.folders.map(f => ({ ...f, chats: f.chats.filter(c => c.id !== chatId) })),
+          folders: s.folders.map(f =>
+            f.chats.some(c => c.id === chatId) ? { ...f, chats: f.chats.filter(c => c.id !== chatId) } : f
+          ),
           active: s.active === chatId ? null : s.active
         }));
       },
@@ -296,12 +298,7 @@ export const useChats = create<ChatsState>()(
         // those change nothing and should not cost a render.
         const c = get().findChat(chatId);
         if (!c || !mayRename(c.nameSource, source) || (c.name === name && c.nameSource === source)) return;
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(x => (x.id === chatId ? { ...x, name, nameSource: source } : x))
-          }))
-        }));
+        set(onChat(chatId, x => ({ ...x, name, nameSource: source })));
       },
 
       setWorktreePath: (chatId, path) =>
@@ -316,81 +313,37 @@ export const useChats = create<ChatsState>()(
       guardNotice: [],
       dismissGuardNotice: () => set({ guardNotice: [] }),
 
-      setGuard: (chatId, guard) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, guard } : c))
-          }))
-        })),
+      setGuard: (chatId, guard) => set(onChat(chatId, c => (c.guard === guard ? c : { ...c, guard }))),
 
-      setAutoHandoff: (chatId, autoHandoff, handoffAt) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, autoHandoff, handoffAt } : c))
-          }))
-        })),
+      setAutoHandoff: (chatId, autoHandoff, handoffAt) => set(onChat(chatId, c => ({ ...c, autoHandoff, handoffAt }))),
 
       setHandoffMark: (chatId, mark) => {
         const c = get().findChat(chatId);
         if (!c || JSON.stringify(c.handoff ?? null) === JSON.stringify(mark)) return;
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(x => (x.id === chatId ? { ...x, handoff: mark } : x))
-          }))
-        }));
+        set(onChat(chatId, x => ({ ...x, handoff: mark })));
       },
 
       setHandoffAsked: (chatId, asked) => {
         const c = get().findChat(chatId);
         if (!c || JSON.stringify(c.handoffAsked ?? null) === JSON.stringify(asked)) return;
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(x => (x.id === chatId ? { ...x, handoffAsked: asked } : x))
-          }))
-        }));
+        set(onChat(chatId, x => ({ ...x, handoffAsked: asked })));
       },
 
       setHandoffAsk: (chatId, ask) => {
         const c = get().findChat(chatId);
         if (!c || JSON.stringify(c.handoffAsk ?? null) === JSON.stringify(ask)) return;
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(x => (x.id === chatId ? { ...x, handoffAsk: ask } : x))
-          }))
-        }));
+        set(onChat(chatId, x => ({ ...x, handoffAsk: ask })));
       },
 
       setMoved: (chatId, moved) => {
         const c = get().findChat(chatId);
         if (!c || Object.entries(moved).every(([k, v]) => c[k as keyof typeof moved] === v)) return;
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(x => (x.id === chatId ? { ...x, ...moved } : x))
-          }))
-        }));
+        set(onChat(chatId, x => ({ ...x, ...moved })));
       },
 
-      setColor: (chatId, color) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, color } : c))
-          }))
-        })),
+      setColor: (chatId, color) => set(onChat(chatId, c => (c.color === color ? c : { ...c, color }))),
 
-      setBrowser: (chatId, browser) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, browser } : c))
-          }))
-        })),
+      setBrowser: (chatId, browser) => set(onChat(chatId, c => ({ ...c, browser }))),
 
       setContext: (chatId, context, tokens, window) =>
         set(
@@ -409,13 +362,7 @@ export const useChats = create<ChatsState>()(
           }))
         })),
 
-      renameChat: (chatId, name) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, name, nameSource: 'user' as const } : c))
-          }))
-        })),
+      renameChat: (chatId, name) => set(onChat(chatId, c => ({ ...c, name, nameSource: 'user' as const }))),
 
       findChat: chatId => {
         if (!chatId) return null;
