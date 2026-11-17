@@ -136,9 +136,9 @@ pub(super) struct Registry {
     pub(super) notified: HashMap<String, u64>,
     /// The tools a Claude Code session's hooks say are up for an answer
     /// (`AskUserQuestion`, or one held for permission), oldest first, each
-    /// with its input and the subagent that asks, if one does: subagents at
-    /// work side by side may each hold one.
-    pub(super) hook_asks: HashMap<String, Vec<(String, serde_json::Value, Option<String>)>>,
+    /// with its input and who asks, the session or a subagent of it:
+    /// subagents at work side by side may each hold one.
+    pub(super) hook_asks: HashMap<String, Vec<(String, serde_json::Value, crate::agents::ask::AskSource)>>,
     /// Text sent to the person's chats where they were typing or had a draft
     /// Luna could not put aside, in the order it came: typed in once the way is
     /// clear (see `deliver_held`).

@@ -8,6 +8,13 @@ use crate::agents::registry::{reg, waits_on_helpers};
 use crate::provider::Provider;
 use serde::Serialize;
 
+/// The most of a permission's detail an ask keeps, in bytes: a whole command
+/// as a rule, cut only past this, with a mark saying how much is left out.
+pub const DETAIL_MAX: usize = 8 * 1024;
+/// The most of it a notice line quotes, in characters: the rest is in
+/// `luna_session_get`'s `ask.detail`, and the line says so.
+const LINE_DETAIL: usize = 200;
+
 /// What a session waits on a person for: a question its model put (Claude
 /// Code's `AskUserQuestion`, Codex's `request_user_input`), or leave to run a
 /// tool. `luna_session_answer` answers either.
@@ -26,11 +33,67 @@ pub struct Ask {
     pub blocking: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<AskQuestion>,
-    /// A permission's tool, and what it would do with it.
+    /// A permission's tool, and what it would do with it: the one field of its
+    /// input that says so, whole up to `DETAIL_MAX`, past it cut with a mark
+    /// (`Ask::permission`). A parent allows what it reads here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Characters of the detail left out past `DETAIL_MAX`; 0 when it is whole.
+    #[serde(skip)]
+    pub detail_cut: usize,
+    /// Who in the session asks, where its CLI says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<AskSource>,
+}
+
+/// Who in a session made the call it asks about: the session itself, or a
+/// native subagent its CLI runs inside it, whose call the session's own
+/// transcript does not hold. Claude Code says so in a `PermissionRequest`
+/// hook's `agent_id` / `agent_type` and on a stream-json message's `agent_id` /
+/// `subagent_type`; a Codex screen says nothing of it.
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AskSource {
+    /// `session` or `subagent`.
+    pub by: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+}
+
+impl AskSource {
+    pub fn session() -> AskSource {
+        AskSource { by: "session", agent_id: None, agent_type: None }
+    }
+
+    pub fn subagent(agent_id: Option<&str>, agent_type: Option<&str>) -> AskSource {
+        let some = |s: Option<&str>| s.filter(|s| !s.is_empty()).map(str::to_owned);
+        AskSource { by: "subagent", agent_id: some(agent_id), agent_type: some(agent_type) }
+    }
+
+    /// From a hook's input, which names a subagent's id only when one asks.
+    pub fn of(agent_id: Option<&str>, agent_type: Option<&str>) -> AskSource {
+        match agent_id.filter(|a| !a.is_empty()) {
+            Some(_) => AskSource::subagent(agent_id, agent_type),
+            None => AskSource::session(),
+        }
+    }
+}
+
+/// `text` up to `DETAIL_MAX` bytes, cut on a character's boundary: whole, or
+/// the part kept, ending in `…` and how many characters are left out; with
+/// that count.
+fn capped(text: String) -> (String, usize) {
+    if text.len() <= DETAIL_MAX {
+        return (text, 0);
+    }
+    let at = (0..=DETAIL_MAX).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+    let left = text[at..].chars().count();
+    let unit = if left == 1 { "character" } else { "characters" };
+    (format!("{}… [{left} more {unit} cut]", &text[..at]), left)
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -50,11 +113,22 @@ pub struct AskQuestion {
 
 impl Ask {
     pub fn question(questions: Vec<AskQuestion>, blocking: bool) -> Ask {
-        Ask { id: None, kind: "question", blocking, questions, tool: None, detail: None }
+        Ask { id: None, kind: "question", blocking, questions, tool: None, detail: None, detail_cut: 0, source: None }
     }
 
+    /// A permission, whichever CLI it comes from: its detail capped at
+    /// `DETAIL_MAX`, never cut without a mark.
     pub fn permission(tool: Option<String>, detail: Option<String>) -> Ask {
-        Ask { id: None, kind: "permission", blocking: true, questions: Vec::new(), tool, detail }
+        let (detail, detail_cut) = match detail.map(capped) {
+            Some((d, cut)) => (Some(d), cut),
+            None => (None, 0),
+        };
+        Ask { id: None, kind: "permission", blocking: true, questions: Vec::new(), tool, detail, detail_cut, source: None }
+    }
+
+    /// The same ask, said to come from `source`.
+    pub fn asked_by(self, source: Option<AskSource>) -> Ask {
+        Ask { source, ..self }
     }
 
     /// Claude Code's `AskUserQuestion` input: `questions[]` with `question`,
@@ -76,21 +150,47 @@ impl Ask {
     }
 
     /// A Claude Code tool call held for permission: the tool, and the one
-    /// field of its input that says what it would do.
+    /// field of its input that says what it would do, whole (`permission`).
     pub fn from_claude_tool(name: &str, input: &serde_json::Value) -> Ask {
         let detail = ["command", "file_path", "path", "url", "pattern", "description"]
             .iter()
             .find_map(|k| input[*k].as_str())
             .map(str::to_owned)
-            .or_else(|| input.is_object().then(|| input.to_string()))
-            .map(|d| d.chars().take(400).collect());
+            .or_else(|| input.is_object().then(|| input.to_string()));
         Ask::permission(Some(name.to_string()), detail)
     }
 
-    /// One line for a notice: the questions with their options numbered.
+    /// One line for a notice: the questions with their options numbered, or
+    /// the permission's tool, who asks where that is known, and its detail. A
+    /// detail longer than `LINE_DETAIL` is shortened with a mark pointing to
+    /// `luna_session_get`, its whitespace runs made one space first, so that
+    /// padding cannot push what follows out of the part shown.
     pub fn line(&self) -> String {
         if self.kind == "permission" {
-            let what = [self.tool.as_deref(), self.detail.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(": ");
+            let tool = self.tool.as_deref().map(|t| match &self.source {
+                Some(AskSource { by: "subagent", agent_id, agent_type }) => {
+                    let named = agent_type.as_deref().map(|a| format!(" {a:?}")).unwrap_or_default();
+                    let id = agent_id.as_deref().map(|a| format!(", agentId {a}")).unwrap_or_default();
+                    format!("{t} (a call of its subagent{named}{id})")
+                }
+                Some(_) => format!("{t} (its own call)"),
+                None => t.to_string(),
+            });
+            let detail = self.detail.as_deref().map(|d| {
+                if d.chars().count() <= LINE_DETAIL && self.detail_cut == 0 {
+                    return d.to_string();
+                }
+                let flat = d.split_whitespace().collect::<Vec<_>>().join(" ");
+                let chars = flat.chars().count();
+                let shown = if chars > LINE_DETAIL { format!("{}…", flat.chars().take(LINE_DETAIL).collect::<String>()) } else { flat };
+                let whole = if self.detail_cut > 0 {
+                    format!("its first {} KB, cut there with a mark", DETAIL_MAX / 1024)
+                } else {
+                    "it whole".to_string()
+                };
+                format!("{shown} [shortened; luna_session_get's ask.detail has {whole}]")
+            });
+            let what = [tool, detail].into_iter().flatten().collect::<Vec<_>>().join(": ");
             return if what.is_empty() { "asks for permission".into() } else { format!("asks for permission to run {what}") };
         }
         let qs: Vec<String> = self
@@ -115,7 +215,7 @@ impl Ask {
 pub fn on_hook(chat: &str, body: &str) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else { return };
     let tool = v["tool_name"].as_str().unwrap_or("");
-    let agent = v["agent_id"].as_str().filter(|a| !a.is_empty()).map(str::to_string);
+    let asker = AskSource::of(v["agent_id"].as_str(), v["agent_type"].as_str());
     let event = v["hook_event_name"].as_str();
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     if event == Some("SessionEnd") {
@@ -131,9 +231,9 @@ pub fn on_hook(chat: &str, body: &str) {
     // One held ask per asker: what it puts up next, or its tool coming back,
     // is the end of the one it had.
     let held = r.hook_asks.entry(chat.to_string()).or_default();
-    held.retain(|(_, _, asker)| *asker != agent);
+    held.retain(|(_, _, by)| by.agent_id != asker.agent_id);
     if raises {
-        held.push((tool.to_string(), v["tool_input"].clone(), agent));
+        held.push((tool.to_string(), v["tool_input"].clone(), asker));
     } else if held.is_empty() {
         r.hook_asks.remove(chat);
     }
@@ -167,14 +267,16 @@ pub fn ask_of(id: &str) -> Option<Ask> {
                 .hook_asks
                 .get(id)
                 .and_then(|held| held.first())
-                .map(|(name, input, _)| (name.clone(), input.clone()));
-            let (name, input) = hooked
-                .filter(|_| turn.is_some_and(|t| t != crate::activity::Turn::Idle))
-                .or_else(|| waiting.then(|| crate::claude::session::pending_tool(&transcript_path(pty, id)?)).flatten())?;
+                .map(|(name, input, by)| (name.clone(), input.clone(), Some(by.clone())));
+            // A call read off the transcript names nobody: it says who only by
+            // which file it is in.
+            let (name, input, by) = hooked.filter(|_| turn.is_some_and(|t| t != crate::activity::Turn::Idle)).or_else(|| {
+                waiting.then(|| crate::claude::session::pending_tool(&transcript_path(pty, id)?).map(|(n, i)| (n, i, None))).flatten()
+            })?;
             if name == "AskUserQuestion" {
                 Ask::from_claude_questions(&input)
             } else {
-                waiting.then(|| Ask::from_claude_tool(&name, &input))
+                waiting.then(|| Ask::from_claude_tool(&name, &input).asked_by(by))
             }
         }
         Provider::Codex => crate::codex::session::pending_ask(&crate::codex::session::Live {
@@ -190,9 +292,21 @@ pub fn ask_of(id: &str) -> Option<Ask> {
     }
 }
 
-/// The command a Codex approval dialog shows, on its `$ ` line.
+/// The command a Codex approval dialog shows: from its `$ ` row down to the
+/// first option, each row trimmed, apart by line breaks as drawn. Codex puts
+/// `$ ` before the first line only; a line too long for the screen wraps onto
+/// the rows below it and a command of several lines goes on there, so the
+/// first row alone would be a cut with no mark. Without option 1 below, the
+/// dialog is not all there: none.
 pub(super) fn codex_command_on(screen: &str) -> Option<String> {
-    screen.lines().map(str::trim).find_map(|l| l.strip_prefix("$ ")).map(|c| c.trim().to_string()).filter(|c| !c.is_empty())
+    let lines: Vec<&str> = screen.lines().map(str::trim).collect();
+    let start = lines.iter().position(|l| l.starts_with("$ "))?;
+    let first_option = |l: &str| l.strip_prefix('›').map(str::trim_start).unwrap_or(l).starts_with("1. ");
+    let end = start + lines[start..].iter().position(|l| first_option(l))?;
+    let mut rows: Vec<&str> = lines[start..end].to_vec();
+    rows[0] = &rows[0][2..];
+    let command = rows.join("\n").trim().to_string();
+    (!command.is_empty()).then_some(command)
 }
 
 /// A list Codex holds its screen on until an option is picked — "Hooks need
@@ -327,5 +441,107 @@ mod tests {
         assert_eq!(held(), Some(vec!["rm a".to_string()]));
         on_hook(chat, r#"{"hook_event_name":"SubagentStop","agent_id":"a"}"#);
         assert_eq!(held(), None);
+    }
+
+    /// What a parent is asked to allow is never shown cut without a mark: not
+    /// in `ask.detail`, not in the notice line.
+    #[test]
+    fn a_long_command_is_never_shown_cut_without_a_mark() {
+        let bash = |cmd: &str| Ask::from_claude_tool("Bash", &serde_json::json!({ "command": cmd }));
+
+        // Short: whole in both, as it was.
+        let short = bash("ls -la");
+        assert_eq!(short.detail.as_deref(), Some("ls -la"));
+        assert_eq!(short.line(), "asks for permission to run Bash: ls -la");
+
+        // Past the old 400 characters: whole in the detail, the line shortened
+        // with a mark that says where the rest is.
+        let tail = "; do rm -f \"$f\"; done # the end";
+        let long = format!("for f in {}{tail}", "build/out/a.o ".repeat(80));
+        let ask = bash(&long);
+        assert_eq!(ask.detail.as_deref(), Some(long.as_str()), "whole");
+        let line = ask.line();
+        assert!(line.contains('…') && line.contains("luna_session_get") && line.contains("has it whole"), "{line}");
+        assert!(!line.contains(tail) && line.chars().count() < 400, "short: {line}");
+        assert_eq!(serde_json::to_value(&ask).unwrap()["detail"], long.as_str(), "luna_session_get shows it whole");
+
+        // Past DETAIL_MAX: cut, ending in the mark with what is left out.
+        let huge = format!("echo {}", "x".repeat(20_000));
+        let ask = bash(&huge);
+        let detail = ask.detail.clone().unwrap();
+        let left = huge.len() - DETAIL_MAX;
+        assert!(detail.starts_with(&huge[..DETAIL_MAX]), "the head kept whole");
+        assert!(detail.ends_with(&format!("… [{left} more characters cut]")), "{}", &detail[DETAIL_MAX..]);
+        assert_eq!(ask.detail_cut, left);
+        let line = ask.line();
+        assert!(line.contains('…') && line.contains("first 8 KB, cut there with a mark"), "{line}");
+
+        // Padding cannot push the end out of the part the line shows.
+        let padded = format!("ls{}rm -rf ~", " ".repeat(5000));
+        let line = bash(&padded).line();
+        assert!(line.contains("ls rm -rf ~ [shortened;"), "{line}");
+
+        // A Codex approval goes the same way.
+        let codex = Ask::permission(None, Some(huge.clone()));
+        assert_eq!(codex.detail, ask.detail);
+        assert!(codex.line().contains("cut there with a mark"));
+    }
+
+    /// The cap cuts on a character's boundary and counts characters, not bytes.
+    #[test]
+    fn multi_byte_text_at_the_cap() {
+        let e = "é".repeat(DETAIL_MAX / 2);
+        assert_eq!(e.len(), DETAIL_MAX);
+        let at_cap = Ask::permission(None, Some(e.clone()));
+        assert_eq!((at_cap.detail.as_deref(), at_cap.detail_cut), (Some(e.as_str()), 0), "exactly at the cap: whole");
+        let over = Ask::permission(None, Some(format!("{e}é")));
+        assert_eq!(over.detail, Some(format!("{e}… [1 more character cut]")));
+
+        // Four-byte characters that straddle the cap: the last whole one is kept.
+        let emoji = format!("a{}", "😀".repeat(3000));
+        let ask = Ask::permission(None, Some(emoji.clone()));
+        let kept = (DETAIL_MAX - 1) / 4;
+        assert_eq!(ask.detail, Some(format!("a{}… [{} more characters cut]", "😀".repeat(kept), 3000 - kept)));
+        assert_eq!(ask.detail_cut, 3000 - kept);
+        let line = ask.line();
+        assert!(line.contains("😀…") && line.contains("cut there with a mark"), "{line}");
+    }
+
+    /// Who asks, where Claude Code says: a hook names a subagent's id and
+    /// type, and its absence is the session's own call.
+    #[test]
+    fn an_ask_names_who_in_the_session_made_the_call() {
+        let bash = || Ask::from_claude_tool("Bash", &serde_json::json!({ "command": "rm -f x" }));
+        let sub = bash().asked_by(Some(AskSource::of(Some("a1b2"), Some("worker"))));
+        assert_eq!(sub.line(), "asks for permission to run Bash (a call of its subagent \"worker\", agentId a1b2): rm -f x");
+        assert_eq!(
+            serde_json::to_value(&sub).unwrap()["source"],
+            serde_json::json!({ "by": "subagent", "agentId": "a1b2", "agentType": "worker" })
+        );
+        let own = bash().asked_by(Some(AskSource::of(Some(""), None)));
+        assert_eq!(own.line(), "asks for permission to run Bash (its own call): rm -f x");
+        assert_eq!(serde_json::to_value(&own).unwrap()["source"], serde_json::json!({ "by": "session" }));
+        assert!(serde_json::to_value(bash()).unwrap().get("source").is_none(), "not said where nothing says it");
+
+        let chat = "asks-source";
+        on_hook(
+            chat,
+            &serde_json::json!({ "hook_event_name": "PermissionRequest", "agent_id": "a9", "agent_type": "Explore", "tool_name": "Bash", "tool_input": { "command": "ls" } })
+                .to_string(),
+        );
+        let by = reg().lock().unwrap().hook_asks[chat][0].2.clone();
+        assert_eq!(by, AskSource::subagent(Some("a9"), Some("Explore")));
+        on_hook(chat, r#"{"hook_event_name":"SessionEnd"}"#);
+    }
+
+    /// A Codex approval's command is read from every row it is drawn on, not
+    /// the `$ ` row alone.
+    #[test]
+    fn a_codex_command_is_read_whole_off_its_rows() {
+        let one = "  Would you like to run the following command?\n\n  $ ls -la\n\n› 1. Yes, proceed (y)\n  2. No (esc)";
+        assert_eq!(codex_command_on(one).as_deref(), Some("ls -la"));
+        let wrapped = "  Would you like to run the following command?\n\n  $ for f in build/*.o; do\n  rm -f \"$f\"; done\n\n  1. Yes, proceed (y)\n› 2. No (esc)";
+        assert_eq!(codex_command_on(wrapped).as_deref(), Some("for f in build/*.o; do\nrm -f \"$f\"; done"));
+        assert_eq!(codex_command_on("  $ rm -rf build\n  and more not yet drawn"), None, "no options: not all there");
     }
 }

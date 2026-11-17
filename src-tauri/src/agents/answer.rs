@@ -413,6 +413,8 @@ mod tests {
             questions: Vec::new(),
             tool: None,
             detail: None,
+            detail_cut: 0,
+            source: None,
         };
         let plain: &[String] = &[];
         let refused = |r: Result<(), String>| r.unwrap_err();
@@ -440,6 +442,8 @@ mod tests {
             questions: vec![AskQuestion { text: "Which?".into(), options: vec!["A".into(), "B".into()], multi: false, list_at }],
             tool: None,
             detail: None,
+            detail_cut: 0,
+            source: None,
         };
         let (question, permission, dialog) = (ask("question", None), ask("permission", None), ask("question", Some(0)));
         let full = Some(Privilege { reach: Reach::Full, net: true });

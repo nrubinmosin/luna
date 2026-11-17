@@ -46,7 +46,7 @@ mod test_support;
 mod wait;
 
 pub use answer::answer;
-pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion};
+pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion, AskSource};
 pub use delivery::{notes_dir, send};
 pub use handoff::{
     asked_of, handoff, handoff_ask, handoff_ask_of, handoff_file, handoff_now, handoff_transcript, mark_of, move_ask,
