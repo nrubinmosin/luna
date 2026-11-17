@@ -106,25 +106,28 @@ function ConvertTo-BashScript([string]$Script) {
 }
 
 # The node_modules volume the builds install into, which every checkout on the
-# machine shares (hence Use-BuildLock): one per pnpm major, the one
-# package.json's packageManager names. Without a TTY a pnpm refuses to clear a
-# node_modules another major laid out, so checkouts on two majors sharing one
-# volume would fail each other's installs.
-function Get-NodeModulesVolume {
-    $manager = (Get-Content (Join-Path $RepoRoot 'package.json') -Raw | ConvertFrom-Json).packageManager
+# machine shares (hence Use-BuildLock): one per pnpm major, the one $Root's
+# package.json names as its packageManager. Without a TTY a pnpm refuses to
+# clear a node_modules another major laid out, so checkouts on two majors
+# sharing one volume would fail each other's installs. Asked where a run needs
+# it, never as this file loads: the release's sign job has no package.json.
+function Get-NodeModulesVolume([string]$Root = $RepoRoot) {
+    $manager = (Get-Content (Join-Path $Root 'package.json') -Raw | ConvertFrom-Json).packageManager
     if ($manager -notmatch '^pnpm@(\d+)\.') { throw "package.json should name pnpm@x.y.z as its packageManager, not '$manager'" }
     "luna-node-modules-pnpm$($Matches[1])"
 }
-$NodeModulesVolume = Get-NodeModulesVolume
 
 # The named volumes the Windows toolchain image (windows-build.Dockerfile) caches
-# into. Every checkout on the machine shares them, hence Use-BuildLock.
-$WinBuildVolumes = @(
-    '-v', "${NodeModulesVolume}:/app/node_modules",
-    '-v', 'luna-xwin-cache:/xwin-cache',
-    '-v', 'luna-cargo-registry:/usr/local/cargo/registry',
-    '-v', 'luna-tauri-cache:/root/.cache/tauri'
-)
+# into, for a build of the tree at $Root. Every checkout on the machine shares
+# them, hence Use-BuildLock.
+function Get-WinBuildVolumes([string]$Root = $RepoRoot) {
+    @(
+        '-v', "$(Get-NodeModulesVolume $Root):/app/node_modules",
+        '-v', 'luna-xwin-cache:/xwin-cache',
+        '-v', 'luna-cargo-registry:/usr/local/cargo/registry',
+        '-v', 'luna-tauri-cache:/root/.cache/tauri'
+    )
+}
 
 # The test flavor's build environment (test-build.ps1, windows-tests.ps1), with
 # a cargo target dir of its own in test-build/, so a test build never overwrites
@@ -159,6 +162,7 @@ function Initialize-HostDirs([string[]]$Names = @('test-build', 'dist', 'node_mo
 function Invoke-WinBuild([string]$What, [string]$Build, [string]$Image, [string]$Script, [string[]]$DockerArgs = @(), [string]$Root = $RepoRoot) {
     $cmd = ConvertTo-BashScript "set -e`n$Script"
     Initialize-HostDirs -Root $Root
+    $volumes = Get-WinBuildVolumes $Root
     Invoke-Checked $What {
         docker run --rm `
           -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
@@ -166,7 +170,7 @@ function Invoke-WinBuild([string]$What, [string]$Build, [string]$Image, [string]
           -e CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C link-arg=/IGNORE:4099" `
           @DockerArgs `
           -v "${Root}:/app" `
-          @WinBuildVolumes `
+          @volumes `
           -w /app `
           $Image `
           bash -c $cmd

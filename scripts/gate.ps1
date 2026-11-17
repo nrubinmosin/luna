@@ -35,7 +35,7 @@ function Invoke-Frontend([string]$What, [string]$Script) {
           -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
           -e COREPACK_HOME=/corepack `
           -v "${RepoRoot}:/app" `
-          -v "${NodeModulesVolume}:/app/node_modules" `
+          -v "$(Get-NodeModulesVolume):/app/node_modules" `
           -v luna-corepack:/corepack `
           -w /app `
           $images.node `

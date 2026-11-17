@@ -104,7 +104,7 @@ Use-BuildLock {
           -e SHOT_SCENES=$sceneList `
           @fontArgs `
           -v "${RepoRoot}:/app" `
-          -v "${NodeModulesVolume}:/app/node_modules" `
+          -v "$(Get-NodeModulesVolume):/app/node_modules" `
           -w /app `
           $image `
           bash -c $cmd
