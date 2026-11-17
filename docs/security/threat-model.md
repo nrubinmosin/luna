@@ -326,7 +326,10 @@ in section 6.
 
 Luna downloads and runs its own copy of each CLI (`cli.rs`): Claude Code from
 `downloads.claude.ai` (`claude/cli.rs`), Codex from `github.com/openai/codex`
-releases (`codex/cli.rs`), both over HTTPS.
+releases (`codex/cli.rs`), both over HTTPS, certificates checked against the
+system's trust store (`http.rs`). On Linux a client reads the store once, when
+it is made, and is kept until Luna exits: a CA removed from the store is still
+trusted for these downloads until the next start.
 
 **What is verified.**
 

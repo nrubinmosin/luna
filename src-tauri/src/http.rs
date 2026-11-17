@@ -36,6 +36,14 @@ pub struct Timeouts {
 /// The clients made so far, by timeouts and whether they follow redirects:
 /// each made once, with its verifier, and its connections kept for the next
 /// request alike.
+///
+/// A client is kept until Luna exits, and on Linux its verifier read the trust
+/// roots when it was made (rustls-platform-verifier loads them once, through
+/// rustls-native-certs), so a CA added to or removed from the system's store
+/// reaches these requests at the next start. Windows and macOS ask the OS on
+/// each handshake. Nothing watches the store for a change: the files
+/// rustls-native-certs reads depend on the distribution and on
+/// `SSL_CERT_FILE` / `SSL_CERT_DIR`.
 fn clients() -> &'static Mutex<HashMap<(Timeouts, bool), reqwest::Client>> {
     static CLIENTS: OnceLock<Mutex<HashMap<(Timeouts, bool), reqwest::Client>>> = OnceLock::new();
     CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))

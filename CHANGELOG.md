@@ -26,11 +26,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   TLS, instead of a second one of their own. Certificates are now checked
   against the system's trust store rather than a list built into Luna, and the
   requests name themselves `luna/<version>`, but for three that keep the name
-  they sent before: Codex's usage lookup says `codex_cli_rs`, and the lookup of
-  Codex's latest release and the download of its checksums say `luna`. The timeouts are as before, gzip is still asked for and
-  undone, and no proxy is used, as before. A request that carries a token (the
-  usage lookups, the model lookup, the sign-in refresh) follows no redirect:
-  one comes back as the error it is.
+  they sent before: Codex's usage lookup says `codex_cli_rs`, and the lookup
+  of Codex's latest release and the download of its checksums say `luna`. A
+  certificate authority added to or removed from Linux's trust store reaches
+  these requests when Luna restarts. The timeouts are as before, gzip is still
+  asked for and undone, and no proxy is used, as before. A request that
+  carries a token (the usage lookups, the model lookup, the sign-in refresh)
+  follows no redirect: one comes back as the error it is.
 
 ### Fixed
 
