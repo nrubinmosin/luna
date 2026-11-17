@@ -311,6 +311,11 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
             reserve(e)
         });
         let lead = e.spec.tools;
+        // Under this lock, with the turn counted: nothing reads it at rest
+        // before its look at its handoff is known to be under way.
+        if lead && cfg!(not(test)) {
+            handoff_looks().insert(id.to_string());
+        }
         let thread = e.session.clone().filter(|_| e.spec.provider == Provider::Codex).map(|t| (e.spec.account_path.clone(), t));
         e.observed.answered |= e.observed.acted;
         let told_move = told_move.filter(|_| e.observed.acted);
@@ -370,15 +375,36 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     // Luna's own document for a lead that writes none.
     #[cfg(not(test))]
     if lead {
-        let id = id.to_string();
-        let started =
-            std::thread::Builder::new().name("luna-lead-handoff".into()).spawn(move || crate::agents::handoff::lead_turn_ended(&id));
+        let looked = id.to_string();
+        let started = std::thread::Builder::new().name("luna-lead-handoff".into()).spawn(move || {
+            crate::agents::handoff::lead_turn_ended(&looked);
+            handoff_looks().remove(&looked);
+        });
         if let Err(e) = started {
+            handoff_looks().remove(id);
             crate::log::warn("handoff", &format!("could not look at a lead's handoff: {e}"));
         }
     }
     #[cfg(test)]
     let _ = lead;
+}
+
+/// Leads whose look at their handoff at a turn's end (agents/handoff/lead.rs
+/// `lead_turn_ended`) is under way, from the turn's end, marked under the
+/// lock that counts it, until that look is over. It may yet queue Luna's ask
+/// for a handoff, build Luna's own document or start the fresh conversation:
+/// such a lead is not at rest for good (`handoff_look_under_way`). A lock of
+/// its own, taken under this module's, with nothing taken under it.
+pub(super) fn handoff_looks() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    static LOOKS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    LOOKS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether lead `id`'s look at its handoff, at its last turn's end, is still
+/// under way (`handoff_looks`). Asked ahead of its record (`work_and_count`):
+/// a look that has queued or started something by its end has it there.
+pub fn handoff_look_under_way(id: &str) -> bool {
+    handoff_looks().contains(id)
 }
 
 pub(super) fn note(e: &mut Entry, line: &str) {

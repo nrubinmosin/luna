@@ -11,8 +11,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 ### Fixed
 
 - A helper or lead that ends its turn with nothing of its own running (no
-  job, subagent or helper of its own at work, nothing, a usage or context
-  line included, on its way into it)
+  job, subagent or helper of its own at work, no handoff of its own under
+  way, nothing, a usage or context line included, on its way into it)
   no longer reads as busy: its parent's notice says "Nothing of its own is
   running: it will not go on unless you send to it", whatever its last words
   said it was waiting for, on Claude Code and Codex alike. The lead's role

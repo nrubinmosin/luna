@@ -3,6 +3,7 @@
 
 use crate::agents::ask::{ask_of, live};
 use crate::agents::lost::{never_started_what, sentence, undelivered_for, undelivered_line, undelivered_text};
+use crate::agents::notifier::usage::{budget_due, quota_due};
 use crate::agents::notifier::{left_quiet, Settled, IDLE_JOB_MS};
 use crate::agents::owed::requests_of;
 use crate::agents::owed::{Owed, QUEUED_GRACE_MS};
@@ -629,7 +630,7 @@ pub(in crate::agents) fn notice_line(
         // Too short a turn for a notice of its own in between.
         let resumed = if o.resumed { " Luna's core stopped it on the way and it resumed automatically." } else { "" };
         // A cut-off line already says a send has it carry on.
-        let idle = if parent && stopped.is_empty() && alive && runs_nothing(id, caller, ts) { NOTHING_RUNNING } else { "" };
+        let idle = if parent && stopped.is_empty() && alive && runs_nothing(pty, id, caller, ts) { NOTHING_RUNNING } else { "" };
         return Some((Some(format!("{who} finished its turn{reply}.{idle}{stopped}{lost}{resumed}{unsure}")), Settled::Answered));
     }
     // A turn gone quiet is told once, and once more if it then answers and
@@ -678,23 +679,36 @@ const NOTHING_RUNNING: &str = " Nothing of its own is running: it will not go on
 /// sends it: no job or subagent its turns left (`children_busy`); no answer
 /// owed to it by anyone else, a helper of its own or a session it wrote to,
 /// whose notice would wake it; no `luna_session_wait` of its out; nothing
-/// queued, held or reserved for it, and no line waiting to go in, one queued
-/// (`news`) or one the notifier has for it by itself (`lines_coming`: a
-/// usage window, a context past its level). What its words say it waits on
-/// does not count: only what Luna sees run.
-fn runs_nothing(id: &str, caller: &str, ts: Option<crate::activity::TurnState>) -> bool {
+/// queued, held or reserved for it; no look at its own handoff under way at
+/// its turn's end (background `handoff_look_under_way`), which may queue an
+/// ask or start its fresh conversation; and no line waiting to go in, one
+/// queued (`news`) or one the notifier types in by itself: a usage window, a
+/// helper's context past its level, a spawn a core's going cut off, a refused
+/// place, a lead that handed off. Each is read as it stands now, not as the
+/// notifier's last look saw it, so that what changed since can only hold the
+/// sentence back. What its words say it waits on does not count: only what
+/// Luna sees run.
+fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option<crate::activity::TurnState>) -> bool {
     if !ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy) {
         return false;
     }
-    if crate::background::work_and_count(id).is_some_and(|(work, _)| work) {
+    // The look first: what it queues or starts is in the record by its end.
+    if crate::background::handoff_look_under_way(id) || crate::background::work_and_count(id).is_some_and(|(work, _)| work) {
         return false;
     }
-    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    !r.owed.keys().any(|(c, h)| c == id && h != caller)
-        && !r.waits.keys().chain(r.reserved.keys()).any(|(c, _)| c == id)
-        && !r.held.iter().any(|h| h.id == id)
-        && !r.news.iter().any(|(c, _)| c == id)
-        && !r.lines_coming.contains(id)
+    let quiet = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        !r.owed.keys().any(|(c, h)| c == id && h != caller)
+            && !r.waits.keys().chain(r.reserved.keys()).any(|(c, _)| c == id)
+            && !r.held.iter().any(|h| h.id == id)
+            && !r.news.iter().any(|(c, _)| c == id)
+            && !r.spawns.values().any(|s| s.caller == id && (s.left_by_core || s.news.is_some()))
+            && !r.places_refused.contains_key(id)
+            && !r.handed_off.contains_key(id)
+    };
+    // Off the registry's lock: these ask whether helpers are live, and read
+    // their transcripts.
+    quiet && !quota_due(pty, id) && !budget_due(pty, id)
 }
 
 /// What a notice says of a helper whose CLI stopped what its last turn left in
@@ -2260,12 +2274,19 @@ mod tests {
             // Only its parent is told to send to it.
             let to_other = says(other).unwrap_or_else(|| panic!("{tag}: a caller not its parent still hears"));
             assert!(!to_other.contains(NOTHING_RUNNING), "{tag}: {to_other}");
-            // A line the notifier has for it, as an account's usage window is:
-            // the turn that wakes it starts without a send of its parent's.
-            reg().lock().unwrap().lines_coming.insert(id.to_string());
+            // A line the notifier has for it, as an account's usage window is,
+            // published after its last look read usage: the turn that wakes
+            // it starts without a send of its parent's.
+            let (sub, account) = (format!("nx-{tag}-sub"), format!("nx{tag}"));
+            register(&sub, Provider::Claude, "C:\\p", &format!("C:/acc/anthropic/{account}"), Some(id), false, serde_json::json!({}));
+            crate::background::idle_for_test(&sub, Provider::Claude, 1, false);
+            let usage = serde_json::json!({ "limits": [{ "label": "5h", "usedPct": 95.0 }] });
+            reg().lock().unwrap().usage.insert(format!("claude/{account}"), usage);
             let line = says(top).unwrap_or_default();
             assert!(line.contains("finished its turn") && !line.contains(NOTHING_RUNNING), "{tag}, a line is coming: {line}");
-            reg().lock().unwrap().lines_coming.remove(id);
+            reg().lock().unwrap().usage.remove(&format!("claude/{account}"));
+            crate::background::gone_for_test(&sub);
+            forget(&sub);
             assert!(says(top).unwrap_or_default().contains(NOTHING_RUNNING), "{tag}: as before once it is said");
             // Its CLI cut its background work off: that line says how it goes on.
             crate::background::background_stopped_for_test(id, &[top]);
@@ -2290,6 +2311,7 @@ mod tests {
         let (top, id, other) = ("rn-top", "rn-lead", "rn-other");
         let state = |turn, children_busy| Some(TurnState { turn, busy: turn == Turn::Busy, turns_ended: 1, children_busy });
         let idle = state(Turn::Idle, false);
+        let pty = crate::pty::manager();
         let account = "C:\\acc\\anthropic\\one";
         for s in [top, other] {
             register(s, Provider::Claude, "C:\\p", account, None, false, serde_json::json!({}));
@@ -2297,12 +2319,12 @@ mod tests {
         register(id, Provider::Claude, "C:\\p", account, Some(top), true, serde_json::json!({ "background": true }));
         let fresh = || crate::background::idle_for_test(id, Provider::Claude, 1, false);
         let key = |c: &str| (id.to_string(), c.to_string());
-        let stops = |what: &str| assert!(!runs_nothing(id, top, idle), "{what}");
+        let stops = |what: &str| assert!(!runs_nothing(pty, id, top, idle), "{what}");
         fresh();
-        assert!(runs_nothing(id, top, idle), "nothing at all");
-        assert!(!runs_nothing(id, top, None), "no state: not known to be idle");
-        assert!(!runs_nothing(id, top, state(Turn::Busy, false)), "a turn runs");
-        assert!(!runs_nothing(id, top, state(Turn::Idle, true)), "a job or subagent its turns left runs");
+        assert!(runs_nothing(pty, id, top, idle), "nothing at all");
+        assert!(!runs_nothing(pty, id, top, None), "no state: not known to be idle");
+        assert!(!runs_nothing(pty, id, top, state(Turn::Busy, false)), "a turn runs");
+        assert!(!runs_nothing(pty, id, top, state(Turn::Idle, true)), "a job or subagent its turns left runs");
         // What its record in the background holds for it.
         crate::background::set_running_for_test(id);
         stops("a process of its own runs");
@@ -2315,7 +2337,7 @@ mod tests {
         crate::background::hold_for_test(id);
         stops("it holds on a permission");
         fresh();
-        assert!(runs_nothing(id, top, idle));
+        assert!(runs_nothing(pty, id, top, idle));
         // What the registry holds for it.
         reg().lock().unwrap().held.push(Held {
             caller: other.into(),
@@ -2336,16 +2358,50 @@ mod tests {
         reg().lock().unwrap().news.push((id.into(), "a line for it".into()));
         stops("a line queued to go into it");
         reg().lock().unwrap().news.retain(|(c, _)| c != id);
-        reg().lock().unwrap().lines_coming.insert(id.into());
-        stops("a usage or context line the notifier has for it");
-        reg().lock().unwrap().lines_coming.remove(id);
+        // What the notifier types in by itself, read as it stands now (issue
+        // #77, review): what was published since its last look counts too.
+        let sub = "rn-sub";
+        register(sub, Provider::Claude, "C:\\p", "C:/acc/anthropic/rn-acc", Some(id), false, serde_json::json!({}));
+        crate::background::idle_for_test(sub, Provider::Claude, 1, false);
+        assert!(runs_nothing(pty, id, top, idle), "an idle helper of its own, nothing to say of it");
+        let window = |pct: f64| serde_json::json!({ "limits": [{ "label": "5h", "usedPct": pct }] });
+        reg().lock().unwrap().usage.insert("claude/rn-acc".into(), window(95.0));
+        stops("its helper's account past a usage level it has not been told of");
+        reg().lock().unwrap().usage.insert("claude/rn-acc".into(), window(40.0));
+        assert!(runs_nothing(pty, id, top, idle), "a window below every level");
+        reg().lock().unwrap().usage.remove("claude/rn-acc");
+        reg().lock().unwrap().known.get_mut(sub).unwrap().settings["budgetBreach"] = serde_json::json!({ "at": 1, "pct": 90 });
+        stops("its helper's context past the alarm level, not yet told");
+        reg().lock().unwrap().known.get_mut(sub).unwrap().settings["budgetTold"] = serde_json::json!(true);
+        assert!(runs_nothing(pty, id, top, idle), "told already");
+        crate::background::gone_for_test(sub);
+        forget(sub);
+        let mut cut = crate::agents::test_support::spawn_taken(9_177_001, id, None, false);
+        cut.news = Some("your spawn went with a core".into());
+        reg().lock().unwrap().spawns.insert(cut.request, cut);
+        stops("a spawn a core's going cut off, to be told");
+        reg().lock().unwrap().spawns.remove(&9_177_001);
+        let places = crate::agents::spawn::PlacesRefused { since: 0, who: vec!["x".into()] };
+        reg().lock().unwrap().places_refused.insert(id.into(), places);
+        stops("a place refused below it, to be told");
+        reg().lock().unwrap().places_refused.remove(id);
+        let handed = crate::agents::handoff::HandedOff { since: 0, who: vec![("x".into(), 1)] };
+        reg().lock().unwrap().handed_off.insert(id.into(), handed);
+        stops("a lead below it that handed off, to be told");
+        reg().lock().unwrap().handed_off.remove(id);
+        // Its own handoff at its turn's end, looked at off that thread: it may
+        // yet queue the ask or build the document and start afresh.
+        crate::background::handoff_look_for_test(id, true);
+        stops("its look at its own handoff under way");
+        crate::background::handoff_look_for_test(id, false);
+        assert!(runs_nothing(pty, id, top, idle));
         owe_from(id, other, 0, 0);
         stops("an answer owed to it by a session it wrote to");
         reg().lock().unwrap().owed.remove(&key(other));
         owe_from(id, top, 0, 0);
-        assert!(runs_nothing(id, top, idle), "an answer owed to it by the caller is the caller's to send");
+        assert!(runs_nothing(pty, id, top, idle), "an answer owed to it by the caller is the caller's to send");
         reg().lock().unwrap().owed.remove(&key(top));
-        assert!(runs_nothing(id, top, idle));
+        assert!(runs_nothing(pty, id, top, idle));
         crate::background::gone_for_test(id);
         for s in [id, top, other] {
             forget(s);

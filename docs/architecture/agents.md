@@ -629,11 +629,18 @@ turn, stopped on a prompt (once per stop) or exited.
   stays open while its background subagents work, and `codex exec`
   interrupts its subagents as the turn ends), no answer owed to it by anyone
   but that parent, no `wait` of its out, nothing queued, held or reserved for
-  it (background `work_and_count`) and no line waiting to go in: one queued
-  for it (a wake), or one the notifier has for it at its latest look and
-  types in unasked (`lines_coming`: an account's usage window past a level, a
-  helper's context past its level, a spawn a core's going cut off, a refused
-  place, a handoff), as each starts a turn of its own.
+  it (background `work_and_count`), no look at its own handoff under way at
+  its turn's end (background `handoff_look_under_way`, marked under the lock
+  that counts the turn and let go once `lead_turn_ended` is over: that look
+  may queue Luna's ask, build Luna's own document or start the fresh
+  conversation), and no line waiting to go in: one queued for it (a wake),
+  or one the notifier types in unasked (an account's usage window past a
+  level, `quota_due`; a helper's context past its level, `budget_due`, its
+  transcript read then; a spawn a core's going cut off; a refused place; a
+  handoff below it), as each starts a turn of its own. Each is read as it
+  stands when the notice is put together, not as the notifier's last look
+  saw it, so a usage figure published since can only hold the sentence
+  back.
   What it wrote does not count: a lead ended a turn on "Gate is running;
   waiting." with no gate started, and its parent read that as work under way
   (issue #77). Not with a cut-off line, which already says a send has it
