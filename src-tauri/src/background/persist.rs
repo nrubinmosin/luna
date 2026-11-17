@@ -133,9 +133,11 @@ pub(super) fn snapshot() -> Vec<Saved> {
         })
         .collect();
     // The agent layer's lock after this one is let go: it is the one taken
-    // first where both are held.
-    for s in &mut saved {
-        s.ties = crate::agents::ties_of(&s.id).unwrap_or_default();
+    // first where both are held. Every helper's ties in one hold of it.
+    let ids: Vec<&str> = saved.iter().map(|s| s.id.as_str()).collect();
+    let ties = crate::agents::ties_of_each(&ids);
+    for (s, ties) in saved.iter_mut().zip(ties) {
+        s.ties = ties.unwrap_or_default();
         // Its CLI has said where it works.
         if s.session.is_some() || s.cwd.is_some() {
             s.ties.worktrees_before = None;

@@ -117,16 +117,20 @@ hooks run unasked.
     chat's own helper (or one whose chat is gone) moves: a helper's helper has
     the link grayed out and goes along with the helper above it. It moves
     only to a chat with Luna's tools that runs at least at its privilege and
-    has places for it and its helpers; the dialog grays out the others and
+    has places for it and its helpers, and where none of them would sit
+    deeper than a helper that chat spawned could (a helper with Luna's tools
+    only as the chat's own helper); the dialog grays out the others and
     says why under each. A refused move says why and changes nothing. It may be in the middle of a turn: the
     turn goes on, and its next turn is told which chat it answers to. Its
     conversation, worktree, settings and constraints stay; text queued for it
-    still goes in. The new chat is owed the answer it is at work on, if any.
+    still goes in, except what the old chat queued that its CLI would read as
+    a command (`/`, `!`), which the old chat is told of. The new chat is owed the answer it is at work on, if any.
     The old chat hears once that you moved it and that nothing more is owed by
     it; from then on it can no longer send to it, answer it, stop or delete it,
     and only reads it and waits on it the way it would another chat's helper
-    (`scope: "all"`). A helper left with no chat, set to delete itself once
-    idle, no longer does once moved to a chat.
+    (`scope: "all"`). A helper left with no chat that was set to delete itself
+    once idle only because its chat was deleted no longer does once moved to
+    a chat; one started to delete itself still does.
   - **Move to <chat>?** shows under its line, as a link, when one of your
     chats tried to send to it or answer it, or a helper under it, and was
     refused for not being above it, and only if it may move there now (the

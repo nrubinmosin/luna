@@ -146,6 +146,10 @@ fn change_hands(id: &str) -> Option<TakenOver> {
     if let Some(p) = &parent {
         r.taken_over.insert(id.to_string(), p.clone());
     }
+    // A move of it as a helper says nothing of a chat (reparent.rs), nor does a
+    // chat refused a write into it ask for one.
+    r.moved.remove(id);
+    r.suggested.remove(id);
     Some(TakenOver { parent, owed })
 }
 

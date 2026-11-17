@@ -7,7 +7,7 @@ use crate::agents::delivery::{as_sent, screen_of, type_in, TypingInto, ENTER_GAP
 use crate::agents::owed::{owe_from, seen};
 use crate::agents::privilege::{answerer, approval_needs, command_reach_now, plain_text, Privilege, Reach};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{authorize_send, ownership_steady, reg};
+use crate::agents::registry::{authorize_send, is_persons_chat, ownership_steady, reg};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::Serialize;
@@ -229,8 +229,8 @@ pub fn answer(
 ) -> Result<Answered, String> {
     // Into a helper: whose it is stays as checked here, `own` below with it,
     // until the debt the answer leaves is in; a move to another chat waits
-    // (reparent.rs).
-    let _steady = crate::background::has(id).then(ownership_steady);
+    // (reparent.rs). Anything but a chat may be a helper (`send`).
+    let _steady = (!is_persons_chat(id)).then(ownership_steady);
     let known = authorize_send(caller, id)?;
     #[cfg(test)]
     super::test_support::reached("answer checked", caller);

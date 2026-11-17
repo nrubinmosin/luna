@@ -67,8 +67,18 @@ pub struct Ties {
     pub moved: Option<crate::agents::reparent::Moved>,
 }
 
-pub fn ties_of(id: &str) -> Option<Ties> {
+/// One helper's ties, as a save keeps them (`ties_of_each`).
+#[cfg(test)]
+pub(super) fn ties_of(id: &str) -> Option<Ties> {
     ties_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), id)
+}
+
+/// `ties_of` each of `ids`, in one hold of the registry: a save never keeps one
+/// helper of a line as before a change of several (a move, reparent.rs) and
+/// another as after it.
+pub fn ties_of_each(ids: &[&str]) -> Vec<Option<Ties>> {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    ids.iter().map(|id| ties_in(&r, id)).collect()
 }
 
 pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {

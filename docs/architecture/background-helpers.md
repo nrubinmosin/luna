@@ -219,7 +219,9 @@ must not undo (a spawn, a conversation named, a delete, a question, a
 handover), the registry is written to `<data>/helpers.json` when changed, one
 save at a time. It holds the spec without its token, the session id, the
 worktree, the turn count, queued text with each sender (`Queued`), and the
-agent ties (`agents::Ties`: parent, name, settings, debts, counts shown); the
+agent ties (`agents::Ties`: parent, name, settings, debts, counts shown, all
+helpers' read in one hold of the agent registry, `ties_of_each`, so a save
+never keeps a line half moved); the
 conversation itself stays in the CLI's transcript ([what Luna keeps of
 conversations](#what-luna-keeps-of-conversations)). A `send` that queues writes
 at once. A batch a turn claimed is
