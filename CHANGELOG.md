@@ -67,6 +67,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   not take are refused past 8 MB waiting, with an error, rather than held.
 - A chat's handoff record is written to disk with the records free to be
   read, so the window's look at its chats no longer waits on that write.
+- Each Codex chat's rollout is read under a lock of its own, so one chat's
+  long read no longer holds up every other Codex chat's status.
 
 ### Fixed
 

@@ -3,6 +3,7 @@
 //! the subagents at work under it.
 
 use super::*;
+use std::sync::Arc;
 
 /// What the turn tracker of each chat has read of its rollout, and where it
 /// stopped.
@@ -39,8 +40,13 @@ pub(super) struct Scan {
     pub(super) last_said_at: Option<String>,
 }
 
-pub(super) fn turn_counts() -> &'static Mutex<HashMap<String, TurnCount>> {
-    static C: OnceLock<Mutex<HashMap<String, TurnCount>>> = OnceLock::new();
+/// Each chat's turn tracker, behind a lock of its own: a look reads and
+/// parses what its rollout gained under it, from byte zero the first time,
+/// and behind one lock for all of them one chat's read held up every other
+/// chat's metadata, activity and questions. The map's own lock is held only
+/// to find or drop a chat's tracker.
+pub(super) fn turn_counts() -> &'static Mutex<HashMap<String, Arc<Mutex<Option<TurnCount>>>>> {
+    static C: OnceLock<Mutex<HashMap<String, Arc<Mutex<Option<TurnCount>>>>>> = OnceLock::new();
     C.get_or_init(Default::default)
 }
 
@@ -57,13 +63,9 @@ pub(super) fn tracked(live: &Live) -> Option<Scan> {
 
 /// `tracked`, the chat on the rollout at `path` now.
 pub(super) fn tracked_at(live: &Live, path: PathBuf) -> Option<Scan> {
-    let mut counts = turn_counts().lock().ok()?;
-    let entry = counts.entry(live.chat_id.to_string()).or_insert_with(|| TurnCount {
-        path: path.clone(),
-        offset: 0,
-        scan: Scan::default(),
-        before: HashMap::new(),
-    });
+    let tracker = Arc::clone(turn_counts().lock().ok()?.entry(live.chat_id.to_string()).or_default());
+    let mut tracker = tracker.lock().ok()?;
+    let entry = tracker.get_or_insert_with(|| TurnCount { path: path.clone(), offset: 0, scan: Scan::default(), before: HashMap::new() });
     let since = live.spawned_at_ms as i64;
     if entry.path != path {
         // What the one it leaves wrote since the last look counts first: a turn
@@ -119,7 +121,9 @@ pub fn turns_completed(live: &Live) -> Option<u32> {
 /// read: the one the turn count comes from, so it goes with the turn counted,
 /// and the session may have exited since.
 pub fn last_failure(chat_id: &str) -> Option<String> {
-    turn_counts().lock().ok()?.get(chat_id)?.scan.failed.clone()
+    let tracker = Arc::clone(turn_counts().lock().ok()?.get(chat_id)?);
+    let failed = tracker.lock().ok()?.as_ref()?.scan.failed.clone();
+    failed
 }
 
 /// The question the session has put to the user and nobody has answered:
@@ -140,8 +144,11 @@ pub(super) struct Children {
     read: HashMap<PathBuf, (u64, Scan)>,
 }
 
-pub(super) fn children() -> &'static Mutex<HashMap<String, Children>> {
-    static C: OnceLock<Mutex<HashMap<String, Children>>> = OnceLock::new();
+/// Each chat's, behind a lock of its own as the turn trackers are
+/// (`turn_counts`): a look reads the first line of each new rollout and what
+/// each of its subagents' gained under it.
+pub(super) fn children() -> &'static Mutex<HashMap<String, Arc<Mutex<Children>>>> {
+    static C: OnceLock<Mutex<HashMap<String, Arc<Mutex<Children>>>>> = OnceLock::new();
     C.get_or_init(Default::default)
 }
 
@@ -178,8 +185,8 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
         .map(|(_, id, p)| (id, p))
         .collect();
     let listed: std::collections::HashSet<&PathBuf> = files.iter().map(|(_, p)| p).collect();
-    let mut all = children().lock().ok()?;
-    let seen = all.entry(live.chat_id.to_string()).or_default();
+    let seen = Arc::clone(children().lock().ok()?.entry(live.chat_id.to_string()).or_default());
+    let mut seen = seen.lock().ok()?;
     seen.parent_of.retain(|p, _| listed.contains(p));
     seen.read.retain(|p, _| listed.contains(p));
     for (_, path) in &files {

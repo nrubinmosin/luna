@@ -346,7 +346,9 @@ live registry.
   `task_started` / `task_complete` → working / resting and the turn count;
   `request_user_input` (holds the turn) and `request_user_input_async` (open
   until the next `UserMessage`) → the question. The turn count goes on over
-  every file the process has been on.
+  every file the process has been on. Each chat's tracker, and its record of
+  its subagents' rollouts, has a lock of its own, held over the read: one
+  chat's read never holds up another's look.
 - **From the tail** (128 KiB, `read.rs`): `token_count.info` → context
   (`last_token_usage.total_tokens − reasoning_output_tokens` against
   `model_context_window`, as Codex counts it); `turn_context.model` → model;
