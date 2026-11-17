@@ -58,6 +58,76 @@ enum Input {
     Resize(PtySize),
 }
 
+impl Input {
+    /// What it counts for in the bytes waiting (`InputTx`).
+    fn len(&self) -> u64 {
+        match self {
+            Input::Bytes(b) => b.len() as u64,
+            Input::Resize(_) => 0,
+        }
+    }
+}
+
+/// The bytes of input a session's writer thread may have waiting before more
+/// is refused: keystrokes, pastes and Luna's notices many times over. ConPTY
+/// takes no bytes while the child is not draining them, and a CLI that has
+/// stopped reading would otherwise have the core hold whatever is typed or
+/// sent at it.
+const INPUT_MAX: u64 = 8 * 1024 * 1024;
+
+/// A session's end of its input queue: what is handed over goes to the
+/// writer thread in order, counted by its bytes until it is written. Past
+/// `INPUT_MAX` waiting, input is refused with an error, and so is all input
+/// after it until the writer has caught up, so what does go in keeps its
+/// order with no gap; the log says so once. One write alone may be larger
+/// than the bound. Resizes count for nothing.
+struct InputTx {
+    id: String,
+    tx: std::sync::mpsc::Sender<Input>,
+    /// Bytes handed over and not written yet; the writer takes off what it
+    /// has written.
+    waiting: Arc<AtomicU64>,
+    refusing: AtomicBool,
+}
+
+impl InputTx {
+    /// A queue for session `id`, with the end its writer thread reads and
+    /// the count it takes written bytes off.
+    fn new(id: &str) -> (InputTx, std::sync::mpsc::Receiver<Input>, Arc<AtomicU64>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiting = Arc::new(AtomicU64::new(0));
+        let theirs = Arc::clone(&waiting);
+        (InputTx { id: id.to_string(), tx, waiting, refusing: AtomicBool::new(false) }, rx, theirs)
+    }
+
+    /// One nobody reads: a session whose process has gone takes no input.
+    fn closed(id: &str) -> InputTx {
+        Self::new(id).0
+    }
+
+    fn send(&self, input: Input) -> Result<(), String> {
+        let len = input.len();
+        let waiting = self.waiting.load(Ordering::SeqCst);
+        if waiting == 0 {
+            self.refusing.store(false, Ordering::SeqCst);
+        }
+        if len > 0 && (self.refusing.load(Ordering::SeqCst) || (waiting > 0 && waiting + len > INPUT_MAX)) {
+            if !self.refusing.swap(true, Ordering::SeqCst) {
+                crate::log::warn(
+                    "pty",
+                    &format!("{}'s CLI is not taking input: {} KB waiting to be written; refusing more", self.id, waiting / 1024),
+                );
+            }
+            return Err(format!("the session is not taking input: {} KB waiting to be written", waiting / 1024));
+        }
+        self.waiting.fetch_add(len, Ordering::SeqCst);
+        self.tx.send(input).map_err(|_| {
+            self.waiting.fetch_sub(len, Ordering::SeqCst);
+            "session writer is gone".to_string()
+        })
+    }
+}
+
 struct Session {
     provider: Provider,
     /// Input is handed to a writer thread instead of being written inline.
@@ -73,8 +143,8 @@ struct Session {
     /// every pane's keystrokes queued for over a second behind one pane's
     /// window drag. The writer thread owns the master end, so the resize
     /// happens there, after the bytes that preceded it and before the ones
-    /// that follow.
-    input_tx: Arc<std::sync::mpsc::Sender<Input>>,
+    /// that follow. What waits for the writer is bounded (`InputTx`).
+    input_tx: Arc<InputTx>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// For asking whether the process is still there without blocking on it;
     /// the reader thread shares it to collect the exit code.
@@ -284,6 +354,32 @@ impl PtyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Input past the bound waiting is refused with an error, and so is all
+    /// after it until the writer has caught up; one write larger than the
+    /// bound goes on its own, and a resize always goes.
+    #[test]
+    fn input_past_its_bound_is_refused_until_the_writer_catches_up() {
+        let (tx, rx, waiting) = InputTx::new("in-bound");
+        let half = (INPUT_MAX / 2) as usize;
+        assert!(tx.send(Input::Bytes(vec![b'a'; half])).is_ok());
+        assert!(tx.send(Input::Bytes(vec![b'b'; half])).is_ok());
+        let refused = tx.send(Input::Bytes(b"c".to_vec())).unwrap_err();
+        assert!(refused.contains("not taking input"), "{refused}");
+        assert!(tx.send(Input::Resize(PtySize { rows: 1, cols: 1, pixel_width: 0, pixel_height: 0 })).is_ok());
+        // The writer takes one: room again, but nothing goes in before it has them all.
+        let first = rx.recv().unwrap();
+        waiting.fetch_sub(first.len(), Ordering::SeqCst);
+        assert!(tx.send(Input::Bytes(b"d".to_vec())).is_err(), "no gap: refused until caught up");
+        for input in rx.try_iter() {
+            waiting.fetch_sub(input.len(), Ordering::SeqCst);
+        }
+        assert!(tx.send(Input::Bytes(b"e".to_vec())).is_ok());
+        let e = rx.recv().unwrap();
+        waiting.fetch_sub(e.len(), Ordering::SeqCst);
+        assert!(tx.send(Input::Bytes(vec![b'f'; INPUT_MAX as usize + 1])).is_ok(), "one write alone may be larger");
+        assert!(InputTx::closed("in-gone").send(Input::Bytes(b"x".to_vec())).is_err());
+    }
 
     #[test]
     fn a_login_session_is_told_by_its_folder() {

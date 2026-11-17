@@ -97,7 +97,8 @@ flowchart LR
   the commands its capability grants
   ([ADR-0015](../adr/0015-the-page-gets-only-what-it-calls.md)).
 - **Events.** Code that emits does not hold an `AppHandle`: everything goes
-  through `emit.rs`. In the core each window has its own queue; a window that
+  through `emit.rs`. In the core each window has its own queue, of 8,192
+  frames and 64 MB at most; a window that
   falls behind is disconnected rather than allowed to stall a pty, and goes
   straight back (`corelink.rs` `rejoin`), its panes redrawn from the scrollback.
   Main event families: `pty://output`, `pty://exit`, `power://state`,

@@ -221,6 +221,14 @@ the command quotes `"@-"` and calls curl by full path.
   going from `busy` to `idle` keeps its length. An entry unused for 10 minutes
   goes, swept at any look, and each cache has a cap. At idle a look is a `stat`
   per file and a read a minute.
+- **Queues are bounded.** A session's input waits for its writer thread in a
+  queue of at most 8 MB (`InputTx`): past that, keys, pastes and Luna's text
+  are refused with an error (a keystroke's, which nobody waits for, only in
+  the log, once), and so is everything after until the writer has caught up,
+  so what goes in keeps its order with no gap; one write alone may be larger,
+  and resizes always go. The reader hands output to the emitter through 512
+  reads (4 MB) at most; past that the reader waits, and the CLI's writes with
+  it, which the log says once: output is never dropped or reordered.
 - **Input to Codex as key presses.** ConPTY turns each character into a key
   press on the console's layout, and a character the layout lacks (on a Russian
   layout brackets, `< > ' ~ @ # $ ^ & |`, backtick, dashes) never reached Codex.

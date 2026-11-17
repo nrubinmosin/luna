@@ -371,6 +371,9 @@ live registry.
   of a live chat's thread and its descendants (threads begun since the process
   spawned, two weeks at most): one is at work while its last turn has not
   ended.
+- A thread's rollout once found (`rollout_of_thread`, `thread_file`), and a
+  thread looked for in vain, are kept, up to 1,024 of each before the lookup
+  starts over.
 - `reading.rs`: `read_rollout`, all that the running read and the tail read
   take of a rollout, of its bytes alone, by the same per-line functions.
 

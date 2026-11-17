@@ -62,7 +62,7 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
         s.stashing.store(true, Ordering::Relaxed);
     }
     // Queueing, so the command returns at once however busy the pty is.
-    s.input_tx.send(Input::Bytes(data.into_bytes())).map_err(|_| "session writer is gone".to_string())
+    s.input_tx.send(Input::Bytes(data.into_bytes()))
 }
 
 /// A person's keys held back from a session (`PtyManager::hold_keys`); they
@@ -143,9 +143,7 @@ pub fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
     let state = manager();
     let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let s = sessions.get(&id).ok_or("no such session")?;
-    s.input_tx
-        .send(Input::Resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }))
-        .map_err(|_| "session writer is gone".to_string())
+    s.input_tx.send(Input::Resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }))
 }
 
 // The pty child is the CLI; everything it spawned (node, MCP servers, shells)
@@ -435,7 +433,7 @@ impl PtyManager {
             return Ok(());
         }
         let s = sessions.get(id).ok_or("no such session")?;
-        s.input_tx.send(Input::Bytes(data.to_vec())).map_err(|_| "session writer is gone".to_string())
+        s.input_tx.send(Input::Bytes(data.to_vec()))
     }
 
     /// Types text the way a terminal pastes it: between bracketed-paste
@@ -575,7 +573,7 @@ impl PtyManager {
 #[cfg(test)]
 mod tests {
     use super::super::spawn::{capture, spawn, Launch};
-    use super::super::Input;
+    use super::super::InputTx;
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU64};
     use std::sync::{Arc, Mutex};
@@ -621,8 +619,12 @@ mod tests {
     fn fake_session(id: &str, cwd: &str) -> Arc<AtomicBool> {
         let quit = Arc::new(AtomicBool::new(false));
         let child: Box<dyn portable_pty::Child + Send + Sync> = Box::new(FakeChild { quit: Arc::clone(&quit) });
-        let (input_tx, input_rx) = std::sync::mpsc::channel::<Input>();
-        std::thread::spawn(move || for _ in input_rx {});
+        let (input_tx, input_rx, written) = InputTx::new(id);
+        std::thread::spawn(move || {
+            for input in input_rx {
+                written.fetch_sub(input.len(), Ordering::SeqCst);
+            }
+        });
         let session = Session {
             provider: Provider::Claude,
             input_tx: Arc::new(input_tx),

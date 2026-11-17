@@ -4,7 +4,7 @@
 
 use super::control::end_leftovers;
 use super::screen::{as_key_events, drawn_screen, render_screen, Drawn, Modes, Scrollback};
-use super::{manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, Session, NEVER_NUDGED};
+use super::{manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, InputTx, Session, NEVER_NUDGED};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
@@ -17,6 +17,12 @@ const SCROLLBACK_CAP: usize = 2 * 1024 * 1024;
 /// Let the buffer run this far past the cap before trimming, so the trim costs
 /// one pass per slack rather than one per read.
 const SCROLLBACK_SLACK: usize = 256 * 1024;
+/// Reads (8 KB at most each) the reader may have waiting for the emitter
+/// before it waits itself: 4 MB, many frames' worth. The emitter only puts
+/// them into an event, which `emit::to_ui` hands on without waiting, so this
+/// is reached only when it is starved of time; the reader waiting then holds
+/// the CLI's writes back, and none of its output is dropped or reordered.
+const OUTPUT_PIECES: usize = 512;
 /// How long output is allowed to pile up before it is sent to the UI — one
 /// frame at 60Hz, short enough to feel immediate and long enough that a
 /// repainting TUI does not turn into hundreds of events per second.
@@ -282,7 +288,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // Drains on its own thread and ends when the session is dropped, which
     // drops the sender with it — and the master end, which the thread owns,
     // goes down with the thread, exactly when the session used to take it.
-    let (input_tx, input_rx) = std::sync::mpsc::channel::<Input>();
+    let (input_tx, input_rx, input_waiting) = InputTx::new(&id);
     // The reader answers cursor queries through a weak handle: a strong one
     // would keep the writer thread, and with it the pty, alive past the
     // session (see the note above).
@@ -304,6 +310,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             // out from under a child that may still be on its way out.
             let mut writable = true;
             for msg in input_rx {
+                let len = msg.len();
                 match msg {
                     Input::Bytes(chunk) if writable => {
                         // Focus moving into or out of a pane shown already
@@ -333,6 +340,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                         }
                     }
                 }
+                input_waiting.fetch_sub(len, Ordering::SeqCst);
             }
         });
     }
@@ -363,8 +371,11 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         // one event per read means one IPC message plus one JSON payload per
         // read, per chat, all landing on the webview's single thread — the app
         // got slower with every busy chat. The emitter coalesces whatever
-        // arrives inside a frame into one event.
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        // arrives inside a frame into one event. What waits for it is bounded
+        // (`OUTPUT_PIECES`): past that the reader waits, and the CLI's writes
+        // with it, rather than drop or reorder output.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(OUTPUT_PIECES);
+        let reading = id.clone();
         let emitter = std::thread::spawn(move || {
             // Carry bytes of a UTF-8 sequence split across reads.
             let mut carry: Vec<u8> = Vec::new();
@@ -423,6 +434,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             let mut chunk = [0u8; 8192];
             // The start of a cursor query cut off at the end of a read.
             let mut carry: Vec<u8> = Vec::new();
+            // The emitter has fallen behind once: said once a session.
+            let mut behind = false;
             'read: loop {
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
@@ -452,7 +465,20 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                                 sb.bytes.extend(piece.iter().copied());
                                 sb.written += piece.len() as u64;
                                 drop(sb);
-                                if tx.send(piece).is_err() {
+                                let sent = match tx.try_send(piece) {
+                                    Err(std::sync::mpsc::TrySendError::Full(piece)) => {
+                                        if !behind {
+                                            behind = true;
+                                            crate::log::warn(
+                                                "pty",
+                                                &format!("{reading}'s output is ahead of what goes to the window; reading it waits"),
+                                            );
+                                        }
+                                        tx.send(piece).is_ok()
+                                    }
+                                    sent => sent.is_ok(),
+                                };
+                                if !sent {
                                     break 'read;
                                 }
                             }
@@ -502,7 +528,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             // tail of the scrollback — or a CLI that quit on its own held
             // megabytes and a console host until Luna restarted.
             if let Some(s) = pm.sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
-                s.input_tx = Arc::new(std::sync::mpsc::channel().0);
+                s.input_tx = Arc::new(InputTx::closed(&id));
             }
             // This session's own output, with the session map let go: a look
             // drawing its screen anew holds `drawn` for as long as that takes.
@@ -535,7 +561,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                 let pm = manager();
                 let mut sessions = pm.sessions.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(s) = sessions.get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
-                    s.input_tx = Arc::new(std::sync::mpsc::channel().0);
+                    s.input_tx = Arc::new(InputTx::closed(&id));
                 }
                 break;
             }

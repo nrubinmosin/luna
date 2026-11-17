@@ -276,7 +276,9 @@ Every 2 s, as the core leaves (`stop_all`), and at once on what a killed core
 must not undo (a spawn, a conversation named, a delete, a question, a
 handover), the registry is written to `<data>/helpers.json` when changed, one
 save at a time. It holds the spec without its token, the session id, the
-worktree, the turn count, queued text with each sender (`Queued`), and the
+worktree, the turn count, queued text with each sender (`Queued`; a `send` or
+`interrupt` past 16 MB queued for the helper is refused, saying why,
+`room_for`), and the
 agent ties (`agents::Ties`: parent, name, settings, debts, counts shown, all
 helpers' read in one hold of the agent registry, `ties_of_each`, so a save
 never keeps a line half moved); the

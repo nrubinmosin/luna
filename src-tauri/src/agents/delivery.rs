@@ -331,7 +331,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     // Checked as written: a `/` or `!` the line would hide is refused all the same.
     let text = &as_sent(caller, id, text);
     if handing_off {
-        hold(caller, id, text);
+        hold(caller, id, text)?;
         let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
         let (state_before, _) = state_of(id);
         return Ok(Sent {
@@ -431,7 +431,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     let typed = if going.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline)? };
     drop(going);
     let Some(sent) = typed else {
-        hold(caller, id, text);
+        hold(caller, id, text)?;
         return Ok(Sent {
             ok: true,
             state_before,

@@ -69,6 +69,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   read, so the window's look at its chats no longer waits on that write.
 - Each Codex chat's rollout is read under a lock of its own, so one chat's
   long read no longer holds up every other Codex chat's status.
+- What waits in the core is bounded in bytes: a session's input (8 MB, then
+  refused with an error until its CLI has taken it), its output on the way to
+  the window (the reader waits, nothing is dropped), each window's queue
+  (64 MB, then the window reconnects), text queued for a helper and text held
+  for a person's chat (16 MB each, then a send is refused, saying why), and
+  the Codex rollouts looked up by thread (1,024 kept).
 
 ### Fixed
 

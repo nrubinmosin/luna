@@ -154,9 +154,19 @@ pub fn rollout_of_thread(account_path: &str, id: &str) -> Option<PathBuf> {
         return Some(p.clone());
     }
     let path = rollout_by_id(account_path, id)?;
-    found.lock().ok()?.insert(id.to_string(), path.clone());
+    let mut found = found.lock().ok()?;
+    if found.len() >= KEPT_LOOKUPS {
+        found.clear();
+    }
+    found.insert(id.to_string(), path.clone());
     Some(path)
 }
+
+/// How many threads' rollouts, found or looked for in vain, a lookup keeps at
+/// most before it starts over: the threads asked about over a core's life are
+/// not bounded, and one let go of costs only a walk of the account's folders
+/// when it is asked for again.
+const KEPT_LOOKUPS: usize = 1024;
 
 /// Where a thread works, per its rollout: a `--worktree` one names the
 /// checkout Codex made.
@@ -217,11 +227,19 @@ fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
     }
     match rollout_where(account_path, |id| id.starts_with(thread)) {
         Some(p) => {
-            found.lock().ok()?.insert(key, p.clone());
+            let mut found = found.lock().ok()?;
+            if found.len() >= KEPT_LOOKUPS {
+                found.clear();
+            }
+            found.insert(key, p.clone());
             Some(p)
         }
         None => {
-            missed.lock().ok()?.insert(key);
+            let mut missed = missed.lock().ok()?;
+            if missed.len() >= KEPT_LOOKUPS {
+                missed.clear();
+            }
+            missed.insert(key);
             None
         }
     }
