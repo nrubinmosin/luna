@@ -59,10 +59,19 @@ fn title_cache() -> &'static Mutex<HashMap<String, Titles>> {
 /// the tail only updates them. The first look reads the whole transcript: a
 /// long session Luna has just restarted on may hold no title in its tail, and
 /// the opening prompt would take the chat's name until one came round again.
-pub(super) fn titles_of(session_id: &str, path: &Path, tail: Option<&str>) -> Titles {
+/// What the tail says is kept until the transcript changes (`tail_titles`).
+pub(super) fn titles_of(session_id: &str, path: &Path) -> Titles {
     let first_look = !title_cache().lock().unwrap().contains_key(session_id);
-    let seen = if first_look { std::fs::read_to_string(path).ok().map(|s| titles_in(&s)) } else { tail.map(titles_in) };
+    let seen = if first_look { std::fs::read_to_string(path).ok().map(|s| titles_in(&s)) } else { tail_titles(path) };
     remembered_titles(session_id, seen.unwrap_or_default())
+}
+
+/// The titles in the last 128 KB of a transcript, read again only once the
+/// file has changed.
+fn tail_titles(path: &Path) -> Option<Titles> {
+    static SEEN: std::sync::LazyLock<crate::stamped::ByStamp<Titles>> =
+        std::sync::LazyLock::new(|| crate::stamped::ByStamp::new(CACHE_CAP));
+    SEEN.get(path, |path| crate::pty::tail(path, 128 * 1024).map(|text| titles_in(&text)))
 }
 
 fn remembered_titles(session_id: &str, seen: Titles) -> Titles {
@@ -213,9 +222,13 @@ mod tests {
         let sid = format!("first-look-{}", std::process::id());
         let path = std::env::temp_dir().join(format!("{sid}.jsonl"));
         std::fs::write(&path, r#"{"type":"ai-title","aiTitle":"Chat titles","sessionId":"s"}"#).unwrap();
+        assert_eq!(titles_of(&sid, &path).ai.as_deref(), Some("Chat titles"));
         // A tail with no title in it, as a long tool run leaves one.
-        assert_eq!(titles_of(&sid, &path, Some("{}")).ai.as_deref(), Some("Chat titles"));
-        assert_eq!(titles_of(&sid, &path, Some("{}")).ai.as_deref(), Some("Chat titles"));
+        let mut long = std::fs::read_to_string(&path).unwrap();
+        long.push('\n');
+        long.push_str(&format!("{}\n", r#"{"type":"user","message":{"content":"x"}}"#).repeat(4_000));
+        std::fs::write(&path, long).unwrap();
+        assert_eq!(titles_of(&sid, &path).ai.as_deref(), Some("Chat titles"));
         let _ = std::fs::remove_file(&path);
     }
 

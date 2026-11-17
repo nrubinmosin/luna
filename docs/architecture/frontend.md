@@ -67,8 +67,10 @@ What the page may call is fixed in Rust, not here
 
 Zustand stores, persisted to localStorage where they are UI state (chats,
 folders, boards). The page computes no session state of its own: status,
-titles, context and drafts come from the core (`session_meta`), polled by
-`useSessionWatch` and pushed by events.
+titles, context and drafts come from the core (`sessions_meta`), polled by
+`useSessionWatch` every 4 s for every chat with an account, in one call, and
+pushed by events. Its own per-chat memory (`titleLooked`, a saved title looked
+up once) lets go of a chat deleted at the next tick.
 
 - **Renders follow changes.** A setter that changes nothing returns the state
   it was given, so it notifies nobody; one that changes a chat replaces that

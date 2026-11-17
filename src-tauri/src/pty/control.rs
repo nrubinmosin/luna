@@ -363,8 +363,8 @@ pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, S
         return Ok(Vec::new());
     }
 
-    // Naming one means reading the head of its transcript, so do it off the
-    // main thread like session_meta does.
+    // Naming one means reading the head of its transcript, so do it on a
+    // thread for blocking work.
     tauri::async_runtime::spawn_blocking(move || {
         candidates
             .into_iter()

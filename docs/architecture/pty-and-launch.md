@@ -36,7 +36,8 @@ How a session is started, what it is started with, and how its terminal is run.
 | `pty/spawn.rs` | the shared spawn, scrollback (`Scrollback`), `pty://output` / `pty://exit`, cursor queries answered |
 | `pty/control.rs` | write, resize, keys, kill, quitting the way a person would, delete, orphans |
 | `pty/screen.rs` | the screen drawn (`vt100`) and kept per session (`Drawn`), composer and draft, terminal modes and title, Codex key events on Windows; `SessionMeta` |
-| `pty/probe.rs` | `ActivityProbe::working_dir()`, `session_meta` by provider, tails, sweep of hook and MCP files |
+| `pty/probe.rs` | `ActivityProbe::working_dir()`, `sessions_meta` (every chat's look, one call a tick) by provider, tails, sweep of hook and MCP files |
+| `stamped.rs` | what is read off a file, kept while its length and change time stand (`ByStamp`) |
 | `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and guard, the helper's system prompt line and settings (`claude_helper_args`, `HelperSettings`, used by `background/command.rs`) |
 | `codex/launch.rs` | Codex's arguments and environment, approval and sandbox overrides, `read-only-net`, the guard, Luna's MCP server |
 | `guard.rs` | the PreToolUse guard against waits that never end |
@@ -207,6 +208,19 @@ the command quotes `"@-"` and calls curl by full path.
   out the new bytes; a look copies nothing under the session map. Both CLIs go
   through it. Kept, the terminal has seen output from before where the
   scrollback starts now, as a pane that stayed attached has.
+- **What is read off disk is kept by stamp.** `sessions_meta` and the sampler
+  ask after every live chat every few seconds. What they read of a file (a
+  Claude Code registry entry, the titles in a transcript's tail; a rollout's
+  tail, its first line's cwd and the limit its last turn met; Codex's
+  `session_index.jsonl`) is kept by the file's length, change time and identity
+  (inode, or creation time on Windows) (`stamped::ByStamp`) and read again once
+  those change, and in any case once a minute, which catches a file a tool put
+  back with its length and change time. A read that failed keeps nothing. A file
+  changed in the last 2 s is read every time, as git treats a racily clean file:
+  a change time is as coarse as the file system keeps it, and a registry entry
+  going from `busy` to `idle` keeps its length. An entry unused for 10 minutes
+  goes, swept at any look, and each cache has a cap. At idle a look is a `stat`
+  per file and a read a minute.
 - **Input to Codex as key presses.** ConPTY turns each character into a key
   press on the console's layout, and a character the layout lacks (on a Russian
   layout brackets, `< > ' ~ @ # $ ^ & |`, backtick, dashes) never reached Codex.

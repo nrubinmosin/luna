@@ -62,7 +62,7 @@ pub(super) fn limit_at(chat_id: &str, provider: Provider) -> Option<(&'static st
             .filter(|(e, _)| *e == "rate_limit"),
         Provider::Codex => {
             let path = crate::codex::session::rollout_for(&codex_live(&p))?;
-            let (kind, at) = crate::codex::session::limit_at_in(&crate::pty::tail(&path, 256 * 1024)?)?;
+            let (kind, at) = crate::codex::session::rollout_limit(&path)?;
             let at = at.and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond().max(0) as u64);
             Some((kind, at))
         }

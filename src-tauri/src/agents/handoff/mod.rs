@@ -2090,14 +2090,6 @@ pub fn handoff_ask_of(id: &str) -> Option<HandoffAsk> {
     })
 }
 
-/// The window's look at the ask open on a chat (`handoff_ask_of`) where
-/// `session_meta` has nothing to say, its CLI not running: the ask is the
-/// core's whether a CLI runs or not, and one that lapsed meanwhile must not
-/// stay on the chip and in the menu's refusal.
-pub fn handoff_ask(chat_id: String) -> Option<HandoffAsk> {
-    handoff_ask_of(&chat_id)
-}
-
 /// Handoff `n` of `chat` as the record has it.
 fn past_of(chat: &str, n: u32) -> Result<(String, Option<String>, Provider), String> {
     let r = store::records();

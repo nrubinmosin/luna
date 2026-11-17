@@ -32,8 +32,8 @@ pub(crate) use control::{
 pub(crate) use control::{fake_person_keys, fake_terminal_for_test, fake_terminal_of};
 pub(crate) use folder::folder_refusal;
 pub(crate) use probe::{
-    complete_lines, complete_lines_in, live_cwds, lossy_lines, prune_session_files_periodically, read_lossy_lines, session_meta, tail,
-    ActivityProbe,
+    complete_lines, complete_lines_in, live_cwds, lossy_lines, prune_session_files_periodically, read_lossy_lines, sessions_meta, tail,
+    ActivityProbe, MetaAsk,
 };
 pub(crate) use screen::{sane_title, session_modes, title_from_prompt, CliTitle, Composer, SessionMeta};
 pub(crate) use spawn::{clean_env, finish_spec};

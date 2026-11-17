@@ -48,6 +48,7 @@ mod provider;
 mod pty;
 mod secret;
 mod settings;
+mod stamped;
 mod sysmenu;
 mod throttle;
 mod watchdog;

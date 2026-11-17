@@ -37,7 +37,7 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("delete_session", Lane::Call),
     ("stop_all_sessions", Lane::Call),
     ("orphan_sessions", Lane::Call),
-    ("session_meta", Lane::Call),
+    ("sessions_meta", Lane::Call),
     ("session_modes", Lane::Call),
     ("dismiss_waiting", Lane::Call),
     ("background_helpers", Lane::Call),
@@ -69,7 +69,6 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("applied_by_luna", Lane::Call),
     ("set_auto_handoff", Lane::Call),
     ("handoff_now", Lane::Call),
-    ("handoff_ask", Lane::Call),
     ("handoff_file", Lane::Call),
     ("handoff_transcript", Lane::Call),
     ("move_prepare", Lane::Call),
@@ -180,7 +179,8 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
             id: String, folder: AbsPath, worktree_path: Option<AbsPath>, drop_worktree: bool),
         "stop_all_sessions" => call!(wait res args, pty::stop_all_sessions),
         "orphan_sessions" => call!(wait res args, pty::orphan_sessions, known: Vec<String>),
-        "session_meta" => call!(wait res args, pty::session_meta, id: String, account_path: AccountPath),
+        // Each chat's account path is checked there, once a path a call.
+        "sessions_meta" => call!(ok args, pty::sessions_meta, chats: Vec<pty::MetaAsk>),
         "session_modes" => call!(ok args, pty::session_modes, id: String),
         "dismiss_waiting" => call!(ok args, crate::asking::dismiss_waiting, id: String, key: String),
         "background_helpers" => call!(ok args, crate::background::background_helpers),
@@ -215,7 +215,6 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "applied_by_luna" => call!(ok args, crate::applied::applied_by_luna, chat_id: String),
         "set_auto_handoff" => call!(res args, agents::set_auto_handoff, id: String, threshold: Option<u8>),
         "handoff_now" => call!(res args, agents::handoff_now, chat_id: String),
-        "handoff_ask" => call!(ok args, agents::handoff_ask, chat_id: String),
         "handoff_file" => call!(res args, agents::handoff_file, chat_id: String, n: u32),
         "handoff_transcript" => call!(res args, agents::handoff_transcript, chat_id: String, n: u32, since: Option<u64>),
         "move_prepare" => call!(res args, agents::move_prepare,
@@ -327,7 +326,6 @@ mod tests {
             ("ensure_codex_session", session(elsewhere, up)),
             // A real folder, but no account of Luna's.
             ("ensure_claude_session", session(elsewhere, elsewhere)),
-            ("session_meta", json!({ "id": "x", "accountPath": elsewhere })),
             ("delete_session", json!({ "id": "x", "folder": elsewhere, "worktreePath": up, "dropWorktree": true })),
             ("codex_trust_folder", json!({ "accountPath": elsewhere, "folder": elsewhere })),
             ("claude_trust_folder", json!({ "accountPath": elsewhere, "folder": elsewhere })),
@@ -341,5 +339,22 @@ mod tests {
             let why = ["not a usable path", "account folder", "Documents directory"];
             assert!(err.starts_with("bad arguments") && why.iter().any(|w| err.contains(w)), "{cmd}: {err}");
         }
+    }
+
+    /// One look at every chat: each answered, in the order asked, and a chat
+    /// whose account path is none of Luna's answered as one with no session,
+    /// nothing under the path read. One bad path does not fail the others.
+    #[test]
+    fn every_chat_is_looked_at_in_one_call_a_bad_account_path_answering_nothing() {
+        let elsewhere = if cfg!(windows) { r"C:\Windows" } else { "/etc" };
+        let chats = json!({ "chats": [
+            { "id": "sm-a", "accountPath": elsewhere },
+            { "id": "sm-b", "accountPath": "projects/p" },
+            { "id": "sm-c", "accountPath": elsewhere },
+        ] });
+        let none = |id: &str| json!({ "id": id, "meta": null, "handoffAsk": null });
+        assert_eq!(dispatch("sessions_meta", chats), Ok(json!([none("sm-a"), none("sm-b"), none("sm-c")])));
+        assert_eq!(dispatch("sessions_meta", json!({ "chats": [] })), Ok(json!([])));
+        assert!(dispatch("sessions_meta", json!({ "chats": [{ "id": "x" }] })).unwrap_err().starts_with("bad arguments"));
     }
 }

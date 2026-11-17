@@ -10,7 +10,8 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   // A usage request may wait out a 10s read timeout, and a token renewal before it.
   account_limits: 15_000,
   codex_limits: 15_000,
-  session_meta: 2000,
+  // Every chat at once: a cold look reads each one's transcript tail.
+  sessions_meta: 5000,
   saved_title: 5000,
   ensure_claude_session: 30_000,
   ensure_codex_session: 30_000,
@@ -43,7 +44,7 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'delete_session',
   'stop_all_sessions',
   'orphan_sessions',
-  'session_meta',
+  'sessions_meta',
   'session_modes',
   'dismiss_waiting',
   'chat_names',
@@ -75,7 +76,6 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'applied_by_luna',
   'set_auto_handoff',
   'handoff_now',
-  'handoff_ask',
   'handoff_file',
   'handoff_transcript',
   'move_prepare',

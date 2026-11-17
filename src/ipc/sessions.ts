@@ -166,8 +166,19 @@ export interface CliTitleDto {
   renamed: boolean;
 }
 
-export const sessionMeta = (id: string, accountPath: string) =>
-  call<SessionMetaDto | null>('session_meta', { id, accountPath }, null);
+/** What the core says of one chat (pty/probe.rs `sessions_meta`). */
+export interface ChatLookDto {
+  id: string;
+  /** Null: its CLI is not running, or its account folder is none of Luna's. */
+  meta: SessionMetaDto | null;
+  /** With no meta to carry it: the ask for a handoff open on the chat, the
+   *  core's word whether its CLI runs or not. */
+  handoffAsk: HandoffAsk | null;
+}
+
+/** Every chat asked about, in one call: each answered, in the order asked. */
+export const sessionsMeta = (chats: { id: string; accountPath: string }[]) =>
+  call<ChatLookDto[]>('sessions_meta', { chats }, []);
 
 /** The CLI's title for a session that is not running, by its id. */
 export const savedTitle = (provider: Provider, accountPath: string, sessionId: string) =>

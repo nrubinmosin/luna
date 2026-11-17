@@ -251,66 +251,98 @@ pub(super) fn meta_from_disk(p: &Probe) -> Option<SessionMeta> {
     }
 }
 
-// Name, status and context of a live session, read off what its CLI leaves on
-// disk — free, no tokens.
-//
-// Async on purpose: this runs every few seconds for every open pane and reads
-// the tail of a transcript that grows into the megabytes. As a sync command it
-// would do that on the main thread, i.e. with the window frozen.
-#[tauri::command]
-//
-// A chat with no live session answers None rather than failing: the watcher
-// polls every chat every few seconds, resting ones included, so treating an
-// absent session as an error meant thousands of warnings a day in the log —
-// enough to push everything worth reading out of it.
-pub async fn session_meta(id: String, account_path: String) -> Result<Option<SessionMeta>, String> {
-    let state = manager();
+/// A chat the window asks about (`sessions_meta`): its id, and the account
+/// folder its row names.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaAsk {
+    pub id: String,
+    pub account_path: String,
+}
+
+/// What `sessions_meta` says of one chat.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLook {
+    pub id: String,
+    /// None: no live session (its CLI exited or never started), or an
+    /// account folder that is none of Luna's.
+    pub meta: Option<SessionMeta>,
+    /// With no meta to carry it, the ask for a handoff open on the chat
+    /// (`handoff_ask_of`): the ask is the core's whether a CLI runs or not,
+    /// and one that lapsed while it was down must not stay on the chip and in
+    /// the menu's refusal.
+    pub handoff_ask: Option<crate::agents::HandoffAsk>,
+}
+
+/// Name, status and context of every chat the window shows, read off what
+/// each CLI leaves on disk — free, no tokens — in one call a tick: the window
+/// used to ask for each chat in turn, every few seconds, one round trip and
+/// thread each, and each check of the same account folder again. A chat
+/// with no live session answers no meta rather than failing: resting chats
+/// are asked about too, and an error each meant thousands of warnings a day
+/// in the log. Each account path is held to an account folder of Luna's
+/// (`boundary::AccountPath`) once a call, before anything under it is read;
+/// a chat whose path is refused answers no meta, as one whose own call
+/// failed did. The files read are kept by their stamp (`stamped`), so at
+/// idle a tick reads next to nothing.
+pub fn sessions_meta(chats: Vec<MetaAsk>) -> Vec<ChatLook> {
+    looks(chats, |path| crate::boundary::AccountPath::try_from(path.to_string()).is_ok(), session_meta)
+}
+
+/// `sessions_meta`, the account check and the look at one chat given.
+fn looks(
+    chats: Vec<MetaAsk>,
+    mut account_ok: impl FnMut(&str) -> bool,
+    mut look: impl FnMut(&str, String) -> Option<SessionMeta>,
+) -> Vec<ChatLook> {
+    let mut checked: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    chats
+        .into_iter()
+        .map(|c| {
+            let ok = match checked.get(&c.account_path) {
+                Some(ok) => *ok,
+                None => *checked.entry(c.account_path.clone()).or_insert(account_ok(&c.account_path)),
+            };
+            let meta = if ok { look(&c.id, c.account_path) } else { None };
+            let handoff_ask = if meta.is_none() { crate::agents::handoff_ask_of(&c.id) } else { None };
+            ChatLook { id: c.id, meta, handoff_ask }
+        })
+        .collect()
+}
+
+/// Name, status and context of a live session, None for one that is not
+/// running. Account path checked by the caller (`sessions_meta`).
+fn session_meta(id: &str, account_path: String) -> Option<SessionMeta> {
     let probe = {
-        let sessions = state.sessions.lock().unwrap();
-        let Some(s) = sessions.get(&id) else {
-            return Ok(None);
-        };
-        if !s.alive.load(Ordering::SeqCst) {
-            return Ok(None);
-        }
-        let mut p = probe_of(&id, s);
+        let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let s = sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst))?;
+        let mut p = probe_of(id, s);
         // The caller's idea of the account wins, as it always has: the chat
         // row is the source of truth for which folder a chat belongs to.
-        if !account_path.is_empty() {
-            p.account_path = account_path;
-        }
+        p.account_path = account_path;
         p
     };
 
     let codex = probe.provider == Provider::Codex;
-    let mut meta = tauri::async_runtime::spawn_blocking(move || meta_from_disk(&probe)).await.map_err(|e| e.to_string())?;
+    let mut m = meta_from_disk(&probe)?;
     // Codex's approval dialog is not in its rollout and the screen does not
     // go quiet under it, so the rollout calls the session working; the
     // activity sampler reads the dialog off the screen (`codex::session::asks`).
-    if let Some(m) = meta.as_mut().filter(|m| codex && m.status.as_deref() == Some("working")) {
-        if crate::activity::turn_state(&id).is_some_and(|t| t.turn == crate::activity::Turn::Waiting) {
-            m.status = Some("waiting".into());
-        }
+    let asking = || crate::activity::turn_state(id).is_some_and(|t| t.turn == crate::activity::Turn::Waiting);
+    if codex && m.status.as_deref() == Some("working") && asking() {
+        m.status = Some("waiting".into());
     }
-    if let Some(m) = meta.as_mut() {
-        crate::asking::overlay(&id, m);
-        overlay_background(&id, m);
-        // The screen may be read for it, which replays the scrollback: off
-        // the main thread, like the disk.
-        let of = id.clone();
-        m.draft = tauri::async_runtime::spawn_blocking(move || manager().has_draft(&of)).await.unwrap_or(false);
-        m.held = crate::agents::held_count(&id);
-        m.handoff = crate::agents::mark_of(&id);
-        m.handoff_asked = crate::agents::asked_of(&id);
-        m.handoff_ask = crate::agents::handoff_ask_of(&id);
-        // A Codex rollout's tail is read for it: off the main thread too.
-        let of = id.clone();
-        m.limit = tauri::async_runtime::spawn_blocking(move || manager().provider(&of).and_then(|p| crate::activity::limit_of(&of, p)))
-            .await
-            .unwrap_or(None);
-        pin_name(m);
-    }
-    Ok(meta)
+    crate::asking::overlay(id, &mut m);
+    overlay_background(id, &mut m);
+    m.draft = manager().has_draft(id);
+    m.held = crate::agents::held_count(id);
+    m.handoff = crate::agents::mark_of(id);
+    m.handoff_asked = crate::agents::asked_of(id);
+    m.handoff_ask = crate::agents::handoff_ask_of(id);
+    m.limit = crate::activity::limit_of(id, probe.provider);
+    pin_name(&mut m);
+    Some(m)
 }
 
 /// A chat between turns with work of its own going on reads `background`, under
@@ -468,6 +500,29 @@ mod background_tests {
 #[cfg(test)]
 mod pin_tests {
     use super::*;
+
+    /// Each account folder is checked once a call, and nothing of a chat
+    /// whose folder is refused is looked at.
+    #[test]
+    fn a_chat_on_a_refused_account_is_not_looked_at_and_each_account_is_checked_once() {
+        let ask = |id: &str, account: &str| MetaAsk { id: id.into(), account_path: account.into() };
+        let (mut checks, mut looked) = (Vec::new(), Vec::new());
+        let got = looks(
+            vec![ask("lk-1", "A"), ask("lk-2", "bad"), ask("lk-3", "A"), ask("lk-4", "bad")],
+            |path| {
+                checks.push(path.to_string());
+                path == "A"
+            },
+            |id, account| {
+                looked.push(format!("{id}@{account}"));
+                (id == "lk-1").then(SessionMeta::default)
+            },
+        );
+        assert_eq!(checks, ["A", "bad"]);
+        assert_eq!(looked, ["lk-1@A", "lk-3@A"]);
+        let ids: Vec<(&str, bool)> = got.iter().map(|l| (l.id.as_str(), l.meta.is_some())).collect();
+        assert_eq!(ids, [("lk-1", true), ("lk-2", false), ("lk-3", false), ("lk-4", false)]);
+    }
 
     #[test]
     fn a_conversation_a_handoff_opened_keeps_the_chats_name() {
