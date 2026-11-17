@@ -1533,8 +1533,21 @@ fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told,
     // The notice bound to this ask: a copy the notifier holds goes in only
     // while it is the one open (`withheld`).
     r.asked = Some(store::Asked { notice: Some(sha256_of(&line)), ..asked });
-    reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), line));
+    // Queued as the ask it is bound to goes in: queued before, the notifier
+    // could find it with the old ask still standing and drop it (`withheld`).
+    let chat = chat.to_string();
+    store::when_in(move || reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat, line)));
     true
+}
+
+/// `chat`'s threshold notices not typed yet, dropped from what the notifier
+/// has to tell as the change of its record they go with is put in
+/// (`store::when_in`).
+pub(super) fn notices_dropped(chat: &str) {
+    let chat = chat.to_string();
+    store::when_in(move || {
+        reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(*c == chat && facts::is_notice(line)));
+    });
 }
 
 /// The threshold auto-handoff is set at on `id` now, a chat that may be
@@ -1856,7 +1869,7 @@ pub fn set_auto_handoff(id: String, threshold: Option<u8>) -> Result<AutoHandoff
         // Its notice not yet typed would ask for what nobody asks any more,
         // and the tool would refuse it: dropped under the lock it was queued
         // under (`ask_auto`).
-        reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(c == &id && facts::is_notice(line)));
+        notices_dropped(&id);
         (tools, close(r, None, false, Some(why.clone()), only_scheduled))
     };
     let (tools, closed) = match store::change(&id, apply) {
@@ -1965,7 +1978,7 @@ fn open_manual(chat: &str) -> Result<HandoffNow, String> {
         }
         r.ask_closed = None;
         r.asked = Some(store::Asked::new(store::AskKind::Manual, now_ms(), turns));
-        reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(c == chat && facts::is_notice(line)));
+        notices_dropped(chat);
         true
     })
     .map_err(|e| format!("the ask could not be saved: {e}"))?;

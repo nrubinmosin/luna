@@ -445,10 +445,16 @@ pub(super) fn saved_for_test() -> Records {
 /// that is not on disk, and nobody sees it before it is (`lock_changing`).
 /// `f` changes a copy of the record, put in once it is saved; the records'
 /// lock is let go for the write.
+///
+/// What `f` does beyond the record goes through `when_in`: the agent
+/// registry changed as the record is (a notice queued with the ask it is
+/// bound to, notices dropped as an ask opens) is changed as the record is
+/// put in, under the records' lock, so nobody sees the one without the
+/// other; a change that fails to save does none of it.
 pub(super) fn change<T>(chat: &str, f: impl FnOnce(&mut Record) -> T) -> Result<T, String> {
     let _changing = lock_changing();
     let mut rec = lock_records().get(chat).cloned().unwrap_or_default();
-    let out = f(&mut rec);
+    let (out, then) = deferring(|| f(&mut rec));
     let bytes = {
         let mut r = lock_records();
         // In for as long as it takes to put them into words, then back out:
@@ -463,8 +469,48 @@ pub(super) fn change<T>(chat: &str, f: impl FnOnce(&mut Record) -> T) -> Result<
         bytes?
     };
     save_for(&bytes, chat)?;
-    lock_records().insert(chat.to_string(), rec);
+    let mut r = lock_records();
+    r.insert(chat.to_string(), rec);
+    for f in then {
+        f();
+    }
+    drop(r);
     Ok(out)
+}
+
+type Then = Box<dyn FnOnce()>;
+
+thread_local! {
+    /// What the change running on this thread does as its record goes in
+    /// (`when_in`); None outside a change.
+    static THEN: std::cell::RefCell<Option<Vec<Then>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `f` run, and what it handed `when_in` meanwhile.
+fn deferring<T>(f: impl FnOnce() -> T) -> (T, Vec<Then>) {
+    let outer = THEN.with(|t| t.borrow_mut().replace(Vec::new()));
+    let out = f();
+    let then = THEN.with(|t| std::mem::replace(&mut *t.borrow_mut(), outer)).unwrap_or_default();
+    (out, then)
+}
+
+/// Inside a change's closure (`change`), `f` is run as the changed record is
+/// put in, and not at all if it fails to save; anywhere else, at once (a
+/// change made in memory alone, its save having failed). For what goes with
+/// the record outside it, in the agent registry: nobody may see the one
+/// without the other.
+pub(super) fn when_in(f: impl FnOnce() + 'static) {
+    let f: Then = Box::new(f);
+    let now = THEN.with(|t| match t.borrow_mut().as_mut() {
+        Some(then) => {
+            then.push(f);
+            None
+        }
+        None => Some(f),
+    });
+    if let Some(f) = now {
+        f();
+    }
 }
 
 /// `chat`'s record gone, saved; what is in memory goes whatever the disk says.
@@ -645,6 +691,59 @@ mod tests {
         assert_eq!((saved["so-me"].last, saved["so-other"].last), (7, 2), "the last write holds both");
         remove("so-me").unwrap();
         remove("so-other").unwrap();
+    }
+
+    /// What a change does beside its record (`when_in`) happens as the record
+    /// goes in: not while it is written, so nobody sees the one without the
+    /// other, and not at all if it fails to save. Outside a change, at once.
+    #[test]
+    fn what_goes_with_a_change_happens_as_its_record_goes_in() {
+        use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
+        static DONE: AtomicU32 = AtomicU32::new(0);
+        let seen = std::sync::Arc::new(Mutex::new(None));
+        let mid = std::sync::Arc::clone(&seen);
+        on_save("wi-me", move || *mid.lock().unwrap() = Some((DONE.load(SeqCst), records().get("wi-me").map(|r| r.last))));
+        change("wi-me", |r| {
+            r.last = 3;
+            when_in(|| {
+                DONE.fetch_add(1, SeqCst);
+            });
+        })
+        .unwrap();
+        assert_eq!(*seen.lock().unwrap(), Some((0, None)), "neither while it was written");
+        assert_eq!((DONE.load(SeqCst), records()["wi-me"].last), (1, 3), "both once it went in");
+        failing().lock().unwrap().insert("wi-me".into());
+        assert!(change("wi-me", |_| when_in(|| {
+            DONE.fetch_add(10, SeqCst);
+        }))
+        .is_err());
+        assert_eq!(DONE.load(SeqCst), 1, "nothing of a change that did not save");
+        failing().lock().unwrap().remove("wi-me");
+        when_in(|| {
+            DONE.fetch_add(100, SeqCst);
+        });
+        assert_eq!(DONE.load(SeqCst), 101, "outside a change, at once");
+        remove("wi-me").unwrap();
+    }
+
+    /// A change in memory alone (`records_mut`) made while a change is being
+    /// written waits for it, and is not put back over by it.
+    #[test]
+    fn a_change_in_memory_waits_for_a_change_being_written() {
+        change("rm-me", |r| r.last = 1).unwrap();
+        let (inside, reached) = std::sync::mpsc::channel();
+        on_save("rm-me", move || {
+            inside.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+        let writing = std::thread::spawn(|| change("rm-me", |r| r.last = 2));
+        reached.recv().unwrap();
+        records_mut().get_mut("rm-me").unwrap().reserved = Some(9);
+        writing.join().unwrap().unwrap();
+        let now = records();
+        assert_eq!((now["rm-me"].last, now["rm-me"].reserved), (2, Some(9)), "after the write, and kept");
+        drop(now);
+        remove("rm-me").unwrap();
     }
 
     #[test]

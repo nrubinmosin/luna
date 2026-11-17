@@ -119,6 +119,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   session killed and started again no longer hears the old one's exit; and a
   chat or helper starting in a worktree being removed with a deleted chat is
   refused, saying so, or keeps it.
+- A handoff's threshold notice is queued only once its ask is saved, so the
+  notifier no longer drops it as one that no ask stands for.
 
 ## [0.18.5] - 2026-11-17
 

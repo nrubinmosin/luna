@@ -658,7 +658,7 @@ fn threshold_retired(chat: &str, r: &mut store::Record) {
     if r.asked.as_ref().is_some_and(|a| a.kind == store::AskKind::Auto) {
         r.asked = None;
     }
-    reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(c == chat && super::facts::is_notice(line)));
+    super::notices_dropped(chat);
 }
 
 /// A move of the chat `old` to `new_id`, as it begins.
