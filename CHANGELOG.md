@@ -36,6 +36,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   power-off's quiet window over. A turn at work still counts, and so does
   what a session prints in answer to keys, a paste or clicks in its terminal
   once that second has passed (a click that moves the focus starts one).
+- Asking Claude Code for an account's models no longer kills the CLI while
+  it may be saving a renewed token, which could sign the account out: the
+  CLI renews a token close to expiry as it starts and saves the new one only
+  after it has answered, and Luna killed it at the answer. Answered or not,
+  it now gets up to 10 seconds to exit by itself first, what it leaves
+  running is taken down after, and Luna waits for that, 12 seconds at
+  most, when it quits, restarts, installs an update or is closed by
+  Windows' Restart Manager. A CLI that hangs past those 10 seconds while
+  saving can still be cut (#75).
 
 ## [0.18.2] - 2026-11-13
 
