@@ -34,10 +34,16 @@ pub fn queued_for_test(id: &str) -> Vec<String> {
     lock().entries.get(id).map(|e| e.queue.iter().map(|q| q.text.clone()).collect()).unwrap_or_default()
 }
 
-/// Being opened as a chat by the person, or not.
+/// Being opened as a chat by the person, or not: an opening that never lapses.
+/// Tests run side by side, and one that lapses openings (`lapse_openings`, by
+/// way of `activity`) at the real time would take back one begun at 0, the
+/// default, past PROMOTE_TIMEOUT_MS since.
 #[cfg(test)]
 pub fn promoting_for_test(id: &str, on: bool) {
-    lock().entries.get_mut(id).unwrap().promoting = on;
+    let mut r = lock();
+    let e = r.entries.get_mut(id).unwrap();
+    e.promoting = on;
+    e.promoting_since = u64::MAX;
 }
 
 /// A turn of its runs.

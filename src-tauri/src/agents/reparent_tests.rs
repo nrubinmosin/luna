@@ -2,6 +2,7 @@ use super::*;
 use crate::agents::owed::owe_from;
 use crate::agents::persist::{tie_back, ties_of, Ties};
 use crate::agents::registry::{authorize, authorize_send, in_scope, parent_of, register, set_name};
+use crate::agents::spawn::background::register_spawned;
 use crate::agents::teardown::{forget, news_for, Auto};
 use crate::agents::test_support::stop_at;
 use crate::provider::Provider;
@@ -23,12 +24,26 @@ fn helper(id: &str, parent: &str, provider: Provider) {
 /// A helper of `parent` as its spawn registers it, before its background
 /// record is made (spawn/background.rs `spawn_background`).
 fn registered(id: &str, parent: &str, provider: Provider) {
-    let settings = match provider {
-        Provider::Claude => serde_json::json!({ "background": true, "permissionMode": "acceptEdits" }),
-        Provider::Codex => serde_json::json!({ "background": true, "sandbox": "workspace-write", "approval": "never" }),
-    };
-    let account = if provider == Provider::Codex { "C:/acc/openai/two" } else { ACCOUNT };
+    let (settings, account) = as_spawned(provider);
     register(id, provider, "C:/p", account, Some(parent), false, settings);
+}
+
+/// What a helper on `provider` is registered with, and its account.
+fn as_spawned(provider: Provider) -> (serde_json::Value, &'static str) {
+    match provider {
+        Provider::Claude => (serde_json::json!({ "background": true, "permissionMode": "acceptEdits" }), ACCOUNT),
+        Provider::Codex => {
+            (serde_json::json!({ "background": true, "sandbox": "workspace-write", "approval": "never" }), "C:/acc/openai/two")
+        }
+    }
+}
+
+/// A helper of `parent` registered as its spawn registers it, through the
+/// spawn's own hold and depth check (spawn/background.rs `register_spawned`),
+/// with no CLI started.
+fn spawned(id: &str, parent: &str, provider: Provider, tools: bool) -> Result<(), String> {
+    let (settings, account) = as_spawned(provider);
+    register_spawned(parent, id, provider, "C:/p", account, tools, settings).map(drop)
 }
 
 fn owes(caller: &str, id: &str) -> bool {
@@ -262,12 +277,11 @@ fn a_move_racing_an_answer_leaves_the_old_chat_owed_nothing() {
 /// A helper spawned under the line once the move has looked at it is held as
 /// the rest are before anything moves, the move looking again; and one a
 /// delete holds by then stops the move whole, as the line's own helpers would.
-/// The spawn registers it under the hold a spawn takes (spawn/background.rs
-/// `ownership_steady`), before the move holds whose the helpers are: once it
-/// does, a spawn waits for the move.
+/// The spawn registers it as a spawn does (`register_spawned`), before the
+/// move holds whose the helpers are. Once a move that goes through holds
+/// that, a spawn's registration waits for it, and lands where it left the line.
 #[test]
 fn a_helper_spawned_under_the_line_mid_move_is_held_too_or_nothing_moves() {
-    use crate::agents::registry::ownership_steady;
     let [a, b, h, g, k] = ["a", "b", "h", "g", "k"].map(|s| format!("ml-{s}"));
     chat(&a, true, "bypassPermissions");
     chat(&b, true, "bypassPermissions");
@@ -281,19 +295,13 @@ fn a_helper_spawned_under_the_line_mid_move_is_held_too_or_nothing_moves() {
         };
         looked.wait();
         assert_eq!(parent_of(&h).as_deref(), Some(a.as_str()));
-        {
-            let _spawning = ownership_steady();
-            helper(id, &h, Provider::Codex);
-        }
+        spawned(id, &h, Provider::Codex, false).unwrap();
+        crate::background::idle_for_test(id, Provider::Codex, 2, false);
+        crate::background::set_parent_for_test(id, Some(h.clone()));
         then();
         looked.go();
         held.wait();
-        // A spawn now waits for the move to be through.
-        let spawn = std::thread::spawn(|| drop(ownership_steady()));
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        assert!(!spawn.is_finished(), "a spawn's hold waits on the move");
         held.go();
-        spawn.join().unwrap();
         mover.join().unwrap()
     };
     let mut deleting = None;
@@ -306,7 +314,27 @@ fn a_helper_spawned_under_the_line_mid_move_is_held_too_or_nothing_moves() {
     assert!(e.contains(&format!("{k} is held back (it is being deleted)")), "{e}");
     assert_eq!(parent_of(&h).as_deref(), Some(a.as_str()), "nothing moved");
     drop(deleting);
-    clean(&[&k, &g, &h, &a, &b]);
+    // A move that holds whose the helpers are and goes through: a spawn under
+    // its line waits for it, and its helper is not among those it moved.
+    let late = "ml-late";
+    let held = stop_at("move held", &h);
+    let mover = {
+        let (h, b) = (h.clone(), b.clone());
+        std::thread::spawn(move || move_helper(&h, &b))
+    };
+    held.wait();
+    let spawn = {
+        let h = h.clone();
+        std::thread::spawn(move || spawned(late, &h, Provider::Codex, false))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!spawn.is_finished(), "a spawn's registration waits on the move");
+    assert!(!crate::agents::registry::is_known(late), "nothing registered meanwhile");
+    held.go();
+    assert_eq!(mover.join().unwrap().map(|m| m.sessions), Ok(vec![h.clone(), g.clone(), k.clone()]));
+    spawn.join().unwrap().unwrap();
+    assert_eq!((parent_of(late).as_deref(), parent_of(&h).as_deref()), (Some(h.as_str()), Some(b.as_str())));
+    clean(&[late, &k, &g, &h, &a, &b]);
 }
 
 /// A chat that goes as the move is through with the registry takes back what
@@ -661,6 +689,40 @@ fn a_send_into_a_helper_still_being_spawned_holds_off_a_move() {
     }
 }
 
+/// An answer into a helper its spawn has registered and not yet started holds
+/// whose it is as an answer into any helper does: the move waits for its debt
+/// and closes it. Claude Code only: a Codex helper asks nobody, so there is
+/// nothing of its to answer (background `asks_through_luna`).
+#[test]
+fn an_answer_into_a_helper_still_being_spawned_holds_off_a_move() {
+    let [a, b, h] = ["a", "b", "h"].map(|s| format!("sa-{s}"));
+    chat(&a, true, "bypassPermissions");
+    chat(&b, true, "bypassPermissions");
+    registered(&h, &a, Provider::Claude);
+    let stop = stop_at("answer checked", &a);
+    let answering = {
+        let (a, h) = (a.clone(), h.clone());
+        std::thread::spawn(move || crate::agents::answer(&a, &h, None, &["Blue".to_string()], None, None, false))
+    };
+    stop.wait();
+    // Its spawn goes on: its first turn on, a question held by now.
+    crate::background::idle_for_test(&h, Provider::Claude, 2, false);
+    crate::background::set_parent_for_test(&h, Some(a.clone()));
+    crate::background::in_turn_for_test(&h);
+    crate::background::hold_question_for_test(&h);
+    let mover = {
+        let (h, b) = (h.clone(), b.clone());
+        std::thread::spawn(move || move_helper(&h, &b))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!mover.is_finished(), "the move waits for the answer");
+    stop.go();
+    assert!(answering.join().unwrap().is_ok(), "it went in before the move");
+    assert!(mover.join().unwrap().unwrap().owed);
+    assert!(!owes(&a, &h) && owes(&b, &h), "the answer's debt went with the move");
+    clean(&[&h, &a, &b]);
+}
+
 /// The old chat's stop that passed its check before the move is made before
 /// the move goes on; one after it is refused naming the new chat, and leaves
 /// the turn the new chat has alone.
@@ -747,6 +809,14 @@ fn a_move_is_not_told_of_once_its_helper_is_a_chat_or_its_new_chat_is_gone() {
     for verb in ["send to", "answer"] {
         assert_eq!(in_scope(&a, &h, Some("all"), verb), Ok(()), "{verb}");
     }
+    // The chat it was taken from (its new chat, B) writes into it as into any
+    // chat, with scope "all": ahead of what it was taken from (`write_reach`).
+    assert_eq!(reg().lock().unwrap().taken_over.get(&h), Some(&b));
+    assert!(authorize_send(&b, &h).is_ok(), "chat to chat");
+    for verb in ["send to", "answer"] {
+        assert_eq!(in_scope(&b, &h, Some("all"), verb), Ok(()), "{verb}");
+        assert!(in_scope(&b, &h, None, verb).err().unwrap().contains("the person took"), "{verb}: its own no more");
+    }
     forget(&b);
     let e = authorize_send(&a, &k).err().unwrap();
     assert!(e.contains("has no chat above it") && !e.contains("the person moved"), "{e}");
@@ -784,10 +854,37 @@ fn a_move_is_refused_where_its_line_would_go_deeper_than_a_spawn() {
     clean(&[&low, &lead, &b]);
 }
 
-/// A move refused once it held the helpers leaves a turn claimed meanwhile to
-/// start as it was claimed: nothing is put back in the queue.
+/// A spawn that passed its depth check before its caller's line was moved
+/// under a chat, and registers its helper after (it waited on the worktree
+/// queue), is asked again where that helper would sit: a lead left alone may
+/// spawn a helper with tools, but not once it is a chat's helper itself. One
+/// without tools still fits there.
 #[test]
-fn a_refused_move_leaves_a_claimed_turn_to_start() {
+fn a_spawn_under_way_as_its_line_moves_goes_no_deeper_than_a_spawn_made_now() {
+    let [gone, b, lead, sub, low] = ["gone", "b", "lead", "sub", "low"].map(|s| format!("sd-{s}"));
+    chat(&gone, true, "bypassPermissions");
+    chat(&b, true, "bypassPermissions");
+    helper(&lead, &gone, Provider::Claude);
+    reg().lock().unwrap().known.get_mut(&lead).unwrap().tools = true;
+    forget(&gone);
+    assert_eq!(parent_of(&lead), None, "a lead with no chat above it, at the top of its line");
+    move_helper(&lead, &b).unwrap();
+    let e = spawned(&sub, &lead, Provider::Claude, true).unwrap_err();
+    assert!(e.contains(&format!("the person moved {lead}'s line under a chat")), "{e}");
+    assert!(e.contains("would now be 2 levels below its chat") && e.contains("spawn it without tools"), "{e}");
+    assert!(!crate::agents::registry::is_known(&sub), "not registered");
+    spawned(&low, &lead, Provider::Codex, false).unwrap();
+    assert_eq!(parent_of(&low).as_deref(), Some(lead.as_str()));
+    clean(&[&low, &lead, &b]);
+}
+
+/// A move refused once it held the helpers leaves a turn claimed meanwhile,
+/// whose launch has not seen the move yet, to start as it was claimed:
+/// nothing is put back in the queue. A launch that saw the move first
+/// (`overtaken`) has put its turn back by then, and it starts again under the
+/// same parent once the move lets go: that one bounces.
+#[test]
+fn a_refused_move_leaves_a_claimed_turn_not_yet_launched_to_start() {
     let [a, plain, h] = ["a", "plain", "h"].map(|s| format!("rf-{s}"));
     chat(&a, true, "bypassPermissions");
     chat(&plain, false, "bypassPermissions");
