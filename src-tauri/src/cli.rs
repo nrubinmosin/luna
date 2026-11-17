@@ -771,7 +771,7 @@ pub(crate) fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 /// Streams `url` into `part`, hashing as it goes, and returns the sha256 hex.
 /// The caller compares it and decides what the file becomes.
 pub fn download_to(agent: &http::Agent, url: &str, part: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<String, String> {
-    let mut resp = agent.get(url).call().map_err(|e| format!("download: {e}"))?;
+    let resp = agent.get(url).call().map_err(|e| format!("download: {e}"))?;
     let total = resp.header("Content-Length").and_then(|s| s.parse::<u64>().ok());
     progress(0, total);
 
@@ -779,9 +779,13 @@ pub fn download_to(agent: &http::Agent, url: &str, part: &Path, progress: &mut d
     let mut hasher = Sha256::new();
     let mut got: u64 = 0;
     let mut last_report = std::time::Instant::now();
-    while let Some(piece) = resp.chunk().map_err(|e| format!("download: {e}"))? {
-        file.write_all(&piece).map_err(|e| format!("write: {e}"))?;
-        hasher.update(&piece);
+    let mut write_err = None;
+    resp.each_piece(|piece| {
+        if let Err(e) = file.write_all(piece) {
+            write_err = Some(format!("write: {e}"));
+            return Err(String::new());
+        }
+        hasher.update(piece);
         got += piece.len() as u64;
         // A 100MB file comes in thousands of pieces; a progress event every
         // 200ms is plenty for a progress label.
@@ -789,7 +793,9 @@ pub fn download_to(agent: &http::Agent, url: &str, part: &Path, progress: &mut d
             last_report = std::time::Instant::now();
             progress(got, total);
         }
-    }
+        Ok(())
+    })
+    .map_err(|e| write_err.take().unwrap_or_else(|| format!("download: {e}")))?;
     file.flush().map_err(|e| e.to_string())?;
     drop(file);
     Ok(format!("{:x}", hasher.finalize()))
@@ -861,10 +867,13 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
     let src = source(provider);
     // Before any way out of the pass, a version held by hand among them.
     reconcile_in(&root, src.bin_rel)?;
-    let agent = http()?;
+    // A client that cannot be made fails the lookup and the download as an
+    // unreachable server would, and leaves the rest of the pass, which needs
+    // no network, to go on.
+    let agent = http().map_err(|e| format!("no HTTP client: {e}"));
     // Asked on either channel: on the known-good one it is news for the
     // status line, and only `latest` fails without it.
-    let latest = (src.latest)(&agent);
+    let latest = agent.as_ref().map_err(String::clone).and_then(|a| (src.latest)(a));
     if let Ok(l) = &latest {
         publish(provider, |s| s.latest = Some(l.clone()));
     }
@@ -917,7 +926,8 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
             s.got = 0;
             s.total = None;
         });
-        (src.fetch)(&agent, &version, dir, &mut progress)
+        let agent = agent.as_ref().map_err(String::clone)?;
+        (src.fetch)(agent, &version, dir, &mut progress)
     };
     let (dir, flipped) = update_in(&root, src.bin_rel, target, &mut fetch)?;
     if flipped {

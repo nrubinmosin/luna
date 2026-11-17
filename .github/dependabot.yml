@@ -31,9 +31,10 @@ updates:
     # covers sha2 0.11 and hmac 0.13. Lift an entry when the migration is
     # done.
     ignore:
-      # sha2 0.11 and hmac 0.13 build on digest 0.11, a second digest stack
-      # beside the 0.10 one tauri's tree still carries; the manifest pins them
-      # to what the tree already resolves. Move them when tauri does.
+      # sha2 0.11 and hmac 0.13 build on digest 0.11, a second digest stack in
+      # the exe beside the 0.10 one wry links (tauri-codegen's 0.11 is build
+      # time only); the manifest pins them to the exe's. Move them when wry
+      # does.
       - dependency-name: sha2
         update-types: ['version-update:semver-major']
       - dependency-name: hmac
@@ -46,6 +47,12 @@ updates:
     groups:
       npm:
         patterns: ['*']
+    ignore:
+      # typescript-eslint takes TypeScript below 6.1 only (8.73): a
+      # TypeScript major would fail the lint until it supports it. Lift this
+      # once its peer range takes the next major.
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: github-actions
     directory: /

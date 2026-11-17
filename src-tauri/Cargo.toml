@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-# The core fingerprint (build.rs); already in the tree as a dependency.
+# The core fingerprint (build.rs), on the sha2 the exe links (below).
 sha2 = "0.10"
 
 [dependencies]
@@ -34,9 +34,14 @@ dirs = "7"
 portable-pty = "0.9"
 # Luna's own requests (src/http.rs): the HTTP client the updater already
 # brings, on its TLS as the updater sets it up, rustls on ring with the OS's
-# trust store, so the tree holds one HTTP stack and one TLS stack.
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+# trust store, so the tree holds one HTTP stack and one TLS stack. gzip
+# decodes through the flate2 below.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "gzip"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# SHA-256 throughout (downloads, tokens, file names, the HMAC). 0.10, the digest
+# stack wry links into the exe; tauri-codegen resolves 0.11, but only at build
+# time, and 0.11 here would link a second stack. It moves, with hmac, when wry
+# does.
 sha2 = "0.10"
 # RSA verification of the Claude Code release manifest's signature
 # (src/claude/manifest_sig.rs). The version rustls already brings in.
@@ -47,7 +52,7 @@ getrandom = "0.4.3"
 # Compares a presented secret with Luna's in constant time (src/secret.rs).
 subtle = "2.6.1"
 # Each chat's hook secret, HMAC-SHA256 of its id (src/secret.rs, hub.rs).
-# Pinned exactly; it builds on the digest, sha2 and subtle already in the tree.
+# Pinned exactly; it builds on the digest, sha2 and subtle the exe already links.
 hmac = "=0.12.1"
 # The hub's request heads (src/hub.rs), parsed strictly.
 httparse = "1.10.1"

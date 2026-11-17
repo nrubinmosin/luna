@@ -11,19 +11,25 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 ### Changed
 
 - Luna builds on Rust 1.100.0, Node 26.13.1 (the current LTS) and pnpm 12.21.0,
-  and its packages and crates are each at their latest release: among them
+  and its packages and crates are at their latest releases: among them
   xterm.js 6 with its WebGL and fit addons (the WebGL addon had been made for 6
   and run on 5.5), Vite 8, TypeScript 6, Tauri 2.12.6 with its plug-ins and
-  jiff 1.0. TypeScript stays on 6, as typescript-eslint does not support 7 yet.
+  jiff 1.0. Two stay behind: TypeScript on 6, as typescript-eslint does not
+  support 7 yet, and sha2 0.10 and hmac 0.12, the digest stack wry still links
+  into the exe.
 - The terminals, a login window's too, look and type as they did: the
   scrollbar xterm.js 6 draws of its own is hidden, as the old one was, and Alt
   with an arrow key still sends what Ctrl with it sends, which xterm.js 6
   leaves to the app.
 - Luna's own requests (the CLI downloads, the usage and model lookups, the
   sign-in refresh) go over the HTTP client the updater already uses, with its
-  TLS, instead of a second one of their own: certificates are now checked
-  against the system's trust store rather than a list built into Luna. The
-  timeouts are as before, and no proxy is used, as before.
+  TLS, instead of a second one of their own. Certificates are now checked
+  against the system's trust store rather than a list built into Luna, and the
+  requests name themselves `luna/<version>` (Codex's usage lookup still says
+  `codex_cli_rs`). The timeouts are as before, gzip is still asked for and
+  undone, and no proxy is used, as before. A request that carries a token (the
+  usage lookups, the model lookup, the sign-in refresh) follows no redirect:
+  one comes back as the error it is.
 
 ### Fixed
 
