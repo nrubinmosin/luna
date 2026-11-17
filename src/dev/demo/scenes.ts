@@ -59,7 +59,7 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
  *  with Luna's own and a skill of the system skill's name), `?demo=power`, `?demo=applied` / `applied-dark` (a
  *  chat's What Luna applied),
  *  `?demo=helper` / `helper-dark` (a helper watched read-only), `?demo=helpers` / `helpers-dark` (a chat's
- *  helper list, opened from its pane's title bar),
+ *  helper list, opened from its pane's title bar), `?demo=helper-move` (where a helper may move, from its Move to chat…),
  *  `?demo=delete-helpers` (deleting a chat whose helpers are at work),
  *  `?demo=handoff` / `handoff-dark` (a chat gone on past a handoff, its divider and copy),
  *  `?demo=hand-off-now` (a pane's … menu with Hand off now), `hand-off-now-refused` (the core's refusal of it shown in
@@ -96,6 +96,7 @@ export type Scene =
   | 'helper-dark'
   | 'helpers'
   | 'helpers-dark'
+  | 'helper-move'
   | 'delete-helpers'
   | 'handoff'
   | 'handoff-dark'
@@ -138,6 +139,7 @@ export const SCENES: Scene[] = [
   'helper-dark',
   'helpers',
   'helpers-dark',
+  'helper-move',
   'delete-helpers',
   'handoff',
   'handoff-dark',
@@ -265,6 +267,20 @@ export function seedDemo(scene: Scene) {
         () =>
           [...document.querySelectorAll<HTMLButtonElement>('.popover [data-helper="demo-bg-1"] button')]
             .find(b => b.textContent === 'Watch')
+            ?.click(),
+        300
+      );
+    }, 300);
+  }
+  // The reviewer's Move to chat…, from the first chat's list: the chats it may go to,
+  // the one that asked for it picked.
+  if (scene === 'helper-move') {
+    setTimeout(() => {
+      document.querySelector<HTMLElement>('.chat-row[data-active="yes"] .kids')?.click();
+      setTimeout(
+        () =>
+          [...document.querySelectorAll<HTMLButtonElement>('.popover [data-helper="demo-bg-1"] button')]
+            .find(b => b.textContent === 'Move to chat…')
             ?.click(),
         300
       );

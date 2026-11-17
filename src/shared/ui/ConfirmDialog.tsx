@@ -13,6 +13,7 @@ export function ConfirmDialog({
   extra,
   confirmLabel = 'Delete',
   danger = true,
+  confirmDisabled = false,
   onConfirm,
   onCancel
 }: {
@@ -22,6 +23,8 @@ export function ConfirmDialog({
   extra?: ReactNode;
   confirmLabel?: string;
   danger?: boolean;
+  /** Nothing to confirm yet (no choice made, or the last one still under way): the button and Enter do nothing. */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -31,11 +34,11 @@ export function ConfirmDialog({
       // Enter confirms, except on a control that Enter works by itself: on a
       // focused Cancel it would otherwise click Cancel and confirm at once.
       const own = e.target instanceof Element && e.target.closest('button, a, summary, select, textarea');
-      if (e.key === 'Enter' && !own) onConfirm();
+      if (e.key === 'Enter' && !own && !confirmDisabled) onConfirm();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onCancel, onConfirm]);
+  }, [onCancel, onConfirm, confirmDisabled]);
 
   // Out of the caller's subtree and into the app root. A chat row is
   // `draggable`, and Chromium hands every mouse press inside a draggable
@@ -104,7 +107,7 @@ export function ConfirmDialog({
         {/* Below the body, which scrolls when the notes or the list run long. */}
         <div className="dialog-foot" style={{ paddingTop: 6 }}>
           <button onClick={onCancel}>Cancel</button>
-          <button onClick={onConfirm} className={danger ? 'danger' : 'primary'}>
+          <button onClick={onConfirm} disabled={confirmDisabled} className={danger ? 'danger' : 'primary'}>
             {confirmLabel}
           </button>
         </div>

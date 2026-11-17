@@ -33,6 +33,14 @@ pub(in crate::agents) fn max_descendants() -> usize {
 /// A child of a child may exist; a child of that may not have tools.
 const MAX_TOOL_DEPTH: usize = 1;
 
+/// Whether a session `depth` below its top chat, with Luna's `tools` or
+/// without, is one a spawn could have made there: one with tools only as a
+/// chat's own helper, and none below a helper's helper, as only a session with
+/// tools spawns. What a move (reparent.rs) may not go past.
+pub(in crate::agents) fn spawnable_at(depth: usize, tools: bool) -> bool {
+    depth <= MAX_TOOL_DEPTH + usize::from(!tools)
+}
+
 /// What an agent asks for. Everything but the prompt may be left to the
 /// account's defaults.
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
@@ -747,7 +755,7 @@ mod tests {
         let e = cap_room(&reg().lock().unwrap(), "cap-top", None, 8).unwrap_err();
         assert!(e.contains("cap-grandkid") && e.contains("cap-kid-0") && e.contains("delete those"), "{e}");
         // One whose answer reached its caller and that waits out autoDelete holds none.
-        let auto = |released| crate::agents::teardown::Auto { idle_since: Some(1), deleting: false, released };
+        let auto = |released| crate::agents::teardown::Auto { idle_since: Some(1), released, ..Default::default() };
         reg().lock().unwrap().auto.insert("cap-kid-0".into(), auto(true));
         assert!(room("cap-top", None), "a finished helper is no place taken");
         // At work again, or not autoDelete, it counts.

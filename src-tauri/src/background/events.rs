@@ -259,10 +259,10 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     let cut_off = codex
         .filter(|(account, thread, since)| crate::codex::session::subagents_cut_at_turn_end(account, thread, *since) > 0)
         .map(|_| crate::agents::callers_owed(id));
-    let (next, thread, generation, rerouted, acted, retried, count, lead) = {
+    let (next, thread, generation, rerouted, acted, retried, count, lead, told_move) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
-        e.run = None;
+        let told_move = e.run.take().and_then(|run| run.moved);
         e.turns_ended += 1;
         e.observed.turn_ended_ms = crate::throttle::now_ms();
         if let Some(callers) = cut_off {
@@ -302,15 +302,36 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         };
         // A lead's handoff scheduled in this turn, or a fresh start that named
         // no conversation, goes first: lead.rs, below, starts or gives it up.
-        let next = (!e.queue.is_empty() && !e.switch_waits()).then(|| {
+        // Held otherwise (being moved to another chat, opened as a chat, deleted:
+        // `Entry::held_back`), what is queued waits for the hold to let go
+        // (control.rs `go_on`): a turn started now would have the parent and
+        // the owners of before.
+        let next = (!e.queue.is_empty() && !e.held_back()).then(|| {
             claim(e);
             reserve(e)
         });
         let lead = e.spec.tools;
         let thread = e.session.clone().filter(|_| e.spec.provider == Provider::Codex).map(|t| (e.spec.account_path.clone(), t));
         e.observed.answered |= e.observed.acted;
-        (next, thread, e.observed.generation, std::mem::take(&mut e.observed.rerouted), e.observed.acted, retried, e.turns_ended, lead)
+        let told_move = told_move.filter(|_| e.observed.acted);
+        (
+            next,
+            thread,
+            e.observed.generation,
+            std::mem::take(&mut e.observed.rerouted),
+            e.observed.acted,
+            retried,
+            e.turns_ended,
+            lead,
+            told_move,
+        )
     };
+    // Its model answered a prompt that told it of a move to another chat: no
+    // turn after is told again (agents/reparent.rs `move_told`). Before the
+    // next turn starts below, which would tell it again otherwise.
+    if let Some(m) = told_move {
+        crate::agents::move_told(id, &m);
+    }
     // Ahead of anything that could be read as the answer: the helper reads as
     // busy from the claim above until this has moved what its senders wait on.
     let senders: Vec<String> = retried.iter().filter_map(|q| q.from.clone()).collect();

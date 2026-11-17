@@ -155,7 +155,7 @@ model either way.
 
 | Text | Who | ~Tokens |
 | --- | --- | --- |
-| `[From session <id> via Luna]` before a message from a session that is not the parent | a session written to with `scope: "all"` | 9 |
+| `[From session <id> via Luna]` before a message from a session not above the one it goes to | one of your chats written to by another, with `scope: "all"` | 9 |
 | A message over 8,000 characters goes into a file, and the session gets "This message is N characters long, so Luna put it in a file: …" | the session written to | 45 |
 | After Luna's core restarted: "Luna's core restarted and stopped your last turn before it finished. Carry on where you left off." | a helper resumed by `resumeOnRestart` | 35 |
 

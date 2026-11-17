@@ -8,11 +8,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
-### Changed
-
-- Claude Code 2.1.325 is on the known-good list, so the default channel
-  installs it.
-
 ### Security
 
 - Claude Code below 2.1.325 no longer runs: the list's `minSafe` rises to it,
@@ -24,6 +19,41 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   already current, held by "Use" or kept for rolling back is not started,
   the hold is dropped and the next pass installs 2.1.325; Settings refuses
   going back below it.
+
+### Added
+
+- The core moves a helper, with the helpers under it, to another of your
+  chats on the window's word (`background_move`), never an agent's: the old
+  chat is told once and owed nothing more by it, its later sends, answers,
+  stops and deletes on it are refused naming the new chat, and the helper's
+  next turn is told which chat it answers to. The move is refused, saying
+  why, for a chat without Luna's tools, one below the helper's privilege or
+  without places for it, one under which a helper would sit deeper than a
+  spawn could put it, a lead or a helper, or while the helper is being
+  opened, deleted or handing off. A helper's row says which chat is at the top
+  of its line, which other chats wait on it, where it was moved from, and
+  which chats were refused a write into it (ADR-0028).
+- In the helper list each helper says who manages it and which chat its line
+  hangs from, which of your other chats waits on it and where you moved it
+  from; Move to chat… lists your chats, grays out the ones it may not go to with why,
+  and moves it on your click; a chat refused a write into it, that it may move
+  to, shows as "Move to <chat>?" under it, which opens the same dialog on that
+  chat. Deleting a chat offers to pass each of its helpers to another chat, a
+  chat that asked for it or waits on it picked to start with and kept; the
+  moves come first, a refused one stops the delete, saying why, and a helper
+  moved to another chat meanwhile is not deleted.
+
+### Changed
+
+- Claude Code 2.1.325 is on the known-good list, so the default channel
+  installs it.
+- Text and answers go into a helper only from the sessions above it: its
+  chat, and a lead it works under. Another of your chats, even with
+  `scope: "all"`, can still read a helper that is not its own and wait on
+  it, but no longer send to it or answer its questions; it is told whose the
+  helper is and that you can move the helper to it. A helper with no chat
+  takes text from no agent. Your chats still send to and answer one another
+  (ADR-0028).
 
 ### Fixed
 

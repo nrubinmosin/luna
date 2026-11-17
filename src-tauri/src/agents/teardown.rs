@@ -7,7 +7,7 @@ use crate::agents::ask::live;
 use crate::agents::notifier::usage::{budget_owed, save_quota_told};
 use crate::agents::notifier::{left_holds, left_quiet};
 use crate::agents::read::{transcript_path, transcripts};
-use crate::agents::registry::{authorize, descendants, label, reg, Known, Registry};
+use crate::agents::registry::{authorize, descendants, label, named, ownership_steady, persons_chat_in, reg, top_of, Known, Registry};
 use crate::agents::said::replies_since;
 use crate::agents::spawn::worktree::worktree_of;
 use crate::throttle::now_ms;
@@ -31,6 +31,10 @@ pub(super) struct Auto {
     /// `idle_since`, the autoDelete clock, which a read starts over without
     /// any work resuming.
     pub(super) released: bool,
+    /// Switched on by `pass_up`, its chat gone and nobody left above it, not
+    /// asked for at its spawn: a move under a chat switches it off again
+    /// (reparent.rs), as that chat is there to answer to.
+    pub(super) by_pass_up: bool,
 }
 
 /// What a helper has at stake in a delete, as the person's Delete dialog lists it:
@@ -98,12 +102,37 @@ pub struct UserDeleted {
 /// each is its own yes, which a parent chat's checkbox is not. Held from the first
 /// look to the removal (`claim_delete`): no turn starts in between, so one found idle
 /// is idle when it goes, and the person's opening it as a chat waits.
-pub fn delete_by_user(id: &str, drop_worktree: bool, stop_working: bool, drop_unsaved: bool) -> Result<UserDeleted, String> {
+///
+/// `of_chat`: the chat whose Delete dialog listed it. Refused if its line hangs
+/// from another chat by now (moved there from another window meanwhile); one
+/// that hangs from none still goes, as that chat's own going leaves its helpers
+/// so and may come first. Asked under the hold, which a move waits on too.
+pub fn delete_by_user(
+    id: &str,
+    drop_worktree: bool,
+    stop_working: bool,
+    drop_unsaved: bool,
+    of_chat: Option<&str>,
+) -> Result<UserDeleted, String> {
     let claim = crate::background::claim_delete(id)?;
     if !claim.held() {
         return Err("no such helper".into());
     }
-    let known = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).cloned().ok_or("no such helper")?;
+    let known = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(chat) = of_chat {
+            let top = top_of(&r, id);
+            if top != chat && persons_chat_in(&r, &top) {
+                return Err(format!(
+                    "{} is no longer under chat {}: it answers to chat {} now; not deleted",
+                    named(&r, id),
+                    named(&r, chat),
+                    named(&r, &top)
+                ));
+            }
+        }
+        r.known.get(id).cloned().ok_or("no such helper")?
+    };
     if !stop_working {
         if let Some(what) = at_work(id) {
             return Err(format!("{} is still working ({what}); not deleted", label(id)));
@@ -135,8 +164,16 @@ pub struct Killed {
 
 /// Stops a helper's turn; it stays, and `luna_session_send` carries it on. Between turns it
 /// has only what its turns left running to stop (`background::kill`).
+///
+/// Whose it is stays as checked here until the stop is made (`ownership_steady`,
+/// let go by `kill_holding` once its turn is marked stopped): the person's move of
+/// it to another chat waits, or came first and this is refused naming that chat.
+/// A former parent never stops a turn its new chat started.
 pub fn kill(caller: &str, id: &str) -> Result<Killed, String> {
+    let steady = ownership_steady();
     authorize(caller, id)?;
+    #[cfg(test)]
+    super::test_support::reached("stop checked", caller);
     if !crate::background::has(id) {
         return Err(format!("session {id} is not running"));
     }
@@ -147,7 +184,7 @@ pub fn kill(caller: &str, id: &str) -> Result<Killed, String> {
     if !between_turns {
         reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(id);
     }
-    let ended = crate::background::kill(id);
+    let ended = crate::background::kill_holding(id, steady);
     Ok(Killed { ok: true, ended })
 }
 
@@ -436,7 +473,7 @@ pub fn forget(id: &str) {
     let spawned = gone.as_ref().is_some_and(|k| k.parent.is_some() || k.orphan);
     let auto = r.auto.remove(id);
     r.known.remove(id);
-    let moved = pass_up(&mut r, id, gone.and_then(|k| k.parent));
+    let (moved, change) = pass_up(&mut r, id, gone.and_then(|k| k.parent));
     r.tokens.retain(|_, chat| chat != id);
     r.seen.retain(|(who, chat), _| who != id && chat != id);
     r.delivery_floors.retain(|(who, chat), _| who != id && chat != id);
@@ -445,6 +482,11 @@ pub fn forget(id: &str) {
     r.spawns.retain(|_, s| s.caller != id);
     r.tasks.remove(id);
     r.taken_over.retain(|chat, from| chat != id && from != id);
+    r.moved.remove(id);
+    r.suggested.remove(id);
+    for asked in r.suggested.values_mut() {
+        asked.retain(|s| s.chat != id);
+    }
     r.worktrees_before.remove(id);
     r.worktrees_left.remove(id);
     r.borrowed.remove(id);
@@ -475,8 +517,12 @@ pub fn forget(id: &str) {
         crate::agentlog::ended(id, if auto.is_some_and(|a| a.deleting) { "auto-deleted" } else { "deleted" });
     }
     let handed = !moved.is_empty();
+    #[cfg(test)]
+    super::test_support::reached("forgotten", id);
+    // Off the registry's lock: a move of one of them since, counted after this
+    // change, keeps the parent it gave (`set_parent`).
     for (helper, parent) in moved {
-        crate::background::set_parent(&helper, parent);
+        crate::background::set_parent(&helper, parent, change);
     }
     if handed {
         crate::background::changed();
@@ -487,19 +533,22 @@ pub fn forget(id: &str) {
 }
 
 /// `id`'s helpers pass to `up`, or with no `up` stand alone (see `forget`).
-/// Returns each with whom it answers to now.
-fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> Vec<(String, Option<String>)> {
+/// Returns each with whom it answers to now, and the count of parent changes
+/// this one is (`Registry::parent_changes`).
+fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (Vec<(String, Option<String>)>, u64) {
+    r.parent_changes += 1;
+    let change = r.parent_changes;
     let Registry { known, auto, .. } = r;
     let mut moved = Vec::new();
     for (kid, k) in known.iter_mut().filter(|(_, k)| k.parent.as_deref() == Some(id)) {
         k.parent = up.clone();
         k.orphan = up.is_none();
         if k.orphan {
-            auto.entry(kid.clone()).or_default();
+            auto.entry(kid.clone()).or_insert_with(|| Auto { by_pass_up: true, ..Auto::default() });
         }
         moved.push((kid.clone(), up.clone()));
     }
-    moved
+    (moved, change)
 }
 
 #[cfg(test)]
@@ -620,7 +669,7 @@ mod tests {
         register("og-other", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
         owe_from("og-mid", "og-low", 0, 0);
         assert!(authorize("og-top", "og-low").is_ok());
-        let moved = pass_up(&mut reg().lock().unwrap(), "og-nobody", Some("og-top".into()));
+        let (moved, _) = pass_up(&mut reg().lock().unwrap(), "og-nobody", Some("og-top".into()));
         assert!(moved.is_empty(), "nobody's helpers, nothing moved");
 
         // A helper in the middle goes: its helper is the top chat's directly,
@@ -704,7 +753,7 @@ mod tests {
             false,
             serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }),
         );
-        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), deleting: false, released: true };
+        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), released: true, ..Auto::default() };
         reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
         reap_these(pty, vec![kid.to_string()]);
         assert!(reg().lock().unwrap().known.contains_key(kid), "the breach would go with it");
@@ -752,7 +801,7 @@ mod tests {
             assert!(claim.held());
             assert!(background_promote("dh-s".into()).err().unwrap().contains("being deleted"));
             assert!(claim_delete("dh-s").err().unwrap().contains("being deleted already"));
-            assert!(delete_by_user("dh-s", false, false, false).is_err(), "nor the person's at once");
+            assert!(delete_by_user("dh-s", false, false, false, None).is_err(), "nor the person's at once");
             // Text sent meanwhile waits: it found the helper idle, and idle it stays.
             assert_eq!(crate::background::send("dh-s", "one more", Some("dh-c")).unwrap(), Placed::Queued);
             assert_eq!(at_work("dh-s"), None);
@@ -762,7 +811,7 @@ mod tests {
             crate::background::idle_for_test("dh-s", provider, 1, false);
             crate::background::promoting_for_test("dh-s", true);
             assert!(claim_delete("dh-s").err().unwrap().contains("the person is opening dh-s"));
-            assert!(delete_by_user("dh-s", true, true, true).err().unwrap().contains("the person is opening dh-s"));
+            assert!(delete_by_user("dh-s", true, true, true, None).err().unwrap().contains("the person is opening dh-s"));
             assert!(delete("dh-c", "dh-s", true, true).is_err());
             assert!(crate::background::has("dh-s"), "nothing was touched");
 
@@ -794,16 +843,16 @@ mod tests {
             let stake = at_stake(&["ud-s".to_string(), "ud-nobody".to_string()]);
             assert_eq!(stake.len(), 1, "only a helper there is");
             assert_eq!(stake[0].working.as_deref(), Some("in the middle of a turn"));
-            let e = delete_by_user("ud-s", true, false, false).unwrap_err();
+            let e = delete_by_user("ud-s", true, false, false, Some("ud-c")).unwrap_err();
             assert!(e.contains("still working") && e.contains("not deleted"), "{e}");
             assert!(crate::background::has("ud-s"), "still there");
             // Waiting on a question and a job left running are at work too.
             crate::background::hold_for_test("ud-s");
             assert_eq!(at_stake(&["ud-s".to_string()])[0].working.as_deref(), Some("waits on a question or permission"));
             crate::background::idle_for_test("ud-s", provider, 1, true);
-            assert!(delete_by_user("ud-s", false, false, false).unwrap_err().contains("left is still running"));
+            assert!(delete_by_user("ud-s", false, false, false, Some("ud-c")).unwrap_err().contains("left is still running"));
             // Told to stop it, it goes.
-            delete_by_user("ud-s", false, true, false).unwrap();
+            delete_by_user("ud-s", false, true, false, Some("ud-c")).unwrap();
             assert!(!crate::background::has("ud-s") && !reg().lock().unwrap().known.contains_key("ud-s"));
             forget("ud-c");
         }
