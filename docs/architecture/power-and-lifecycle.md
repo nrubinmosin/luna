@@ -43,7 +43,37 @@ Every 5 s `activity/` combines three signals per session:
    caught). What the CLI starts in its first 30 s (`STARTUP_MS`: MCP servers,
    its shell) is furniture; a program with a visible window of its own, and
    everything under it, is the user's and left out.
-3. **Output** over the last 30 s.
+3. **Output** over the last 30 s, by the session's work stamp
+   (`work_output_ms`), not its raw one (`last_output_ms`). Two things Luna
+   passes on make an idle CLI repaint, its nudges: a resize, from a pane that
+   mounts, refits or changes size (the refit, and `nudgeRepaint`'s row less
+   and back); and focus reports, `ESC [ I` and `ESC [ O`, which xterm.js sends
+   as focus moves into or out of a pane whose CLI turned focus reporting on
+   (`?1004`, one of `KEPT_MODES`), so moving between two panes already shown
+   sends both CLIs one. The repaint that follows is Luna's doing. The writer
+   thread stamps each nudge before and after passing it on (a resize: ConPTY
+   may redraw while the call stalls; a write of focus reports alone,
+   `only_focus_reports`, in `write_input`: the CLI may redraw before a
+   descheduled writer gets back to it), and the reader moves the work stamp
+   only for output more than `REPAINT_WINDOW_MS` (1 s) after that. The window
+   runs on a monotonic clock (`mono_ms`), so a wall clock set back cannot
+   stretch it; the work stamp itself is wall-clock time, as the sampler
+   compares it with now. Each nudge starts the window over: while a split is
+   dragged nothing the session prints counts until 1 s after the last resize,
+   and a short burst of real output wholly inside the window is never
+   counted. A turn at work, or a process under it, keeps the session busy all
+   the same. The window is a heuristic: a repaint that ConPTY or the CLI
+   delivers more than 1 s after its nudge (a heavily loaded machine) still
+   counts as output, and so does an idle CLI's redraw of its own (a status
+   line whose text changed). The person's input (keys, a paste, a mouse
+   report: a click or a wheel in a CLI that turned mouse reporting on) is no
+   nudge, but neither does it close the window: what a CLI writes in answer
+   counts once the window has passed. A click that moves the focus sends its
+   `ESC [ I` as a write of its own (xterm.js's `onData`), so the answer to
+   that click within the window is left out too. How soon each CLI repaints
+   is in [CLI compatibility](../cli-compatibility.md). The raw stamp still moves on every
+   byte, for what wants any output at all: the screen cache's key, Codex's
+   working/still status, the agents' reads.
 
 Rules between hooks and registry: the registry beats an "idle" from a hook; a
 hook's "waiting" beats the registry's "busy" (a permission prompt is inside a
