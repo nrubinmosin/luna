@@ -107,6 +107,10 @@ titles, context and drafts come from the core (`session_meta`), polled by
 - `terminal/`: `theme.ts`, `links.ts`, `keys.ts` (clipboard keys, Alt+arrow
   sent as Ctrl+arrow as xterm did before 6), `scrollback.ts` (the replayed
   tail), `sizing.ts` (fit and repaint), `pty.ts` (the gated pty sender),
+  `ptyRoutes.ts` (one listener each for `pty://output` and `pty://exit`,
+  handing each payload to the terminal of its session; a terminal and the
+  sign-in window start their session only once both listen, and a listener
+  that failed to register is tried again by the next terminal),
   `webgl.ts` (the webgl renderer; a context lost for good disposes the addon,
   which puts the DOM renderer back, and the pane is repainted), `title.ts` (a
   title from what is typed), `safely.ts`.

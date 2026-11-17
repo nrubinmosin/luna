@@ -23,12 +23,12 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { handoffOf, type Chat } from '../../shared/types';
 import { ensureClaudeSession, ensureCodexSession, killSession } from '../../ipc/sessions';
-import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
 import { claude } from '../providers';
 import { attachKeys } from './terminal/keys';
 import { linkHandler } from './terminal/links';
 import { ptySender } from './terminal/pty';
+import { routePty } from './terminal/ptyRoutes';
 import { safely } from './terminal/safely';
 import { SCROLLBACK, pinToBottom, replayTail } from './terminal/scrollback';
 import { sizing } from './terminal/sizing';
@@ -244,28 +244,24 @@ function create(spec: TermSpec): Entry {
     () => resizeSub.dispose()
   );
 
-  void (async () => {
-    const un1 = await onPtyOutput(p => {
-      if (p.id === chatId) term.write(p.data);
-    });
-    const un2 = await onPtyExit(p => {
-      if (p.id === chatId) {
-        pty.setLive(false);
-        entry.dead = true;
-        useChats.getState().setStatus(chatId, 'resting');
-        term.write('\r\n\x1b[2m[session exited]\x1b[0m\r\n');
-      }
-    });
-    // The dispose may already have run while these were still in flight.
-    if (disposed) {
-      safely(un1);
-      safely(un2);
-      return;
+  const route = routePty(chatId, {
+    output: data => term.write(data),
+    exit: () => {
+      pty.setLive(false);
+      entry.dead = true;
+      useChats.getState().setStatus(chatId, 'resting');
+      term.write('\r\n\x1b[2m[session exited]\x1b[0m\r\n');
     }
-    unlisteners.push(un1, un2);
+  });
+  unlisteners.push(route.unroute);
 
+  void (async () => {
     let backlog: string;
     try {
+      // Heard before the session can print anything.
+      await route.ready;
+      // The dispose may already have run while the listeners were coming in.
+      if (disposed) return;
       backlog = await startSession(chat, folderPath, accountPath);
     } catch (e) {
       // The ipc layer already logged the cause. Without this catch the

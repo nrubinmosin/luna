@@ -80,12 +80,13 @@ vi.mock('@xterm/addon-webgl', () => ({
   }
 }));
 
-/** The pty's events as the terminals subscribed to them. While `hold` is on,
- *  a subscription's answer waits in `waiting` until `release`. */
+/** The pty's events as the router (terminal/ptyRoutes.ts) subscribed to
+ *  them. While `hold` is on, a subscription's answer waits in `waiting` until
+ *  `release`. */
 const pty = vi.hoisted(() => {
   const output = new Set<(p: { id: string; data: string }) => void>();
   const exit = new Set<(p: { id: string; code: number | null }) => void>();
-  const state = { hold: false, waiting: [] as Array<() => void>, unlistened: 0 };
+  const state = { hold: false, waiting: [] as Array<() => void> };
   const release = () => {
     state.hold = false;
     state.waiting.splice(0).forEach(go => go());
@@ -95,7 +96,6 @@ const pty = vi.hoisted(() => {
     (cb: (p: T) => void) => {
       set.add(cb);
       const unlisten = () => {
-        state.unlistened++;
         set.delete(cb);
       };
       if (!state.hold) return Promise.resolve(unlisten);
@@ -161,13 +161,11 @@ beforeEach(() => {
   xterm.FakeTerminal.made = [];
   pty.state.hold = false;
   pty.state.waiting = [];
-  pty.state.unlistened = 0;
 });
 
+// The router's listeners stay for the module's life, as they do for the page's.
 afterEach(() => {
   forgetAll();
-  pty.output.clear();
-  pty.exit.clear();
 });
 
 describe('terminals: the pty behind a terminal', () => {
@@ -249,15 +247,21 @@ describe('terminals: reattaching to a running session', () => {
 });
 
 describe('terminals: disposed while starting', () => {
-  it('starts no session when disposed before its event subscriptions are in, and drops them as they arrive', async () => {
+  it('starts no session when disposed before the pty listeners are in, and hears nothing after', async () => {
+    // A page whose router has not listened yet: modules loaded afresh.
+    vi.resetModules();
+    const fresh = await import('./terminals');
+    const freshSessions = vi.mocked(await import('../../ipc/sessions'));
     pty.state.hold = true;
-    const { term } = open('early-gone');
-    forget('early-gone');
+    fresh.acquire({ chat: chat('early-gone'), folderPath: '/repo', accountPath: '/acc/work' });
+    const term = xterm.FakeTerminal.made.at(-1)!;
+    fresh.forget('early-gone');
     expect(term.disposed).toBe(true);
     pty.release();
     await settle();
-    expect(sessions.ensureClaudeSession).not.toHaveBeenCalled();
-    expect(pty.state.unlistened).toBe(2);
+    expect(freshSessions.ensureClaudeSession).not.toHaveBeenCalled();
+    pty.output.forEach(cb => cb({ id: 'early-gone', data: 'late' }));
+    expect(term.log).toEqual([]);
   });
 
   it('writes nothing and sends nothing when disposed while its session was starting', async () => {
@@ -265,9 +269,9 @@ describe('terminals: disposed while starting', () => {
     const { term } = open('mid-gone');
     await settle();
     forget('mid-gone');
-    expect(pty.state.unlistened).toBe(2);
     start('TAIL');
     await settle();
+    pty.output.forEach(cb => cb({ id: 'mid-gone', data: 'late' }));
     term.data.fire('x');
     expect(term.log).toEqual([]);
     expect(writesFor('mid-gone')).toEqual([]);

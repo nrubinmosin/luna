@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { Account } from '../../shared/types';
 import { killSession, resizeSession, writeSession } from '../../ipc/sessions';
-import { onPtyExit, onPtyOutput } from '../../ipc/events';
+import { routePty } from '../panes/terminal/ptyRoutes';
 import { attachLoginKeys } from '../panes/terminal/keys';
 import { safely } from '../panes/terminal/safely';
 import { loadWebgl } from '../panes/terminal/webgl';
@@ -39,7 +39,6 @@ export function LoginModal({ account }: { account: Account }) {
     const disposeWebgl = loadWebgl(term);
 
     let disposed = false;
-    const unlisteners: Array<() => void> = [];
     // Same gate as the chat terminals: the session only exists between
     // ensure_session resolving and pty://exit, and talking to it outside that
     // window logged a "no such session" pair on every login window close.
@@ -54,26 +53,25 @@ export function LoginModal({ account }: { account: Account }) {
     };
     refit();
 
-    void (async () => {
-      const un1 = await onPtyOutput(p => {
-        if (p.id === id) term.write(p.data);
-      });
-      const un2 = await onPtyExit(p => {
-        if (p.id === id) {
-          sessionLive = false;
-          term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
-        }
-      });
-      if (disposed) {
-        safely(un1);
-        safely(un2);
-        return;
+    const route = routePty(id, {
+      output: data => term.write(data),
+      exit: () => {
+        sessionLive = false;
+        term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
       }
-      unlisteners.push(un1, un2);
+    });
+    // The login session, from the moment it is asked for: closing the window
+    // ends it, and one closed before the start has answered is ended once it
+    // has (a kill sent sooner finds no session and leaves it running).
+    let starting: Promise<string> | null = null;
 
+    void (async () => {
       let backlog: string;
       try {
-        backlog = await ui(account.provider).loginSession(id, account);
+        await route.ready;
+        if (disposed) return;
+        starting = ui(account.provider).loginSession(id, account);
+        backlog = await starting;
       } catch {
         // Already logged by the ipc layer; keep the rejection out of the
         // global unhandled-promise log and say what happened in the window.
@@ -102,17 +100,21 @@ export function LoginModal({ account }: { account: Account }) {
       safely(() => ro.disconnect());
       safely(() => dataSub.dispose());
       safely(() => resizeSub.dispose());
-      unlisteners.forEach(u => safely(u));
+      safely(route.unroute);
       disposeWebgl();
       safely(() => term.dispose());
+      // Usually already gone by now (login flows exit on their own); a
+      // failed kill is not worth an unhandled-rejection entry.
+      void starting?.then(
+        () => killSession(id).catch(() => {}),
+        () => {}
+      );
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // Unmounting ends the session (the effect's cleanup).
   const close = () => {
-    // The session is usually already gone by now (login flows exit on their
-    // own); a failed kill is not worth an unhandled-rejection entry.
-    killSession(id).catch(() => {});
     useAccounts.getState().setLoginFor(null);
     void useAccounts.getState().refresh();
   };

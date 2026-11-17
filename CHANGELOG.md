@@ -47,6 +47,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A chat terminal whose graphics context the WebView takes away (too many
   open at once) goes back to drawing without WebGL instead of staying blank,
   and closing a terminal no longer fails inside the WebGL addon.
+- Closing an account's sign-in window while its session is still starting
+  ends that session once it has started, instead of leaving it running.
 
 ## [0.18.5] - 2026-11-17
 
