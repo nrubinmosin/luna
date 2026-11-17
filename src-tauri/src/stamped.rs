@@ -21,7 +21,14 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// What a file is known by: its length and last change as the OS has them,
 /// and which file it is: its inode off Windows, its creation time on Windows
-/// (where std reads no file index without opening the file).
+/// (where std reads no file index without opening the file). On Windows the
+/// creation time does not always tell a file put in another's place: NTFS
+/// tunneling gives a file created or renamed into a name within 15 s of the
+/// last one leaving it that one's creation time, so a file rewritten by a
+/// rename onto its name can keep its stamp. Its length and change time
+/// mostly differ anyway, and what was read is read again a minute on
+/// whatever the stamp (`ByStamp`), which bounds how long such a file is
+/// taken for the one before.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Stamp {
     len: u64,
