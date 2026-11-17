@@ -75,6 +75,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   (64 MB, then the window reconnects), text queued for a helper and text held
   for a person's chat (16 MB each, then a send is refused, saying why), and
   the Codex rollouts looked up by thread (1,024 kept).
+- Dependabot opens no more pull requests: the crates, npm packages, pinned
+  Actions and Docker images move by hand, in the project's own commits through
+  the gate, and Dependabot only alerts on advisories
+  ([ADR-0029](docs/adr/0029-dependencies-move-by-hand.md)).
 
 ### Removed
 

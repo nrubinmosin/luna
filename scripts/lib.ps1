@@ -45,8 +45,8 @@ function Get-NodeVersion {
 
 # The base images the Dockerfiles in docker/ build on, one per FROM line:
 # File, Line, Repo (rust, node), Tag and Digest. Each FROM names its image by
-# tag and digest, the tag for people and Dependabot, the digest so the tag
-# cannot move under a build.
+# tag and digest, the tag for people, the digest so the tag cannot move under a
+# build; both are bumped by hand (docs/adr/0029-dependencies-move-by-hand.md).
 function Get-BaseImages {
     foreach ($file in Get-ChildItem (Join-Path $RepoRoot 'docker') -Filter *.Dockerfile) {
         foreach ($from in Select-String -Path $file.FullName -Pattern '^FROM\s+(\S+)') {
@@ -65,7 +65,7 @@ function Get-BaseImages {
 }
 
 # The official Node image the Windows image starts from, as pinned (tag and
-# digest, which Dependabot moves): for what needs node alone, such as the
+# digest, both bumped by hand): for what needs node alone, such as the
 # release's signer.
 function Get-NodeImage {
     $node = Get-BaseImages | Where-Object { $_.File -eq 'docker/windows-build.Dockerfile' -and $_.Repo -eq 'node' }
@@ -224,7 +224,7 @@ $Script
 # The Rust toolchain is pinned twice, in src-tauri/rust-toolchain.toml and in the
 # images' FROM lines, and rust-version in Cargo.toml names it a third time; Node
 # in .node-version and the FROM lines. Throws when any two disagree, or a FROM
-# line has no digest, naming the files: a bump of one alone (Dependabot moves the
+# line has no digest, naming the files: a bump of one alone (a new digest on the
 # FROM lines) would otherwise build with a toolchain rustup fetches on the fly,
 # or a frontend checked on another Node than the one people run.
 function Assert-ToolchainPins {

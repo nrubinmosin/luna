@@ -92,9 +92,9 @@ The Tauri version check (`pnpm check:tauri`, `scripts/check-tauri-versions.mjs`)
 holds each Tauri crate in `src-tauri/Cargo.lock` and its npm package in
 `pnpm-lock.yaml` (`tauri` and `@tauri-apps/api`, `tauri-plugin-<name>` and
 `@tauri-apps/plugin-<name>`) to one major.minor, the rule `tauri build` refuses
-a build by. The gate never runs `tauri build`, and Dependabot moves the cargo and
-npm sides in separate PRs, so a bump to one side fails here first: move the other
-side to match in the same PR.
+a build by. The gate never runs `tauri build`, and the cargo and npm sides are
+locked in separate files, so a bump of one side alone fails here first: move the
+other side to match in the same commit.
 
 ## The test build
 
@@ -182,9 +182,11 @@ every pull request, every push to master, weekly and by hand
 ([Supply chain](#supply-chain)).
 
 `.github/workflows/release.yml` runs only on `v*` tags and by hand
-([Releases](#releases)). Actions are pinned by commit; Dependabot (`.github/dependabot.yml`) moves them,
-the crates, the npm packages and the images monthly, one grouped PR per ecosystem; a new
-Node or Rust major is left to a hand-made migration (`.github/dependabot.yml` says why).
+([Releases](#releases)). Actions are pinned by commit and images by tag and digest.
+They, the crates, the npm packages and the toolchains move only in the project's own
+commits, by hand and through the gate; Dependabot alerts report advisories against them
+and author no code ([ADR-0029](adr/0029-dependencies-move-by-hand.md)). A new Node or
+Rust major is a migration of its own.
 
 ## Supply chain
 

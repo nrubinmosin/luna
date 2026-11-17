@@ -3,9 +3,9 @@
 // src/info/plugins.rs): the crate `tauri` against `@tauri-apps/api`, and each
 // `tauri-plugin-<name>` against `@tauri-apps/plugin-<name>`, by the versions
 // actually locked, which must agree in major and minor; the patch may differ.
-// The gate builds neither the app nor a bundle, and Dependabot moves the cargo
-// and npm sides in separate PRs, so this applies the same rule to the lockfiles
-// and fails the gate where tauri build would. No network, no install: what is
+// The gate builds neither the app nor a bundle, and the cargo and npm sides are
+// locked in separate files, each bumped on its own, so this applies the same rule
+// to the lockfiles and fails the gate where tauri build would. No network, no install: what is
 // compared is what src-tauri/Cargo.lock and pnpm-lock.yaml say.
 //
 // A pair counts only when both sides are there, as in tauri-cli: a plugin with
