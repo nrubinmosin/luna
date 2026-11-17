@@ -119,15 +119,11 @@ fn read_token(account_path: &str) -> Result<Token, String> {
     Ok(Token { access, expired })
 }
 
-/// Being signed in is about the *refresh* token: while it lives, a new access
-/// token can be minted without the user doing anything.
+/// Being signed in is about the *refresh* token (`oauth::signed_in`). A blank
+/// one is none: it is what the CLI leaves once the server has turned the
+/// token down.
 fn signed_in(account_path: &str) -> bool {
-    read_json(&Path::new(account_path).join(".credentials.json"))
-        .map(|v| {
-            let o = &v["claudeAiOauth"];
-            o["refreshToken"].is_string() && o["refreshTokenExpiresAt"].as_u64().map(|ms| now_ms() < ms).unwrap_or(true)
-        })
-        .unwrap_or(false)
+    read_json(&Path::new(account_path).join(".credentials.json")).is_some_and(|v| oauth::signed_in(&v["claudeAiOauth"]))
 }
 
 fn plan_from_tier(tier: &str) -> Option<String> {
@@ -357,9 +353,12 @@ fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String
             oauth::Outcome::Fresh => token = read_token(account_path)?,
             // A CLI is renewing it right now; the next round has the result.
             oauth::Outcome::Busy => {}
-            oauth::Outcome::Rejected => {
+            oauth::Outcome::Rejected { unsaved } => {
                 out.signed_in = false;
-                out.refresh_error = Some("sign-in expired — log in again".into());
+                out.refresh_error = Some(match unsaved {
+                    None => "sign-in expired — log in again".into(),
+                    Some(why) => format!("sign-in expired — log in again ({why})"),
+                });
                 return Ok(out);
             }
             oauth::Outcome::Failed(e) => out.refresh_error = Some(e),
@@ -601,6 +600,50 @@ mod scoped_tests {
         let out = fetch_limits(&path, false).unwrap();
         assert_eq!((out.h5, out.week, out.source.as_deref()), (Some(0.12), Some(0.4), Some("cache")));
         last_answer().lock().unwrap().remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod signed_in_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn account_with(tag: &str, oauth: Value) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("luna-limits-signed-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".credentials.json"), json!({ "claudeAiOauth": oauth }).to_string()).unwrap();
+        let path = dir.to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_blank_or_missing_refresh_token_is_signed_out() {
+        let cases = [
+            ("present", json!({ "accessToken": "at", "refreshToken": "rt", "expiresAt": 1 }), true),
+            ("empty", json!({ "accessToken": "", "refreshToken": "", "expiresAt": 0 }), false),
+            ("blank", json!({ "accessToken": "at", "refreshToken": "  \n", "expiresAt": 1 }), false),
+            ("absent", json!({ "accessToken": "at", "expiresAt": 1 }), false),
+            ("not-text", json!({ "refreshToken": null }), false),
+            ("expired", json!({ "refreshToken": "rt", "refreshTokenExpiresAt": 1 }), false),
+        ];
+        for (tag, oauth, expect) in cases {
+            let (dir, path) = account_with(tag, oauth);
+            assert_eq!(signed_in(&path), expect, "{tag}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        assert!(!signed_in(&std::env::temp_dir().join("luna-limits-signed-none").to_string_lossy()), "no credentials");
+    }
+
+    /// #76: the panel showed this account signed in with "token refresh
+    /// failed" and no way to sign in again. Signed out, it asks nothing.
+    #[test]
+    fn the_tokens_the_cli_blanks_read_as_signed_out_not_as_a_failed_refresh() {
+        let (dir, path) = account_with("blanked", json!({ "accessToken": "", "refreshToken": "", "expiresAt": 0 }));
+        let out = fetch_limits(&path, true).unwrap();
+        assert!(!out.signed_in);
+        assert_eq!((out.refresh_error, out.stale), (None, false));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,7 +1,7 @@
 // The invented chats, accounts and answers the demo scenes stand on.
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../../shared/types';
 import type { AccountsRootInfo } from '../../ipc/accounts';
-import type { AtStakeDto, BackgroundHelperDto, HelperTranscriptDto } from '../../ipc/agents';
+import type { AtStakeDto, BackgroundHelperDto, HelperTranscriptDto, MoveTargetsDto } from '../../ipc/agents';
 import type { CliStatusDto, CliVersionsDto } from '../../ipc/cli';
 import type { CoreStateDto } from '../../ipc/coreProcess';
 import type { ClaudeDefaultsDto, ClaudeModelDto, CodexDefaultsDto, CodexModelDto } from '../../ipc/defaults';
@@ -937,7 +937,9 @@ export const CORE: CoreStateDto = {
 
 // Five helpers the first chat's agent runs in the background, in mixed
 // states, one of them waiting on an answer: the chip on its row and the pill
-// on its pane. The last has no chat: "Helpers with no chat".
+// on its pane. The one that asks is a helper's helper; the reviewer is watched
+// by the second chat, which was refused a send into it ("Move to …?"); the
+// test runner came from the fourth. The last has no chat: "Helpers with no chat".
 export const BACKGROUND: BackgroundHelperDto[] = [
   {
     id: 'demo-bg-1',
@@ -952,11 +954,15 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     startedMs: Date.now() - 14 * 60_000,
     turnStartedMs: Date.now() - 4 * 60_000,
     lastActivityMs: Date.now() - 20_000,
-    task: 'Review docs/release-plan.md against what CHANGELOG.md says is in 0.11.0.'
+    task: 'Review docs/release-plan.md against what CHANGELOG.md says is in 0.11.0.',
+    top: 'demo-1',
+    watchedBy: ['demo-2'],
+    suggested: [{ chat: 'demo-2', atMs: Date.now() - 3 * 60_000 }]
   },
   {
     id: 'demo-bg-2',
-    parent: 'demo-1',
+    parent: 'demo-bg-1',
+    top: 'demo-1',
     name: 'Check the changelog',
     provider: 'claude',
     state: 'question',
@@ -987,7 +993,9 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     startedMs: Date.now() - 9 * 60_000,
     turnStartedMs: Date.now() - 9 * 60_000,
     lastActivityMs: Date.now() - 3 * 60_000,
-    task: 'Build the unit tests for Windows and run them; report the failures with their output.'
+    task: 'Build the unit tests for Windows and run them; report the failures with their output.',
+    top: 'demo-1',
+    moved: { from: 'demo-4', to: 'demo-1', atMs: Date.now() - 7 * 60_000, told: true }
   },
   {
     id: 'demo-bg-5',
@@ -1002,7 +1010,8 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     startedMs: Date.now() - 32 * 60_000,
     turnStartedMs: null,
     lastActivityMs: Date.now() - 12 * 60_000,
-    task: 'Draft the 0.12.0 release notes from the changelog, in the voice of the last three.'
+    task: 'Draft the 0.12.0 release notes from the changelog, in the voice of the last three.',
+    top: 'demo-1'
   },
   {
     id: 'demo-bg-6',
@@ -1017,7 +1026,8 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     startedMs: Date.now() - 50 * 60_000,
     turnStartedMs: null,
     lastActivityMs: Date.now() - 41 * 60_000,
-    task: 'Run pnpm check:text over docs/ and fix what it finds.'
+    task: 'Run pnpm check:text over docs/ and fix what it finds.',
+    top: 'demo-1'
   },
   {
     id: 'demo-bg-3',
@@ -1035,6 +1045,36 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     task: 'Delete the merged branches older than a month, locally and on origin.'
   }
 ];
+
+// The person's chats helper `id` may move to (agents/reparent.rs
+// `move_targets`): its own chat is one it is under already, and one chat runs
+// without Luna's tools. A helper's helper moves only with the one above it.
+export function moveTargets(id: string): MoveTargetsDto {
+  const h = BACKGROUND.find(b => b.id === id);
+  const above = h?.parent ? BACKGROUND.find(b => b.id === h.parent) : undefined;
+  if (above) {
+    return {
+      blocked: `${id} is a helper of "${above.name}" (${above.id}), itself a helper under chat demo-1: only a chat's own helper moves, with the helpers under it. Move ${above.id} and ${id} goes with it`,
+      targets: []
+    };
+  }
+  const already = (chat: string) =>
+    h?.parent === chat
+      ? `${id} is a helper of chat "${CHATS.find(c => c.id === chat)?.name ?? chat}" (${chat}) already`
+      : null;
+  return {
+    targets: [
+      { id: 'demo-1', ok: !already('demo-1'), why: already('demo-1') ?? undefined },
+      { id: 'demo-2', ok: true },
+      {
+        id: 'demo-3',
+        ok: false,
+        why: `chat "Why does the tray icon vanish after resume?" (demo-3) runs without Luna's tools, so it could not send to ${id}, wait on it or answer it: turn Luna's tools on for it first`
+      },
+      { id: 'demo-4', ok: !already('demo-4'), why: already('demo-4') ?? undefined }
+    ]
+  };
+}
 
 // What the working helper has said so far, as its read-only view shows it.
 export const HELPER_TRANSCRIPT: HelperTranscriptDto = {

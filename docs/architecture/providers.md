@@ -227,11 +227,42 @@ supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
   --output-format stream-json --verbose --safe-mode --strict-mcp-config
   --no-session-persistence` in an empty folder of Luna's, `claude-models-cwd`:
   no hook, plugin, skill, CLAUDE.md, MCP server or project setting of the
-  account's loads; one `control_request` line; its process tree taken down
-  once it has answered or after 20 s: no prompt, no turn). It holds the
-  account's own lock in `claude-config-locks/` while it runs, since the CLI
-  rewrites `.claude.json` as it starts; Luna's writes of that file (a trust
-  mark, a recommended key) take the same lock and wait up to 25 s, and
+  account's loads; one `control_request` line: no prompt, no turn). Once it
+  has answered, or not in 20 s, its stdin is closed and it gets 10 s to exit
+  by itself (`EXIT_GRACE`), on a thread of its own while the answer is used:
+  the CLI may be renewing the account's token then, and saves the rotated
+  tokens after its answer, so a kill at the answer could leave the account
+  signed out (docs/cli-compatibility.md, 2.1.325). Only past that is it taken
+  down. It runs in a Job Object of its own on Windows (not one ended by
+  Luna's exit) and a process group of its own on Unix, and what is left in
+  there once it has exited, or at the deadline, is taken down: a hook it
+  started (managed hooks run even in safe mode), which would otherwise run
+  on and hold its stdout open. On Windows nothing in the job can break away,
+  so the sweep ends whatever holds the stdout. On Unix the sweep reaches the
+  group and, while the CLI still runs, its descendants: one that made a
+  session of its own and was orphaned before the sweep escapes it, and may
+  keep the ask's stdout reader blocked until Luna exits (a thread, which
+  nothing waits on). Luna's own exit (the end of the event loop: Quit, a
+  tray Restart; an update's install on Windows; Windows' Restart Manager
+  closing it) starts no more asks, has one still waiting for its answer stop
+  waiting and take its 10 s at once, and waits for every ask's sweep, up to
+  12 s (`wait_for_asks`). Before an install the asks are refused only while
+  that wait lasts (`wait_for_asks_before_install`): the install may never
+  come (a page reloaded meanwhile, or one that fails), and nothing would
+  then let them start again; an ask started between the wait's end and the
+  install's end of the process is not waited for. A Windows
+  shutdown or sign-out does not wait: the OS ends the CLI with the rest. A
+  launch of Luna during that wait is handed to the instance on its way out
+  (the single-instance check) and comes to nothing; a tray Restart avoids it
+  by having the new window wait for the old one's exit (`--after`); a launch
+  by hand then has to be made again once Luna is gone (a known limit). It holds the account's own lock in
+  `claude-config-locks/` until it is gone, since the CLI rewrites
+  `.claude.json` as it starts and exits; Luna's writes of that file (a trust
+  mark, a chat's trust ticked in the new-chat dialog, a recommended key)
+  take the same lock and wait up to 35 s (`ASK_WAIT`), so a chat started
+  right after an ask can wait for the CLI's exit: about 1 s after the answer
+  as measured, at most 30 s after the ask began (20 s without an answer, then
+  the 10 s grace), and
   nothing else, settings.json or another account, waits on it
   and kept per account in `claude-models.json` in the data folder for six
   hours → the four aliases. A stale catalog or answer is returned at once and

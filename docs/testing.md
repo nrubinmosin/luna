@@ -147,6 +147,16 @@ checks that:
 - a spawn asking for more privilege than its caller has is refused before any
   CLI starts.
 
+For Claude Code alone, the model ask (`claude/models.rs` `from_cli`) is run
+on the account with its token's `expiresAt` set two minutes ahead: the CLI
+renews it as it starts, and the renewed tokens must be on disk once the ask
+has let it go, the account still signed in (issue #75). It rotates the test
+account's refresh token, as any session near expiry would, so it runs only
+when asked for: `./scripts/live-tests.ps1 -ClaudeAccount live -Renew`
+(`LUNA_LIVE_RENEW=1`); without it the script leaves it out (`--skip`) and
+reports it as skipped, not passed. Never on a clone made with `-WithCredentials` (below): the renewal there leaves the
+source account's refresh token dead, and the source signed out.
+
 ### Accounts
 
 The live tests run only on throwaway accounts in `test-build/accounts`, which

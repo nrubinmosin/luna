@@ -283,6 +283,10 @@ fn wait_for(
     let mut looks = 0u32;
     // The turn count a turn end was first seen at, and when (QUEUED_GRACE_MS).
     let mut quiet: Option<(u32, u64)> = None;
+    // Text queued for a background helper may go onto its running process's
+    // stdin after all (`moved_onto_stdin`): a wait going by the count its send
+    // returned, or by the debt as it stood, goes by that process's once.
+    let mut moved = false;
     loop {
         if gone() {
             return gone_err();
@@ -291,6 +295,13 @@ fn wait_for(
         let alive = live(pty, id);
         let (ts, floor) = state_then_floor(&key, || crate::activity::turn_state(id));
         baseline = baseline.max(floor);
+        if !moved {
+            let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
+            if let Some(o) = owed.filter(|o| o.moved_from == Some(baseline)) {
+                baseline = o.baseline;
+                moved = true;
+            }
+        }
         let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
         let turn = ts.map(|t| t.turn);
         let mut ended = turns_ended > baseline && turn != Some(crate::activity::Turn::Busy);

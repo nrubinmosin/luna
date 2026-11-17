@@ -7,7 +7,7 @@ use crate::agents::delivery::{as_sent, screen_of, type_in, TypingInto, ENTER_GAP
 use crate::agents::owed::{owe_from, seen};
 use crate::agents::privilege::{answerer, approval_needs, command_reach_now, plain_text, Privilege, Reach};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{authorize_send, reg};
+use crate::agents::registry::{authorize_send, is_persons_chat, ownership_steady, reg};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::Serialize;
@@ -227,7 +227,13 @@ pub fn answer(
     note: Option<&str>,
     draining: bool,
 ) -> Result<Answered, String> {
+    // Into a helper: whose it is stays as checked here, `own` below with it,
+    // until the debt the answer leaves is in; a move to another chat waits
+    // (reparent.rs). Anything but a chat may be a helper (`send`).
+    let _steady = (!is_persons_chat(id)).then(ownership_steady);
     let known = authorize_send(caller, id)?;
+    #[cfg(test)]
+    super::test_support::reached("answer checked", caller);
     // Typed in as keys: what is not plain text would be keys of its own.
     for t in answers.iter().map(String::as_str).chain(note) {
         plain_text(t)?;
@@ -368,7 +374,7 @@ mod tests {
         assert!(presses_for(Provider::Codex, &perm, &[]).is_err());
         assert_eq!(perm.line(), "asks for permission to run Bash: ls");
         let codex =
-            "  Would you like to run the following command?\n\n  $ Set-Content -LiteralPath made.txt -Value hi\n\n› 1. Yes, proceed (y)";
+            "  Would you like to run the following command?\n\n  $ Set-Content -LiteralPath made.txt -Value hi\n\n› 1. Yes, proceed (y)\n  2. No (esc)";
         assert_eq!(codex_command_on(codex).as_deref(), Some("Set-Content -LiteralPath made.txt -Value hi"));
     }
 
@@ -407,6 +413,8 @@ mod tests {
             questions: Vec::new(),
             tool: None,
             detail: None,
+            detail_cut: 0,
+            source: None,
         };
         let plain: &[String] = &[];
         let refused = |r: Result<(), String>| r.unwrap_err();
@@ -434,6 +442,8 @@ mod tests {
             questions: vec![AskQuestion { text: "Which?".into(), options: vec!["A".into(), "B".into()], multi: false, list_at }],
             tool: None,
             detail: None,
+            detail_cut: 0,
+            source: None,
         };
         let (question, permission, dialog) = (ask("question", None), ask("permission", None), ask("question", Some(0)));
         let full = Some(Privilege { reach: Reach::Full, net: true });

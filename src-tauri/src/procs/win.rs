@@ -153,8 +153,8 @@ pub fn join(job: &Job, pid: u32) -> bool {
 
 /// A job for a short run that must leave nothing behind (cli/probe.rs): its
 /// every member ends with it, by `end` or by its last handle closing, this
-/// process's death included. Unlike a session's `Job`, it is never let go,
-/// and nothing in it is spared for having a window.
+/// process's death included (`untied`: not by that). Unlike a session's
+/// `Job`, it is never let go, and nothing in it is spared for having a window.
 pub struct KillJob(HANDLE);
 // A job handle is a kernel object; any thread may use or close it.
 unsafe impl Send for KillJob {}
@@ -162,9 +162,7 @@ unsafe impl Sync for KillJob {}
 
 impl KillJob {
     pub fn new() -> windows::core::Result<KillJob> {
-        // SAFETY: a new job handle, owned by the KillJob from here on, which
-        // closes it once.
-        let job = KillJob(unsafe { CreateJobObjectW(None, windows::core::PCWSTR::null())? });
+        let job = KillJob::untied()?;
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         // SAFETY: the handle is open, and the struct is the one the class
@@ -178,6 +176,15 @@ impl KillJob {
             )?;
         }
         Ok(job)
+    }
+
+    /// One whose members outlive this process's death, ended only by `end`
+    /// or a drop: for a run that must not be cut short when Luna leaves
+    /// (claude/models.rs, a CLI that may be saving a renewed token).
+    pub fn untied() -> windows::core::Result<KillJob> {
+        // SAFETY: a new job handle, owned by the KillJob from here on, which
+        // closes it once.
+        Ok(KillJob(unsafe { CreateJobObjectW(None, windows::core::PCWSTR::null())? }))
     }
 
     /// Puts `pid`, created suspended, into the job.

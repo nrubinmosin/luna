@@ -216,20 +216,17 @@ impl Tree {
         let mut child = cmd.spawn()?;
         // Not let run outside its job: what it started there could outlive
         // the run with nothing to end it. Still suspended, it has started
-        // nothing.
+        // nothing; one that will not resume would only run out the deadline.
         #[cfg(windows)]
         {
-            match job_for(child.id()) {
-                Ok(job) => {
-                    crate::procs::resume(child.id());
-                    Ok(Tree { child, job })
-                }
-                Err(e) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    Err(std::io::Error::other(format!("no job of its own to run in: {e}")))
-                }
-            }
+            let why = match job_for(child.id()) {
+                Ok(job) if crate::procs::resume(child.id()) => return Ok(Tree { child, job }),
+                Ok(_) => "it would not resume in its job".to_string(),
+                Err(e) => format!("no job of its own to run in: {e}"),
+            };
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(std::io::Error::other(why))
         }
         #[cfg(not(windows))]
         Ok(Tree { child })
@@ -375,11 +372,11 @@ pub(crate) fn covers(provider: Provider, args: &[String]) -> Result<(), String> 
 mod tests {
     use super::*;
 
-    /// `--help` of every command, as the versions on the known-good list
-    /// print it: Claude Code 2.1.319 and 2.1.322 print 2.1.318's line for
-    /// line, 2.1.323 its own (only `claude rm`'s text differs); Codex 0.167.2
-    /// and 0.168.0 print 0.167.0's, 0.169.0 too but for `exec` and `exec
-    /// resume`, which list `--trust`.
+    /// `--help` of every command, as the versions checked print it: Claude
+    /// Code 2.1.319 and 2.1.322 print 2.1.318's line for line, 2.1.323 its
+    /// own (only `claude rm`'s text differs) and 2.1.325, the one on the
+    /// known-good list, 2.1.323's; Codex 0.167.2 and 0.168.0 print 0.167.0's,
+    /// 0.169.0 too but for `exec` and `exec resume`, which list `--trust`.
     const CLAUDE_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.318-help.txt"))];
     const CLAUDE_2_1_323_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.323-help.txt"))];
     const CODEX_HELP: &[(&str, &str)] = &[

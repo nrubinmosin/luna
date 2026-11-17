@@ -56,6 +56,7 @@ pub fn permission(id: &str, args: &Value) -> Value {
     } else {
         Ask::from_claude_tool(&tool, &input)
     };
+    let tool_use_id = args["tool_use_id"].as_str().filter(|t| !t.is_empty()).map(str::to_owned);
     let serial = {
         let mut r = lock();
         let serial = r.next_serial;
@@ -64,8 +65,11 @@ pub fn permission(id: &str, args: &Value) -> Value {
             return json!({ "behavior": "deny", "message": "Luna does not know this session." });
         };
         ask.id = Some(format!("a{serial}"));
+        // Who made the call, if its message has come in yet; one that comes
+        // after says so then (`events::made_calls`).
+        ask.source = tool_use_id.as_deref().and_then(|t| e.calls.iter().find(|(c, _)| c == t)).map(|(_, by)| by.clone());
         note(e, &format!("waits: {}", ask.line()));
-        e.held.push_back(Held { serial, ask, input, answer: None });
+        e.held.push_back(Held { serial, ask, input, tool_use_id, answer: None });
         r.asked.insert(serial, id.to_string());
         serial
     };
@@ -288,6 +292,64 @@ mod tests {
         assert!(serde_json::to_value(Ask::permission(None, None)).unwrap().get("id").is_none(), "a terminal's has none");
     }
 
+    /// A permission call names only its tool call's id; the stream-json
+    /// message that made the call says who did, whether it came in before the
+    /// permission call or after it.
+    #[test]
+    fn a_held_permission_names_the_subagent_that_made_the_call() {
+        use crate::agents::AskSource;
+        in_claimed_turn("src-ask");
+        let made = |call: &str, subagent: bool| {
+            let mut v = json!({
+                "type": "assistant",
+                "message": { "content": [{ "type": "tool_use", "id": call, "name": "Bash", "input": { "command": "rm -f x" } }] },
+                "parent_tool_use_id": null,
+            });
+            if subagent {
+                v["parent_tool_use_id"] = json!("toolu_agent");
+                v["agent_id"] = json!("a7");
+                v["subagent_type"] = json!("worker");
+            }
+            let mut r = lock();
+            on_claude_event(r.entries.get_mut("src-ask").unwrap(), &v);
+        };
+        let held = |call: &'static str| {
+            std::thread::spawn(move || {
+                permission("src-ask", &json!({ "tool_name": "Bash", "input": { "command": "rm -f x" }, "tool_use_id": call }))
+            })
+        };
+        let until = |want: &dyn Fn(&Option<Ask>) -> bool| {
+            for _ in 0..200 {
+                if want(&ask("src-ask")) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("never: {:?}", ask("src-ask"));
+        };
+        let worker = Some(AskSource::subagent(Some("a7"), Some("worker")));
+
+        // The message first, then the call.
+        made("toolu_1", true);
+        let first = held("toolu_1");
+        until(&|a| a.is_some());
+        assert_eq!(ask("src-ask").unwrap().source, worker);
+        assert!(ask("src-ask").unwrap().line().contains("subagent \"worker\", agentId a7"));
+        answer("src-ask", None, &[], Some(false), None, |_| Ok(())).unwrap();
+        reg().1.notify_all();
+        first.join().unwrap();
+
+        // The call first: not said, until its message comes in.
+        let second = held("toolu_2");
+        until(&|a| a.is_some());
+        assert_eq!(ask("src-ask").unwrap().source, None);
+        made("toolu_2", false);
+        assert_eq!(ask("src-ask").unwrap().source, Some(AskSource::session()));
+        kill("src-ask");
+        let _ = second.join();
+        lock().entries.remove("src-ask");
+    }
+
     #[test]
     fn an_answer_is_shaped_as_the_cli_takes_it() {
         let input = json!({ "questions": [{ "question": "Which color?", "options": [{ "label": "Red" }, { "label": "Blue" }] }] });
@@ -319,7 +381,7 @@ mod tests {
             let mut r = lock();
             r.asked.insert(serial, "ba-kid".into());
             let ask = Ask { id: Some(format!("a{serial}")), ..ask };
-            r.entries.get_mut("ba-kid").unwrap().held.push_back(Held { serial, ask, input: Value::Null, answer: None });
+            r.entries.get_mut("ba-kid").unwrap().held.push_back(Held { serial, ask, input: Value::Null, tool_use_id: None, answer: None });
         };
         let answered = |serial: u64| lock().entries["ba-kid"].held.iter().find(|h| h.serial == serial).is_some_and(|h| h.answer.is_some());
         let yes = |ask_id: Option<&str>| answer("ba-edits", "ba-kid", ask_id, &[], Some(true), None, false).map(|_| ());

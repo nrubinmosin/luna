@@ -37,8 +37,8 @@ pub struct LimitWindow {
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexLimits {
-    /// `auth.json` holds ChatGPT tokens. The access token expiring is routine
-    /// — Codex renews it from the refresh token on next use.
+    /// `auth.json` holds ChatGPT tokens (`chatgpt_login`). The access token
+    /// expiring is routine — Codex renews it from the refresh token on next use.
     pub signed_in: bool,
     pub email: Option<String>,
     pub plan: Option<String>,
@@ -105,8 +105,25 @@ pub fn plan_label(plan_type: &str) -> Option<String> {
     Some(p.into())
 }
 
+/// Whether `auth.json` holds a ChatGPT login Codex can go on with: an access
+/// token and the refresh token that renews it, neither blank, as `codex
+/// doctor` judges a ChatGPT login ("ChatGPT auth is missing a refresh
+/// token"). The exception is `auth_mode: "chatgptAuthTokens"`, tokens a host
+/// application hands Codex, with an empty refresh token Codex never uses:
+/// there the access token alone is the login. Codex 0.169.0 keeps those in
+/// memory and writes no such `auth.json`, but its loader would take one, so
+/// one found here is read the way Codex would read it.
+pub(crate) fn chatgpt_login(auth: &Value) -> bool {
+    let token = |key: &str| auth["tokens"][key].as_str().is_some_and(|t| !t.trim().is_empty());
+    let external = auth["auth_mode"].as_str() == Some("chatgptAuthTokens");
+    token("access_token") && (external || token("refresh_token"))
+}
+
 fn read_auth(account_path: &str) -> Option<Auth> {
     let v = read_auth_json(account_path)?;
+    if !chatgpt_login(&v) {
+        return None;
+    }
     let tokens = &v["tokens"];
     let access = tokens["access_token"].as_str()?.to_string();
     let claims = tokens["id_token"].as_str().and_then(jwt_claims).unwrap_or(Value::Null);
@@ -604,7 +621,7 @@ mod tests {
         let today = chrono::Local::now();
         let day = dir.join("sessions").join(today.format("%Y/%m/%d").to_string());
         std::fs::create_dir_all(&day).unwrap();
-        let auth = serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig") } });
+        let auth = serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig"), "refresh_token": "rt" } });
         std::fs::write(dir.join("auth.json"), auth.to_string()).unwrap();
         let at = chrono::DateTime::from_timestamp_millis((now_ms() - ago) as i64).unwrap().to_rfc3339();
         let line = serde_json::json!({ "timestamp": at, "type": "event_msg", "payload": { "type": "token_count", "info": null, "rate_limits": {
@@ -669,6 +686,47 @@ mod tests {
         let r = known_limits(Some((30, answer)), vec![(spark(100), Some(40))]).unwrap();
         assert_eq!(rows(&r), [(None, 7, Some(30)), (Some("GPT-5 Codex Spark".into()), 100, Some(40))]);
         assert_eq!(known_limits(None, vec![]), None);
+    }
+
+    /// Blank tokens are no login: the panel offers a sign-in, not a
+    /// stale row, and a helper is not sent there.
+    #[test]
+    fn a_blank_or_missing_token_is_no_chatgpt_login() {
+        use serde_json::json;
+        assert!(chatgpt_login(&json!({ "tokens": { "access_token": "at", "refresh_token": "rt", "id_token": "it" } })));
+        assert!(!chatgpt_login(&json!({ "tokens": { "access_token": "", "refresh_token": "", "id_token": "" } })));
+        assert!(!chatgpt_login(&json!({ "tokens": { "access_token": "at", "refresh_token": " " } })));
+        assert!(!chatgpt_login(&json!({ "tokens": { "access_token": "\t", "refresh_token": "rt" } })));
+        assert!(!chatgpt_login(&json!({ "tokens": { "access_token": "at" } })));
+        assert!(!chatgpt_login(&json!({ "tokens": null, "OPENAI_API_KEY": "sk-1" })), "a key is no ChatGPT login");
+
+        let dir = std::env::temp_dir().join(format!("luna-codex-limits-blank-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("auth.json"), r#"{"tokens":{"access_token":"","refresh_token":"","id_token":""}}"#).unwrap();
+        let out = fetch_limits(&dir.to_string_lossy(), true).unwrap();
+        assert!(!out.signed_in && !out.stale);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tokens a host application supplied (`auth_mode: "chatgptAuthTokens"`)
+    /// come with an empty refresh token, as Codex 0.169.0 builds them (in
+    /// memory; this `auth.json` is what its loader would take): the access
+    /// token alone is the login there, and only there.
+    #[test]
+    fn supplied_tokens_need_no_refresh_token() {
+        use serde_json::json;
+        let supplied = |access: &str| json!({ "auth_mode": "chatgptAuthTokens", "tokens": { "access_token": access, "refresh_token": "", "account_id": "acc" } });
+        assert!(chatgpt_login(&supplied("at")));
+        assert!(!chatgpt_login(&supplied(" ")), "a blank access token is no login in any mode");
+        assert!(!chatgpt_login(&json!({ "auth_mode": "chatgpt", "tokens": { "access_token": "at", "refresh_token": "" } })));
+        assert!(chatgpt_login(&json!({ "auth_mode": "chatgpt", "tokens": { "access_token": "at", "refresh_token": "rt" } })));
+
+        let dir = std::env::temp_dir().join(format!("luna-codex-limits-supplied-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("auth.json"), supplied("hdr.e30.sig").to_string()).unwrap();
+        let auth = read_auth(&dir.to_string_lossy()).expect("signed in");
+        assert_eq!(auth.account_id.as_deref(), Some("acc"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -93,6 +93,15 @@ pub fn exit_with_session() {
                 "Windows is shutting down or restarting"
             };
             crate::lifecycle::exiting(why);
+            // Restart Manager ends Luna alone: a model ask's CLI, in a job
+            // Luna's death does not end, would be left running unswept, so it
+            // gets its grace here as at any other exit (up to 12 s, on this
+            // thread: the ask's cleanup needs no window). A shutdown or a
+            // sign-out ends the CLI with everything else; waiting would only
+            // hold that up.
+            if flags & ENDSESSION_CLOSEAPP != 0 {
+                crate::claude::models::wait_for_asks();
+            }
             std::process::exit(0);
         }
         // SAFETY: passes on, unchanged, a message Windows handed this subclass.

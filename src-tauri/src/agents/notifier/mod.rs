@@ -398,6 +398,12 @@ pub(super) fn notifier() {
                 };
                 by_caller.entry(caller.clone()).or_default().push((id.clone(), k.clone(), *o, who));
             }
+            // A lead's stdin kept open past its answer for notices goes once it
+            // has none to come (background/events.rs `keeps_listening`). Under
+            // this lock, which goes before the background one: a debt made
+            // meanwhile would not be in what it goes by.
+            let owed_to: std::collections::HashSet<String> = owed.keys().map(|(caller, _)| caller.clone()).collect();
+            crate::background::listen_only_while_owed(&owed_to);
         }
         for (caller, id) in gave_up {
             crate::log::warn(
@@ -529,7 +535,10 @@ pub(super) fn notifier() {
                 drafts.remove(&caller);
             }
             let looks = idle_looks.entry(caller.clone()).or_default();
-            *looks = if ready_for_notice(pty, &caller) { *looks + 1 } else { 0 };
+            // Or a lead kept up by its own background tasks, which takes the
+            // notice on stdin then (background/events.rs `listening`).
+            let ready = ready_for_notice(pty, &caller) || crate::background::takes_notices(&caller);
+            *looks = if ready { *looks + 1 } else { 0 };
             if *looks < NOTIFY_IDLE_LOOKS {
                 continue;
             }
@@ -907,13 +916,22 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
     #[cfg(test)]
     tests::between_check_and_typing(caller);
     // The turn it starts: the next, or for a background caller that has begun
-    // one since the look, the one after that.
+    // one since the look, the one after that. A background caller whose turn
+    // runs on and took it on stdin (`Placed::Joined`) answers it within that
+    // turn, which is no turn on a notice: it is not marked as one. Nor is it
+    // for a lead found taking notices so that its CLI has begun a turn of its
+    // own since the look: queued, it goes onto that stdin at the turn's
+    // `result` (background/events.rs `feed_queued`).
     let background = crate::background::has(caller);
+    let mut joined = false;
     let (typed, turn) = if background {
         // A background parent's own record says when these have arrived (`budget_news`).
         let marks = budget_lines.iter().map(|n| crate::background::BudgetMark { id: n.id.clone(), line: n.line.clone() }).collect();
         match crate::background::send_marked(caller, text, None, marks) {
-            Ok(queued) => (Ok(Some(true)), baseline + 1 + u32::from(queued)),
+            Ok((placed, for_stdin)) => {
+                joined = placed == crate::background::Placed::Joined || for_stdin;
+                (Ok(Some(true)), baseline + 1 + u32::from(placed == crate::background::Placed::Queued))
+            }
             Err(e) => (Err(e), 0),
         }
     } else {
@@ -962,8 +980,9 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
         Ok(None) => {}
         Ok(Some(started)) => {
             let held = held_for.map_or(String::new(), |d| format!("; held {} s for company", d.as_secs()));
+            let into = if joined { "; on the stdin of its running process" } else { "" };
             if started {
-                crate::log::info("agents", &format!("notice to {} about {about}{held}", label(caller)));
+                crate::log::info("agents", &format!("notice to {} about {about}{held}{into}", label(caller)));
             } else {
                 crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn{held}", label(caller)));
             }
@@ -985,7 +1004,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             }
             // A turn it did not start stays unmarked: at worst the caller hears
             // of a turn once too often, never misses one.
-            if started {
+            if started && !joined {
                 let told_of: Vec<String> = settled.iter().map(|(id, _, _)| id.clone()).collect();
                 let wake = news_lines.iter().any(|(_, line)| is_wake(line));
                 notice_turn(&mut r, caller, turn, &told_of, wake);
@@ -1571,6 +1590,184 @@ mod tests {
             reg().lock().unwrap().news.retain(|(c, _)| *c != a);
             for s in [&id, &other, &a] {
                 crate::background::gone_for_test(s);
+                forget(s);
+            }
+        }
+    }
+
+    /// Issue #73: a lead whose CLI is kept up by its own background subagents
+    /// past its answer hears of its helper then, on stdin, not once they end.
+    /// The notice is answered within the lead's running turn, which is not
+    /// marked as one on a notice: its parent hears of that turn as ever.
+    #[test]
+    fn a_lead_kept_up_by_its_own_background_work_hears_of_its_helper_on_stdin() {
+        let (a, id) = ("ln-lead", "ln-helper");
+        register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({ "background": true }));
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, serde_json::json!({ "background": true }));
+        crate::background::test_helper(a, "C:\\acc", None, true);
+        let lines = crate::background::listening_for_test(a);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        assert!(crate::background::takes_notices(a));
+        owe_from(a, id, 0, 0);
+        let key = (a.to_string(), id.to_string());
+        let told = reg().lock().unwrap().owed[&key];
+        let text = format!("{NOTICE_TAG} {id} answered");
+        deliver_notice(
+            crate::pty::manager(),
+            a,
+            &text,
+            Notice { settled: vec![(id.to_string(), Settled::Answered, told)], ..Notice::default() },
+        );
+        let line: serde_json::Value = serde_json::from_str(&lines.try_recv().expect("on its stdin")).unwrap();
+        assert_eq!(line["message"]["content"].as_str(), Some(text.as_str()));
+        assert!(crate::background::queued_for_test(a).is_empty(), "not held for its next process");
+        assert!(!reg().lock().unwrap().owed.contains_key(&key), "told");
+        assert!(!reg().lock().unwrap().notice_turns.contains_key(a), "no turn of its marked as one on a notice");
+        assert!(!crate::background::takes_notices(a), "at work on it");
+        for s in [id, a] {
+            crate::background::gone_for_test(s);
+            forget(s);
+        }
+    }
+
+    /// Issue #73, review: the lead's CLI takes up a task's end in a turn of
+    /// its own between the notifier's look and the notice going in. The notice
+    /// waits for that turn, and so does a send behind it; both go onto stdin
+    /// at the turn's `result`, in the order they came, and not behind the
+    /// process for as long as its other tasks run. No turn is marked as one
+    /// on the notice: it is answered within this process.
+    #[test]
+    fn a_notice_that_finds_the_leads_cli_at_a_turn_of_its_own_goes_in_at_its_result() {
+        let (a, id) = ("lq-lead", "lq-helper");
+        register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({ "background": true }));
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, serde_json::json!({ "background": true }));
+        crate::background::test_helper(a, "C:\\acc", None, true);
+        let lines = crate::background::listening_for_test(a);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        assert!(crate::background::takes_notices(a));
+        owe_from(a, id, 0, 0);
+        let key = (a.to_string(), id.to_string());
+        let told = reg().lock().unwrap().owed[&key];
+        let text = format!("{NOTICE_TAG} {id} answered");
+        run_between(
+            a,
+            Box::new(move || {
+                crate::background::claude_event_for_test(a, &serde_json::json!({ "type": "system", "subtype": "task_notification" }));
+            }),
+        );
+        deliver_notice(
+            crate::pty::manager(),
+            a,
+            &text,
+            Notice { settled: vec![(id.to_string(), Settled::Answered, told)], ..Notice::default() },
+        );
+        assert!(lines.try_recv().is_err(), "not into the CLI's own turn");
+        assert_eq!(crate::background::queued_for_test(a), std::slice::from_ref(&text));
+        assert!(!reg().lock().unwrap().notice_turns.contains_key(a), "no later turn of its marked as one on a notice");
+        // Its parent's send comes behind the notice, not past it.
+        assert_eq!(crate::background::send(a, "from its parent", None).unwrap(), crate::background::Placed::Queued);
+
+        crate::background::claude_event_for_test(
+            a,
+            &serde_json::json!({ "type": "assistant", "message": { "model": "claude-haiku", "content": [] }, "parent_tool_use_id": null }),
+        );
+        crate::background::claude_event_for_test(a, &serde_json::json!({ "type": "result", "subtype": "success", "duration_ms": 10 }));
+        let content =
+            |line: String| serde_json::from_str::<serde_json::Value>(&line).unwrap()["message"]["content"].as_str().unwrap().to_string();
+        assert_eq!(content(lines.try_recv().expect("the notice, on its stdin")), text);
+        assert_eq!(content(lines.try_recv().expect("then the send")), "from its parent");
+        assert!(crate::background::queued_for_test(a).is_empty());
+        assert!(!crate::background::takes_notices(a), "at work on them");
+        for s in [id, a] {
+            crate::background::gone_for_test(s);
+            forget(s);
+        }
+    }
+
+    /// Review of issue #73: a parent's send queued behind a notice for a lead
+    /// whose CLI is at a turn of its own goes onto its stdin with the notice
+    /// at that turn's `result`, and is
+    /// answered within that process. Its debt, put past the process as the
+    /// text queued, is that process's from then: once it ends, the answer is
+    /// told, with no process after it. Through the send itself, with its debt
+    /// in before the move, with the move between the text queuing and its
+    /// debt going in, and with the line taken in, answered and the process
+    /// over in between as well (review of 0.18.4).
+    #[test]
+    fn a_send_moved_from_a_leads_queue_onto_its_stdin_is_owed_by_its_process() {
+        use crate::agents::notifier::lines::{verdict, Verdict};
+        use crate::agents::test_support::stop_at;
+        let event = |id: &str, v: serde_json::Value| crate::background::claude_event_for_test(id, &v);
+        for (race, over) in [(false, false), (true, false), (true, true)] {
+            let (p, a) = match (race, over) {
+                (false, _) => ("lm-parent", "lm-lead"),
+                (true, false) => ("lmr-parent", "lmr-lead"),
+                (true, true) => ("lmo-parent", "lmo-lead"),
+            };
+            register(p, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
+            register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(p), true, serde_json::json!({ "background": true }));
+            crate::background::test_helper(a, "C:\\acc", None, true);
+            let lines = crate::background::listening_for_test(a);
+            // Its CLI takes up a task's end in a turn of its own, and a notice
+            // that finds it so waits for that turn's end; the send behind it.
+            event(a, serde_json::json!({ "type": "system", "subtype": "task_notification" }));
+            let notice = crate::background::send_marked(a, "[Luna notice] a helper answered", None, Vec::new()).unwrap();
+            assert_eq!(notice, (crate::background::Placed::Queued, true));
+            let ended = crate::activity::turn_state(a).unwrap().turns_ended;
+            let at_result = || {
+                event(
+                    a,
+                    serde_json::json!({ "type": "assistant", "message": { "model": "claude-haiku", "content": [] }, "parent_tool_use_id": null }),
+                );
+                event(a, serde_json::json!({ "type": "result", "subtype": "success", "duration_ms": 10 }));
+            };
+            let fed = || {
+                let notice = lines.try_recv().expect("the notice, on its stdin");
+                assert!(notice.contains("a helper answered"), "{notice}");
+                let line = lines.try_recv().expect("then the send");
+                assert!(line.contains("the build is green"), "{line}");
+                [notice, line]
+            };
+            let key = (p.to_string(), a.to_string());
+            if race {
+                let stop = stop_at("send placed", p);
+                let sending = std::thread::spawn(move || crate::agents::send(p, a, "the build is green", false, None, true));
+                stop.wait();
+                // Moved before its debt is in.
+                at_result();
+                let lines = fed();
+                if over {
+                    // And taken in and answered, its tasks over and the
+                    // process gone, all before the debt is in.
+                    for line in lines {
+                        let line: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        event(a, serde_json::json!({ "type": "user", "isReplay": true, "uuid": line["uuid"] }));
+                    }
+                    crate::background::turn_over_for_test(a, Some(0));
+                }
+                stop.go();
+                let sent = sending.join().unwrap().unwrap();
+                assert!(sent.queued && sent.turns_ended == ended, "the count it is answered past: this process's");
+            } else {
+                let sent = crate::agents::send(p, a, "the build is green", false, None, true).unwrap();
+                assert!(sent.queued && !sent.joined);
+                assert_eq!(reg().lock().unwrap().owed[&key].baseline, ended + 1, "past this process, as queued");
+                at_result();
+                fed();
+            }
+            let o = reg().lock().unwrap().owed[&key];
+            assert_eq!(o.baseline, ended, "race {race}, over {over}: owed by this process");
+            assert_eq!(o.moved_from, Some(ended + 1), "for a wait going by the count the send returned first");
+            // It takes the line in and answers; its tasks over, the process ends.
+            if !over {
+                crate::background::test_turn_ended(a);
+            }
+            let ts = crate::activity::turn_state(a).unwrap();
+            assert_eq!(ts.turns_ended, ended + 1, "no process after it");
+            assert_eq!(verdict(&o, ts.turns_ended, Some(ts.turn), false, true), Verdict::TurnOver, "race {race}, over {over}");
+            reg().lock().unwrap().owed.remove(&key);
+            crate::background::gone_for_test(a);
+            for s in [a, p] {
                 forget(s);
             }
         }
