@@ -115,7 +115,12 @@ call, held on a Condvar until `luna_session_answer` (allow / deny, or `answers` 
 question text) or the turn's end. Several at once queue; the oldest is shown.
 Each has an opaque `askId`: one no longer open is refused, one never had
 (`Registry::asked`) is unknown, and without an id an answer goes through only
-with a single ask held.
+with a single ask held. A permission's `detail` is kept whole up to 8 KB and
+marked where cut, and its `source` says whether the helper itself or one of
+its subagents made the call: the call names only its `tool_use_id`, and the
+helper's latest 64 tool calls are kept with who made them, as their stream
+messages say (`Entry::calls`), an ask held before its message comes in being
+named when it does (agents.md, "State and asks").
 
 Codex's `exec` asks nobody (approval `never`) and puts a question in its reply,
 unless spawned with `approval: auto-review` (`--approve-for-me`), where a

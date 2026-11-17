@@ -208,6 +208,6 @@ every request. Checked by `context_page.rs`.
 | `guide-accounts` | 1,266 | 317 |
 | `guide-spawning` | 4,480 | 1,120 |
 | `guide-getting` | 4,400 | 1,100 |
-| `guide-answering` | 2,180 | 545 |
+| `guide-answering` | 2,379 | 595 |
 | `guide-restart` | 1,189 | 297 |
 | `guide-working` | 1,779 | 445 |

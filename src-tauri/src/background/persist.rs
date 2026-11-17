@@ -431,6 +431,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         fed: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
+        calls: VecDeque::new(),
         error: None,
         cut_short: stopped,
         undelivered,

@@ -393,6 +393,8 @@ pub(super) struct Held {
     pub(super) ask: Ask,
     /// The tool input as the CLI sent it, returned with the answer.
     pub(super) input: Value,
+    /// The call's id, by which its stream-json message says who made it.
+    pub(super) tool_use_id: Option<String>,
     pub(super) answer: Option<Value>,
 }
 
