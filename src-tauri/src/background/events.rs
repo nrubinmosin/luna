@@ -50,6 +50,29 @@ fn refuse_request(e: &mut Entry, v: &Value) {
     }
 }
 
+/// Who made the tool calls of an assistant message: the helper itself, or a
+/// subagent of it, whose messages carry `parent_tool_use_id` and (2.1.325)
+/// `agent_id` and `subagent_type`. Kept for a permission call that names the
+/// call's id (`permission`), and said of one already held, the message having
+/// come in after it.
+fn made_calls(e: &mut Entry, v: &Value) {
+    let by = if v["parent_tool_use_id"].is_null() {
+        crate::agents::AskSource::session()
+    } else {
+        crate::agents::AskSource::subagent(v["agent_id"].as_str(), v["subagent_type"].as_str())
+    };
+    let calls = v["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use");
+    for call in calls.filter_map(|b| b["id"].as_str()) {
+        for h in e.held.iter_mut().filter(|h| h.ask.source.is_none() && h.tool_use_id.as_deref() == Some(call)) {
+            h.ask.source = Some(by.clone());
+        }
+        if e.calls.len() == CALLS {
+            e.calls.pop_front();
+        }
+        e.calls.push_back((call.to_string(), by.clone()));
+    }
+}
+
 /// What an event of a Claude Code turn says of the helper; whether a message of
 /// its has landed, which is to be saved.
 pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
@@ -76,6 +99,7 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
         if v["message"]["model"].as_str().is_some_and(|m| !m.starts_with('<')) {
             e.observed.acted = true;
         }
+        made_calls(e, v);
     }
     match (v["type"].as_str(), v["subtype"].as_str()) {
         (Some("system"), Some("init")) => {

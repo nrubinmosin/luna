@@ -17,6 +17,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         fed: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
+        calls: VecDeque::new(),
         error: None,
         cut_short: false,
         undelivered: Vec::new(),

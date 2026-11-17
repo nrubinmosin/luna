@@ -76,7 +76,7 @@ pub fn turn_ended_for_test(id: &str) {
 #[cfg(test)]
 pub fn hold_for_test(id: &str) {
     let ask = Ask::from_claude_tool("Bash", &json!({ "command": "x" }));
-    lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, answer: None });
+    lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, tool_use_id: None, answer: None });
 }
 
 /// It stops on a question its model asked (`AskUserQuestion`), held the same way.
@@ -84,7 +84,7 @@ pub fn hold_for_test(id: &str) {
 pub fn hold_question_for_test(id: &str) {
     let q = crate::agents::AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
     let ask = Ask::question(vec![q], false);
-    lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, answer: None });
+    lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, tool_use_id: None, answer: None });
 }
 
 /// `luna_session_stop`: what was queued is dropped.
@@ -362,6 +362,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         fed: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
+        calls: VecDeque::new(),
         error: None,
         cut_short: false,
         undelivered: Vec::new(),
@@ -426,6 +427,7 @@ pub(super) fn entry(provider: Provider) -> Entry {
         fed: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
+        calls: VecDeque::new(),
         error: None,
         cut_short: false,
         undelivered: Vec::new(),

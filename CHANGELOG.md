@@ -8,6 +8,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- A helper's permission request reaches its parent whole: `ask.detail` in
+  `luna_session_get` keeps the command (or path, or URL) up to 8 KB, where it
+  was cut to 400 characters with no mark, and past 8 KB ends with `…` and how
+  many characters were left out. The notice quotes only its start, marked where
+  shortened and pointing to `luna_session_get`. `ask.source` says whether the
+  helper itself asks or one of its subagents, where Claude Code says so. A
+  Codex approval on a terminal's screen is read from every row its command is
+  drawn on, down to its own options, not the first alone, and says so where the
+  screen holds only part of the command. `ask.detailCut` counts the characters
+  left out, and the notice shows a line break as `⏎`, not a space.
+
 ## [0.18.3] - 2026-11-17
 
 Luna now installs Claude Code 2.1.325 and runs nothing older. Only the

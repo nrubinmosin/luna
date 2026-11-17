@@ -254,7 +254,14 @@ A Claude Code helper puts its questions and permission prompts to Luna instead
 of a screen, so its agent answers them. Each has an `id` in `ask`, which
 `luna_session_answer` takes as `askId`, so an answer cannot land on the next prompt; an
 id it never had is refused as unknown, and without one an answer is taken only
-when a single prompt is held. A Codex helper has nobody to ask and says what it
+when a single prompt is held. The command up for permission is shown whole, up
+to 8 KB, and marked where it is cut (`ask.detailCut` counts what is left out);
+that is one field of the call, the command, path or URL, so a file's new
+content or a subagent's prompt is not in it. A notice quotes only its start,
+marked where shortened, line breaks shown as `⏎`, and `luna_session_get` has
+the rest. Where Claude Code says
+so, `ask.source` tells whether the helper itself asks or one of its subagents
+does. A Codex helper has nobody to ask and says what it
 would have asked in its reply, unless it runs with `approval: auto-review`. In
 one of your own chats an agent may answer only a question its model asked
 (`scope: "all"`); a permission there is yours.
