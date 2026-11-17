@@ -353,9 +353,12 @@ fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String
             oauth::Outcome::Fresh => token = read_token(account_path)?,
             // A CLI is renewing it right now; the next round has the result.
             oauth::Outcome::Busy => {}
-            oauth::Outcome::Rejected => {
+            oauth::Outcome::Rejected { unsaved } => {
                 out.signed_in = false;
-                out.refresh_error = Some("sign-in expired — log in again".into());
+                out.refresh_error = Some(match unsaved {
+                    None => "sign-in expired — log in again".into(),
+                    Some(why) => format!("sign-in expired — log in again ({why})"),
+                });
                 return Ok(out);
             }
             oauth::Outcome::Failed(e) => out.refresh_error = Some(e),

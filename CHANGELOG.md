@@ -20,6 +20,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   drawn on, down to its own options, not the first alone, and says so where the
   screen holds only part of the command. `ask.detailCut` counts the characters
   left out, and the notice shows a line break as `⏎`, not a space.
+- A Claude Code account whose sign-in the server turned down on Luna's own
+  token refresh now stays signed out everywhere and after a restart: Luna
+  clears its tokens in `.credentials.json` as Claude Code does, under the
+  CLI's locks and only if the file still holds the refused token, so helpers
+  and moved chats no longer go to it and Sign in shows. Until now only the
+  Accounts panel knew, until Luna restarted (#76). A file Luna cannot replace
+  is left as it was, its row says so, and the refused token is not sent
+  again.
 
 ## [0.18.3] - 2026-11-17
 
