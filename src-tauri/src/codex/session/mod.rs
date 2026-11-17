@@ -30,7 +30,8 @@
 
 use crate::paths::path_key_loose as norm_path;
 use crate::pty::{sane_title, tail, title_from_prompt, CliTitle, SessionMeta};
-use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use jiff::civil::{Date, DateTime};
+use jiff::ToSpan;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

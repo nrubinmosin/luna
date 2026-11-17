@@ -1,6 +1,6 @@
 [package]
 name = "luna"
-version = "0.18.4"
+version = "0.18.5"
 description = "Thin desktop UI over Claude Code and Codex CLI sessions"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nrubinmosin/luna"
@@ -26,7 +26,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 base64 = "0.23"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+jiff = "0.2"
 serde = { version = "1", features = ["derive"] }
 # preserve_order: a settings file Luna edits keeps its keys where the user put them.
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -66,9 +66,10 @@ vt100 = "0.18"
 # and on the private files made with one (src/secret.rs); the core's named
 # pipe, overlapped, and the token its client opened it with (src/endpoint/,
 # src/peer/); the core started with the desktop user's token and profile
-# environment from a window run as administrator (src/elevation.rs). Pinned to
-# the version tauri already resolves, so this adds features to a crate in the
-# tree rather than a second copy of it.
+# environment from a window run as administrator (src/elevation.rs); the
+# local wall clock Codex names its rollouts by (src/codex/session/rollouts.rs).
+# Pinned to the version tauri already resolves, so this adds features to a
+# crate in the tree rather than a second copy of it.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
@@ -86,6 +87,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Shutdown",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_System_Time",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

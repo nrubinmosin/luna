@@ -32,7 +32,7 @@ fn quota_level(pct: f64) -> u8 {
 
 /// Whether an instant has passed; one that does not read has not.
 fn is_past(at: Option<&str>, now: u64) -> bool {
-    at.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).is_some_and(|t| (t.timestamp_millis() as u64) < now)
+    at.and_then(|t| t.parse::<jiff::Timestamp>().ok()).is_some_and(|t| (t.as_millisecond() as u64) < now)
 }
 
 /// Where a usage window stands against what the caller was last told of it:

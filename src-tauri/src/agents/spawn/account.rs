@@ -70,10 +70,7 @@ const ACCOUNT_SPENT_PCT: f64 = 95.0;
 fn usage_windows(usage: Option<&serde_json::Value>, now_ms: u64) -> Option<Vec<(String, f64)>> {
     let limits = usage?["limits"].as_array().filter(|l| !l.is_empty())?;
     let over = |l: &serde_json::Value| {
-        l["resetsAt"]
-            .as_str()
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-            .is_some_and(|t| t.timestamp_millis() <= now_ms as i64)
+        l["resetsAt"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).is_some_and(|t| t.as_millisecond() <= now_ms as i64)
     };
     Some(
         limits
@@ -324,8 +321,8 @@ mod tests {
             serde_json::json!({ "limits": [{ "label": "5 hours", "usedPct": 100, "resetsAt": "2026-01-01T00:00:00+00:00" }] }),
         )]
         .into();
-        let before = chrono::DateTime::parse_from_rfc3339("2025-12-31T00:00:00Z").unwrap().timestamp_millis() as u64;
-        let after = chrono::DateTime::parse_from_rfc3339("2026-01-02T00:00:00Z").unwrap().timestamp_millis() as u64;
+        let before = "2025-12-31T00:00:00Z".parse::<jiff::Timestamp>().unwrap().as_millisecond() as u64;
+        let after = "2026-01-02T00:00:00Z".parse::<jiff::Timestamp>().unwrap().as_millisecond() as u64;
         let pick = |now| pick_from_list(&names(&["a"]), Provider::Claude, &allowed, &usage, |_| true, now).unwrap().1;
         assert!(pick(before).why.contains("the most room, at 100%"), "spent, and the only one");
         assert!(pick(after).why.contains("reset since"), "the figure is from before the reset");

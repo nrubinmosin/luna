@@ -8,6 +8,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.18.5] - 2026-11-17
+
+Luna no longer depends on chrono, which RustSec now lists as unmaintained:
+it keeps its times with jiff, and reads and writes them as before.
+
+### Changed
+
+- Luna reads and writes its times with jiff instead of chrono, which RustSec
+  lists as unmaintained (RUSTSEC-2026-0543); times are written as before, and
+  `cargo-deny` no longer has to ignore the advisory.
+
 ## [0.18.4] - 2026-11-17
 
 Luna now installs Claude Code 2.1.325 and runs nothing older. Only the
@@ -1359,7 +1370,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.4...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.5...HEAD
+[0.18.5]: https://github.com/nrubinmosin/luna/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.4
 [0.18.2]: https://github.com/nrubinmosin/luna/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/nrubinmosin/luna/compare/v0.18.0...v0.18.1

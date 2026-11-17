@@ -2260,15 +2260,15 @@ dependencies = [
 
 [[package]]
 name = "luna"
-version = "0.18.4"
+version = "0.18.5"
 dependencies = [
  "base64 0.23.1",
- "chrono",
  "dirs",
  "flate2",
  "getrandom 0.4.3",
  "hmac",
  "httparse",
+ "jiff",
  "libc",
  "portable-pty",
  "ring",

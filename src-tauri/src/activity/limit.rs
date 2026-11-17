@@ -142,7 +142,7 @@ pub fn limit_in_force(chat: &str, provider: Provider) -> Option<LimitFact> {
 
 /// The ISO instant `at`, in ms.
 fn ms_of(at: &str) -> Option<u64> {
-    chrono::DateTime::parse_from_rfc3339(at).ok().map(|t| t.timestamp_millis().max(0) as u64)
+    at.parse::<jiff::Timestamp>().ok().map(|t| t.as_millisecond().max(0) as u64)
 }
 
 /// The limit `kind` that stopped a chat at `since`, judged on `reading` at

@@ -397,10 +397,7 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
                     "local_shell_call" => bound(&payload["action"]),
                     _ => payload["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok()).and_then(|a| bound(&a)),
                 };
-                let at = v["timestamp"]
-                    .as_str()
-                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .map(|t| t.timestamp_millis().max(0) as u64);
+                let at = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond().max(0) as u64);
                 if let (Some(by), Some(at), Some(id)) = (by, at, payload["call_id"].as_str()) {
                     open.push((id.to_string(), at.saturating_add(by)));
                 }
@@ -568,7 +565,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
 /// The files are read written-to-last first, and only until one was last
 /// written before the newest snapshot found, which holds none newer.
 pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
-    let today = Local::now().date_naive();
+    let today = local_today();
     let ms = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
     let mut files: Vec<(i64, PathBuf)> = rollouts_on(account_path, days_back(today, 2))
         .into_iter()
@@ -581,7 +578,7 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
             break;
         }
         let Some(hit) = read_tail(&path).rate_limits else { continue };
-        let at = chrono::DateTime::parse_from_rfc3339(&hit.1).map_or(i64::MIN, |t| t.timestamp_millis());
+        let at = hit.1.parse::<jiff::Timestamp>().map_or(i64::MIN, |t| t.as_millisecond());
         if best.as_ref().is_none_or(|(b, _)| at > *b) {
             best = Some((at, hit));
         }
@@ -604,7 +601,7 @@ const LIMIT_FILES: usize = 32;
 /// is kept, newest per limit: a limit whose rollouts fall out of the newest is
 /// still known, as of when it was read, not taken for gone, however old.
 pub fn latest_rate_limits_by_id(account_path: &str, own: Option<&Path>) -> Vec<(Value, String)> {
-    let today = Local::now().date_naive();
+    let today = local_today();
     let ms = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
     let mut files: Vec<(i64, PathBuf)> = rollouts_on(account_path, days_back(today, 2))
         .into_iter()
@@ -620,7 +617,7 @@ pub fn latest_rate_limits_by_id(account_path: &str, own: Option<&Path>) -> Vec<(
     for path in paths {
         let Some(text) = tail(&path, 128 * 1024) else { continue };
         for hit in rate_limits_in(&text) {
-            let at = chrono::DateTime::parse_from_rfc3339(&hit.1).map_or(i64::MIN, |t| t.timestamp_millis());
+            let at = hit.1.parse::<jiff::Timestamp>().map_or(i64::MIN, |t| t.as_millisecond());
             let id = limit_id(&hit.0);
             if known.get(&id).is_none_or(|(b, _)| at > *b) {
                 known.insert(id, (at, hit));
@@ -938,7 +935,7 @@ mod tests {
     #[test]
     fn a_call_is_due_by_its_own_bound() {
         let at = "2026-11-04T13:15:19.533Z";
-        let start = chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp_millis() as u64;
+        let start = at.parse::<jiff::Timestamp>().unwrap().as_millisecond() as u64;
         let item = |payload: Value| serde_json::json!({ "timestamp": at, "type": "response_item", "payload": payload }).to_string();
         let call = |id: &str, name: &str, args: Value| {
             item(serde_json::json!({ "type": "function_call", "name": name, "arguments": args.to_string(), "call_id": id }))
@@ -1046,7 +1043,7 @@ mod limit_tests {
         );
 
         let (root, at) = rollout_bench("limits-by-id");
-        let iso = |ms: u64| chrono::DateTime::from_timestamp_millis(ms as i64).unwrap().to_rfc3339();
+        let iso = |ms: u64| jiff::Timestamp::from_millisecond(ms as i64).unwrap().to_string();
         let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(at - 50_000);
         // The Spark chat's own rollout, written to before the others.
         write_rollout(&root, at, "00000000-0000-4000-8000-0000000000ff", Some(r#""cli""#));
@@ -1078,7 +1075,7 @@ mod limit_tests {
     fn a_full_reading_days_old_is_not_dropped_for_its_age() {
         let (root, at) = rollout_bench("limits-old-full");
         let day = 24 * 60 * 60_000;
-        let iso = |ms: u64| chrono::DateTime::from_timestamp_millis(ms as i64).unwrap().to_rfc3339();
+        let iso = |ms: u64| jiff::Timestamp::from_millisecond(ms as i64).unwrap().to_string();
         let snapshot = |ts: u64, id: &str, used: u64, resets_s: u64| {
             serde_json::json!({ "timestamp": iso(ts), "type": "event_msg", "payload": { "type": "token_count", "info": null,
                 "rate_limits": { "limit_id": id, "limit_name": "GPT-5 Codex Spark",
