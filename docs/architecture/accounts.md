@@ -82,19 +82,30 @@ scopes), by the CLI's rules, since refresh tokens rotate: both its mkdir locks
 under the lock, write only if the refresh token on disk is still the one sent.
 A CLI refreshing after Luna sees a new access token and takes it.
 The answer is judged as the CLI judges it (`refusal`): a 400 or 401 saying
-`invalid_grant` means a new login, and the account shows signed out with
-"sign-in expired — log in again"; one whose `error_description` is
+`invalid_grant` means a new login; one whose `error_description` is
 `account_on_hold` is not, since a login does not lift a hold, and every other
 answer is a failed refresh, tried again after 5 minutes. The temp file is
 created 0600.
+
+On `invalid_grant` Luna signs the account out the way the CLI does
+(`sign_out`): still under both locks it re-reads the file and, only if it
+still holds the refresh token that was refused, blanks the tokens
+(`refreshToken: ""`, `accessToken: ""`, `expiresAt: 0`; `loginEnded:
+"time_limit"` when the server said the token expired, else no `loginEnded`),
+keeping every other field, written as a renewal is. The file is the only
+record of the refusal: the panel (window process), the core's account choice
+and move check, and any later start all read it as signed out, and the row
+says "sign-in expired — log in again". A file holding another token by then
+was written by a login since, and is left alone; a file that cannot be
+written is a failed refresh, tried again after 5 minutes.
 
 Signed in means a refresh token that is not blank, not past its
 `refreshTokenExpiresAt` (`oauth::signed_in`): the panel's row and the choice of
 an account for a helper or a moved chat (`agents/spawn/account.rs`
 `signed_in`) both go by it, and `scripts/lib.ps1` `Test-AccountSignedIn` by
-the same rule. On `invalid_grant` the CLI blanks its tokens
-(`refreshToken: ""`, `accessToken: ""`, `expiresAt: 0`), so that file reads as
-signed out, offers Sign in, and no refresh is posted with it. A Codex
+the same rule. On `invalid_grant` the CLI blanks its tokens, and Luna its
+own refused ones (above), so that file reads as signed out, offers Sign in,
+and no refresh is posted with it. A Codex
 `auth.json` is signed in by the same measure: both of its ChatGPT tokens there
 and not blank (`codex::limits::chatgpt_login`). The exception is
 `auth_mode: "chatgptAuthTokens"`, tokens a host application gives Codex, with

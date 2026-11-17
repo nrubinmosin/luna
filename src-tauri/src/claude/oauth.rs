@@ -13,10 +13,15 @@
 //! is still the one it posted. Luna does the same three things. A CLI that
 //! comes to refresh after us finds a different access token on disk and
 //! adopts it — that is its own "race resolved" path.
+//!
+//! A refresh token the server turns down ends the login, and the CLI says so
+//! in the file: it blanks the tokens, if the file still holds the one turned
+//! down. Luna does the same under the same locks, so every process of Luna's
+//! and every later start reads the account as signed out from the file alone.
 
 use crate::throttle::now_ms;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -35,8 +40,8 @@ pub enum Outcome {
     Fresh,
     /// A CLI holds the lock: it is renewing the token this very moment.
     Busy,
-    /// The server refused the refresh token, or there is none to send. Only a
-    /// new login helps.
+    /// The server refused the refresh token and its tokens on disk are now
+    /// blank, or there was none to send. Only a new login helps.
     Rejected,
     Failed(String),
 }
@@ -67,13 +72,6 @@ pub(crate) fn signed_in(oauth: &Value) -> bool {
 
 fn expired(oauth: &Value) -> bool {
     oauth["expiresAt"].as_u64().map(|ms| now_ms() >= ms).unwrap_or(false)
-}
-
-/// Refresh tokens the server turned down. Asking again with one only earns
-/// the same answer; a new login writes a different token and clears this.
-fn dead() -> &'static Mutex<HashSet<String>> {
-    static D: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    D.get_or_init(Default::default)
 }
 
 /// Accounts whose last exchange failed: until when to leave them alone, and
@@ -133,7 +131,11 @@ fn lock(account_path: &str) -> Result<Option<Lock>, String> {
 }
 
 enum Exchange {
-    Rejected,
+    /// `time_limit`: the server said the refresh token ran out, which the CLI
+    /// records as `loginEnded: "time_limit"`.
+    Rejected {
+        time_limit: bool,
+    },
     Failed(String),
 }
 
@@ -165,15 +167,17 @@ fn exchange(oauth: &Value, refresh_token: &str) -> Result<Value, Exchange> {
 /// What an error answer from the token endpoint means, by the CLI's own test
 /// before it gives a refresh token up: a 400 or 401 whose `error` (a string,
 /// or an object's `type`) is `invalid_grant` — the token is invalid, expired
-/// or revoked (RFC 6749 §5.2). The exception is an account on hold, which
+/// or revoked (RFC 6749 §5.2); it ran out when `error_description` says
+/// "Refresh token expired". The exception is an account on hold, which
 /// the server tells with `error_description: "account_on_hold"`: a new login
 /// does not lift that, so it is not called a sign-out. Anything else — a
 /// 429, a 5xx, a 400 of another kind — may pass, and is tried again later.
 fn refusal(code: u16, body: &Value) -> Exchange {
     let err = body["error"].as_str().or_else(|| body["error"]["type"].as_str()).unwrap_or("");
-    let on_hold = body["error_description"].as_str() == Some("account_on_hold");
+    let description = body["error_description"].as_str();
+    let on_hold = description == Some("account_on_hold");
     if matches!(code, 400 | 401) && err == "invalid_grant" && !on_hold {
-        return Exchange::Rejected;
+        return Exchange::Rejected { time_limit: description == Some("Refresh token expired") };
     }
     let why = if on_hold { "account on hold" } else { err };
     Exchange::Failed(format!("{code} {why}").trim().to_string())
@@ -200,6 +204,31 @@ fn renewed(oauth: &Value, resp: &Value) -> Option<Value> {
         obj.insert("scopes".into(), scopes.into());
     }
     Some(next)
+}
+
+/// The login turned down: the tokens of `claudeAiOauth` blanked as Claude
+/// Code blanks them on `invalid_grant` (`refreshToken: ""`, `accessToken:
+/// ""`, `expiresAt: 0`, and `loginEnded: "time_limit"` when the token ran out,
+/// else no `loginEnded`), every other field kept. Only while the file still
+/// holds `refused`: a newer token there is a login made since, and the
+/// refusal was of one gone stale. The caller holds the CLI's locks. Ok(true)
+/// once blanked, Ok(false) when the file holds another token.
+fn sign_out(account_path: &str, refused: &str, time_limit: bool) -> Result<bool, String> {
+    let mut cur = read(account_path).ok_or("credentials vanished mid-refresh")?;
+    let Some(oauth) = cur["claudeAiOauth"].as_object_mut().filter(|o| o.get("refreshToken").and_then(Value::as_str) == Some(refused))
+    else {
+        return Ok(false);
+    };
+    oauth.insert("refreshToken".into(), "".into());
+    oauth.insert("accessToken".into(), "".into());
+    oauth.insert("expiresAt".into(), 0.into());
+    if time_limit {
+        oauth.insert("loginEnded".into(), "time_limit".into());
+    } else {
+        oauth.shift_remove("loginEnded");
+    }
+    write(account_path, &serde_json::to_string(&cur).map_err(|e| e.to_string())?)?;
+    Ok(true)
 }
 
 /// Temp file and rename, so a CLI reading at the same instant sees the old
@@ -245,8 +274,7 @@ fn write_via(path: &Path, tmp: &Path, text: &str) -> Result<(), String> {
 pub fn refresh(account_path: &str, force: bool) -> Outcome {
     let Some(v) = read(account_path) else { return Outcome::Failed("no credentials".into()) };
     // No token to post is the same as one turned down, and asks nothing.
-    let Some(rt) = refresh_token(&v["claudeAiOauth"]) else { return Outcome::Rejected };
-    if dead().lock().unwrap().contains(rt) {
+    if refresh_token(&v["claudeAiOauth"]).is_none() {
         return Outcome::Rejected;
     }
     if !force {
@@ -278,10 +306,21 @@ pub fn refresh(account_path: &str, force: bool) -> Outcome {
     };
     let resp = match exchange(oauth, &rt) {
         Ok(r) => r,
-        Err(Exchange::Rejected) => {
+        Err(Exchange::Rejected { time_limit }) => {
             crate::log::warn("oauth", &format!("refresh token rejected for {account_path} — needs a new login"));
-            dead().lock().unwrap().insert(rt);
-            return Outcome::Rejected;
+            // Rejected only once the file says so, for every reader of it; a
+            // file that cannot be changed is a failed refresh, held off.
+            return match sign_out(account_path, &rt, time_limit) {
+                Ok(true) => {
+                    held_until().lock().unwrap().remove(account_path);
+                    Outcome::Rejected
+                }
+                // A login, or a CLI past the locks, wrote the file meanwhile:
+                // the account is whatever the file now says.
+                Ok(false) if read(account_path).is_some_and(|v| signed_in(&v["claudeAiOauth"])) => Outcome::Fresh,
+                Ok(false) => Outcome::Rejected,
+                Err(e) => fail(format!("sign-in refused, but the tokens could not be cleared: {e}")),
+            };
         }
         Err(Exchange::Failed(e)) => return fail(e),
     };
@@ -303,6 +342,14 @@ pub fn refresh(account_path: &str, force: bool) -> Outcome {
     held_until().lock().unwrap().remove(account_path);
     crate::log::info("oauth", &format!("renewed the access token for {account_path}"));
     Outcome::Fresh
+}
+
+/// What a refresh the server turned down leaves on disk, under the locks as
+/// `refresh` takes them, for the tests of the modules that read the file.
+#[cfg(test)]
+pub(crate) fn refused_for_test(account_path: &str, refused: &str) -> bool {
+    let _lock = lock(account_path).unwrap().expect("no CLI holds the lock");
+    sign_out(account_path, refused, false).unwrap()
 }
 
 #[cfg(test)]
@@ -341,13 +388,16 @@ mod tests {
     /// and the object shape the CLI reads `error` from as well.
     #[test]
     fn only_a_bad_grant_is_a_sign_out() {
-        let rejected = |code, body: Value| matches!(refusal(code, &body), Exchange::Rejected);
+        let rejected = |code, body: Value| matches!(refusal(code, &body), Exchange::Rejected { .. });
         let failed = |code, body: Value| match refusal(code, &body) {
             Exchange::Failed(why) => why,
-            Exchange::Rejected => panic!("{code} {body} taken as a sign-out"),
+            Exchange::Rejected { .. } => panic!("{code} {body} taken as a sign-out"),
         };
         let grant = json!({ "error": "invalid_grant", "error_description": "Refresh token not found or invalid" });
         assert!(rejected(400, grant.clone()));
+        assert!(matches!(refusal(400, &grant), Exchange::Rejected { time_limit: false }));
+        let ran_out = json!({ "error": "invalid_grant", "error_description": "Refresh token expired" });
+        assert!(matches!(refusal(400, &ran_out), Exchange::Rejected { time_limit: true }));
         assert!(rejected(401, grant.clone()));
         assert!(rejected(400, json!({ "error": { "type": "invalid_grant", "message": "Refresh token expired" } })));
 
@@ -389,6 +439,62 @@ mod tests {
         assert!(root.join(".oauth_refresh.lock").is_dir(), "the CLI's lock is left as it was");
         assert_eq!(refresh_token(&json!({ "refreshToken": "rt-1" })), Some("rt-1"));
         assert_eq!(refresh_token(&json!({ "refreshToken": 7 })), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A refusal blanks the tokens as Claude Code 2.1.325 does (`Kjo`): only
+    /// over the refused token, every other field kept, `loginEnded` said only
+    /// of a token that ran out. A newer token saved meanwhile is left alone.
+    #[test]
+    fn a_refused_token_still_on_disk_is_blanked_and_nothing_else() {
+        let root = std::env::temp_dir().join(format!("luna-oauth-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let acct = root.to_string_lossy().into_owned();
+        let path = creds_path(&acct);
+        let stored = |rt: &str| {
+            json!({
+                "claudeAiOauth": {
+                    "accessToken": "at", "refreshToken": rt, "expiresAt": 1,
+                    "refreshTokenExpiresAt": 99999999999999u64, "scopes": ["user:inference"],
+                    "subscriptionType": "max", "rateLimitTier": "default_claude_max_20x", "loginEnded": "earlier"
+                },
+                "mcpOAuth": { "srv": { "accessToken": "mcp" } }
+            })
+        };
+        let save = |v: &Value| std::fs::write(&path, v.to_string()).unwrap();
+        let now = || serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        // A CLI saved a newer token since the refused one was read: untouched.
+        save(&stored("rt-newer"));
+        let before = std::fs::read(&path).unwrap();
+        assert!(!sign_out(&acct, "rt-refused", false).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(signed_in(&now()["claudeAiOauth"]));
+
+        save(&stored("rt-refused"));
+        assert!(sign_out(&acct, "rt-refused", false).unwrap());
+        let mut want = stored("");
+        let o = want["claudeAiOauth"].as_object_mut().unwrap();
+        o.insert("accessToken".into(), "".into());
+        o.insert("expiresAt".into(), 0.into());
+        o.shift_remove("loginEnded");
+        assert_eq!(now(), want);
+        assert!(!signed_in(&now()["claudeAiOauth"]));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // Once blank, nothing more to sign out, and a later refresh asks nobody.
+        assert!(!sign_out(&acct, "rt-refused", false).unwrap());
+        assert!(matches!(refresh(&acct, true), Outcome::Rejected));
+
+        save(&stored("rt-refused"));
+        assert!(sign_out(&acct, "rt-refused", true).unwrap());
+        assert_eq!(now()["claudeAiOauth"]["loginEnded"], "time_limit");
+        let left: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 1, "no temp file left: {left:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

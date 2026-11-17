@@ -281,6 +281,11 @@ mod tests {
         // A refresh token past its end is no login either, as the panel says.
         assert!(!claude(r#"{"claudeAiOauth":{"refreshToken":"rt","refreshTokenExpiresAt":1}}"#));
         assert!(claude(r#"{"claudeAiOauth":{"refreshToken":"rt","refreshTokenExpiresAt":99999999999999}}"#));
+        // Luna's own refresh turned down: the file it leaves is no login to
+        // the core either, read afresh.
+        assert!(claude(r#"{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt-refused","expiresAt":1,"scopes":[]}}"#));
+        assert!(crate::claude::oauth::refused_for_test(&p, "rt-refused"));
+        assert!(!signed_in(Provider::Claude, &p));
         let codex = |body: &str| {
             std::fs::write(dir.join("auth.json"), body).unwrap();
             signed_in(Provider::Codex, &p)
