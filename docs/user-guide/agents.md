@@ -37,6 +37,10 @@ tools.
   `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`. Once they are all done and
   it has said nothing, Luna wakes the lead itself, once, and its parent hears
   what came of that, or that it seems stuck.
+- When a helper or lead ends a turn with nothing of its own running (no job,
+  subagent or helper of its own still at it, nothing waiting to go into it),
+  its agent's notice adds "Nothing of its own is running: it will not go on
+  unless you send to it", whatever its last words said it was waiting for.
 - A send may ask for no reply (`expectReply: false`): the helper's answer then
   wakes the agent only for a status word or a report.
 - An agent reads, waits on, sends text to and answers its own helpers. One of
