@@ -161,14 +161,15 @@ up once) lets go of a chat deleted at the next tick.
   whose `generation` its start answered with (`Attached`). An exit heard
   before the start answers waits for that answer, since it may be the chat's
   session before this one, said late, or this one ending at once.
-- `terminal/`: `theme.ts`, `links.ts` (an OSC 8 link goes to `open_link`,
-  which opens web and mail links in the system's handler), `keys.ts`
-  (clipboard keys, Alt+arrow sent as Ctrl+arrow as xterm did before 6),
-  `scrollback.ts` (the replayed tail), `sizing.ts` (fit and repaint), `pty.ts` (the gated pty sender),
-  `ptyRoutes.ts` (one listener each for `pty://output`, `pty://exit` and
-  `pty://input-refused`, handing each payload to the terminal of its session;
-  a terminal and the sign-in window start their session only once all listen, and a listener
-  that failed to register is tried again by the next terminal; a sign-in
+- `terminal/`: `theme.ts`, `links.ts` (an OSC 8 link goes to `open_link` in
+  `links.rs`, which opens web and mail links in the system's handler),
+  `keys.ts` (clipboard keys, Alt+arrow sent as Ctrl+arrow as xterm did before
+  6), `scrollback.ts` (the replayed tail), `sizing.ts` (fit and repaint),
+  `pty.ts` (the gated pty sender), `ptyRoutes.ts` (one listener each for
+  `pty://output`, `pty://exit` and `pty://input-refused`, handing each payload
+  to the terminal of its session; a terminal and the sign-in window start
+  their session only once all listen, and a listener that failed to register
+  is tried again by the next terminal; a sign-in
   window closed while its start is under way kills the session once it has
   started, and one opened again on that account listens to the session's id
   and starts its own only after that kill, however long it takes, saying so

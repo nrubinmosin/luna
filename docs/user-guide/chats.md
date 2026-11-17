@@ -428,4 +428,4 @@ double-click on its name; a name you set is never overwritten.
   move a word, where the CLI's input takes such a move.
 - A link opens in your system's default browser, or a mail link in your mail
   app, without a question. Only web (`http`, `https`) and mail (`mailto`) links
-  open; any other kind is ignored.
+  open, and no mail link that asks to attach a file; any other is ignored.

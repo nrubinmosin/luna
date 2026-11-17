@@ -197,6 +197,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A pane or the login window whose session was killed while its reader was
   stuck is told the session ended, rather than left waiting on a dead one.
 
+### Security
+
+- A link from a terminal is parsed before it opens and reaches the browser
+  or mail app percent-encoded; one with a control character, longer than
+  8 KB, or a mail link asking to attach a file is refused, and no part of a
+  link, nor the system's error about one, is written to the log any more.
+
 ## [0.18.5] - 2026-11-17
 
 Luna no longer depends on chrono, which RustSec now lists as unmaintained:

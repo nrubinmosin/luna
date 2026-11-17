@@ -6,7 +6,7 @@ import { openLink } from '../../../ipc/links';
  * which the dialog plugin's init script turns into a `plugin:dialog|message`
  * call this window has no permission for, and then opens a window of the
  * WebView's own. The link goes to the system's handler instead, the user's
- * default browser or mail app (lib.rs `open_link`), without the question.
+ * default browser or mail app (links.rs `open_link`), without the question.
  */
 export const linkHandler: ILinkHandler = {
   activate: (_e, uri) => {
