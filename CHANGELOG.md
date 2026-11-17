@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-11-17
+
+Luna now installs Claude Code 2.1.325 and runs nothing older. Only the chats
+above a helper send to it or answer it, and you can move a helper to another
+of your chats from the window. An idle session no longer holds the PC awake
+when it comes into view, and asking for an account's models no longer signs
+it out.
+
 ### Security
 
 - Claude Code below 2.1.325 no longer runs: the list's `minSafe` rises to it,
@@ -1315,7 +1323,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.2...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.3...HEAD
+[0.18.3]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.3
 [0.18.2]: https://github.com/nrubinmosin/luna/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/nrubinmosin/luna/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/nrubinmosin/luna/compare/v0.17.0...v0.18.0
