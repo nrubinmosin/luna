@@ -374,7 +374,7 @@ mod tests {
         assert!(presses_for(Provider::Codex, &perm, &[]).is_err());
         assert_eq!(perm.line(), "asks for permission to run Bash: ls");
         let codex =
-            "  Would you like to run the following command?\n\n  $ Set-Content -LiteralPath made.txt -Value hi\n\n› 1. Yes, proceed (y)";
+            "  Would you like to run the following command?\n\n  $ Set-Content -LiteralPath made.txt -Value hi\n\n› 1. Yes, proceed (y)\n  2. No (esc)";
         assert_eq!(codex_command_on(codex).as_deref(), Some("Set-Content -LiteralPath made.txt -Value hi"));
     }
 
