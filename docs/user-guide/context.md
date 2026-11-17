@@ -33,7 +33,7 @@ With default settings:
 | --- | --- | --- | --- |
 | Chat without **Luna tools** | 0 | 0 | 0 |
 | Chat with **Luna tools** | ~2,465: the instructions, 16 tools and the handoff's tool | 0 | notices of the sessions it started or wrote to; guide topics it reads; a handoff when asked |
-| Lead | ~2,825: the chat's, plus its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat; a handoff when its context passes the lead threshold |
+| Lead | ~2,905: the chat's, plus its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat; a handoff when its context passes the lead threshold |
 | Helper | ~210: its role text | the note after its task, ~65 (Codex: after every task) | a refused command, ~125 |
 
 Added to these where you turn them on: a chat with **Wait guard** ticked gets
@@ -76,7 +76,7 @@ they stay in its context all along.
 | Text | Who | When, where | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
 | `role-chat` | chats | nothing unless you write one | 0 | Library → System texts |
-| `role-lead`: answer the agent in its language and form, split work among helpers, own what they report, status words, constraints pass down, stop leftovers, keep caveats, send and install nothing unasked | leads | layers, as above | 360 | Library → System texts, `role-lead` |
+| `role-lead`: answer the agent in its language and form, split work among helpers, own what they report, status words, constraints pass down, stop leftovers, no turn ended on "waiting" with nothing to wake it, keep caveats, send and install nothing unasked | leads | layers, as above | 440 | Library → System texts, `role-lead` |
 | `role-helper`: the same, less what is about helpers | helpers | layers, as above | 210 | Library → System texts, `role-helper` |
 | The note after a task (`[A note, not part of the task: …]`): the task comes from an agent; rules for a chat with a person do not apply | leads and helpers | Claude Code: after the first task, once; Codex: after every task, so it adds up in the conversation | 65 | Library → System texts, `note-lead`, `note-helper` (one line; it cannot be empty) |
 | Constraints: a heading, then each constraint word for word | a helper spawned with `constraints`, and every session under it | layers, last | 57 + the constraints | the agent that spawns; nothing removes one |
@@ -189,9 +189,9 @@ every request. Checked by `context_page.rs`.
 | `tools` | 8,886 | 2,222 |
 | `handoff-tool` | 390 | 98 |
 | `per-request-chat` | 9,854 | 2,464 |
-| `per-request-lead` | 11,292 | 2,823 |
+| `per-request-lead` | 11,613 | 2,903 |
 | `per-request-helper` | 831 | 208 |
-| `role-lead` | 1,438 | 360 |
+| `role-lead` | 1,759 | 440 |
 | `role-helper` | 831 | 208 |
 | `note` | 265 | 66 |
 | `constraints-heading` | 229 | 57 |
@@ -207,7 +207,7 @@ every request. Checked by `context_page.rs`.
 | `guide-sessions` | 4,770 | 1,193 |
 | `guide-accounts` | 1,266 | 317 |
 | `guide-spawning` | 4,480 | 1,120 |
-| `guide-getting` | 4,400 | 1,100 |
+| `guide-getting` | 4,652 | 1,163 |
 | `guide-answering` | 2,583 | 646 |
 | `guide-restart` | 1,189 | 297 |
 | `guide-working` | 1,779 | 445 |

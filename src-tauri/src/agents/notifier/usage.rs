@@ -86,6 +86,64 @@ pub(in crate::agents) fn save_quota_told() {
     }
 }
 
+/// A usage window: its label, the share used, when it resets.
+type Window = (String, f64, Option<String>);
+
+/// Each account's usage windows, as `account_usage` last showed them.
+fn windows_of(r: &Registry) -> HashMap<String, Vec<Window>> {
+    r.usage
+        .iter()
+        .map(|(account, u)| {
+            let limits = u["limits"].as_array().into_iter().flatten();
+            let w: Vec<Window> = limits
+                .filter_map(|l| {
+                    let resets = l["resetsAt"].as_str().map(str::to_owned);
+                    Some((l["label"].as_str()?.to_string(), l["usedPct"].as_f64()?, resets))
+                })
+                .collect();
+            (account.clone(), w)
+        })
+        .collect()
+}
+
+/// Every helper's account, under every session above it: (that session,
+/// `provider/name`, the helper).
+fn accounts_below(r: &Registry) -> Vec<(String, String, String)> {
+    let mut helpers = Vec::new();
+    for (id, k) in &r.known {
+        let account = format!("{}/{}", k.provider.as_str(), k.account);
+        let mut above = k.parent.clone();
+        while let Some(caller) = above {
+            above = r.known.get(&caller).and_then(|p| p.parent.clone());
+            if caller != DEV_CALLER && r.known.contains_key(&caller) {
+                helpers.push((caller, account.clone(), id.clone()));
+            }
+        }
+    }
+    helpers
+}
+
+/// Whether `caller` has a usage window to hear of (`quota_news`) by the usage
+/// as it stands now, not as the notifier's last look read it: what the window
+/// has published since is said at its next look, and wakes the caller.
+pub(in crate::agents) fn quota_due(pty: &crate::pty::PtyManager, caller: &str) -> bool {
+    let (windows, helpers) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let below: Vec<(String, String)> = accounts_below(&r).into_iter().filter(|(c, ..)| c == caller).map(|(_, a, h)| (a, h)).collect();
+        (windows_of(&r), below)
+    };
+    // Off the registry's lock, as `quota_news` asks.
+    let accounts: Vec<String> = helpers.into_iter().filter(|(_, h)| live(pty, h)).map(|(a, _)| a).collect();
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let now = now_ms();
+    accounts.iter().any(|account| {
+        windows.get(account).into_iter().flatten().any(|(label, pct, resets_at)| {
+            let key = (caller.to_string(), account.clone(), label.clone());
+            quota_step(r.quota_told.get(&key), *pct, resets_at.as_deref(), now).1
+        })
+    })
+}
+
 /// A usage window a caller is yet to hear of.
 pub(in crate::agents) struct QuotaNews {
     pub(in crate::agents) key: (String, String, String),
@@ -98,40 +156,14 @@ pub(in crate::agents) struct QuotaNews {
 /// them. It is told only once the notice has gone in (`quota_told`); what has
 /// reset or come down is settled here.
 pub(in crate::agents) fn quota_news(pty: &crate::pty::PtyManager) -> HashMap<String, Vec<QuotaNews>> {
-    // Every helper's account, under every session above it.
-    type Window = (String, f64, Option<String>);
-    let (windows, helpers): (HashMap<String, Vec<Window>>, Vec<(String, String, String)>) = {
+    let (windows, helpers) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let windows: HashMap<String, Vec<Window>> = r
-            .usage
-            .iter()
-            .map(|(account, u)| {
-                let limits = u["limits"].as_array().into_iter().flatten();
-                let w: Vec<Window> = limits
-                    .filter_map(|l| {
-                        let resets = l["resetsAt"].as_str().map(str::to_owned);
-                        Some((l["label"].as_str()?.to_string(), l["usedPct"].as_f64()?, resets))
-                    })
-                    .collect();
-                (account.clone(), w)
-            })
-            .collect();
+        let windows = windows_of(&r);
         // Nothing near a level and nothing told: the usual case, every look.
         if r.quota_told.is_empty() && !windows.values().flatten().any(|w| quota_level(w.1) > 0) {
             return HashMap::new();
         }
-        let mut helpers = Vec::new();
-        for (id, k) in &r.known {
-            let account = format!("{}/{}", k.provider.as_str(), k.account);
-            let mut above = k.parent.clone();
-            while let Some(caller) = above {
-                above = r.known.get(&caller).and_then(|p| p.parent.clone());
-                if caller != DEV_CALLER && r.known.contains_key(&caller) {
-                    helpers.push((caller, account.clone(), id.clone()));
-                }
-            }
-        }
-        (windows, helpers)
+        (windows, accounts_below(&r))
     };
     let live_ones: Vec<(String, String)> = helpers.into_iter().filter(|(_, _, id)| live(pty, id)).map(|(c, a, _)| (c, a)).collect();
     let mut news: HashMap<String, Vec<QuotaNews>> = HashMap::new();
@@ -238,6 +270,45 @@ pub(in crate::agents) fn context_rider(id: &str) -> String {
     reg().lock().unwrap_or_else(|e| e.into_inner()).context_seen.get(id).map_or(String::new(), |pct| format!(" (context {pct}%)"))
 }
 
+/// Where helper `id`'s context stands by its transcript, with the level it is
+/// held to (`level_of`), when past that level. Off the registry's lock: this
+/// reads the transcript. Not of a lead mid-switch to a fresh conversation
+/// (handoff/lead.rs): the one it leaves says nothing of where the next stands.
+fn context_over(
+    pty: &crate::pty::PtyManager,
+    id: &str,
+    provider: Provider,
+    settings: &serde_json::Value,
+    default: u64,
+) -> Option<(crate::background::Context, u64)> {
+    if crate::background::switch_of(id).is_some() {
+        return None;
+    }
+    let context = transcript_path(pty, id).and_then(|path| crate::background::Context::of(&path, provider))?;
+    let level = level_of(settings, default, context.window)?;
+    past(&context, level).then_some((context, level))
+}
+
+/// Whether `parent` has a helper's context line to hear of (`budget_news`) by
+/// where its helpers' contexts stand now: `budget_news` reads transcripts only
+/// every few looks, and a line it finds then wakes the parent. A breach seen
+/// and not yet told counts, as does a context past the alarm level not yet seen.
+pub(in crate::agents) fn budget_due(pty: &crate::pty::PtyManager, parent: &str) -> bool {
+    let default = u64::from(crate::settings::get().helper_context_pct.min(100));
+    let helpers: Vec<(String, Provider, serde_json::Value)> = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        r.known
+            .iter()
+            .filter(|(_, k)| k.parent.as_deref() == Some(parent) && k.settings["budgetTold"] != true)
+            .map(|(id, k)| (id.clone(), k.provider, k.settings.clone()))
+            .collect()
+    };
+    helpers.into_iter().any(|(id, provider, settings)| {
+        settings.get("budgetBreach").is_some_and(|b| !b.is_null())
+            || context_over(pty, &id, provider, &settings, default).is_some_and(|(c, level)| past(&c, level.max(ALARM_PCT)))
+    })
+}
+
 /// One watched helper, as `budget_news` takes it off the registry.
 struct Budgeted {
     id: String,
@@ -286,24 +357,17 @@ pub(in crate::agents) fn budget_news(pty: &crate::pty::PtyManager, read: bool) -
     for w in watched {
         let mut breach = w.breach;
         if read {
-            // Off the registry lock: this reads the session's transcript. Not
-            // of a lead mid-switch to a fresh conversation (handoff/lead.rs):
-            // the one it leaves says nothing of where the next stands.
-            let switching = crate::background::switch_of(&w.id).is_some();
-            let context =
-                transcript_path(pty, &w.id).filter(|_| !switching).and_then(|path| crate::background::Context::of(&path, w.provider));
-            let level = context.as_ref().and_then(|c| level_of(&w.settings, default, c.window));
-            let over = context.as_ref().zip(level).filter(|(c, level)| past(c, *level));
+            let over = context_over(pty, &w.id, w.provider, &w.settings, default);
             {
                 let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                match over {
+                match &over {
                     Some((c, _)) => r.context_seen.insert(w.id.clone(), c.pct),
                     None => r.context_seen.remove(&w.id),
                 };
             }
             if let Some((c, level)) = over.filter(|(c, level)| breach.is_none() && !w.told && past(c, (*level).max(ALARM_PCT))) {
                 crate::log::warn("agents", &format!("{} has used {}% of its context, past {}%", label(&w.id), c.pct, level.max(ALARM_PCT)));
-                let b = budget_breach(c, now_ms());
+                let b = budget_breach(&c, now_ms());
                 set_budget_state(&w.id, "budgetBreach", Some(b.clone()));
                 breach = Some(b);
                 moved = true;

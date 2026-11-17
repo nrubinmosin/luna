@@ -52,6 +52,13 @@ pub fn set_running_for_test(id: &str) {
     lock().entries.get_mut(id).unwrap().run = Some(Run::claimed(None, 0));
 }
 
+/// Text queued for its next turn with no turn running, as `turn_over` leaves
+/// it for a moment.
+#[cfg(test)]
+pub fn queue_for_test(id: &str, text: &str) {
+    lock().entries.get_mut(id).unwrap().queue.push(Queued::from(text));
+}
+
 /// A turn begins on what is queued, as `turn_over` starts the next.
 #[cfg(test)]
 pub fn start_queued_for_test(id: &str) {
@@ -255,6 +262,17 @@ pub(crate) fn after_result_for_test(id: &str) {
 #[cfg(test)]
 pub(crate) fn gone_for_test(id: &str) {
     lock().entries.remove(id);
+}
+
+/// A lead's look at its handoff at its turn's end under way, or over, as
+/// `turn_over` marks it and its thread lets it go (events.rs `handoff_looks`).
+#[cfg(test)]
+pub(crate) fn handoff_look_for_test(id: &str, on: bool) {
+    if on {
+        handoff_looks().insert(id.to_string());
+    } else {
+        handoff_looks().remove(id);
+    }
 }
 
 /// Its turn is over and what was queued is reserved for the next, as
