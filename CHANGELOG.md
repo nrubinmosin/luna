@@ -121,6 +121,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   refused, saying so, or keeps it.
 - A handoff's threshold notice is queued only once its ask is saved, so the
   notifier no longer drops it as one that no ask stands for.
+- A save of the chats' ties waiting behind another as the sessions are
+  stopped no longer writes over what was saved before.
 
 ## [0.18.5] - 2026-11-17
 

@@ -263,13 +263,13 @@ pub(super) fn chats_now() -> SavedChats {
 pub fn save_chats() {
     use std::sync::atomic::Ordering;
     static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-    if !CHATS_READ.load(Ordering::SeqCst) || CHATS_FROZEN.load(Ordering::SeqCst) {
+    if !CHATS_READ.load(Ordering::SeqCst) {
         return;
     }
     let path = chat_ties_file();
     save_in_order(
         &LAST,
-        || serde_json::to_vec_pretty(&chats_now()).ok(),
+        || snapshot_unless(&CHATS_FROZEN, || serde_json::to_vec_pretty(&chats_now()).ok()),
         |bytes| match crate::secret::write_private(&path, bytes) {
             Ok(()) => true,
             Err(e) => {
@@ -278,6 +278,17 @@ pub fn save_chats() {
             }
         },
     );
+}
+
+/// `snapshot`, unless `frozen` is set: asked as the snapshot is taken, under
+/// the save's lock (`save_in_order`), so a save that waited there behind
+/// another while the sessions were stopped (`freeze_chats`) takes nothing of
+/// what the stopping did and writes nothing over what was written before it.
+fn snapshot_unless(frozen: &std::sync::atomic::AtomicBool, snapshot: impl FnOnce() -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+    if frozen.load(std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    snapshot()
 }
 
 /// Takes a snapshot and writes it if it differs from the last one written,
@@ -495,6 +506,41 @@ mod tests {
         assert_eq!(disk.lock().unwrap().last().map(Vec::as_slice), Some(&b"newer"[..]));
         // Unchanged since the last write: nothing written.
         save_in_order(&LAST, || Some(b"newer".to_vec()), |_| panic!("written again"));
+    }
+
+    /// A save that waited behind another while the chats were frozen takes
+    /// no snapshot and writes nothing over what was written before.
+    #[test]
+    fn a_save_queued_behind_the_freeze_writes_nothing() {
+        static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+        static FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let (writing, wrote) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let first = std::thread::spawn(move || {
+            save_in_order(
+                &LAST,
+                || snapshot_unless(&FROZEN, || Some(b"before".to_vec())),
+                |_| {
+                    writing.send(()).unwrap();
+                    wait.recv().unwrap();
+                    true
+                },
+            )
+        });
+        wrote.recv().unwrap();
+        let queued = std::thread::spawn(|| {
+            save_in_order(
+                &LAST,
+                || snapshot_unless(&FROZEN, || panic!("a snapshot after the freeze")),
+                |_| panic!("written after the freeze"),
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        FROZEN.store(true, std::sync::atomic::Ordering::SeqCst);
+        go.send(()).unwrap();
+        first.join().unwrap();
+        queued.join().unwrap();
+        assert_eq!(*LAST.lock().unwrap(), b"before");
     }
 
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,
