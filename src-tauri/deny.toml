@@ -30,6 +30,11 @@ ignore = [
     # 0.18 is gtk-rs 0.18's, which tao, wry and muda pin for the Linux build;
     # absent from the Windows build, and Luna's code never touches GVariant.
     { id = "RUSTSEC-2024-0429", reason = "glib: Linux-only, through gtk-rs 0.18 under tao, wry and muda; Luna never uses VariantStrIter. Expires 2027-02-08" },
+    # chrono is unmaintained, with no vulnerability reported. Luna parses and
+    # writes RFC 3339 times with it in 23 files, and tauri-utils pulls it in
+    # again through serde_with, so it cannot leave the tree in a release; the
+    # move to jiff or time is its own change.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: Luna's own timestamps in 23 files, and tauri-utils through serde_with; the move to jiff or time is still to do. Expires 2027-02-17" },
 ]
 
 [licenses]
