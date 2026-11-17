@@ -273,7 +273,6 @@
   border-left: 5px solid currentColor;
   border-top: 4px solid transparent;
   border-bottom: 4px solid transparent;
-  transition: transform 0.12s;
 }
 [data-app] .set-about[open] > summary::before {
   transform: rotate(90deg);

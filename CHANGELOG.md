@@ -33,6 +33,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   asked for and undone, and no proxy is used, as before. A request that
   carries a token (the usage lookups, the model lookup, the sign-in refresh)
   follows no redirect: one comes back as the error it is.
+- Nothing in Luna's window moves any more, so an idle window draws no frames:
+  a chat waiting for you wears an orange title bar and status-bar field
+  instead of flashing them, a working or background chat's dot keeps its color
+  without pulsing, a helper just spawned rings its chip for a few seconds
+  without glowing, a button at work says so in words and goes gray instead of
+  spinning, and dialogs, menus, the sidebar and folders open and close at once.
+  The terminals' cursors no longer blink: each blinking cursor redrew its
+  terminal twice a second.
 
 ### Fixed
 

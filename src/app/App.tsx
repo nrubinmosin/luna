@@ -45,8 +45,8 @@ const EDGE = 24;
 
 /**
  * The sidebar. Pinned, it holds its width in the row. Unpinned, it takes none:
- * resting the pointer at the window's left edge slides it out over the board
- * (which keeps its size), and leaving it slides it away again — never pinned
+ * resting the pointer at the window's left edge brings it out over the board
+ * (which keeps its size), and leaving it puts it away again — never pinned
  * by the hover itself. The title bar's button pins and unpins.
  */
 function Dock() {
@@ -133,7 +133,7 @@ function Dock() {
       data-shown={shown ? 'yes' : 'no'}
       onMouseEnter={enter}
       onMouseLeave={leave}
-      style={{ width: pinned ? width : STRIP, transition: resizing ? 'none' : undefined }}
+      style={{ width: pinned ? width : STRIP }}
     >
       {!pinned && <div className="dock-strip" />}
       {/* Hidden rather than unmounted: the list keeps its scroll, and coming

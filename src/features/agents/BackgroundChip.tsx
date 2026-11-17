@@ -28,7 +28,7 @@ import { ownershipLine, suggestedChats } from './ownership';
 import { useNameOf } from './useNameOf';
 import './helpers.css';
 
-/** How long a chip glows after a helper of its chat was spawned. */
+/** How long a chip wears its ring after a helper of its chat was spawned. */
 const NEW_MS = 5000;
 
 /** A helper's four buttons (slim, each as wide as its label on one line) share
@@ -128,16 +128,16 @@ export function HelperSummary({ parentId }: { parentId: string }) {
 }
 
 /** Whether a helper of these was spawned within NEW_MS: the one moment nothing
- *  else on screen marks, so the face glows for a while. */
+ *  else on screen marks, so the face wears a ring for a while (a still one). */
 function useFresh(helpers: BackgroundHelperDto[]): boolean {
   const newest = Math.max(0, ...helpers.map(h => h.startedMs));
   const [fresh, setFresh] = useState(false);
   useEffect(() => {
     const left = newest + NEW_MS - Date.now();
-    // Also when the newest helper went inside its glow: the cleanup took the
-    // timer that would have put the glow out.
+    // Also when the newest helper went inside its ring's time: the cleanup
+    // took the timer that would have taken the ring off.
     if (left <= 0) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- the glow runs on the clock, outside React: it is set as the timer is armed or skipped
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the ring runs on the clock, outside React: it is set as the timer is armed or skipped
       setFresh(false);
       return;
     }

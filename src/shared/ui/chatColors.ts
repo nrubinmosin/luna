@@ -4,7 +4,7 @@
  * glance links the two without reading either name.
  *
  * Muted on purpose — moss, olive, slate, clay rather than signal colors: a
- * title bar is looked at all day, and only the waiting flash should shout.
+ * title bar is looked at all day, and only the waiting orange should shout.
  * Hand-picked per preset, low in saturation and dark enough for white title
  * text on every one. The keys are what chats store, so they stay as they were.
  */

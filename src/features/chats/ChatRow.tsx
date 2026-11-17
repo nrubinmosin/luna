@@ -152,8 +152,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
             color: onScreen ? '#fff' : 'inherit',
             opacity: onScreen ? 1 : 0.6,
             background: onScreen ? ACCENT : 'transparent',
-            border: `1px solid ${onScreen ? (active ? '#fff' : ACCENT) : 'currentColor'}`,
-            transition: 'background .2s, color .2s'
+            border: `1px solid ${onScreen ? (active ? '#fff' : ACCENT) : 'currentColor'}`
           }}
         >
           {badge}

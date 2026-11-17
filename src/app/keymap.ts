@@ -87,7 +87,7 @@ export function useKeymap(opts: { openNewChat: () => void; closeModal: () => voi
         return;
       }
 
-      // Ctrl+Shift+B pins the sidebar or lets it slide away; Ctrl+Shift+T
+      // Ctrl+Shift+B pins the sidebar or lets it hide; Ctrl+Shift+T
       // opens a new group, as Ctrl+T a tab in a browser; Ctrl+Shift+W goes to
       // the next chat that is waiting for you. By physical key, so a Cyrillic
       // layout gets them too.

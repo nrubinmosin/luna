@@ -4,6 +4,16 @@
 * {
   box-sizing: border-box;
 }
+/* Nothing on screen moves: a state is a color, a shape or a word, so an idle
+   window draws no frames. Luna's own sheets set no animation or transition;
+   this takes back what xp.css brings (a fade on the title-bar buttons, a
+   sliding progress bar). */
+*,
+*::before,
+*::after {
+  animation: none !important;
+  transition: none !important;
+}
 body {
   margin: 0;
   overflow: hidden;
@@ -56,15 +66,11 @@ body {
 }
 
 .hover-bg {
-  transition: background 0.14s;
 }
 .hover-bg:hover {
   background: var(--hover) !important;
 }
 .hover-danger {
-  transition:
-    background 0.14s,
-    color 0.14s;
 }
 .hover-danger:hover {
   background: oklch(0.63 0.19 25 / 0.16) !important;

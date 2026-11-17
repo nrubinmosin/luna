@@ -446,7 +446,6 @@ export function ToolButton({
   active,
   size = 26,
   disabled,
-  spin,
   style
 }: {
   icon: IconName;
@@ -457,8 +456,6 @@ export function ToolButton({
   active?: boolean;
   size?: number;
   disabled?: boolean;
-  /** Turns the icon while whatever it started is still running. */
-  spin?: boolean;
   style?: CSSProperties;
 }) {
   return (
@@ -475,11 +472,7 @@ export function ToolButton({
       className={`tool-btn${danger ? ' tool-btn-danger' : ''}${active ? ' tool-btn-on' : ''}`}
       style={{ height: size, minWidth: size, ...style }}
     >
-      <Icon
-        name={icon}
-        size={size >= 24 ? 16 : 14}
-        style={spin ? { animation: 'spin .9s linear infinite' } : undefined}
-      />
+      <Icon name={icon} size={size >= 24 ? 16 : 14} />
       {label != null && <span className="tool-btn-label">{label}</span>}
     </button>
   );

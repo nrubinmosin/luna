@@ -30,7 +30,7 @@ const write = (key: string, value: string) => {
 interface ShellState {
   theme: ThemePref;
   /** Pinned: the sidebar holds its place in the row. Unpinned: it leaves a
-   *  strip, and hovering the strip slides it out over the board. */
+   *  strip, and hovering the strip brings it out over the board. */
   pinned: boolean;
   width: number;
   /** Unpinned and slid out over the board by the hover. */

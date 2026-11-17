@@ -28,7 +28,7 @@ export function LoginModal({ account }: { account: Account }) {
       fontSize: TERM_FONT_SIZE,
       lineHeight: 1.35,
       allowTransparency: false,
-      cursorBlink: true,
+      cursorBlink: false,
       minimumContrastRatio: 3,
       theme: themeFor(dark())
     });

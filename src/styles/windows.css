@@ -162,9 +162,6 @@
     700 var(--fs-4) "Times New Roman",
     serif;
   text-shadow: 0 1px 1px rgba(0, 0, 40, 0.45);
-  transition:
-    background 0.14s,
-    transform 0.12s;
 }
 [data-app] .tb-seg > button + button {
   border-left: 1px solid rgba(255, 255, 255, 0.22);
@@ -262,10 +259,6 @@
     var(--glyph) center / 16px 16px no-repeat,
     var(--face) !important;
   box-shadow: inset -1px -1px rgba(0, 0, 40, 0.22) !important;
-  transition:
-    filter 0.12s,
-    opacity 0.15s,
-    transform 0.12s;
 }
 [data-app] .title-bar-controls button:not(:disabled):hover {
   filter: brightness(1.18);

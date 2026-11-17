@@ -159,8 +159,7 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
                 aside={
                   <ToolButton
                     icon="sync"
-                    label="Sync all"
-                    spin={busy}
+                    label={busy ? 'Syncing…' : 'Sync all'}
                     disabled={busy}
                     title={
                       'Make every account hold what the library says: deleted copies put back, changed ones replaced, ' +

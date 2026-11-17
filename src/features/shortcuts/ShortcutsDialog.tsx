@@ -22,7 +22,7 @@ const KEYBOARD: Row[] = [
   ['Ctrl+Shift+T', 'New window group, switched to (Ctrl+T stays with the CLI)'],
   ['Ctrl+0', 'Back to the grid'],
   ['Ctrl+Shift+W', 'The next chat that is waiting for you'],
-  ['Ctrl+Shift+B', 'Keep the sidebar open, or let it slide away to the edge'],
+  ['Ctrl+Shift+B', 'Keep the sidebar open, or let it hide at the edge'],
   ['Hold Alt', 'Over a chat in the list: a look at it on the sheet until Alt is let go — a click keeps it'],
   ['F1', 'This list'],
   ['Esc', 'Closes a dialog; otherwise left to the CLI, where it interrupts']
@@ -34,7 +34,7 @@ const MOUSE: Row[] = [
     'Click outside the sheet',
     'Back to the grid — so do the mouse’s Back button and, in the sheet’s bar, the chip of the pane that is up'
   ],
-  ['Pointer at the left edge', 'With the sidebar hidden: slides it out over the board until the pointer leaves'],
+  ['Pointer at the left edge', 'With the sidebar hidden: brings it out over the board until the pointer leaves'],
   ['Drag a chat onto a pane', 'Seats it in that pane'],
   ['Drag a title bar onto a pane', 'Swaps the two panes'],
   ['“Waiting” in the status bar', 'Goes to the next chat that is waiting for you']

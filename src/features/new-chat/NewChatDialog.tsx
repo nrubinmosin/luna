@@ -341,8 +341,7 @@ export function NewChatDialog() {
                       borderRadius: 4,
                       background: on ? 'var(--row-sel)' : 'transparent',
                       color: on ? 'var(--row-sel-ink)' : 'var(--fg)',
-                      fontWeight: on ? 600 : 400,
-                      transition: 'background .14s'
+                      fontWeight: on ? 600 : 400
                     }}
                     className={on ? undefined : 'hover-bg'}
                   >

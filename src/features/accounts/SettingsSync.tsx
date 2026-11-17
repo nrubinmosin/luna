@@ -97,9 +97,8 @@ export function SettingsSync({ accounts }: { accounts: Account[] }) {
             </select>
             <ToolButton
               icon="sync"
-              label="Sync now"
+              label={busy === p ? 'Syncing…' : 'Sync now'}
               disabled={!parent || busy === p}
-              spin={busy === p}
               title={
                 parent
                   ? `Copy ${parent}'s settings onto the other ${PROVIDER_LABEL[p]} accounts now`

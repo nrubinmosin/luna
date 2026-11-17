@@ -160,7 +160,8 @@ function create(spec: TermSpec): Entry {
     fontSize: TERM_FONT_SIZE,
     lineHeight: 1.25,
     allowTransparency: false,
-    cursorBlink: true,
+    // A steady cursor: a blinking one redraws the terminal twice a second.
+    cursorBlink: false,
     scrollback: SCROLLBACK,
     // Nudge unreadable theme-vs-content combinations without flattening colors.
     minimumContrastRatio: 3,

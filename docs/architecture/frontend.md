@@ -119,7 +119,12 @@ titles, context and drafts come from the core (`session_meta`), polled by
 `--code-key` / `--code-string` / `--code-literal`), `base.css`, `controls.css`
 (every shared control), `windows.css` (window and dialog chrome); the features'
 own sheets beside their entry components (`panes.css`, `chats.css`,
-`status-bar.css`, `library.css`); `motion.css` last.
+`status-bar.css`, `library.css`). Nothing animates: Luna's sheets and
+components set no `@keyframes`, `animation` or `transition`, and run no Web
+Animations or frame loops, so an idle window draws no frames; a state is a
+static color, shape or word. `base.css` turns off, with `!important`, what
+xp.css brings of its own (a fade on the title-bar buttons, a sliding progress
+bar), and the terminals' cursors do not blink.
 
 Theme tokens are CSS custom properties on `[data-app][data-theme]`, switching
 system / light / dark without redrawing terminals (xterm gets its theme through

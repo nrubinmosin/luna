@@ -29,16 +29,14 @@ export function FolderSection({ folder }: { folder: Folder }) {
         />
         <Chevron open={folder.open} />
       </div>
-      {/* Always mounted, folded by its row height: the fold animates both ways. */}
-      <div className="tp-fold" data-open={folder.open ? 'yes' : 'no'}>
-        <div>
-          <div className="tp-body" style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {folder.chats.map(chat => (
-              <ChatRow key={chat.id} chat={chat} />
-            ))}
-          </div>
+      {/* Folded, its rows are not there at all: nothing to render while out of sight. */}
+      {folder.open && (
+        <div className="tp-body" style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+          {folder.chats.map(chat => (
+            <ChatRow key={chat.id} chat={chat} />
+          ))}
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -89,7 +89,7 @@ hooks run unasked.
   `2 working · 1 idle · !1 asks │ !check-changelog · review-plan 4m`. A
   narrower pane shows `▸2 ◦1 !1`, the narrowest `3 !1`. A helper that asks
   counts as working: its turn waits on the answer. One that has exited is not
-  counted. Both glow a few seconds on a spawn.
+  counted. Both wear a ring for a few seconds after a spawn.
 - A chat that a helper, or a helper's helper, still owes an answer reads
   **background** between turns ([Chats: Status](chats.md#status)), also while
   that helper asks something: the question shows on the pill and in the list.

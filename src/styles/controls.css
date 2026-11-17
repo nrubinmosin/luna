@@ -31,11 +31,6 @@
   background: var(--btn-face);
   color: var(--btn-ink);
   box-shadow: none;
-  transition:
-    transform 0.12s ease,
-    box-shadow 0.14s ease,
-    filter 0.14s ease,
-    background 0.14s;
 }
 [data-app] button:not(:disabled):hover {
   box-shadow:
@@ -106,9 +101,6 @@
   border-radius: 5px;
   background-color: var(--field);
   color: var(--fg);
-  transition:
-    border-color 0.14s,
-    box-shadow 0.14s;
 }
 [data-app] textarea {
   height: auto;
@@ -172,10 +164,6 @@
   border-radius: 4px;
   background: var(--field);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
-  transition:
-    border-color 0.14s,
-    box-shadow 0.14s,
-    background 0.14s;
 }
 [data-app] input[type="radio"] + label::before {
   border-radius: 50%;
@@ -205,9 +193,6 @@
   background: none;
   transform: scale(0.3);
   opacity: 0;
-  transition:
-    transform 0.1s ease-out,
-    opacity 0.1s;
 }
 [data-app] input[type="checkbox"]:checked + label::after {
   display: block;
@@ -288,13 +273,8 @@
   box-shadow: none !important;
   color: inherit;
   font-size: var(--fs-3);
-  transition:
-    background 0.14s,
-    border-color 0.14s,
-    transform 0.12s;
 }
 [data-app] button.tool-btn svg {
-  transition: transform 0.12s ease-out;
 }
 [data-app] button.tool-btn:not(:disabled):hover {
   background: var(--btn-face);
@@ -355,10 +335,6 @@
   white-space: nowrap;
   color: var(--dim);
   cursor: default;
-  transition:
-    background 0.14s,
-    color 0.14s,
-    box-shadow 0.14s;
 }
 [data-app] .seg > :is([role="radio"], [role="checkbox"]):hover {
   background: var(--hover);
@@ -409,7 +385,6 @@
     transparent var(--block) calc(var(--block) + 2px)
   );
   mask: repeating-linear-gradient(90deg, #000 0 var(--block), transparent var(--block) calc(var(--block) + 2px));
-  transition: width 0.3s ease-out;
 }
 [data-app] .sb-mini.meter {
   padding: 1px;
@@ -478,7 +453,6 @@
   border-radius: 5px;
   background: var(--field);
   box-shadow: var(--shadow);
-  animation: pop-in 0.1s ease-out;
 }
 [data-app] .picker-list > [role="option"] {
   display: flex;
@@ -498,7 +472,7 @@
   color: var(--row-sel-ink);
 }
 
-/* Popovers (the color picker): an XP menu, rising from where it was asked for.
+/* Popovers (the color picker): an XP menu, opening where it was asked for.
    A long one (a helper list, a menu of accounts) scrolls rather than run off
    a short window; each places itself by its measured height, so this caps it. */
 [data-app] .popover {
@@ -511,8 +485,6 @@
   border: 1px solid var(--line);
   background: var(--surface);
   box-shadow: var(--shadow);
-  animation: pop-in 0.12s ease-out;
-  transform-origin: var(--origin, top left);
 }
 [data-app] .swatch {
   width: 22px;
@@ -521,9 +493,6 @@
   cursor: default;
   display: grid;
   place-items: center;
-  transition:
-    transform 0.1s ease-out,
-    box-shadow 0.1s;
 }
 [data-app] .swatch:hover {
   transform: scale(1.15);

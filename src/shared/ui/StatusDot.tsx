@@ -21,8 +21,7 @@ export function StatusDot({ status }: { status: ChatStatus }) {
         // The ring separates the dot from whatever color the title bar
         // wears; the halo is what makes it findable without looking straight
         // at it.
-        boxShadow: busy ? `0 0 0 1.5px rgba(255,255,255,.85), 0 0 8px 1.5px ${st.color}` : 'none',
-        animation: st.anim
+        boxShadow: busy ? `0 0 0 1.5px rgba(255,255,255,.85), 0 0 8px 1.5px ${st.color}` : 'none'
       }}
     />
   );
