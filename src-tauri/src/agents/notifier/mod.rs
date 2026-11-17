@@ -373,7 +373,6 @@ pub(super) fn notifier() {
         // come back has nothing to be told in.
         let mut by_caller: std::collections::BTreeMap<String, Vec<(String, Known, Owed, String)>> = Default::default();
         let mut gave_up: Vec<(String, String)> = Vec::new();
-        let owed_to: std::collections::HashSet<String>;
         {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let Registry { owed, known, names, .. } = &mut *r;
@@ -399,11 +398,13 @@ pub(super) fn notifier() {
                 };
                 by_caller.entry(caller.clone()).or_default().push((id.clone(), k.clone(), *o, who));
             }
-            owed_to = owed.keys().map(|(caller, _)| caller.clone()).collect();
+            // A lead's stdin kept open past its answer for notices goes once it
+            // has none to come (background/events.rs `keeps_listening`). Under
+            // this lock, which goes before the background one: a debt made
+            // meanwhile would not be in what it goes by.
+            let owed_to: std::collections::HashSet<String> = owed.keys().map(|(caller, _)| caller.clone()).collect();
+            crate::background::listen_only_while_owed(&owed_to);
         }
-        // A lead's stdin kept open past its answer for notices goes once it
-        // has none to come (background/events.rs `keeps_listening`).
-        crate::background::listen_only_while_owed(&owed_to);
         for (caller, id) in gave_up {
             crate::log::warn(
                 "agents",
@@ -917,15 +918,18 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
     // The turn it starts: the next, or for a background caller that has begun
     // one since the look, the one after that. A background caller whose turn
     // runs on and took it on stdin (`Placed::Joined`) answers it within that
-    // turn, which is no turn on a notice: it is not marked as one.
+    // turn, which is no turn on a notice: it is not marked as one. Nor is it
+    // for a lead found taking notices so that its CLI has begun a turn of its
+    // own since the look: queued, it goes onto that stdin at the turn's
+    // `result` (background/events.rs `feed_queued`).
     let background = crate::background::has(caller);
     let mut joined = false;
     let (typed, turn) = if background {
         // A background parent's own record says when these have arrived (`budget_news`).
         let marks = budget_lines.iter().map(|n| crate::background::BudgetMark { id: n.id.clone(), line: n.line.clone() }).collect();
         match crate::background::send_marked(caller, text, None, marks) {
-            Ok(placed) => {
-                joined = placed == crate::background::Placed::Joined;
+            Ok((placed, for_stdin)) => {
+                joined = placed == crate::background::Placed::Joined || for_stdin;
                 (Ok(Some(true)), baseline + 1 + u32::from(placed == crate::background::Placed::Queued))
             }
             Err(e) => (Err(e), 0),
@@ -976,7 +980,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
         Ok(None) => {}
         Ok(Some(started)) => {
             let held = held_for.map_or(String::new(), |d| format!("; held {} s for company", d.as_secs()));
-            let into = if joined { "; into its running turn, on stdin" } else { "" };
+            let into = if joined { "; on the stdin of its running process" } else { "" };
             if started {
                 crate::log::info("agents", &format!("notice to {} about {about}{held}{into}", label(caller)));
             } else {
@@ -1620,6 +1624,60 @@ mod tests {
         assert!(!reg().lock().unwrap().owed.contains_key(&key), "told");
         assert!(!reg().lock().unwrap().notice_turns.contains_key(a), "no turn of its marked as one on a notice");
         assert!(!crate::background::takes_notices(a), "at work on it");
+        for s in [id, a] {
+            crate::background::gone_for_test(s);
+            forget(s);
+        }
+    }
+
+    /// Issue #73, review: the lead's CLI takes up a task's end in a turn of
+    /// its own between the notifier's look and the notice going in. The notice
+    /// waits for that turn, and so does a send behind it; both go onto stdin
+    /// at the turn's `result`, in the order they came, and not behind the
+    /// process for as long as its other tasks run. No turn is marked as one
+    /// on the notice: it is answered within this process.
+    #[test]
+    fn a_notice_that_finds_the_leads_cli_at_a_turn_of_its_own_goes_in_at_its_result() {
+        let (a, id) = ("lq-lead", "lq-helper");
+        register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({ "background": true }));
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, serde_json::json!({ "background": true }));
+        crate::background::test_helper(a, "C:\\acc", None, true);
+        let lines = crate::background::listening_for_test(a);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        assert!(crate::background::takes_notices(a));
+        owe_from(a, id, 0, 0);
+        let key = (a.to_string(), id.to_string());
+        let told = reg().lock().unwrap().owed[&key];
+        let text = format!("{NOTICE_TAG} {id} answered");
+        run_between(
+            a,
+            Box::new(move || {
+                crate::background::claude_event_for_test(a, &serde_json::json!({ "type": "system", "subtype": "task_notification" }));
+            }),
+        );
+        deliver_notice(
+            crate::pty::manager(),
+            a,
+            &text,
+            Notice { settled: vec![(id.to_string(), Settled::Answered, told)], ..Notice::default() },
+        );
+        assert!(lines.try_recv().is_err(), "not into the CLI's own turn");
+        assert_eq!(crate::background::queued_for_test(a), std::slice::from_ref(&text));
+        assert!(!reg().lock().unwrap().notice_turns.contains_key(a), "no later turn of its marked as one on a notice");
+        // Its parent's send comes behind the notice, not past it.
+        assert_eq!(crate::background::send(a, "from its parent", None).unwrap(), crate::background::Placed::Queued);
+
+        crate::background::claude_event_for_test(
+            a,
+            &serde_json::json!({ "type": "assistant", "message": { "model": "claude-haiku", "content": [] }, "parent_tool_use_id": null }),
+        );
+        crate::background::claude_event_for_test(a, &serde_json::json!({ "type": "result", "subtype": "success", "duration_ms": 10 }));
+        let content =
+            |line: String| serde_json::from_str::<serde_json::Value>(&line).unwrap()["message"]["content"].as_str().unwrap().to_string();
+        assert_eq!(content(lines.try_recv().expect("the notice, on its stdin")), text);
+        assert_eq!(content(lines.try_recv().expect("then the send")), "from its parent");
+        assert!(crate::background::queued_for_test(a).is_empty());
+        assert!(!crate::background::takes_notices(a), "at work on them");
         for s in [id, a] {
             crate::background::gone_for_test(s);
             forget(s);
