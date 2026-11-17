@@ -95,7 +95,7 @@ pub(super) fn handoff(caller: &str, file: &str) -> Result<Value, String> {
     let free = file::next_free(&dir);
     let (n, served) = reserve(caller, free)?;
     let unreserve = || {
-        if let Some(rec) = store::records().get_mut(caller).filter(|r| r.reserved == Some(n)) {
+        if let Some(rec) = store::records_mut().get_mut(caller).filter(|r| r.reserved == Some(n)) {
             rec.reserved = None;
         }
     };
@@ -171,7 +171,7 @@ pub(super) fn handoff(caller: &str, file: &str) -> Result<Value, String> {
 /// The next handoff number of `lead`'s, past any copy on disk (`free`),
 /// reserved for one call at a time; with what it was served to write it by.
 fn reserve(lead: &str, free: u32) -> Result<(u32, Option<served::Served>), String> {
-    let mut r = store::records();
+    let mut r = store::records_mut();
     let rec = r.entry(lead.to_string()).or_default();
     if rec.reserved.is_some() {
         return Err("a handoff of this session is being scheduled already; end your turn".into());
@@ -590,7 +590,7 @@ fn written_from_records(id: &str, v: &LeadView) -> Result<(u32, String, String),
     let free = file::next_free(&dir);
     let (n, _) = reserve(id, free)?;
     let unreserve = || {
-        if let Some(rec) = store::records().get_mut(id).filter(|r| r.reserved == Some(n)) {
+        if let Some(rec) = store::records_mut().get_mut(id).filter(|r| r.reserved == Some(n)) {
             rec.reserved = None;
         }
     };

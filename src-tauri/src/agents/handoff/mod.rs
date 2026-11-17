@@ -442,7 +442,7 @@ fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Res
     // copy and its record (a number reserved is not saved) is never reused.
     let free = file::next_free(&dir);
     let (n, served) = {
-        let mut r = store::records();
+        let mut r = store::records_mut();
         let rec = r.entry(caller.to_string()).or_default();
         if let Some(s) = &rec.switch {
             return Err(format!("handoff {} is under way already; end your turn", s.n));
@@ -456,7 +456,7 @@ fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Res
         (n, rec.served.clone())
     };
     let unreserve = || {
-        if let Some(rec) = store::records().get_mut(caller).filter(|r| r.reserved == Some(n)) {
+        if let Some(rec) = store::records_mut().get_mut(caller).filter(|r| r.reserved == Some(n)) {
             rec.reserved = None;
         }
     };
@@ -1018,7 +1018,7 @@ fn finish(chat: &str, n: u32, ended: Ended, prompt: &dyn Fn() -> String) {
         Ok(closed) => closed,
         Err(e) => {
             crate::log::warn("handoff", &format!("{}: handoff {n} could not be saved as ended: {e}", label(chat)));
-            store::records().get_mut(chat).and_then(end)
+            store::records_mut().get_mut(chat).and_then(end)
         }
     };
     let Some((s, gone)) = closed else { return };
@@ -1098,7 +1098,7 @@ fn bind_continued(chat: &str, line: &str, conversation: Option<String>, short: S
     };
     if let Err(e) = store::change(chat, add) {
         crate::log::warn("handoff", &format!("{}: which conversation a failure line is for could not be saved: {e}", label(chat)));
-        if let Some(r) = store::records().get_mut(chat) {
+        if let Some(r) = store::records_mut().get_mut(chat) {
             add(r);
         }
     }
@@ -1174,7 +1174,7 @@ pub(in crate::agents) fn taken_late(chat: &str, line: &str) -> bool {
     };
     if let Err(e) = store::change(chat, through) {
         crate::log::warn("handoff", &format!("{}: handoff {n} could not be saved as through: {e}", label(chat)));
-        if let Some(r) = store::records().get_mut(chat) {
+        if let Some(r) = store::records_mut().get_mut(chat) {
             through(r);
         }
     }
@@ -1863,7 +1863,7 @@ pub fn set_auto_handoff(id: String, threshold: Option<u8>) -> Result<AutoHandoff
         Ok(done) => done,
         Err(e) => {
             crate::log::warn("handoff", &format!("{}: auto-handoff's change could not be saved: {e}", label(&id)));
-            let mut r = store::records();
+            let mut r = store::records_mut();
             apply(r.entry(id.clone()).or_default())
         }
     };

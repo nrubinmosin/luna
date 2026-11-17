@@ -23,7 +23,7 @@ hands off too, at its turn's end with no terminal: [Leads](#leads),
 | `agents/handoff/facts.rs` | what the notices, the tool's answer and the prompt say; the checklist (`SECTIONS`) and the look at a file for it (`missing_sections`) |
 | `agents/handoff/file.rs` | the handoff file checked and copied |
 | `agents/handoff/phase.rs` | the switch's machine |
-| `agents/handoff/store.rs` | what is saved, `<data>/handoffs/handoffs.json`; the ask (`Asked`, `AskKind`) and the re-arm of a record from before asks were kept (`rearmed_unasked`) |
+| `agents/handoff/store.rs` | what is saved, `<data>/handoffs/handoffs.json`; the ask (`Asked`, `AskKind`) and the re-arm of a record from before asks were kept (`rearmed_unasked`); changes one at a time (`change`, `records_mut`), each written with every one before it and seen only once on disk, the write made with the records' lock let go so a look at them (`records`, `sessions_meta`'s) never waits on it |
 | `library/system.rs` | the instructions resolved: Luna's own or the library's override (`handoff_instructions`) |
 | `resources/skills/session-handoff/SKILL.md` | Luna's own instructions, compiled in (`LUNA_HANDOFF`) |
 | `src/features/chats/Handoff.tsx` | the panel's box, the divider, the chip's words (`askedWords`, `instructionsWords`) |

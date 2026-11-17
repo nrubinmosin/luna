@@ -2,9 +2,11 @@
 //! the number last given out, what the chat was told of its context and in
 //! which conversation, the instructions it was last served, the handoff under
 //! way with its phase, and those through or given up. Saved at every change,
-//! under the lock it is changed under, and on disk before the change counts
-//! (`change`): what is typed into a chat next goes by it, and a core started
-//! later goes on from there (`from_bytes`).
+//! one change at a time, and on disk before the change counts (`change`):
+//! what is typed into a chat next goes by it, and a core started later goes
+//! on from there (`from_bytes`). The write is not made under the lock the
+//! records are read under, so a look at them (the window's, every few
+//! seconds) never waits on a disk.
 
 use super::phase::{Phase, Switch};
 use super::served::Served;
@@ -202,11 +204,66 @@ fn file() -> std::path::PathBuf {
     super::root().join("handoffs.json")
 }
 
-/// Every chat's record, behind one lock; read from disk at first use. A
-/// test's run starts empty and writes nothing: tests share the data dir, and a
-/// record a test left would stand in another's way.
-pub(super) fn records() -> MutexGuard<'static, Records> {
+/// Every chat's record, behind one lock, to read; read from disk at first
+/// use. A test's run starts empty and writes nothing: tests share the data
+/// dir, and a record a test left would stand in another's way.
+pub(super) fn records() -> Reading {
+    Reading(lock_records())
+}
+
+/// The records to change in memory alone, unsaved: a number reserved for a
+/// call (`Record::reserved`), a change put in after its save failed. Taken
+/// after any change being saved (`change`), which would otherwise put its
+/// record in over this one.
+pub(super) fn records_mut() -> Changing {
+    let changing = lock_changing();
+    Changing { records: lock_records(), _changing: changing }
+}
+
+/// The records as read (`records`): nothing changes them through this.
+pub(super) struct Reading(MutexGuard<'static, Records>);
+
+impl std::ops::Deref for Reading {
+    type Target = Records;
+    fn deref(&self) -> &Records {
+        &self.0
+    }
+}
+
+/// The records as changed in memory (`records_mut`), with every other
+/// change held off until this is dropped.
+pub(super) struct Changing {
+    records: MutexGuard<'static, Records>,
+    _changing: MutexGuard<'static, ()>,
+}
+
+impl std::ops::Deref for Changing {
+    type Target = Records;
+    fn deref(&self) -> &Records {
+        &self.records
+    }
+}
+
+impl std::ops::DerefMut for Changing {
+    fn deref_mut(&mut self) -> &mut Records {
+        &mut self.records
+    }
+}
+
+fn lock_records() -> MutexGuard<'static, Records> {
     static_records().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Held by whatever changes the records, from before it looks at what it
+/// changes to after the change is saved and in: changes go one at a time and
+/// are written in the order they were made, each with every one before it.
+/// The records' own lock is held only to read them, to put a change into
+/// words and to put a saved change in, never over a write: `sessions_meta`
+/// and the handoff loop read them every few seconds, and each write waits on
+/// the disk (`secret::write_private_synced`).
+fn lock_changing() -> MutexGuard<'static, ()> {
+    static CHANGING: Mutex<()> = Mutex::new(());
+    CHANGING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn static_records() -> &'static Mutex<Records> {
@@ -231,8 +288,8 @@ fn static_records() -> &'static Mutex<Records> {
 /// The records if nobody holds them now: for the test that the file is read
 /// without them.
 #[cfg(test)]
-pub(super) fn try_records() -> Option<MutexGuard<'static, Records>> {
-    static_records().try_lock().ok()
+pub(super) fn try_records() -> Option<Reading> {
+    static_records().try_lock().ok().map(Reading)
 }
 
 /// What a core saved, as this one takes it up: a switch it was in the middle
@@ -290,7 +347,7 @@ const MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// only as a private file of this user's, opened as itself
 /// (`secret::read_private`). A link there, or a file others could have
 /// written, is no record of Luna's: none is taken up, and the log says why;
-/// the next save puts Luna's own in its place (`write`).
+/// the next save puts Luna's own in its place (`write_bytes`).
 fn load(path: &std::path::Path, now: u64) -> Records {
     match crate::secret::read_private(path, MAX_BYTES) {
         Ok(Some(bytes)) => from_bytes(&bytes, now),
@@ -302,38 +359,52 @@ fn load(path: &std::path::Path, now: u64) -> Records {
     }
 }
 
+/// The records as `handoffs.json` holds them.
+fn to_bytes(r: &Records) -> Result<Vec<u8>, String> {
+    serde_json::to_vec_pretty(r).map_err(|e| format!("could not put the handoffs into words: {e}"))
+}
+
 /// The records written to `path`, on disk (flushed, the folder too where it
 /// can be) before it returns: a new private file renamed into place
 /// (`secret::write_private_synced`), which takes the place of a link at the
 /// name, never writing through it.
-fn write(path: &std::path::Path, r: &Records) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(r).map_err(|e| format!("could not put the handoffs into words: {e}"))?;
-    crate::secret::write_private_synced(path, &bytes).map_err(|e| format!("could not save {}: {e}", path.display()))
+fn write_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    crate::secret::write_private_synced(path, bytes).map_err(|e| format!("could not save {}: {e}", path.display()))
 }
 
-/// Writes the records out as they are, called with their lock held, on disk
-/// before it returns.
+#[cfg(test)]
+fn write(path: &std::path::Path, r: &Records) -> Result<(), String> {
+    write_bytes(path, &to_bytes(r)?)
+}
+
+/// Writes the records as `bytes` has them, on disk before it returns.
 #[cfg(not(test))]
-fn save(r: &Records) -> Result<(), String> {
+fn save(bytes: &[u8]) -> Result<(), String> {
     // Its folder checked first (`private_chain`): a record written through a
     // link would be another user's to forge.
     super::private_chain(&super::root(), &[])?;
-    write(&file(), r)
+    write_bytes(&file(), bytes)
 }
 
 /// A test's records stay in memory; a chat a test names here fails to save,
-/// as a full disk would.
+/// as a full disk would. What a save would write is kept (`saved_for_test`),
+/// and a test's hook for the chat (`on_save`) runs as it is saved.
 #[cfg(test)]
-fn save_for(_: &Records, chat: &str) -> Result<(), String> {
+fn save_for(bytes: &[u8], chat: &str) -> Result<(), String> {
+    let hook = hooks().lock().unwrap_or_else(|e| e.into_inner()).remove(chat);
+    if let Some(hook) = hook {
+        hook();
+    }
     if failing().lock().unwrap_or_else(|e| e.into_inner()).contains(chat) {
         return Err("could not save handoffs.json: the disk is full".into());
     }
+    *saved().lock().unwrap_or_else(|e| e.into_inner()) = bytes.to_vec();
     Ok(())
 }
 
 #[cfg(not(test))]
-fn save_for(r: &Records, _: &str) -> Result<(), String> {
-    save(r)
+fn save_for(bytes: &[u8], _: &str) -> Result<(), String> {
+    save(bytes)
 }
 
 #[cfg(test)]
@@ -342,34 +413,71 @@ pub(super) fn failing() -> &'static Mutex<std::collections::HashSet<String>> {
     F.get_or_init(Default::default)
 }
 
-/// Changes `chat`'s record and saves them all. A save that fails puts the
-/// record back as it was and says so: nothing goes by a change that is not on
-/// disk.
+#[cfg(test)]
+type Hook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+fn hooks() -> &'static Mutex<std::collections::HashMap<String, Hook>> {
+    static H: OnceLock<Mutex<std::collections::HashMap<String, Hook>>> = OnceLock::new();
+    H.get_or_init(Default::default)
+}
+
+/// `f` run as the next change of `chat` is saved, in the middle of its write.
+#[cfg(test)]
+pub(super) fn on_save(chat: &str, f: impl FnOnce() + Send + 'static) {
+    hooks().lock().unwrap_or_else(|e| e.into_inner()).insert(chat.to_string(), Box::new(f));
+}
+
+#[cfg(test)]
+fn saved() -> &'static Mutex<Vec<u8>> {
+    static S: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    &S
+}
+
+/// The records as the last save of a test's would have written them.
+#[cfg(test)]
+pub(super) fn saved_for_test() -> Records {
+    serde_json::from_slice(&saved().lock().unwrap_or_else(|e| e.into_inner())).unwrap_or_default()
+}
+
+/// Changes `chat`'s record and saves them all, the change in. A save that
+/// fails leaves the record as it was and says so: nothing goes by a change
+/// that is not on disk, and nobody sees it before it is (`lock_changing`).
+/// `f` changes a copy of the record, put in once it is saved; the records'
+/// lock is let go for the write.
 pub(super) fn change<T>(chat: &str, f: impl FnOnce(&mut Record) -> T) -> Result<T, String> {
-    let mut r = records();
-    let before = r.get(chat).cloned();
-    let out = f(r.entry(chat.to_string()).or_default());
-    if let Err(e) = save_for(&r, chat) {
-        match before {
-            Some(b) => {
-                r.insert(chat.to_string(), b);
-            }
-            None => {
-                r.remove(chat);
-            }
+    let _changing = lock_changing();
+    let mut rec = lock_records().get(chat).cloned().unwrap_or_default();
+    let out = f(&mut rec);
+    let bytes = {
+        let mut r = lock_records();
+        // In for as long as it takes to put them into words, then back out:
+        // nobody sees it until it is saved.
+        let was = r.insert(chat.to_string(), rec);
+        let bytes = to_bytes(&r);
+        rec = match was {
+            Some(was) => r.insert(chat.to_string(), was),
+            None => r.remove(chat),
         }
-        return Err(e);
-    }
+        .unwrap_or_default();
+        bytes?
+    };
+    save_for(&bytes, chat)?;
+    lock_records().insert(chat.to_string(), rec);
     Ok(out)
 }
 
 /// `chat`'s record gone, saved; what is in memory goes whatever the disk says.
 pub(super) fn remove(chat: &str) -> Result<(), String> {
-    let mut r = records();
-    if r.remove(chat).is_none() {
-        return Ok(());
-    }
-    save_for(&r, chat)
+    let _changing = lock_changing();
+    let bytes = {
+        let mut r = lock_records();
+        if r.remove(chat).is_none() {
+            return Ok(());
+        }
+        to_bytes(&r)?
+    };
+    save_for(&bytes, chat)
 }
 
 #[cfg(test)]
@@ -500,6 +608,43 @@ mod tests {
         write(&own, &mine).unwrap();
         assert_eq!(load(&own, 1)["c2"].last, 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A change is written with the records' lock let go: they can be read
+    /// while it is on its way to disk, as they were before it. A change of
+    /// another chat meanwhile waits for that write, and the write after it
+    /// holds both.
+    #[test]
+    fn a_change_is_written_with_the_records_free_and_changes_go_in_order() {
+        change("so-other", |r| r.last = 1).unwrap();
+        let (inside, reached) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        on_save("so-me", move || {
+            inside.send(()).unwrap();
+            let _ = wait.recv_timeout(std::time::Duration::from_secs(10));
+        });
+        let first = std::thread::spawn(|| change("so-me", |r| r.last = 7));
+        reached.recv().unwrap();
+        // Other tests take the records for a moment: one free look of a few is enough.
+        let free = (0..20).any(|_| {
+            let got = try_records().is_some_and(|r| r.get("so-me").is_none());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            got
+        });
+        assert!(free, "free to read while the change is written, and without it");
+        let second = std::thread::spawn(|| change("so-other", |r| r.last = 2));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(records()["so-other"].last, 1, "another chat's change waits for the write under way");
+        go.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+        let now = records();
+        assert_eq!((now["so-me"].last, now["so-other"].last), (7, 2));
+        drop(now);
+        let saved = saved_for_test();
+        assert_eq!((saved["so-me"].last, saved["so-other"].last), (7, 2), "the last write holds both");
+        remove("so-me").unwrap();
+        remove("so-other").unwrap();
     }
 
     #[test]

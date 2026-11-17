@@ -1257,7 +1257,7 @@ fn end_where(chat: &str, id: &str, to: MovePhase, may: impl Fn(&Move) -> bool, a
         Ok(m) => m.ok_or_else(|| "no such move of this chat".to_string()),
         Err(e) => {
             crate::log::warn("move", &format!("{}: move {id} could not be saved as ended: {e}", label(chat)));
-            store::records().get_mut(chat).and_then(set).ok_or_else(|| "no such move of this chat".to_string())
+            store::records_mut().get_mut(chat).and_then(set).ok_or_else(|| "no such move of this chat".to_string())
         }
     };
     // A document the chat wrote goes with its move's end: the new chat has its

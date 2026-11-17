@@ -65,6 +65,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   so do its log lines and the keystrokes it passes to the core, so a slow
   disk or a busy core no longer holds the window up. Keystrokes a core does
   not take are refused past 8 MB waiting, with an error, rather than held.
+- A chat's handoff record is written to disk with the records free to be
+  read, so the window's look at its chats no longer waits on that write.
 
 ### Fixed
 
