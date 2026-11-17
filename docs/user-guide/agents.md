@@ -289,7 +289,8 @@ one of your own chats an agent may answer only a question its model asked
   usual. A subagent the agent left working in the background does not hold the
   notice back. That goes for a Claude Code lead too, whose CLI stays up past
   its answer while its own background subagents run: the notice goes in on its
-  stdin and it answers it at once, for up to 3 hours after that answer
+  stdin and it answers it at once, or right after a turn its CLI is at (one it
+  starts by itself when a subagent ends), for up to 3 hours after that answer
   (later ones wait for its CLI to end). A Codex lead's `exec` ends with its
   turn, its subagents interrupted, so nothing holds its notices.
 - The notice says what happened, how many messages the helper wrote, the first

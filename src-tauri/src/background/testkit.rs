@@ -260,6 +260,12 @@ pub(crate) fn listening_for_test(id: &str) -> std::sync::mpsc::Receiver<String> 
     lines
 }
 
+/// An event of its Claude Code process, as the reader of its stdout takes it.
+#[cfg(test)]
+pub(crate) fn claude_event_for_test(id: &str, v: &Value) {
+    on_claude_event(lock().entries.get_mut(id).expect("a test helper"), v);
+}
+
 /// A test helper in a turn whose CLI has written its result (`waits_on_background`).
 #[cfg(test)]
 pub(crate) fn after_result_for_test(id: &str) {
