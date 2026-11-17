@@ -8,6 +8,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.18.5] - 2026-11-17
+
+Luna no longer depends on chrono, which RustSec now lists as unmaintained:
+it keeps its times with jiff, and reads and writes them as before.
+
 ### Changed
 
 - Luna reads and writes its times with jiff instead of chrono, which RustSec
@@ -1365,7 +1370,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.4...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.5...HEAD
+[0.18.5]: https://github.com/nrubinmosin/luna/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.4
 [0.18.2]: https://github.com/nrubinmosin/luna/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/nrubinmosin/luna/compare/v0.18.0...v0.18.1
