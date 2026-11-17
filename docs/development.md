@@ -25,6 +25,17 @@ docker runs. The builds install the frontend's packages into a Docker volume
 every checkout shares, one per pnpm major (`luna-node-modules-pnpm<major>`): a
 pnpm without a terminal refuses to clear what another major laid out.
 
+A package Luna needs changed before its authors release the change is patched
+with pnpm's own patching: the diff in `patches/<name>@<version>.patch`, named
+under `patchedDependencies` in `pnpm-workspace.yaml` with why and when it goes,
+and the lockfile pinning its hash. pnpm applies it on every install and fails
+one where it no longer applies, so a version bump of the package is where the
+patch is looked at again. The images have no git, which `pnpm patch-commit`
+needs: make the diff with `git diff --no-index` between the published file and
+the edited one (`a/` and `b/` the package's root), then `pnpm install` once
+without `--frozen-lockfile` to record it. `.gitattributes` keeps the patches'
+LF endings as they are.
+
 ## First clone
 
 ```powershell

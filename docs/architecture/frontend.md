@@ -135,6 +135,26 @@ titles, context and drafts come from the core (`session_meta`), polled by
   `webgl.ts` (the webgl renderer; a context lost for good disposes the addon,
   which puts the DOM renderer back, and the pane is repainted), `title.ts` (a
   title from what is typed), `safely.ts`.
+- The webgl addon (0.19.0) runs patched (`patches/`, `patchedDependencies`
+  in `pnpm-workspace.yaml`). Its texture atlas is shared by every terminal of
+  one font, size and theme, and when it merges pages (it grows with every new
+  glyph and color pair) or adds a page for an oversized glyph, every
+  renderer's vertex data points at the old layout, so each must rebuild its
+  whole viewport once. 0.19.0 asked for that with a flag on the atlas it never
+  cleared: from the first merge on, every render of every terminal rebuilt
+  every cell, the cost growing with the atlas. On a harness of four
+  terminals fed bursts of colorful output (xterm.js 6.0.0, ten bursts), a
+  render took 0.38 ms before the first merge and 0.89 ms by the tenth burst;
+  patched, 0.28 to 0.32 ms throughout, with two full rebuilds per merge. The
+  atlas itself still grows with each new glyph and color pair, patched or
+  not, until the addon's own limit. The patch backports
+  xterm.js's own fix after 6.0.0: a layout version on the atlas (bumped on a
+  merge, an overflow page and `clearTexture`), and each glyph renderer
+  rebuilds once per version it has not seen (`beginFrame`), and again after
+  `setAtlas`. Only `lib/addon-webgl.mjs`, the module Vite bundles, is
+  patched. It goes when an addon release carries the fix (`pageLayoutVersion`
+  in its `TextureAtlas`); pnpm refuses an install where the patch no longer
+  applies.
 - Shortcuts are claimed in the capture phase (`app/keymap.ts`), otherwise xterm
   swallows them; everything unclaimed goes to the CLI. Escape is never claimed.
 
