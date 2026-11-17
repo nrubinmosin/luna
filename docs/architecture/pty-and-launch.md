@@ -247,6 +247,12 @@ the command quotes `"@-"` and calls curl by full path.
   or connectors turned off. Helpers start in `background/`.
 - MCP tokens are never written to disk; the config names `${LUNA_MCP_TOKEN}`.
 - `cwd` must exist.
+- A delete (`PtyManager::delete`) holds the chat's spawn gate from before it
+  takes the session until its cleanup is done: what it clears goes by the
+  chat's id alone (the registry entry and token, the hooks and MCP files, the
+  Codex rollout), and would clear a session spawned under that id meanwhile.
+  Such a spawn waits for the delete. Whether the worktree is shared is asked
+  once the deleted session has quit.
 
 ## Failure modes
 

@@ -91,6 +91,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   not drawn there at all.
 - A panic in the core while it held its list of sessions no longer makes
   every later keystroke, resize, reattach and start panic too.
+- A chat started again under the id of one being deleted waits for the delete
+  rather than losing its registration, hooks file and Codex rollout to the
+  delete's cleanup; and a worktree another session went into while the
+  deleted chat was quitting is kept.
 
 ## [0.18.5] - 2026-11-17
 

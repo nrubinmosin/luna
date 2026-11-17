@@ -40,7 +40,9 @@ lose, and to sweep the ones no chat claims.
 ## Removal
 
 - Deleting a chat takes its worktree and its `worktree-*` branch by default,
-  unless another session or helper works in it (`worktree_shared`). Removal is
+  unless another session or helper works in it (`worktree_shared`, asked once
+  the deleted chat's session has quit, so one that went in meanwhile counts).
+  Removal is
   `git worktree remove -f -f`, since Claude Code locks its worktree and a killed
   one does not release the lock. Only `worktree-*` branches are ever deleted.
   A Codex bucket dir goes once empty.
