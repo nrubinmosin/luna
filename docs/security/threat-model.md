@@ -548,11 +548,12 @@ plugin, not the page); `img-src 'self' data:`; `font-src 'self'`;
 
 Residuals:
 
-- `style-src` allows `'unsafe-inline'`: the pinned xterm.js 5.5.0 has no nonce
-  option and its DOM renderer creates `<style>` elements; Tauri's style nonce is
-  off (`dangerousDisableAssetCspModification`), since a nonce makes the browser
-  ignore `'unsafe-inline'`. Injected CSS can restyle the page but runs no
-  script.
+- `style-src` allows `'unsafe-inline'`: the pinned xterm.js 6.0.0 (with
+  `@xterm/addon-webgl` 0.19.0 and `@xterm/addon-fit` 0.11.0) has no nonce
+  option, and its DOM renderer and scrollbar create `<style>` elements;
+  Tauri's style nonce is off (`dangerousDisableAssetCspModification`), since a
+  nonce makes the browser ignore `'unsafe-inline'`. Injected CSS can restyle
+  the page but runs no script.
 - `devCsp` (only for `pnpm tauri dev`) adds `'unsafe-inline'` to `script-src`
   for the Vite React preamble and `ws://localhost:1420` for HMR.
 - On Windows the policy is a response header; on Linux (and per source,
