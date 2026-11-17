@@ -22,6 +22,7 @@
 //! well inside their stale window: past it a CLI may have taken them and
 //! rotated the token, and the refusal may be of a token already replaced.
 
+use crate::http::{Agent, Error, Timeouts};
 use crate::throttle::now_ms;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -35,8 +36,7 @@ const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const SCOPES: &str = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins";
 /// proper-lockfile's `stale`, as the CLI configures it.
 const LOCK_STALE_MS: u128 = 60_000;
-/// The whole exchange, connect to last byte. The name lookup comes before
-/// ureq's clock starts, which is why `SIGN_OUT_WITHIN` is checked as well.
+/// The whole exchange, from the name lookup to the last byte.
 const EXCHANGE_DEADLINE: Duration = Duration::from_secs(20);
 /// How long after reaching for the locks a refusal may still sign the account
 /// out: half their stale window, so they are certainly still ours. A refusal
@@ -175,16 +175,11 @@ fn exchange(oauth: &Value, refresh_token: &str) -> Result<Value, Exchange> {
         "client_id": oauth["clientId"].as_str().unwrap_or(CLIENT_ID),
         "scope": scope,
     });
-    let resp = ureq::builder()
-        .timeout_connect(Duration::from_secs(5))
-        .timeout_read(Duration::from_secs(15))
-        .timeout(EXCHANGE_DEADLINE)
-        .build()
-        .post(TOKEN_URL)
-        .send_json(body);
+    let t = Timeouts { connect: Duration::from_secs(5), read: Duration::from_secs(15), total: Some(EXCHANGE_DEADLINE) };
+    let resp = Agent::new(t).map_err(Exchange::Failed)?.post(TOKEN_URL).json(&body).call();
     match resp {
-        Ok(r) => r.into_json().map_err(|e| Exchange::Failed(e.to_string())),
-        Err(ureq::Error::Status(code, r)) => Err(refusal(code, &r.into_json().unwrap_or(Value::Null))),
+        Ok(r) => r.json().map_err(Exchange::Failed),
+        Err(Error::Status(code, _, r)) => Err(refusal(code, &r.json().unwrap_or(Value::Null))),
         Err(e) => Err(Exchange::Failed(e.to_string())),
     }
 }

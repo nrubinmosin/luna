@@ -54,12 +54,13 @@ pub use in_use::{session_version, InUse};
 #[cfg(test)]
 pub(crate) use probe::covers as probe_covers;
 
+use crate::http;
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -74,10 +75,10 @@ pub struct Source {
     pub root_name: &'static str,
     /// The executable, relative to a version directory, `/`-separated.
     pub bin_rel: &'static str,
-    pub latest: fn(&ureq::Agent) -> Result<String, String>,
+    pub latest: fn(&http::Agent) -> Result<String, String>,
     /// Puts `version` into `dir`, an empty staging directory, and says what
     /// it put there. What it leaves on failure goes with the directory.
-    pub fetch: fn(&ureq::Agent, &str, &Path, &mut dyn FnMut(u64, Option<u64>)) -> Result<Package, String>,
+    pub fetch: fn(&http::Agent, &str, &Path, &mut dyn FnMut(u64, Option<u64>)) -> Result<Package, String>,
 }
 
 /// What a fetch vouches for, from the release's own account of it: every
@@ -736,8 +737,10 @@ pub fn refresh_periodically() {
 
 // ---------------------------------------------------------------- update --
 
-pub fn http() -> ureq::Agent {
-    ureq::builder().timeout_connect(Duration::from_secs(10)).timeout_read(Duration::from_secs(60)).build()
+/// For the version lookups and the downloads: no deadline on the whole, a
+/// download of hundreds of MB taking as long as the line needs.
+pub fn http() -> Result<http::Agent, String> {
+    http::Agent::new(http::Timeouts { connect: Duration::from_secs(10), read: Duration::from_secs(60), total: None })
 }
 
 /// A version string that came off the network and is about to become a
@@ -767,27 +770,21 @@ pub(crate) fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// Streams `url` into `part`, hashing as it goes, and returns the sha256 hex.
 /// The caller compares it and decides what the file becomes.
-pub fn download_to(agent: &ureq::Agent, url: &str, part: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<String, String> {
-    let resp = agent.get(url).call().map_err(|e| format!("download: {e}"))?;
+pub fn download_to(agent: &http::Agent, url: &str, part: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<String, String> {
+    let mut resp = agent.get(url).call().map_err(|e| format!("download: {e}"))?;
     let total = resp.header("Content-Length").and_then(|s| s.parse::<u64>().ok());
     progress(0, total);
 
-    let mut reader = resp.into_reader();
     let mut file = fs::File::create(part).map_err(|e| format!("create {}: {e}", part.display()))?;
     let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 256 * 1024];
     let mut got: u64 = 0;
     let mut last_report = std::time::Instant::now();
-    loop {
-        let n = reader.read(&mut buf).map_err(|e| format!("download: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buf[..n]).map_err(|e| format!("write: {e}"))?;
-        hasher.update(&buf[..n]);
-        got += n as u64;
-        // A 100MB file at 256KB per chunk is 400 events; one every 200ms is
-        // plenty for a progress label.
+    while let Some(piece) = resp.chunk().map_err(|e| format!("download: {e}"))? {
+        file.write_all(&piece).map_err(|e| format!("write: {e}"))?;
+        hasher.update(&piece);
+        got += piece.len() as u64;
+        // A 100MB file comes in thousands of pieces; a progress event every
+        // 200ms is plenty for a progress label.
         if last_report.elapsed() > Duration::from_millis(200) {
             last_report = std::time::Instant::now();
             progress(got, total);
@@ -864,7 +861,7 @@ fn update_inner(provider: Provider) -> Result<Option<String>, String> {
     let src = source(provider);
     // Before any way out of the pass, a version held by hand among them.
     reconcile_in(&root, src.bin_rel)?;
-    let agent = http();
+    let agent = http()?;
     // Asked on either channel: on the known-good one it is news for the
     // status line, and only `latest` fails without it.
     let latest = (src.latest)(&agent);

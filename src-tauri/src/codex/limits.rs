@@ -4,6 +4,7 @@
 //! not there, the newer of Luna's last answer and the last `token_count` line
 //! of a rollout (the same numbers as of the last turn) stands in.
 
+use crate::http::{Agent, Error, Timeouts};
 use crate::throttle::{self, now_ms};
 use base64::Engine;
 use serde::Serialize;
@@ -11,6 +12,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 pub const RATE_429: &str = "rate-limited";
@@ -70,7 +72,7 @@ fn read_auth_json(account_path: &str) -> Option<Value> {
     let path = Path::new(account_path).join("auth.json");
     for attempt in 0..3 {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(50));
         }
         let Ok(text) = std::fs::read_to_string(&path) else { return None };
         if let Ok(v) = serde_json::from_str::<Value>(&text) {
@@ -168,7 +170,7 @@ fn note_length(minutes: Option<i64>) {
 
 fn iso(secs: Option<i64>) -> Option<String> {
     let t = jiff::Timestamp::from_second(secs?).ok()?;
-    Some(t.to_zoned(jiff::tz::TimeZone::UTC).strftime("%Y-%m-%dT%H:%M:%S%:z").to_string())
+    Some(t.to_zoned_datetime(jiff::tz::TimeZone::UTC).strftime("%Y-%m-%dT%H:%M:%S%:z").to_string())
 }
 
 /// One window of the `wham/usage` response; none without its share, which
@@ -247,27 +249,24 @@ pub fn windows_from_rollout(snapshot: &Value) -> (Vec<LimitWindow>, Option<Strin
 fn get_usage(auth: &Auth) -> Result<Value, String> {
     // The read timeout is per read and the connect one per address, so only
     // the overall one bounds the request as a whole.
-    let mut req = ureq::builder()
-        .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
+    let t = Timeouts { connect: Duration::from_secs(5), read: Duration::from_secs(10), total: Some(Duration::from_secs(15)) };
+    let mut req = Agent::new(t)?
         .get(USAGE_URL)
-        .set("Authorization", &format!("Bearer {}", auth.access))
-        .set("User-Agent", "codex_cli_rs")
-        .set("originator", "codex_cli_rs")
-        .set("Accept", "application/json");
+        .header("Authorization", &format!("Bearer {}", auth.access))
+        .header("User-Agent", "codex_cli_rs")
+        .header("originator", "codex_cli_rs")
+        .header("Accept", "application/json");
     if let Some(id) = &auth.account_id {
-        req = req.set("ChatGPT-Account-Id", id);
+        req = req.header("ChatGPT-Account-Id", id);
     }
     let resp = req.call().map_err(|e| match e {
-        ureq::Error::Status(401, _) => "token expired — run a session to refresh".to_string(),
-        ureq::Error::Status(429, r) => {
+        Error::Status(401, ..) => "token expired — run a session to refresh".to_string(),
+        Error::Status(429, _, r) => {
             format!("{RATE_429}:{}", r.header("retry-after").and_then(|h| h.trim().parse::<u64>().ok()).unwrap_or(0))
         }
         other => other.to_string(),
     })?;
-    resp.into_json().map_err(|e| e.to_string())
+    resp.json()
 }
 
 /// The last answer from the endpoint, per account path, and when it came.
@@ -619,7 +618,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("luna-codex-limits-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":1}"#);
-        let today = jiff::Zoned::now();
+        let today = jiff::ZonedDateTime::now();
         let day = dir.join("sessions").join(today.strftime("%Y/%m/%d").to_string());
         std::fs::create_dir_all(&day).unwrap();
         let auth = serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig"), "refresh_token": "rt" } });

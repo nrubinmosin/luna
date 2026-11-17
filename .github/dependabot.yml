@@ -28,13 +28,9 @@ updates:
     # Each of these is a migration the crate's code has to follow by hand; a
     # monthly PR would fail to compile until then. For cargo Dependabot counts
     # a 0.y -> 0.(y+1) bump as major, the way cargo does, so semver-major
-    # covers sha2 0.11 and hmac 0.13 as well as ureq 3. Lift an entry when the
-    # migration is done.
+    # covers sha2 0.11 and hmac 0.13. Lift an entry when the migration is
+    # done.
     ignore:
-      # ureq 3 reworked the whole API (builder, errors, responses) in five
-      # modules and the hub's tests.
-      - dependency-name: ureq
-        update-types: ['version-update:semver-major']
       # sha2 0.11 and hmac 0.13 build on digest 0.11, a second digest stack
       # beside the 0.10 one tauri's tree still carries; the manifest pins them
       # to what the tree already resolves. Move them when tauri does.

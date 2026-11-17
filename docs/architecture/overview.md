@@ -207,6 +207,7 @@ Smaller modules:
 | `browsers.rs` | which browser a link opens in: a command line with `%1` per browser, found on Windows (StartMenuInternet, each Chromium browser's Local State profiles, Firefox's `profiles.ini`, the https UserChoice handler) plus the user's own; chosen chat → account → folder → default; run by `open_link` (`lib.rs`) with the link as its own argument and no shell |
 | `media.rs` | files pasted or dropped into a pane, copied into the data folder |
 | `throttle.rs` | the cool-off after a 429 from the usage endpoints, shared by both providers |
+| `http.rs` | Luna's own requests (CLI downloads, usage and model lookups, the OAuth refresh): a blocking face over the reqwest the updater brings, rustls on ring against the OS's trust store, no proxy, each call's timeouts its own |
 | `log.rs`, `agentlog.rs` | `luna.log`; `agents.jsonl` |
 | `sysmenu.rs` | Windows' own window menu and frame messages for the undecorated window |
 | `watchdog.rs` | rebuilds a window whose WebView died |

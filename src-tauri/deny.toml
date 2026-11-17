@@ -51,8 +51,9 @@ allow = [
     # Apache-2.0 with an exception that only loosens it: target-lexicon, a
     # build-time dependency of the Linux GTK crates' build scripts.
     "Apache-2.0 WITH LLVM-exception",
-    # The Mozilla CA bundle as data, a permissive data license: webpki-roots and
-    # webpki-root-certs, ureq's trust roots.
+    # The Mozilla CA bundle as data, a permissive data license: webpki-root-certs,
+    # the trust roots rustls-platform-verifier (under reqwest) takes on a target
+    # with no trust store of its own (WebAssembly), which the tree counts too.
     "CDLA-Permissive-2.0",
     # Weak copyleft per file: cssparser, cssparser-macros, selectors, dtoa-short
     # (tauri-utils' HTML handling at build time) and option-ext (under dirs).

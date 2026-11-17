@@ -5,9 +5,10 @@
 //! endpoint is account metadata — no inference, no tokens — so this costs one
 //! request every few hours.
 
+use crate::http::{Agent, Timeouts};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const REFRESH_MS: u64 = 6 * 3600 * 1000;
 
@@ -89,17 +90,16 @@ fn read_token(account_path: &str) -> Option<String> {
 }
 
 fn fetch(token: &str) -> Option<HashMap<String, f64>> {
-    let resp = ureq::builder()
-        .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(std::time::Duration::from_secs(10))
-        .build()
+    let t = Timeouts { connect: Duration::from_secs(5), read: Duration::from_secs(10), total: None };
+    let resp = Agent::new(t)
+        .ok()?
         .get("https://api.anthropic.com/v1/models?limit=100")
-        .set("Authorization", &format!("Bearer {token}"))
-        .set("anthropic-version", "2023-06-01")
-        .set("anthropic-beta", "oauth-2025-04-20")
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("anthropic-version", "2023-06-01")
+        .header("anthropic-beta", "oauth-2025-04-20")
         .call()
         .ok()?;
-    let body: serde_json::Value = resp.into_json().ok()?;
+    let body: serde_json::Value = resp.json().ok()?;
 
     let mut out = HashMap::new();
     for m in body["data"].as_array()? {
@@ -131,7 +131,7 @@ pub fn refresh_soon() {
                 }
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(600));
+        std::thread::sleep(Duration::from_secs(600));
     });
 }
 

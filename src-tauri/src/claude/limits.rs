@@ -1,10 +1,12 @@
 use super::oauth;
+use crate::http::{Agent, Error, Timeouts};
 use crate::throttle::{self, now_ms};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 const BETA_HEADER: &str = "oauth-2025-04-20";
 const RATE_401: &str = "token rejected (401)";
@@ -213,26 +215,19 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
     // Without these a stalled connection hangs the refresh indefinitely. The
     // read timeout is per read and the connect one per address, so only the
     // overall one bounds the request as a whole.
-    let resp = ureq::builder()
-        .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .get(url)
-        .set("Authorization", &format!("Bearer {token}"))
-        .set("anthropic-beta", BETA_HEADER)
-        .call()
-        .map_err(|e| match e {
-            ureq::Error::Status(401, _) => RATE_401.to_string(),
-            // Polling usage too eagerly gets the endpoint throttled; the caller
-            // turns this into a backoff rather than another immediate retry.
-            ureq::Error::Status(429, r) => {
-                format!("{RATE_429}:{}", r.header("retry-after").and_then(|h| h.trim().parse::<u64>().ok()).unwrap_or(0))
-            }
-            ureq::Error::Transport(t) => format!("{OFFLINE}: {t}"),
-            other => other.to_string(),
-        })?;
-    resp.into_json().map_err(|e| e.to_string())
+    let t = Timeouts { connect: Duration::from_secs(5), read: Duration::from_secs(10), total: Some(Duration::from_secs(15)) };
+    let req = Agent::new(t)?.get(url).header("Authorization", &format!("Bearer {token}")).header("anthropic-beta", BETA_HEADER);
+    let resp = req.call().map_err(|e| match e {
+        Error::Status(401, ..) => RATE_401.to_string(),
+        // Polling usage too eagerly gets the endpoint throttled; the caller
+        // turns this into a backoff rather than another immediate retry.
+        Error::Status(429, _, r) => {
+            format!("{RATE_429}:{}", r.header("retry-after").and_then(|h| h.trim().parse::<u64>().ok()).unwrap_or(0))
+        }
+        Error::Transport(t) => format!("{OFFLINE}: {t}"),
+        other => other.to_string(),
+    })?;
+    resp.json()
 }
 
 /// Async so the blocking HTTP work leaves the main thread free. `force` is a

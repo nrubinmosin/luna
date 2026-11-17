@@ -59,7 +59,7 @@ pub(super) fn days_back(from: Date, n: usize) -> impl Iterator<Item = Date> {
 
 /// Today on the wall clock Codex names its day folders by (`local_at`).
 pub(super) fn local_today() -> Date {
-    local_at(jiff::Timestamp::now().as_millisecond()).map_or_else(|| jiff::Zoned::now().date(), |t| t.date())
+    local_at(jiff::Timestamp::now().as_millisecond()).map_or_else(|| jiff::ZonedDateTime::now().date(), |t| t.date())
 }
 
 /// The instant `ms` on the wall clock Codex names its rollouts by: the `time`
@@ -75,7 +75,7 @@ pub(super) fn local_at(ms: i64) -> Option<DateTime> {
     }
     #[cfg(not(windows))]
     {
-        Some(t.to_zoned(jiff::tz::TimeZone::system()).datetime())
+        Some(t.to_zoned_datetime(jiff::tz::TimeZone::system()).datetime())
     }
 }
 
@@ -83,7 +83,7 @@ pub(super) fn local_at(ms: i64) -> Option<DateTime> {
 fn windows_local(t: jiff::Timestamp) -> Option<DateTime> {
     use windows::Win32::Foundation::SYSTEMTIME;
     use windows::Win32::System::Time::SystemTimeToTzSpecificLocalTime;
-    let u = t.to_zoned(jiff::tz::TimeZone::UTC).datetime();
+    let u = t.to_zoned_datetime(jiff::tz::TimeZone::UTC).datetime();
     let utc = SYSTEMTIME {
         wYear: u16::try_from(u.year()).ok()?,
         wMonth: u.month() as u16,
@@ -393,7 +393,7 @@ mod tests {
         unsafe { FileTimeToLocalFileTime(&utc, &mut local) }.unwrap();
         let local_ticks = (u64::from(local.dwHighDateTime) << 32) | u64::from(local.dwLowDateTime);
         let wall_ms = (local_ticks / 10_000) as i64 - 11_644_473_600_000;
-        let os = jiff::Timestamp::from_millisecond(wall_ms).unwrap().to_zoned(jiff::tz::TimeZone::UTC).datetime();
+        let os = jiff::Timestamp::from_millisecond(wall_ms).unwrap().to_zoned_datetime(jiff::tz::TimeZone::UTC).datetime();
         assert_eq!(local_at(ms), Some(os));
     }
 

@@ -37,7 +37,7 @@ fn lock() -> &'static Mutex<()> {
 }
 
 fn stamp() -> String {
-    jiff::Zoned::now().strftime("%Y-%m-%d %H:%M:%S%.3f").to_string()
+    jiff::ZonedDateTime::now().strftime("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
 /// Appends one line. Never returns an error: logging must not be able to break

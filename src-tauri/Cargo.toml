@@ -18,7 +18,7 @@ tauri-build = { version = "2", features = [] }
 sha2 = "0.10"
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
@@ -26,13 +26,17 @@ tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 base64 = "0.23"
-jiff = "0.2"
+jiff = "1"
 serde = { version = "1", features = ["derive"] }
 # preserve_order: a settings file Luna edits keeps its keys where the user put them.
 serde_json = { version = "1", features = ["preserve_order"] }
 dirs = "7"
 portable-pty = "0.9"
-ureq = { version = "2", features = ["json"] }
+# Luna's own requests (src/http.rs): the HTTP client the updater already
+# brings, on its TLS as the updater sets it up, rustls on ring with the OS's
+# trust store, so the tree holds one HTTP stack and one TLS stack.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 sha2 = "0.10"
 # RSA verification of the Claude Code release manifest's signature
 # (src/claude/manifest_sig.rs). The version rustls already brings in.

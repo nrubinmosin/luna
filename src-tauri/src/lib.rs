@@ -28,6 +28,7 @@ mod fingerprint;
 #[cfg(test)]
 mod golden;
 mod guard;
+mod http;
 mod hub;
 mod ipc;
 #[cfg(unix)]
