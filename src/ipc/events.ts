@@ -32,6 +32,16 @@ export const onCliCanary = (cb: (c: { provider: Provider; version: string }) => 
 export const onPtyExit = (cb: (p: PtyExit) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<PtyExit>('pty://exit', e => cb(e.payload)) : Promise.resolve(() => {});
 
+/** A session refused input: its CLI is not reading what waits for it
+ *  (pty/mod.rs `InputTx`). Said once a stretch, on its first refusal. */
+export interface PtyInputRefused {
+  id: string;
+  waitingKb: number;
+}
+
+export const onPtyInputRefused = (cb: (p: PtyInputRefused) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<PtyInputRefused>('pty://input-refused', e => cb(e.payload)) : Promise.resolve(() => {});
+
 export const onPowerState = (cb: (s: PowerStateDto) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<PowerStateDto>('power://state', e => cb(e.payload)) : Promise.resolve(() => {});
 

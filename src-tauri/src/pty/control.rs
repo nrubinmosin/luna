@@ -622,7 +622,7 @@ mod tests {
         let (input_tx, input_rx, written) = InputTx::new(id);
         std::thread::spawn(move || {
             for input in input_rx {
-                written.fetch_sub(input.len(), Ordering::SeqCst);
+                written.release(input.len());
             }
         });
         let session = Session {

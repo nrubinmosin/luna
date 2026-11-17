@@ -223,12 +223,17 @@ the command quotes `"@-"` and calls curl by full path.
   per file and a read a minute.
 - **Queues are bounded.** A session's input waits for its writer thread in a
   queue of at most 8 MB (`InputTx`): past that, keys, pastes and Luna's text
-  are refused with an error (a keystroke's, which nobody waits for, only in
-  the log, once), and so is everything after until the writer has caught up,
-  so what goes in keeps its order with no gap; one write alone may be larger,
-  and resizes always go. The reader hands output to the emitter through 512
-  reads (4 MB) at most; past that the reader waits, and the CLI's writes with
-  it, which the log says once: output is never dropped or reordered.
+  are refused with an error, and so is everything after until the writer has
+  caught up, so what goes in keeps its order with no gap; one write alone may
+  be larger, and resizes always go. The first refusal of a stretch is logged
+  and sent to the window as `pty://input-refused`, which the pane shows as
+  `[keys not delivered: …]`: a keystroke is a send whose answer nobody reads.
+  The core's own answers to its CLI's cursor queries (`InputTx::reply`) are
+  never refused, or a CLI waiting on one would wait for good. Every byte bound
+  takes its room in one step under a lock (`backlog.rs`). The reader hands
+  output to the emitter through 512 reads (4 MB) at most; past that the
+  reader waits, and the CLI's writes with it, which the log says once:
+  output is never dropped or reordered.
 - **Input to Codex as key presses.** ConPTY turns each character into a key
   press on the console's layout, and a character the layout lacks (on a Russian
   layout brackets, `< > ' ~ @ # $ ^ & |`, backtick, dashes) never reached Codex.

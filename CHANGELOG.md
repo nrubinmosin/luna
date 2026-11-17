@@ -112,6 +112,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Writers at once can no longer queue more between them than a byte bound
   lets through, and one page log line longer than its 1 MB bound is written
   when nothing else waits.
+- Keys a session does not take are said in its pane (`[keys not delivered:
+  …]`), and the core's answer to a CLI's cursor query is never refused with
+  them.
 
 ## [0.18.5] - 2026-11-17
 

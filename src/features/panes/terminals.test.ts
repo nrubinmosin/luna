@@ -86,6 +86,7 @@ vi.mock('@xterm/addon-webgl', () => ({
 const pty = vi.hoisted(() => {
   const output = new Set<(p: { id: string; data: string }) => void>();
   const exit = new Set<(p: { id: string; code: number | null }) => void>();
+  const refused = new Set<(p: { id: string; waitingKb: number }) => void>();
   const state = { hold: false, waiting: [] as Array<() => void> };
   const release = () => {
     state.hold = false;
@@ -101,10 +102,23 @@ const pty = vi.hoisted(() => {
       if (!state.hold) return Promise.resolve(unlisten);
       return new Promise<() => void>(resolve => state.waiting.push(() => resolve(unlisten)));
     };
-  return { output, exit, state, release, onPtyOutput: subscribe(output), onPtyExit: subscribe(exit) };
+  return {
+    output,
+    exit,
+    refused,
+    state,
+    release,
+    onPtyOutput: subscribe(output),
+    onPtyExit: subscribe(exit),
+    onPtyInputRefused: subscribe(refused)
+  };
 });
 
-vi.mock('../../ipc/events', () => ({ onPtyOutput: pty.onPtyOutput, onPtyExit: pty.onPtyExit }));
+vi.mock('../../ipc/events', () => ({
+  onPtyOutput: pty.onPtyOutput,
+  onPtyExit: pty.onPtyExit,
+  onPtyInputRefused: pty.onPtyInputRefused
+}));
 vi.mock('../../ipc/sessions', () => ({
   ensureClaudeSession: vi.fn(),
   ensureCodexSession: vi.fn(),
@@ -198,6 +212,15 @@ describe('terminals: the pty behind a terminal', () => {
     term.data.fire('x');
     expect(writesFor('exits')).toEqual([]);
     expect(term.log.at(-1)).toContain('[session exited]');
+  });
+
+  it('says in the pane when its session refused keys, and only for its own', async () => {
+    const { term } = open('stuck');
+    await settle();
+    pty.refused.forEach(cb => cb({ id: 'other', waitingKb: 1 }));
+    expect(term.log.join('')).not.toContain('keys not delivered');
+    pty.refused.forEach(cb => cb({ id: 'stuck', waitingKb: 8192 }));
+    expect(term.log.at(-1)).toContain('keys not delivered: the session is not taking input, 8192 KB waiting');
   });
 
   it('sends nothing for a session that failed to start, and shows why', async () => {

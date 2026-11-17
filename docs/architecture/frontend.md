@@ -153,12 +153,16 @@ up once) lets go of a chat deleted at the next tick.
   switching chats costs no `ensure_session`, reset and redraw. The three most
   recently put away keep their subscriptions; older ones are evicted. Returning
   is a refit plus a nudge to redraw.
+- What the pane says of its session it writes into the terminal itself, never
+  sent to the CLI: `[failed to start session: …]`, `[session exited]`, and
+  `[keys not delivered: …]` when the core refused its keys
+  (`pty://input-refused`), whose own error comes back to nobody.
 - `terminal/`: `theme.ts`, `links.ts`, `keys.ts` (clipboard keys, Alt+arrow
   sent as Ctrl+arrow as xterm did before 6), `scrollback.ts` (the replayed
   tail), `sizing.ts` (fit and repaint), `pty.ts` (the gated pty sender),
-  `ptyRoutes.ts` (one listener each for `pty://output` and `pty://exit`,
-  handing each payload to the terminal of its session; a terminal and the
-  sign-in window start their session only once both listen, and a listener
+  `ptyRoutes.ts` (one listener each for `pty://output`, `pty://exit` and
+  `pty://input-refused`, handing each payload to the terminal of its session;
+  a terminal and the sign-in window start their session only once all listen, and a listener
   that failed to register is tried again by the next terminal; a sign-in
   window closed while its start is under way kills the session once it has
   started, and one opened again on that account listens to the session's id

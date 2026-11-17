@@ -251,6 +251,12 @@ function create(spec: TermSpec): Entry {
       entry.dead = true;
       useChats.getState().setStatus(chatId, 'resting');
       term.write('\r\n\x1b[2m[session exited]\x1b[0m\r\n');
+    },
+    // Keys the session refused were not typed: said in the pane, as a start
+    // that failed is, since a keystroke's error comes back to nobody.
+    refused: waitingKb => {
+      const said = `[keys not delivered: the session is not taking input, ${waitingKb} KB waiting]`;
+      term.write(`\r\n\x1b[31m${said}\x1b[0m\r\n`);
     }
   });
   unlisteners.push(route.unroute);

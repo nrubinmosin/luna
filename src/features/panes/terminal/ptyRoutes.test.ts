@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-/** The pty's two events, each listener kept; `fail` makes the next listen
+/** The pty's events, each listener kept; `fail` makes the next listen
  *  of that event reject. */
 const events = vi.hoisted(() => {
   const output: Array<(p: { id: string; data: string }) => void> = [];
   const exit: Array<(p: { id: string; code: number | null }) => void> = [];
-  const fail = { output: false, exit: false };
+  const refused: Array<(p: { id: string; waitingKb: number }) => void> = [];
+  const fail = { output: false, exit: false, refused: false };
   const listen =
-    <T>(list: Array<(p: T) => void>, which: 'output' | 'exit') =>
+    <T>(list: Array<(p: T) => void>, which: 'output' | 'exit' | 'refused') =>
     (cb: (p: T) => void) => {
       if (fail[which]) {
         fail[which] = false;
@@ -16,10 +17,22 @@ const events = vi.hoisted(() => {
       list.push(cb);
       return Promise.resolve(() => {});
     };
-  return { output, exit, fail, onPtyOutput: listen(output, 'output'), onPtyExit: listen(exit, 'exit') };
+  return {
+    output,
+    exit,
+    refused,
+    fail,
+    onPtyOutput: listen(output, 'output'),
+    onPtyExit: listen(exit, 'exit'),
+    onPtyInputRefused: listen(refused, 'refused')
+  };
 });
 
-vi.mock('../../../ipc/events', () => ({ onPtyOutput: events.onPtyOutput, onPtyExit: events.onPtyExit }));
+vi.mock('../../../ipc/events', () => ({
+  onPtyOutput: events.onPtyOutput,
+  onPtyExit: events.onPtyExit,
+  onPtyInputRefused: events.onPtyInputRefused
+}));
 
 /** The router as a page that has not listened yet finds it. */
 async function freshRouter() {
@@ -35,8 +48,10 @@ const recorder = () => {
 beforeEach(() => {
   events.output.length = 0;
   events.exit.length = 0;
+  events.refused.length = 0;
   events.fail.output = false;
   events.fail.exit = false;
+  events.fail.refused = false;
 });
 
 describe('ptyRoutes', () => {
@@ -48,6 +63,7 @@ describe('ptyRoutes', () => {
     await routePty('b', b.route).ready;
     expect(events.output).toHaveLength(1);
     expect(events.exit).toHaveLength(1);
+    expect(events.refused).toHaveLength(1);
 
     events.output[0]!({ id: 'a', data: 'for a' });
     events.output[0]!({ id: 'b', data: 'for b' });

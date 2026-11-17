@@ -340,7 +340,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                         }
                     }
                 }
-                input_waiting.fetch_sub(len, Ordering::SeqCst);
+                input_waiting.release(len);
             }
         });
     }
@@ -465,20 +465,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                                 sb.bytes.extend(piece.iter().copied());
                                 sb.written += piece.len() as u64;
                                 drop(sb);
-                                let sent = match tx.try_send(piece) {
-                                    Err(std::sync::mpsc::TrySendError::Full(piece)) => {
-                                        if !behind {
-                                            behind = true;
-                                            crate::log::warn(
-                                                "pty",
-                                                &format!("{reading}'s output is ahead of what goes to the window; reading it waits"),
-                                            );
-                                        }
-                                        tx.send(piece).is_ok()
-                                    }
-                                    sent => sent.is_ok(),
-                                };
-                                if !sent {
+                                if !hand_on(&tx, piece, &mut behind, &reading) {
                                     break 'read;
                                 }
                             }
@@ -489,7 +476,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                                 let size = *size.lock().unwrap_or_else(|e| e.into_inner());
                                 let (row, col) = drawn_screen(&drawn, &scrollback, size, |s| s.cursor_position());
                                 if let Some(input) = replies.upgrade() {
-                                    let _ = input.send(Input::Bytes(format!("\x1b[{};{}R", row + 1, col + 1).into_bytes()));
+                                    let _ = input.reply(format!("\x1b[{};{}R", row + 1, col + 1).into_bytes());
                                 }
                             }
                         }
@@ -601,6 +588,23 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     Ok(String::new())
 }
 
+/// Hands a piece of `who`'s output on to its emitter, waiting while the
+/// channel is full (`OUTPUT_PIECES`): the reader then reads nothing more, and
+/// the CLI's writes wait, but nothing is dropped and nothing overtakes. The
+/// first wait is logged (`behind`). False once the emitter is gone.
+fn hand_on(tx: &std::sync::mpsc::SyncSender<Vec<u8>>, piece: Vec<u8>, behind: &mut bool, who: &str) -> bool {
+    match tx.try_send(piece) {
+        Err(std::sync::mpsc::TrySendError::Full(piece)) => {
+            if !*behind {
+                *behind = true;
+                crate::log::warn("pty", &format!("{who}'s output is ahead of what goes to the window; reading it waits"));
+            }
+            tx.send(piece).is_ok()
+        }
+        sent => sent.is_ok(),
+    }
+}
+
 /// The same clean-up for a process started without a pty (background/).
 pub(crate) fn clean_env(cmd: &mut Command) {
     for k in removed_env() {
@@ -704,6 +708,32 @@ mod tests {
         let _ = capture::take("captured-as-admin");
         assert_eq!(captured, Err("built".into()), "the launch was built, to be captured");
         assert!(live.is_err_and(|e| e != "built"), "refused before it was built");
+    }
+
+    /// Output handed on faster than the emitter takes it waits, all of it in
+    /// order: nothing is dropped and nothing overtakes; the wait is noted once.
+    #[test]
+    fn output_ahead_of_the_emitter_waits_in_order() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(2);
+        let emitter = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            while let Ok(piece) = rx.recv() {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                got.push(piece);
+            }
+            got
+        });
+        let mut behind = false;
+        for n in 0..50u8 {
+            assert!(hand_on(&tx, vec![n], &mut behind, "out-test"));
+        }
+        drop(tx);
+        let got = emitter.join().unwrap();
+        assert_eq!(got, (0..50u8).map(|n| vec![n]).collect::<Vec<_>>());
+        assert!(behind, "the reader waited");
+        let (gone, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+        drop(rx);
+        assert!(!hand_on(&gone, vec![1], &mut behind, "out-test"), "an emitter gone ends the reader");
     }
 
     #[test]

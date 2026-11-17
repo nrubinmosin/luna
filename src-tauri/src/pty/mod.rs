@@ -79,25 +79,36 @@ const INPUT_MAX: u64 = 8 * 1024 * 1024;
 /// writer thread in order, counted by its bytes until it is written. Past
 /// `INPUT_MAX` waiting, input is refused with an error, and so is all input
 /// after it until the writer has caught up, so what does go in keeps its
-/// order with no gap; the log says so once. One write alone may be larger
-/// than the bound. Resizes count for nothing.
+/// order with no gap. The first refusal of a stretch is logged and told to
+/// the window (`pty://input-refused`), which shows it in the pane: a
+/// keystroke goes to the core as a send nobody waits on, and its error would
+/// otherwise reach nobody. One write alone may be larger than the bound.
+/// Resizes, and the core's own answers to its CLI's queries (`reply`), are
+/// never refused.
 struct InputTx {
     id: String,
     tx: std::sync::mpsc::Sender<Input>,
-    /// Bytes handed over and not written yet; the writer takes off what it
+    /// Bytes handed over and not written yet; the writer gives back what it
     /// has written.
-    waiting: Arc<AtomicU64>,
-    refusing: AtomicBool,
+    waiting: Arc<crate::backlog::Backlog>,
+}
+
+/// What the window is told of input a session refused.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InputRefused<'a> {
+    id: &'a str,
+    waiting_kb: u64,
 }
 
 impl InputTx {
     /// A queue for session `id`, with the end its writer thread reads and
-    /// the count it takes written bytes off.
-    fn new(id: &str) -> (InputTx, std::sync::mpsc::Receiver<Input>, Arc<AtomicU64>) {
+    /// the backlog it gives written bytes back to.
+    fn new(id: &str) -> (InputTx, std::sync::mpsc::Receiver<Input>, Arc<crate::backlog::Backlog>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        let waiting = Arc::new(AtomicU64::new(0));
+        let waiting: Arc<crate::backlog::Backlog> = Arc::default();
         let theirs = Arc::clone(&waiting);
-        (InputTx { id: id.to_string(), tx, waiting, refusing: AtomicBool::new(false) }, rx, theirs)
+        (InputTx { id: id.to_string(), tx, waiting }, rx, theirs)
     }
 
     /// One nobody reads: a session whose process has gone takes no input.
@@ -107,22 +118,34 @@ impl InputTx {
 
     fn send(&self, input: Input) -> Result<(), String> {
         let len = input.len();
-        let waiting = self.waiting.load(Ordering::SeqCst);
-        if waiting == 0 {
-            self.refusing.store(false, Ordering::SeqCst);
+        if len == 0 {
+            return self.hand_over(input, 0);
         }
-        if len > 0 && (self.refusing.load(Ordering::SeqCst) || (waiting > 0 && waiting + len > INPUT_MAX)) {
-            if !self.refusing.swap(true, Ordering::SeqCst) {
-                crate::log::warn(
-                    "pty",
-                    &format!("{}'s CLI is not taking input: {} KB waiting to be written; refusing more", self.id, waiting / 1024),
-                );
+        if let Err(refused) = self.waiting.reserve_in_order(len, INPUT_MAX) {
+            let waiting_kb = refused.waiting / 1024;
+            if refused.first {
+                let id = &self.id;
+                crate::log::warn("pty", &format!("{id}'s CLI is not taking input: {waiting_kb} KB waiting to be written; refusing more"));
+                crate::emit::to_ui("pty://input-refused", InputRefused { id: &self.id, waiting_kb });
             }
-            return Err(format!("the session is not taking input: {} KB waiting to be written", waiting / 1024));
+            return Err(format!("the session is not taking input: {waiting_kb} KB waiting to be written"));
         }
-        self.waiting.fetch_add(len, Ordering::SeqCst);
+        self.hand_over(input, len)
+    }
+
+    /// The core's own answer to a query its CLI made (the cursor's place):
+    /// queued whatever waits, as a terminal would answer. A CLI that waits
+    /// for it would otherwise wait for good once its input was refused.
+    fn reply(&self, bytes: Vec<u8>) -> Result<(), String> {
+        let len = bytes.len() as u64;
+        self.waiting.force(len);
+        self.hand_over(Input::Bytes(bytes), len)
+    }
+
+    /// `input` to the writer, its `len` bytes reserved already.
+    fn hand_over(&self, input: Input, len: u64) -> Result<(), String> {
         self.tx.send(input).map_err(|_| {
-            self.waiting.fetch_sub(len, Ordering::SeqCst);
+            self.waiting.release(len);
             "session writer is gone".to_string()
         })
     }
@@ -369,14 +392,18 @@ mod tests {
         assert!(tx.send(Input::Resize(PtySize { rows: 1, cols: 1, pixel_width: 0, pixel_height: 0 })).is_ok());
         // The writer takes one: room again, but nothing goes in before it has them all.
         let first = rx.recv().unwrap();
-        waiting.fetch_sub(first.len(), Ordering::SeqCst);
+        waiting.release(first.len());
         assert!(tx.send(Input::Bytes(b"d".to_vec())).is_err(), "no gap: refused until caught up");
-        for input in rx.try_iter() {
-            waiting.fetch_sub(input.len(), Ordering::SeqCst);
+        // The core's answer to a cursor query goes all the same, behind what waits.
+        tx.reply(b"\x1b[1;1R".to_vec()).unwrap();
+        let rest: Vec<Input> = rx.try_iter().collect();
+        assert!(matches!(rest.last(), Some(Input::Bytes(b)) if b == b"\x1b[1;1R"), "the answer came last");
+        for input in rest {
+            waiting.release(input.len());
         }
         assert!(tx.send(Input::Bytes(b"e".to_vec())).is_ok());
         let e = rx.recv().unwrap();
-        waiting.fetch_sub(e.len(), Ordering::SeqCst);
+        waiting.release(e.len());
         assert!(tx.send(Input::Bytes(vec![b'f'; INPUT_MAX as usize + 1])).is_ok(), "one write alone may be larger");
         assert!(InputTx::closed("in-gone").send(Input::Bytes(b"x".to_vec())).is_err());
     }
