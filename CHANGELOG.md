@@ -56,6 +56,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   load as before.
 - The power chip's state goes to the window only when it changes, not at
   every sample.
+- The window's commands that only read files run off its main thread, and
+  so do its log lines and the keystrokes it passes to the core, so a slow
+  disk or a busy core no longer holds the window up. Keystrokes a core does
+  not take are refused past 8 MB waiting, with an error, rather than held.
 
 ### Fixed
 

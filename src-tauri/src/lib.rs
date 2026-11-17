@@ -432,6 +432,8 @@ pub fn run() {
                 }
             }
             if let tauri::RunEvent::Exit = &event {
+                // The page's last lines go in before the way out is said.
+                log::flush_page_lines(std::time::Duration::from_secs(2));
                 // Every way out that names itself has done so by now.
                 lifecycle::exiting("the event loop ended");
                 // A Claude Code model ask may still be saving a renewed

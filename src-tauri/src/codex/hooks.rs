@@ -33,7 +33,7 @@ fn kept(s: &crate::settings::Settings, folder: &str) -> Option<bool> {
     s.codex_hooks_unasked_in.iter().find(|(path, _)| crate::pty::same_dir(path, folder)).map(|(_, on)| *on)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn codex_hooks_start(folder: String) -> HookStart {
     let s = crate::settings::get();
     HookStart { default: s.codex_hooks_unasked, kept: kept(&s, &folder) }

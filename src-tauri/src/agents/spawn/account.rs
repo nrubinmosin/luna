@@ -168,7 +168,7 @@ pub fn account_usage(usage: HashMap<String, serde_json::Value>) {
 }
 
 /// Account names the user has switched off for agents, as `provider/name`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_blocked_accounts() -> Vec<String> {
     crate::settings::get().agent_blocked_accounts
 }

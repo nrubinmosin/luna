@@ -30,10 +30,16 @@ list and the board; the core owns sessions
 commands through `core_call` (and terminal input through `core_send`), times
 every call (a sync Tauri command runs on the main thread, so a slow one looks
 like a hang), logs failures, and in a plain browser answers from the demo or a
-fallback. One module per domain holds its commands and DTOs: `accounts`,
-`sessions`, `worktrees`, `defaults`, `trust`, `media`, `cli`, `power`,
-`coreProcess`, `agents`, `accountSettings`, `library`, `browsers`,
-`accountConfig`; `events.ts` wraps `listen`. Tests mock per module.
+fallback. A window command that only reads files is `async` or `command(async)`,
+off the main thread. One that changes a setting or a file stays sync, so the
+person's changes land in the order made: run on the async runtime, two quick
+ones could finish the other way round. `core_send` hands its frame to the
+connection's writer thread and `append_log` its line to the log's, each bounded
+by the bytes waiting and refusing past that with an error.
+One module per domain holds its commands and DTOs: `accounts`, `sessions`,
+`worktrees`, `defaults`, `trust`, `media`, `cli`, `power`, `coreProcess`,
+`agents`, `accountSettings`, `library`, `browsers`, `accountConfig`;
+`events.ts` wraps `listen`. Tests mock per module.
 
 What the page may call is fixed in Rust, not here
 ([ADR-0015](../adr/0015-the-page-gets-only-what-it-calls.md)):

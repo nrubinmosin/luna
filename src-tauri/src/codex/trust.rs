@@ -121,7 +121,7 @@ fn under_root(folder: &str, roots: &[String]) -> bool {
         .any(|r| folder == r || folder.starts_with(&format!("{r}{sep}")))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn codex_trusted_roots() -> Vec<String> {
     crate::settings::get().codex_trusted_roots
 }

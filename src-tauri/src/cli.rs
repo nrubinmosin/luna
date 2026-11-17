@@ -523,7 +523,7 @@ pub fn cli_canary_dismiss(provider: Provider) -> Result<(), String> {
     canary::dismiss_in(&root(provider))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cli_versions(provider: Provider) -> CliVersions {
     let src = source(provider);
     CliVersions { provider: Some(provider), ..versions_in(&root(provider), src.bin_rel, known_good::entry(provider)) }

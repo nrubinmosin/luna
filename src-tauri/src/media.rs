@@ -37,7 +37,7 @@ fn sanitize(raw: &str) -> String {
 
 /// `data` is base64 — a raw JS byte array would cross the IPC bridge as a JSON
 /// list of numbers, roughly 4x the payload for a screenshot.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_media(chat_id: String, name: String, data: String) -> Result<String, String> {
     let bytes = STANDARD.decode(data.as_bytes()).map_err(|e| e.to_string())?;
     if bytes.is_empty() {

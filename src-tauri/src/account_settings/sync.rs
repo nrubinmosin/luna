@@ -141,7 +141,7 @@ pub struct SyncState {
     pub on_start: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn settings_sync_state() -> SyncState {
     let s = crate::settings::get();
     SyncState { claude: s.settings_parents.claude, codex: s.settings_parents.codex, on_start: s.settings_sync_on_start }

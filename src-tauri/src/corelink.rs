@@ -47,9 +47,103 @@ pub struct LinkState {
 /// The connection in use: its writing end and the requests waiting on it.
 /// `pending` is None once the connection has ended: a request let in after
 /// the last of them heard so would wait for an answer nothing can bring.
+///
+/// Frames go out through `out` to one thread of the connection's own
+/// (`writer`), in the order they were handed over. A write blocks while the
+/// core is not reading, and `core_send` runs on the window's main thread:
+/// writing there itself, under a lock that request threads held through
+/// their own writes, it held the window up behind them.
+///
+/// What waits to be written is bounded by its bytes (`OUT_MAX`): past that a
+/// frame is refused with an error, and so is every one after it until the
+/// writer has caught up with all of them, so the frames that do go out keep
+/// the order they were handed over in with no gap between them.
 struct Conn {
-    writer: Mutex<Stream>,
+    out: Sender<Vec<u8>>,
+    backlog: Arc<Backlog>,
+    /// Bytes past which frames are refused (`OUT_MAX`).
+    max: usize,
     pending: Mutex<Option<HashMap<u64, Sender<Result<Value, String>>>>>,
+}
+
+/// How many bytes of frames may wait for the writer: keystrokes and a paste
+/// or two, many times over, where a core that has stopped reading would
+/// otherwise have the window hold whatever is typed at it.
+const OUT_MAX: usize = 8 * 1024 * 1024;
+
+/// The bytes handed to a connection's writer and not written yet, and
+/// whether frames are being refused until it has written them all.
+#[derive(Default)]
+struct Backlog {
+    bytes: AtomicU64,
+    refusing: AtomicBool,
+}
+
+impl Conn {
+    /// A connection writing to `stream` from a thread of its own.
+    fn over(stream: impl Write + Send + 'static) -> Arc<Conn> {
+        Self::over_bounded(stream, OUT_MAX)
+    }
+
+    /// `over`, refusing past `max` bytes waiting.
+    fn over_bounded(stream: impl Write + Send + 'static, max: usize) -> Arc<Conn> {
+        Arc::new_cyclic(|conn| {
+            let (out, frames) = channel();
+            let backlog = Arc::new(Backlog::default());
+            let (conn, written) = (std::sync::Weak::clone(conn), Arc::clone(&backlog));
+            let spawned = std::thread::Builder::new().name("luna-core-writer".into()).spawn(move || writer(stream, frames, conn, &written));
+            if let Err(e) = spawned {
+                // No writer: every frame handed over is refused, as to a
+                // core that cannot be reached.
+                crate::log::error("core", &format!("cannot start the connection's writer: {e}"));
+            }
+            Conn { out, backlog, pending: Mutex::new(Some(HashMap::new())), max }
+        })
+    }
+
+    /// Hands a frame to the writer; Err once it has stopped, and while what
+    /// waits for it is over its bound (`Backlog`). One frame alone may be
+    /// larger than the bound.
+    fn send(&self, frame: Vec<u8>) -> Result<(), String> {
+        let len = frame.len() as u64;
+        let waiting = self.backlog.bytes.load(Ordering::SeqCst);
+        if waiting == 0 {
+            self.backlog.refusing.store(false, Ordering::SeqCst);
+        }
+        if self.backlog.refusing.load(Ordering::SeqCst) || (waiting > 0 && waiting + len > self.max as u64) {
+            if !self.backlog.refusing.swap(true, Ordering::SeqCst) {
+                crate::log::warn(
+                    "core",
+                    &format!("the core is not taking input: {} KB waiting to be written; refusing more", waiting / 1024),
+                );
+            }
+            return Err(format!("the core is not taking input: {} KB waiting to be written", waiting / 1024));
+        }
+        self.backlog.bytes.fetch_add(len, Ordering::SeqCst);
+        self.out.send(frame).map_err(|_| {
+            self.backlog.bytes.fetch_sub(len, Ordering::SeqCst);
+            "the core is not reachable".to_string()
+        })
+    }
+}
+
+/// Writes the frames handed over, in order, until every sender is gone (the
+/// connection let go) or a write fails. On a failure the connection is over:
+/// it is logged, whoever waits on an answer hears that the core cannot be
+/// reached, no request is let in after, and no frame is taken.
+fn writer(mut stream: impl Write, frames: std::sync::mpsc::Receiver<Vec<u8>>, conn: std::sync::Weak<Conn>, backlog: &Backlog) {
+    for frame in frames {
+        if let Err(e) = stream.write_all(&frame).and_then(|_| stream.flush()) {
+            let waiting = conn.upgrade().and_then(|c| c.pending.lock().unwrap_or_else(|e| e.into_inner()).take());
+            let waiting: Vec<_> = waiting.into_iter().flatten().collect();
+            crate::log::warn("core", &format!("writing to the core failed: {e}; {} request(s) told so", waiting.len()));
+            for (_, tx) in waiting {
+                let _ = tx.send(Err(format!("the core is not reachable: {e}")));
+            }
+            return;
+        }
+        backlog.bytes.fetch_sub(frame.len() as u64, Ordering::SeqCst);
+    }
 }
 
 static CURRENT: Mutex<Option<Arc<Conn>>> = Mutex::new(None);
@@ -96,7 +190,7 @@ fn connect() {
                     set(LinkState { state: "down", core: None, error: Some("cannot use the connection".into()) });
                     return;
                 };
-                let conn = Arc::new(Conn { writer: Mutex::new(writer), pending: Mutex::new(Some(HashMap::new())) });
+                let conn = Conn::over(writer);
                 // A restart has taken over from here, or is stopping this core
                 // to start the next: no core for this connection to stand for.
                 // Looked at under the lock every taking of the line holds, so a
@@ -457,19 +551,13 @@ pub(crate) fn request(cmd: String, args: Value) -> Result<Value, String> {
         Some(pending) => pending.insert(id, tx),
         None => return Err("the core stopped".into()),
     };
-    if let Err(e) = write(&conn, &frame) {
+    if let Err(e) = conn.send(frame) {
         if let Some(pending) = conn.pending.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             pending.remove(&id);
         }
-        return Err(format!("the core is not reachable: {e}"));
+        return Err(e);
     }
     rx.recv().unwrap_or_else(|_| Err("the core stopped".into()))
-}
-
-fn write(conn: &Conn, frame: &[u8]) -> io::Result<()> {
-    let mut w = conn.writer.lock().unwrap_or_else(|e| e.into_inner());
-    w.write_all(frame)?;
-    w.flush()
 }
 
 /// Starts a core of this build, detached: it is meant to outlive the window.
@@ -607,19 +695,111 @@ pub async fn core_call(cmd: String, args: Value) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || request(cmd, args)).await.map_err(|e| e.to_string())?
 }
 
-/// Keystrokes and resizes: written to the core in the order they come, and
-/// not waited on. Sync, so the page's calls keep their order.
+/// Keystrokes and resizes: handed to the connection's writer in the order
+/// they come, and not waited on, written or answered. Sync, so the page's
+/// calls keep their order; the write is the writer's (`Conn`).
 #[tauri::command]
 pub fn core_send(cmd: String, args: Value) -> Result<(), String> {
     passes(&cmd, corecmd::Lane::Send)?;
     let conn = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("the core is not running")?;
     let frame = ipc::encode(ipc::SEND, &Req { id: 0, cmd, args }).map_err(|e| e.to_string())?;
-    write(&conn, &frame).map_err(|e| format!("the core is not reachable: {e}"))
+    conn.send(frame)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pipe end whose writes wait until `open`, as a core that is not
+    /// reading holds them, or fail at once with `fail`.
+    struct Pipe {
+        open: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        got: Arc<Mutex<Vec<u8>>>,
+        fail: bool,
+    }
+
+    impl Write for Pipe {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            if self.fail {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "gone"));
+            }
+            let (lock, cv) = &*self.open;
+            let _open = cv.wait_while(lock.lock().unwrap(), |open| !*open).unwrap();
+            self.got.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Keystrokes are handed over, never written by the caller: a core that
+    /// is not reading holds none of them, and they go out in the order sent.
+    #[test]
+    fn a_send_never_waits_on_the_write_and_frames_keep_their_order() {
+        let open = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let conn = Conn::over(Pipe { open: Arc::clone(&open), got: Arc::clone(&got), fail: false });
+        let started = std::time::Instant::now();
+        for frame in [b"one ".to_vec(), b"two ".to_vec(), b"three".to_vec()] {
+            conn.send(frame).unwrap();
+        }
+        assert!(started.elapsed() < Duration::from_secs(1), "handed over, not written");
+        assert!(got.lock().unwrap().is_empty(), "the pipe holds them");
+        *open.0.lock().unwrap() = true;
+        open.1.notify_all();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while got.lock().unwrap().len() < 13 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(&got.lock().unwrap()[..], b"one two three");
+    }
+
+    /// A core that does not read: past the bound each frame is refused with
+    /// an error, and so is every one after until all that waited is written;
+    /// what went out went in order, with no gap.
+    #[test]
+    fn past_its_bound_input_is_refused_until_the_writer_has_caught_up() {
+        let open = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let conn = Conn::over_bounded(Pipe { open: Arc::clone(&open), got: Arc::clone(&got), fail: false }, 10);
+        conn.send(b"aaaa".to_vec()).unwrap();
+        conn.send(b"bbbb".to_vec()).unwrap();
+        let refused = conn.send(b"cccc".to_vec()).unwrap_err();
+        assert!(refused.contains("not taking input"), "{refused}");
+        assert!(conn.send(b"d".to_vec()).is_err(), "nothing slips in behind a refusal");
+        *open.0.lock().unwrap() = true;
+        open.1.notify_all();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while conn.backlog.bytes.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        conn.send(b"eeee".to_vec()).unwrap();
+        while got.lock().unwrap().len() < 12 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(&got.lock().unwrap()[..], b"aaaabbbbeeee");
+        // One frame larger than the bound goes when nothing waits.
+        conn.send(vec![b'f'; 64]).unwrap();
+    }
+
+    /// A write that fails ends the connection: who waits on an answer hears
+    /// so, and nothing is taken after.
+    #[test]
+    fn a_failed_write_tells_the_waiting_and_takes_nothing_more() {
+        let conn = Conn::over(Pipe { open: Arc::default(), got: Arc::default(), fail: true });
+        let (tx, rx) = channel();
+        conn.pending.lock().unwrap().as_mut().unwrap().insert(1, tx);
+        conn.send(b"frame".to_vec()).unwrap();
+        let heard = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(heard.unwrap_err().contains("not reachable"));
+        assert!(conn.pending.lock().unwrap().is_none(), "no request let in after");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while conn.send(b"more".to_vec()).is_ok() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(conn.send(b"more".to_vec()).is_err(), "the writer is gone");
+    }
 
     #[test]
     fn the_page_cannot_have_the_window_pass_on_what_the_core_does_not_list() {

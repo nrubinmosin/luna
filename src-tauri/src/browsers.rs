@@ -49,7 +49,7 @@ pub struct Browsers {
     pub settings: BrowserSettings,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn browsers() -> Browsers {
     Browsers { system: imp::system_command(), found: imp::found(), settings: crate::settings::get().browsers }
 }

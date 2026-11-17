@@ -596,7 +596,7 @@ fn info() -> Result<AccountsRootInfo, String> {
     Ok(AccountsRootInfo { path: crate::accounts::accounts_root()?.to_string_lossy().into_owned(), is_default: s.accounts_root.is_none() })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_accounts_root() -> Result<AccountsRootInfo, String> {
     info()
 }

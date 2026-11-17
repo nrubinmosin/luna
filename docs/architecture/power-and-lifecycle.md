@@ -340,7 +340,10 @@ WARN). A helper turn's line gives the CLI's arguments with the chat's hook and
 guard URLs, which carry its secret, as `<hook-url>` and `<guard-url>`, and the
 helper's identity line as its length (`background/run.rs` `args_for_log`).
 Sessions are named by id and chat name (`agents::label`). Every line names the version; each launch opens with a
-`START` line.
+`START` line. The page's own lines (`append_log`) go to a writer thread of the
+window's, in the order they came and stamped when they came, never written on
+its main thread; past 1 MB waiting a line is refused, and the log says how many
+were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`).
 
 ## Failure modes
 

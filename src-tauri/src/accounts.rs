@@ -52,7 +52,7 @@ pub(crate) fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_accounts() -> Result<Vec<AccountInfo>, String> {
     let mut out = vec![];
     for provider in Provider::ALL {
@@ -77,7 +77,7 @@ pub fn list_accounts() -> Result<Vec<AccountInfo>, String> {
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_account(provider: Provider, name: String) -> Result<AccountInfo, String> {
     validate_name(&name)?;
     let dir = provider_root(provider)?.join(&name);

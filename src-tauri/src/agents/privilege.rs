@@ -404,7 +404,7 @@ fn within_or_above(a: &str, b: &str) -> bool {
 }
 
 /// The user lets helpers run with more privilege than the session spawning them.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn helpers_above_caller() -> bool {
     crate::settings::get().helpers_above_caller
 }

@@ -238,6 +238,7 @@ pub fn exiting(reason: &str) {
 pub fn note_exit(reason: Option<String>) {
     match reason {
         Some(r) => {
+            crate::log::flush_page_lines(Duration::from_secs(2));
             exiting(&r);
             // On Windows the install ends the process with exit(0), past the
             // event loop's end where Luna's other ways out wait for it.
@@ -355,6 +356,7 @@ pub fn wait_for_previous() {
 /// PC being shut down under Luna. Does what the app's own exit would: no new
 /// events, the power request let go.
 pub fn end_process() -> ! {
+    crate::log::flush_page_lines(Duration::from_secs(2));
     crate::emit::stop();
     crate::power::clear();
     std::process::exit(0)

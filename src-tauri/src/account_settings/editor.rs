@@ -91,7 +91,7 @@ pub fn format_account_config(provider: Provider, text: String) -> Result<String,
 
 /// The page's account path is held to an account folder of Luna's
 /// (boundary.rs) before anything there is read or written.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_account_config(provider: Provider, account_path: crate::boundary::AccountPath) -> Result<ConfigFile, String> {
     read_config_file(provider, &String::from(account_path))
 }
