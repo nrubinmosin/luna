@@ -8,6 +8,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.18.4] - 2026-11-17
+
+A lead now hears of its helpers while its own background subagents run, and
+a parent is told plainly when a helper's turn left nothing running. A
+helper's permission request reaches its parent whole, and an account whose
+sign-in the server refused stays signed out everywhere.
+
 ### Fixed
 
 - A helper's permission request reaches its parent whole: `ask.detail` in
@@ -1362,7 +1369,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.3...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.4...HEAD
+[0.18.4]: https://github.com/nrubinmosin/luna/compare/v0.18.3...v0.18.4
 [0.18.3]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.3
 [0.18.2]: https://github.com/nrubinmosin/luna/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/nrubinmosin/luna/compare/v0.18.0...v0.18.1
