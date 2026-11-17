@@ -67,6 +67,10 @@ const LOG_CHARS: usize = 300;
 /// CLI is told nobody answered. Under the MCP call timeout the CLIs are given
 /// (pty/start.rs `MCP_TOOL_TIMEOUT_MS`).
 const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// How many of what was moved onto stdin a helper keeps past the process that
+/// took it (`Entry::drained`): the sends that may still be looking for theirs
+/// are the few in flight in this moment, not one per process.
+const DRAINED_KEPT: usize = 16;
 
 struct Entry {
     spec: Spec,
@@ -90,6 +94,13 @@ struct Entry {
     /// Text that joined the running turn on stdin, until the CLI says it took
     /// it in. One killed before that has not kept it, whatever the pipe took.
     fed: Vec<Queued>,
+    /// What was moved from its queue onto its running process's stdin
+    /// (events.rs `feed_queued`), oldest first: all of it while that process
+    /// runs, the last DRAINED_KEPT once it is gone (`turn_over`). A send
+    /// whose debt goes in only after its text was moved, taken in and
+    /// answered, and the process gone, still finds what it is owed by there
+    /// (`moved_onto_stdin_at`). Not saved: a core gone takes the send with it.
+    drained: Vec<Drained>,
     log: VecDeque<String>,
     /// What it is held on, oldest first: parallel subagents and tool calls ask
     /// at once, and the first still unanswered is the one shown.

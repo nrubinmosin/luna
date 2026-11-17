@@ -151,7 +151,7 @@ pub(super) fn listen_while_owed(e: &mut Entry, owed: bool, now: u64) {
 /// background tasks run. Text its CLI would read as a command stays for the
 /// next process, its sender asked again then (queue.rs `settle_batch`), and
 /// what came after it with it. Whether any went. What went is kept in
-/// `Run::drained`: its senders' answers end this process now, not the next
+/// `Entry::drained`: its senders' answers end this process now, not the next
 /// one their debts were put past as it queued (agents/owed.rs
 /// `moved_onto_stdin`).
 pub(super) fn feed_queued(e: &mut Entry) -> bool {
@@ -161,39 +161,40 @@ pub(super) fn feed_queued(e: &mut Entry) -> bool {
     let mut fed = false;
     while e.queue.first().is_some_and(|q| crate::agents::command_prefix(&q.text).is_none()) {
         let q = e.queue.remove(0);
-        let moved = (q.id.clone(), q.from.clone());
+        let moved = Drained { id: q.id.clone(), from: q.from.clone(), turns_ended: e.turns_ended };
         if let Err(q) = write_line(e, q) {
             e.queue.insert(0, q);
             break;
         }
-        if let Some(run) = e.run.as_mut() {
-            run.drained.push(moved);
-        }
+        e.drained.push(moved);
         fed = true;
     }
     fed
 }
 
-/// The ids of what `feed_queued` has moved onto the stdin of the process
-/// running now, past the first `from` of them: what an event moved, `from`
-/// being their count before it.
+/// The ids of what `feed_queued` has moved onto stdin past the first `from`
+/// of `Entry::drained`: what an event moved, `from` being their count before
+/// it. Nothing trims that list while a process runs (`turn_over`).
 pub(super) fn drained_since(e: &Entry, from: usize) -> Vec<String> {
-    e.run.as_ref().map(|run| run.drained.iter().skip(from).map(|(qid, _)| qid.clone()).collect()).unwrap_or_default()
+    e.drained.iter().skip(from).map(|d| d.id.clone()).collect()
 }
 
 /// Of text queued for `id`, by `Queued::id`: whether it went onto the stdin
-/// of the process running now instead (`feed_queued`). If so, its sender and
-/// the count that process ends past, as for a line that joined it; None too
-/// while more of that sender's text waits in the queue, which only the next
-/// process answers.
+/// of a process instead (`feed_queued`), the one running now or one gone
+/// since. If so, its sender and the count that process ends past, as for a
+/// line that joined it; None too while more of that sender's text waits for
+/// a process after it: in the queue, or with that one gone, in what a later
+/// one was started on or took on its stdin.
 pub fn moved_onto_stdin_at(id: &str, qid: &str) -> Option<(Option<String>, u32)> {
     let r = lock();
     let e = r.entries.get(id)?;
-    let (_, from) = e.run.as_ref()?.drained.iter().find(|(d, _)| d == qid)?;
-    if e.queue.iter().any(|q| q.from == *from) {
-        return None;
-    }
-    Some((from.clone(), e.turns_ended))
+    let d = e.drained.iter().find(|d| d.id == qid)?;
+    let mine = |q: &Queued| q.from == d.from;
+    let gone = e.turns_ended > d.turns_ended;
+    let later = e.queue.iter().any(mine)
+        || (gone && (e.in_flight.iter().any(mine) || e.fed.iter().any(mine)))
+        || e.drained.iter().any(|l| l.from == d.from && l.turns_ended > d.turns_ended);
+    (!later).then(|| (d.from.clone(), d.turns_ended))
 }
 
 /// What an event of a Claude Code turn says of the helper; whether a message of
@@ -466,6 +467,13 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         let Some(e) = r.entries.get_mut(id) else { return };
         let told_move = e.run.take().and_then(|run| run.moved);
         e.turns_ended += 1;
+        // A send whose text this process took may have its debt still to go
+        // in. What it never took in is no move any more: it goes again with
+        // the next process (`sort_out_untaken`, below), which answers it.
+        let untaken = &e.fed;
+        e.drained.retain(|d| !untaken.iter().any(|q| q.id == d.id));
+        let over = e.drained.len().saturating_sub(DRAINED_KEPT);
+        e.drained.drain(..over);
         e.observed.turn_ended_ms = crate::throttle::now_ms();
         if let Some(callers) = cut_off {
             note(e, "codex exec interrupted the subagents of the turn as it ended");
@@ -979,6 +987,45 @@ mod tests {
         assert!(sent[0].contains("a notice") && sent[1].contains("plain words"));
         assert_eq!(e.fed, ["a notice", "plain words"]);
         assert_eq!(e.queue, ["/compact", "after it"]);
+    }
+
+    /// Text moved onto a process's stdin is found by a send whose debt goes
+    /// in late, the process gone by then, with the count that process ended
+    /// past; not while more of its sender's text is with a later process.
+    /// The last DRAINED_KEPT are kept past a process's end, and none the
+    /// process never took in.
+    #[test]
+    fn what_went_onto_stdin_is_found_past_its_process_unless_its_sender_has_more_coming() {
+        let id = "drained-kept";
+        let moved = |n: usize, turns_ended: u32| Drained { id: format!("q{n}"), from: Some("p".into()), turns_ended };
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 3;
+        e.drained = vec![moved(0, 2)];
+        lock().entries.insert(id.into(), e);
+        assert_eq!(moved_onto_stdin_at(id, "q0"), Some((Some("p".into()), 2)), "its process gone");
+        assert_eq!(moved_onto_stdin_at(id, "q9"), None, "never moved");
+        let mut later: Queued = "more of it".into();
+        later.from = Some("p".into());
+        lock().entries.get_mut(id).unwrap().in_flight = vec![later];
+        assert_eq!(moved_onto_stdin_at(id, "q0"), None, "a later process answers the sender");
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut(id).unwrap();
+            // Its process is to go before taking in what it was started on,
+            // or the line moved onto its stdin: both are left undelivered,
+            // and no turn starts on them here.
+            e.in_flight = vec!["the batch".into()];
+            let mut untaken: Queued = "never taken in".into();
+            (untaken.id, untaken.from) = ("u".into(), Some("p".into()));
+            e.fed = vec![untaken];
+            e.drained = (0..=DRAINED_KEPT).map(|n| moved(n, 3)).collect();
+            e.drained.push(Drained { id: "u".into(), from: Some("p".into()), turns_ended: 3 });
+        }
+        turn_over(id, Some(0));
+        assert_eq!(moved_onto_stdin_at(id, "u"), None, "never taken in: no move of its sender's");
+        assert_eq!(moved_onto_stdin_at(id, "q0"), None, "the oldest let go");
+        assert_eq!(moved_onto_stdin_at(id, &format!("q{DRAINED_KEPT}")), Some((Some("p".into()), 3)));
+        lock().entries.remove(id);
     }
 
     /// A lead whose turn has scheduled a handoff takes nothing on stdin: what

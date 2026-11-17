@@ -429,6 +429,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         queue: Vec::new(),
         in_flight: Vec::new(),
         fed: Vec::new(),
+        drained: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
         error: None,

@@ -273,10 +273,6 @@ pub(super) struct Run {
     /// notices its helpers owe it, while its own background tasks run
     /// (events.rs `keeps_listening`); None once it is closed as ever.
     pub(super) listening_since: Option<u64>,
-    /// What was moved from its queue onto this process's stdin (events.rs
-    /// `feed_queued`), by `Queued::id`, with its sender: whose answer this
-    /// process now owes (agents/owed.rs `moved_onto_stdin`).
-    pub(super) drained: Vec<(String, Option<String>)>,
     /// The processes in its job, as sampled while it waits so (rows.rs
     /// `activity`): what tells a subagent's long command at work from a
     /// watcher that does nothing, where its stream says nothing of either.
@@ -299,6 +295,18 @@ pub(super) struct Run {
     pub(super) overtaken: bool,
 }
 
+/// Text moved from a helper's queue onto the stdin of its running process
+/// (events.rs `feed_queued`): whose answer that process owes now
+/// (agents/owed.rs `moved_onto_stdin`).
+pub(super) struct Drained {
+    /// Its `Queued::id`.
+    pub(super) id: String,
+    /// Its sender.
+    pub(super) from: Option<String>,
+    /// The helper's turn count while that process ran: its end goes past it.
+    pub(super) turns_ended: u32,
+}
+
 impl Run {
     pub(super) fn claimed(pid: Option<u32>, started_ms: u64) -> Run {
         static CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -313,7 +321,6 @@ impl Run {
             after_result: false,
             background_tasks: 0,
             listening_since: None,
-            drained: Vec::new(),
             watched: Vec::new(),
             claim,
             moved: None,

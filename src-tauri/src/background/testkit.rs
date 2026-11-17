@@ -267,7 +267,7 @@ pub(crate) fn claude_event_for_test(id: &str, v: &Value) {
     let moved = {
         let mut r = lock();
         let e = r.entries.get_mut(id).expect("a test helper");
-        let drained = e.run.as_ref().map_or(0, |run| run.drained.len());
+        let drained = e.drained.len();
         on_claude_event(e, v);
         drained_since(e, drained)
     };
@@ -392,6 +392,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         queue: Vec::new(),
         in_flight: Vec::new(),
         fed: Vec::new(),
+        drained: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
         error: None,
@@ -456,6 +457,7 @@ pub(super) fn entry(provider: Provider) -> Entry {
         queue: Vec::new(),
         in_flight: Vec::new(),
         fed: Vec::new(),
+        drained: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
         error: None,
