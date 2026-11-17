@@ -186,8 +186,11 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 ## Answering and steering
 - A session in state `question` or `waiting` has an `ask`: the questions with their options, or
   the tool up for permission (`luna_session_get`; its row has the `askId`). A permission's
-  `detail` is whole up to 8 KB, else ends `… [N more characters cut]`; a notice quotes only its
-  start, marked when shortened. `source` says whether the helper or a subagent of it asks. In
+  `detail` is one field of the call (the command, path or URL), not all of it: a Write's content,
+  a Task's prompt and other arguments are not in it. It is whole up to 8 KB, else ends
+  `… [N more characters cut]` with `detailCut` counting them; a notice quotes only its start,
+  marked when shortened, line breaks shown as `⏎`. `source` says whether the helper or a
+  subagent of it asks. In
   `luna_session_answer` an option's number counts from 1. Pass `askId`, so your answer cannot
   land on the next one; a stale or unknown id is refused, and so is no id with several held. It
   returns `state`, `ask` and, for a user's chat, the `screen` after it.

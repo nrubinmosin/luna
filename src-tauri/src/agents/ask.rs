@@ -40,8 +40,11 @@ pub struct Ask {
     pub tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// Characters of the detail left out past `DETAIL_MAX`; 0 when it is whole.
-    #[serde(skip)]
+    /// Characters of the detail left out past `DETAIL_MAX`, which is also
+    /// the text's last words (`… [N more characters cut]`); absent when it is
+    /// whole, so that a command that itself ends in such words is told from a
+    /// cut one. A Codex screen's own marks (`codex_command_on`) are in the text.
+    #[serde(skip_serializing_if = "is_zero")]
     pub detail_cut: usize,
     /// Who in the session asks, where its CLI says.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,6 +97,28 @@ fn capped(text: String) -> (String, usize) {
     let left = text[at..].chars().count();
     let unit = if left == 1 { "character" } else { "characters" };
     (format!("{}… [{left} more {unit} cut]", &text[..at]), left)
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// How a notice shows a line break of a detail: visibly, between spaces.
+const BREAK: &str = " ⏎ ";
+
+/// `text` on one line for a notice, each line break (of any kind a terminal or
+/// a shell takes for one) shown as `BREAK`, the text's ends trimmed.
+fn show_breaks(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.trim().chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\r' | '\n' | '\u{85}' | '\u{2028}' | '\u{2029}' => out.push_str(BREAK),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -163,8 +188,13 @@ impl Ask {
     /// One line for a notice: the questions with their options numbered, or
     /// the permission's tool, who asks where that is known, and its detail. A
     /// detail longer than `LINE_DETAIL` is shortened with a mark pointing to
-    /// `luna_session_get`, its whitespace runs made one space first, so that
-    /// padding cannot push what follows out of the part shown.
+    /// `luna_session_get`, first with each line's runs of whitespace made one
+    /// space, so that padding with spaces, tabs or other Unicode whitespace
+    /// cannot push what follows out of the part shown, and each line break
+    /// shown as `⏎`, not a space. Characters that are invisible without being
+    /// whitespace (zero-width ones, a braille blank) are not collapsed: such
+    /// padding can still push the end out, but the mark is there then, and it
+    /// says the detail has the rest.
     pub fn line(&self) -> String {
         if self.kind == "permission" {
             let tool = self.tool.as_deref().map(|t| match &self.source {
@@ -178,9 +208,17 @@ impl Ask {
             });
             let detail = self.detail.as_deref().map(|d| {
                 if d.chars().count() <= LINE_DETAIL && self.detail_cut == 0 {
-                    return d.to_string();
+                    return show_breaks(d);
                 }
-                let flat = d.split_whitespace().collect::<Vec<_>>().join(" ");
+                // Each line's whitespace runs made one space, the lines
+                // apart by a visible break: a newline is where a command ends
+                // and the next begins, not a space within one.
+                let flat = show_breaks(d)
+                    .split(BREAK)
+                    .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .filter(|l| !l.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(BREAK);
                 let chars = flat.chars().count();
                 let shown = if chars > LINE_DETAIL { format!("{}…", flat.chars().take(LINE_DETAIL).collect::<String>()) } else { flat };
                 let whole = if self.detail_cut > 0 {
@@ -292,21 +330,59 @@ pub fn ask_of(id: &str) -> Option<Ask> {
     }
 }
 
-/// The command a Codex approval dialog shows: from its `$ ` row down to the
-/// first option, each row trimmed, apart by line breaks as drawn. Codex puts
-/// `$ ` before the first line only; a line too long for the screen wraps onto
-/// the rows below it and a command of several lines goes on there, so the
-/// first row alone would be a cut with no mark. Without option 1 below, the
-/// dialog is not all there: none.
+/// What Codex's exec approval dialog says above its command, and the other
+/// approval, of edits, above theirs.
+const CODEX_RUN_HEAD: &str = "Would you like to run the following command?";
+const CODEX_EDIT_HEAD: &str = "Would you like to make the following edits?";
+const CODEX_START_OFF: &str = "[the command could not be read whole: its start is above what the terminal shows, so none of it is quoted]";
+const CODEX_END_OFF: &str = "[the command could not be read whole: its end is not on the terminal's screen]";
+const CODEX_TWO_DIALOGS: &str = "[the screen holds more than one approval dialog; the command may start at any later `$ ` row]";
+
+/// The command a Codex approval dialog shows, from its `$ ` row down to the
+/// options, each row trimmed, apart by line breaks as drawn. Codex puts `$ `
+/// before the first line only; a line too long for the screen wraps onto the
+/// rows below it and a command of several lines goes on there, so the first
+/// row alone would be a cut with no mark.
+///
+/// The dialog is found, not any row that looks like a part of it: the options
+/// are the last `1. ` row with a `2. ` row below it (the command is drawn
+/// above them, so a heredoc line `1. …` is not taken for them), and the
+/// command starts at the `$ ` row right under the dialog's heading. What the
+/// screen does not hold whole is said so in the text, never left out quietly:
+/// a command whose end is not drawn (no options below it), whose start is off
+/// the top of the screen, or a screen with two such dialogs. Any other
+/// screen: none.
 pub(super) fn codex_command_on(screen: &str) -> Option<String> {
     let lines: Vec<&str> = screen.lines().map(str::trim).collect();
-    let start = lines.iter().position(|l| l.starts_with("$ "))?;
-    let first_option = |l: &str| l.strip_prefix('›').map(str::trim_start).unwrap_or(l).starts_with("1. ");
-    let end = start + lines[start..].iter().position(|l| first_option(l))?;
-    let mut rows: Vec<&str> = lines[start..end].to_vec();
-    rows[0] = &rows[0][2..];
-    let command = rows.join("\n").trim().to_string();
-    (!command.is_empty()).then_some(command)
+    let option = |l: &str, n: &str| l.strip_prefix('›').map(str::trim_start).unwrap_or(l).starts_with(n);
+    let options = (0..lines.len()).rev().find(|&i| option(lines[i], "1. ") && lines[i + 1..].iter().any(|l| option(l, "2. ")));
+    let above = options.unwrap_or(lines.len());
+    // Each `$ ` row right under a heading, above the options.
+    let starts: Vec<usize> = (0..above)
+        .filter(|&i| lines[i] == CODEX_RUN_HEAD)
+        .filter_map(|i| lines[i + 1..above].iter().position(|l| !l.is_empty()).map(|k| i + 1 + k))
+        .filter(|&d| lines[d].starts_with("$ "))
+        .collect();
+    let rows_from = |start: usize| -> String {
+        let mut rows: Vec<&str> = lines[start..above].to_vec();
+        rows[0] = &rows[0][2..];
+        rows.join("\n").trim().to_string()
+    };
+    let (Some(&first), Some(&last)) = (starts.first(), starts.last()) else {
+        // Options of a dialog with no heading: its top is off the screen, and
+        // so is the start of the command.
+        let off =
+            options.is_some_and(|i| option(lines[i], "1. Yes")) && !lines.iter().any(|l| *l == CODEX_RUN_HEAD || *l == CODEX_EDIT_HEAD);
+        return off.then(|| CODEX_START_OFF.to_string());
+    };
+    let command = rows_from(last);
+    if command.is_empty() {
+        return None;
+    }
+    if options.is_none() {
+        return Some(format!("{command}\n{CODEX_END_OFF}"));
+    }
+    Some(if first == last { command } else { format!("{CODEX_TWO_DIALOGS}\n{}", rows_from(first)) })
 }
 
 /// A list Codex holds its screen on until an option is picked — "Hooks need
@@ -542,6 +618,72 @@ mod tests {
         assert_eq!(codex_command_on(one).as_deref(), Some("ls -la"));
         let wrapped = "  Would you like to run the following command?\n\n  $ for f in build/*.o; do\n  rm -f \"$f\"; done\n\n  1. Yes, proceed (y)\n› 2. No (esc)";
         assert_eq!(codex_command_on(wrapped).as_deref(), Some("for f in build/*.o; do\nrm -f \"$f\"; done"));
-        assert_eq!(codex_command_on("  $ rm -rf build\n  and more not yet drawn"), None, "no options: not all there");
+        assert_eq!(codex_command_on("  $ rm -rf build\n  and more not yet drawn"), None, "not a dialog");
+    }
+
+    const CODEX_HEAD: &str = "  Would you like to run the following command?\n\n";
+    const CODEX_OPTIONS: &str = "\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again (p)\n  3. No (esc)";
+
+    /// A heredoc line that looks like option 1 does not end the command.
+    #[test]
+    fn a_numbered_row_of_the_command_is_not_its_end() {
+        let screen = format!("{CODEX_HEAD}  $ cat > notes.md <<'EOF'\n  1. step\n  2. step\n  EOF\n  rm -rf ~\n{CODEX_OPTIONS}");
+        assert_eq!(codex_command_on(&screen).as_deref(), Some("cat > notes.md <<'EOF'\n1. step\n2. step\nEOF\nrm -rf ~"));
+        // Even where the command's own rows look like the whole option block.
+        let tricky = format!("{CODEX_HEAD}  $ cat <<'EOF'\n  › 1. Yes, proceed (y)\n  2. No (esc)\n  EOF\n  rm -rf ~\n{CODEX_OPTIONS}");
+        assert_eq!(codex_command_on(&tricky).as_deref(), Some("cat <<'EOF'\n› 1. Yes, proceed (y)\n2. No (esc)\nEOF\nrm -rf ~"));
+    }
+
+    /// A `$ ` row above the dialog, in what Codex showed before, is not its command.
+    #[test]
+    fn a_stale_dollar_row_above_the_dialog_is_not_the_command() {
+        let screen = format!("  • Ran\n  $ git status\n  On branch main\n\n{CODEX_HEAD}  $ ls -la\n{CODEX_OPTIONS}");
+        assert_eq!(codex_command_on(&screen).as_deref(), Some("ls -la"));
+        // A `$ ` row in the command is not its start.
+        let inner = format!("{CODEX_HEAD}  $ cat <<'EOF'\n  $ not the start\n  EOF\n{CODEX_OPTIONS}");
+        assert_eq!(codex_command_on(&inner).as_deref(), Some("cat <<'EOF'\n$ not the start\nEOF"));
+        // A heading with no command under it: none.
+        assert_eq!(codex_command_on(&format!("{CODEX_HEAD}{CODEX_OPTIONS}")), None);
+        // Two dialogs on the screen: said, and the earlier one's rows come too.
+        let two = format!("{CODEX_HEAD}  $ echo one\n{CODEX_OPTIONS}\n\n{CODEX_HEAD}  $ echo two\n{CODEX_OPTIONS}");
+        let read = codex_command_on(&two).unwrap();
+        assert!(read.starts_with(CODEX_TWO_DIALOGS) && read.contains("echo one") && read.contains("echo two"), "{read}");
+    }
+
+    /// A command taller than the screen is said not to be whole, whichever end is off.
+    #[test]
+    fn a_codex_command_taller_than_the_screen_says_so() {
+        let end_off = format!("{CODEX_HEAD}  $ echo 1\n  echo 2\n  echo 3");
+        assert_eq!(codex_command_on(&end_off), Some(format!("echo 1\necho 2\necho 3\n{CODEX_END_OFF}")));
+        let start_off = "  echo 98\n  echo 99\n  rm -rf ~\n\n› 1. Yes, proceed (y)\n  2. No (esc)";
+        assert_eq!(codex_command_on(start_off).as_deref(), Some(CODEX_START_OFF));
+        let read = codex_command_on(start_off).unwrap();
+        assert!(read.contains("could not be read whole"), "{read}");
+        // The edits dialog, and a numbered list in the conversation, are not commands.
+        let edits = "  Would you like to make the following edits?\n  src/a.rs\n\n› 1. Yes, proceed (y)\n  2. No (esc)";
+        assert_eq!(codex_command_on(edits), None);
+        assert_eq!(codex_command_on("  Steps:\n  1. one\n  2. two\n\n› "), None);
+    }
+
+    /// A line break in a detail shows in the notice, not as a space.
+    #[test]
+    fn the_notice_shows_a_line_break_as_one() {
+        let bash = |c: &str| Ask::from_claude_tool("Bash", &serde_json::json!({ "command": c }));
+        assert_eq!(bash("ls # list\nrm -rf ~\n").line(), "asks for permission to run Bash: ls # list ⏎ rm -rf ~");
+        assert_eq!(bash("a\r\nb\rc\u{2028}d").line(), "asks for permission to run Bash: a ⏎ b ⏎ c ⏎ d");
+        // Past the line's length too, where whitespace is collapsed.
+        let long = format!("ls # list{}\nrm -rf ~\n\n{}", " ".repeat(300), "x".repeat(300));
+        let line = bash(&long).line();
+        assert!(line.contains("ls # list ⏎ rm -rf ~ ⏎ xxx") && line.contains("[shortened;"), "{line}");
+        assert!(!line.contains('\n') && !line.contains("list rm"), "{line}");
+    }
+
+    /// `detailCut` tells a cut detail from a whole one that ends in the same words.
+    #[test]
+    fn a_cut_detail_says_how_much_in_a_field() {
+        let whole = Ask::permission(None, Some("echo '… [5 more characters cut]'".into()));
+        assert!(serde_json::to_value(&whole).unwrap().get("detailCut").is_none());
+        let cut = Ask::permission(None, Some("x".repeat(DETAIL_MAX + 7)));
+        assert_eq!(serde_json::to_value(&cut).unwrap()["detailCut"], 7);
     }
 }

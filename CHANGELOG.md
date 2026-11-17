@@ -17,7 +17,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   shortened and pointing to `luna_session_get`. `ask.source` says whether the
   helper itself asks or one of its subagents, where Claude Code says so. A
   Codex approval on a terminal's screen is read from every row its command is
-  drawn on, not the first alone.
+  drawn on, down to its own options, not the first alone, and says so where the
+  screen holds only part of the command. `ask.detailCut` counts the characters
+  left out, and the notice shows a line break as `⏎`, not a space.
 
 ## [0.18.3] - 2026-11-17
 
