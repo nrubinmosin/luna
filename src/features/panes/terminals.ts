@@ -166,7 +166,7 @@ function create(spec: TermSpec): Entry {
     // Nudge unreadable theme-vs-content combinations without flattening colors.
     minimumContrastRatio: 3,
     theme: themeFor(dark()),
-    linkHandler: linkHandler(chatId)
+    linkHandler
   });
   const fit = new FitAddon();
   term.loadAddon(fit);

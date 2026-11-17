@@ -205,7 +205,6 @@ Smaller modules:
 | `settings.rs` | `<data>/settings.json`, written under its lock re-reading the file; the cache checked against mtime, as more than one process writes it |
 | `emit.rs` | the one door for events; `pty::manager()` is likewise the process's only `PtyManager`, no Tauri state |
 | `secret.rs`, `admit.rs` | minted secrets and constant-time checks; what the loopback listeners let in before authentication |
-| `browsers.rs` | which browser a link opens in: a command line with `%1` per browser, found on Windows (StartMenuInternet, each Chromium browser's Local State profiles, Firefox's `profiles.ini`, the https UserChoice handler) plus the user's own; chosen chat → account → folder → default; run by `open_link` (`lib.rs`) with the link as its own argument and no shell |
 | `media.rs` | files pasted or dropped into a pane, copied into the data folder |
 | `throttle.rs` | the cool-off after a 429 from the usage endpoints, shared by both providers |
 | `http.rs` | Luna's own requests (CLI downloads, usage and model lookups, the OAuth refresh): a blocking face over the reqwest the updater brings, rustls on ring against the OS's trust store, no proxy, each call's timeouts its own. Its clients live until exit; on Linux they read the trust roots when made, so a CA added to or removed from the system's store takes effect at Luna's next start (Windows and macOS ask the OS on each handshake) |

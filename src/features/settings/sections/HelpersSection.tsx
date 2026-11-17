@@ -73,7 +73,7 @@ export function HelpersSection() {
         control={
           <select
             id="set-max-helpers"
-            className="set-browser"
+            className="set-select"
             value={limits?.maxHelpers ?? ''}
             disabled={!limits}
             onChange={e => void setMaxHelpers(Number(e.target.value)).then(setLimits)}
@@ -93,7 +93,7 @@ export function HelpersSection() {
         control={
           <select
             id="set-helper-mode"
-            className="set-browser"
+            className="set-select"
             value={limits?.helperMode ?? 'inherit'}
             disabled={!limits}
             onChange={e => void setHelperMode(e.target.value as HelperMode).then(setLimits)}
@@ -110,7 +110,7 @@ export function HelpersSection() {
         control={
           <select
             id="set-helper-context"
-            className="set-browser"
+            className="set-select"
             value={limits?.helperContextPct ?? 50}
             disabled={!limits}
             onChange={e => void setHelperContextPct(Number(e.target.value)).then(setLimits)}

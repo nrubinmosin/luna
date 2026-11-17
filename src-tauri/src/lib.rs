@@ -10,7 +10,6 @@ mod asking;
 mod background;
 mod backlog;
 mod boundary;
-mod browsers;
 mod checks;
 mod claude;
 mod cli;
@@ -140,19 +139,41 @@ pub(crate) fn build_main(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
     Ok(w)
 }
 
-/// A link a terminal was clicked on, in a browser of the user's (browsers.rs)
-/// or the mail app: a window the WebView opened would be a browser of Luna's
-/// own, with none of the user's sign-ins. Web and mail links only; a
-/// terminal prints anything.
+/// A link a terminal was clicked on, in the system's handler for it: the
+/// user's default browser or mail app. A window the WebView opened would be
+/// a browser of Luna's own, with none of the user's sign-ins.
 #[tauri::command]
-fn open_link(url: String, ctx: Option<browsers::Context>) -> Result<(), String> {
+fn open_link(url: String) -> Result<(), String> {
+    web_or_mail(&url)?;
+    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Web and mail links only: a terminal prints anything, and the system's
+/// handler would start whatever program a scheme is registered to. The error
+/// names the scheme, not the link: the log gets it, and a link may carry a
+/// sign-in code.
+fn web_or_mail(url: &str) -> Result<(), String> {
     let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default();
     match scheme.as_str() {
-        "http" | "https" => browsers::open(&url, &ctx.unwrap_or_default()),
-        "mailto" => tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|e| e.to_string()),
-        // Not the link itself: the log gets this, and a link may carry a
-        // sign-in code.
+        "http" | "https" | "mailto" => Ok(()),
         _ => Err(format!("not a web or mail link ({scheme}:)")),
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::web_or_mail;
+
+    #[test]
+    fn only_web_and_mail_links_open() {
+        for ok in ["https://example.com/a?b=c", "HTTP://example.com", "mailto:a@example.com"] {
+            assert!(web_or_mail(ok).is_ok(), "{ok}");
+        }
+        for no in ["file:///C:/Windows/System32/calc.exe", "javascript:alert(1)", "ms-settings:", r"C:\x.exe", "example.com", ""] {
+            assert!(web_or_mail(no).is_err(), "{no}");
+        }
+        let e = web_or_mail("vscode://open?code=secret").unwrap_err();
+        assert!(!e.contains("secret"), "the link stays out of the log: {e}");
     }
 }
 
@@ -271,8 +292,6 @@ macro_rules! app_handler {
             log::append_log,
             media::save_media,
             open_link,
-            browsers::browsers,
-            browsers::set_browsers,
             tray_awake,
             corelink::core_call,
             corelink::core_send,

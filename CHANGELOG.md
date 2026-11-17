@@ -76,6 +76,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   for a person's chat (16 MB each, then a send is refused, saying why), and
   the Codex rollouts looked up by thread (1,024 kept).
 
+### Removed
+
+- Luna no longer chooses a browser for a link: a link clicked in a terminal
+  opens in the system's default browser (a mail link in the mail app), and
+  Shift+click does the same. Settings → Links, its default browser, its
+  per-account and per-folder exceptions, the browsers found on Windows, your
+  own browser command lines and a chat's remembered browser are gone. A
+  settings file or a chat that still holds them loads as before, and the
+  next write leaves them out.
+
 ### Fixed
 
 - A chat terminal whose graphics context the WebView takes away (too many

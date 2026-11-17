@@ -46,8 +46,8 @@ import { demoState } from './ipc';
 import { useMoveHints } from '../../features/chats/moveHints.store';
 import { useHandoffNow } from '../../features/chats/handoffNow';
 
-/** A Settings page's scene: `settings` is its first page, `settings-links` and
- *  the like the others, each with a `-dark` twin. */
+/** A Settings page's scene: `settings` is its first page, `settings-agents`
+ *  and the like the others, each with a `-dark` twin. */
 type SettingsScene = 'settings' | `settings-${Exclude<SettingsPage, 'general'>}`;
 const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general' ? 'settings' : `settings-${p}`));
 

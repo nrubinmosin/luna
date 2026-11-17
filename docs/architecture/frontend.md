@@ -17,8 +17,8 @@ list and the board; the core owns sessions
 | `features/providers/` | `claude/` and `codex/`: stock values, defaults, dialog `Fields`, title bar `Meta`, `LimitBars`, login, trust, `worktreeRe`, `projectOf(cwd)`, `branchPrefix`; `index.ts` `ui(provider)` |
 | `features/accounts/` | Accounts window, limits, sign-in (`LoginModal`), `RecommendedDialog`, `ConfigEditor`, `SettingsSync` |
 | `features/library/` | Skills & instructions window: grids, `ReachPicker`, `FolderCell`, `AddFolder`, "Needs a look" with `diff.ts` (line LCS), `LibraryEditor`, System texts (`SystemSkills`) |
-| `features/settings/` | Settings dialog: its page list and pages (`SettingsDialog`), the shared row, list and disclosure pieces (`SettingsRows`), one file per group in `sections/` (Links in `browsers/BrowserSection`); Recommendations window and chip |
-| `features/status-bar/`, `power/`, `shortcuts/`, `updates/`, `browsers/`, `core/` | the status bar, power chip and menu (`power.store` only listens to `power://state`), the F1 list, app and CLI updates, link browsers, the core banner |
+| `features/settings/` | Settings dialog: its page list and pages (`SettingsDialog`), the shared row, list and disclosure pieces (`SettingsRows`), one file per group in `sections/`; Recommendations window and chip |
+| `features/status-bar/`, `power/`, `shortcuts/`, `updates/`, `core/` | the status bar, power chip and menu (`power.store` only listens to `power://state`), the F1 list, app and CLI updates, the core banner |
 | `features/agents/` | `bridge.ts` (agent events ↔ chats), `background.store.ts`, `BackgroundChip` (the row's chip, the pane's `HelperSummary` pill and the `HelperPanel` list both open), `HelperPill` (the pill's counts and the names that fit), `helperSummary.ts` (counts, tabs, lines), `agentAccounts.store.ts` |
 | `ipc/` | the only boundary with Rust |
 | `styles/` | app-wide sheets |
@@ -38,7 +38,7 @@ connection's writer thread and `append_log` its line to the log's, each bounded
 by the bytes waiting and refusing past that with an error.
 One module per domain holds its commands and DTOs: `accounts`, `sessions`,
 `worktrees`, `defaults`, `trust`, `media`, `cli`, `power`, `coreProcess`,
-`agents`, `accountSettings`, `library`, `browsers`, `accountConfig`;
+`agents`, `accountSettings`, `library`, `links`, `accountConfig`;
 `events.ts` wraps `listen`. Tests mock per module.
 
 What the page may call is fixed in Rust, not here
@@ -161,9 +161,10 @@ up once) lets go of a chat deleted at the next tick.
   whose `generation` its start answered with (`Attached`). An exit heard
   before the start answers waits for that answer, since it may be the chat's
   session before this one, said late, or this one ending at once.
-- `terminal/`: `theme.ts`, `links.ts`, `keys.ts` (clipboard keys, Alt+arrow
-  sent as Ctrl+arrow as xterm did before 6), `scrollback.ts` (the replayed
-  tail), `sizing.ts` (fit and repaint), `pty.ts` (the gated pty sender),
+- `terminal/`: `theme.ts`, `links.ts` (an OSC 8 link goes to `open_link`,
+  which opens web and mail links in the system's handler), `keys.ts`
+  (clipboard keys, Alt+arrow sent as Ctrl+arrow as xterm did before 6),
+  `scrollback.ts` (the replayed tail), `sizing.ts` (fit and repaint), `pty.ts` (the gated pty sender),
   `ptyRoutes.ts` (one listener each for `pty://output`, `pty://exit` and
   `pty://input-refused`, handing each payload to the terminal of its session;
   a terminal and the sign-in window start their session only once all listen, and a listener

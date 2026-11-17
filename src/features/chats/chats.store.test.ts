@@ -76,7 +76,6 @@ describe('chats store: a set that changes nothing', () => {
     s.setHandoffAsk('c1', { kind: 'manual', at: 3 } as never);
     s.setMoved('c1', { movedTo: 'c9' });
     s.setColor('c1', '#123456');
-    s.setBrowser('c1', 'edge');
     s.deleteChat('c3');
     const now = useChats.getState().folders;
     expect(now[1]).toBe(other);
@@ -229,5 +228,32 @@ describe('chats store: a chat deleted', () => {
     expect(useRestarts.getState().pending).toEqual({});
     expect(useMoveHints.getState().limits).toEqual({});
     expect(useMoveHints.getState().dismissed).toEqual({});
+  });
+});
+
+describe('chats store: what an earlier Luna stored', () => {
+  it('reads a chat that remembered a browser, and lets the browser go', async () => {
+    const stored = { id: 'c1', name: 'c1', provider: 'claude', account: 'work', group: 0, worktree: false };
+    localStorage.setItem(
+      'luna.chats',
+      JSON.stringify({
+        state: {
+          folders: [
+            {
+              id: 'f1',
+              path: '/repo',
+              open: true,
+              picked: true,
+              chats: [{ ...stored, browser: 'found:chrome:Default' }]
+            }
+          ]
+        },
+        version: 2
+      })
+    );
+    await useChats.persist.rehydrate();
+    const read = useChats.getState().findChat('c1');
+    expect(read).toMatchObject(stored);
+    expect(read).not.toHaveProperty('browser');
   });
 });

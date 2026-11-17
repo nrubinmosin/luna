@@ -95,8 +95,6 @@
     "allow-append-log",
     "allow-save-media",
     "allow-open-link",
-    "allow-browsers",
-    "allow-set-browsers",
     "allow-tray-awake",
     "allow-core-call",
     "allow-core-send",

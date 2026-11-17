@@ -98,9 +98,6 @@ interface ChatBase {
   /** The guard against endless waits, asked for in the new-chat dialog: a
    *  shell command that would wait forever is refused before it runs. */
   guard?: boolean;
-  /** The browser this chat's links open in, remembered from a Shift+click;
-   *  unset means its account's, its folder's or the default. */
-  browser?: string | null;
   /** Auto-handoff, asked for in the new-chat dialog or its What Luna applied
    *  panel: past `handoffAt` percent of its context Luna asks the chat for a
    *  handoff and offers it the tool that starts its next conversation from

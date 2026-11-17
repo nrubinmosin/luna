@@ -18,8 +18,6 @@ export type IconName =
   | 'sun'
   | 'moon'
   | 'auto'
-  | 'hide'
-  | 'show'
   | 'even'
   | 'gear'
   | 'refresh'
@@ -141,26 +139,6 @@ function draw(name: IconName, p: string): ReactNode {
           <defs>{grad(`${p}g`, '#fff3a0', '#f5b400')}</defs>
           <circle cx="8" cy="8" r="6.4" fill="#2b3550" stroke="#141a2c" />
           <path d="M8 1.6a6.4 6.4 0 0 1 0 12.8z" fill={`url(#${p}g)`} stroke="#b06c00" />
-        </>
-      );
-    case 'hide':
-    case 'show':
-      return (
-        <>
-          <defs>{grad(`${p}g`, '#ffffff', '#c6d3f7')}</defs>
-          <circle cx="8" cy="8" r="7" fill={`url(#${p}g)`} stroke="#7b93d0" />
-          <path
-            d={
-              name === 'hide'
-                ? 'M8.6 4.6 5.4 8l3.2 3.4M11.4 4.6 8.2 8l3.2 3.4'
-                : 'M7.4 4.6 10.6 8l-3.2 3.4M4.6 4.6 7.8 8l-3.2 3.4'
-            }
-            fill="none"
-            stroke="#215dc6"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
         </>
       );
     case 'even':

@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom';
 import { useUpdates } from '../updates/updates.store';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon, type IconName } from '../../shared/ui/icons';
-import { BrowsersSection, OpenLinksSection } from '../browsers/BrowserSection';
 import { SETTINGS_PAGES, useSettings, type SettingsPage } from './settings.store';
 import { useModal } from '../../shared/ui/modal';
 import { AccountsFolderSection } from './sections/AccountsFolderSection';
@@ -52,16 +51,6 @@ const PAGES: Record<SettingsPage, { title: string; icon: IconName; body: () => R
       </>
     )
   },
-  links: {
-    title: 'Links',
-    icon: 'show',
-    body: () => (
-      <>
-        <OpenLinksSection />
-        <BrowsersSection />
-      </>
-    )
-  },
   clis: { title: 'CLIs', icon: 'download', body: () => <ClisSection /> },
   updates: { title: 'Updates', icon: 'update', body: () => <VersionsSection /> }
 };
@@ -89,8 +78,8 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
   // Modal: the rest of the app is inert while Settings is up, Tab goes round
   // inside it, and the focus goes back to what opened it on close. Keyboard
   // users land on the page list, ready for the arrows. Popups opened later
-  // (the exception menu) land beside it in the host and stay live; the update
-  // confirm is a modal of its own and suspends Settings while it is up.
+  // land beside it in the host and stay live; the update confirm is a modal
+  // of its own and suspends Settings while it is up.
   const trap = useModal(dialog, host, '[role="tab"][aria-selected="true"]');
 
   useEffect(() => {
@@ -192,8 +181,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
             <div className="settings-nav-foot">Luna {current || '—'}</div>
           </div>
           {/* Every page stays mounted, the others hidden: a draft typed on one
-              (the waiting marker, a browser of your own) is still there after
-              a look at another. */}
+              (the waiting marker) is still there after a look at another. */}
           {SETTINGS_PAGES.map(id => (
             <div
               key={id}

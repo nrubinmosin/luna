@@ -426,11 +426,6 @@ double-click on its name; a name you set is never overwritten.
   Selecting alone copies nothing.
 - Alt with an arrow key sends what Ctrl with it sends: Alt+Left and Alt+Right
   move a word, where the CLI's input takes such a move.
-- A link opens in your browser, chosen in Settings → Links: a default, and one
-  per account or per project folder. Shift+click lists every browser, can
-  remember the pick for that chat, and copies the link. Order: the chat's pick,
-  its account's, its folder's, the default. A browser is a command line with
-  `%1` where the link goes, so a profile is a flag
-  (`--profile-directory="Profile 1"` for Chrome, Edge and Brave, `-P name` for
-  Firefox). On Windows installed browsers and their profiles are listed
-  automatically; elsewhere it is the system's handler and your own.
+- A link opens in your system's default browser, or a mail link in your mail
+  app, without a question. Only web (`http`, `https`) and mail (`mailto`) links
+  open; any other kind is ignored.

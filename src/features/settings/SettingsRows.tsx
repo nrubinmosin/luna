@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
 import { Icon } from '../../shared/ui/icons';
 
 /**
@@ -125,22 +125,18 @@ export function List({
   label,
   empty,
   actions,
-  items,
-  extra
+  items
 }: {
   label: string;
   /** Said in place of the rows while there are none. */
   empty: string;
   actions?: ReactNode;
   items: ReactNode[];
-  /** Rows that do not count towards emptiness (the system default browser). */
-  extra?: ReactNode;
 }) {
   return (
     <>
       <div className="set-list xp-field">
         <div role="list" aria-label={label}>
-          {extra}
           {items}
         </div>
         {!items.length && <div className="set-empty">{empty}</div>}
@@ -155,43 +151,5 @@ export function ListItem({ children }: { children: ReactNode }) {
     <div className="set-item" role="listitem">
       {children}
     </div>
-  );
-}
-
-/** A named command line in a list: cut off at the end until shown in full,
- *  and copied whole either way. */
-export function CommandLine({ name, command }: { name: string; command: string }) {
-  const [full, setFull] = useState(false);
-  const [copied, setCopied] = useState(false);
-  return (
-    <ListItem>
-      <span className="set-item-main">
-        <span className="set-item-name">{name}</span>
-        {command && (
-          <code className={`set-cmd${full ? ' set-cmd-full' : ''}`} title={full ? undefined : command}>
-            {command}
-          </code>
-        )}
-      </span>
-      <span className="set-item-actions" hidden={!command}>
-        <button className="slim" aria-expanded={full} onClick={() => setFull(f => !f)}>
-          {full ? 'Less' : 'Show all'}
-        </button>
-        <button
-          className="slim"
-          onClick={() =>
-            void navigator.clipboard
-              .writeText(command)
-              .then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1200);
-              })
-              .catch(() => {})
-          }
-        >
-          {copied ? 'Copied' : 'Copy'}
-        </button>
-      </span>
-    </ListItem>
   );
 }

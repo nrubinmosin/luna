@@ -24,7 +24,6 @@ import { useKeymap } from './keymap';
 import { useAltPeek } from '../features/panes/altPeek';
 import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog';
 import { SettingsDialog } from '../features/settings/SettingsDialog';
-import { LinkChooser } from '../features/browsers/LinkChooser';
 import { LibraryWindow } from '../features/library/LibraryWindow';
 import { RecommendationsDialog } from '../features/settings/RecommendationsWindow';
 import { useLibrary } from '../features/library/library.store';
@@ -274,7 +273,6 @@ export function App() {
       <ShortcutsDialog />
       <SettingsDialog />
       <RecommendationsDialog />
-      <LinkChooser />
       <WorktreesDialog />
       <LibraryWindow />
     </div>

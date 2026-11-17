@@ -67,8 +67,6 @@ interface ChatsState {
   setModelSeen: (chatId: string, model: string) => void;
   setContext: (chatId: string, context: number, tokens: number | null, window: number | null) => void;
   setColor: (chatId: string, color: string | null) => void;
-  /** The browser the chat's links open in; null forgets it. */
-  setBrowser: (chatId: string, browser: string | null) => void;
   renameChat: (chatId: string, name: string) => void;
   /** An account was renamed: its chats follow it. */
   renameAccount: (provider: Chat['provider'], from: string, to: string) => void;
@@ -246,6 +244,13 @@ const atOnce = (change: () => void) => {
   if (useChats.getState().folders !== before) storage.flush();
 };
 
+/** What a chat row stored while Luna chose browsers may still carry: the one
+ *  its links opened in. Links go to the system's handler now; let go as it is
+ *  read (`merge`). */
+interface Chose {
+  browser?: string | null;
+}
+
 let seq = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
 
@@ -389,8 +394,6 @@ export const useChats = create<ChatsState>()(
 
       setColor: (chatId, color) => set(onChat(chatId, c => (c.color === color ? c : { ...c, color }))),
 
-      setBrowser: (chatId, browser) => set(onChat(chatId, c => ({ ...c, browser }))),
-
       setContext: (chatId, context, tokens, window) =>
         set(
           onChat(chatId, c =>
@@ -460,13 +463,13 @@ export const useChats = create<ChatsState>()(
           // `last` was what the folder's newest chat started with, learned
           // rather than chosen; a folder now keeps only a start it was given.
           folders: guarded.folders.map(({ last: _learned, ...f }: Folder & { last?: unknown }) => {
-            const stored = (f.chats ?? []) as Array<Chat & Spawned>;
+            const stored = (f.chats ?? []) as Array<Chat & Spawned & Chose>;
             return {
               ...f,
               // A chat an earlier Luna nested under the chat whose agent spawned
               // it is the person's own now (agents/handover.rs): a top-level row.
               // Stored without its context: none until the watcher reads it.
-              chats: stored.map(({ parentId: _p, childrenOpen: _o, ...c }) =>
+              chats: stored.map(({ parentId: _p, childrenOpen: _o, browser: _b, ...c }) =>
                 named({ ...c, group: c.group ?? 0, context: c.context ?? 0 })
               ),
               // Stored before folders said who launched there. A top-level chat,
