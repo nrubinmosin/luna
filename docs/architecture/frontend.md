@@ -171,7 +171,12 @@ components set no `@keyframes`, `animation` or `transition`, and run no Web
 Animations or frame loops, so an idle window draws no frames; a state is a
 static color, shape or word. `base.css` turns off, with `!important`, what
 xp.css brings of its own (a fade on the title-bar buttons, a sliding progress
-bar), and the terminals' cursors do not blink.
+bar). The terminals start with a steady cursor (`cursorBlink: false`, chat
+and sign-in terminals alike); a program in one can still ask for a blinking
+cursor (DECSCUSR `CSI 1 q`/`3 q`/`5 q`, or `CSI ? 12 h`), which xterm.js
+honors over the option. Claude Code 2.1.325's binary holds neither sequence
+as a literal; Codex 0.169.0's holds the DECSCUSR table of its terminal
+library, so whether it asks for one is not known.
 
 Theme tokens are CSS custom properties on `[data-app][data-theme]`, switching
 system / light / dark without redrawing terminals (xterm gets its theme through

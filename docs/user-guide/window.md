@@ -18,7 +18,8 @@
 - Only the pane you are working in wears its full color; the others go pale, as
   XP drew inactive windows. A chat waiting for you wears an orange title bar,
   and over a pane you are not in a balloon says so. Nothing on screen moves:
-  states are told by color, shape and words, never by a pulse, a flash or a
+  states are told by color, shape and words, never by a pulse or a flash, and
+  the terminals' cursors hold still unless the program in one asks for a
   blinking cursor.
 - The chrome does not select as text, so a drag across the sidebar paints
   nothing blue.

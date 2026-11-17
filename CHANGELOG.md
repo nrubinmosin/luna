@@ -39,10 +39,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   without pulsing, a helper just spawned rings its chip for a few seconds
   without glowing, a button at work says so in words and goes gray instead of
   spinning, and dialogs, menus, the sidebar and folders open and close at once.
-  The terminals' cursors no longer blink: each blinking cursor redrew its
-  terminal twice a second.
-- The window does less as chats change: a chat's status or context
-  re-renders its own row rather than the whole list, the status bar measures
+  The terminals' cursors no longer blink unless the program in one asks for
+  it: each blinking cursor redrew its terminal twice a second.
+- The window does less as chats change: a change to one chat (its status,
+  context, title, a handoff mark) re-renders its own row rather than the whole
+  list, the status bar measures
   itself only when what it shows changes, the chat list is written to disk at
   most twice a second and without the chats' context (read again within
   seconds), and each session's output goes to its own terminal only. Chats
