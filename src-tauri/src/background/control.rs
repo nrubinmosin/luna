@@ -21,6 +21,13 @@ pub(crate) const STOPPED_BY_STOP: &str = "it was stopped, by luna_session_stop o
 /// turns there is no turn to stop, and what its turns left running is what is
 /// left of it to stop: that is ended, and what went is returned by name.
 pub fn kill(id: &str) -> Vec<String> {
+    kill_holding(id, ())
+}
+
+/// `kill`, with `held` let go once the turn is marked stopped, before its
+/// process and what it left running are waited on: what the caller checked
+/// the stop against holds until it is made (agents/teardown.rs `kill`).
+pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
     let (pid, job, _pin) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
@@ -40,6 +47,7 @@ pub fn kill(id: &str) -> Vec<String> {
         // turn that ends a moment later then leaves it to nobody else.
         (pid, job, pid.map(crate::procs::pin))
     };
+    drop(held);
     reg().1.notify_all();
     // Its turn's exit is Luna's doing, not its CLI version's.
     crate::cli::session_stopped(id);
@@ -321,17 +329,37 @@ pub fn claim_delete(id: &str) -> Result<DeleteClaim, String> {
 }
 
 /// A move's hold on the helpers it moves (`claim_move`), let go when dropped.
-pub struct MoveClaim(Vec<String>);
+pub struct MoveClaim {
+    held: Vec<String>,
+    /// The helpers whose claimed turn it overtook (`Run::overtaken`).
+    overtook: Vec<String>,
+    /// The move was made (`moved`): an overtaken turn waits for the next.
+    moved: bool,
+}
+
+impl MoveClaim {
+    /// The move went through: a turn it overtook starts after it, under the
+    /// new parent. Not said, the move changed nothing, and such a turn starts
+    /// as it was claimed.
+    pub fn moved(&mut self) {
+        self.moved = true;
+    }
+}
 
 impl Drop for MoveClaim {
     fn drop(&mut self) {
         let mut held = Vec::new();
         {
             let mut r = lock();
-            for id in &self.0 {
+            for id in &self.held {
                 if let Some(e) = r.entries.get_mut(id) {
                     e.moving = false;
                     held.push(id.clone());
+                }
+            }
+            for id in self.overtook.iter().filter(|_| !self.moved) {
+                if let Some(run) = r.entries.get_mut(id).and_then(|e| e.run.as_mut()).filter(|run| run.pid.is_none()) {
+                    run.overtaken = false;
                 }
             }
         }
@@ -368,17 +396,18 @@ pub fn claim_move(ids: &[String]) -> Result<MoveClaim, String> {
     if let Some(why) = claim_move_check(&r, ids) {
         return Err(why);
     }
-    let mut held = Vec::new();
+    let (mut held, mut overtook) = (Vec::new(), Vec::new());
     for id in ids {
         if let Some(e) = r.entries.get_mut(id) {
             e.moving = true;
-            if let Some(run) = e.run.as_mut().filter(|run| run.pid.is_none()) {
+            if let Some(run) = e.run.as_mut().filter(|run| run.pid.is_none() && !run.overtaken) {
                 run.overtaken = true;
+                overtook.push(id.clone());
             }
             held.push(id.clone());
         }
     }
-    Ok(MoveClaim(held))
+    Ok(MoveClaim { held, overtook, moved: false })
 }
 
 /// How long a move waits for a turn whose command is made to have its process.
@@ -421,9 +450,18 @@ pub fn work_and_count(id: &str) -> Option<(bool, u32)> {
     })
 }
 
-/// How many messages `from` has queued for helper `id` that its CLI has not had yet.
+/// How many messages `from` has queued for helper `id` that its CLI has not had
+/// yet and that go in whoever it answers to: plain text. What a CLI reads as a
+/// command is judged again as it goes in (queue.rs `settle_batch`), against the
+/// parent then, and `from` is told if it is dropped.
 pub fn queued_from(id: &str, from: &str) -> usize {
-    lock().entries.get(id).map_or(0, |e| e.queue.iter().chain(&e.in_flight).filter(|q| q.from.as_deref() == Some(from)).count())
+    lock().entries.get(id).map_or(0, |e| {
+        e.queue
+            .iter()
+            .chain(&e.in_flight)
+            .filter(|q| q.from.as_deref() == Some(from) && crate::agents::command_prefix(&q.text).is_none())
+            .count()
+    })
 }
 
 /// What waited while helper `id` was held (`Entry::held_back`) goes on once it is

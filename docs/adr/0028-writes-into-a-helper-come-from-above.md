@@ -101,7 +101,11 @@ never under a lead or a helper. The new chat's privilege has to cover every
 session that moves, as a spawn by that chat would have had to (`privilege.rs`
 `holds_over`, with `helpersAboveCaller` the one way past it), and its line has
 to have room for them and for the spawns under way below them, counted in the
-same hold of the registry a spawn counts its places in. A helper being opened
+same hold of the registry a spawn counts its places in. None of them may end
+up deeper under the new chat than a spawn could have put it there (a helper
+with Luna's tools only as a chat's own helper, nothing below a helper's
+helper: `spawn::spawnable_at`), which a line grown with no chat above it, a
+lead left alone that spawned a lead, would. A helper being opened
 as a chat, being deleted, or between a lead's handoff and its fresh start is
 not moved. Every refusal names why, and nothing has changed by then; the
 window asks `background_move_targets` for the same verdict per chat, to gray
@@ -115,7 +119,9 @@ In one move:
   receipts (a canceled call cannot put a debt back), what it was last shown,
   its answer marks and notice counts. It hears one line saying where the
   helper went, that nothing more is owed by it, that it may still read and wait
-  with `scope: "all"`, and how many of its messages are still queued for it.
+  with `scope: "all"`, and how many of its messages queued for it still go
+  in: its plain text, as what the CLI would read as a command is judged again
+  at delivery against the new owner;
   Its later sends, answers, stops and deletes on any of them are refused
   naming the new chat (`moved_error`, the pattern of `taken_over_error`), as
   are its reads and waits without `scope: "all"`: a wait in flight sees that at
@@ -133,9 +139,14 @@ In one move:
 **Order.** The move holds the notifier's hand-off on every session that moves,
 so a notice about one of them going in is in before the debts change; then
 whose the helpers are, alone (`registry.rs` `ownership_changing`), which every
-send and answer into a helper holds shared from its first check
-(`authorize_send`) to the debt it leaves (`owe_from_at`, `owe_from`), and a
-spawn from registering its helper to its caller's debt; then the helpers
+send and answer into anything but a person's chat holds shared from its first
+check (`authorize_send`) to the debt it leaves (`owe_from_at`, `owe_from`), a
+helper a spawn has registered and not yet started included; a spawn from
+registering its helper to its caller's debt; and a stop from its check to its
+turn marked stopped (`teardown::kill`), so a former chat never stops a turn
+its new chat started. An agent's delete needs no more: it asks whose the
+helper is again under its claim, which a move refuses, as the delete refuses
+a move's. Then the helpers
 between turns (`background::claim_move`), so no turn starts until the move is
 through, not even at a turn's end with text queued, and the next one starts
 under the new parent. A turn already claimed when the move claims the helper
@@ -153,7 +164,13 @@ registry (a move, a chat's going) is counted, and the record keeps a parent
 only from a change later than the one it has, so it follows the registry
 whichever of a move and a chat's going writes it last. A send, an answer or a spawn the old
 chat had checked is in, debt and all, before the move closes that debt; one
-that comes after is checked against the new parent. A background send does
+that comes after is checked against the new parent. A wait that took the old
+chat's answer as the move came puts no debt back for what the helper says
+once its own helpers answer: that debt is put in only if the caller is still
+above the helper (`owed.rs` `owed_on_for`). A save writes every helper's ties
+from one hold of the registry (`agents::ties_of_each`), so a core that dies
+then never comes back with half a line moved. A move refused once it has
+claimed the helpers leaves a turn it overtook to start as claimed. A background send does
 not go through the notifier's `going_into` hold, so the hand-off alone would
 not have been enough.
 

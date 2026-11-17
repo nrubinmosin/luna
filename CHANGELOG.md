@@ -16,7 +16,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   stops and deletes on it are refused naming the new chat, and the helper's
   next turn is told which chat it answers to. The move is refused, saying
   why, for a chat without Luna's tools, one below the helper's privilege or
-  without places for it, a lead or a helper, or while the helper is being
+  without places for it, one under which a helper would sit deeper than a
+  spawn could put it, a lead or a helper, or while the helper is being
   opened, deleted or handing off. A helper's row says which chat is at the top
   of its line, which other chats wait on it, where it was moved from, and
   which chats were refused a write into it (ADR-0028).

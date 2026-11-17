@@ -237,15 +237,23 @@ does. Only its parent changes, so its line follows; its id, worktree,
 settings and constraints stay. It moves only a direct child of a person's chat
 or a helper with no chat above it, only to a person's chat with Luna's tools,
 not in its own line, whose privilege covers every moved session's
-(`privilege::holds_over`, `helpersAboveCaller` aside) and whose line has their
+(`privilege::holds_over`, `helpersAboveCaller` aside), whose line has their
 places and their spawns under way (`under_cap`, with a helper `pass_up` had
-put on `autoDelete` counted, as the move switches that off). In this order:
+put on `autoDelete` counted, as the move switches that off), and under which
+none of them would be deeper than a spawn could make it (`spawnable_at`:
+tools only at depth 1, nothing below depth 2; a lead left with no chat may
+have spawned a lead). In this order:
 
 1. The notifier's hand-off on each moved session (`hand_off`): a notice about
    one going in is in first, none starts after.
 2. Whose the helpers are, alone (`registry::ownership_changing`). Every send
-   and answer into a helper holds it shared from `authorize_send` to the debt
-   it leaves (`delivery::send`, `answer::answer`), and a spawn from its
+   and answer into anything but a person's chat holds it shared from
+   `authorize_send` to the debt it leaves (`delivery::send`, `answer::answer`),
+   a helper a spawn has registered and not yet started included; a stop from
+   `authorize` until its turn is marked stopped (`teardown::kill`,
+   `background::kill_holding`), so a former chat never stops a turn its new
+   chat started (an agent's delete asks again under its claim, which a move
+   refuses); and a spawn from its
    `register` to its caller's debt (`spawn/background.rs`, past its wait for
    the worktree queue), so one checked against the old chat has its debt in
    before the move goes on, and one after is checked against the new chat; a
@@ -282,8 +290,9 @@ put on `autoDelete` counted, as the move switches that off). In this order:
    a turn, has text queued or holds an ask (`owed::owe_in`), so a chat going
    meanwhile (`forget`, decided in a hold of the same lock) takes that debt
    with it; the old chat's one line in `news`, with how many of its messages
-   are still queued. It records `moved` (`Moved`: from, to, when, whether a
-   turn has been told), which its ties keep.
+   queued still go in (plain text only: `queued_from`). It records `moved`
+   (`Moved`: from, to, when, whether a turn has been told), which its ties
+   keep.
 5. Then the exclusive hold on whose the helpers are goes, before anything
    that may start a turn; the background spec's parent is set from the
    change (`background::set_parent`): every change of a helper's parent in the
@@ -291,12 +300,19 @@ put on `autoDelete` counted, as the move switches that off). In this order:
    (`Registry::parent_changes`), and the spec takes a parent only from a
    change later than the one it has, so a chat's going that changed the
    registry before the move but writes the spec after it loses; the claim and
-   the hand-off go; the save and the rows' event.
+   the hand-off go (a claim given up without a move clears the `overtaken`
+   it set, `MoveClaim::moved`); the save and the rows' event.
 
 From then on the old chat's send, answer, stop, delete, and read or wait
 without `scope: "all"` on any moved session are refused naming the new chat
 (`moved_away`, `moved_error`): a wait in flight sees it at its next look. Its
-waits with `scope: "all"` go on. The helper's next turn gets a note in its
+waits with `scope: "all"` go on. A wait that took its answer as the move came
+puts no debt back (`owed_on_for` puts one in only for a caller still above
+it). The record stands for refusals only while the chat moved to is above
+the helper: once that chat is gone, or the person opens the helper as a chat
+(`change_hands` drops the record and its suggestions), the former chat is
+judged as any other, chat to chat by R1. A save takes every helper's ties
+in one hold of the registry (`ties_of_each`). The helper's next turn gets a note in its
 prompt that the person moved it and to which chat (`move_note`), naming
 whom it answers to at that turn, its parent then (a chat moved to and gone
 since is named as gone, and no chat as above it), until a
@@ -731,8 +747,8 @@ path, worktree, last message, cut to 400 characters by `history`).
 | Two models answering each other | breaker after 12 notices in 15 min |
 | Core dies mid-turn | debts, ties and queues restored from disk; callers told "cut short" ([background helpers](background-helpers.md#outliving-the-core)) |
 | Window gone while opening a helper as a chat | the next window settles it by whether its row exists (`settleOpenings`) |
-| A move refused (no tools, its own line, a lead, privilege, places, held back, not a chat's own helper) | nothing changed; the refusal names why, and `background_move_targets` says it per chat beforehand |
-| A move waits on a send or an answer in flight into a helper, or on a notice about it going in | it goes on once that is in, the debt it left closed; a notice still going in after 120 s refuses the move (`hand_off`) |
+| A move refused (no tools, its own line, a lead, privilege, places, deeper than a spawn reaches, held back, not a chat's own helper) | nothing changed; the refusal names why, and `background_move_targets` says it per chat beforehand |
+| A move waits on a send, an answer or a stop in flight into a helper, or on a notice about it going in | it goes on once that is in, the debt it left closed; a notice still going in after 120 s refuses the move (`hand_off`) |
 | Core dies between a move and the helper's next turn | its ties keep the move and that no turn has been told; the next core's first turn of it is |
 | A chat's CLI draws a dialog differently | not recognized: it waits for the person |
 

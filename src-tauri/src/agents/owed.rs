@@ -4,7 +4,7 @@
 
 use crate::agents::lost::{put_undelivered_back, take_undelivered};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{parent_of, reg, waits_on_helpers_in, Registry, DEV_CALLER};
+use crate::agents::registry::{is_descendant, parent_of, reg, waits_on_helpers_in, Registry, DEV_CALLER};
 use crate::agents::said::{request_head, Request};
 use crate::throttle::now_ms;
 
@@ -170,35 +170,43 @@ pub(super) fn shown(caller: &str, id: &str, turns_ended: u32) {
 /// past what it asked about, or, `job_debt` being this very debt, the end of a
 /// job it was told of. In one hold of the lock, so that a question asked a
 /// moment later is a debt that stands. Returns whether what the session goes on
-/// to say is owed on (`owed_on`).
-fn take_debt(r: &mut Registry, key: &(String, String), turns_ended: u32, job_debt: Option<u64>) -> bool {
-    let Some(o) = r.owed.get(key) else { return false };
+/// to say is owed on (`owed_on`): Some, with whether the caller is above the
+/// session now, as it must still be when that debt is put in.
+fn take_debt(r: &mut Registry, key: &(String, String), turns_ended: u32, job_debt: Option<u64>) -> Option<bool> {
+    let o = r.owed.get(key)?;
     if turns_ended <= o.baseline && job_debt != Some(o.rev) {
-        return false;
+        return None;
     }
     r.owed.remove(key);
-    waits_on_helpers_in(r, &key.1, &key.0)
+    waits_on_helpers_in(r, &key.1, &key.0).then(|| is_descendant(r, &key.0, &key.1))
 }
 
 /// What a session says once its own helpers have answered it is what it was
 /// asked for: still owed, past what the caller has now, as a notice's "not
 /// done" leaves it. Off the lock, as this reads the transcript's length, and so
 /// behind a question asked meanwhile, whose debt covers that too.
-fn owed_on(key: (String, String), turns_ended: u32, goes_on: bool) {
+fn owed_on(key: (String, String), turns_ended: u32, goes_on: Option<bool>) {
     owed_on_for(key, turns_ended, goes_on, None);
 }
 
 /// `owed_on` by a hand-over of the debt of rev `taken`: the one put in is said
 /// to the receipt that stands for that debt in the same hold (`Receipt::put_in`),
 /// so a hand-over coming in next finds them tied. Returns the one put in, by
-/// `rev`: none when a question since stands there already.
-fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: bool, taken: Option<u64>) -> Option<u64> {
-    if !goes_on {
-        return None;
-    }
+/// `rev`: none when a question since stands there already, or when the caller
+/// was above the session as its debt was taken and is not now.
+fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<bool>, taken: Option<u64>) -> Option<u64> {
+    let above = goes_on?;
+    #[cfg(test)]
+    super::test_support::reached("owed on", &key.0);
     let cursor = transcript_end(&key.1);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let r = &mut *r;
+    // The caller is no longer above it: the person moved it away from the
+    // caller, or took it over, since the debt was taken, which closed what the
+    // caller was owed (reparent.rs `change`, handover.rs).
+    if above && !is_descendant(r, &key.0, &key.1) {
+        return None;
+    }
     let rev = match r.owed.entry(key.clone()) {
         std::collections::hash_map::Entry::Vacant(v) => v.insert(Owed::pending(turns_ended, cursor)).rev,
         std::collections::hash_map::Entry::Occupied(_) => return None,
@@ -845,7 +853,7 @@ mod tests {
         owe_from("tk-mid", "tk-low", 0, 0);
         owe_from("tk-top", "tk-mid", 0, 0);
         let goes_on = take_debt(&mut reg().lock().unwrap(), &key, 1, None);
-        assert!(goes_on, "its own helper has yet to answer it");
+        assert!(goes_on.is_some(), "its own helper has yet to answer it");
         assert!(!reg().lock().unwrap().owed.contains_key(&key), "taken in the one hold of the lock");
         // A question between the taking and the owing on is the debt from here.
         owe_from("tk-top", "tk-mid", 1, 50);

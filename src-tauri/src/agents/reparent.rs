@@ -31,9 +31,9 @@ use crate::agents::owed::owe_in;
 use crate::agents::privilege::{helpers_above_caller, holds_over};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{
-    descendants, is_descendant, label, named, ownership_changing, persons_chat_in, reg, top_of, Registry, DEV_CALLER,
+    depth_of, descendants, is_descendant, label, named, ownership_changing, persons_chat_in, reg, top_of, Registry, DEV_CALLER,
 };
-use crate::agents::spawn::{max_descendants, under_cap};
+use crate::agents::spawn::{max_descendants, spawnable_at, under_cap};
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 
@@ -99,14 +99,17 @@ pub(super) fn movable_root(r: &Registry, id: &str) -> String {
 }
 
 /// The helper moved away from `caller` that `target` is, or is under, if the
-/// person moved one: `caller` was its chat, and is not above it now.
+/// person moved one: `caller` was its chat, is not above it now, and the chat
+/// it was moved to still is. One whose new chat has gone since hangs from no
+/// chat, or from whichever the person moved it to after; its former chat is
+/// told that, not of the move.
 pub(super) fn moved_away(r: &Registry, caller: &str, target: &str) -> Option<String> {
     if is_descendant(r, caller, target) {
         return None;
     }
     let mut cur = target.to_string();
     for _ in 0..16 {
-        if r.moved.get(&cur).is_some_and(|m| m.from.as_deref() == Some(caller)) {
+        if r.moved.get(&cur).is_some_and(|m| m.from.as_deref() == Some(caller) && is_descendant(r, &m.to, &cur)) {
             return Some(cur);
         }
         cur = r.known.get(&cur)?.parent.clone()?;
@@ -282,6 +285,26 @@ fn check_target(r: &Registry, id: &str, from: Option<&str>, sessions: &[String],
             named(r, to)
         ));
     }
+    // No deeper than a spawn could make it under that chat: a line that grew
+    // with no chat above it (a lead left alone, spawning leads) does not fit.
+    // The one nearest the top is named: what is under it is why the rest are.
+    let base = depth_of(r, id);
+    let too_deep = sessions
+        .iter()
+        .filter_map(|s| {
+            let tools = r.known.get(s)?.tools;
+            let depth = depth_of(r, s) - base + 1;
+            (!spawnable_at(depth, tools)).then_some((s, depth, tools))
+        })
+        .min_by_key(|(_, depth, _)| *depth);
+    if let Some((s, depth, tools)) = too_deep {
+        let what = if tools { "a helper with Luna's tools" } else { "a helper" };
+        return Err(format!(
+            "{s}, {what}, would be {depth} levels below chat {}, deeper than a spawn could put it there (a helper's \
+             helper has no tools of its own, and nothing is below it): not moved",
+            named(r, to)
+        ));
+    }
     if !above {
         for s in sessions {
             let Some(h) = r.known.get(s) else { continue };
@@ -360,8 +383,10 @@ fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usi
     // file. Taken early, what the new chat is owed may begin a little before the
     // move, never after what the helper is at work on.
     let cursor = transcript_end(id);
+    #[cfg(test)]
+    super::test_support::reached("move looked", id);
     let owners = ownership_changing();
-    let claim = match crate::background::claim_move(first) {
+    let mut claim = match crate::background::claim_move(first) {
         Ok(claim) => claim,
         Err(why) => {
             drop(owners);
@@ -409,6 +434,7 @@ fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usi
         // writes it here too, after its own hold of the registry: whichever of
         // the two writes last, the one that changed the registry last stands.
         crate::background::set_parent(id, Some(to.to_string()), *change);
+        claim.moved();
     }
     drop(claim);
     drop(holds);

@@ -7,7 +7,7 @@ use crate::agents::ask::live;
 use crate::agents::notifier::usage::{budget_owed, save_quota_told};
 use crate::agents::notifier::{left_holds, left_quiet};
 use crate::agents::read::{transcript_path, transcripts};
-use crate::agents::registry::{authorize, descendants, label, named, persons_chat_in, reg, top_of, Known, Registry};
+use crate::agents::registry::{authorize, descendants, label, named, ownership_steady, persons_chat_in, reg, top_of, Known, Registry};
 use crate::agents::said::replies_since;
 use crate::agents::spawn::worktree::worktree_of;
 use crate::throttle::now_ms;
@@ -164,8 +164,16 @@ pub struct Killed {
 
 /// Stops a helper's turn; it stays, and `luna_session_send` carries it on. Between turns it
 /// has only what its turns left running to stop (`background::kill`).
+///
+/// Whose it is stays as checked here until the stop is made (`ownership_steady`,
+/// let go by `kill_holding` once its turn is marked stopped): the person's move of
+/// it to another chat waits, or came first and this is refused naming that chat.
+/// A former parent never stops a turn its new chat started.
 pub fn kill(caller: &str, id: &str) -> Result<Killed, String> {
+    let steady = ownership_steady();
     authorize(caller, id)?;
+    #[cfg(test)]
+    super::test_support::reached("stop checked", caller);
     if !crate::background::has(id) {
         return Err(format!("session {id} is not running"));
     }
@@ -176,7 +184,7 @@ pub fn kill(caller: &str, id: &str) -> Result<Killed, String> {
     if !between_turns {
         reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(id);
     }
-    let ended = crate::background::kill(id);
+    let ended = crate::background::kill_holding(id, steady);
     Ok(Killed { ok: true, ended })
 }
 

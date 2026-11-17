@@ -679,15 +679,21 @@ pub(super) enum WriteRefused {
 }
 
 /// Whether `caller` may write into `target`: send it text or answer what it
-/// asks (ADR-0028). Into a person's chat a person's chat may (R1), as may the
-/// sessions above a helper into it (its parent, a lead between, the chat at
-/// the top), and the dev caller, which stands in for the person, anywhere.
-/// Nobody else: not a sibling, not another chat or its helpers, and nobody
-/// into a helper with no chat above it. One check for every place a write is
-/// decided: the tool's gate (`in_scope`), the write itself (`authorize_send`),
-/// and wherever ownership can change under a write and it is asked again.
+/// asks (ADR-0028). Into a person's chat a person's chat may (R1), whatever the
+/// target was before (a helper the person moved, then opened as a chat), as
+/// may the sessions above a helper into it (its parent, a lead between, the
+/// chat at the top), and the dev caller, which stands in for the person,
+/// anywhere. Nobody else: not a sibling, not another chat or its helpers, and
+/// nobody into a helper with no chat above it. One check for every place a
+/// write is decided: the tool's gate (`in_scope`), the write itself
+/// (`authorize_send`), and wherever ownership can change under a write and it
+/// is asked again.
 pub(super) fn write_reach(r: &Registry, caller: &str, target: &str) -> Result<(), WriteRefused> {
     if caller == DEV_CALLER || is_descendant(r, caller, target) {
+        return Ok(());
+    }
+    let chat = persons_chat_in(r, caller);
+    if chat && persons_chat_in(r, target) {
         return Ok(());
     }
     if r.taken_over.get(target).is_some_and(|from| from == caller) {
@@ -696,11 +702,8 @@ pub(super) fn write_reach(r: &Registry, caller: &str, target: &str) -> Result<()
     if let Some(root) = moved_away(r, caller, target) {
         return Err(WriteRefused::MovedAway(root));
     }
-    if !persons_chat_in(r, caller) {
+    if !chat {
         return Err(WriteRefused::NotUnderYou);
-    }
-    if persons_chat_in(r, target) {
-        return Ok(());
     }
     Err(WriteRefused::NotAbove)
 }

@@ -63,7 +63,7 @@ pub use lost::undelivered_left;
 pub(crate) use notifier::riders_go;
 pub use notifier::{notify, NOTICE_TAG};
 pub use owed::{callers_owed, resumed, retried};
-pub use persist::{freeze_chats, restore_chats, save_chats, take_up_spawns, tie_back, ties_of, Ties};
+pub use persist::{freeze_chats, restore_chats, save_chats, take_up_spawns, tie_back, ties_of_each, Ties};
 pub(crate) use privilege::{command_prefix, command_reach_now};
 pub use read::{read, report_get, Message};
 pub(crate) use registry::mint;

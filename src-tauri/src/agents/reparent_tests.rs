@@ -15,14 +15,20 @@ fn chat(id: &str, tools: bool, mode: &str) {
 
 /// A helper of `parent` running in the background, between turns, on `provider`.
 fn helper(id: &str, parent: &str, provider: Provider) {
+    registered(id, parent, provider);
+    crate::background::idle_for_test(id, provider, 2, false);
+    crate::background::set_parent_for_test(id, Some(parent.to_string()));
+}
+
+/// A helper of `parent` as its spawn registers it, before its background
+/// record is made (spawn/background.rs `spawn_background`).
+fn registered(id: &str, parent: &str, provider: Provider) {
     let settings = match provider {
         Provider::Claude => serde_json::json!({ "background": true, "permissionMode": "acceptEdits" }),
         Provider::Codex => serde_json::json!({ "background": true, "sandbox": "workspace-write", "approval": "never" }),
     };
     let account = if provider == Provider::Codex { "C:/acc/openai/two" } else { ACCOUNT };
     register(id, provider, "C:/p", account, Some(parent), false, settings);
-    crate::background::idle_for_test(id, provider, 2, false);
-    crate::background::set_parent_for_test(id, Some(parent.to_string()));
 }
 
 fn owes(caller: &str, id: &str) -> bool {
@@ -256,23 +262,38 @@ fn a_move_racing_an_answer_leaves_the_old_chat_owed_nothing() {
 /// A helper spawned under the line once the move has looked at it is held as
 /// the rest are before anything moves, the move looking again; and one a
 /// delete holds by then stops the move whole, as the line's own helpers would.
+/// The spawn registers it under the hold a spawn takes (spawn/background.rs
+/// `ownership_steady`), before the move holds whose the helpers are: once it
+/// does, a spawn waits for the move.
 #[test]
 fn a_helper_spawned_under_the_line_mid_move_is_held_too_or_nothing_moves() {
+    use crate::agents::registry::ownership_steady;
     let [a, b, h, g, k] = ["a", "b", "h", "g", "k"].map(|s| format!("ml-{s}"));
     chat(&a, true, "bypassPermissions");
     chat(&b, true, "bypassPermissions");
     helper(&h, &a, Provider::Claude);
     let mid_move = |id: &str, then: &mut dyn FnMut()| {
-        let stop = stop_at("move held", &h);
+        let looked = stop_at("move looked", &h);
+        let held = stop_at("move held", &h);
         let mover = {
             let (h, b) = (h.clone(), b.clone());
             std::thread::spawn(move || move_helper(&h, &b))
         };
-        stop.wait();
+        looked.wait();
         assert_eq!(parent_of(&h).as_deref(), Some(a.as_str()));
-        helper(id, &h, Provider::Codex);
+        {
+            let _spawning = ownership_steady();
+            helper(id, &h, Provider::Codex);
+        }
         then();
-        stop.go();
+        looked.go();
+        held.wait();
+        // A spawn now waits for the move to be through.
+        let spawn = std::thread::spawn(|| drop(ownership_steady()));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!spawn.is_finished(), "a spawn's hold waits on the move");
+        held.go();
+        spawn.join().unwrap();
         mover.join().unwrap()
     };
     let mut deleting = None;
@@ -359,6 +380,8 @@ fn a_turn_reserved_before_a_move_starts_after_it_on_what_the_new_chat_allows() {
     assert!(crate::agents::command_reach_now(&a, &h, "/compact").is_ok(), "its chat may send it a command");
     crate::background::reserved_for_test(&h);
     move_helper(&h, &b).unwrap();
+    let told = news_for(&a);
+    assert!(told[0].contains("The message you had queued for it still goes in"), "only the plain text is said to: {}", told[0]);
     assert!(!crate::background::launch_for_test(&h), "the reserved turn does not start");
     assert_eq!(crate::background::queued_for_test(&h), ["/compact", "plain"], "its batch waits, first in the queue");
     assert_eq!(crate::background::told_parent_for_test(&h).as_deref(), Some(b.as_str()));
@@ -602,4 +625,180 @@ fn a_chats_delete_spares_a_helper_moved_to_another_chat_meanwhile() {
     // From the helper list, with no chat named: as before.
     delete_by_user(&g, false, false, false, None).unwrap();
     clean(&[&h, &b]);
+}
+
+/// A send into a helper its spawn has registered and not yet started holds
+/// whose it is as a send into any helper does: the move waits for its debt and
+/// closes it, and nothing of the old chat's is left owed. Both CLIs alike.
+#[test]
+fn a_send_into_a_helper_still_being_spawned_holds_off_a_move() {
+    for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+        let [a, b, h] = ["a", "b", "h"].map(|s| format!("sp-{tag}-{s}"));
+        chat(&a, true, "bypassPermissions");
+        chat(&b, true, "bypassPermissions");
+        registered(&h, &a, provider);
+        let stop = stop_at("send checked", &a);
+        let sending = {
+            let (a, h) = (a.clone(), h.clone());
+            std::thread::spawn(move || crate::agents::send(&a, &h, "one more thing", false, None, true))
+        };
+        stop.wait();
+        // Its spawn goes on: its background record is made, its first turn on.
+        crate::background::idle_for_test(&h, provider, 2, false);
+        crate::background::set_parent_for_test(&h, Some(a.clone()));
+        crate::background::in_turn_for_test(&h);
+        let mover = {
+            let (h, b) = (h.clone(), b.clone());
+            std::thread::spawn(move || move_helper(&h, &b))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!mover.is_finished(), "the move waits for the send");
+        stop.go();
+        assert!(sending.join().unwrap().unwrap().queued);
+        assert!(mover.join().unwrap().unwrap().owed);
+        assert!(!owes(&a, &h) && owes(&b, &h), "the send's debt went with the move");
+        clean(&[&h, &a, &b]);
+    }
+}
+
+/// The old chat's stop that passed its check before the move is made before
+/// the move goes on; one after it is refused naming the new chat, and leaves
+/// the turn the new chat has alone.
+#[test]
+fn a_move_racing_a_stop_leaves_the_new_chats_turn_alone() {
+    let [a, b, h] = ["a", "b", "h"].map(|s| format!("rk-{s}"));
+    chat(&a, true, "bypassPermissions");
+    chat(&b, true, "bypassPermissions");
+    helper(&h, &a, Provider::Claude);
+    crate::background::in_turn_for_test(&h);
+    let stop = stop_at("stop checked", &a);
+    let stopping = {
+        let (a, h) = (a.clone(), h.clone());
+        std::thread::spawn(move || crate::agents::kill(&a, &h))
+    };
+    stop.wait();
+    let mover = {
+        let (h, b) = (h.clone(), b.clone());
+        std::thread::spawn(move || move_helper(&h, &b))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!mover.is_finished(), "the move waits for the stop");
+    assert_eq!(parent_of(&h).as_deref(), Some(a.as_str()));
+    stop.go();
+    assert!(stopping.join().unwrap().is_ok(), "stopped before the move");
+    mover.join().unwrap().unwrap();
+    // The new chat's turn: the old chat's stop is refused, and stops nothing.
+    crate::background::gone_for_test(&h);
+    crate::background::idle_for_test(&h, Provider::Claude, 3, false);
+    crate::background::in_turn_for_test(&h);
+    let e = crate::agents::kill(&a, &h).err().unwrap();
+    assert!(e.contains("the person moved") && e.contains(&b), "{e}");
+    assert_eq!(crate::background::work_and_count(&h), Some((true, 3)), "its turn runs on");
+    clean(&[&h, &a, &b]);
+}
+
+/// A wait that took its answer as the move came puts back no debt of the old
+/// chat's for what the lead says once its own helpers answer: the move closed
+/// what that chat was owed. Without a move, the same wait puts it back.
+#[test]
+fn a_wait_ending_as_the_move_comes_puts_back_no_debt_of_the_old_chats() {
+    use crate::agents::owed::shown;
+    let [a, b, h, g] = ["a", "b", "h", "g"].map(|s| format!("wd-{s}"));
+    chat(&a, true, "bypassPermissions");
+    chat(&b, true, "bypassPermissions");
+    helper(&h, &a, Provider::Claude);
+    helper(&g, &h, Provider::Codex);
+    owe_from(&a, &h, 2, 0);
+    owe_from(&h, &g, 2, 0);
+    let stop = stop_at("owed on", &a);
+    let waiting = {
+        let (a, h) = (a.clone(), h.clone());
+        std::thread::spawn(move || shown(&a, &h, 3))
+    };
+    stop.wait();
+    move_helper(&h, &b).unwrap();
+    stop.go();
+    waiting.join().unwrap();
+    assert!(!owes(&a, &h) && !owes(&a, &g), "nothing owed to the old chat");
+    owe_from(&b, &h, 3, 0);
+    shown(&b, &h, 4);
+    assert!(owes(&b, &h), "still owed what it says once its own helper answers");
+    clean(&[&g, &h, &a, &b]);
+}
+
+/// A helper moved and then opened by the person as a chat of their own is a
+/// chat to its former chat like any other (R1), not a helper moved away; one
+/// whose new chat has gone since hangs from no chat, and its former chat is
+/// told that, and offered it, while its next turn still hears of the move.
+#[test]
+fn a_move_is_not_told_of_once_its_helper_is_a_chat_or_its_new_chat_is_gone() {
+    let [a, b, h, k] = ["a", "b", "h", "k"].map(|s| format!("ms-{s}"));
+    chat(&a, true, "bypassPermissions");
+    chat(&b, true, "bypassPermissions");
+    helper(&h, &a, Provider::Claude);
+    helper(&k, &a, Provider::Codex);
+    move_helper(&h, &b).unwrap();
+    move_helper(&k, &b).unwrap();
+    assert!(authorize_send(&b, &h).is_ok());
+    assert!(authorize_send(&a, &h).err().unwrap().contains("the person moved"));
+    crate::agents::take_over(&h, || None).unwrap();
+    assert!(!reg().lock().unwrap().moved.contains_key(&h), "a chat now, moved as a helper no more");
+    assert!(authorize_send(&a, &h).is_ok(), "chat to chat");
+    for verb in ["send to", "answer"] {
+        assert_eq!(in_scope(&a, &h, Some("all"), verb), Ok(()), "{verb}");
+    }
+    forget(&b);
+    let e = authorize_send(&a, &k).err().unwrap();
+    assert!(e.contains("has no chat above it") && !e.contains("the person moved"), "{e}");
+    assert_eq!(ownership_of(&k).suggested.into_iter().map(|s| s.chat).collect::<Vec<_>>(), std::slice::from_ref(&a));
+    assert!(move_note(&k).unwrap().text.contains("which has gone since"), "its next turn still hears of it");
+    clean(&[&k, &h, &a]);
+}
+
+/// A line that grew with no chat above it does not move under a chat deeper
+/// than a spawn could have made it there: a lead left alone, which spawned a
+/// helper with tools, would put that one a helper's helper with tools. With
+/// that one gone, it fits.
+#[test]
+fn a_move_is_refused_where_its_line_would_go_deeper_than_a_spawn() {
+    let [gone, b, lead, sub, low] = ["gone", "b", "lead", "sub", "low"].map(|s| format!("dp-{s}"));
+    chat(&gone, true, "bypassPermissions");
+    chat(&b, true, "bypassPermissions");
+    let tools = |id: &str| reg().lock().unwrap().known.get_mut(id).unwrap().tools = true;
+    helper(&lead, &gone, Provider::Claude);
+    tools(&lead);
+    forget(&gone);
+    helper(&sub, &lead, Provider::Claude);
+    tools(&sub);
+    helper(&low, &sub, Provider::Codex);
+    let e = move_helper(&lead, &b).unwrap_err();
+    assert!(e.contains(&format!("{sub}, a helper with Luna's tools, would be 2 levels below chat {b}")), "{e}");
+    assert!(e.contains("deeper than a spawn could put it there"), "{e}");
+    assert_eq!(parent_of(&lead), None, "nothing moved");
+    let menu = move_targets(&lead);
+    assert!(menu.targets.iter().any(|t| t.id == b && !t.ok && t.why.as_ref().is_some_and(|w| w.contains("deeper"))));
+    // Its helper gone, the one under it passes up to the lead: two levels, no tools.
+    crate::background::gone_for_test(&sub);
+    forget(&sub);
+    assert_eq!(move_helper(&lead, &b).unwrap().sessions, [lead.clone(), low.clone()]);
+    clean(&[&low, &lead, &b]);
+}
+
+/// A move refused once it held the helpers leaves a turn claimed meanwhile to
+/// start as it was claimed: nothing is put back in the queue.
+#[test]
+fn a_refused_move_leaves_a_claimed_turn_to_start() {
+    let [a, plain, h] = ["a", "plain", "h"].map(|s| format!("rf-{s}"));
+    chat(&a, true, "bypassPermissions");
+    chat(&plain, false, "bypassPermissions");
+    helper(&h, &a, Provider::Claude);
+    crate::background::in_turn_for_test(&h);
+    assert_eq!(crate::background::send(&h, "plain", Some(&a)).unwrap(), crate::background::Placed::Queued);
+    crate::background::reserved_for_test(&h);
+    assert!(move_helper(&h, &plain).unwrap_err().contains("without Luna's tools"));
+    assert!(crate::background::launch_for_test(&h), "its turn starts as claimed");
+    assert!(crate::background::queued_for_test(&h).is_empty(), "nothing put back");
+    crate::background::launch_failed_for_test(&h);
+    crate::background::gone_for_test(&h);
+    clean(&[&h, &a, &plain]);
 }
