@@ -263,17 +263,22 @@ mod tests {
         (format!("http://{addr}/"), rx)
     }
 
-    /// A listener nothing answers on, and whether anything came to it.
-    fn nobody() -> (String, std::sync::mpsc::Receiver<()>) {
+    /// A listener nothing answers on, nonblocking: once a request has come
+    /// back, a connection made to it is already waiting in its backlog, so
+    /// `reached` tells at once, with no thread left behind to wait on it.
+    fn nobody() -> (String, TcpListener) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let addr = listener.local_addr().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            if listener.accept().is_ok() {
-                let _ = tx.send(());
-            }
-        });
-        (format!("http://{addr}/elsewhere"), rx)
+        (format!("http://{addr}/elsewhere"), listener)
+    }
+
+    fn reached(listener: &TcpListener) -> bool {
+        match listener.accept() {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(e) => panic!("{e}"),
+        }
     }
 
     /// A 307 to `to`, which keeps the method and the body.
@@ -336,14 +341,14 @@ mod tests {
         // A body (the OAuth refresh posts its token in one), and an
         // Authorization header: the 307 comes back, and nothing reaches the
         // other origin.
-        let (elsewhere, reached) = nobody();
+        let (elsewhere, listener) = nobody();
         let post = agent().post(&redirect_to(&elsewhere)).json(&serde_json::json!({"refresh_token": "secret"})).call();
         assert!(matches!(post, Err(Error::Status(307, ..))));
-        let (elsewhere2, reached2) = nobody();
-        let get = agent().get(&redirect_to(&elsewhere2)).header("Authorization", "Bearer secret").call();
+        assert!(!reached(&listener), "a body went on to the redirect's target");
+        let (elsewhere, listener) = nobody();
+        let get = agent().get(&redirect_to(&elsewhere)).header("Authorization", "Bearer secret").call();
         assert!(matches!(get, Err(Error::Status(307, ..))));
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(reached.try_recv().is_err() && reached2.try_recv().is_err(), "a credential went on to the redirect's target");
+        assert!(!reached(&listener), "an Authorization header went on to the redirect's target");
     }
 
     #[test]
