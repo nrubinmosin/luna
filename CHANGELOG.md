@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- A Claude Code account whose sign-in the server turned down on Luna's own
+  token refresh now stays signed out everywhere and after a restart: Luna
+  clears its tokens in `.credentials.json` as Claude Code does, under the
+  CLI's locks and only if the file still holds the refused token, so helpers
+  and moved chats no longer go to it and Sign in shows. Until now only the
+  Accounts panel knew, until Luna restarted (#76).
+
 ## [0.18.3] - 2026-11-17
 
 Luna now installs Claude Code 2.1.325 and runs nothing older. Only the

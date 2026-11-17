@@ -2379,6 +2379,9 @@ pub(super) mod tests {
         assert!(signed_out_refusal(Provider::Claude, &p, "rOut").is_some_and(|w| w.contains("rOut is signed out")));
         std::fs::write(dir.join(".credentials.json"), r#"{"claudeAiOauth":{"refreshToken":"x"}}"#).unwrap();
         assert_eq!(signed_out_refusal(Provider::Claude, &p, "rA"), None);
+        // Signed out by a refresh the server turned down: no move there.
+        assert!(crate::claude::oauth::refused_for_test(&p, "x"));
+        assert!(signed_out_refusal(Provider::Claude, &p, "rA").is_some_and(|w| w.contains("rA is signed out")));
         assert!(signed_out_refusal(Provider::Codex, &p, "c").is_some(), "Codex keeps its own");
         let _ = std::fs::remove_dir_all(&dir);
     }
