@@ -77,7 +77,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the Codex rollouts looked up by thread (1,024 kept).
 - Dependabot opens no more pull requests: the crates, npm packages, pinned
   Actions and Docker images move by hand, in the project's own commits through
-  the gate, and Dependabot only alerts on advisories
+  the gate, and Dependabot only alerts on advisories, for the crates alone
+  (GitHub reads neither the lockfile pnpm 12 writes nor Actions pinned by
+  SHA; `pnpm audit` is what sees npm advisories)
   ([ADR-0029](docs/adr/0029-dependencies-move-by-hand.md)). The commit-message
   check holds every commit to the rules, with no exemption for Dependabot's.
 

@@ -184,9 +184,14 @@ every pull request, every push to master, weekly and by hand
 `.github/workflows/release.yml` runs only on `v*` tags and by hand
 ([Releases](#releases)). Actions are pinned by commit and images by tag and digest.
 They, the crates, the npm packages and the toolchains move only in the project's own
-commits, by hand and through the gate; Dependabot alerts report advisories against them
-and author no code ([ADR-0029](adr/0029-dependencies-move-by-hand.md)). A new Node or
-Rust major is a migration of its own.
+commits, by hand and through the gate; Dependabot authors no code
+([ADR-0029](adr/0029-dependencies-move-by-hand.md)). Advisories reach the project through
+cargo-deny and `pnpm audit` ([Supply chain](#supply-chain)), and through Dependabot alerts
+for the crates alone: GitHub's dependency graph detects nothing in the two-document
+`pnpm-lock.yaml` pnpm 12 writes, and raises no alert for an Action pinned by SHA or for an
+image. The Actions, the images and the toolchains and tools in them are watched by
+nothing, so moving one means reading its releases for fixes. A new Node or Rust major is
+a migration of its own.
 
 ## Supply chain
 

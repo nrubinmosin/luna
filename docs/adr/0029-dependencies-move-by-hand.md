@@ -30,8 +30,9 @@ On the table:
 1. Keep version updates and security updates.
 2. Keep security updates only: a pull request per advisory, nothing on a
    schedule.
-3. Alerts only: Dependabot reports advisories against what is pinned, and
-   every change to a pin is a commit of the project's own.
+3. Alerts only: Dependabot reports advisories against what GitHub's
+   dependency graph can read of the pins, and every change to a pin is a
+   commit of the project's own.
 
 ## Decision
 
@@ -53,17 +54,29 @@ Dependabot authors no code.
   containers (`cargo update`, `pnpm update`, new digests in `docker/`), for
   instance as a release nears or when a tool needs a newer version. Falling
   behind is easy, and catching up costs more the longer it waits.
-- Advisories are seen in two places: Dependabot alerts in the repository's
-  Security tab (crates, npm packages and Actions; not the Docker images), and
-  cargo-deny and `pnpm audit` in `.github/workflows/security.yml` on every
-  pull request, every push to master and weekly (`scripts/supply-chain.ps1`
-  locally), where a high or critical advisory fails the check. One is acted on
-  by a commit that moves the package to a fixed version or, where there is
-  none yet or the package cannot move, by an ignore with a reason and an
-  expiry ([development](../development.md#supply-chain)).
+- What watches each pin for advisories:
+  - the crates: cargo-deny in `.github/workflows/security.yml`, and
+    Dependabot alerts, from `src-tauri/Cargo.lock`;
+  - the npm packages: `pnpm audit` in the same workflow, alone. pnpm 12
+    writes `pnpm-lock.yaml` as two YAML documents, from which GitHub's
+    dependency graph detects no dependencies, so no npm alert reaches the
+    Security tab;
+  - the Actions, the Docker base images and the toolchains and tools in them
+    (Node, Rust, pnpm through `packageManager`, cargo-xwin, the cargo-deny
+    binary, the gitleaks image): nothing. GitHub raises alerts for an Action
+    pinned by a version, not by a commit SHA as every one here is, and none
+    for an image. These move only when the project moves them by hand, and
+    reading their releases for fixes is part of moving them.
+
+  The workflow runs on every pull request, every push to master and weekly
+  (`scripts/supply-chain.ps1` locally), and a high or critical advisory fails
+  it. One is acted on by a commit that moves the package to a fixed version
+  or, where there is none yet or the package cannot move, by an ignore with a
+  reason and an expiry ([development](../development.md#supply-chain)). A
+  check over the unwatched pins (an advisory lookup for the Actions, a
+  scanner for the images) could be added later; none runs now.
 - Nothing opens a fix on its own: between an advisory and its fix there is a
-  person's turn. A Docker base image's own distro packages get no alert at
-  all; they move when the image's digest is bumped by hand.
+  person's turn.
 - Dependabot's earlier commits stay in master's history in their own form. CI
   checks the commits a push or a pull request brings, never those master
   already holds, so they are not checked again.
