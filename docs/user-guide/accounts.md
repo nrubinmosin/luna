@@ -15,8 +15,9 @@ per account. A fresh Codex account gets a `config.toml` with
 
 - **Sign in** with the button on a fresh account's row: it runs `claude`, or
   `codex login`, in a modal. A Claude Code account whose login has run out
-  (the server turned its refresh token down, or the CLI cleared its tokens)
-  shows signed out with the same button. Luna never renews a Codex login, and
+  (the server turned its refresh token down, and Luna or the CLI cleared its
+  tokens) shows signed out with the same button, and helpers and moved chats
+  no longer go to it. Luna never renews a Codex login, and
   Codex leaves `auth.json` as it is when its own renewal is refused, so a
   Codex account shows signed out only once its tokens are gone or blank.
 - **Rename** with the pencil beside the name: the folder is renamed and every
