@@ -83,6 +83,9 @@ pub struct ActivityProbe {
     /// The worktree it was started into, where that is not its `cwd`
     /// (`Session::enters`).
     pub enters: Option<String>,
+    /// Started with a new worktree whose path its CLI picks
+    /// (`Session::makes_worktree`).
+    pub makes_worktree: bool,
     pub spawned_at_ms: u128,
     pub resume: Option<String>,
     pub account_path: String,
@@ -125,6 +128,7 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
         pid: s.pid,
         cwd: s.cwd.clone(),
         enters: s.enters.clone(),
+        makes_worktree: s.makes_worktree,
         spawned_at_ms: s.spawned_at_ms,
         resume: s.resume.clone(),
         account_path: s.account_path.clone(),
@@ -150,6 +154,26 @@ pub fn live_cwds() -> Vec<String> {
         .collect();
     cwds.extend(crate::background::working_dirs(None));
     cwds
+}
+
+/// The live sessions and helpers that asked their CLI for a new worktree and
+/// have not said where it is yet (`worktree::Unplaced`): a session until its
+/// working folder has moved from where it started, a helper's turn until it
+/// says where it works.
+pub fn unplaced_worktrees() -> Vec<crate::worktree::Unplaced> {
+    let mut out: Vec<crate::worktree::Unplaced> = manager()
+        .activity_probes()
+        .into_iter()
+        .filter(|p| p.makes_worktree && p.working_dir().is_none_or(|w| super::same_dir(&w, &p.cwd)))
+        .map(|p| crate::worktree::Unplaced {
+            provider: p.provider,
+            folder: p.cwd,
+            account_path: p.account_path,
+            since_ms: p.spawned_at_ms as u64,
+        })
+        .collect();
+    out.extend(crate::background::unplaced_worktrees());
+    out
 }
 
 /// The last `max` bytes of a file as text, or None if it cannot be read.

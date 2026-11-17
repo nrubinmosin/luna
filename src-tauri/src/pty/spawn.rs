@@ -125,6 +125,9 @@ pub(super) struct Launch {
     /// the map, and kept there with it (`Session::enters`) for as long as it
     /// runs.
     pub(super) enters: Option<String>,
+    /// It asks its CLI for a new worktree whose path the CLI picks: Codex's
+    /// `--worktree`, Claude Code's with no name (`Session::makes_worktree`).
+    pub(super) makes_worktree: bool,
 }
 
 impl Launch {
@@ -253,7 +256,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let Some(launch) = capture::keep(&id, launch) else {
         return Ok(Attached { backlog: String::new(), generation });
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters, makes_worktree } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -616,6 +619,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             pid,
             cwd,
             enters,
+            makes_worktree,
             spawned_at_ms,
             resume,
             account_path,

@@ -8,6 +8,60 @@ use super::*;
 /// reported its path yet, and is never treated as an orphan.
 const GRACE_SECS: u64 = 300;
 
+/// A live session or helper that asked its CLI for a new worktree whose path
+/// Luna has not learned yet: Codex makes its checkout in a bucket of its own
+/// choosing (`<CODEX_HOME>/worktrees/<first 4 hex of a fresh UUID>/<repo>`,
+/// codex-rs `worktree/src/paths.rs`) and says where only in the rollout, which
+/// is written with the first turn; Claude Code given `--worktree` with no
+/// name picks one under `<repo>/.claude/worktrees/`, and says which in its
+/// registry once it is up. What appears there after it asked may be its own
+/// (`awaits`): no orphan while it runs with its path unknown.
+#[derive(Clone, Debug)]
+pub(crate) struct Unplaced {
+    pub provider: crate::provider::Provider,
+    /// The project folder it was started in.
+    pub folder: String,
+    pub account_path: String,
+    /// When it was started, on the wall clock (ms).
+    pub since_ms: u64,
+}
+
+/// How long before a session's start a worktree may have appeared and still
+/// be taken for its own: the session's stamp is taken just after its process
+/// is spawned, and file times are written by another clock's reading.
+const BORN_SLACK_MS: u64 = 2_000;
+
+/// When `path` appeared, in ms on the wall clock: its creation time, or where
+/// the file system keeps none, its last change.
+fn born_ms(path: &Path) -> Option<u64> {
+    let m = std::fs::metadata(path).ok()?;
+    let at = m.created().or_else(|_| m.modified()).ok()?;
+    at.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as u64)
+}
+
+/// Whether the worktree `wt` of `folder` may be the one `u` is making: where
+/// its CLI makes one for that folder (Claude Code under the folder, Codex
+/// under its account), and appeared since it was started. One whose time
+/// cannot be read is taken for it.
+fn awaits(u: &Unplaced, folder: &str, wt: &Path) -> bool {
+    use crate::provider::Provider;
+    if norm(&u.folder) != norm(folder) {
+        return false;
+    }
+    let root = match u.provider {
+        Provider::Claude => wt.parent(),
+        Provider::Codex => wt.parent().and_then(Path::parent),
+    };
+    let place = match u.provider {
+        Provider::Claude => claude_worktrees(&u.folder),
+        Provider::Codex => Path::new(&u.account_path).join("worktrees"),
+    };
+    if !root.is_some_and(|r| norm(&r.to_string_lossy()) == norm(&place.to_string_lossy())) {
+        return false;
+    }
+    born_ms(wt).is_none_or(|born| born >= u.since_ms.saturating_sub(BORN_SLACK_MS))
+}
+
 fn younger_than(path: &Path, secs: u64) -> bool {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -24,7 +78,8 @@ fn younger_than(path: &Path, secs: u64) -> bool {
 #[tauri::command]
 pub async fn orphan_worktrees(folder: String, in_use: Vec<String>, account_paths: Vec<String>) -> Result<Vec<String>, String> {
     let live = crate::pty::live_cwds();
-    tauri::async_runtime::spawn_blocking(move || orphan_worktrees_now(folder, in_use, account_paths, live))
+    let unplaced = crate::pty::unplaced_worktrees();
+    tauri::async_runtime::spawn_blocking(move || orphan_worktrees_now(folder, in_use, account_paths, live, &unplaced, GRACE_SECS))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -45,11 +100,16 @@ pub(super) fn own_claude_dir() -> Option<String> {
         .or_else(|| dirs::home_dir().map(|h| h.join(".claude").to_string_lossy().into_owned()))
 }
 
+/// The orphans of `folder`: worktrees older than `grace` seconds (`GRACE_SECS`)
+/// that no folder in use claims, and that no session making a worktree whose
+/// path is not known yet may have made (`Unplaced`).
 fn orphan_worktrees_now(
     folder: String,
     in_use: Vec<String>,
     account_paths: Vec<String>,
     live_pty_cwds: Vec<String>,
+    unplaced: &[Unplaced],
+    grace: u64,
 ) -> Result<Vec<String>, String> {
     let mut claimed: Vec<String> = in_use.iter().map(|p| norm_in_use(p)).collect();
     // Claude Code moves into its worktree on its own; only its registry says
@@ -61,7 +121,7 @@ fn orphan_worktrees_now(
 
     let mut out = vec![];
     for path in candidates(&folder, &account_paths) {
-        if younger_than(&path, GRACE_SECS) {
+        if younger_than(&path, grace) || unplaced.iter().any(|u| awaits(u, &folder, &path)) {
             continue;
         }
         let path = path.to_string_lossy().into_owned();
@@ -135,8 +195,10 @@ pub async fn remove_orphan_worktrees(
     paths: Vec<String>,
 ) -> Result<SweepResult, String> {
     let live = crate::pty::live_cwds();
+    let unplaced = crate::pty::unplaced_worktrees();
     tauri::async_runtime::spawn_blocking(move || {
-        let orphans: Vec<String> = orphan_worktrees_now(folder.clone(), in_use, account_paths, live)?.iter().map(|p| norm(p)).collect();
+        let orphans: Vec<String> =
+            orphan_worktrees_now(folder.clone(), in_use, account_paths, live, &unplaced, GRACE_SECS)?.iter().map(|p| norm(p)).collect();
         let mut result = SweepResult { removed: vec![], failed: vec![] };
         for path in paths {
             // Held from the look to the end of its removal, as a chat's delete
@@ -182,6 +244,46 @@ mod tests {
         let account = root.join("account").to_string_lossy().into_owned();
         assert_eq!(made_for(&repo, &account), std::slice::from_ref(&wt));
         assert!(made_for(&repo, r"C:\no\such\account").is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A worktree that appeared, where its CLI makes them, after a live
+    /// session there asked for a new one whose path Luna does not know yet is
+    /// no orphan, however old; one there before it asked, another account's
+    /// or another folder's is, and so is every one once nobody is waiting.
+    #[test]
+    fn a_worktree_made_after_a_session_asked_for_one_is_no_orphan_while_its_path_is_unknown() {
+        use crate::provider::Provider;
+        let Some((root, repo, wt)) = codex_layout("unplaced") else { return };
+        let account = root.join("account").to_string_lossy().into_owned();
+        let claude_wt = claude_worktrees(&repo).join("named-by-claude");
+        std::fs::create_dir_all(&claude_wt).unwrap();
+        let claude_wt = claude_wt.to_string_lossy().into_owned();
+        let orphans = |unplaced: &[Unplaced]| {
+            let mut found: Vec<String> = orphan_worktrees_now(repo.clone(), vec![], vec![account.clone()], vec![], unplaced, 0)
+                .unwrap()
+                .iter()
+                .map(|p| place(p))
+                .collect();
+            found.sort();
+            found
+        };
+        let mut both = vec![place(&wt), place(&claude_wt)];
+        both.sort();
+        assert_eq!(orphans(&[]), both, "nobody waiting: both orphans");
+        let now = crate::throttle::now_ms();
+        let asked = |provider, since_ms: u64, folder: &str, account: &str| Unplaced {
+            provider,
+            folder: folder.to_string(),
+            account_path: account.to_string(),
+            since_ms,
+        };
+        let before = now - 60_000;
+        assert_eq!(orphans(&[asked(Provider::Codex, before, &repo, &account)]), [place(&claude_wt)], "Codex's, made after it asked");
+        assert_eq!(orphans(&[asked(Provider::Claude, before, &repo, &account)]), [place(&wt)], "Claude Code's, made after it asked");
+        assert_eq!(orphans(&[asked(Provider::Codex, now + 60_000, &repo, &account)]), both, "there before it asked");
+        assert_eq!(orphans(&[asked(Provider::Codex, before, &repo, &native(r"C:\other\account"))]), both, "another account");
+        assert_eq!(orphans(&[asked(Provider::Claude, before, &native(r"C:\other\repo"), &account)]), both, "another folder");
         let _ = std::fs::remove_dir_all(&root);
     }
 

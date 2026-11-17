@@ -522,6 +522,7 @@ mod tests {
             pid: None,
             cwd: String::new(),
             enters: None,
+            makes_worktree: false,
             spawned_at_ms: 0,
             resume: None,
             account_path: String::new(),

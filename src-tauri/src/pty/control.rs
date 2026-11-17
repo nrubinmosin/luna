@@ -698,6 +698,7 @@ mod tests {
             pid: None,
             cwd: cwd.to_string(),
             enters: None,
+            makes_worktree: false,
             spawned_at_ms: now_ms() as u128,
             resume: None,
             account_path: String::new(),
@@ -748,6 +749,7 @@ mod tests {
                     applied: Vec::new(),
                     reserved: None,
                     enters: None,
+                    makes_worktree: false,
                 })
             }))
             .map(|a: Attached| a.backlog)
@@ -857,6 +859,26 @@ mod tests {
         assert!(wt.exists());
         came.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session started with a new worktree whose place its CLI picks is
+    /// waited for, its folder and account and start given, until its working
+    /// folder says where it went; one started without is not.
+    #[test]
+    fn a_session_making_a_worktree_is_waited_for_until_it_says_where() {
+        let (making, plain) = ("dl-unplaced", "dl-placed");
+        let dir = scratch("unplaced");
+        let folder = dir.to_string_lossy().into_owned();
+        let quits = [fake_session(making, &folder, PROMPT), fake_session(plain, &folder, PROMPT)];
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(making).unwrap().makes_worktree = true;
+        let waited: Vec<_> = super::super::unplaced_worktrees().into_iter().filter(|u| u.folder == folder).collect();
+        assert_eq!(waited.len(), 1, "{waited:?}");
+        assert!(waited[0].since_ms > 0 && waited[0].since_ms <= now_ms());
+        for (id, quit) in [making, plain].into_iter().zip(quits) {
+            quit.store(true, Ordering::SeqCst);
+            manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

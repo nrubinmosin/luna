@@ -67,7 +67,19 @@ lose, and to sweep the ones no chat claims.
   removal that still fails is `worktreeLeft` + `worktreeError` in the result,
   not an error. The log names branches deleted and kept.
 - The orphan sweep scans every folder and each account's `worktrees/`; nothing a
-  live session or helper sits in is deleted.
+  live session or helper sits in is deleted. A worktree younger than 5 minutes
+  is no orphan (`GRACE_SECS`), nor, however old, is one that may be a live
+  session's whose path Luna has not learned yet (`Unplaced`): a chat or a
+  helper's running turn started with a new worktree whose place its CLI picks
+  (Codex's `--worktree`, a bucket named for the first 4 hex of a fresh UUID
+  under `<CODEX_HOME>/worktrees/`, said only in the rollout of its first turn;
+  Claude Code's `--worktree` with no name, said in its registry once it is
+  up) keeps every worktree that appeared since it started (by creation time,
+  2 s of slack) where that CLI makes them for that folder: under the folder's
+  `.claude/worktrees/`, or under that account's `worktrees/`. Once the
+  session's folder says where it went, or it ends, the usual check applies.
+  Deletes take only the deleted chat's or helper's own worktree, which no
+  such session can be making: theirs is new.
 
 ## Fetch before a Claude Code worktree
 

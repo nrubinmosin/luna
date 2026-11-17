@@ -138,6 +138,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   carries its session's spawn number, and the pane takes only its own.
 - Stopping the sessions waits for a save of the chats' ties under way, so
   nothing the stopping did is written after it.
+- The sweep of orphan worktrees no longer offers or removes the worktree of a
+  Codex chat or helper started with a new worktree before its first prompt,
+  or of a Claude Code one started into an unnamed worktree, while Luna does
+  not yet know which worktree is theirs.
 
 ## [0.18.5] - 2026-11-17
 

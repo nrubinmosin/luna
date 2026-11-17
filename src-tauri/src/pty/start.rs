@@ -761,6 +761,8 @@ pub async fn ensure_claude_session(
             applied,
             reserved,
             enters,
+            // With no name its CLI picks one, which its registry tells.
+            makes_worktree: worktree && worktree_name.is_none() && !login,
         })
     })
     .await
@@ -811,6 +813,7 @@ pub async fn ensure_codex_session(
                 applied,
                 reserved: None,
                 enters: None,
+                makes_worktree: false,
             });
         }
         // A folder Codex could not start in, refused before anything of the
@@ -923,6 +926,7 @@ pub async fn ensure_codex_session(
             applied,
             reserved: Some(reserved),
             enters: None,
+            makes_worktree: new_worktree,
         })
     })
     .await

@@ -292,6 +292,29 @@ pub fn uses_account(account_path: &str) -> bool {
     lock().entries.values().any(|e| crate::pty::same_dir(&e.spec.account_path, account_path))
 }
 
+/// The helpers sent into a new worktree whose turn is running and has not
+/// said where it works yet (`worktree::Unplaced`, from the turn's start):
+/// Claude Code says it as the turn starts, Codex only in its rollout, read
+/// here as `working_dirs` reads it.
+pub fn unplaced_worktrees() -> Vec<crate::worktree::Unplaced> {
+    let found: Vec<(Provider, String, String, Option<String>, u64)> = lock()
+        .entries
+        .values()
+        .filter(|e| e.spec.worktree && e.cwd.is_none())
+        .filter_map(|e| {
+            let since = e.run.as_ref()?.started_ms;
+            Some((e.spec.provider, e.spec.folder.clone(), e.spec.account_path.clone(), e.session.clone(), since))
+        })
+        .collect();
+    found
+        .into_iter()
+        .filter(|(provider, _, account, session, _)| {
+            *provider != Provider::Codex || session.as_deref().and_then(|t| crate::codex::session::thread_cwd(account, t)).is_none()
+        })
+        .map(|(provider, folder, account_path, _, since_ms)| crate::worktree::Unplaced { provider, folder, account_path, since_ms })
+        .collect()
+}
+
 /// Every folder the helpers other than `except` work in, between turns too:
 /// the one each was sent to, and the worktree it made once the CLI has said
 /// where — Codex says it only in its rollout, read here off the registry.
