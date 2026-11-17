@@ -256,16 +256,28 @@ function Use-BuildLock([scriptblock]$Body) {
 
 # Whether an account folder holds a login its CLI can start on, by the rule
 # Luna's own spawns go by (agents/spawn/account.rs `signed_in`): Claude Code's
-# OAuth refresh token, or Codex's ChatGPT tokens or API key. $Provider is the
-# accounts folder's name for it, anthropic or openai.
+# OAuth refresh token, not past its refreshTokenExpiresAt, or Codex's ChatGPT
+# access and refresh tokens or API key, none of them blank (Claude Code blanks
+# its tokens once a refresh is refused). Under auth_mode chatgptAuthTokens
+# (tokens a host application supplies, which carry an empty refresh token) the
+# access token alone counts: Codex 0.169.0 keeps those in memory and writes no
+# such auth.json, but would load one. $Provider is the accounts folder's name
+# for it, anthropic or openai.
 function Test-AccountSignedIn([string]$Provider, [string]$Path) {
     $file = if ($Provider -eq 'anthropic') { '.credentials.json' } else { 'auth.json' }
     $json = try { Get-Content -LiteralPath (Join-Path $Path $file) -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable } catch { $null }
     if (-not $json) { return $false }
+    $text = { param($Value) $Value -is [string] -and $Value.Trim() -ne '' }
     if ($Provider -eq 'anthropic') {
-        return $json.claudeAiOauth -is [hashtable] -and $json.claudeAiOauth.refreshToken -is [string]
+        $oauth = $json.claudeAiOauth
+        if (-not ($oauth -is [hashtable] -and (& $text $oauth.refreshToken))) { return $false }
+        # An end that is no whole number of milliseconds is no end, as in Rust.
+        $end = $oauth.refreshTokenExpiresAt
+        return -not ($end -is [long] -or $end -is [int]) -or $end -lt 0 -or [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $end
     }
-    ($json.tokens -is [hashtable]) -or ($json.OPENAI_API_KEY -is [string] -and [bool]$json.OPENAI_API_KEY)
+    $tokens = $json.tokens
+    $external = $json.auth_mode -ceq 'chatgptAuthTokens'
+    ($tokens -is [hashtable] -and (& $text $tokens.access_token) -and ($external -or (& $text $tokens.refresh_token))) -or (& $text $json.OPENAI_API_KEY)
 }
 
 # Whether $Path is a junction or symlink (any reparse point), not following it.

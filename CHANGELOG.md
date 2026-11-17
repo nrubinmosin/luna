@@ -45,6 +45,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   most, when it quits, restarts, installs an update or is closed by
   Windows' Restart Manager. A CLI that hangs past those 10 seconds while
   saving can still be cut (#75).
+- A Claude Code account whose login the CLI had cleared (empty tokens in
+  `.credentials.json`) no longer shows as signed in with "token refresh
+  failed" and no way back: it shows signed out with its **Sign in** button,
+  and Luna no longer sends a refresh with an empty token. A refresh the
+  server turns down as `invalid_grant` signs the account out the same way;
+  an account on hold, or any other refused refresh, stays a failed refresh.
+  A Codex account with an empty token in `auth.json` reads as signed out
+  too, and neither is picked for a helper; nor is a Claude Code account
+  whose refresh token has run out.
 
 ## [0.18.2] - 2026-11-13
 
