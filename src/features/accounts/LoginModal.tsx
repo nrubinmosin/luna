@@ -5,6 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 import type { Account } from '../../shared/types';
 import { killSession, resizeSession, writeSession } from '../../ipc/sessions';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
+import { attachLoginKeys } from '../panes/terminal/keys';
 import { safely } from '../panes/terminal/safely';
 import { loadWebgl } from '../panes/terminal/webgl';
 import { dark, themeFor, TERM_FONT_FAMILY, TERM_FONT_SIZE } from '../panes/terminal/theme';
@@ -34,6 +35,7 @@ export function LoginModal({ account }: { account: Account }) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    attachLoginKeys(term);
     const disposeWebgl = loadWebgl(term);
 
     let disposed = false;

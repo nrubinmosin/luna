@@ -15,9 +15,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   xterm.js 6 with its WebGL and fit addons (the WebGL addon had been made for 6
   and run on 5.5), Vite 8, TypeScript 6, Tauri 2.12.6 with its plug-ins and
   jiff 1.0. TypeScript stays on 6, as typescript-eslint does not support 7 yet.
-- The terminals look and type as they did: the scrollbar xterm.js 6 draws of
-  its own is hidden, as the old one was, and Alt with an arrow key still sends
-  what Ctrl with it sends, which xterm.js 6 leaves to the app.
+- The terminals, a login window's too, look and type as they did: the
+  scrollbar xterm.js 6 draws of its own is hidden, as the old one was, and Alt
+  with an arrow key still sends what Ctrl with it sends, which xterm.js 6
+  leaves to the app.
 - Luna's own requests (the CLI downloads, the usage and model lookups, the
   sign-in refresh) go over the HTTP client the updater already uses, with its
   TLS, instead of a second one of their own: certificates are now checked

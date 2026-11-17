@@ -1,9 +1,9 @@
 import type { Terminal as XTerm } from '@xterm/xterm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { attachKeys } from './keys';
+import { attachKeys, attachLoginKeys } from './keys';
 
 /** The key handler as xterm would be handed it, over a selection the test sets. */
-function setup(selection: string) {
+function setup(selection: string, attach: (term: XTerm) => void = attachKeys) {
   let handler: (e: KeyboardEvent) => boolean = () => true;
   const term = {
     attachCustomKeyEventHandler: (h: typeof handler) => (handler = h),
@@ -12,7 +12,7 @@ function setup(selection: string) {
     clearSelection: vi.fn(),
     input: vi.fn()
   };
-  attachKeys(term as unknown as XTerm);
+  attach(term as unknown as XTerm);
   const press = (code: string, mods: Partial<KeyboardEventInit> = { ctrlKey: true }, type = 'keydown') => {
     const e = new KeyboardEvent(type, { code, key: code, cancelable: true, ...mods });
     return { passed: handler(e), prevented: e.defaultPrevented };
@@ -83,5 +83,22 @@ describe('terminal keys: Alt+arrow', () => {
     expect(press('ArrowLeft', { altKey: true }, 'keyup').passed).toBe(true);
     expect(press('ArrowLeft', {}).passed).toBe(true);
     expect(term.input).not.toHaveBeenCalled();
+  });
+});
+
+describe('login terminal keys', () => {
+  beforeEach(() => Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true }));
+
+  it('sends Ctrl+arrow for Alt+arrow, as a chat terminal does', () => {
+    const { term, press } = setup('', attachLoginKeys);
+    expect(press('ArrowLeft', { altKey: true })).toEqual({ passed: false, prevented: true });
+    expect(term.input.mock.calls).toEqual([['[1;5D']]);
+  });
+
+  it('leaves Ctrl+C and Ctrl+V to xterm, as it always has', () => {
+    const { press } = setup('some output', attachLoginKeys);
+    expect(press('KeyC')).toEqual({ passed: true, prevented: false });
+    expect(press('KeyV')).toEqual({ passed: true, prevented: false });
+    expect(writeText).not.toHaveBeenCalled();
   });
 });
