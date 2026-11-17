@@ -81,8 +81,26 @@ scopes), by the CLI's rules, since refresh tokens rotate: both its mkdir locks
 (`<config>/.oauth_refresh.lock` and `<config>.lock`, stale after 60 s), re-read
 under the lock, write only if the refresh token on disk is still the one sent.
 A CLI refreshing after Luna sees a new access token and takes it.
-`invalid_grant` means a new login; the account shows signed out. The temp file
-is created 0600.
+The answer is judged as the CLI judges it (`refusal`): a 400 or 401 saying
+`invalid_grant` means a new login, and the account shows signed out with
+"sign-in expired — log in again"; one whose `error_description` is
+`account_on_hold` is not, since a login does not lift a hold, and every other
+answer is a failed refresh, tried again after 5 minutes. The temp file is
+created 0600.
+
+Signed in means a refresh token that is not blank, not past its
+`refreshTokenExpiresAt` (`oauth::signed_in`): the panel's row and the choice of
+an account for a helper or a moved chat (`agents/spawn/account.rs`
+`signed_in`) both go by it, and `scripts/lib.ps1` `Test-AccountSignedIn` by
+the same rule. On `invalid_grant` the CLI blanks its tokens
+(`refreshToken: ""`, `accessToken: ""`, `expiresAt: 0`), so that file reads as
+signed out, offers Sign in, and no refresh is posted with it. A Codex
+`auth.json` is signed in by the same measure: both of its ChatGPT tokens there
+and not blank (`codex::limits::chatgpt_login`). The exception is
+`auth_mode: "chatgptAuthTokens"`, tokens a host application gives Codex, with
+an empty refresh token Codex never uses: there a non-blank access token is the
+login. Codex 0.169.0 keeps such tokens in memory and writes no `auth.json` for
+them, but its loader would take one, so Luna reads one the same way.
 
 Codex is left alone: its token lives 10 days, it refreshes itself, and the
 server rejects a reused refresh token, so a refresh beside a live Codex would
@@ -166,6 +184,8 @@ comments and key order kept). Only what parses is written.
 | Failure | Behavior |
 | --- | --- |
 | Usage endpoint 429 | growing cool-off, shared by both providers |
-| Refresh token rejected | account shown signed out |
+| Refresh token rejected (400/401 `invalid_grant`) | account shown signed out |
+| Refresh token blanked by the CLI | account shown signed out; no refresh sent |
+| Token endpoint answers anything else | "token refresh failed"; retried after 5 minutes |
 | File unparseable | error shown; nothing written |
 | CLI outside Luna writes concurrently | can race; documented in the row |
