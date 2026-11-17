@@ -85,7 +85,7 @@ vi.mock('@xterm/addon-webgl', () => ({
  *  `release`. */
 const pty = vi.hoisted(() => {
   const output = new Set<(p: { id: string; data: string }) => void>();
-  const exit = new Set<(p: { id: string; code: number | null }) => void>();
+  const exit = new Set<(p: { id: string; code: number | null; generation: number }) => void>();
   const refused = new Set<(p: { id: string; waitingKb: number }) => void>();
   const state = { hold: false, waiting: [] as Array<() => void> };
   const release = () => {
@@ -151,12 +151,21 @@ const chat = (id: string): Chat => ({
   perm: 'Bypass'
 });
 
+/** The spawn number the tests' sessions start with. */
+const GEN = 7;
+
+/** What a start answers: `backlog`, and the session's spawn number. */
+const attached = (backlog: string, generation = GEN) => ({ backlog, generation });
+
 /** A session start that answers when the test says. */
 function deferredStart() {
-  let answer: (backlog: string) => void = () => {};
-  sessions.ensureClaudeSession.mockImplementationOnce(() => new Promise<string>(resolve => (answer = resolve)));
-  return (backlog: string) => answer(backlog);
+  let answer: (a: ReturnType<typeof attached>) => void = () => {};
+  sessions.ensureClaudeSession.mockImplementationOnce(() => new Promise(resolve => (answer = resolve)));
+  return (backlog: string, generation = GEN) => answer(attached(backlog, generation));
 }
+
+/** `id`'s session of spawn `generation` exited, as the core says it. */
+const exitOf = (id: string, generation = GEN) => pty.exit.forEach(cb => cb({ id, code: 0, generation }));
 
 /** The terminal for a chat, as a pane would take it, and its fake xterm. */
 function open(id: string) {
@@ -170,7 +179,7 @@ const resizesFor = (id: string) => sessions.resizeSession.mock.calls.filter(c =>
 
 beforeEach(() => {
   vi.clearAllMocks();
-  sessions.ensureClaudeSession.mockResolvedValue('');
+  sessions.ensureClaudeSession.mockResolvedValue(attached(''));
   sessions.sessionModes.mockResolvedValue('');
   xterm.FakeTerminal.made = [];
   pty.state.hold = false;
@@ -208,9 +217,41 @@ describe('terminals: the pty behind a terminal', () => {
   it('stops sending once the session has exited, and says so on screen', async () => {
     const { term } = open('exits');
     await settle();
-    pty.exit.forEach(cb => cb({ id: 'exits', code: 0 }));
+    exitOf('exits');
     term.data.fire('x');
     expect(writesFor('exits')).toEqual([]);
+    expect(term.log.at(-1)).toContain('[session exited]');
+  });
+
+  it('takes only its own session’s exit, one heard before its start answered included', async () => {
+    const start = deferredStart();
+    const { term } = open('again');
+    await settle();
+    // The chat's last session, said late while this one was starting.
+    exitOf('again', GEN - 1);
+    start('');
+    await settle();
+    term.data.fire('typed');
+    expect(writesFor('again')).toEqual(['typed']);
+    expect(term.log.join('')).not.toContain('[session exited]');
+    // A later session's exit is not this one's either; its own is.
+    exitOf('again', GEN + 1);
+    expect(term.log.join('')).not.toContain('[session exited]');
+    exitOf('again');
+    term.data.fire('gone');
+    expect(writesFor('again')).toEqual(['typed']);
+    expect(term.log.at(-1)).toContain('[session exited]');
+  });
+
+  it('ends at once when its own session exited before its start answered', async () => {
+    const start = deferredStart();
+    const { term } = open('quick');
+    await settle();
+    exitOf('quick');
+    start('');
+    await settle();
+    term.data.fire('x');
+    expect(writesFor('quick')).toEqual([]);
     expect(term.log.at(-1)).toContain('[session exited]');
   });
 
@@ -235,7 +276,7 @@ describe('terminals: the pty behind a terminal', () => {
 
 describe('terminals: reattaching to a running session', () => {
   it('resets only once the replayed tail is parsed, then puts the modes back, then asks for a repaint', async () => {
-    sessions.ensureClaudeSession.mockResolvedValueOnce('TAIL');
+    sessions.ensureClaudeSession.mockResolvedValueOnce(attached('TAIL'));
     sessions.sessionModes.mockResolvedValueOnce('MODES');
     const { term } = open('replay');
     await settle();
@@ -258,7 +299,7 @@ describe('terminals: reattaching to a running session', () => {
   });
 
   it('does nothing more to a terminal disposed while the tail was being parsed', async () => {
-    sessions.ensureClaudeSession.mockResolvedValueOnce('TAIL');
+    sessions.ensureClaudeSession.mockResolvedValueOnce(attached('TAIL'));
     const { term } = open('replay-gone');
     await settle();
     forget('replay-gone');
@@ -315,7 +356,7 @@ describe('terminals: two chats at once', () => {
     expect(writesFor('chat-b')).toEqual(['typed in b']);
     expect(writesFor('chat-a')).toEqual([]);
 
-    pty.exit.forEach(cb => cb({ id: 'chat-a', code: 0 }));
+    exitOf('chat-a');
     b.term.data.fire('still live');
     a.term.data.fire('gone');
     expect(writesFor('chat-b')).toEqual(['typed in b', 'still live']);

@@ -26,6 +26,16 @@ export interface FolderCheck {
 export const chatFolderCheck = (provider: Provider, accountPath: string, folder: string, worktree: boolean) =>
   call<FolderCheck>('chat_folder_check', { provider, accountPath, folder, worktree }, { refusal: null, warning: null });
 
+/** What a session's start answers: what it has printed so far (empty for one
+ *  just started), and its spawn's number, which its exit carries (`PtyExit`). */
+export interface Attached {
+  backlog: string;
+  generation: number;
+}
+
+/** In a browser, where nothing spawns. */
+const NOT_STARTED: Attached = { backlog: '', generation: 0 };
+
 export interface ClaudeSessionSpec {
   chatId: string;
   folder: string;
@@ -50,7 +60,7 @@ export interface ClaudeSessionSpec {
 }
 
 export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
-  call<string>(
+  call<Attached>(
     'ensure_claude_session',
     {
       id: spec.chatId,
@@ -69,7 +79,7 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
       guard: spec.guard ?? false,
       handoff: spec.handoff ?? null
     },
-    ''
+    NOT_STARTED
   );
 
 export interface CodexSessionSpec {
@@ -96,7 +106,7 @@ export interface CodexSessionSpec {
 }
 
 export const ensureCodexSession = (spec: CodexSessionSpec) =>
-  call<string>(
+  call<Attached>(
     'ensure_codex_session',
     {
       id: spec.chatId,
@@ -114,7 +124,7 @@ export const ensureCodexSession = (spec: CodexSessionSpec) =>
       guard: spec.guard ?? false,
       handoff: spec.handoff ?? null
     },
-    ''
+    NOT_STARTED
   );
 
 export const writeSession = (id: string, data: string) => call<void>('write_session', { id, data });

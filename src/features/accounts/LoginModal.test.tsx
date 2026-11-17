@@ -56,14 +56,16 @@ vi.mock('../../ipc/sessions', () => ({
 vi.mock('../providers', () => ({
   ui: () => ({
     loginSession: vi.fn(() => {
+      // What a start answers (`Attached`): the backlog, and the session's
+      // spawn number.
       if (login.live !== null) {
         login.order.push('reuse');
-        return Promise.resolve('');
+        return Promise.resolve({ backlog: '', generation: login.live });
       }
-      login.live = ++login.made;
-      return new Promise<string>((answer, fail) => {
+      const generation = (login.live = ++login.made);
+      return new Promise<{ backlog: string; generation: number }>((resolve, fail) => {
         login.order.push('start');
-        login.start = { answer, fail };
+        login.start = { answer: backlog => resolve({ backlog, generation }), fail };
       });
     })
   })

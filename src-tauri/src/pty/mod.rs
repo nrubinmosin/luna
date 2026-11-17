@@ -155,15 +155,18 @@ impl InputTx {
 /// over a session that exited by itself) waits for its reader thread to have
 /// said it exited (`ReaderEnd`), before the chat's id goes to anyone else.
 /// The reader is through within moments of its process ending; past this it
-/// says nothing at all.
+/// says nothing more.
 const READER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A session's reader thread on its way out. Its word that the session
-/// exited (`agents::session_exited`, `pty://exit`) names only the chat id:
-/// said after a respawn under that id had begun, it would mark the new
-/// session's exit in the registry and tell its pane it had ended. So whoever
-/// takes a session waits for it (`wait`), under the chat's spawn gate, and
-/// one that is not through by then says nothing.
+/// exited (`agents::session_exited`, `pty://exit`) goes by the chat id: said
+/// after a respawn under that id had begun, it would mark the new session's
+/// exit in the registry and tell its pane it had ended. So whoever takes a
+/// session waits for it (`wait`), under the chat's spawn gate, and one that
+/// is not through by then says nothing: one that has not begun to is
+/// disowned here, and one already saying it is through before the chat's
+/// spawn number changes (`PtyManager::generations`), which a word begun
+/// later finds changed.
 #[derive(Default)]
 struct ReaderEnd {
     state: Mutex<EndState>,
@@ -218,6 +221,10 @@ impl ReaderEnd {
 
 struct Session {
     provider: Provider,
+    /// Its spawn's number (`PtyManager::generations`), in its exit event and
+    /// in what its start answers, so the window tells its exit from that of
+    /// a session of the same chat before or after it.
+    generation: u64,
     /// Its reader thread on its way out (`ReaderEnd`).
     reader_end: Arc<ReaderEnd>,
     /// Input is handed to a writer thread instead of being written inline.
@@ -309,6 +316,37 @@ pub struct PtyManager {
     /// The chats deleted in this core's life, which no start brings back
     /// (`delete`, `spawn`).
     deleted: Mutex<std::collections::HashSet<String>>,
+    /// Each chat's session that may still say it exited, by its spawn's
+    /// number (`Session::generation`); none once whoever took it has done
+    /// waiting for it. A reader says its session's exit under this lock and
+    /// only while its number is the one here (`spawn::reader_exited`), and a
+    /// start or a taker changes it under the same lock (`next_generation`,
+    /// `retire`): an exit said late cannot land on the session after it.
+    generations: Mutex<HashMap<String, u64>>,
+}
+
+impl PtyManager {
+    /// A new number for the session about to start as `id`, once the one
+    /// before is through or past waiting for: from here, nothing of an
+    /// earlier session of `id` is said to have exited, and one saying so
+    /// right now is through before this returns.
+    fn next_generation(&self, id: &str) -> u64 {
+        // Counted on from when this core started, so no core after it gives
+        // a number out again to a window that outlived this one; under 2^53,
+        // as the page's numbers are.
+        static NEXT: std::sync::OnceLock<AtomicU64> = std::sync::OnceLock::new();
+        let mut generations = self.generations.lock().unwrap_or_else(|e| e.into_inner());
+        let n = NEXT.get_or_init(|| AtomicU64::new(now_ms() << 10)).fetch_add(1, Ordering::SeqCst);
+        generations.insert(id.to_string(), n);
+        n
+    }
+
+    /// `id`'s session taken and waited for: whatever it has not said of its
+    /// exit by now it never says, and what it is saying is through before
+    /// this returns.
+    fn retire(&self, id: &str) {
+        self.generations.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
 }
 
 /// The one session manager this process has, whatever asks for it: a

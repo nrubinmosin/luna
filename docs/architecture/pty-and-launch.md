@@ -191,8 +191,9 @@ the command quotes `"@-"` and calls curl by full path.
 ## Scrollback and terminal state
 
 - The output buffer (2 MB cap) lives in the core, so moving a chat between panes
-  or recreating an xterm restores the screen (`ensure_session` returns the
-  backlog). Output streams as `pty://output`; termination as `pty://exit`.
+  or recreating an xterm restores the screen (`ensure_session` answers with the
+  backlog and the session's spawn number, `Attached`). Output streams as
+  `pty://output`; termination as `pty://exit`, with the spawn number.
 - **ConPTY and the cursor.** portable-pty opens ConPTY with `INHERIT_CURSOR`:
   until the terminal answers `ESC[6n`, ConPTY lets out nothing. A helper with no
   pane would hang. The core cuts each `ESC[6n` out of the stream and answers
@@ -277,13 +278,20 @@ the command quotes `"@-"` and calls curl by full path.
   registry says where it went only once the CLI is up: its session keeps
   that worktree (`Session::enters`) from the start, for the sharing check
   and the orphan sweep (`live_cwds`).
-- A session's exit names only its chat id. Whoever takes a session out of
-  the map (a delete, a kill, a start over a session that exited by itself)
-  waits under the gate, up to 5 s (`READER_WAIT`), for its reader thread to
-  have said it exited (`ReaderEnd`); a reader not through by then says
-  nothing. A respawn never hears the old session's exit. The reader asks
-  for the exit code by `try_wait` rather than holding the child's lock in a
-  `wait`, which a shutdown asking whether it exited would block on.
+- A session's exit goes by its chat id, with its spawn number. Whoever takes
+  a session out of the map (a delete, a kill, a start over a session that
+  exited by itself) waits under the gate, up to 5 s (`READER_WAIT`), for its
+  reader thread to have said it exited (`ReaderEnd`). Each start gives the
+  chat a new number before its launch (`next_generation`), and a taker done
+  waiting takes the number away (`retire`); the reader says the registry's
+  exit and the `pty://exit` event under that number's lock and only while
+  its number is the chat's, so one already saying it when the wait ran out
+  is through before the start goes on, and one later says nothing. A
+  respawn never hears the old session's exit, and the window applies an
+  exit only to the session whose start answered with its number. The
+  reader asks for the exit code by `try_wait` rather than holding the
+  child's lock in a `wait`, which a shutdown asking whether it exited
+  would block on.
 
 ## Failure modes
 

@@ -133,6 +133,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A Claude Code chat resumed into its worktree by name keeps that worktree
   from a delete or the orphan sweep from its start, not only once its CLI has
   said where it is.
+- A session's exit said late, as the chat was started again, no longer marks
+  the new session exited in its pane or in what agents are told: each exit
+  carries its session's spawn number, and the pane takes only its own.
 - Stopping the sessions waits for a save of the chats' ties under way, so
   nothing the stopping did is written after it.
 

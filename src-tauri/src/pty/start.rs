@@ -9,7 +9,7 @@
 
 use super::folder::folder_refusal;
 use super::same_dir;
-use super::spawn::{spawn, Launch};
+use super::spawn::{spawn, Attached, Launch};
 use crate::claude::launch::{self as claude_launch, claude_settings, with_role, HelperSettings, CLAUDE_MCP_TOKEN_ENV};
 use crate::codex::launch::{self as codex_launch, AUTO_REVIEW, AUTO_REVIEW_SANDBOX, READ_ONLY_NET};
 use crate::provider::Provider;
@@ -607,7 +607,7 @@ pub async fn ensure_claude_session(
     // Auto-handoff's threshold, in percent of the context (agents/handoff):
     // only with Luna's tools, whose server offers its tool.
     handoff: Option<u8>,
-) -> Result<String, String> {
+) -> Result<Attached, String> {
     not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -791,7 +791,7 @@ pub async fn ensure_codex_session(
     guard: Option<bool>,
     // Auto-handoff's threshold, as for a Claude Code chat.
     handoff: Option<u8>,
-) -> Result<String, String> {
+) -> Result<Attached, String> {
     not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -1022,7 +1022,7 @@ mod tests {
         }
     }
 
-    fn started(id: &str, r: &Redact, start: impl std::future::Future<Output = Result<String, String>>) -> Started {
+    fn started(id: &str, r: &Redact, start: impl std::future::Future<Output = Result<Attached, String>>) -> Started {
         capture::expect(id);
         let built = tauri::async_runtime::block_on(start);
         let launch = capture::take(id);
@@ -1030,7 +1030,7 @@ mod tests {
         // token has to be the one Luna knows it by.
         let envs = launch.as_ref().map(|l| r.envs(&l.envs));
         crate::agents::forget(id);
-        assert_eq!(built, Ok(String::new()));
+        assert_eq!(built.map(|a| a.backlog), Ok(String::new()));
         let (l, mut envs) = (launch.expect("the start was caught"), envs.unwrap());
         no_way_into_the_core(&l.args, &l.envs);
         Redact::assert_shown(&l.args, &l.envs, &l.cwd, &l.applied);
@@ -1105,7 +1105,7 @@ mod tests {
             started(id, r, self.ensure(id))
         }
 
-        fn ensure(self, id: &str) -> impl std::future::Future<Output = Result<String, String>> {
+        fn ensure(self, id: &str) -> impl std::future::Future<Output = Result<Attached, String>> {
             let s = |v: Option<&str>| v.map(str::to_owned);
             ensure_claude_session(
                 id.into(),
@@ -1128,7 +1128,7 @@ mod tests {
 
     /// A start refused before anything of it was built: no launch caught,
     /// and so no CLI started, nothing for the canary to watch. Its reason back.
-    fn refused(id: &str, start: impl std::future::Future<Output = Result<String, String>>) -> String {
+    fn refused(id: &str, start: impl std::future::Future<Output = Result<Attached, String>>) -> String {
         capture::expect(id);
         let got = tauri::async_runtime::block_on(start);
         let launch = capture::take(id);
@@ -1611,7 +1611,7 @@ mod tests {
             started(id, r, self.ensure(id))
         }
 
-        fn ensure(self, id: &str) -> impl std::future::Future<Output = Result<String, String>> {
+        fn ensure(self, id: &str) -> impl std::future::Future<Output = Result<Attached, String>> {
             let s = |v: Option<&str>| v.map(str::to_owned);
             ensure_codex_session(
                 id.into(),

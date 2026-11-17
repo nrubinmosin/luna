@@ -284,6 +284,10 @@ impl PtyManager {
             let who = crate::agents::label(id);
             crate::log::warn("pty", &format!("{who}'s reader was not through {READER_WAIT:?} after its end; it says nothing now"));
         }
+        // One already saying it is through by the time this returns, and
+        // none says it after: a delete's cleanup and a kill's start that
+        // follows come after the exit or without it.
+        self.retire(id);
     }
 }
 
@@ -593,7 +597,7 @@ impl PtyManager {
 
 #[cfg(test)]
 mod tests {
-    use super::super::spawn::{capture, reader_exited, said, spawn, Launch};
+    use super::super::spawn::{capture, reader_exited, said, spawn, Attached, Launch};
     use super::super::{InputTx, ReaderEnd};
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -666,6 +670,7 @@ mod tests {
         });
         let alive = Arc::new(AtomicBool::new(true));
         let reader_end = Arc::new(ReaderEnd::default());
+        let generation = manager().next_generation(id);
         {
             let (id, quit, alive, end) = (id.to_string(), Arc::clone(&quit), Arc::clone(&alive), Arc::clone(&reader_end));
             std::thread::spawn(move || {
@@ -674,11 +679,12 @@ mod tests {
                 }
                 alive.store(false, Ordering::SeqCst);
                 std::thread::sleep(how.reader_lag);
-                reader_exited(&id, Some(0), &alive, &end);
+                reader_exited(&id, generation, Some(0), &end);
             });
         }
         let session = Session {
             provider: Provider::Claude,
+            generation,
             reader_end,
             input_tx: Arc::new(input_tx),
             killer: child.clone_killer(),
@@ -744,6 +750,7 @@ mod tests {
                     enters: None,
                 })
             }))
+            .map(|a: Attached| a.backlog)
         })
     }
 
@@ -798,8 +805,8 @@ mod tests {
     fn a_reader_not_through_in_time_says_nothing() {
         let end = ReaderEnd::default();
         assert!(!end.wait(Duration::from_millis(20)));
-        let alive = Arc::new(AtomicBool::new(false));
-        reader_exited("dl-late", Some(1), &alive, &end);
+        let generation = manager().next_generation("dl-late");
+        reader_exited("dl-late", generation, Some(1), &end);
         assert_eq!(said::at("exit dl-late"), None);
         assert!(end.wait(Duration::ZERO), "through all the same");
     }
@@ -851,6 +858,28 @@ mod tests {
         came.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An exit said for a session whose chat has a start under way since, or
+    /// was taken and let go, is not said: the registry's exit and the pane's
+    /// event would land on the session after it. The current one's is, with
+    /// its spawn number.
+    #[test]
+    fn an_exit_said_late_lands_on_no_later_session() {
+        let id = "dl-gen";
+        let old = manager().next_generation(id);
+        // A start of the chat has begun; its session is not in the map yet.
+        let new = manager().next_generation(id);
+        reader_exited(id, old, Some(3), &ReaderEnd::default());
+        assert_eq!(said::at(&format!("exit {id}")), None, "the old session's exit was not said");
+        let told = || crate::emit::sent_for_test("pty://exit").into_iter().filter(|e| e["id"] == id).collect::<Vec<_>>();
+        assert!(told().is_empty());
+        reader_exited(id, new, Some(0), &ReaderEnd::default());
+        assert_eq!(told(), [serde_json::json!({ "id": id, "code": 0, "generation": new })]);
+        // Taken and let go (a kill's wait over): nothing of it is said after.
+        manager().retire(id);
+        reader_exited(id, new, Some(0), &ReaderEnd::default());
+        assert_eq!(told().len(), 1);
     }
 
     /// A start into a worktree that a delete has found free and is removing

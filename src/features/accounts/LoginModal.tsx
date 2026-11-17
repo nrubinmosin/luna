@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { Account } from '../../shared/types';
-import { killSession, resizeSession, writeSession } from '../../ipc/sessions';
+import { killSession, resizeSession, writeSession, type Attached } from '../../ipc/sessions';
 import { routePty } from '../panes/terminal/ptyRoutes';
 import { attachLoginKeys } from '../panes/terminal/keys';
 import { safely } from '../panes/terminal/safely';
@@ -70,7 +70,7 @@ export function LoginModal({ account }: { account: Account }) {
     // The login session, from the moment it is asked for: closing the window
     // ends it, and one closed before the start has answered is ended once it
     // has (a kill sent sooner finds no session and leaves it running).
-    let starting: Promise<string> | null = null;
+    let starting: Promise<Attached> | null = null;
 
     void (async () => {
       const before = ending.get(id);
@@ -86,19 +86,27 @@ export function LoginModal({ account }: { account: Account }) {
         clearTimeout(timer);
         if (disposed) return;
       }
+      // Its own session's exit only (`generation`): one heard before the
+      // start answers waits for it, as it may be an earlier session's.
+      let generation: number | null = null;
+      const heard: number[] = [];
+      const ended = () => {
+        sessionLive = false;
+        term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
+      };
       route = routePty(id, {
         output: data => term.write(data),
-        exit: () => {
-          sessionLive = false;
-          term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
+        exit: (_code, spawned) => {
+          if (generation === null) heard.push(spawned);
+          else if (spawned === generation) ended();
         }
       });
-      let backlog: string;
+      let started: Attached;
       try {
         await route.ready;
         if (disposed) return;
         starting = ui(account.provider).loginSession(id, account);
-        backlog = await starting;
+        started = await starting;
       } catch {
         // Already logged by the ipc layer; keep the rejection out of the
         // global unhandled-promise log and say what happened in the window.
@@ -106,8 +114,13 @@ export function LoginModal({ account }: { account: Account }) {
         return;
       }
       if (disposed) return;
+      generation = started.generation;
       sessionLive = true;
-      if (backlog) term.write(backlog);
+      if (started.backlog) term.write(started.backlog);
+      if (heard.includes(generation)) {
+        ended();
+        return;
+      }
       sendResize(term.cols, term.rows);
     })();
 

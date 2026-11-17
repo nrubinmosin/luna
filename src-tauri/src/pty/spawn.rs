@@ -83,10 +83,24 @@ struct PtyOutput<'a> {
     data: &'a str,
 }
 
+/// A session's exit, with its spawn's number (`Session::generation`): the
+/// window applies it to the session its start answered with that number
+/// (`Attached`), not to one started under the chat's id since.
 #[derive(Serialize, Clone)]
 struct PtyExit<'a> {
     id: &'a str,
     code: Option<u32>,
+    generation: u64,
+}
+
+/// What a start answers: what the session has printed so far (empty for one
+/// that has just started), and its spawn's number, which its exit event
+/// carries.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Attached {
+    pub backlog: String,
+    pub generation: u64,
 }
 
 /// Everything a spawn needs that is not the provider's business to work out.
@@ -171,7 +185,7 @@ pub(super) mod capture {
 // and rewrites the files the process reads at start. A pane attaching to a
 // running chat ensures it too, and doing all that then left the running
 // process holding a token Luna no longer knew.
-pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> Result<String, String> {
+pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> Result<Attached, String> {
     // Before anything of the launch is built: nothing runs as administrator.
     // A test's captured launch is never run (`capture`), and only so may a
     // test, elevated on CI's runners, get past.
@@ -199,7 +213,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let exited = {
         let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
-            Some(s) if s.alive.load(Ordering::SeqCst) => Err(Arc::clone(&s.scrollback)),
+            Some(s) if s.alive.load(Ordering::SeqCst) => Err((Arc::clone(&s.scrollback), s.generation)),
             _ => Ok(sessions.remove(&id)),
         }
     };
@@ -208,9 +222,9 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // holds the session in place.
     let exited = match exited {
         Ok(exited) => exited,
-        Err(scrollback) => {
+        Err((scrollback, generation)) => {
             let bytes = scrollback.lock().unwrap_or_else(|e| e.into_inner()).all();
-            return Ok(String::from_utf8_lossy(&bytes).into_owned());
+            return Ok(Attached { backlog: String::from_utf8_lossy(&bytes).into_owned(), generation });
         }
     };
     // A CLI that exited by itself: what it left running goes with the old
@@ -222,6 +236,9 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             crate::log::warn("pty", &format!("{id}'s last session did not finish exiting in {READER_WAIT:?}; starting anyway"));
         }
     }
+    // Before the launch, whose registration clears the chat's last exit: an
+    // earlier session's exit is said by now or never (`next_generation`).
+    let generation = state.next_generation(&id);
     // Finished here, so a test's capture holds the process as it will run.
     let launch = launch()?.finished();
     #[cfg(test)]
@@ -234,7 +251,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // A test reads what a start would run, and nothing runs (`capture`).
     #[cfg(test)]
     let Some(launch) = capture::keep(&id, launch) else {
-        return Ok(String::new());
+        return Ok(Attached { backlog: String::new(), generation });
     };
     let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters } = launch;
 
@@ -533,7 +550,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             });
             crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
-            reader_exited(&id, code, &alive, &reader_end);
+            reader_exited(&id, generation, code, &reader_end);
             // The entry stays, for as long as the chat does: its transcript, its
             // folder and its last screen are still asked for (luna_message_list, the
             // exit notice, deleting it). What only a running session needs
@@ -585,6 +602,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         id,
         Session {
             provider,
+            generation,
             reader_end,
             input_tx,
             killer,
@@ -613,7 +631,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         },
     );
 
-    Ok(String::new())
+    Ok(Attached { backlog: String::new(), generation })
 }
 
 /// Hands a piece of `who`'s output on to its emitter, waiting while the
@@ -633,18 +651,20 @@ fn hand_on(tx: &std::sync::mpsc::SyncSender<Vec<u8>>, piece: Vec<u8>, behind: &m
     }
 }
 
-/// The reader's word that session `id` (the one `alive` belongs to) exited
-/// with `code`, said through its `ReaderEnd`: nothing once whoever took the
-/// session has stopped waiting for it. The exit names only the chat. A
-/// session spawned under the same id since — after an exit of its own, or
-/// past a taker's wait — is the one its pane is listening to, and this exit
-/// would mark that running session dead.
-pub(super) fn reader_exited(id: &str, code: Option<u32>, alive: &Arc<AtomicBool>, end: &ReaderEnd) {
+/// The reader's word that session `id` of spawn `generation` exited with
+/// `code`, said through its `ReaderEnd`: nothing once whoever took the
+/// session has stopped waiting for it, nor once the chat's spawn number has
+/// moved on (a session spawned under the same id since, after an exit of
+/// its own or past a taker's wait, or the session taken and let go). Said
+/// under that number's lock, all of it: the registry's exit and the event
+/// are in before a start of the chat goes on to its launch, whose
+/// registration clears the exit, and so never land on the session after.
+pub(super) fn reader_exited(id: &str, generation: u64, code: Option<u32>, end: &ReaderEnd) {
     end.finish(|| {
-        let replaced = manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|s| !Arc::ptr_eq(&s.alive, alive));
-        if !replaced {
+        let generations = manager().generations.lock().unwrap_or_else(|e| e.into_inner());
+        if generations.get(id) == Some(&generation) {
             crate::agents::session_exited(id, code);
-            crate::emit::to_ui("pty://exit", PtyExit { id, code });
+            crate::emit::to_ui("pty://exit", PtyExit { id, code, generation });
             #[cfg(test)]
             said::note(&format!("exit {id}"));
         }

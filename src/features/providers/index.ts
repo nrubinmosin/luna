@@ -6,6 +6,7 @@
  * settings have nothing in common but the word.
  */
 import type { Account, Provider } from '../../shared/types';
+import type { Attached } from '../../ipc/sessions';
 import * as claude from './claude';
 import * as codex from './codex';
 
@@ -16,7 +17,7 @@ export interface ProviderUi {
   folderTrusted: (accountPath: string, folder: string) => Promise<boolean>;
   trustFolder: (accountPath: string, folder: string) => Promise<void>;
   trustNote: string;
-  loginSession: (id: string, account: Account) => Promise<string>;
+  loginSession: (id: string, account: Account) => Promise<Attached>;
   worktreeRe: RegExp;
   /** The project a session's worktree cwd belongs to, where the path says. */
   projectOf: (cwd: string) => string | null;

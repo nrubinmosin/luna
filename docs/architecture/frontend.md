@@ -157,6 +157,10 @@ up once) lets go of a chat deleted at the next tick.
   sent to the CLI: `[failed to start session: …]`, `[session exited]`, and
   `[keys not delivered: …]` when the core refused its keys
   (`pty://input-refused`), whose own error comes back to nobody.
+- A pane (and the login window) takes only its own session's exit: the one
+  whose `generation` its start answered with (`Attached`). An exit heard
+  before the start answers waits for that answer, since it may be the chat's
+  session before this one, said late, or this one ending at once.
 - `terminal/`: `theme.ts`, `links.ts`, `keys.ts` (clipboard keys, Alt+arrow
   sent as Ctrl+arrow as xterm did before 6), `scrollback.ts` (the replayed
   tail), `sizing.ts` (fit and repaint), `pty.ts` (the gated pty sender),

@@ -3,7 +3,8 @@ import { onPtyExit, onPtyInputRefused, onPtyOutput } from '../../../ipc/events';
 /** What one session's terminal takes from its pty. */
 export interface PtyRoute {
   output: (data: string) => void;
-  exit: (code: number | null) => void;
+  /** `generation`: the spawn number of the session that exited (`PtyExit`). */
+  exit: (code: number | null, generation: number) => void;
   /** The session refused keys, `waitingKb` of them waiting already. */
   refused?: (waitingKb: number) => void;
 }
@@ -32,7 +33,7 @@ function listening(): Promise<void> {
       throw e;
     }
   );
-  exitIn ??= onPtyExit(p => routes.get(p.id)?.forEach(r => r.exit(p.code))).then(
+  exitIn ??= onPtyExit(p => routes.get(p.id)?.forEach(r => r.exit(p.code, p.generation))).then(
     () => {},
     (e: unknown) => {
       exitIn = null;

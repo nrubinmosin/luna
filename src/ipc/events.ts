@@ -12,9 +12,12 @@ export interface PtyOutput {
   data: string;
 }
 
+/** A session's exit. `generation`: its spawn's number, as its start answered
+ *  it (`Attached`); a session of the same chat before or after it has another. */
 export interface PtyExit {
   id: string;
   code: number | null;
+  generation: number;
 }
 
 export const onPtyOutput = (cb: (p: PtyOutput) => void): Promise<UnlistenFn> =>
