@@ -10,9 +10,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [0.18.3] - 2026-11-17
 
-Luna now installs Claude Code 2.1.325 and runs nothing older. Only the chats
-above a helper send to it or answer it, and you can move a helper to another
-of your chats from the window. An idle session no longer holds the PC awake
+Luna now installs Claude Code 2.1.325 and runs nothing older. Only the
+sessions above a helper send to it or answer it, and you can move a helper to
+another of your chats from the window. An idle session no longer holds the PC awake
 when it comes into view, and asking for an account's models no longer signs
 it out.
 
