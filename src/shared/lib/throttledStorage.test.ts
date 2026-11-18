@@ -45,16 +45,31 @@ describe('throttledStorage', () => {
     const s = throttledStorage<{ n: number }>(JSON.stringify);
     s.setItem('t', value(1));
     s.setItem('t', value(2));
-    exiting();
+    exiting('tray');
     expect(stored()?.state.n).toBe(2);
     // A title the watcher sets after the tray's Quit was heard.
     s.setItem('t', value(3));
     expect(stored()?.state.n).toBe(3);
-    exiting(false);
+    exiting('tray', false);
     s.setItem('t', value(4));
     expect(stored()?.state.n).toBe(3);
     vi.advanceTimersByTime(500);
     expect(stored()?.state.n).toBe(4);
+  });
+
+  it('keeps writing at once until every way out under way is taken back', () => {
+    vi.useFakeTimers();
+    const s = throttledStorage<{ n: number }>(JSON.stringify);
+    s.setItem('t', value(1));
+    // The tray's Restart is under way when an update's install fails.
+    exiting('tray');
+    exiting('update');
+    exiting('update', false);
+    s.setItem('t', value(2));
+    expect(stored()?.state.n).toBe(2);
+    exiting('tray', false);
+    s.setItem('t', value(3));
+    expect(stored()?.state.n).toBe(2);
   });
 
   it('writes what it holds back on flush, and on the way out', () => {

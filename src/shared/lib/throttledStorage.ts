@@ -80,7 +80,7 @@ export function throttledStorage<S>(
     setItem: (name, value) => {
       pending = { name, value };
       const wait = lastAt + gapMs - Date.now();
-      if (wait <= 0 || shared.exiting) write();
+      if (wait <= 0 || shared.exiting.size) write();
       else timer ??= setTimeout(write, wait);
     },
     removeItem: name => {
@@ -92,12 +92,15 @@ export function throttledStorage<S>(
 }
 
 type Throttled = { flush: () => void; drop: () => void };
-/** Every throttled storage made, and whether Luna is on its way out, on
- *  globalThis so a module loaded afresh in a test (vi.resetModules) shares
- *  them. */
-const shared: { all: Set<Throttled>; exiting: boolean } = ((
-  globalThis as { lunaThrottledStorages?: { all: Set<Throttled>; exiting: boolean } }
-).lunaThrottledStorages ??= { all: new Set(), exiting: false });
+/** Who has Luna on its way out: the tray's Quit or Restart, an update's install. */
+export type Exit = 'tray' | 'update';
+type Shared = { all: Set<Throttled>; exiting: Set<Exit> };
+/** Every throttled storage made, and the ways out under way, on globalThis so
+ *  a module loaded afresh in a test (vi.resetModules) shares them. */
+const shared: Shared = ((globalThis as { lunaThrottledStorages?: Shared }).lunaThrottledStorages ??= {
+  all: new Set(),
+  exiting: new Set()
+});
 const registry = shared.all;
 
 /** Writes what every throttled storage holds back now. */
@@ -109,16 +112,20 @@ export function flushPendingWrites() {
  * Luna is on its way out without the page going away first (a tray Quit or
  * Restart, an update's install), and the process may end before any gap is
  * over: what every throttled storage holds is written now, and every change
- * from here on at once. `false` takes it back, for a way out that did not
- * happen (a Restart that could not start the new window, a failed install).
+ * from here on at once. `false` takes back that way out alone, for one that
+ * did not happen (a Restart that could not start the new window, an install
+ * that failed or returned): an update's download failing during a Restart's
+ * wait leaves the Restart's on.
  */
-export function exiting(on = true) {
-  shared.exiting = on;
-  if (on) flushPendingWrites();
+export function exiting(by: Exit, on = true) {
+  if (on) {
+    shared.exiting.add(by);
+    flushPendingWrites();
+  } else shared.exiting.delete(by);
 }
 
 /** For tests: forget every write still waiting, as a page that never was. */
 export function dropPendingWrites() {
-  shared.exiting = false;
+  shared.exiting.clear();
   registry.forEach(s => s.drop());
 }

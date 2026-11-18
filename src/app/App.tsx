@@ -179,7 +179,7 @@ export function App() {
     const offOpen = onOpenChat(p => peekFromNotice(p.chatId));
     // What the chats' storage holds back goes to disk before the tray's
     // way out ends the process, and every change after it at once.
-    const offExit = onExiting(exiting);
+    const offExit = onExiting(going => exiting('tray', going));
     return () => {
       void off.then(f => f());
       void offOpen.then(f => f());

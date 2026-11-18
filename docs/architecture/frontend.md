@@ -93,7 +93,10 @@ titles, context and drafts come from the core (`session_meta`), polled by
   once (`exiting`): a tray Quit or Restart window, which tell the page
   `ui://exiting` (`true`; `false` when a Restart could not start the new
   window) and give it 300 ms (`lifecycle.rs`), and an update's install, which
-  writes again as it starts. The event has no answer: a page too busy to take
+  writes again as it starts. Each way out (`'tray'`, `'update'`) takes back
+  only its own, when it fails or, off Windows, when the install returns:
+  writes go with gaps again once none is left, so an update failing during
+  a Restart's 300 ms leaves the Restart's at once. The event has no answer: a page too busy to take
   it within those 300 ms, or a change after the process is gone, is lost. A
   renderer that dies loses at most the last 500 ms of statuses and titles.
   A chat is stored without its context (`context`,

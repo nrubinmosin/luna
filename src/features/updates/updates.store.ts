@@ -123,7 +123,7 @@ export const useUpdates = create<UpdatesState>(set => ({
       // below if it fails. The chats' storage writes what it holds back
       // first, for the same reason, and every change after it at once; and
       // once more as the install starts, for one that came in meanwhile.
-      exiting();
+      exiting('update');
       await noteExit(
         `installing the update to ${pending.version}${keep ? '; the sessions keep running in the core' : ''}`
       );
@@ -134,11 +134,13 @@ export const useUpdates = create<UpdatesState>(set => ({
       // exe of a running app. It passes /UPDATE and this process's own
       // arguments, which is what has the installer start Luna again afterwards.
       // So there is no "installed, restart when you like" state to offer, and
-      // nothing after this line runs.
+      // nothing after this line runs. Elsewhere this window stays, and so do
+      // its writes' gaps.
+      exiting('update', false);
       logInfo('updater', `${pending.version} installed`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      exiting(false);
+      exiting('update', false);
       await noteExit(null).catch(() => {});
       logWarn('updater', `install failed: ${msg}`);
       set({ phase: 'error', error: msg });
