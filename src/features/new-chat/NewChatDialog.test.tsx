@@ -179,6 +179,48 @@ describe('NewChatDialog: creating', () => {
     expect(allChats(useChats.getState().folders)[0]).toMatchObject({ perm: 'Ask' });
   });
 
+  it('creates nothing on the stock Bypass before the account’s settings have answered', async () => {
+    let answer: (dto: ClaudeDefaultsDto) => void = () => {};
+    const late = new Promise<ClaudeDefaultsDto>(resolve => (answer = resolve));
+    mocked.claudeDefaults.mockImplementation(() => late);
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    // The folder and trust checks are in; the settings are not.
+    await settle();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await user.keyboard('{Enter}');
+    expect(allChats(useChats.getState().folders)).toEqual([]);
+    act(() => answer({ model: null, effort: null, permissionMode: fromAccount('auto') }));
+    await settle();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ provider: 'claude', perm: 'Auto' });
+  });
+
+  it('creates nothing on Codex’s stock full access before its config has answered', async () => {
+    let answer: (dto: CodexDefaultsDto) => void = () => {};
+    const late = new Promise<CodexDefaultsDto>(resolve => (answer = resolve));
+    mocked.codexDefaults.mockImplementation(() => late);
+    useNewChat.getState().remember('/repo', { provider: 'codex', name: 'gpt' });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)).toEqual([]);
+    act(() =>
+      answer({ model: null, effort: null, approval: fromAccount('on-request'), sandbox: fromAccount('read-only') })
+    );
+    await settle();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({
+      provider: 'codex',
+      approval: 'on-request',
+      sandbox: 'read-only'
+    });
+  });
+
   it('takes Codex’s model, effort, approval and sandbox from the account’s config', async () => {
     mocked.codexDefaults.mockResolvedValue({
       model: fromAccount('gpt-5.4-codex'),
