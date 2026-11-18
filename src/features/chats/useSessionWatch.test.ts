@@ -89,4 +89,23 @@ describe('useSessionWatch', () => {
     await tickOver([chat]);
     expect(saved.mock.calls.length).toBe(before + 2);
   });
+
+  it('forgets the saved-title lookups when no chat is listed at all', async () => {
+    const saved = vi.mocked(sessionsIpc.savedTitle);
+    const chat = chatOf('t2', { sessionId: 'aaaa-2', nameSource: 'prompt' });
+    const before = saved.mock.calls.length;
+    await tickOver([chat]);
+    expect(saved.mock.calls.length).toBe(before + 1);
+    // The only folder removed: a round with nothing to ask the core still
+    // lets the lookups of the chats gone go, before it stops.
+    useChats.setState({ folders: [] });
+    const asked = vi.mocked(sessionsIpc.sessionsMeta).mock.calls.length;
+    const empty = renderHook(() => useSessionWatch());
+    await new Promise(r => setTimeout(r, 0));
+    empty.unmount();
+    expect(vi.mocked(sessionsIpc.sessionsMeta).mock.calls.length).toBe(asked);
+    // The chat restored: looked up again.
+    await tickOver([chat]);
+    expect(saved.mock.calls.length).toBe(before + 2);
+  });
 });
