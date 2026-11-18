@@ -69,9 +69,13 @@ if test -z $up; then
 fi
 IFS=
 # Chromium can exit 0 without having written the shot, so the file is the test.
+# The terminals draw with WebGL, here on SwiftShader asked for by name: left
+# to fall back to software WebGL on its own (--disable-gpu), Chromium shot
+# them blank more often than not, and the page before it had settled. Its
+# "unsafe" is about untrusted pages; this one is the local demo.
 shoot() {
   rm -f $SHOT_OUT/$1.png
-  chromium --headless=new --no-sandbox --disable-gpu --hide-scrollbars \
+  chromium --headless=new --no-sandbox --use-angle=swiftshader --enable-unsafe-swiftshader --hide-scrollbars \
     --window-size=$SHOT_SIZE --force-device-scale-factor=$SHOT_SCALE --virtual-time-budget=8000 \
     --screenshot=$SHOT_OUT/$1.png http://localhost:1420/\?demo=$2
   test -s $SHOT_OUT/$1.png || { echo no shot $1 >&2; exit 1; }

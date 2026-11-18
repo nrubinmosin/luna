@@ -133,6 +133,11 @@ shoot whatever is open in it, and the fixture retakes all three from one state.
 small screen is shot as it is seen: a 1280×720 screen at 150% is
 `-Size 853,480 -Scale 1.5`.
 
+Chromium draws the terminals' WebGL on SwiftShader, asked for by name
+(`--use-angle=swiftshader`): left to fall back to it on its own under
+`--disable-gpu`, it often shot the terminals blank and the page before it had
+settled, differently from one run to the next.
+
 ## Fit on small screens
 
 `./scripts/fit-check.ps1` serves the same demo in the same image and drives
