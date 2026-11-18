@@ -9,10 +9,10 @@ What Luna is built from is pinned: the crates in `src-tauri/Cargo.lock`, the
 npm packages in `pnpm-lock.yaml`, every Action in `.github/workflows/` by
 commit SHA, every base image in `docker/` by tag and digest, and the
 toolchains in `src-tauri/rust-toolchain.toml`, `rust-version` in
-`src-tauri/Cargo.toml` and `.node-version`. The build runs all of it, the
-release build with the updater's signing key present
+`src-tauri/Cargo.toml` and `.node-version`. The build runs all of it, and
+what it builds reaches every installed copy through the updater
 ([threat model](../security/threat-model.md), B6), so whoever moves a pin
-chooses code that runs there.
+chooses code that runs there and in the app.
 
 Until now Dependabot moved most of them. `.github/dependabot.yml` opened one
 grouped pull request a month per ecosystem (cargo, npm, Actions, Docker), and
