@@ -8,6 +8,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-18
+
+Nothing in Luna's window moves any more, so an idle window draws no frames,
+and the window and the core do less as chats change: a chat waiting for you
+turns orange instead of flashing. A link clicked in a terminal opens in the
+system's default browser, and Settings → Links is gone. Luna is on the latest
+toolchains and packages, xterm.js 6 and Tauri 2.12.6 among them, and its own
+requests check certificates against the system's trust store. The terminals
+no longer slow down the longer Luna runs, what waits in the core is bounded,
+and a delete or the orphan sweep no longer removes a worktree another session
+is in or starting into.
+
 ### Changed
 
 - Luna builds on Rust 1.100.0, Node 26.13.1 (the current LTS) and pnpm 12.21.0,
@@ -1576,7 +1588,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.5...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/nrubinmosin/luna/compare/v0.18.5...v0.19.0
 [0.18.5]: https://github.com/nrubinmosin/luna/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.4
 [0.18.2]: https://github.com/nrubinmosin/luna/compare/v0.18.1...v0.18.2

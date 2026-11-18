@@ -1,7 +1,7 @@
 {
   "name": "luna",
   "private": true,
-  "version": "0.18.5",
+  "version": "0.19.0",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@12.21.0",
