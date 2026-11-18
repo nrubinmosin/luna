@@ -61,16 +61,71 @@ const NOT_THE_VERSION: &[(&str, &str)] = &[
     ("Error: git command failed: fatal: not a git repository", "a worktree asked for outside a git repository"),
 ];
 
+const SIGN_IN: &str = "a sign-in missing or expired";
+const LIMIT: &str = "a usage limit";
+const SERVICE: &str = "the network or the provider's service";
+
+/// What a CLI says, anywhere in a line, when a turn ends for want of a
+/// sign-in, of usage left, or of the network or the API: none of it the
+/// version's doing, and each ends a session fast. Lowercase, a typographic
+/// apostrophe read as a plain one; each as the binary carries it, Claude
+/// Code 2.1.325 and Codex 0.169.0 (docs/cli-compatibility.md). A helper's
+/// words are its stderr's end and what its own stream said the turn failed
+/// on (background/run.rs); a pane's, its last screen. Words someone typed
+/// that happen to read so let a real failure go uncounted: the canary then
+/// errs on the side of not rolling back.
+const OUTSIDE_ANYWHERE: &[(&str, &str)] = &[
+    // Claude Code: "Not logged in · Please run /login", "Session expired.
+    // Please run /login to sign in again.", "Not logged in · Run /login",
+    // "Invalid API key · Fix external API key", "Authentication required ·
+    // Sign in again", "Authentication error · Try again".
+    ("please run /login", SIGN_IN),
+    ("not logged in", SIGN_IN),
+    ("invalid api key", SIGN_IN),
+    ("authentication required", SIGN_IN),
+    ("authentication error", SIGN_IN),
+    // Codex: "Your access token could not be refreshed. Please log out and
+    // sign in again.", "… Please sign in again.".
+    ("token could not be refreshed", SIGN_IN),
+    ("sign in again", SIGN_IN),
+    // Claude Code: "You've hit your session limit", "… · usage limit reached
+    // · …", "Your credit balance is too low …". Codex: "You've hit your usage
+    // limit.", "Quota exceeded. Check your plan and billing details."
+    ("you've hit your session limit", LIMIT),
+    ("you've hit your usage limit", LIMIT),
+    ("usage limit reached", LIMIT),
+    ("credit balance is too low", LIMIT),
+    ("quota exceeded", LIMIT),
+    // Claude Code: "Connection error.", "Request timed out.", "API Error:
+    // 500 …", "… 529 … Overloaded". Codex: "error sending request",
+    // "Reconnecting... waiting for network", "stream disconnected",
+    // "exceeded retry limit, last status: …", "HTTP status server error".
+    ("connection error", SERVICE),
+    ("request timed out", SERVICE),
+    ("api error: 5", SERVICE),
+    ("overloaded", SERVICE),
+    ("error sending request", SERVICE),
+    ("waiting for network", SERVICE),
+    ("stream disconnected", SERVICE),
+    ("exceeded retry limit", SERVICE),
+    ("http status server error", SERVICE),
+];
+
 /// The cause outside the CLI that `said` names, if a line of it is one of
-/// `NOT_THE_VERSION`'s, from the line's start: the words anywhere else (a
-/// prompt on the screen, a folder named so, a path in another error) name
-/// nothing, and an exit beside them still counts. Colors are taken out first.
-/// A pane's screen keeps a line its width wrapped as one; a line broken
-/// before its first words end is not known, and counts.
+/// `NOT_THE_VERSION`'s from the line's start, or holds one of
+/// `OUTSIDE_ANYWHERE`'s: `NOT_THE_VERSION`'s words anywhere else (a prompt
+/// on the screen, a folder named so, a path in another error) name nothing,
+/// and an exit beside them still counts. Colors are taken out first. A
+/// pane's screen keeps a line its width wrapped as one; a line broken before
+/// its first words end is not known, and counts.
 pub(crate) fn cause_outside(said: &str) -> Option<&'static str> {
     said.lines().map(without_escapes).find_map(|line| {
         let line = line.trim_start();
-        NOT_THE_VERSION.iter().find(|(start, _)| line.starts_with(start)).map(|&(_, cause)| cause)
+        let start = NOT_THE_VERSION.iter().find(|(start, _)| line.starts_with(start)).map(|&(_, cause)| cause);
+        start.or_else(|| {
+            let lower = line.to_lowercase().replace('\u{2019}', "'");
+            OUTSIDE_ANYWHERE.iter().find(|(words, _)| lower.contains(words)).map(|&(_, cause)| cause)
+        })
     })
 }
 
@@ -114,10 +169,16 @@ pub struct Canary {
     pub settled: u32,
     /// Why each watched session failed.
     pub failures: Vec<String>,
-    /// `ROLL_BACK_AT` failures were seen: Luna rolled back from it, or found
-    /// nothing to roll back to. 0.19's `canary.json` also has `dismissed`,
-    /// which nothing reads any more.
+    /// `ROLL_BACK_AT` failures were seen, and Luna set out to roll back from
+    /// it. 0.19's `canary.json` also has `dismissed`, which nothing reads any
+    /// more.
     pub warned: bool,
+    /// Why the rollback it set out on could not be made. None while it is
+    /// to be made: a core gone before it was is followed by one that makes
+    /// it (`cli.rs` `finish_rollbacks`). A rollback made starts the canary of
+    /// the version gone back to, so this one is gone with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
 }
 
 /// Reads, changes and writes back the canary under its lock.
@@ -354,24 +415,57 @@ fn failed(provider: Provider, root: &Path, w: &Watch, why: &str) {
     }
 }
 
-/// The canary of `canary.version` has tripped: back to the version kept
-/// before, and the person told what happened, in the log, to the window
-/// (`cli://canary`, which reads the versions again) and as a desktop notice.
-fn tripped(provider: Provider, root: &Path, canary: &Canary) {
-    let name = match provider {
+/// The CLI's name, for what the person is told.
+pub(super) fn name_of(provider: Provider) -> &'static str {
+    match provider {
         Provider::Claude => "Claude Code",
         Provider::Codex => "Codex",
-    };
+    }
+}
+
+/// The canary of `canary.version` has tripped: back to the version kept
+/// before (`cli.rs` `roll_back`), and the person told what came of it.
+fn tripped(provider: Provider, root: &Path, canary: &Canary) {
     let version = &canary.version;
     let seen = format!(
-        "{} of the {} sessions started on {name} {version} so far failed soon after starting.",
+        "{} of the {} sessions started on {} {version} so far failed soon after starting.",
         canary.failures.len(),
-        canary.watched
+        canary.watched,
+        name_of(provider)
     );
-    let (title, body) = match super::roll_back(provider, root, version, &format!("rolled back: {seen}")) {
-        Ok(to) => (
+    let rolled = super::roll_back(provider, root, version, &format!("rolled back: {seen}"));
+    if let Err(e) = &rolled {
+        note_outcome(root, version, e);
+    }
+    tell(provider, version, &seen, &rolled);
+}
+
+/// A rollback from `version` could not be made, for `why`: not to be tried
+/// again by the next core.
+pub(super) fn note_outcome(root: &Path, version: &str, why: &str) {
+    let noted = locked(root, |c| {
+        if let Some(c) = c.as_mut().filter(|c| c.version == version) {
+            c.outcome = Some(why.to_string());
+        }
+    });
+    if let Err(e) = noted {
+        crate::log::warn("cli", &format!("canary: {e}"));
+    }
+}
+
+/// What a rollback from `version` came to, after `seen`: in the log, to the
+/// window (`cli://canary`, which reads the versions again) and as a desktop
+/// notice.
+pub(super) fn tell(provider: Provider, version: &str, seen: &str, rolled: &Result<super::Rolled, String>) {
+    let name = name_of(provider);
+    let (title, body) = match rolled {
+        Ok(super::Rolled { to, unnoted: None }) => (
             format!("{name} rolled back to {to}"),
-            format!("{seen} Luna went back to {to} and takes no {version} again; a newer release installs as usual. Running sessions keep their version."),
+            format!("{seen} Luna went back to {to} and takes no {version} again until a newer release is out (or for a week). Running sessions keep their version."),
+        ),
+        Ok(super::Rolled { to, unnoted: Some(e) }) => (
+            format!("{name} rolled back to {to}"),
+            format!("{seen} Luna went back to {to}, but could not note {version} as failed ({e}), so a later check may install it again. Running sessions keep their version."),
         ),
         Err(e) => (format!("{name} {version} may be broken"), format!("{seen} Luna could not roll back: {e}.")),
     };
@@ -571,8 +665,74 @@ mod tests {
             "fatal: not a git repository (or any of the parent directories): .git\npanic: index out of range",
             "Managed worktrees require a local Git repository.",
         ];
-        for said in mixed.into_iter().chain(["", "Error: Invalid API key", "segmentation fault"]) {
+        for said in mixed.into_iter().chain(["", "segmentation fault", "error: unexpected argument '--effort' found"]) {
             assert_eq!(cause_outside(said), None, "{said}");
         }
+    }
+
+    /// The exits a version is not to blame for and that end a session fast:
+    /// each as its CLI words it (Claude Code 2.1.325, Codex 0.169.0).
+    #[test]
+    fn a_sign_in_a_usage_limit_or_the_network_is_a_cause_outside_the_cli() {
+        for (said, cause) in [
+            ("Not logged in · Please run /login", SIGN_IN),
+            ("Session expired. Please run /login to sign in again.", SIGN_IN),
+            ("Invalid API key · Fix external API key", SIGN_IN),
+            ("Authentication required · Sign in again", SIGN_IN),
+            ("Error: Your access token could not be refreshed. Please log out and sign in again.", SIGN_IN),
+            ("You've hit your session limit · resets 3pm", LIMIT),
+            ("Opus weekly limit reached · usage limit reached · send a message after it resets", LIMIT),
+            ("Your credit balance is too low to access the Anthropic API.", LIMIT),
+            ("ERROR: You\u{2019}ve hit your usage limit. Upgrade to Plus to continue.", LIMIT),
+            ("Quota exceeded. Check your plan and billing details.", LIMIT),
+            ("API Error: Connection error.", SERVICE),
+            ("API Error: Request timed out.", SERVICE),
+            ("API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}", SERVICE),
+            ("API Error: 500 Internal server error", SERVICE),
+            ("Reconnecting... waiting for network", SERVICE),
+            ("error: stream disconnected before completion: error sending request for url", SERVICE),
+            ("ERROR: exceeded retry limit, last status: 503 Service Unavailable", SERVICE),
+        ] {
+            assert_eq!(cause_outside(&format!("starting\n\u{1b}[31m{said}\u{1b}[39m\n")), Some(cause), "{said}");
+        }
+        // An API refusal of what Luna sent is the version's to answer for.
+        assert_eq!(cause_outside("API Error: 400 due to tool use concurrency issues."), None);
+    }
+
+    /// A helper stopped by a usage limit, and a chat whose sign-in expired,
+    /// each within half a minute: neither counted, both watches given back,
+    /// no rollback.
+    #[test]
+    fn early_exits_for_causes_outside_the_cli_do_not_trip_it() {
+        let root = scratch("outside");
+        reset_in(&root, "2.0.0").unwrap();
+        let causes = [
+            ("canary-out-a", "You've hit your session limit · resets 3pm"),
+            ("canary-out-b", "Not logged in · Please run /login"),
+            ("canary-out-c", "stream disconnected before completion"),
+        ];
+        for (id, said) in causes {
+            session_started(Provider::Claude, &root, "2.0.0", id);
+            session_ended(id, true, || said.to_string());
+        }
+        let c = read_in(&root).unwrap();
+        assert_eq!((c.watched, c.failures.len(), c.warned), (0, 0, false), "{c:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A tripped canary whose rollback could not be made says why, and is
+    /// then not taken up by the next core; a `canary.json` without the field
+    /// reads as one whose rollback is still to be made.
+    #[test]
+    fn a_rollback_that_could_not_be_made_is_noted_once() {
+        let root = scratch("outcome");
+        reset_in(&root, "2.0.0").unwrap();
+        note_outcome(&root, "1.0.0", "another version's");
+        assert_eq!(read_in(&root).unwrap().outcome, None);
+        note_outcome(&root, "2.0.0", "no version before it is kept");
+        assert_eq!(read_in(&root).unwrap().outcome.as_deref(), Some("no version before it is kept"));
+        fs::write(root.join(FILE), r#"{"version":"2.0.0","run":"r","watched":3,"failures":["a","b"],"warned":true}"#).unwrap();
+        assert_eq!(read_in(&root).unwrap().outcome, None);
+        let _ = fs::remove_dir_all(&root);
     }
 }

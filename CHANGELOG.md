@@ -14,21 +14,27 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   two of a new version's first three sessions fail soon after starting, Luna
   goes back to the version before (once its files match their checksums),
   says so in a desktop notice and the log, and skips the failed version until
-  a newer one is out. A version that fails the offline check is skipped the
-  same way. Each Luna release names the oldest version of each CLI it runs
-  (Claude Code 2.1.325, Codex 0.167.0), compiled in; nothing on the machine
-  raises it any more, and Luna never steps down from the version it runs
+  a newer one is out, or for a week. A session that ended for a sign-in, a
+  usage limit, or the network or the provider's service does not count. A
+  rollback Luna was closed in the middle of is finished at its next start. A
+  version whose answers fail the offline check is skipped until a newer one
+  is out, or for a day; one the check could not run to its end (a scanner
+  holding the fresh download) is asked again at the next check. Each Luna
+  release names the oldest version of each CLI it runs (Claude Code 2.1.325,
+  Codex 0.167.0), compiled in; nothing on the machine raises it any more,
+  and Luna never steps down from the version it runs
   ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
 
 ### Removed
 
 - The CLI channels (Known-good and Latest) and the known-good list
-  (`cli-known-good.json`), **Use**, **Mark bad**, **Mark good**, **Clear
-  bad**, **Unmark good**, **Roll back** and **Keep it** in Settings → CLIs,
-  and their commands. What 0.19 kept for them at each CLI's root (`channel`,
-  `pinned`, `good.json`, `marks.lock`, `floor`, `signed-floor`) is removed at
-  the first check; its `bad.json` is still read until a newer version is
-  current.
+  (`cli-known-good.json`), and the commands behind **Use**, **Mark bad**,
+  **Mark good**, **Clear bad**, **Unmark good**, **Roll back** and **Keep
+  it** in Settings → CLIs: until the new window comes, the old one still
+  shows those controls, and they only fail. What 0.19 kept for them at each
+  CLI's root (`channel`, `pinned`, `good.json`, `marks.lock`, `floor`,
+  `signed-floor`) is removed at the first check; its `bad.json` is still
+  read until a newer version is current.
 
 ## [0.19.0] - 2026-11-18
 

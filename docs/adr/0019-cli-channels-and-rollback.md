@@ -12,7 +12,8 @@
 > became current, the known-good list (`cli-known-good.json`), the channels,
 > "Use", the marks by hand and `good.json` are gone. The canary now rolls
 > back on its own to the previous version and turns the failed one away
-> (`bad.json`) until a newer one is current. How it works now:
+> (`bad.json`) until a newer one is current or a week has passed; a probe's
+> verdict holds a day, and a probe that could not run says nothing. How it works now:
 > [providers](../architecture/providers.md#cli-binaries).
 
 ## Context

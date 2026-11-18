@@ -296,24 +296,46 @@ fn run_within(mut cmd: Process, shown: &str, within: Duration) -> Result<(Option
     Ok((status.code(), text))
 }
 
+/// Why a version did not pass.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Failed {
+    /// It ran and answered wrong: another version, a flag gone, Luna's
+    /// configuration refused. A verdict on the version, which turns it away.
+    Wrong(String),
+    /// It could not be asked: not run, not done within `RUN_FOR` (a scanner
+    /// holding a fresh exe), elevated, or Luna's own scratch folder not to
+    /// be had. Nothing said of the version: the next pass asks again.
+    Unasked(String),
+}
+
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failed::Wrong(why) | Failed::Unasked(why) => f.write_str(why),
+        }
+    }
+}
+
 /// The probe of `exe`, staged as `version`, run in `home`, a scratch folder
-/// it may write into. Err says what failed, for the bad mark and the log.
-pub(crate) fn probe(provider: Provider, exe: &Path, version: &str, home: &Path) -> Result<(), String> {
+/// it may write into.
+pub(crate) fn probe(provider: Provider, exe: &Path, version: &str, home: &Path) -> Result<(), Failed> {
     // The update pass runs in the window, which stays elevated when a core
     // is started de-elevated from it (elevation.rs): a CLI run from here
     // would run as administrator, which no session of Luna's ever does (F11).
-    crate::elevation::guard()?;
+    crate::elevation::guard().map_err(Failed::Unasked)?;
     probe_with(provider, version, &|args: &[String]| run(provider, exe, home, args))
 }
 
 /// What a run of the CLI with these arguments gave: its exit code and output.
+/// Err where it could not be run to its end.
 type Runner<'a> = &'a dyn Fn(&[String]) -> Result<(Option<i32>, String), String>;
 
 /// The probe's checks, on what `run` says the CLI answers.
-fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), String> {
+fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), Failed> {
+    let run = |args: &[String]| run(args).map_err(Failed::Unasked);
     let (code, text) = run(&["--version".into()])?;
     if code != Some(0) || !listed(&text, version) {
-        return Err(format!("`--version` said {:?}, not {version}", text.trim().chars().take(80).collect::<String>()));
+        return Err(Failed::Wrong(format!("`--version` said {:?}, not {version}", text.trim().chars().take(80).collect::<String>())));
     }
     for command in commands(provider) {
         let mut args: Vec<String> = command.path.iter().map(|s| s.to_string()).collect();
@@ -321,11 +343,11 @@ fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), Stri
         let (code, help) = run(&args)?;
         let words = if command.path.is_empty() { "the command".to_string() } else { format!("`{}`", command.path.join(" ")) };
         if code != Some(0) {
-            return Err(format!("{words} --help failed: {}", help.trim().chars().take(200).collect::<String>()));
+            return Err(Failed::Wrong(format!("{words} --help failed: {}", help.trim().chars().take(200).collect::<String>())));
         }
         let gone = missing(&help, command);
         if !gone.is_empty() {
-            return Err(format!("{words} no longer lists {}, which Luna passes it", gone.join(", ")));
+            return Err(Failed::Wrong(format!("{words} no longer lists {}, which Luna passes it", gone.join(", "))));
         }
     }
     if provider == Provider::Codex {
@@ -333,10 +355,10 @@ fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), Stri
         args.extend(["features".to_string(), "list".to_string()]);
         let (code, text) = run(&args)?;
         if code != Some(0) || text.contains("failed to load") {
-            return Err(format!(
+            return Err(Failed::Wrong(format!(
                 "it refuses the hooks and MCP overrides Luna gives it: {}",
                 text.trim().lines().take(3).collect::<Vec<_>>().join(" ")
-            ));
+            )));
         }
     }
     Ok(())
@@ -374,8 +396,8 @@ mod tests {
 
     /// `--help` of every command, as the versions checked print it: Claude
     /// Code 2.1.319 and 2.1.322 print 2.1.318's line for line, 2.1.323 its
-    /// own (only `claude rm`'s text differs) and 2.1.325, the one on the
-    /// known-good list, 2.1.323's; Codex 0.167.2 and 0.168.0 print 0.167.0's,
+    /// own (only `claude rm`'s text differs) and 2.1.325, the floor,
+    /// 2.1.323's; Codex 0.167.2 and 0.168.0 print 0.167.0's,
     /// 0.169.0 too but for `exec` and `exec resume`, which list `--trust`.
     const CLAUDE_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.318-help.txt"))];
     const CLAUDE_2_1_323_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.323-help.txt"))];
@@ -420,7 +442,7 @@ mod tests {
         let why = crate::elevation::refusal().unwrap();
         let refused = probe(Provider::Codex, Path::new("no-such-codex-exe"), "0.167.0", &std::env::temp_dir());
         crate::elevation::refuse_here(None);
-        assert_eq!(refused.unwrap_err(), why, "refused before anything was started");
+        assert_eq!(refused, Err(Failed::Unasked(why.to_string())), "refused before anything was started");
     }
 
     #[cfg(unix)]
@@ -564,11 +586,25 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
                 Ok((Some(0), if args == ["--version"] { "2.1.318 (Claude Code)".into() } else { help.clone() }))
             }
         };
+        let wrong = |r: Result<(), Failed>| match r {
+            Err(Failed::Wrong(why)) => why,
+            other => panic!("not a verdict on the version: {other:?}"),
+        };
         let fine = claude(CLAUDE_HELP[0].1.to_string());
         probe_with(Provider::Claude, "2.1.318", &fine).unwrap();
-        assert!(probe_with(Provider::Claude, "2.1.319", &fine).unwrap_err().contains("--version"));
+        assert!(wrong(probe_with(Provider::Claude, "2.1.319", &fine)).contains("--version"));
         let dropped = claude(CLAUDE_HELP[0].1.replace("--effort", "--effortless"));
-        assert!(probe_with(Provider::Claude, "2.1.318", &dropped).unwrap_err().contains("no longer lists --effort"));
+        assert!(wrong(probe_with(Provider::Claude, "2.1.318", &dropped)).contains("no longer lists --effort"));
+        // Not run to its end (out of time, gone from under it): nothing said
+        // of the version.
+        let late = |_: &[String]| -> Result<(Option<i32>, String), String> { Err("claude --version did not finish within 30s".into()) };
+        assert_eq!(
+            probe_with(Provider::Claude, "2.1.318", &late),
+            Err(Failed::Unasked("claude --version did not finish within 30s".into()))
+        );
+        let gone = probe(Provider::Claude, Path::new("no-such-claude-exe"), "2.1.318", &std::env::temp_dir());
+        // "could not run", or refused as elevated where the tests run as root.
+        assert!(matches!(gone, Err(Failed::Unasked(_))), "{gone:?}");
 
         let codex = |config: (Option<i32>, &'static str)| {
             move |args: &[String]| -> Result<(Option<i32>, String), String> {
@@ -584,6 +620,6 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
         };
         probe_with(Provider::Codex, "0.167.0", &codex((Some(0), "apps  stable  true"))).unwrap();
         let refused = probe_with(Provider::Codex, "0.167.0", &codex((Some(1), "Error: failed to load bootstrap configuration")));
-        assert!(refused.unwrap_err().contains("refuses the hooks and MCP overrides"));
+        assert!(wrong(refused).contains("refuses the hooks and MCP overrides"));
     }
 }

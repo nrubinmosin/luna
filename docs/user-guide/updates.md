@@ -33,26 +33,32 @@ nothing depends on a global install.
   does at once.
 - Before a new version is used, Luna runs it once offline to see that it
   still knows every flag Luna passes it (and, for Codex, takes the hooks Luna
-  gives it). One that does not is not used, and not tried again until a newer
-  release is out.
+  gives it). One that answers wrong is not used, and not tried again until a
+  newer release is out or a day has passed. One that could not be run to its
+  end (a virus scanner still holding the fresh download, say) is simply asked
+  again at the next check.
 - The version before is always kept, and so is any version a session still
   runs on; older ones go once nothing runs them. Running sessions keep the
   version they started with; new ones start on the current one.
 - The first three sessions on a new version are watched. If two of them fail
   soon after starting, Luna goes back to the version before on its own, says
-  so in a desktop notice, and does not take the failed version again; the
-  next newer release installs as usual. With no version before to go back to
-  (or one Luna cannot vouch for: older than the oldest it runs, or its files
-  no longer matching their checksums), the notice says so and the version
-  stays. A session you or Luna stopped does not count, nor one that ended on
-  something that was not the CLI's fault (a worktree asked for outside a git
-  repository); the next session is watched in its place. If the version gone
-  back to fails its first sessions too, Luna stays on it: the failures were
-  then not the version's.
+  so in a desktop notice, and does not take the failed version again for a
+  week, or until a newer release is out, which installs as usual. With no
+  version before to go back to (or one Luna cannot vouch for: older than the
+  oldest it runs, or its files no longer matching their checksums), the
+  notice says so and the version stays. If Luna is closed in the middle of
+  going back, it finishes as it next starts. A session you or Luna stopped
+  does not count, nor one that ended on something that was not the CLI's
+  fault: a worktree asked for outside a git repository, a sign-in missing or
+  expired, a usage limit, or the network or the provider's service failing,
+  each known by what the CLI says; the next session is watched in its place.
+  If the version gone back to fails its first sessions too, Luna stays on it:
+  the failures were then not the version's.
 - Luna 0.19's **Known-good** and **Latest** channels, **Use**, **Mark bad**,
-  **Mark good** and the rest are gone. What they left on disk is removed at
-  the first check; a version marked bad then stays skipped until a newer one
-  is installed.
+  **Mark good** and the rest are gone from Luna; until Luna's new window
+  comes, the old window still shows some of them in Settings → CLIs, and they
+  only fail. What they left on disk is removed at the first check; a version
+  marked bad then stays skipped until a newer one is installed.
 - While Luna runs as administrator it does not update the CLIs: the check
   before a new version is used would run it with administrator rights.
 - Claude Code comes as a bare exe from the official release bucket, verified

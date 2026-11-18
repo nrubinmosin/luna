@@ -3,20 +3,27 @@
 //! `floor`), older than the version that runs here already, or one Luna has
 //! turned away (ADR-0030).
 //!
-//! A version is turned away when it fails the offline probe (`probe`), or
-//! when its first sessions fail and Luna rolls back from it (`canary`). Why
-//! is kept at the provider's root, written private like `current` and only
-//! under the switch lock (`cli.rs` `switching`), which both the window's
-//! update pass and the core's rollback take:
+//! A version is turned away when the offline probe finds it wrong (`probe`:
+//! its `--version`, a flag gone, a configuration refused), or when its first
+//! sessions fail and Luna rolls back from it (`canary`). Why is kept at the
+//! provider's root, written private like `current` and only under the switch
+//! lock (`cli.rs` `switching`), which both the window's update pass and the
+//! core's rollback take:
 //!
 //! ```text
-//! bad.json   {"<version>": "why"}: not taken while the pointer names it
+//! bad.json   {"<version>": {"why": …, "by": "probe"|"rollback", "atMs": …}}
 //! ```
 //!
-//! An entry goes once a version at or above it is current: a newer release
-//! has been published and taken by then, and the pass never goes down to an
-//! older one.
+//! A mark holds until a version at or above it is current (a newer release
+//! has been taken by then, and the pass never goes down to an older one), or
+//! until it has stood for its time (`By::lasts`): a day for the probe's, a
+//! week for a rollback's. There is no clearing a mark by hand, so that is
+//! how a mark made in error ends without a newer release: a probe that
+//! found fault with a sound version through a fault of Luna's own is tried
+//! again, and a version rolled back from for failures that were not its own
+//! is taken again, at the cost of two failed starts if they were.
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -27,7 +34,7 @@ const BAD: &str = "bad.json";
 /// hold, the marks by hand and the floor that rose on this machine, none of
 /// which 0.20 has. Removed at the first pass, each only where it is a plain
 /// file; a `bad.json` of then is read as this one is, its marks by hand
-/// counting like a rollback's.
+/// holding like any until a newer version is current.
 const LEFT_BY_0_19: [&str; 6] = ["channel", "good.json", "marks.lock", "pinned", "floor", "signed-floor"];
 
 /// Removes what 0.19 left (`LEFT_BY_0_19`). One that will not go stays,
@@ -45,9 +52,56 @@ pub(super) fn forget_0_19(root: &Path) {
     }
 }
 
-/// The versions turned away, each with why. A file that does not parse is
+/// Who turned a version away.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum By {
+    /// The offline probe found it wrong.
+    Probe,
+    /// Its first sessions failed and Luna rolled back from it.
+    Rollback,
+}
+
+impl By {
+    /// How long a mark holds, if no newer version is current first.
+    fn lasts(self) -> u64 {
+        const HOUR: u64 = 3_600_000;
+        match self {
+            By::Probe => 24 * HOUR,
+            By::Rollback => 7 * 24 * HOUR,
+        }
+    }
+}
+
+/// One version turned away.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub(crate) enum Mark {
+    #[serde(rename_all = "camelCase")]
+    Dated { why: String, by: By, at_ms: u64 },
+    /// As 0.19 wrote it, by hand or by its probe: why alone, held until a
+    /// newer version is current.
+    Plain(String),
+}
+
+impl Mark {
+    pub(crate) fn why(&self) -> &str {
+        match self {
+            Mark::Dated { why, .. } | Mark::Plain(why) => why,
+        }
+    }
+
+    fn holds_at(&self, now_ms: u64) -> bool {
+        match self {
+            Mark::Dated { by, at_ms, .. } => now_ms < at_ms.saturating_add(by.lasts()),
+            Mark::Plain(_) => true,
+        }
+    }
+}
+
+/// Every mark in `bad.json`, in force or not. A file that does not parse is
 /// taken as none, and said so in the log: it only ever adds refusals.
-pub(crate) fn bad_in(root: &Path) -> BTreeMap<String, String> {
+fn marks_in(root: &Path) -> BTreeMap<String, Mark> {
     let Ok(bytes) = fs::read(root.join(BAD)) else { return BTreeMap::new() };
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
         crate::log::warn("cli", &format!("{}: {e}; taking it as no version turned away", root.join(BAD).display()));
@@ -55,7 +109,16 @@ pub(crate) fn bad_in(root: &Path) -> BTreeMap<String, String> {
     })
 }
 
-fn write_bad(root: &Path, bad: &BTreeMap<String, String>) -> Result<(), String> {
+/// The versions turned away as of now, each with why.
+pub(crate) fn bad_in(root: &Path) -> BTreeMap<String, String> {
+    bad_at(root, super::now_ms())
+}
+
+fn bad_at(root: &Path, now_ms: u64) -> BTreeMap<String, String> {
+    marks_in(root).into_iter().filter(|(_, m)| m.holds_at(now_ms)).map(|(v, m)| (v, m.why().to_string())).collect()
+}
+
+fn write_bad(root: &Path, bad: &BTreeMap<String, Mark>) -> Result<(), String> {
     fs::create_dir_all(root).map_err(|e| format!("mkdir {}: {e}", root.display()))?;
     let bytes = serde_json::to_vec_pretty(bad).map_err(|e| e.to_string())?;
     crate::secret::write_private_synced(&root.join(BAD), &bytes).map_err(|e| format!("write {BAD}: {e}"))
@@ -66,20 +129,27 @@ fn short(why: &str) -> String {
     why.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect()
 }
 
-/// Turns `version` away, for `why`, until a newer one is current.
-pub(super) fn mark_bad_in(_held: &super::Switching, root: &Path, version: &str, why: &str) -> Result<(), String> {
+/// Turns `version` away, for `why`. A mark still in force stays as it is,
+/// with its time: a rollback finished after a core went away does not
+/// lengthen it.
+pub(super) fn mark_bad_in(_held: &super::Switching, root: &Path, version: &str, by: By, why: &str) -> Result<(), String> {
     let version = super::sane_version(version, "a version turned away")?;
-    let mut bad = bad_in(root);
-    bad.insert(version, short(why));
+    let now_ms = super::now_ms();
+    let mut bad = marks_in(root);
+    if bad.get(&version).is_some_and(|m| m.holds_at(now_ms)) {
+        return Ok(());
+    }
+    bad.insert(version, Mark::Dated { why: short(why), by, at_ms: now_ms });
     write_bad(root, &bad)
 }
 
 /// `version` has become current: what was turned away at or below it goes,
-/// as nothing takes it again.
+/// as nothing takes it again, and so does every mark past its time.
 pub(super) fn forget_up_to_in(_held: &super::Switching, root: &Path, version: &str) -> Result<(), String> {
-    let mut bad = bad_in(root);
+    let now_ms = super::now_ms();
+    let mut bad = marks_in(root);
     let before = bad.len();
-    bad.retain(|v, _| super::version_cmp(v, version).is_gt());
+    bad.retain(|v, m| super::version_cmp(v, version).is_gt() && m.holds_at(now_ms));
     if bad.len() == before {
         return Ok(());
     }
@@ -95,8 +165,9 @@ pub(super) enum Plan {
     Stay(String),
 }
 
-/// The pass's decision from the version that runs here (`current`: a
-/// recorded install at or above the floor, None where there is none such),
+/// The pass's decision from the version that runs here (`current`: at or
+/// above the floor, recorded or from before records; None where there is
+/// none such),
 /// the floor, the versions turned away and what the release pointer said
 /// (an error where it could not be read). The pointer is not signed: what it
 /// names is held to the floor, and the pass never moves below what runs.
@@ -167,10 +238,10 @@ mod tests {
     fn what_was_turned_away_goes_once_a_version_at_or_above_it_is_current() {
         let root = scratch("forget");
         let held = super::super::switching(&root).unwrap();
-        mark_bad_in(&held, &root, "1.5.0", "  rolled back:\n its first sessions failed  ").unwrap();
-        mark_bad_in(&held, &root, "1.7.0", "failed the offline probe").unwrap();
+        mark_bad_in(&held, &root, "1.5.0", By::Rollback, "  rolled back:\n its first sessions failed  ").unwrap();
+        mark_bad_in(&held, &root, "1.7.0", By::Probe, "`exec` no longer lists --json").unwrap();
         assert_eq!(bad_in(&root)["1.5.0"], "rolled back: its first sessions failed");
-        assert!(mark_bad_in(&held, &root, "<html>", "x").is_err());
+        assert!(mark_bad_in(&held, &root, "<html>", By::Probe, "x").is_err());
         forget_up_to_in(&held, &root, "1.2.0").unwrap();
         assert_eq!(bad_in(&root).len(), 2, "a rollback to an older one keeps both");
         forget_up_to_in(&held, &root, "1.6.0").unwrap();
@@ -179,6 +250,32 @@ mod tests {
         assert!(bad_in(&root).is_empty());
         fs::write(root.join(BAD), "{not json").unwrap();
         assert!(bad_in(&root).is_empty(), "a garbled file turns nothing away");
+        drop(held);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// With no clearing by hand, a mark made in error ends with its time: a
+    /// probe's after a day, a rollback's after a week; one still in force is
+    /// not made longer by being made again.
+    #[test]
+    fn a_mark_holds_for_its_time_and_no_longer() {
+        let root = scratch("expiry");
+        let held = super::super::switching(&root).unwrap();
+        mark_bad_in(&held, &root, "1.5.0", By::Probe, "probe").unwrap();
+        mark_bad_in(&held, &root, "1.6.0", By::Rollback, "rollback").unwrap();
+        let at = match &marks_in(&root)["1.5.0"] {
+            Mark::Dated { at_ms, .. } => *at_ms,
+            m => panic!("{m:?}"),
+        };
+        const HOUR: u64 = 3_600_000;
+        assert_eq!(bad_at(&root, at + 23 * HOUR).len(), 2);
+        assert_eq!(bad_at(&root, at + 25 * HOUR).keys().collect::<Vec<_>>(), ["1.6.0"], "the probe's is tried again after a day");
+        assert!(bad_at(&root, at + 8 * 24 * HOUR).is_empty(), "a rollback's after a week");
+        mark_bad_in(&held, &root, "1.5.0", By::Probe, "again").unwrap();
+        assert_eq!(marks_in(&root)["1.5.0"], Mark::Dated { why: "probe".into(), by: By::Probe, at_ms: at }, "kept as it was");
+        // 0.19's plain marks hold until a newer version is current.
+        fs::write(root.join(BAD), r#"{"1.5.0":"marked bad by hand"}"#).unwrap();
+        assert_eq!(bad_at(&root, u64::MAX)["1.5.0"], "marked bad by hand");
         drop(held);
         let _ = fs::remove_dir_all(&root);
     }
