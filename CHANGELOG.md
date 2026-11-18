@@ -145,7 +145,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A chat's or helper's delete and the orphan sweep keep a worktree a session
   reached through a link or junction to its project, where they name it by
   its real path, and the other way about; on Linux a path in another case is
-  no longer taken for the same worktree.
+  no longer taken for the same worktree; a path through a folder that no
+  longer reads is taken for in use.
 - The sweep of orphan worktrees keeps a Codex chat's new worktree that its
   CLI made while Luna's own start waited, or after the wall clock was set
   back, and asks again under its last look whether a session making one may

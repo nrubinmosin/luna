@@ -36,40 +36,76 @@ fn ways() -> std::sync::MutexGuard<'static, Ways> {
 /// delete naming the real one are of one worktree.
 pub(crate) struct Place {
     key: String,
-    real: Option<String>,
+    real: Real,
+}
+
+/// Where a path leads, as far as the disk says.
+enum Real {
+    /// Resolved, in `path_key_loose`'s spelling.
+    At(String),
+    /// Nothing of it is there, up to its root: only its spelling says.
+    Nowhere,
+    /// A folder on its way could not be read (access denied, a link that
+    /// loops): it may lead anywhere, and is taken for every place.
+    Unknown,
 }
 
 impl Place {
     /// Reads the disk: taken before the holds' lock where it can be.
     pub(crate) fn of(path: &str) -> Place {
-        Place { key: norm_in_use(path), real: resolved(Path::new(path)).map(|r| norm_in_use(&r.to_string_lossy())) }
+        fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+            std::fs::canonicalize(path)
+        }
+        Place::by(path, canonicalize)
+    }
+
+    fn by(path: &str, canonicalize: impl Fn(&Path) -> std::io::Result<PathBuf>) -> Place {
+        Place { key: norm_in_use(path), real: resolved(Path::new(path), canonicalize) }
     }
 
     /// Whether this is the worktree `wt` or inside it, by either spelling or
-    /// by where both lead.
+    /// by where both lead; so it is where either cannot be told.
     pub(crate) fn within(&self, wt: &Place) -> bool {
-        claims(&self.key, &wt.key) || matches!((&self.real, &wt.real), (Some(p), Some(w)) if claims(p, w))
+        claims(&self.key, &wt.key) || self.real.meets(&wt.real, claims)
     }
 
     /// Whether this and `other` are one place, by either spelling or by
-    /// where both lead.
+    /// where both lead; so they are where either cannot be told.
     pub(crate) fn is(&self, other: &Place) -> bool {
-        self.key == other.key || matches!((&self.real, &other.real), (Some(a), Some(b)) if a == b)
+        self.key == other.key || self.real.meets(&other.real, |a, b| a == b)
+    }
+}
+
+impl Real {
+    fn meets(&self, other: &Real, by: impl Fn(&str, &str) -> bool) -> bool {
+        match (self, other) {
+            (Real::At(a), Real::At(b)) => by(a, b),
+            (Real::Unknown, _) | (_, Real::Unknown) => true,
+            _ => false,
+        }
     }
 }
 
 /// Where `path` leads: the nearest of it and the folders above it that is
 /// there, resolved, and the rest of it on top. A worktree a CLI has not made
-/// yet resolves as it will once it is there.
-fn resolved(path: &Path) -> Option<PathBuf> {
+/// yet resolves as it will once it is there; only a folder that is not there
+/// counts as not made yet, and one that does not read leaves where the path
+/// leads unknown: taken for one not there, a folder whose traversal was
+/// revoked since would put the path a session was started on through a
+/// link beside the link itself, and a removal by the real path would miss
+/// it.
+fn resolved(path: &Path, canonicalize: impl Fn(&Path) -> std::io::Result<PathBuf>) -> Real {
     let mut rest = Vec::new();
     let mut at = path;
     loop {
-        if let Ok(real) = std::fs::canonicalize(at) {
-            return Some(rest.iter().rev().fold(real, |r, part| r.join(part)));
+        match canonicalize(at) {
+            Ok(real) => return Real::At(norm_in_use(&rest.iter().rev().fold(real, |r, part| r.join(part)).to_string_lossy())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Real::Unknown,
         }
-        rest.push(at.file_name()?);
-        at = at.parent()?;
+        let (Some(name), Some(parent)) = (at.file_name(), at.parent()) else { return Real::Nowhere };
+        rest.push(name);
+        at = parent;
     }
 }
 
@@ -147,6 +183,33 @@ mod tests {
         drop(on_the_way);
         assert!(removing(wt, || true).is_none(), "kept for whoever is in it");
         assert!(removing(wt, || false).is_some());
+    }
+
+    /// A path through a folder that does not read (its traversal revoked
+    /// since a session was started on it through a link) may lead to any
+    /// worktree, and is held as in it: taken for one not made yet, it would
+    /// resolve beside the link, and a removal by the real path would go.
+    /// One that is only not there yet is compared as before.
+    #[test]
+    fn a_path_that_does_not_read_is_taken_for_in_the_worktree() {
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let root = PathBuf::from(if cfg!(windows) { r"C:\" } else { "/" });
+        let wt = s(&root.join("real").join(".claude").join("worktrees").join("w"));
+        let locked = root.join("locked");
+        let session = s(&locked.join("link").join(".claude").join("worktrees").join("w").join("src"));
+        let disk = |denied: bool| {
+            let (root, locked) = (root.clone(), locked.clone());
+            move |p: &Path| match p {
+                p if p == root => Ok(root.clone()),
+                p if denied && p.starts_with(&locked) => Err(std::io::ErrorKind::PermissionDenied.into()),
+                _ => Err(std::io::ErrorKind::NotFound.into()),
+            }
+        };
+        let wt_place = Place::by(&wt, disk(true));
+        assert!(Place::by(&session, disk(true)).within(&wt_place), "where it leads cannot be told");
+        assert!(wt_place.within(&Place::by(&session, disk(true))), "nor the other way about");
+        assert!(Place::by(&session, disk(true)).is(&Place::by(&wt, disk(true))));
+        assert!(!Place::by(&session, disk(false)).within(&Place::by(&wt, disk(false))), "not there yet: by where it would be");
     }
 
     /// One worktree, however it is reached: through a link or a junction to

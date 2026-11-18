@@ -56,6 +56,10 @@ lose, and to sweep the ones no chat claims.
   resolved through links and junctions (the nearest folder of it there, the
   rest on top, for a worktree not made yet), so a session started through a
   linked project folder keeps the worktree a delete names by its real path.
+  Only a folder that is not there counts as not made yet: one on the way
+  that does not read (access denied, a link that loops) leaves where the
+  path leads unknown, and such a path is taken for in every worktree, as a
+  miss deletes one with a session in it.
   Removal is
   `git worktree remove -f -f`, since Claude Code locks its worktree and a killed
   one does not release the lock. Only `worktree-*` branches are ever deleted.
