@@ -155,7 +155,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   session making one may have made it.
 - A session started while every session is being stopped (an update, a core
   leaving, the PC shutting down) no longer lets the chats' ties be saved as
-  the stopping left them.
+  the stopping left them; one the stop missed lets them be saved again once
+  the stop is over.
 - A start no longer waits for a delete or the orphan sweep reading a slow or
   dropped network drive.
 - A pane or the login window whose session was killed while its reader was

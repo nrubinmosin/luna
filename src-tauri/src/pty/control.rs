@@ -717,7 +717,7 @@ mod tests {
             held_keys: Arc::new(Mutex::new(None)),
             stashing: Arc::new(AtomicBool::new(false)),
         };
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
+        manager().list(id.to_string(), session);
         quit
     }
 
@@ -950,6 +950,29 @@ mod tests {
         quit.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session whose start registered while every session was being
+    /// stopped, listed after the stop had taken the sessions, escaped it and
+    /// runs on: the chats' ties are news again once the stop is over, the
+    /// session listed before its end or after.
+    #[test]
+    fn a_session_that_escaped_a_stop_of_every_session_lifts_the_freeze() {
+        let _alone = crate::agents::stops_for_test();
+        let stopping = crate::agents::freeze_chats();
+        let quit = fake_session("fz-escaped", "/nowhere", PROMPT);
+        assert!(crate::agents::chats_frozen(None), "frozen while the stop is under way");
+        drop(stopping);
+        assert!(!crate::agents::chats_frozen(None), "lifted at the stop's end: it runs on");
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove("fz-escaped");
+        // Frozen still once the stop is over, with nothing found running:
+        // the session is listed only now.
+        crate::agents::chats_frozen(Some(true));
+        let quit = fake_session("fz-late", "/nowhere", PROMPT);
+        assert!(!crate::agents::chats_frozen(None), "lifted as it is listed");
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove("fz-late");
     }
 
     /// An exit said for a session whose chat has a start under way since, or

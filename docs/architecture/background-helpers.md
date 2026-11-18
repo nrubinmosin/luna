@@ -336,6 +336,10 @@ A session that starts lifts the freeze (`register`), the core going on where
 an update or a shutdown did not come, but not while the stop is under way
 (`freeze_chats` holds it until the sessions are stopped): a pane asking for
 its chat again then, or a helper's turn, is one more session to be stopped.
+One that the stop missed (its start registered during it, its session in the
+map only once the stop had taken the sessions) runs on: the stop's end lifts
+the freeze where it finds a session running (`Winding`), and a session listed
+after that end lifts it as it is listed (`PtyManager::list`).
 
 Neither CLI continues a turn a core killed (Claude Code's `--resume` needs an
 environment variable Luna does not set; Codex's continuation lives in the daemon

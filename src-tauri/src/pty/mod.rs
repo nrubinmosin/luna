@@ -348,6 +348,15 @@ impl PtyManager {
         n
     }
 
+    /// Puts a session that has started in the map, where whatever asks for
+    /// it looks, and lifts the chats' freeze unless every session is being
+    /// stopped (`agents::thaw_chats`): one whose start registered while a
+    /// stop was under way that is over by now escaped it, and runs on.
+    fn list(&self, id: String, session: Session) {
+        self.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id, session);
+        crate::agents::thaw_chats();
+    }
+
     /// `id`'s session of spawn `generation` taken and waited for: an exit
     /// its reader has not said by now it never says, and this says it in
     /// its stead, once, with `code` (None where it cannot be read): a reader

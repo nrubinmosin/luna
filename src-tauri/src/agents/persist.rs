@@ -222,8 +222,19 @@ pub struct Winding(());
 
 impl Drop for Winding {
     fn drop(&mut self) {
-        let mut winding = WINDING.lock().unwrap_or_else(|e| e.into_inner());
-        *winding = winding.saturating_sub(1);
+        let over = {
+            let mut winding = WINDING.lock().unwrap_or_else(|e| e.into_inner());
+            *winding = winding.saturating_sub(1);
+            *winding == 0
+        };
+        // A session still running once the stop is over came after it had
+        // taken the sessions, started while it was under way: it escaped
+        // the stop and runs on, and its registration, which found the stop
+        // counted, left the freeze. Lifted here, as a start after the stop
+        // lifts it; one listed after this lifts it itself (`thaw_chats`).
+        if over && crate::pty::manager().live_count() > 0 {
+            thaw_chats();
+        }
     }
 }
 
@@ -242,13 +253,33 @@ pub fn freeze_chats() -> Winding {
 
 /// A session running again: what the chats' ties say is news once more,
 /// unless every session is being stopped, where it is one more that will
-/// be and the freeze holds. Called under the registry's lock, which nothing
-/// takes under `WINDING`.
-pub(super) fn thaw_chats() {
+/// be, or one the stop's end finds running (`Winding`), and the freeze
+/// holds. Called as a session registers, under the registry's lock, and
+/// once it is listed in the session map; nothing takes either under
+/// `WINDING`.
+pub(crate) fn thaw_chats() {
     let winding = WINDING.lock().unwrap_or_else(|e| e.into_inner());
     if *winding == 0 {
         CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+/// One test at a time that stops every session or reads the freeze: each
+/// counts on no other stop being under way.
+#[cfg(test)]
+pub(crate) fn stops_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: Mutex<()> = Mutex::new(());
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether the chats' ties are frozen, and, given `to`, set so first.
+#[cfg(test)]
+pub(crate) fn chats_frozen(to: Option<bool>) -> bool {
+    use std::sync::atomic::Ordering;
+    if let Some(to) = to {
+        CHATS_FROZEN.store(to, Ordering::SeqCst);
+    }
+    CHATS_FROZEN.load(Ordering::SeqCst)
 }
 
 /// Sets `frozen` under the saves' lock: a save already taking its snapshot
@@ -631,6 +662,7 @@ mod tests {
     #[test]
     fn a_start_while_the_sessions_are_stopped_leaves_the_chats_frozen() {
         use std::sync::atomic::Ordering;
+        let _alone = stops_for_test();
         let start = || register("fz-start", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
         let stopping = freeze_chats();
         start();

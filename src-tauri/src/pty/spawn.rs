@@ -603,7 +603,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         });
     }
 
-    state.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(
+    state.list(
         id,
         Session {
             provider,
