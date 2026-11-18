@@ -65,11 +65,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   (it grows with every new character and color seen), every frame of every
   terminal rebuilt all its cells; now each rebuilds once per merge. Nor does
   the atlas grow for as long as Luna runs any more: once full it starts over,
-  as does its cache of drawn glyphs past 32,768 (or four times a large
-  terminal's cells) and the colors it worked out for contrast, which kept the
-  window's memory climbing with every new color seen. Luna carries the WebGL
-  addon patched with xterm.js's own fixes until a release of the addon has
-  them.
+  as does its cache of drawn glyphs past 32,768 (or four times the cells of
+  the largest terminal sharing it) and the colors it worked out for contrast,
+  which kept the window's memory climbing with every new color seen. Luna
+  carries the WebGL addon patched with xterm.js's own fixes until a release
+  of the addon has them.
 - Closing an account's sign-in window while its session is still starting
   ends that session once it has started, instead of leaving it running; a
   sign-in window opened again on the account meanwhile shows nothing of that

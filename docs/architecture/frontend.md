@@ -183,12 +183,16 @@ titles, context and drafts come from the core (`session_meta`), polled by
   when no four pages of one size are left to merge, or before an oversized
   glyph's page would pass the renderer's texture units. Two bounds are Luna's
   own: pages merge to 4096 px at most, and the glyph cache is evicted the same
-  way past 32,768 entries or four times the cells of the terminal drawing,
-  whichever is more (a maximized terminal on a 4K screen has over 50,000,
-  each of which can be a glyph of its own). That bound is checked as a frame
-  begins (`_boundAtlas`), never inside one: evicting mid-frame, a frame with
-  more glyphs than the bound evicted on every rebuild and was drawn with
-  cells pointing at pages gone. So the atlas holds at most the renderer's
+  way past 32,768 entries or four times the cells of the largest terminal
+  on the atlas, whichever is more (a maximized terminal on a 4K screen has
+  over 50,000, each of which can be a glyph of its own). Each renderer keeps
+  its cell count on its atlas (`_owners`, as each frame begins) and takes it
+  off when it moves to another atlas or goes: bounded by its own cells, a
+  narrow pane beside a wide one evicted the wide one's glyphs on each of its
+  frames, and the wide one drew its whole viewport again on each of its own.
+  That bound is checked as a frame begins (`_boundAtlas`), never inside one:
+  evicting mid-frame, a frame with more glyphs than the bound evicted on
+  every rebuild and was drawn with cells pointing at pages gone. So the atlas holds at most the renderer's
   texture units in pages (16 on the harness), each at most 4096 px square,
   but for one page for oversized glyphs at the GPU's size, and the cache that
   bound plus one frame's new glyphs. On the
