@@ -65,6 +65,26 @@ body {
   background-color: var(--scroll-thumb-hover);
 }
 
+/* A chat's status dot (shared/ui/StatusDot) in Windows' contrast themes,
+   which drop its shadows and paint its background over with their own: it
+   vanished. There it takes the theme's colors, a ring its border, and waiting
+   the highlight. !important over the colors it sets inline. */
+@media (forced-colors: active) {
+  [data-app] .status-dot {
+    background: CanvasText !important;
+  }
+  [data-app] .status-dot[data-status="waiting"] {
+    background: Highlight !important;
+  }
+  [data-app] .status-dot[data-status="resting"] {
+    background: GrayText !important;
+  }
+  [data-app] .status-dot[data-shape="ring"] {
+    background: transparent !important;
+    border-color: CanvasText !important;
+  }
+}
+
 .hover-bg:hover {
   background: var(--hover) !important;
 }

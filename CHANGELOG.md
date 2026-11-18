@@ -36,8 +36,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Nothing in Luna's window moves any more, so an idle window draws no frames:
   a chat waiting for you wears an orange title bar and status-bar field
   instead of flashing them, a working chat's dot keeps its color without
-  pulsing and a background chat's is a ring, a helper just spawned rings its
-  chip for a few seconds
+  pulsing and a background chat's is a ring, as is the status bar's dot
+  beside the background count, a helper just spawned rings its chip for a few
+  seconds
   without glowing, a button at work says so in words and goes gray instead of
   spinning (an account's refresh button says "Refreshing…"), and dialogs,
   menus, the sidebar and folders open and close at once.
@@ -73,6 +74,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   ends that session once it has started, instead of leaving it running; a
   sign-in window opened again on the account meanwhile shows nothing of that
   session and starts its own once it is gone, or after 15 s, saying so.
+- The chats' status dots, and the status bar's, show in Windows' contrast
+  themes, in the theme's colors, a background chat's as a ring: they were
+  not drawn there at all.
 
 ## [0.18.5] - 2026-11-17
 

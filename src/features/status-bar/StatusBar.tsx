@@ -332,7 +332,12 @@ export function StatusBar() {
           chats.backgroundN ? `At work in the background:\n${chats.background}` : 'Nothing is at work in the background'
         }
       >
-        <span className="sb-dot" style={{ background: chats.backgroundN ? STATUS.background.color : 'var(--faint)' }} />
+        {/* A ring, as a background chat's dot is (StatusDot). */}
+        <span
+          className="sb-dot"
+          data-shape="ring"
+          style={{ borderColor: chats.backgroundN ? STATUS.background.color : 'var(--faint)' }}
+        />
         {chats.backgroundN} background
       </div>
 

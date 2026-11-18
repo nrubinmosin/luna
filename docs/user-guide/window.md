@@ -21,7 +21,9 @@
   states are told by color, shape and words, never by a pulse or a flash, and
   the terminals' cursors hold still unless the program in one asks for a
   blinking cursor. The one thing that blinks is the text cursor of a field
-  you are typing in, as Windows draws it.
+  you are typing in, as Windows draws it. In a Windows contrast theme the
+  status dots take the theme's colors: filled for working, the highlight
+  color for waiting, a ring for background, gray for idle.
 - The chrome does not select as text, so a drag across the sidebar paints
   nothing blue.
 

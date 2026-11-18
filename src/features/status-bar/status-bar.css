@@ -58,6 +58,22 @@
   border-radius: 50%;
   flex: none;
 }
+[data-app] .sb-dot[data-shape="ring"] {
+  background: transparent;
+  border: 2px solid;
+}
+/* Windows' contrast themes paint every background over with their own, which
+   took the dots with them: there each is the theme's text color, a ring its
+   border. !important over the colors the fields set inline. */
+@media (forced-colors: active) {
+  [data-app] .sb-dot {
+    background: CanvasText !important;
+  }
+  [data-app] .sb-dot[data-shape="ring"] {
+    background: transparent !important;
+    border-color: CanvasText !important;
+  }
+}
 /* Each account a card of its own on the bar: in one run of text the windows
    of one account ran into the next one's name. */
 [data-app] .sb-acc {

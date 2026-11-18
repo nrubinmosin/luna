@@ -31,6 +31,12 @@ describe('StatusBar', () => {
     expect(screen.getByText('1 working')).toBeInTheDocument();
     expect(screen.getByText('2 waiting')).toBeInTheDocument();
     expect(screen.getByText('3 background')).toBeInTheDocument();
+    // The background count wears a ring, as a background chat's dot does;
+    // working and waiting a filled dot.
+    const shape = (text: string) => screen.getByText(text).querySelector('.sb-dot')?.getAttribute('data-shape');
+    expect(shape('3 background')).toBe('ring');
+    expect(shape('1 working')).toBeNull();
+    expect(shape('2 waiting')).toBeNull();
   });
 
   it('names the chats at work in the background', () => {
