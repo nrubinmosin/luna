@@ -12,6 +12,8 @@ patchedDependencies:
   # flag that is never cleared, so every render from then on rebuilds the
   # whole viewport, and the atlas and its glyph cache never shrink. The patch
   # makes the flag a version each renderer rebuilds for once and evicts the
-  # atlas when it is full, with two bounds of Luna's own. Drop it with the
-  # first addon release that has the fixes (docs/architecture/frontend.md).
+  # atlas when it is full, with two bounds of Luna's own. Only
+  # lib/addon-webgl.mjs, the build Vite bundles, is patched: nothing of Luna's
+  # loads the CommonJS one. Drop it with the first addon release that has the
+  # fixes (docs/architecture/frontend.md).
   '@xterm/addon-webgl@0.19.0': patches/@xterm__addon-webgl@0.19.0.patch
