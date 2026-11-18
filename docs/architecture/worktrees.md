@@ -80,7 +80,10 @@ lose, and to sweep the ones no chat claims.
   delete; the sweep, which only offers, takes it for in every worktree, and
   is the only look a session making a new worktree keeps anything from (a
   delete's worktree is the deleted session's own, which no such session can
-  be making: theirs is new).
+  be making: theirs is new). A start on its way in is compared with a
+  removal under way as the sweep compares, whatever the removal: one with a
+  place that does not read is refused while any worktree is being removed,
+  which costs it a retry once the removal is through (`entering`).
 - **The removal's hold** (`removing`). From the look for whoever is in the
   worktree to the end of its removal the worktree is held: a start on its
   way in that may be in it keeps it, and one that comes during the removal

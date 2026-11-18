@@ -245,7 +245,7 @@ struct Ways {
     /// Each start on its way in, by a number of its own, and its hold.
     entering: Vec<(u64, Arc<Hold>)>,
     looking: Vec<Looking>,
-    removing: Vec<(u64, Arc<Target>, Look)>,
+    removing: Vec<(u64, Arc<Target>)>,
     next: u64,
 }
 
@@ -272,10 +272,16 @@ impl Drop for Entering {
 
 /// Holds the way in for a start, its `hold` resolved before it starts, until
 /// it is listed where a removal looks (the guard dropped then); refused,
-/// saying why, where one of its places is in a worktree being removed.
+/// saying why, where one of its places is or may be in a worktree being
+/// removed.
 pub(crate) fn entering(hold: Arc<Hold>) -> Result<Entering, String> {
     let mut w = ways();
-    if let Some((_, wt, _)) = w.removing.iter().find(|(_, wt, look)| hold.is_in(wt, *look)) {
+    // As the sweep compares, whatever the removal is: a place of the start's
+    // whose way did not read may be in any worktree, and is not let into one
+    // going. That costs a start no more than a retry once the removal is
+    // through; a session listed with such a place keeps no delete's worktree
+    // (`Look::Delete`), or it would keep them all for as long as it runs.
+    if let Some((_, wt)) = w.removing.iter().find(|(_, wt)| hold.is_in(wt, Look::Sweep)) {
         return Err(format!("{} is being removed with the chat that was in it; start again once it is gone", wt.path));
     }
     w.next += 1;
@@ -299,7 +305,7 @@ pub(crate) struct Removing(u64);
 
 impl Drop for Removing {
     fn drop(&mut self) {
-        ways().removing.retain(|(n, _, _)| *n != self.0);
+        ways().removing.retain(|(n, _)| *n != self.0);
     }
 }
 
@@ -326,7 +332,7 @@ pub(crate) fn removing(wt: Target, look: Look, others_in_it: impl FnOnce() -> bo
     if in_it || missed || w.entering.iter().any(|(_, hold)| hold.keeps(&wt, look)) {
         return None;
     }
-    w.removing.push((n, wt, look));
+    w.removing.push((n, wt));
     Some(Removing(n))
 }
 
@@ -431,6 +437,31 @@ mod tests {
         assert!(!place(&session, true).within(&wt_place, Look::Delete), "a delete goes by its spelling");
         assert!(place(&wt, true).within(&wt_place, Look::Delete), "which is the worktree's");
         assert!(!place(&session, false).within(&place(&wt, false), Look::Sweep), "not there yet: by where it would be");
+    }
+
+    /// A start one of whose places does not read may be on its way into
+    /// any worktree: while a removal is under way, a delete's too, it is
+    /// refused, where a delete compares a listed session's such place by its
+    /// spelling alone.
+    #[test]
+    fn a_start_whose_place_does_not_read_is_refused_while_a_worktree_goes() {
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let root = PathBuf::from(if cfg!(windows) { r"C:\" } else { "/" });
+        let wt = s(&root.join("entry-unread").join(".claude").join("worktrees").join("w"));
+        let session = s(&root.join("entry-denied").join("project"));
+        let denied = |p: &Path| -> std::io::Result<PathBuf> {
+            if p == root.as_path() {
+                Ok(p.to_path_buf())
+            } else {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            }
+        };
+        let unread = || Arc::new(Hold { places: vec![Place::by(&session, denied)], makers: Vec::new() });
+        assert!(!unread().keeps(&Target::of(&wt, None), Look::Delete), "by its spelling, not in it");
+        let held = delete(&wt, || false).expect("nobody there");
+        let refused = entering(unread()).err().expect("refused while it goes");
+        assert!(refused.contains("being removed"), "{refused}");
+        drop(held);
     }
 
     /// A session that moved under a place it was started in, into a folder

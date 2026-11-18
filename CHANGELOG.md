@@ -167,7 +167,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A session or helper started through a link to its project keeps its
   worktree from a delete by the real path even once the link is gone, and
   one that moved into a `.claude/worktrees` that is a junction elsewhere is
-  found there; a Codex or Claude Code
+  found there; a start whose folder does not read is not let into a
+  worktree while one is being removed; a Codex or Claude Code
   start making a new worktree keeps what its CLI may have made from the
   orphan sweep before its session is listed too.
 - A Claude Code session killed long ago, whose registry entry stayed behind,
