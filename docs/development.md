@@ -146,7 +146,7 @@ steps it takes in the page are `scripts/fit-check-page.mjs`, which ESLint
 lints with the browser's globals and the rest with Node's). It
 opens every scene of `src/dev/demo/scenes.ts` (the `-dark` twins left out:
 the theme changes no size) and the popups that only a click opens (its
-`EXTRAS`: the account list, the library's pickers, the link chooser, a chat's
+`EXTRAS`: the account list, the library's pickers, a chat's
 long helper list from its row and its pane, a narrow pane's "…" menu, ...),
 each at 1280×720 and 1024×600, 1280×720 at 125% and 150%, and 1024×600 at
 150% (683×400 CSS pixels). It fails on:
