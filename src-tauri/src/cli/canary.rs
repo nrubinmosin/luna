@@ -1,9 +1,11 @@
 //! The canary: the first sessions on a version that has just become current,
 //! watched for what the offline probe cannot see. A session whose CLI exits
-//! with an error within `EARLY` of starting counts as a failure; `WARN_AT`
-//! failures among the first `WATCH` sessions raise a warning — a desktop
-//! notice, a badge in the status bar and a "Roll back" in Settings → CLIs.
-//! Nothing rolls back on its own: a person decides (ADR-0019).
+//! with an error within `EARLY` of starting counts as a failure;
+//! `ROLL_BACK_AT` failures among the first `WATCH` sessions trip it, and Luna
+//! rolls back on its own to the version kept before (`cli.rs` `roll_back`),
+//! turns the failed one away until a newer one is out, and says so in the log
+//! and a desktop notice (ADR-0030). With nothing to go back to, the notice
+//! says that instead and the version stays.
 //!
 //! An exit that says nothing of the version does not count, and gives its
 //! watch to the next session: one whose last words name a cause outside the
@@ -14,9 +16,11 @@
 //! CLI gives no sign of a finished startup both CLIs share.
 //!
 //! The window flips `current` and starts a canary for the new version
-//! (`reset_in`); the core starts and reaps the sessions and counts them. So
-//! the count lives in `<root>/canary.json`, read and written under the file
-//! lock `<root>/canary.lock` by both.
+//! (`reset_in`); the core starts and reaps the sessions, counts them and
+//! rolls back. So the count lives in `<root>/canary.json`, read and written
+//! under the file lock `<root>/canary.lock` by both, and the rollback takes
+//! the switch lock the update pass takes (`cli.rs` `switching`), never while
+//! it holds the canary's.
 
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -30,13 +34,13 @@ const FILE: &str = "canary.json";
 const LOCK: &str = "canary.lock";
 /// In the test build only: a file of this name at the provider's root makes
 /// each watched session a failure as it starts, for the live check of the
-/// warning and the rollback.
+/// rollback.
 const FORCE_FAIL: &str = "canary-fail";
 
 /// How many sessions on a new version are watched.
 pub(crate) const WATCH: u32 = 3;
-/// How many of them failing raise the warning.
-pub(crate) const WARN_AT: usize = 2;
+/// How many of them failing roll the version back.
+pub(crate) const ROLL_BACK_AT: usize = 2;
 /// An exit with an error sooner than this after the start is a failure: a
 /// CLI that cannot run its session at all, not one stopped after work.
 const EARLY: Duration = Duration::from_secs(30);
@@ -110,10 +114,10 @@ pub struct Canary {
     pub settled: u32,
     /// Why each watched session failed.
     pub failures: Vec<String>,
-    /// `WARN_AT` failures were seen.
+    /// `ROLL_BACK_AT` failures were seen: Luna rolled back from it, or found
+    /// nothing to roll back to. 0.19's `canary.json` also has `dismissed`,
+    /// which nothing reads any more.
     pub warned: bool,
-    /// The person said to keep the version all the same.
-    pub dismissed: bool,
 }
 
 /// Reads, changes and writes back the canary under its lock.
@@ -180,12 +184,12 @@ fn unwatch_in(root: &Path, w: &Watch) -> Result<(), String> {
 }
 
 /// A watched session failed for `why`: the canary as it now stands when this
-/// failure is the one that raised the warning.
+/// failure is the one that trips it.
 fn fail_in(root: &Path, w: &Watch, why: &str) -> Result<Option<Canary>, String> {
     locked(root, |c| match c {
         Some(c) if w.of(c) => {
             c.failures.push(why.to_string());
-            let raised = !c.warned && c.failures.len() >= WARN_AT;
+            let raised = !c.warned && c.failures.len() >= ROLL_BACK_AT;
             c.warned |= raised;
             raised.then(|| c.clone())
         }
@@ -220,15 +224,6 @@ fn settled(provider: Provider, root: &Path, w: &Watch) {
         Ok(None) => {}
         Err(e) => crate::log::warn("cli", &format!("canary: {e}")),
     }
-}
-
-/// "Keep it": the warning stays in the record, its badge goes.
-pub(super) fn dismiss_in(root: &Path) -> Result<(), String> {
-    locked(root, |c| {
-        if let Some(c) = c {
-            c.dismissed = true;
-        }
-    })
 }
 
 /// A session the canary watches, in this core.
@@ -343,28 +338,46 @@ pub fn session_stopped(session: &str) {
 fn failed(provider: Provider, root: &Path, w: &Watch, why: &str) {
     crate::log::warn("cli", &format!("canary: {} {}: {why}", provider.as_str(), w.version));
     match fail_in(root, w, why) {
-        Ok(Some(canary)) => warn(provider, &canary),
+        // On a thread of its own: going back holds every file of the version
+        // to its sha256 (half a gigabyte for Codex) and sweeps, which the
+        // reaper or the helper's turn that saw the exit must not wait on.
+        Ok(Some(canary)) => {
+            let (at, tripped_one) = (root.to_path_buf(), canary.clone());
+            let spawned = std::thread::Builder::new().name("luna-cli-rollback".into()).spawn(move || tripped(provider, &at, &tripped_one));
+            if let Err(e) = spawned {
+                crate::log::warn("cli", &format!("canary: {e}; rolling back on this thread"));
+                tripped(provider, root, &canary);
+            }
+        }
         Ok(None) => {}
         Err(e) => crate::log::warn("cli", &format!("canary: {e}")),
     }
 }
 
-/// The warning: in the log, to the window (`cli://canary`, which shows the
-/// badge and Settings' rollback) and as a desktop notice.
-fn warn(provider: Provider, canary: &Canary) {
+/// The canary of `canary.version` has tripped: back to the version kept
+/// before, and the person told what happened, in the log, to the window
+/// (`cli://canary`, which reads the versions again) and as a desktop notice.
+fn tripped(provider: Provider, root: &Path, canary: &Canary) {
     let name = match provider {
         Provider::Claude => "Claude Code",
         Provider::Codex => "Codex",
     };
-    let body = format!(
-        "{} of the {} sessions started on {name} {} so far failed soon after starting. Settings → CLIs can roll back to the version before.",
+    let version = &canary.version;
+    let seen = format!(
+        "{} of the {} sessions started on {name} {version} so far failed soon after starting.",
         canary.failures.len(),
-        canary.watched,
-        canary.version
+        canary.watched
     );
-    crate::log::warn("cli", &format!("canary warning: {body}"));
-    crate::emit::to_ui("cli://canary", serde_json::json!({ "provider": provider, "version": canary.version }));
-    crate::power::notify(&format!("{name} {} may be broken", canary.version), &body);
+    let (title, body) = match super::roll_back(provider, root, version, &format!("rolled back: {seen}")) {
+        Ok(to) => (
+            format!("{name} rolled back to {to}"),
+            format!("{seen} Luna went back to {to} and takes no {version} again; a newer release installs as usual. Running sessions keep their version."),
+        ),
+        Err(e) => (format!("{name} {version} may be broken"), format!("{seen} Luna could not roll back: {e}.")),
+    };
+    crate::log::warn("cli", &format!("canary: {body}"));
+    crate::emit::to_ui("cli://canary", serde_json::json!({ "provider": provider, "version": version }));
+    crate::power::notify(&title, &body);
 }
 
 #[cfg(test)]
@@ -391,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn two_failures_among_the_first_sessions_raise_one_warning() {
+    fn two_failures_among_the_first_sessions_trip_it_once() {
         let root = scratch("warn");
         reset_in(&root, "2.0.0").unwrap();
         // A session on another version is none of this canary's.
@@ -402,13 +415,11 @@ mod tests {
         assert!(watch_in(&root, "2.0.0").unwrap().is_none(), "only the first {WATCH}");
         let w = watch(&root, "2.0.0");
         assert_eq!(fail_in(&root, &w, "a").unwrap(), None);
-        let raised = fail_in(&root, &w, "b").unwrap().expect("the second failure warns");
+        let raised = fail_in(&root, &w, "b").unwrap().expect("the second failure trips it");
         assert_eq!((raised.watched, raised.failures.len(), raised.warned), (WATCH, 2, true));
         assert_eq!(fail_in(&root, &w, "c").unwrap(), None, "once");
         assert_eq!(fail_in(&root, &watch(&root, "1.0.0"), "d").unwrap(), None);
 
-        dismiss_in(&root).unwrap();
-        assert!(read_in(&root).unwrap().dismissed);
         // The next version starts afresh.
         reset_in(&root, "3.0.0").unwrap();
         let fresh = read_in(&root).unwrap();
@@ -453,7 +464,7 @@ mod tests {
         let through = settle_in(&root, &w).unwrap().expect("the last of them");
         assert_eq!((through.watched, through.settled), (WATCH, WATCH));
         assert_eq!(settle_in(&root, &w).unwrap(), None, "once");
-        // One failure among them: no way through, though no warning either.
+        // One failure among them: no way through, though no rollback either.
         reset_in(&root, "3.0.0").unwrap();
         let w = watch(&root, "3.0.0");
         fail_in(&root, &w, "a").unwrap();
@@ -464,8 +475,9 @@ mod tests {
         unwatch_in(&root, &w).unwrap();
         let c = read_in(&root).unwrap();
         assert_eq!((c.watched, c.settled, c.failures.len()), (0, 0, 0), "{c:?}");
-        // A canary.json from before the field: none settled.
-        fs::write(root.join(FILE), r#"{"version":"4.0.0","watched":3,"failures":[],"warned":false,"dismissed":false}"#).unwrap();
+        // A canary.json from before the field, 0.19's with `dismissed`: none
+        // settled, and the field it no longer has is passed over.
+        fs::write(root.join(FILE), r#"{"version":"4.0.0","watched":3,"failures":[],"warned":false,"dismissed":true}"#).unwrap();
         assert_eq!(read_in(&root).unwrap().settled, 0);
         let _ = fs::remove_dir_all(&root);
     }

@@ -8,6 +8,28 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Each CLI is kept at its newest release, and rolls back on its own: when
+  two of a new version's first three sessions fail soon after starting, Luna
+  goes back to the version before (once its files match their checksums),
+  says so in a desktop notice and the log, and skips the failed version until
+  a newer one is out. A version that fails the offline check is skipped the
+  same way. Each Luna release names the oldest version of each CLI it runs
+  (Claude Code 2.1.325, Codex 0.167.0), compiled in; nothing on the machine
+  raises it any more, and Luna never steps down from the version it runs
+  ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+
+### Removed
+
+- The CLI channels (Known-good and Latest) and the known-good list
+  (`cli-known-good.json`), **Use**, **Mark bad**, **Mark good**, **Clear
+  bad**, **Unmark good**, **Roll back** and **Keep it** in Settings → CLIs,
+  and their commands. What 0.19 kept for them at each CLI's root (`channel`,
+  `pinned`, `good.json`, `marks.lock`, `floor`, `signed-floor`) is removed at
+  the first check; its `bad.json` is still read until a newer version is
+  current.
+
 ## [0.19.0] - 2026-11-18
 
 Nothing in Luna's window moves any more, so an idle window draws no frames,

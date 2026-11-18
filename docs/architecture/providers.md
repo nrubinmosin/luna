@@ -54,24 +54,23 @@ never overwritten. Nothing else is started, the CLI on `PATH` included: until
 the first copy is installed a session is refused as not installed yet, and a
 `current` that names a missing, incomplete or unrecorded directory is refused as
 damaged (`cli.rs` `launch_in`), never replaced by whatever a bare name finds. Which version
-the pass installs is the provider's channel
-([ADR-0019](../adr/0019-cli-channels-and-rollback.md), `cli/choice.rs`):
-`known-good` (the default) takes the newest version on the list compiled into
-the release (`src-tauri/cli-known-good.json`, `cli/known_good.rs`) not marked
-bad, fetched by its version; `latest` takes what the CLI's pointer names. Each
-is checked every six hours. Claude
+the pass installs ([ADR-0030](../adr/0030-scope-of-0-20.md), `cli/choice.rs`
+`plan`): the one the CLI's release pointer names, checked every six hours,
+unless it is below the floor, older than the version current here (no step
+down: the pointer going back is logged and left), or turned away (`bad.json`,
+below). Claude
 Code's `manifest.json` is verified against its detached signature
 (`manifest.json.sig`) and Anthropic's release key, pinned in
 `claude/manifest_sig.rs`; the exe then against that manifest's sha256 and
 size. A new key reaches Luna only with a Luna release. The manifest must name
 the version it was fetched for (a signed older manifest served under a newer
-version's URLs is a relabel). No version below the floor is downloaded or
-taken from a pointer: the highest version that has been current
-(`<root>/floor`, raised by `flip_in`; Claude Code's older `signed-floor` still
-counts), or the list's `minSafe` on a fresh tree. The pointers are not
-signed, so this is what keeps an old release from being replayed; a release
-Anthropic pulls back is refused as well, logged, until a newer one comes.
-Codex comes as the
+version's URLs is a relabel). No version below the floor is downloaded, made
+current, rolled back to or started: one per provider, compiled into the Luna
+release (`cli.rs` `floor`), raised only by editing it there when an older
+version is found unsafe; nothing on the machine moves it. The pointers are not
+signed, so the floor and the no-step-down rule are what keep an old release
+from being replayed; a release Anthropic pulls back is not followed down,
+logged, until a newer one comes. Codex comes as the
 package tarball, the only asset with a line in `codex-package_SHA256SUMS`, which
 also carries `codex-command-runner.exe` and the other Windows sandbox helpers; it
 is unpacked whole into the version folder.
@@ -118,16 +117,17 @@ An install is all or nothing:
    there (the table `COMMANDS`, which the golden launch tests hold to every
    argument list they pin, and fixtures hold to the listed versions' help),
    and Codex must load its configuration with Luna's hook and MCP overrides
-   (`features list`). A version that fails is marked bad and swept.
-6. **Flip.** The first time, `<root>/recorded` is written. Then `previous` is
-   set to what `current` named, the floor rises to the version and a canary
-   starts for it (`cli/canary.rs`), all before `current` is
+   (`features list`). A version that fails is turned away (`bad.json`) and
+   swept, and not fetched or probed again while the pointer names it.
+6. **Flip.** Under the switch lock (below). The first time, `<root>/recorded`
+   is written. A version the core turned away since the pass chose it is
+   refused here. Then `previous` is set to what `current` named and a canary
+   starts for the version (`cli/canary.rs`), both before `current` is
    rewritten through a temp name, flushed before its rename (and its folder
    fsynced on Unix, `secret::write_private_synced`), to the new folder's name:
-   a crash or a failed write leaves the old version current under the new
-   floor at worst, never the reverse. Each pass first raises the floor to
-   what is current (`reconcile_in`), which mends a tree an older order left.
-   Then the sweep runs.
+   a crash or a failed write leaves the old version current, and no session
+   of the new one starts unwatched. What `bad.json` held at or below the
+   version goes. Then the sweep runs.
 
 A folder counts as installed only by its record, with every file it lists
 present at its size; that is checked for each spawn, the hashes only at
@@ -148,30 +148,41 @@ in memory; the OS lets go of it with a process that dies. The lock files are
 never removed: a start that opened one while the sweep held it goes on to lock
 that file, which must be the one every later sweep locks too.
 
-Going back: "Use" (`cli_use_version`) makes any installed folder current and
-writes `<root>/pinned`, which the pass leaves be until a channel is chosen
-again. It holds every file to the sha256 its record kept first; below the
-floor every file must have one, and nothing below `minSafe` is taken. "Mark
-bad" (`cli_mark_bad`) writes `<root>/bad.json`, which no pass installs or
-makes current; "Mark good" (`cli_mark_good`, an installed version off the
-shipped list, not below `minSafe`) writes `<root>/good.json`, whose versions
-the known-good channel picks from beside the shipped list (`known_good::pick`)
-as `chosen` ones: fetched by their own version, and gone back to below the
-floor only while installed. A version is in one file at most: each mark takes
-it out of the other, under `marks.lock`; read back, a good one is held to the
-`minSafe` of the Luna reading it and loses to a bad one (`choice::good_in`).
-"Clear bad" and "Unmark good" (`cli_clear_mark`) take a version out of both,
-installed or not. The canary counts the first three sessions on a new version
-in `<root>/canary.json` (the core counts, the window resets it on a flip,
-both under `canary.lock`): two whose CLI exits with an error within half a
-minute raise a desktop notice and `cli://canary`, which the status bar and
-Settings → CLIs show. A watched session past that half minute with no
-failure (ended well, stopped, or still running when a timer of the core's
-looks) adds to `settled`; three settled with no failure is a version through
-its first sessions, which the log says once and Settings tags. A core that
-went away meanwhile leaves those still inside their half minute unsettled,
-so the count stays short rather than claim more than was seen. Nothing rolls back on its own. In the test build a
-file `canary-fail` at the provider's root fails each watched session.
+**Rollback.** The canary counts the first three sessions on a new version in
+`<root>/canary.json` (the core counts, the window resets it on a flip, both
+under `canary.lock`). Two whose CLI exits with an error within half a minute
+trip it, and the core rolls back on its own, on a thread of its own so the
+reaper that saw the exit does not wait on the hashing (`cli.rs`
+`roll_back_in`): only
+while that version is still current, only to the folder `previous` names, of
+another version, not below the floor and not turned away itself, once every
+file matches the sha256 its record kept (a record without one per file is
+refused). It flips back, writes the failed version into `<root>/bad.json`
+with why, and removes `previous`: the failed folder is swept once nothing
+runs from it, and a version gone back to whose own first sessions fail stays,
+with nothing to go back to (the failures were then not the version's). The
+flip comes before the mark, so a crash between leaves the old version current
+and the failed one offered again, never the failed one current for good.
+Either way the log, a desktop notice and `cli://canary` say what happened. A
+version in `bad.json` (rolled back from, or failed by the probe) is not taken
+while the pointer names it; the entry goes once a version at or above it is
+current (`choice::forget_up_to_in`). A watched session past that half minute
+with no failure (ended well, stopped, or still running when a timer of the
+core's looks) adds to `settled`; three settled with no failure is a version
+through its first sessions, which the log says once. A core that went away
+meanwhile leaves those still inside their half minute unsettled, so the count
+stays short rather than claim more than was seen. In the test build a file
+`canary-fail` at the provider's root fails each watched session.
+
+The window's pass and the core's rollback are two processes changing one
+tree, so every change of `current`, `previous`, `bad.json` or `versions/` is
+made under the file lock `<root>/switch.lock` (`switching`): a flip, a
+turning away, a sweep. A download and the probe run outside it; the canary's
+lock may be taken under it, never the other way round. Luna 0.19's state for
+channels, "Use", marks by hand and the rising floor (`channel`, `pinned`,
+`good.json`, `marks.lock`, `floor`, `signed-floor`) is removed at the first
+pass (`choice::forget_0_19`); its `bad.json` is read as this one, and its
+`canary.json`'s `dismissed` is passed over.
 An exit that says nothing of the version does not count and gives its watch
 to the next session: one whose last words (a pane's last screen, drawn from
 the end of its output; a helper's last 4 KB of stderr) hold a line that
