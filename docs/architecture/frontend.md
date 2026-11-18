@@ -180,7 +180,9 @@ own sheets beside their entry components (`panes.css`, `chats.css`,
 `status-bar.css`, `library.css`). Nothing animates: Luna's sheets and
 components set no `@keyframes`, `animation` or `transition`, and run no Web
 Animations or frame loops, so an idle window draws no frames; a state is a
-static color, shape or word. `base.css` turns off, with `!important`, what
+static color, shape or word. The one thing left blinking is the caret of a
+focused text field, the WebView's own, which draws only while a field has
+the focus. `base.css` turns off, with `!important`, what
 xp.css brings of its own (a fade on the title-bar buttons, a sliding progress
 bar). The terminals start with a steady cursor (`cursorBlink: false`, chat
 and sign-in terminals alike); a program in one can still ask for a blinking
