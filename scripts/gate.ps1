@@ -160,6 +160,17 @@ $steps = @(
         }
     }
     @{
+        # The macOS bundle script (scripts/macos-app.sh), dry-run here; CI's
+        # macOS runner makes the real bundle. No volume, no lock.
+        Name  = 'macos-app tests'
+        Group = 'rust'
+        Run   = {
+            Invoke-Checked 'macos-app tests' {
+                docker run --rm -v "${RepoRoot}:/app:ro" -w /app $images.linux sh scripts/macos-app.test.sh
+            }
+        }
+    }
+    @{
         Name  = 'cargo fmt --check'
         Group = 'rust'
         Run   = { Invoke-LinuxCargo 'cargo fmt' $build $images.linux 'cargo fmt --check' }

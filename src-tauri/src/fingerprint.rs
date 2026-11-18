@@ -19,7 +19,8 @@ use std::path::{Path, PathBuf};
 /// defaults and notes (library/system.rs).
 /// What `tauri::generate_context!` compiles in (`tauri.conf.json`,
 /// `capabilities/`, `permissions/`, `icons/`, the frontend) is the window's: the
-/// core never builds a Tauri app (lib.rs `run`, coreproc.rs).
+/// core never builds a Tauri app (lib.rs `run`, coreproc.rs). So is the tray's
+/// icon in `icons/` (desktop/tray.rs): the core never makes a tray.
 pub const INPUTS: &[&str] = &[
     "build.rs",
     "cli-known-good.json",
@@ -196,7 +197,8 @@ mod tests {
             }
         }
         assert!(!outside.is_empty(), "the scan found nothing: cli-known-good.json at least is compiled in");
-        for f in &outside {
+        // The window's icons are no input of the core's (INPUTS).
+        for f in outside.iter().filter(|f| !f.starts_with("icons/")) {
             assert!(INPUTS.contains(&f.as_str()), "{f} is compiled into the core but not in fingerprint::INPUTS");
         }
     }

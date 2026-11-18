@@ -11,6 +11,10 @@
 #
 #   ./scripts/build-windows.ps1                 the bare exe
 #   ./scripts/build-windows.ps1 -Installer      and the setup
+#   ... -Installer -Native                      the setup made by makensis from
+#                                               src-tauri/windows/installer.nsi, not by
+#                                               Tauri's bundler: the same name, place and
+#                                               install (docs/development.md, "Installer")
 #   ... -Source <tree>                          of another tree than this checkout: an
 #                                               export of its HEAD (release.ps1 -Local), so
 #                                               the build can write nothing the signing runs
@@ -26,19 +30,37 @@
 # container that runs nothing of the build's.
 param(
     [switch]$Installer,
+    [switch]$Native,
     [string]$Source
 )
 . "$PSScriptRoot/lib.ps1"
 $Source = if ($Source) { [IO.Path]::GetFullPath($Source, (Get-Location).Path) } else { $RepoRoot }
+if ($Native -and -not $Installer) { throw '-Native is a kind of -Installer: say both' }
 
 # Tauri stops on a missing private key while the config asks for updater
 # artifacts; this override turns them, and so the signing, off.
 # The installer also carries the third-party notices beside the exe, a bundle
 # resource of a config of its own: the crate's build copies every resource its
 # config lists, and a plain build, which has no notices made, lists none.
-$bundleArg = if ($Installer) { '--bundles nsis --config src-tauri/tauri.unsigned.conf.json --config src-tauri/tauri.installer.conf.json' } else { '--no-bundle' }
+$bundleArg = if ($Installer -and -not $Native) { '--bundles nsis --config src-tauri/tauri.unsigned.conf.json --config src-tauri/tauri.installer.conf.json' } else { '--no-bundle' }
 # A .sig an older build left would sit beside a setup it does not sign.
 $clearSigs = if ($Installer) { 'rm -f src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.sig' } else { '' }
+
+# The native installer: makensis over the exe just built, into the folder and
+# under the name Tauri's bundler gives the setup, so the release scripts find
+# it the same way. -WX: a warning fails the build, as hooks.nsh's own
+# unresolved names do.
+$makensis = ''
+if ($Native) {
+    $manifest = Get-Content (Join-Path $Source 'src-tauri/Cargo.toml') -Raw
+    if ($manifest -notmatch '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"') { throw 'src-tauri/Cargo.toml has no x.y.z version for the installer' }
+    $version = $Matches[1]
+    $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
+    $makensis = @"
+mkdir -p $release/bundle/nsis
+makensis -V3 -WX -DVERSION=$version -DMAINBINARYSRCPATH=/app/$release/luna.exe -DNOTICES=/app/src-tauri/target/THIRD-PARTY-NOTICES.txt -DINSTALLERICON=/app/src-tauri/icons/icon.ico -DOUTFILE=/app/$release/bundle/nsis/Luna_${version}_x64-setup.exe src-tauri/windows/installer.nsi
+"@
+}
 
 $build = Get-BuildStamp
 Write-Host "build stamp: $build"
@@ -58,5 +80,6 @@ Use-BuildLock {
 $clearSigs
 pnpm install --frozen-lockfile
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc $bundleArg -- --locked
+$makensis
 "@ -Root $Source
 }

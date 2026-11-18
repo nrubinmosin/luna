@@ -19,6 +19,8 @@ mod context_page;
 mod corecmd;
 mod corelink;
 mod coreproc;
+// The native window's services, not wired in yet.
+mod desktop;
 mod elevation;
 mod emit;
 mod endpoint;

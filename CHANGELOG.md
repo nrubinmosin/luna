@@ -8,6 +8,22 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- The desktop services the native window of 0.20 will use in place of
+  Tauri's plugins, not wired in yet (`src-tauri/src/desktop/`,
+  [desktop services](docs/architecture/desktop-services.md)): the tray, toasts
+  and macOS notifications that open their chat when clicked, one window per
+  data folder with a second launch handing over to the first, folder and file
+  pickers, a clipboard read that tells files, text and images apart, the
+  window's size and place kept in the data folder, and an updater that reads
+  the same `latest.json`, checks the same signature and runs the installer as
+  0.19's does, so 0.19 updates onto 0.20 and 0.20 onto later releases.
+- An NSIS installer built without Tauri's bundler
+  (`./scripts/build-windows.ps1 -Installer -Native`), installing as today's in
+  place over it, without the WebView2 bootstrap; and `scripts/macos-app.sh`,
+  which assembles an unsigned `Luna.app` for a macOS runner.
+
 ## [0.19.0] - 2026-11-18
 
 Nothing in Luna's window moves any more, so an idle window draws no frames,

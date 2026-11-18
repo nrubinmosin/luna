@@ -64,7 +64,7 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 
 | Command | What it does |
 | --- | --- |
-| `./scripts/gate.ps1` | the gate a change passes before commit: rustfmt, clippy `-D warnings`, the Linux unit tests, the commit-message check's tests, and the frontend's install, lint, format check, typecheck, text check, Tauri version check, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
+| `./scripts/gate.ps1` | the gate a change passes before commit: rustfmt, clippy `-D warnings`, the Linux unit tests, the commit-message check's tests, the macOS bundle script's dry run, and the frontend's install, lint, format check, typecheck, text check, Tauri version check, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
 | `./scripts/gate.ps1 -Group frontend` | one group only (`frontend`, `rust`, `windows`) |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
@@ -72,6 +72,8 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 | `./scripts/test-build.ps1` | the test build, `test-build/luna-test.exe` (below); `-Test` is the Windows tests |
 | `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained; needs only the system WebView2) |
 | `./scripts/build-windows.ps1 -Installer` | the signed NSIS setup, `…/release/bundle/nsis/Luna_*_x64-setup.exe` |
+| `./scripts/build-windows.ps1 -Installer -Native` | the same setup made by makensis from `src-tauri/windows/installer.nsi` instead of Tauri's bundler, under the same name ([below](#installer)) |
+| `sh scripts/macos-app.sh <exe> <version> <out-dir>` | `Luna.app`, unsigned, from a macOS build of the exe; on a macOS runner (`LUNA_APP_DRY_RUN=1` elsewhere, as `scripts/macos-app.test.sh` in the gate does) |
 | `./scripts/screenshots.ps1 -Out test-build/shots` | headless shots of the UI on the demo data |
 | `./scripts/fit-check.ps1` | every demo scene and popup at small screen sizes; fails on a control out of reach ([below](#fit-on-small-screens)) |
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
@@ -241,6 +243,26 @@ why it does not reach Luna in its description; three months is the usual
 expiry. The licenses `deny.toml` allows are the ones the tree needs, each
 unusual one justified there; a new license in the tree is decided there, not
 allowed in bulk.
+
+## Installer
+
+Two installers can be built, and install the same way
+([desktop services](architecture/desktop-services.md#installer)):
+
+- `./scripts/build-windows.ps1 -Installer`: Tauri's bundler and its NSIS
+  template, with `src-tauri/windows/hooks.nsh`. What releases ship until the
+  native window does.
+- `./scripts/build-windows.ps1 -Installer -Native`: makensis, in the Windows
+  build image (NSIS 3.11), over `src-tauri/windows/installer.nsi`, which
+  includes the same `hooks.nsh`. The exe is built as `-Installer` builds it,
+  without Tauri's bundling; the setup lands at
+  `…/release/bundle/nsis/Luna_<version>_x64-setup.exe`, beside the third-party
+  notices it carries, where the release scripts look for it. makensis runs
+  with `-WX`: any warning fails the build. It downloads nothing.
+
+Neither is ever run on the development machine: an install writes the
+registry and the Start menu. The script is checked by compiling it, and by
+reading it against Tauri's template.
 
 ## Releases
 
