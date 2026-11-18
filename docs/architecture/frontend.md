@@ -82,14 +82,20 @@ titles, context and drafts come from the core (`session_meta`), polled by
   longer listed at its next round.
 - **The chats on disk** (`luna.chats`) are written through
   `shared/lib/throttledStorage.ts`: a change after a quiet spell at once, then
-  at most one write per 500 ms with the latest state (a write skipped as the
-  same text starts no gap), and what waits on `pagehide`. A change a window
-  started over after a hard exit could not do without is written at once
-  (`atOnce`: a chat added or deleted, its session id, worktree, account, group
-  or move). Luna's own ways out write what waits first
-  (`flushPendingWrites`): a tray Quit or Restart window, which tell the page
-  `ui://exiting` and give it 300 ms (`lifecycle.rs`), and an update's install.
-  A renderer that dies loses at most the last 500 ms of statuses and titles.
+  at most one write per 500 ms with the latest state, and what waits on
+  `pagehide`. The gap runs from the last serialization, a write skipped as the
+  same text included: zustand's persist hands the storage the whole state on
+  every set, and a burst of context ticks, which store the same text, would
+  otherwise serialize the whole list once per tick. A change a window started
+  over after a hard exit could not do without is written at once (`atOnce`: a
+  chat added or deleted, its session id, worktree, account, group or move).
+  Luna's own ways out write what waits first and every change after it at
+  once (`exiting`): a tray Quit or Restart window, which tell the page
+  `ui://exiting` (`true`; `false` when a Restart could not start the new
+  window) and give it 300 ms (`lifecycle.rs`), and an update's install, which
+  writes again as it starts. The event has no answer: a page too busy to take
+  it within those 300 ms, or a change after the process is gone, is lost. A
+  renderer that dies loses at most the last 500 ms of statuses and titles.
   A chat is stored without its context (`context`,
   `contextTokens`, `contextWindow`), which the watcher reads again within
   seconds; one stored with it still loads. Its status is kept: it is what

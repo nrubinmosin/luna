@@ -56,9 +56,10 @@ export const onNotify = (cb: (n: Notice) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<Notice>('ui://notify', e => cb(e.payload)) : Promise.resolve(() => {});
 
 /** Luna is going from the tray, a Quit or a Restart window, and ends the
- *  process without the page going away first (lifecycle.rs). */
-export const onExiting = (cb: () => void): Promise<UnlistenFn> =>
-  tauriAvailable ? listen('ui://exiting', () => cb()) : Promise.resolve(() => {});
+ *  process without the page going away first (`true`); `false` when a
+ *  Restart could not start the new window and this one stays (lifecycle.rs). */
+export const onExiting = (cb: (going: boolean) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<boolean>('ui://exiting', e => cb(e.payload !== false)) : Promise.resolve(() => {});
 
 /** A notification about a chat was clicked (lib.rs). */
 export const onOpenChat = (cb: (p: { chatId: string }) => void): Promise<UnlistenFn> =>

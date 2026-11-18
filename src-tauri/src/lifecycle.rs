@@ -261,9 +261,11 @@ pub fn note_exit(reason: Option<String>) {
 /// A tray Quit already under way.
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
-/// Told to the page as a way out from the tray begins: it ends the process
-/// without the page going away first, and the page writes on it what it holds
-/// back (the chats' storage writes a burst of changes once, after a gap).
+/// Told to the page as a way out from the tray begins (`true`): it ends the
+/// process without the page going away first, and the page writes on it what
+/// it holds back (the chats' storage writes a burst of changes once, after a
+/// gap) and every change after it at once. `false` takes that back, for a
+/// Restart that could not start the new window.
 const EXITING: &str = "ui://exiting";
 /// How long a way out from the tray gives the page to do so.
 const PAGE_WRITE: Duration = Duration::from_millis(300);
@@ -277,7 +279,7 @@ pub fn quit_from_tray(app: &AppHandle) {
         return;
     }
     exiting("Quit from the tray menu");
-    crate::emit::to_ui(EXITING, ());
+    crate::emit::to_ui(EXITING, true);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
@@ -299,7 +301,7 @@ pub fn restart_from_tray(app: &AppHandle) {
         return;
     }
     // Off the event loop, which has to carry the event to the page meanwhile.
-    crate::emit::to_ui(EXITING, ());
+    crate::emit::to_ui(EXITING, true);
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(PAGE_WRITE);
@@ -313,6 +315,7 @@ fn restart_now(app: &AppHandle) {
         Err(e) => {
             crate::log::warn("app", &format!("cannot restart: {e}"));
             QUITTING.store(false, Ordering::SeqCst);
+            crate::emit::to_ui(EXITING, false);
             return;
         }
     };
@@ -326,6 +329,7 @@ fn restart_now(app: &AppHandle) {
     if let Err(e) = started {
         crate::log::warn("app", &format!("cannot restart: {} did not start: {e}", exe.display()));
         QUITTING.store(false, Ordering::SeqCst);
+        crate::emit::to_ui(EXITING, false);
         return;
     }
     exiting("Restart from the tray menu; the core and its sessions stay");

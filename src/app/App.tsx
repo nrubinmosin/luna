@@ -35,7 +35,7 @@ import { uiHeartbeat } from '../ipc/agents';
 import { onExiting, onNotify, onOpenChat } from '../ipc/events';
 import { keepKeyboardHome, peekFromNotice } from '../features/panes/navigate';
 import { notify } from '../shared/lib/notify';
-import { flushPendingWrites } from '../shared/lib/throttledStorage';
+import { exiting } from '../shared/lib/throttledStorage';
 import { chatsChanged, useChats } from '../features/chats/chats.store';
 import type { Folder } from '../shared/types';
 import { usePanes } from '../features/panes/panes.store';
@@ -178,8 +178,8 @@ export function App() {
     const off = onNotify(n => void notify(n.title, n.body, n.chatId));
     const offOpen = onOpenChat(p => peekFromNotice(p.chatId));
     // What the chats' storage holds back goes to disk before the tray's
-    // way out ends the process.
-    const offExit = onExiting(flushPendingWrites);
+    // way out ends the process, and every change after it at once.
+    const offExit = onExiting(exiting);
     return () => {
       void off.then(f => f());
       void offOpen.then(f => f());
