@@ -68,7 +68,16 @@ account, since whether to trust it is yours to say.
   The account's top-level `effortLevel` counts only for older models, as in
   Claude Code; a project's or a managed one counts for every model. Picking a
   model moves to its level unless you picked one by hand; one that does not
-  take the level shown moves it to that model's own default. Isolation runs
+  take the level shown moves it to that model's own default.
+- Permission mode, passed as `--permission-mode`: **Ask** (`default`, confirm
+  every action), **Edits** (`acceptEdits`), **Plan only** (`plan`), **Auto**
+  (`auto`) and **Bypass** (`bypassPermissions`). In Auto Claude Code decides
+  for itself, with its own review of risky actions; where that review cannot
+  run (Claude Code says "Auto mode is unavailable") it starts in its Manual
+  mode, which asks first. A settings file's `defaultMode` of one of these
+  opens the dialog on it; any other starts it on Bypass.
+
+Isolation runs
 `claude --worktree` in `<folder>/.claude/worktrees/<name>`, on a
 `worktree-<name>` branch. Before Claude Code makes one, Luna fetches origin's
 default branch (10 s at most, never asking for a password; off in Settings);

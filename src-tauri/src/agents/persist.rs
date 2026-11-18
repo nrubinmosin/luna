@@ -1019,6 +1019,26 @@ mod tests {
         }
     }
 
+    /// A chat the person started in Claude Code's auto mode is saved and taken
+    /// up with it, and ranks where a helper in auto does: its helpers may run
+    /// in auto or below, never in bypassPermissions.
+    #[test]
+    fn a_chat_saved_in_auto_mode_comes_back_in_it_at_its_rank() {
+        use crate::agents::privilege::{Privilege, Reach};
+        let mut chat = owed_chat("am-chat", "am-peer", 2, 10);
+        chat.ties.settings = serde_json::json!({ "model": "opus", "permissionMode": "auto" });
+        take_up(vec![chat], Vec::new(), Vec::new());
+        let settings = reg().lock().unwrap().known["am-chat"].settings.clone();
+        assert_eq!(settings["permissionMode"], "auto");
+        let has = Privilege::of_caller(Provider::Claude, &settings);
+        assert_eq!(has, Privilege { reach: Reach::Reviewed, net: true });
+        let edits = Privilege::of_caller(Provider::Claude, &serde_json::json!({ "permissionMode": "acceptEdits" }));
+        let bypass = Privilege::of_caller(Provider::Claude, &serde_json::json!({ "permissionMode": "bypassPermissions" }));
+        assert!(has.covers(edits) && !has.covers(bypass) && bypass.covers(has));
+        forget("am-chat");
+        crate::activity::forget("am-chat");
+    }
+
     #[test]
     fn a_chat_with_nothing_to_keep_or_a_helper_is_not_saved_as_one() {
         let none = serde_json::json!({});

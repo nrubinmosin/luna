@@ -705,29 +705,60 @@ mod tests {
             ("acceptEdits", claude("acceptEdits")),
             ("ww", codex("workspace-write", "on-request")),
             ("review", codex("workspace-write", "auto-review")),
+            ("auto", claude("auto")),
             ("bypass", claude("bypassPermissions")),
             ("full", codex("danger-full-access", "never")),
         ];
         // Each helper mode, and the callers that may spawn it.
-        let helpers: [((Provider, &str, Option<&str>), &[&str]); 9] = [
+        let helpers: [((Provider, &str, Option<&str>), &[&str]); 10] = [
             (
                 (Provider::Claude, "plan", None),
-                &["plan", "ro", "ro-net", "default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+                &[
+                    "plan",
+                    "ro",
+                    "ro-net",
+                    "default",
+                    "dontAsk",
+                    "manual",
+                    "ro-ask",
+                    "acceptEdits",
+                    "ww",
+                    "review",
+                    "auto",
+                    "bypass",
+                    "full",
+                ],
             ),
             (
                 (Provider::Codex, "read-only", Some("never")),
-                &["plan", "ro", "ro-net", "default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+                &[
+                    "plan",
+                    "ro",
+                    "ro-net",
+                    "default",
+                    "dontAsk",
+                    "manual",
+                    "ro-ask",
+                    "acceptEdits",
+                    "ww",
+                    "review",
+                    "auto",
+                    "bypass",
+                    "full",
+                ],
             ),
             // The network is an escalation of its own.
-            ((Provider::Codex, "read-only-net", Some("never")), &["ro-net", "review", "bypass", "full"]),
+            ((Provider::Codex, "read-only-net", Some("never")), &["ro-net", "review", "auto", "bypass", "full"]),
             (
                 (Provider::Claude, "default", None),
-                &["default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+                &["default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "auto", "bypass", "full"],
             ),
-            ((Provider::Claude, "acceptEdits", None), &["acceptEdits", "ww", "review", "bypass", "full"]),
+            ((Provider::Claude, "acceptEdits", None), &["acceptEdits", "ww", "review", "auto", "bypass", "full"]),
             // Commands in a sandbox go further than edits.
-            ((Provider::Codex, "workspace-write", Some("never")), &["ww", "review", "bypass", "full"]),
-            ((Provider::Codex, "workspace-write", Some("auto-review")), &["review", "bypass", "full"]),
+            ((Provider::Codex, "workspace-write", Some("never")), &["ww", "review", "auto", "bypass", "full"]),
+            ((Provider::Codex, "workspace-write", Some("auto-review")), &["review", "auto", "bypass", "full"]),
+            // A model, not a person, answers: above edits and a sandbox's commands, below bypass.
+            ((Provider::Claude, "auto", None), &["review", "auto", "bypass", "full"]),
             ((Provider::Claude, "bypassPermissions", None), &["bypass", "full"]),
             ((Provider::Codex, "danger-full-access", Some("on-request")), &["bypass", "full"]),
         ];

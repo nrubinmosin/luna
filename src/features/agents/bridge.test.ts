@@ -198,6 +198,12 @@ describe('agent bridge: opening a background helper as a chat', () => {
     expect(mocked.backgroundPromoted).toHaveBeenCalledWith('bg1', null);
   });
 
+  it('keeps a Claude Code helper’s auto mode, not the account’s default', async () => {
+    mocked.backgroundPromote.mockResolvedValue(helper({ settings: { model: 'haiku', permissionMode: 'auto' } }));
+    await openAsChat('bg1');
+    expect(useChats.getState().findChat('bg1')).toMatchObject({ provider: 'claude', perm: 'Auto' });
+  });
+
   it('opens a Codex helper the same way, its approval and sandbox as it ran', async () => {
     mocked.backgroundPromote.mockResolvedValue(
       helper({

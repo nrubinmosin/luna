@@ -66,7 +66,10 @@ const STOCK_PERMISSION_MODE: &str = "bypassPermissions";
 /// The levels a settings file may name (2.1.322's schema: `effortLevel` is one
 /// of these or nothing; `max` and `ultracode` are a session's only).
 const SETTINGS_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
-const PERMISSION_MODES: [&str; 4] = ["default", "acceptEdits", "plan", "bypassPermissions"];
+/// The modes a chat can start in from the new-chat dialog (`PERM_CLI` in
+/// src/shared/types.ts). `defaultMode: auto` starts Claude Code in its own
+/// review (2.1.323), so it is read as such, not as nothing said.
+const PERMISSION_MODES: [&str; 5] = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
 
 /// The models the account's top-level `effortLevel` still speaks for, by their
 /// canonical names (2.1.322's list; any other model it reads as named by none).
@@ -417,6 +420,21 @@ mod tests {
         if d.permission_mode.source != "managed" {
             assert_eq!(d.permission_mode.value, STOCK_PERMISSION_MODE);
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A file naming auto mode starts a chat in it, not in Luna's stock
+    /// bypassPermissions, which would allow more than the file asked for.
+    #[test]
+    fn a_settings_files_auto_mode_is_read_as_auto() {
+        let root = std::env::temp_dir().join(format!("luna-defaults-auto-{}", std::process::id()));
+        let account = root.join("account");
+        write(&account.join("settings.json"), r#"{ "permissions": { "defaultMode": "auto" } }"#);
+        let d = claude_defaults(account.to_string_lossy().into_owned(), String::new());
+        if d.permission_mode.source != "managed" {
+            assert_eq!((d.permission_mode.value.as_str(), d.permission_mode.source.as_str()), ("auto", "account"));
+        }
+        assert_eq!(permission_mode("auto").as_deref(), Some("auto"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -198,7 +198,8 @@ hooks run unasked.
   Settings → Agents & trust → Helpers → "Helpers' mode when not given" can make
   it the account's default instead; either way it is held to the caller's.
   The spawn's `settings.modeFrom` says which (`caller`, `callerNearest`,
-  `account`). A Claude Code helper may also run in `auto` or `dontAsk`.
+  `account`). A Claude Code helper may also run in `auto`, as a chat may
+  (Auto), or in `dontAsk`.
 - Helpers that each make a worktree in the same repository start one after
   another, each once its CLI has made its worktree, as two made at once could
   fail.

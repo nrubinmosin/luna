@@ -20,6 +20,18 @@ no longer slow down the longer Luna runs, what waits in the core is bounded,
 and a delete or the orphan sweep no longer removes a worktree another session
 is in or starting into.
 
+### Added
+
+- A Claude Code chat can be started in auto mode: the new-chat dialog offers
+  **Auto** (`--permission-mode auto`) beside Ask, Edits, Plan only and Bypass,
+  and the pane's chip shows it. Claude Code then decides for itself, with its
+  own review of risky actions, and starts in its Manual mode, which asks,
+  where that review cannot run. Luna ranks such a chat where it ranks a helper
+  in `auto`, above Edits and below Bypass, so its helpers run in `auto` or
+  below. A settings file's `defaultMode: auto` now opens the dialog on Auto
+  (it opened on Bypass), and a helper running in `auto` that you open as a
+  chat keeps it (it took the account's default).
+
 ### Changed
 
 - Luna builds on Rust 1.100.0, Node 26.13.1 (the current LTS) and pnpm 12.21.0,

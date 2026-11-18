@@ -30,7 +30,11 @@ export const PROVIDER_VENDOR: Record<Provider, string> = { claude: 'Anthropic', 
  *  `ultracode`, so it is not closed here. */
 export type Effort = string;
 
-export type PermMode = 'Ask' | 'Edits' | 'Plan only' | 'Bypass';
+/** Claude Code's permission modes as a chat names them (`PERM_CLI` spells
+ *  each as the CLI takes it). `Auto` leaves what would go further to Claude
+ *  Code's own review, and starts in its Manual mode, which asks, where that
+ *  review cannot run (2.1.323). */
+export type PermMode = 'Ask' | 'Edits' | 'Plan only' | 'Auto' | 'Bypass';
 
 /** A Claude model as a chat keeps it: a family by its label (`Opus`), which
  *  goes to `--model` as its alias and so follows the family to its next
@@ -266,6 +270,7 @@ export const PERM_CLI: Record<PermMode, string> = {
   Ask: 'default',
   Edits: 'acceptEdits',
   'Plan only': 'plan',
+  Auto: 'auto',
   Bypass: 'bypassPermissions'
 };
 
@@ -273,6 +278,7 @@ export const PERM_HINTS: Record<PermMode, string> = {
   Ask: 'confirm every action',
   Edits: 'write files, ask for commands',
   'Plan only': 'no disk writes',
+  Auto: 'Claude Code reviews risky actions; asks if it cannot',
   Bypass: 'full access, no prompts'
 };
 
@@ -281,6 +287,7 @@ const PERM_OF_CLI: Record<string, PermMode> = {
   default: 'Ask',
   acceptEdits: 'Edits',
   plan: 'Plan only',
+  auto: 'Auto',
   bypassPermissions: 'Bypass'
 };
 

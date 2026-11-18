@@ -5,7 +5,7 @@ import * as defaults from '../../ipc/defaults';
 import * as sessions from '../../ipc/sessions';
 import * as trust from '../../ipc/trust';
 import type { ClaudeDefaultsDto, ClaudeModelDto, CodexDefaultsDto } from '../../ipc/defaults';
-import type { Account } from '../../shared/types';
+import { PERM_CLI, type Account } from '../../shared/types';
 import { expectInDialogFoot } from '../../test/dialog';
 import { useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from '../chats/chats.store';
@@ -136,6 +136,36 @@ describe('NewChatDialog: creating', () => {
     await user.click(screen.getByRole('button', { name: 'Create' }));
     const [chat] = allChats(useChats.getState().folders);
     expect(chat).toMatchObject({ provider: 'claude', model: 'Sonnet', effort: 'low', perm: 'Plan only' });
+  });
+
+  it('offers Claude Code’s auto mode, and starts the chat in it', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getAllByRole('radio', { name: /^(Ask|Edits|Plan only|Auto|Bypass)$/ }).map(r => r.id)).toEqual([
+      'perm-Ask',
+      'perm-Edits',
+      'perm-Plan only',
+      'perm-Auto',
+      'perm-Bypass'
+    ]);
+    expect(screen.getByText('Claude Code reviews risky actions; asks if it cannot')).toBeInTheDocument();
+    await user.click(screen.getByRole('radio', { name: 'Auto' }));
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ provider: 'claude', perm: 'Auto' });
+    // What its start passes as `--permission-mode` (ipc/sessions.ts).
+    expect(chat?.provider === 'claude' && PERM_CLI[chat.perm]).toBe('auto');
+  });
+
+  it('opens on auto where the account’s settings say so', async () => {
+    mocked.claudeDefaults.mockResolvedValue({ model: null, effort: null, permissionMode: fromAccount('auto') });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('radio', { name: 'Auto' })).toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ perm: 'Auto' });
   });
 
   it('takes Codex’s model, effort, approval and sandbox from the account’s config', async () => {

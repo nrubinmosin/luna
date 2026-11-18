@@ -128,8 +128,10 @@ up once) lets go of a chat deleted at the next tick.
   ran a helper in keeps its sidebar row but is not offered.
 - **New-chat dialog.** Model from a drop-down for both providers, the one the
   files (or CLI) would pick marked "· default"; Codex's catalog in `priority`
-  order with level descriptions as tooltips; approval and sandbox as two radio
-  columns, `auto-review` holding the sandbox at `workspace-write`. The title bar
+  order with level descriptions as tooltips; Claude Code's permission modes
+  as radios (`PermMode`, `PERM_CLI`: Ask, Edits, Plan only, Auto, Bypass;
+  `permFromSetting` reads them back, and a mode outside them is none); Codex's
+  approval and sandbox as two radio columns, `auto-review` holding the sandbox at `workspace-write`. The title bar
   shows `bypass` for never + danger-full-access and `auto-review` for that.
 - **Agent bridge** (`features/agents/bridge.ts`): `agent://background` → the
   helpers' list (`background.store`), shown as a chip on their parent's row;

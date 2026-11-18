@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Chat, Folder } from '../../shared/types';
+import { PERM_CLI, type Chat, type Folder } from '../../shared/types';
 import { useRestarts } from '../panes/restarts.store';
 import { chatsChanged, foldersOfGroup, useChats } from './chats.store';
 import { useMoveHints } from './moveHints.store';
@@ -212,6 +212,20 @@ describe('chats store: persistence', () => {
     expect(useChats.getState().findChat('old')?.context).toBe(0.7);
     expect(useChats.getState().findChat('new')?.context).toBe(0);
     expect(useChats.getState().active).toBe('old');
+  });
+
+  it('loads a Claude chat stored in auto mode, which starts again in it', async () => {
+    localStorage.setItem(
+      'luna.chats',
+      JSON.stringify({
+        state: { folders: [{ ...folder('a', [chat('auto', { perm: 'Auto' })]), picked: true }], active: 'auto' },
+        version: 2
+      })
+    );
+    await useChats.persist.rehydrate();
+    const read = useChats.getState().findChat('auto');
+    expect(read).toMatchObject({ provider: 'claude', perm: 'Auto' });
+    expect(read?.provider === 'claude' && PERM_CLI[read.perm]).toBe('auto');
   });
 });
 

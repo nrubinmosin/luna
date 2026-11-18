@@ -387,7 +387,12 @@ takes the account's and project's default, as before. Either way the mode is
 held to the caller's (`cap`) and pinned; `settings.modeFrom` says `caller`,
 `callerNearest` or `account`. The dev caller has no mode and always takes the
 account's. Claude Code helpers start in `auto` and `dontAsk` too
-(`CLAUDE_MODES`: `claude -p --permission-mode` takes both, 2.1.322).
+(`CLAUDE_MODES`: `claude -p --permission-mode` takes both, 2.1.322). A
+person's Claude Code chat may start in `auto` as well (the dialog's Auto);
+`Privilege::of` ranks it as it ranks a helper's, one scale for both:
+`Reviewed` with the network, above `acceptEdits` and Codex's
+`workspace-write`, below `bypassPermissions`, so such a chat's helpers run in
+`auto` or below and it takes in a moved helper only that far.
 
 **One worktree at a time per repository.** Each CLI makes a helper's worktree
 with `git worktree add` as its first turn starts, and two of those in one
