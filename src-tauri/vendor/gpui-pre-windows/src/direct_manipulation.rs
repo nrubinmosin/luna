@@ -94,6 +94,11 @@ impl DirectManipulationHandler {
         self.scale_factor.set(scale_factor);
     }
 
+    // luna patch: with frames on demand (window.rs, frame_waker) the
+    // manager is only pumped by frames a window asked for, so a touchpad
+    // contact asks for one, and so does every pump while a gesture or its
+    // inertia is still running, or for CONTACT_FRAMES after the contact (the
+    // viewport can still read READY before it has recognized the pan).
     pub fn on_pointer_hit_test(&self, wparam: WPARAM) {
         unsafe {
             let pointer_id = wparam.loword() as u32;
@@ -101,6 +106,8 @@ impl DirectManipulationHandler {
             if GetPointerType(pointer_id, &mut pointer_type).is_ok() && pointer_type == PT_TOUCHPAD
             {
                 self.viewport.SetContact(pointer_id).log_err();
+                Self::contact_at().with(|at| at.set(Some(std::time::Instant::now())));
+                crate::window::request_frame_on_vsync(self.window);
             }
         }
     }
@@ -108,7 +115,28 @@ impl DirectManipulationHandler {
     pub fn update(&self) {
         unsafe {
             self.update_manager.Update(None).log_err();
+            let after_contact = Self::contact_at()
+                .with(|at| at.get())
+                .is_some_and(|at| at.elapsed() < Self::CONTACT_FRAMES);
+            if after_contact
+                || matches!(
+                    self.viewport.GetStatus(),
+                    Ok(DIRECTMANIPULATION_RUNNING | DIRECTMANIPULATION_INERTIA)
+                )
+            {
+                crate::window::request_frame_on_vsync(self.window);
+            }
         }
+    }
+
+    const CONTACT_FRAMES: std::time::Duration = std::time::Duration::from_millis(250);
+
+    /// When the last touchpad contact began, on this (the UI) thread.
+    fn contact_at() -> &'static std::thread::LocalKey<Cell<Option<std::time::Instant>>> {
+        thread_local! {
+            static AT: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+        }
+        &AT
     }
 
     pub fn drain_events(&self) -> Vec<PlatformInput> {

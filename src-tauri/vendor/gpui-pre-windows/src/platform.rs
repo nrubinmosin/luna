@@ -422,6 +422,9 @@ impl WindowsPlatform {
             // Not joined: the thread can be sending this thread a message. It exits after its
             // next vsync, and drops its reference to the devices then.
             stop.store(true, Ordering::Release);
+            // luna patch: the vsync thread sleeps until signaled
+            // (frames on demand, begin_vsync_thread): wake it to stop.
+            crate::window::frame_demand_event().set();
         }
         self.inner.state.directx_devices.borrow_mut().take();
     }
@@ -442,10 +445,29 @@ impl WindowsPlatform {
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
+                // luna patch: frames on demand. Each round: wait until a
+                // window wants a frame or the thread is to stop (detach_gpu
+                // signals; a failed resize that invalidates the devices dirties
+                // its window, which asks for a frame), redraw at once the
+                // windows that asked,
+                // then wait for a vsync, so that a window still asking after its
+                // frame is redrawn at most once per vsync. Serving a request as
+                // soon as it wakes the thread, not after the next DwmFlush, keeps
+                // a frame from idle as prompt as upstream's (whose windows are
+                // invalidated every vsync), however late composition runs. A
+                // request is a window property plus a signal of one auto-reset
+                // event the vsync thread waits on: signals that coalesce still
+                // find every property, and one set during a scan leaves the event
+                // signaled for the next round, so none is lost. After a detach
+                // and a reattach an old thread may still wait on the event beside
+                // the new one: one that wakes to stop signals it again on its way
+                // out, so a request it took goes to the other.
+                let mut signal_source = FrameRequestSource::LocalSchedule;
                 loop {
-                    let signal_source = vsync_provider.wait_for_vsync();
+                    crate::window::frame_demand_event().wait();
                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
                     if stop.load(Ordering::Acquire) {
+                        crate::window::frame_demand_event().set();
                         break;
                     }
                     if check_device_lost(&directx_device.device)
@@ -475,11 +497,20 @@ impl WindowsPlatform {
                                     hwnd.frame_signal.take();
                                 }
                             }
-                            RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
-                                .ok()
-                                .log_err();
+                            // luna patch: only a window that asked for a
+                            // frame is redrawn (window.rs, frame_waker); taking
+                            // the property clears the request in one step.
+                            if RemovePropW(hwnd.as_raw(), crate::window::FRAME_DEMAND_PROP)
+                                .is_ok_and(|h| !h.is_invalid())
+                            {
+                                RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
+                                    .ok()
+                                    .log_err();
+                            }
                         }
                     }
+                    drop(all_windows);
+                    signal_source = vsync_provider.wait_for_vsync();
                 }
             })
             .unwrap();

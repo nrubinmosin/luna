@@ -515,6 +515,12 @@ impl WindowsWindow {
         if !disable_direct_composition {
             dwexstyle |= WS_EX_NOREDIRECTIONBITMAP;
         }
+        // luna patch: a window opened without focus never takes it and
+        // stays off the taskbar and out of Alt+Tab, so it can run unattended
+        // beside a desktop someone is using.
+        if !params.focus {
+            dwexstyle = (dwexstyle & !WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        }
 
         let hinstance = get_module_handle();
         let display = if let Some(display_id) = params.display_id {
@@ -577,8 +583,15 @@ impl WindowsWindow {
         this.state.border_offset.update(hwnd)?;
         let placement =
             retrieve_window_placement(hwnd, display, params.bounds, &this.state.border_offset)?;
+        // luna patch: an unfocused window keeps the bounds it was given,
+        // off every display if so asked; upstream moves bounds that are on no
+        // display to the default ones on the primary.
+        let mut placement = placement;
+        if !params.focus {
+            let bounds = params.bounds.to_device_pixels(display.scale_factor());
+            placement.rcNormalPosition = calculate_window_rect(bounds, &this.state.border_offset);
+        }
         if params.show {
-            let mut placement = placement;
             if !params.focus {
                 placement.showCmd = SW_SHOWNOACTIVATE.0 as u32;
             }
@@ -816,6 +829,11 @@ impl PlatformWindow for WindowsWindow {
 
     fn activate(&self) {
         let hwnd = self.0.hwnd;
+        // luna patch: a window made never to activate is never activated,
+        // and above all sends no synthesized input (the SendInput below).
+        if unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_NOACTIVATE.0 != 0 {
+            return;
+        }
         let this = self.0.clone();
         self.0
             .executor
@@ -1035,12 +1053,28 @@ impl PlatformWindow for WindowsWindow {
             .set(Some(callback));
     }
 
+    // luna patch: frames on demand. The vsync thread redraws a window
+    // only once it has asked for a frame (FRAME_DEMAND_PROP, see
+    // begin_vsync_thread), instead of on every vsync whether anything changed
+    // or not: gpui wakes the platform when a window becomes dirty and asks for
+    // a follow-up frame while it stays so. A present is counted, so that a
+    // draw_window that presented nothing can ask again (events.rs).
     fn draw(&self, scene: &Scene) {
+        PRESENTS.with(|n| n.set(n.get() + 1));
         self.state
             .renderer
             .borrow_mut()
             .draw(scene, self.state.background_appearance.get())
             .log_err();
+    }
+
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        let hwnd = self.0.hwnd;
+        Some(Rc::new(move || request_frame_on_vsync(hwnd)))
+    }
+
+    fn schedule_frame(&self) {
+        request_frame_on_vsync(self.0.hwnd);
     }
 
     #[cfg(feature = "test-support")]
@@ -1739,4 +1773,83 @@ mod tests {
             1
         );
     }
+}
+
+// luna patch: the window property the vsync thread takes to know a
+// window wants a frame (see frame_waker); setting it is the request.
+pub(crate) const FRAME_DEMAND_PROP: PCWSTR = w!("luna-frame-demand");
+
+/// A request from gpui: it also refills the window's budget of retries.
+pub(crate) fn request_frame_on_vsync(hwnd: HWND) {
+    RETRIES.with(|r| r.borrow_mut().insert(hwnd.0 as isize, RETRY_BUDGET));
+    ask_vsync_thread(hwnd);
+}
+
+fn ask_vsync_thread(hwnd: HWND) {
+    unsafe { SetPropW(hwnd, FRAME_DEMAND_PROP, Some(HANDLE(1 as _))).log_err() };
+    frame_demand_event().set();
+}
+
+/// How many frames in a row a window may ask for again on its own after a
+/// draw_window that presented nothing: gpui skips a frame without asking for
+/// another when the request comes re-entrantly during one of its own draws
+/// (its "draw in progress" path, a deferred forced render among them), which
+/// upstream's redraw of every window on every vsync covered. Bounded, so a
+/// stray WM_PAINT of an idle window costs a few frames, not one per vsync.
+const RETRY_BUDGET: u8 = 8;
+
+thread_local! {
+    /// Frames presented on this (the UI) thread so far.
+    static PRESENTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Retries left per window (HWND), refilled by every request from gpui.
+    static RETRIES: RefCell<std::collections::HashMap<isize, u8>> = RefCell::new(Default::default());
+}
+
+pub(crate) fn presents() -> u64 {
+    PRESENTS.with(|n| n.get())
+}
+
+/// After a draw_window that presented nothing: ask for the frame again while
+/// the window's retries last.
+pub(crate) fn retry_frame(hwnd: HWND) {
+    let retry = RETRIES.with(|r| match r.borrow_mut().get_mut(&(hwnd.0 as isize)) {
+        Some(left) if *left > 0 => {
+            *left -= 1;
+            true
+        }
+        _ => false,
+    });
+    if retry {
+        ask_vsync_thread(hwnd);
+    }
+}
+
+/// Signaled when a window wants a frame, and to stop the vsync thread, so an
+/// idle vsync thread can sleep on it instead of waking on every vsync.
+pub(crate) struct FrameDemandEvent(isize);
+
+impl FrameDemandEvent {
+    pub(crate) fn set(&self) {
+        unsafe { windows::Win32::System::Threading::SetEvent(HANDLE(self.0 as _)).log_err() };
+    }
+
+    /// Waits until a window wants a frame or the thread is to stop.
+    pub(crate) fn wait(&self) {
+        unsafe {
+            windows::Win32::System::Threading::WaitForSingleObject(
+                HANDLE(self.0 as _),
+                windows::Win32::System::Threading::INFINITE,
+            )
+        };
+    }
+}
+
+pub(crate) fn frame_demand_event() -> &'static FrameDemandEvent {
+    static EVENT: std::sync::OnceLock<FrameDemandEvent> = std::sync::OnceLock::new();
+    EVENT.get_or_init(|| {
+        // Auto-reset: one wait consumes one signal.
+        let event = unsafe { windows::Win32::System::Threading::CreateEventW(None, false, false, None) }
+            .expect("creating the frame demand event");
+        FrameDemandEvent(event.0 as isize)
+    })
 }

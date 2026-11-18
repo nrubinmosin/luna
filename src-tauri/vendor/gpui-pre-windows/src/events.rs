@@ -1351,6 +1351,15 @@ impl WindowsWindowInner {
 
     #[inline]
     fn draw_window(&self, handle: HWND, force_render: bool) -> Option<isize> {
+        // luna patch: frames on demand (window.rs, frame_waker). The
+        // vsync thread redraws only windows that asked, so a deferred draw asks
+        // for its frame again (gpui, still dirty, will not), and the update
+        // region is validated before the draw, not after it as upstream does:
+        // the vsync thread may take a request gpui makes during this draw and
+        // invalidate the window before the draw returns, and validating then
+        // would drop that frame; invalidated after this point, the window gets
+        // another WM_PAINT. A draw that presented nothing asks again
+        // (window.rs, retry_frame), at the end of this function.
         let Some(_guard) = self.state.draw_coordinator.try_begin_draw() else {
             log::debug!("deferring re-entrant draw of window {handle:?}");
             if force_render {
@@ -1363,8 +1372,11 @@ impl WindowsWindowInner {
             // `begin_vsync_thread`), so the deferred frame still gets drawn,
             // at most one vsync late.
             unsafe { ValidateRect(Some(handle), None).ok().log_err() };
+            crate::window::request_frame_on_vsync(handle);
             return Some(0);
         };
+        unsafe { ValidateRect(Some(handle), None).ok().log_err() };
+        let presents_before = crate::window::presents();
         let mut request_frame = self.state.callbacks.request_frame.take()?;
 
         self.state.direct_manipulation.update();
@@ -1398,7 +1410,11 @@ impl WindowsWindowInner {
 
         self.state.callbacks.request_frame.set(Some(request_frame));
         self.update_ime_enabled(handle);
-        unsafe { ValidateRect(Some(handle), None).ok().log_err() };
+        // luna patch: validated before the draw (above); retry a frame
+        // that was not presented.
+        if crate::window::presents() == presents_before {
+            crate::window::retry_frame(handle);
+        }
 
         Some(0)
     }
