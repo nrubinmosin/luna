@@ -80,8 +80,15 @@ titles, context and drafts come from the core (`session_meta`), polled by
   longer listed at its next round.
 - **The chats on disk** (`luna.chats`) are written through
   `shared/lib/throttledStorage.ts`: a change after a quiet spell at once, then
-  at most one write per 500 ms with the latest state, and what waits on
-  `pagehide`. A chat is stored without its context (`context`,
+  at most one write per 500 ms with the latest state (a write skipped as the
+  same text starts no gap), and what waits on `pagehide`. A change a window
+  started over after a hard exit could not do without is written at once
+  (`atOnce`: a chat added or deleted, its session id, worktree, account, group
+  or move). Luna's own ways out write what waits first
+  (`flushPendingWrites`): a tray Quit or Restart window, which tell the page
+  `ui://exiting` and give it 300 ms (`lifecycle.rs`), and an update's install.
+  A renderer that dies loses at most the last 500 ms of statuses and titles.
+  A chat is stored without its context (`context`,
   `contextTokens`, `contextWindow`), which the watcher reads again within
   seconds; one stored with it still loads. Its status is kept: it is what
   tells the watcher a waiting chat was already announced, so a new window

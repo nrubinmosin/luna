@@ -46,8 +46,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   list, the status bar measures
   itself only when what it shows changes, the chat list is written to disk at
   most twice a second and without the chats' context (read again within
-  seconds), and each session's output goes to its own terminal only. Chats
-  stored by an earlier Luna load as before.
+  seconds), and each session's output goes to its own terminal only. A new
+  chat, its session id, worktree or account is still written at once, and a
+  Quit or Restart window from the tray, or an update, writes what waits
+  first. Chats stored by an earlier Luna load as before.
 
 ### Fixed
 

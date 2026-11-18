@@ -32,9 +32,10 @@ import { healScaleDrift } from './dpi';
 import { Icon } from '../shared/ui/icons';
 import { STRIP, useShell } from './shell.store';
 import { uiHeartbeat } from '../ipc/agents';
-import { onNotify, onOpenChat } from '../ipc/events';
+import { onExiting, onNotify, onOpenChat } from '../ipc/events';
 import { keepKeyboardHome, peekFromNotice } from '../features/panes/navigate';
 import { notify } from '../shared/lib/notify';
+import { flushPendingWrites } from '../shared/lib/throttledStorage';
 import { useChats } from '../features/chats/chats.store';
 import type { Folder } from '../shared/types';
 import { usePanes } from '../features/panes/panes.store';
@@ -176,9 +177,13 @@ export function App() {
   useEffect(() => {
     const off = onNotify(n => void notify(n.title, n.body, n.chatId));
     const offOpen = onOpenChat(p => peekFromNotice(p.chatId));
+    // What the chats' storage holds back goes to disk before the tray's
+    // way out ends the process.
+    const offExit = onExiting(flushPendingWrites);
     return () => {
       void off.then(f => f());
       void offOpen.then(f => f());
+      void offExit.then(f => f());
     };
   }, []);
 

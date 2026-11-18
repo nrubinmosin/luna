@@ -7,13 +7,19 @@ import type { PersistStorage, StorageValue } from 'zustand/middleware';
  * the chats, a status or context change every few seconds per chat meant the
  * whole list serialized and written as often.
  *
- * A write after a quiet spell goes out at once, so a lone change (a session
- * id, a rename) is on disk straight away; what follows within `gapMs` waits
- * and goes out as one write of the latest state. `serialize` turns the state
- * into what is stored; a write of the same text as the last is skipped. A
- * page going away writes what waits.
+ * A write after a quiet spell goes out at once, so a lone change (a rename)
+ * is on disk straight away; what follows within `gapMs` waits and goes out as
+ * one write of the latest state. `serialize` turns the state into what is
+ * stored; a write of the same text as the last is skipped, and does not start
+ * the gap. `flush` writes what waits now: for a change a window started over
+ * after a hard exit could not do without (a new chat, its session id), which
+ * the store calls right after its set. A page going away writes what waits,
+ * and so does Luna's own way out (`flushPendingWrites`).
  */
-export function throttledStorage<S>(serialize: (value: StorageValue<S>) => string, gapMs = 500): PersistStorage<S> {
+export function throttledStorage<S>(
+  serialize: (value: StorageValue<S>) => string,
+  gapMs = 500
+): PersistStorage<S> & { flush: () => void } {
   let pending: { name: string; value: StorageValue<S> } | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let lastAt = -Infinity;
@@ -25,9 +31,9 @@ export function throttledStorage<S>(serialize: (value: StorageValue<S>) => strin
     const p = pending;
     pending = null;
     if (!p) return;
-    lastAt = Date.now();
     const text = serialize(p.value);
     if (text === lastText) return;
+    lastAt = Date.now();
     lastText = text;
     try {
       localStorage.setItem(p.name, text);
@@ -55,6 +61,7 @@ export function throttledStorage<S>(serialize: (value: StorageValue<S>) => strin
   }
 
   return {
+    flush: write,
     getItem: name => {
       // Read to hydrate the store, which takes what is stored over what it
       // held: a write still waiting would only put the old state back.
@@ -85,6 +92,12 @@ type Throttled = { flush: () => void; drop: () => void };
  *  test (vi.resetModules) adds to the same set. */
 const registry: Set<Throttled> = ((globalThis as { lunaThrottledStorages?: Set<Throttled> }).lunaThrottledStorages ??=
   new Set());
+
+/** Writes what every throttled storage holds back, for a way out that ends
+ *  the process without the page going away first (a tray Quit, an update). */
+export function flushPendingWrites() {
+  registry.forEach(s => s.flush());
+}
 
 /** For tests: forget every write still waiting, as a page that never was. */
 export function dropPendingWrites() {

@@ -261,6 +261,13 @@ pub fn note_exit(reason: Option<String>) {
 /// A tray Quit already under way.
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
+/// Told to the page as a way out from the tray begins: it ends the process
+/// without the page going away first, and the page writes on it what it holds
+/// back (the chats' storage writes a burst of changes once, after a gap).
+const EXITING: &str = "ui://exiting";
+/// How long a way out from the tray gives the page to do so.
+const PAGE_WRITE: Duration = Duration::from_millis(300);
+
 /// Quit from the tray takes all of Luna along: the core is asked to stop,
 /// which has every session quit as a delete would, each leaving a whole
 /// transcript behind, and the window goes once it is gone. The window hides
@@ -270,12 +277,15 @@ pub fn quit_from_tray(app: &AppHandle) {
         return;
     }
     exiting("Quit from the tray menu");
+    crate::emit::to_ui(EXITING, ());
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
     let app = app.clone();
     std::thread::spawn(move || {
+        let told = std::time::Instant::now();
         crate::corelink::shut_down();
+        std::thread::sleep(PAGE_WRITE.saturating_sub(told.elapsed()));
         app.exit(0);
     });
 }
@@ -288,6 +298,16 @@ pub fn restart_from_tray(app: &AppHandle) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
     }
+    // Off the event loop, which has to carry the event to the page meanwhile.
+    crate::emit::to_ui(EXITING, ());
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(PAGE_WRITE);
+        restart_now(&app);
+    });
+}
+
+fn restart_now(app: &AppHandle) {
     let exe = match tauri::process::current_binary(&app.env()) {
         Ok(exe) => exe,
         Err(e) => {

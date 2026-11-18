@@ -103,6 +103,37 @@ describe('chats store: one group of the folders', () => {
   });
 });
 
+describe('chats store: what changed for a subscriber', () => {
+  const byGroup = (was: Chat, now: Chat) => was.group === now.group;
+
+  it('sees no change in a status or context tick, nor in another field it ignores', () => {
+    seed(folder('a', [chat('c1'), chat('c2')]), folder('b', [chat('c3')]));
+    const before = useChats.getState().folders;
+    useChats.getState().setStatus('c1', 'working');
+    useChats.getState().setContext('c3', 0.3, null, null);
+    useChats.getState().setName('c2', 'a title', 'cli');
+    expect(chatsChanged(before, useChats.getState().folders, byGroup)).toBe(false);
+  });
+
+  it('sees a chat that came, went or moved group', () => {
+    seed(folder('a', [chat('c1'), chat('c2')]));
+    let before = useChats.getState().folders;
+    useChats.getState().addChat('/a', chat('c4'), true);
+    expect(chatsChanged(before, useChats.getState().folders, byGroup)).toBe(true);
+    before = useChats.getState().folders;
+    useChats.getState().deleteChat('c4');
+    expect(chatsChanged(before, useChats.getState().folders, byGroup)).toBe(true);
+    before = useChats.getState().folders;
+    useChats.setState(s => ({
+      folders: s.folders.map(f => ({ ...f, chats: f.chats.map(c => (c.id === 'c2' ? { ...c, group: 1 } : c)) }))
+    }));
+    expect(chatsChanged(before, useChats.getState().folders, byGroup)).toBe(true);
+    before = useChats.getState().folders;
+    useChats.getState().addChat('/new', chat('c5'), true);
+    expect(chatsChanged(before, useChats.getState().folders, byGroup)).toBe(true);
+  });
+});
+
 describe('chats store: persistence', () => {
   it('stores a chat without its context, its status kept', () => {
     vi.useFakeTimers();

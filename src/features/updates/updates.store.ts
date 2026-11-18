@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Update } from '@tauri-apps/plugin-updater';
 import { noteExit, stopAllSessions } from '../../ipc/coreProcess';
+import { flushPendingWrites } from '../../shared/lib/throttledStorage';
 import { useCore } from '../core/core.store';
 import { logInfo, logWarn } from '../../shared/lib/log';
 
@@ -119,7 +120,9 @@ export const useUpdates = create<UpdatesState>(set => ({
         await stopAllSessions();
       }
       // Said before, because the install never returns on Windows; taken back
-      // below if it fails.
+      // below if it fails. The chats' storage writes what it holds back
+      // first, for the same reason.
+      flushPendingWrites();
       await noteExit(
         `installing the update to ${pending.version}${keep ? '; the sessions keep running in the core' : ''}`
       );
