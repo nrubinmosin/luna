@@ -11,20 +11,15 @@
 //!
 //! ```text
 //! <data>/claude-cli/
-//!   current                     text file: the version directory sessions spawn from
-//!   previous                    text file: the one `current` named before, kept to roll back to
+//!   state.json, state.lock      the record: current, the one to go back to, the versions
+//!                               turned away, the canary (`state`)
 //!   versions/<ver>/claude.exe   one directory per installed version
 //!   versions/<ver>/luna-install.json   its completion record
 //!   staging/<ver>-<random>/     a download in progress
-//!   bad.json                    versions turned away (`choice`)
-//!   canary.json, canary.lock    the watch over a new version's first sessions (`canary`)
-//!   switch.lock                 held while `current`, `previous`, `bad.json` or `versions/` change (`switching`)
+//!   in-use/<dir>                held (shared) by each process started from <dir>, and by a
+//!                               promotion until its flip (`in_use`)
 //! <data>/codex-cli/
-//!   current
 //!   versions/<ver>/bin/codex.exe (+ codex-path/, codex-resources/ from the package)
-//!   versions/<ver>/luna-install.json
-//!   staging/
-//!   in-use/<dir>                held (shared) by each process started from <dir> (`in_use`)
 //!   (and the rest as for Claude Code)
 //! ```
 //!
@@ -33,10 +28,11 @@
 //! for hours. A new version is fetched into `staging/`, held to what its
 //! release says the package is, given its completion record last, and
 //! renamed into `versions/` under a name nothing has (`<ver>`, or `<ver>~<n>`
-//! while an older `<ver>` directory is still there). `current` then flips to
-//! it, `previous` to what it named before, and old directories are swept
-//! whenever nothing runs from them any more; the previous one stays, for the
-//! canary to roll back to when the new one's first sessions fail.
+//! while an older `<ver>` directory is still there). The record then names
+//! it current and what it named before the one to go back to, in one write,
+//! and old directories are swept whenever nothing names or holds them any
+//! more; the one before stays, for the canary to roll back to when the new
+//! one's first sessions fail.
 //! A directory counts as installed by its record alone, so a crash
 //! mid-download or mid-unpack leaves nothing that passes for one.
 //!
@@ -52,6 +48,7 @@ mod canary;
 mod choice;
 mod in_use;
 mod probe;
+mod state;
 
 #[cfg(test)]
 pub(crate) use canary::cause_outside;
@@ -106,12 +103,6 @@ pub struct PackageFile {
 /// The completion record: written into the staged directory after
 /// everything else, before the rename that makes it a version.
 const RECORD: &str = "luna-install.json";
-
-/// At a provider's root once this code has installed there, before it first
-/// points `current` at anything: from then on a version without its record
-/// is never run (`current_in`). A tree without it is from before records,
-/// whose `current` was only ever moved to a finished install.
-const RECORDED: &str = "recorded";
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Record {
@@ -191,19 +182,18 @@ pub fn root(provider: Provider) -> PathBuf {
     crate::paths::data_dir().join(source(provider).root_name)
 }
 
-/// What `current` names: the directory sessions spawn from and the version
-/// in it.
+/// What the record names current: the directory sessions spawn from and the
+/// version in it.
 struct Current {
     dir: String,
     version: String,
-    /// False for a directory from before completion records, which `current`
-    /// was only ever pointed at once its install had finished. Sessions keep
-    /// spawning it; the update pass does not count it as installed and
-    /// fetches its version again beside it.
+    /// False for a directory from before completion records (`state::Slot`).
+    /// Sessions keep spawning it; the update pass does not count it as
+    /// installed and fetches its version again beside it.
     recorded: bool,
 }
 
-/// A directory name out of `current`, or one component of a package path.
+/// A directory name out of the record, or one component of a package path.
 fn plain_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
 }
@@ -228,50 +218,59 @@ fn intact(dir: &Path, record: &Record, bin_rel: &str) -> bool {
         })
 }
 
+/// The record's slot for the folder `dir` under `versions/`, by its
+/// completion record; for the migration of a tree from before records
+/// (`unrecorded`), by the folder alone, named for its version.
+fn slot_of(root: &Path, dir: &str, unrecorded: bool) -> Option<state::Slot> {
+    if !plain_name(dir) {
+        return None;
+    }
+    let path = root.join("versions").join(dir);
+    match read_record(&path) {
+        Ok(record) => Some(state::Slot { dir: dir.to_string(), version: record.version, recorded: true }),
+        Err(_) if unrecorded && path.is_dir() => Some(state::Slot { dir: dir.to_string(), version: dir.to_string(), recorded: false }),
+        Err(_) => None,
+    }
+}
+
 fn current_in(root: &Path, bin_rel: &str) -> Option<Current> {
     current_or_why(root, bin_rel).ok()
 }
 
-/// Why `current` gives nothing to start.
+/// Why the record gives nothing to start.
 #[derive(Debug, PartialEq)]
 enum NoCurrent {
-    /// No `current` yet: the first install has not finished.
+    /// Nothing current yet: the first install has not finished.
     NotInstalled,
-    /// A `current` that names nothing runnable, and why.
+    /// A record that will not read, or names nothing runnable, and why.
     Damaged(String),
 }
 
 fn current_or_why(root: &Path, bin_rel: &str) -> Result<Current, NoCurrent> {
-    let name = match fs::read_to_string(root.join("current")) {
-        Ok(name) => name,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(NoCurrent::NotInstalled),
-        Err(e) => return Err(NoCurrent::Damaged(format!("its current will not read: {e}"))),
-    };
-    let name = name.trim();
+    let slot = state::read_in(root).map_err(NoCurrent::Damaged)?.current.ok_or(NoCurrent::NotInstalled)?;
+    let name = slot.dir.as_str();
     if !plain_name(name) {
-        return Err(NoCurrent::Damaged(format!("its current names {name:?}, which is no version directory")));
+        return Err(NoCurrent::Damaged(format!("its record names {name:?} current, which is no version directory")));
     }
     let dir = root.join("versions").join(name);
-    let damaged = |why: &str| NoCurrent::Damaged(format!("versions/{name}, which current names, {why}"));
+    let damaged = |why: &str| NoCurrent::Damaged(format!("versions/{name}, which its record names current, {why}"));
+    if !slot.recorded {
+        return match dir.join(bin_rel).is_file() {
+            true => Ok(Current { dir: slot.dir.clone(), version: slot.version, recorded: false }),
+            false => Err(damaged(&format!("has no {bin_rel}"))),
+        };
+    }
     match read_record(&dir) {
-        Ok(record) if intact(&dir, &record, bin_rel) => Ok(Current { dir: name.into(), version: record.version, recorded: true }),
-        Ok(_) => Err(damaged("is missing files its record lists, or has them at another size")),
-        // Without its record, a directory is run only in a tree this code has
-        // never installed into: there it can only be from before records. In
-        // one it has, it is an install whose record is gone, which proves
-        // nothing about the files beside it.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && fs::symlink_metadata(root.join(RECORDED)).is_err() => {
-            match dir.join(bin_rel).is_file() {
-                true => Ok(Current { dir: name.into(), version: name.into(), recorded: false }),
-                false => Err(damaged(&format!("has no {bin_rel}"))),
-            }
+        Ok(record) if record.version == slot.version && intact(&dir, &record, bin_rel) => {
+            Ok(Current { dir: slot.dir.clone(), version: record.version, recorded: true })
         }
+        Ok(_) => Err(damaged("is missing files its completion record lists, or has them at another size")),
         Err(e) => Err(damaged(&format!("has no completion record that reads ({e})"))),
     }
 }
 
-/// A recorded, intact directory of `version` under `versions/`: one a crash
-/// left between its promotion and the flip of `current`.
+/// A recorded, intact directory of `version` under `versions/`: one a pass
+/// left between its promotion and its flip.
 fn installed_in(root: &Path, bin_rel: &str, version: &str) -> Option<String> {
     let suffixed = format!("{version}~");
     fs::read_dir(root.join("versions")).ok()?.flatten().find_map(|entry| {
@@ -292,18 +291,19 @@ pub(crate) fn current_version(provider: Provider) -> Option<String> {
     current_in(&root(provider), source(provider).bin_rel).map(|c| c.version)
 }
 
-/// The managed copy `current` names, for Settings to show; None while there
-/// is none to start.
+/// The managed copy the record names current, for Settings to show; None
+/// while there is none to start.
 pub fn binary(provider: Provider) -> Option<PathBuf> {
     let src = source(provider);
     let root = root(provider);
     current_in(&root, src.bin_rel).map(|c| root.join("versions").join(c.dir).join(src.bin_rel))
 }
 
-/// What a session should spawn: the managed copy `current` names, with a hold
-/// on its version directory that the caller keeps until the process has
-/// exited, so the sweep leaves that directory be (`in_use`). `session` is the
-/// chat or helper it is for, whose version `luna_session_get` then shows.
+/// What a session should spawn: the managed copy the record names current,
+/// with a hold on its version directory that the caller keeps until the
+/// process has exited, so the sweep leaves that directory be (`in_use`).
+/// `session` is the chat or helper it is for, whose version
+/// `luna_session_get` then shows.
 ///
 /// Nothing else is started, the CLI on PATH included: only a managed copy has
 /// been through the checks a version passes before it runs (its signature or
@@ -339,19 +339,19 @@ pub fn live_cli(provider: Provider) -> Option<PathBuf> {
     std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
-/// How often a launch tries for its hold: `current` moving under it, or the
+/// How often a launch tries for its hold: the record moving under it, or the
 /// lock file not to be had for a moment.
 const HOLD_TRIES: u32 = 5;
 
-/// The exe `current` names under `root`, its version, and a hold on its
-/// directory taken before `current` is read a second time: a flip and a
-/// sweep between the two reads would have taken the directory the first one
-/// named. An Err where nothing is current, saying whether nothing has been
-/// installed yet or what is there is damaged; an Err rather than a start
-/// without the hold: the sweep could later take the folder from under the
-/// process. An Err too for a current version below `floor`: a Luna release
-/// that raised its floor runs nothing older, whatever `current` says, until
-/// the next pass moves it.
+/// The exe the record names current under `root`, its version, and a hold
+/// on its directory taken before the record is read a second time: a flip
+/// and a sweep between the two reads would have taken the directory the
+/// first one named. An Err where nothing is current, saying whether nothing
+/// has been installed yet or what is there is damaged; an Err rather than a
+/// start without the hold: the sweep could later take the folder from under
+/// the process. An Err too for a current version below `floor`: a Luna
+/// release that raised its floor runs nothing older until the next pass
+/// moves it.
 fn launch_in(root: &Path, bin_rel: &str, floor: &str) -> Result<(PathBuf, String, InUse), String> {
     let mut why = String::new();
     for attempt in 0..HOLD_TRIES {
@@ -474,11 +474,12 @@ fn installed_all(root: &Path, bin_rel: &str) -> Vec<(String, Record)> {
 }
 
 fn versions_in(root: &Path, bin_rel: &str, floor: &str) -> CliVersions {
+    let record = state::read_in(root).unwrap_or_default();
     let current = current_in(root, bin_rel);
-    let canary = canary::read_in(root).filter(|c| current.as_ref().is_some_and(|cur| cur.version == c.version));
+    let canary = record.canary.clone().filter(|c| current.as_ref().is_some_and(|cur| cur.version == c.version));
     let current = current.map(|c| c.dir);
-    let previous = previous_in(root, bin_rel);
-    let bad = choice::bad_in(root);
+    let previous = record.previous.as_ref().map(|p| p.dir.clone());
+    let bad = record.bad_whys();
     let versions = installed_all(root, bin_rel)
         .into_iter()
         .map(|(dir, record)| VersionRow {
@@ -587,20 +588,27 @@ pub fn sane_version(v: &str, what: &str) -> Result<String, String> {
 /// 2.1.99; then a pre-release (`-alpha.1`) below the release it leads to,
 /// two pre-releases by their dotted identifiers (numbers by value and below
 /// words, words by their bytes, a longer list above its own start). Build
-/// metadata (`+…`) does not count.
+/// metadata (`+…`) does not count. Numbers are compared as digit strings, by
+/// length once their leading zeros are gone and then digit by digit, so no
+/// number is too long to order.
 pub(crate) fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering::{Equal, Greater, Less};
-    let split = |v: &'_ str| -> (Vec<u64>, Option<String>) {
+    fn number(x: &str, y: &str) -> std::cmp::Ordering {
+        let (x, y) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
+        x.len().cmp(&y.len()).then_with(|| x.cmp(y))
+    }
+    let digits = |p: &str| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>();
+    let split = |v: &'_ str| -> (Vec<String>, Option<String>) {
         let v = v.split('+').next().unwrap_or(v);
         let (core, pre) = match v.split_once('-') {
             Some((core, pre)) => (core, Some(pre.to_string())),
             None => (v, None),
         };
-        let parts = core.split('.').map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0));
-        (parts.collect(), pre)
+        (core.split('.').map(digits).collect(), pre)
     };
     let ((a, a_pre), (b, b_pre)) = (split(a), split(b));
-    let core = (0..a.len().max(b.len())).map(|i| a.get(i).unwrap_or(&0).cmp(b.get(i).unwrap_or(&0))).find(|o| o.is_ne());
+    let zero = String::new();
+    let core = (0..a.len().max(b.len())).map(|i| number(a.get(i).unwrap_or(&zero), b.get(i).unwrap_or(&zero))).find(|o| o.is_ne());
     if let Some(o) = core {
         return o;
     }
@@ -610,11 +618,12 @@ pub(crate) fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
         (Some(_), None) => Less,
         (Some(a), Some(b)) => {
             let (a, b): (Vec<&str>, Vec<&str>) = (a.split('.').collect(), b.split('.').collect());
-            let id = |x: &str, y: &str| match (x.parse::<u64>(), y.parse::<u64>()) {
-                (Ok(x), Ok(y)) => x.cmp(&y),
-                (Ok(_), Err(_)) => Less,
-                (Err(_), Ok(_)) => Greater,
-                (Err(_), Err(_)) => x.cmp(y),
+            let numeric = |x: &str| !x.is_empty() && x.bytes().all(|c| c.is_ascii_digit());
+            let id = |x: &str, y: &str| match (numeric(x), numeric(y)) {
+                (true, true) => number(x, y),
+                (true, false) => Less,
+                (false, true) => Greater,
+                (false, false) => x.cmp(y),
             };
             a.iter().zip(&b).map(|(x, y)| id(x, y)).find(|o| o.is_ne()).unwrap_or(a.len().cmp(&b.len()))
         }
@@ -765,9 +774,11 @@ fn probe_in(root: &Path, provider: Provider, exe: &Path, version: &str) -> Resul
 }
 
 /// The pass on one provider's tree once the release pointer has been asked
-/// (`latest`, an error where it could not be read): what Luna 0.19 left goes
-/// (`choice::forget_0_19`), `choice::plan` names the version, `update_in`
-/// makes it current. `probe` and `fetch` take the version they are for.
+/// (`latest`, an error where it could not be read). The pointer read, every
+/// mark of another version goes from the record (a tree from before the
+/// record migrates in the same write); `choice::plan` names the version,
+/// `update_in` makes it current. `probe` and `fetch` take the version they
+/// are for.
 fn pass_in(
     root: &Path,
     bin_rel: &str,
@@ -776,11 +787,16 @@ fn pass_in(
     probe: &dyn Fn(&Path, &str) -> Result<(), probe::Failed>,
     fetch: &mut dyn FnMut(&str, &Path) -> Result<Package, String>,
 ) -> Result<Option<String>, String> {
-    choice::forget_0_19(root);
+    let record = state::change(root, |s| {
+        if let Ok(named) = latest {
+            s.bad.retain(|v, _| v == named);
+        }
+        s.clone()
+    })?;
     // What runs, recorded or from before records alike: no step down from
     // either. One below the floor runs nothing, and holds nothing back.
     let current = current_in(root, bin_rel).filter(|c| version_cmp(&c.version, floor).is_ge());
-    let version = match choice::plan(current.as_ref().map(|c| c.version.as_str()), floor, &choice::bad_in(root), latest)? {
+    let version = match choice::plan(current.as_ref().map(|c| c.version.as_str()), floor, &record.bad_whys(), latest)? {
         choice::Plan::Stay(why) => return Ok(Some(why)),
         choice::Plan::Install(version) => version,
     };
@@ -805,14 +821,14 @@ struct Target<'a> {
 }
 
 /// The update pass on one provider's tree once `choice::plan` has named its
-/// version. Nothing to fetch when `current` holds a recorded install of it,
-/// or when one already in `versions/` still matches its record's sha256;
-/// otherwise `fetch` stages a fresh one. Nothing below the floor is fetched
-/// or made current. From its promotion to its flip the version is held
-/// (`in_use`), so a sweep the core's rollback runs meanwhile leaves it be.
-/// One the probe finds wrong is turned away; one it could not ask is left
-/// for the next pass. Then the flip and the sweep, under the switch lock.
-/// Returns the directory now current and whether `current` moved.
+/// version. Nothing to fetch when the record names a recorded install of it
+/// current, or when one already in `versions/` still matches its record's
+/// sha256; otherwise `fetch` stages a fresh one. Nothing below the floor is
+/// fetched or made current. From its promotion to its flip the version is
+/// held (`in_use`), so no sweep takes it meanwhile. One the probe finds wrong
+/// is turned away; one it could not ask is left for the next pass. Then the
+/// flip, one write of the record (`flip_in`), and the sweep. Returns the
+/// directory now current and whether it moved.
 fn update_in(
     root: &Path,
     bin_rel: &str,
@@ -821,21 +837,14 @@ fn update_in(
 ) -> Result<(String, bool), String> {
     let version = target.version;
     if let Some(c) = current_in(root, bin_rel).filter(|c| c.recorded && c.version == version) {
-        // `current` names a recorded install, so this code installed here:
-        // a marker missing is one a crash or a cleanup took after the fact.
-        let held = switching(root)?;
-        mark_recorded(root)?;
-        prune_in(&held, root, bin_rel);
+        prune_in(root, bin_rel);
         return Ok((c.dir, false));
     }
     at_or_above(target.floor, version)?;
     // One a pass left between its promotion and its flip has sat there
     // unwatched: held first, then held to every sha256 its record kept, or
     // fetched afresh beside it.
-    let found = {
-        let _switch = switching(root)?;
-        installed_in(root, bin_rel, version).and_then(|dir| in_use::hold(root, &dir).map(|held| (dir, held)))
-    };
+    let found = installed_in(root, bin_rel, version).and_then(|dir| in_use::hold(root, &dir).map(|held| (dir, held)));
     let found = found.filter(|(dir, _)| {
         let path = root.join("versions").join(dir);
         match read_record(&path).map_err(|e| e.to_string()).and_then(|record| reverify(&path, &record)) {
@@ -854,62 +863,42 @@ fn update_in(
     // session.
     match (target.probe)(&root.join("versions").join(&dir).join(bin_rel)) {
         Ok(()) => {}
-        // Not offered again until a newer one is out or the mark's time is
-        // up; the sweep takes it.
+        // Not offered again while the pointer names it; the sweep takes it.
         Err(probe::Failed::Wrong(e)) => {
             drop(being_made_current);
-            let held = switching(root)?;
-            if let Err(m) = choice::mark_bad_in(&held, root, version, choice::By::Probe, &format!("failed the offline probe: {e}")) {
-                crate::log::warn("cli", &m);
-            }
-            prune_in(&held, root, bin_rel);
-            return Err(format!("{version} failed the offline probe: {e}"));
+            let why = format!("failed the offline probe: {e}");
+            state::change(root, |s| s.bad.insert(version.to_string(), state::Mark { why: short(&why), by: state::By::Probe }))?;
+            step("sweep")?;
+            prune_in(root, bin_rel);
+            return Err(format!("{version} {why}"));
         }
         Err(probe::Failed::Unasked(e)) => return Err(format!("{version} could not be probed ({e}); the next pass tries again")),
     }
-    let held = switching(root)?;
-    // The core may have rolled back from this very version since the plan
-    // was made.
-    if let Some(why) = choice::bad_in(root).get(version) {
+    if let Err(e) = flip_in(root, &dir, version) {
         drop(being_made_current);
-        prune_in(&held, root, bin_rel);
-        return Err(format!("{version} was turned away meanwhile ({why})"));
+        prune_in(root, bin_rel);
+        return Err(e);
     }
-    mark_recorded(root)?;
-    flip_in(&held, root, bin_rel, &dir, false)?;
-    prune_in(&held, root, bin_rel);
+    step("sweep")?;
+    prune_in(root, bin_rel);
     drop(being_made_current);
     Ok((dir, true))
 }
 
-/// At a provider's root: held by whoever changes `current`, `previous`,
-/// `bad.json` or what is in `versions/` (`switching`).
-const SWITCH_LOCK: &str = "switch.lock";
-
-/// The switch lock, held: the window's update pass and the core's rollback
-/// are two processes, so it is a file lock, and each takes it for a
-/// promotion into `versions/`, a flip, a turning away or a sweep, never for a
-/// download or the probe. Taken while no other lock of the tree is held; the
-/// canary's and a version's in-use hold may be taken under it.
-struct Switching {
-    _lock: fs::File,
-}
-
-fn switching(root: &Path) -> Result<Switching, String> {
-    fs::create_dir_all(root).map_err(|e| format!("mkdir {}: {e}", root.display()))?;
-    let lock = crate::secret::open_private(&root.join(SWITCH_LOCK)).map_err(|e| format!("{SWITCH_LOCK}: {e}"))?;
-    lock.lock().map_err(|e| format!("{SWITCH_LOCK}: {e}"))?;
-    Ok(Switching { _lock: lock })
+/// Words for a person to read: one line, kept short.
+fn short(why: &str) -> String {
+    why.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect()
 }
 
 #[cfg(test)]
 thread_local! {
-    /// For this test thread: the switch's step of this name fails, as a
-    /// crash or a failed write just before it would leave the tree.
+    /// For this test thread: the step of this name fails, as the process
+    /// dying just before it would leave the tree.
     static FAIL_AT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
 
-/// A step of a flip or a rollback, about to be taken.
+/// A step of a change to the tree, about to be taken: `state`, the record's
+/// one write; `sweep`, the sweep after it.
 fn step(name: &'static str) -> Result<(), String> {
     #[cfg(test)]
     if FAIL_AT.with(std::cell::Cell::get) == Some(name) {
@@ -919,136 +908,109 @@ fn step(name: &'static str) -> Result<(), String> {
     Ok(())
 }
 
-/// Points `current` at `dir`, an installed directory, and `previous` at what
-/// `current` named before (none when going `back`: the version left is the
-/// one just turned away). Each write leaves a tree that holds together if
-/// the next never comes: first the canary for a version not watched yet, so
-/// no session on it starts unwatched; then `current`; then `previous`, which
-/// names the flip it belongs to, so a flip cut short before it is read
-/// right (`previous_in`).
-/// `current` goes through a temp file: the core reads it for every spawn, and
-/// a read between a plain write's truncate and its bytes would find no
-/// version and refuse the start. Private as it is made, under a random name:
-/// in a data dir open to others a `current` of theirs would pick the binary
-/// every session runs. Synced, so a power cut leaves the old name or the new
-/// one. Then what was turned away at or below the version goes.
-fn flip_in(held: &Switching, root: &Path, bin_rel: &str, dir: &str, back: bool) -> Result<(), String> {
-    let record = read_record(&root.join("versions").join(dir)).map_err(|e| format!("{dir}: {e}"))?;
-    let old = current_in(root, bin_rel);
-    step("canary")?;
-    if old.as_ref().is_none_or(|o| o.version != record.version) {
-        canary::reset_in(root, &record.version)?;
-    }
-    step("current")?;
-    crate::secret::write_private_synced(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))?;
-    step("previous")?;
-    match old.map(|o| o.dir) {
-        // Onto the directory already current: what was before stays.
-        Some(same) if same == dir => {}
-        before => write_previous(root, before.filter(|_| !back).as_deref(), dir)?,
-    }
-    step("forget")?;
-    if let Err(e) = choice::forget_up_to_in(held, root, &record.version) {
-        crate::log::warn("cli", &format!("{}: {e}", root.display()));
-    }
-    Ok(())
-}
-
-/// What a rollback came to.
-#[derive(Debug, PartialEq)]
-pub(crate) struct Rolled {
-    /// The version current now.
-    pub(crate) to: String,
-    /// Why the failed version could not be turned away, where it could not:
-    /// a later pass may then take it again.
-    pub(crate) unnoted: Option<String>,
+/// Makes the installed directory `dir`, of `version`, current: one write of
+/// the record. What ran until now becomes the one to go back to, unless it
+/// was on its way out itself (turned away, or its canary tripped): then the
+/// one before it stays. A version not current before gets a fresh canary in
+/// the same write, so no session on it starts unwatched. Refused for a
+/// version turned away since the pass chose it (the core's rollback from it).
+fn flip_in(root: &Path, dir: &str, version: &str) -> Result<(), String> {
+    let slot = state::Slot { dir: dir.to_string(), version: version.to_string(), recorded: true };
+    state::change(root, |s| {
+        if let Some(mark) = s.bad.get(version) {
+            return Err(format!("{version} was turned away meanwhile ({})", mark.why));
+        }
+        let old = s.current.take();
+        let leaving = old
+            .as_ref()
+            .is_some_and(|o| s.bad.contains_key(&o.version) || s.canary.as_ref().is_some_and(|c| c.version == o.version && c.warned));
+        if old.as_ref().is_none_or(|o| o.version != version) {
+            s.canary = Some(canary::fresh(version));
+        }
+        match old {
+            Some(o) if o.dir == dir => {}
+            Some(o) if !leaving => s.previous = Some(o),
+            _ => {}
+        }
+        s.current = Some(slot);
+        Ok(())
+    })?
 }
 
 /// The canary's rollback (`canary`): `version`'s first sessions failed for
-/// `why`.
-fn roll_back(provider: Provider, root: &Path, version: &str, why: &str) -> Result<Rolled, String> {
-    let rolled = roll_back_in(root, source(provider).bin_rel, floor(provider), version, why)?;
-    crate::log::info("cli", &format!("{} rolled back from {version} to {}: {why}", provider.as_str(), rolled.to));
-    Ok(rolled)
+/// `why`. Returns the version now current.
+fn roll_back(provider: Provider, root: &Path, version: &str, why: &str) -> Result<String, String> {
+    let to = roll_back_in(root, source(provider).bin_rel, floor(provider), version, why)?;
+    crate::log::info("cli", &format!("{} rolled back from {version} to {to}: {why}", provider.as_str()));
+    Ok(to)
 }
 
-/// Makes the version `previous` names current again in place of `version`,
-/// and turns `version` away. Only while `version` is still what is current
-/// (a pass may have moved on meanwhile), and only to a whole install of
-/// another version, not below `floor` nor turned away itself, once every
-/// file matches the sha256 its record kept. Afterwards nothing is
-/// `previous`: the only version left to go back to is the one just turned
-/// away, whose directory the sweep takes once nothing runs from it. So a
-/// version gone back to whose first sessions fail too stays: the failures
-/// were then not the version's.
-/// The mark comes first: a core gone after it and before the flip leaves
-/// the failed version current and turned away, which the next core rolls
-/// back from (`finish_rollbacks`), never the version gone back to current
-/// and the failed one offered again. A mark that will not write is said, and
-/// the rollback goes on: better the version before, with the failed one
-/// perhaps offered again, than every session on the failed one.
-fn roll_back_in(root: &Path, bin_rel: &str, floor: &str, version: &str, why: &str) -> Result<Rolled, String> {
-    let held = switching(root)?;
-    let current = current_in(root, bin_rel).ok_or("nothing is current to roll back from")?;
+/// Makes the version the record keeps to go back to current again in place
+/// of `version`, and turns `version` away, in one write of the record: only
+/// while `version` is still current (a pass may have moved on), only to a
+/// whole install of another version, not below `floor` nor turned away
+/// itself, once every file matches the sha256 its record kept (hashed before
+/// the write, outside the lock). Afterwards nothing is kept to go back to:
+/// the only version left is the one just turned away, whose directory the
+/// sweep takes once nothing runs from it. So a version gone back to whose
+/// first sessions fail too stays: the failures were then not the version's.
+fn roll_back_in(root: &Path, bin_rel: &str, floor: &str, version: &str, why: &str) -> Result<String, String> {
+    let record = state::read_in(root)?;
+    let current = record.current.ok_or("nothing is current to roll back from")?;
     if current.version != version {
         return Err(format!("{} is current by now", current.version));
     }
-    let prev = previous_in(root, bin_rel).ok_or("no version before it is kept")?;
-    let dir = root.join("versions").join(&prev);
-    let record = read_record(&dir).map_err(|e| format!("{prev}: {e}"))?;
-    let to = record.version.clone();
+    let prev = record.previous.ok_or("no version before it is kept")?;
+    let to = prev.version.clone();
     if to == version {
         return Err(format!("the version kept before it is {version} too"));
     }
     if version_cmp(&to, floor).is_lt() {
         return Err(format!("{to}, the one before, is older than {floor}, the oldest this Luna runs"));
     }
-    if let Some(bad) = choice::bad_in(root).get(&to) {
-        return Err(format!("{to}, the one before, was turned away too ({bad})"));
+    if let Some(bad) = record.bad.get(&to) {
+        return Err(format!("{to}, the one before, was turned away too ({})", bad.why));
     }
-    reverify(&dir, &record).map_err(|e| format!("{to}, the one before: {e}"))?;
-    mark_recorded(root)?;
-    step("mark")?;
-    let unnoted = choice::mark_bad_in(&held, root, version, choice::By::Rollback, why).err();
-    if let Some(e) = &unnoted {
-        crate::log::warn("cli", &format!("rolling back from {version}, which could not be turned away: {e}"));
+    let dir = root.join("versions").join(&prev.dir);
+    let kept = read_record(&dir).map_err(|e| format!("{to}, the one before: {e}"))?;
+    if kept.version != to || !intact(&dir, &kept, bin_rel) {
+        return Err(format!("{to}, the one before, is no longer whole"));
     }
-    flip_in(&held, root, bin_rel, &prev, true)?;
-    step("prune")?;
-    prune_in(&held, root, bin_rel);
-    Ok(Rolled { to, unnoted })
+    reverify(&dir, &kept).map_err(|e| format!("{to}, the one before: {e}"))?;
+    state::change(root, |s| {
+        if s.current.as_ref() != Some(&current) || s.previous.as_ref() != Some(&prev) {
+            return Err("the versions changed while it was checked".to_string());
+        }
+        s.bad.insert(version.to_string(), state::Mark { why: short(why), by: state::By::Rollback });
+        s.canary = Some(canary::fresh(&to));
+        s.current = Some(prev.clone());
+        s.previous = None;
+        Ok(())
+    })??;
+    step("sweep")?;
+    prune_in(root, bin_rel);
+    Ok(to)
 }
 
-/// A rollback a core went away in the middle of, for the next core to
-/// finish (`finish_rollbacks`): the version current is turned away (the
-/// mark was made, the flip was not), or its canary tripped with nothing
-/// come of it yet (the core went before the mark). `name` is the CLI's, for
-/// what the person is told. The version, what was seen of it, and what the
-/// rollback came to.
-fn resume_in(root: &Path, bin_rel: &str, floor: &str, name: &str) -> Option<(String, String, Result<Rolled, String>)> {
-    let version = current_in(root, bin_rel)?.version;
-    if let Some(why) = choice::bad_in(root).get(&version).cloned() {
-        let seen = format!("{name} {version} was turned away ({why}) and was still current.");
-        let rolled = roll_back_in(root, bin_rel, floor, &version, &why);
-        return Some((version, seen, rolled));
-    }
-    let tripped = canary::read_in(root).filter(|c| c.version == version && c.warned && c.outcome.is_none())?;
-    let seen = format!(
-        "{} of the {} sessions started on {name} {version} failed soon after starting, and Luna's core stopped before it rolled back.",
-        tripped.failures.len(),
-        tripped.watched
-    );
+/// A rollback the record says is due and not done: the current version's
+/// canary tripped, with nothing come of it (the core went away between the
+/// trip and the rollback, or in the middle of the rollback's checks). The
+/// version, what was seen of it, and what the rollback came to.
+fn resume_in(provider: Provider, root: &Path, bin_rel: &str, floor: &str) -> Option<(String, String, Result<String, String>)> {
+    let record = state::read_in(root).ok()?;
+    let version = record.current?.version;
+    let tripped = record.canary.filter(|c| c.version == version && c.warned && c.outcome.is_none())?;
+    let seen = canary::seen_of(provider, &tripped);
     let rolled = roll_back_in(root, bin_rel, floor, &version, &format!("rolled back: {seen}"));
     Some((version, seen, rolled))
 }
 
-/// At the core's start, before any session: each rollback the last core
-/// went away in the middle of, finished, and the person told as for any.
+/// At the core's start, before any session: each rollback the record says
+/// is due, made, and the person told as for any.
 pub fn finish_rollbacks() {
     for provider in Provider::ALL {
         let root = root(provider);
-        let name = canary::name_of(provider);
-        let Some((version, seen, rolled)) = resume_in(&root, source(provider).bin_rel, floor(provider), name) else { continue };
+        let Some((version, seen, rolled)) = resume_in(provider, &root, source(provider).bin_rel, floor(provider)) else { continue };
         if let Err(e) = &rolled {
             canary::note_outcome(&root, &version, e);
         }
@@ -1056,53 +1018,11 @@ pub fn finish_rollbacks() {
     }
 }
 
-/// At a provider's root: the directory `current` named before its last flip,
-/// and on a second line the directory that flip made current. A first line
-/// left empty is a flip that left nothing to go back to (a rollback's).
-const PREVIOUS: &str = "previous";
-
-fn write_previous(root: &Path, before: Option<&str>, of: &str) -> Result<(), String> {
-    let text = format!("{}\n{of}\n", before.unwrap_or(""));
-    crate::secret::write_private_synced(&root.join(PREVIOUS), text.as_bytes()).map_err(|e| format!("write {PREVIOUS}: {e}"))
-}
-
-/// The directory to go back to from what is current, while it is still a
-/// whole install: `previous`'s first line, if its second names the directory
-/// `current` does. If it names another, the flip away from that one was cut
-/// short after `current` and before `previous`, and that one is the
-/// directory before. One line alone is a `previous` from before the second
-/// (Luna 0.19), taken as it is.
-fn previous_in(root: &Path, bin_rel: &str) -> Option<String> {
-    let text = fs::read_to_string(root.join(PREVIOUS)).ok()?;
-    let mut lines = text.lines().map(str::trim);
-    let before = lines.next().unwrap_or("");
-    let name = match lines.next().filter(|of| !of.is_empty()) {
-        Some(of) if fs::read_to_string(root.join("current")).ok().as_deref().map(str::trim) != Some(of) => of,
-        _ => before,
-    };
-    if !plain_name(name) {
-        return None;
-    }
-    let dir = root.join("versions").join(name);
-    let record = read_record(&dir).ok()?;
-    intact(&dir, &record, bin_rel).then(|| name.to_string())
-}
-
-/// Writes the `RECORDED` marker where it is not there yet.
-fn mark_recorded(root: &Path) -> Result<(), String> {
-    if fs::symlink_metadata(root.join(RECORDED)).is_ok() {
-        return Ok(());
-    }
-    crate::secret::write_private_synced(&root.join(RECORDED), b"versions here are installed with completion records\n")
-        .map_err(|e| format!("write {RECORDED}: {e}"))
-}
-
 /// Fetches `version` into a fresh staging directory, holds it to what the
 /// fetch vouched for, puts it and its record on disk, and renames it into
-/// `versions/`, under the switch lock as every change there is, and held
-/// (`in_use`) before that lock goes, so no sweep takes it before its flip.
-/// Returns the name it got there and the hold. Whatever fails, the staged
-/// directory goes.
+/// `versions/`, held (`in_use`) from before the rename, so no sweep takes it
+/// before its flip. Returns the name it got there and the hold. Whatever
+/// fails, the staged directory goes.
 fn install_in(
     root: &Path,
     bin_rel: &str,
@@ -1116,12 +1036,7 @@ fn install_in(
     let done = fetch(&staged)
         .and_then(|package| validate(&staged, version, bin_rel, package))
         .and_then(|record| persist(&staged, &record))
-        .and_then(|()| {
-            let _switch = switching(root)?;
-            let name = promote(&staged, &versions, version)?;
-            let held = in_use::hold(root, &name).ok_or_else(|| format!("cannot hold {name} in {}", root.join(in_use::DIR).display()))?;
-            Ok((name, held))
-        });
+        .and_then(|()| promote(root, &staged, version));
     let done = done.and_then(|name| {
         // The rename made durable before `current` names its result. Where
         // the platform cannot (Windows, `secret::sync_dir`), a rename a power
@@ -1233,16 +1148,21 @@ fn sha256_of(path: &Path) -> Result<String, String> {
 /// `<ver>`, or `<ver>~<n>` while an older directory of that version is still
 /// there — one a running session may hold, which is left exactly as it is.
 /// One rename on one volume, so the directory appears whole or not at all.
-fn promote(staged: &Path, versions: &Path, version: &str) -> Result<String, String> {
-    fs::create_dir_all(versions).map_err(|e| format!("mkdir {}: {e}", versions.display()))?;
+/// The name is held (`in_use`) before the rename: the sweep, which takes a
+/// folder only under its exclusive lock, cannot take the new one before the
+/// flip makes the record name it.
+fn promote(root: &Path, staged: &Path, version: &str) -> Result<(String, InUse), String> {
+    let versions = root.join("versions");
+    fs::create_dir_all(&versions).map_err(|e| format!("mkdir {}: {e}", versions.display()))?;
     for n in 0..1000u32 {
         let name = if n == 0 { version.to_string() } else { format!("{version}~{n}") };
         let target = versions.join(&name);
         if fs::symlink_metadata(&target).is_ok() {
             continue;
         }
+        let held = in_use::hold(root, &name).ok_or_else(|| format!("cannot hold {name} in {}", root.join(in_use::DIR).display()))?;
         match fs::rename(staged, &target) {
-            Ok(()) => return Ok(name),
+            Ok(()) => return Ok((name, held)),
             // Taken meanwhile: Windows refuses a directory rename onto
             // anything, Unix onto a directory with anything in it.
             Err(_) if fs::symlink_metadata(&target).is_ok() => continue,
@@ -1327,14 +1247,23 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
     fs::remove_dir(path)
 }
 
-/// Drops every version directory but the current one, the previous one and
-/// those a process of Luna's runs from (`in_use`); such a one goes on a later
-/// pass, once nothing runs from it. On Windows a running exe would not go
-/// anyway; on Unix the hold is all that keeps a running session's directory,
-/// its helpers with it. Under the switch lock, so `current` and `previous`
-/// cannot move between their reading and the sweep.
-fn prune_in(_held: &Switching, root: &Path, bin_rel: &str) {
-    let keep: Vec<String> = current_in(root, bin_rel).map(|c| c.dir).into_iter().chain(previous_in(root, bin_rel)).collect();
+/// Drops every version directory but those the record names (current and
+/// the one to go back to) and those a process of Luna's runs from or a
+/// promotion holds (`in_use`); such a one goes on a later pass, once nothing
+/// holds it. On Windows a running exe would not go anyway; on Unix the hold
+/// is all that keeps a running session's directory, its helpers with it. The
+/// record is read once, without its lock: a folder a later write comes to
+/// name was named before it (the one to go back to, made current by a
+/// rollback; what was current, made the one to go back to by a flip) or is
+/// held (a promotion), so this sweep spares it either way.
+fn prune_in(root: &Path, bin_rel: &str) {
+    let keep = match state::read_in(root) {
+        Ok(record) => record.named(),
+        Err(e) => {
+            crate::log::warn("cli", &format!("{}: {e}; not sweeping", root.display()));
+            return;
+        }
+    };
     let versions = root.join("versions");
     if !link_free_below(root, &versions) {
         crate::log::warn("cli", &format!("{} is a link or junction; not sweeping through it", versions.display()));
@@ -1466,11 +1395,45 @@ mod tests {
     }
 
     fn prune(root: &Path) {
-        prune_in(&switching(root).unwrap(), root, BIN);
+        prune_in(root, BIN);
     }
 
     fn current_version_in(root: &Path) -> Option<String> {
         current_in(root, BIN).map(|c| c.version)
+    }
+
+    /// The versions the record turns away, with why.
+    fn bad_of(root: &Path) -> std::collections::BTreeMap<String, String> {
+        state::read_in(root).unwrap().bad_whys()
+    }
+
+    /// The folder the record keeps to go back to.
+    fn previous_of(root: &Path) -> Option<String> {
+        state::read_in(root).unwrap().previous.map(|p| p.dir)
+    }
+
+    /// Turns `version` away, as the core's rollback from it would.
+    fn mark(root: &Path, version: &str, why: &str) {
+        state::change(root, |s| s.bad.insert(version.into(), state::Mark { why: why.into(), by: state::By::Rollback })).unwrap();
+    }
+
+    /// The current version's canary tripped, as `fail_in` leaves it before
+    /// the rollback.
+    fn trip(root: &Path) {
+        state::change(root, |s| {
+            let c = s.canary.as_mut().unwrap();
+            (c.failures, c.watched, c.warned) = (vec!["a".into(), "b".into()], 2, true);
+        })
+        .unwrap();
+    }
+
+    /// Runs `f` with the step `at` failing on this thread, as the process
+    /// dying just before it.
+    fn cut_at<T>(at: &'static str, f: impl FnOnce() -> T) -> T {
+        FAIL_AT.with(|s| s.set(Some(at)));
+        let out = f();
+        FAIL_AT.with(|s| s.set(None));
+        out
     }
 
     /// Every file below `dir` with its bytes, in order.
@@ -1526,7 +1489,7 @@ mod tests {
             Err("unpack: unexpected end of file".into())
         });
         assert!(cut.is_err());
-        assert!(!root.join("current").exists(), "nothing was activated");
+        assert!(current_version_in(&root).is_none(), "nothing was activated");
         assert_eq!(entries(&root.join("staging")), 0, "the staged copies are gone");
 
         let fetched = Cell::new(0);
@@ -1575,7 +1538,7 @@ mod tests {
         let root = scratch("whole");
         let (dir, flipped) = update_in(&root, BIN, pointer("1.2.0"), &mut whole).unwrap();
         assert_eq!((dir.as_str(), flipped), ("1.2.0", true));
-        assert_eq!(fs::read_to_string(root.join("current")).unwrap(), "1.2.0");
+        assert_eq!(state::read_in(&root).unwrap().current.unwrap().dir, "1.2.0");
         let record = read_record(&root.join("versions").join("1.2.0")).unwrap();
         assert_eq!(record.version, "1.2.0");
         assert_eq!(record.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), [FILES[0].0, FILES[1].0]);
@@ -1603,7 +1566,7 @@ mod tests {
         let staged = root.join("staging").join("3.0.0-new");
         whole(&staged).unwrap();
 
-        let name = promote(&staged, &root.join("versions"), "3.0.0").unwrap();
+        let (name, _held) = promote(&root, &staged, "3.0.0").unwrap();
         assert_eq!(name, "3.0.0~1");
         assert_eq!(snapshot(&running), before, "nothing in the running version changed");
         assert!(!staged.exists());
@@ -1612,29 +1575,26 @@ mod tests {
     }
 
     /// A record lost after install (a power cut before it reached the disk,
-    /// on an older layout) must not let the bare exe pass: only a tree this
-    /// code never installed into runs a directory without one.
+    /// on an older layout) must not let the bare exe pass: only a tree from
+    /// before records runs a directory without one.
     #[test]
     fn a_version_installed_here_is_not_run_without_its_record() {
         let root = scratch("unrecorded");
         update_in(&root, BIN, pointer("1.2.0"), &mut whole).unwrap();
-        assert!(root.join(RECORDED).is_file(), "the tree is marked before `current` names anything");
-        // A marker lost after the fact comes back on the next pass, even one
-        // with nothing to fetch.
-        fs::remove_file(root.join(RECORDED)).unwrap();
-        let (_, flipped) = update_in(&root, BIN, pointer("1.2.0"), &mut |_: &Path| panic!("fetched again")).unwrap();
-        assert!(!flipped && root.join(RECORDED).is_file());
         fs::remove_file(root.join("versions").join("1.2.0").join(RECORD)).unwrap();
         assert!(current_in(&root, BIN).is_none());
         let _ = remove_tree(&root);
 
-        // From before records: no marker, and `current` names a directory
-        // with its exe. Still run, but not taken for installed.
+        // From before records: no `recorded` marker, and `current` names a
+        // directory with its exe. Still run, but not taken for installed.
         let legacy = scratch("legacy");
         write_files(&legacy.join("versions").join("0.9.0"), &FILES[..1]);
         fs::write(legacy.join("current"), "0.9.0").unwrap();
         assert!(current_in(&legacy, BIN).is_some_and(|c| !c.recorded && c.version == "0.9.0"));
         assert!(installed_in(&legacy, BIN, "0.9.0").is_none());
+        // With the marker, the same folder is an install whose record is gone.
+        fs::write(legacy.join("recorded"), "x").unwrap();
+        assert!(current_in(&legacy, BIN).is_none());
         let _ = remove_tree(&legacy);
     }
 
@@ -1673,7 +1633,7 @@ mod tests {
         update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
         update_in(&root, BIN, pointer("2.0.0"), &mut whole).unwrap();
         assert_eq!(dirs(&root), ["1.0.0", "2.0.0"]);
-        assert_eq!(previous_in(&root, BIN).as_deref(), Some("1.0.0"));
+        assert_eq!(previous_of(&root).as_deref(), Some("1.0.0"));
 
         // A session starts on 2.0.0 and runs on through two more updates.
         let (exe, version, held) = launch_in(&root, BIN, "0").unwrap();
@@ -1755,10 +1715,16 @@ mod tests {
         fs::remove_file(&record).unwrap();
         assert!(damaged(&root).contains("completion record"));
         fs::write(&record, kept).unwrap();
-        // `current` naming no version directory.
-        fs::write(root.join("current"), "../elsewhere").unwrap();
+        // The record naming no version directory, then not reading at all.
+        let name = |dir: &str| state::change(&root, |s| s.current.as_mut().unwrap().dir = dir.into()).unwrap();
+        name("../elsewhere");
         assert!(damaged(&root).contains("no version directory"));
-        fs::write(root.join("current"), "1.0.0").unwrap();
+        name("1.0.0");
+        assert!(launch_in(&root, BIN, "0").is_ok());
+        let kept = fs::read(root.join("state.json")).unwrap();
+        fs::write(root.join("state.json"), "{not json").unwrap();
+        assert!(damaged(&root).contains("does not read"));
+        fs::write(root.join("state.json"), kept).unwrap();
         assert!(launch_in(&root, BIN, "0").is_ok());
         let _ = remove_tree(&root);
     }
@@ -1780,6 +1746,12 @@ mod tests {
         assert_eq!(version_cmp("1.0.0-1", "1.0.0-alpha"), Less, "a number below a word");
         assert_eq!(version_cmp("1.0.0-rc.1", "1.0.0-rc.1"), Equal);
         assert_eq!(version_cmp("1.0.0+build.5", "1.0.0"), Equal, "build metadata does not count");
+        // Numbers past any machine word, ordered as numbers.
+        let huge = "1.0.0-alpha.18446744073709551616";
+        assert_eq!(version_cmp(huge, "1.0.0-alpha.18446744073709551615"), Greater);
+        assert_eq!(version_cmp(huge, "1.0.0-alpha.beta"), Less, "still a number, below a word");
+        assert_eq!(version_cmp("99999999999999999999999.0.0", "2.0.0"), Greater);
+        assert_eq!(version_cmp("1.007.0", "1.7.0"), Equal, "leading zeros do not count");
     }
 
     /// Floors a security fix set; a Luna release may raise them, never lower
@@ -1851,13 +1823,13 @@ mod tests {
         assert_eq!(*probed.borrow(), [root.join("versions").join("2.0.0").join(BIN)], "the exe where it would run from");
         assert_eq!(current_version_in(&root).as_deref(), Some("1.0.0"));
         assert_eq!(dirs(&root), ["1.0.0"], "the refused version went");
-        assert!(choice::bad_in(&root)["2.0.0"].contains("failed the offline probe"));
+        assert!(bad_of(&root)["2.0.0"].contains("failed the offline probe"));
 
         let stayed = pass_in(&root, BIN, "0", Ok("2.0.0"), &refuse, &mut |_: &str, _: &Path| panic!("fetched again")).unwrap();
         assert!(stayed.unwrap().contains("2.0.0, the newest release, was turned away (failed the offline probe"));
         assert_eq!(probed.borrow().len(), 1, "nor probed again");
         assert_eq!(pass_at(&root, "0", "2.1.0"), Ok(None), "a newer one is taken");
-        assert!(choice::bad_in(&root).is_empty(), "and what it passed is forgotten");
+        assert!(bad_of(&root).is_empty(), "and what it passed is forgotten");
         let _ = remove_tree(&root);
     }
 
@@ -1892,8 +1864,8 @@ mod tests {
         fail("2.0.0", ["rollback-a", "rollback-b"]);
         told_with("Codex rolled back to 1.0.0");
         assert_eq!(current_version_in(&root).as_deref(), Some("1.0.0"), "rolled back");
-        assert!(choice::bad_in(&root)["2.0.0"].starts_with("rolled back: 2 of the 2 sessions started on Codex 2.0.0"));
-        assert_eq!(previous_in(&root, BIN), None, "nothing but the failed one to go back to");
+        assert!(bad_of(&root)["2.0.0"].starts_with("rolled back: 2 of the 2 sessions started on Codex 2.0.0"));
+        assert_eq!(previous_of(&root), None, "nothing but the failed one to go back to");
         assert_eq!(dirs(&root), ["1.0.0"], "and that one is swept, nothing running from it");
         assert!(launch_in(&root, BIN, "0").is_ok_and(|(_, v, _)| v == "1.0.0"));
 
@@ -1906,12 +1878,12 @@ mod tests {
         let told = told_with("Codex 1.0.0 may be broken");
         assert!(told["body"].as_str().unwrap().contains("Luna could not roll back: no version before it is kept"), "{told}");
         assert_eq!(current_version_in(&root).as_deref(), Some("1.0.0"));
-        assert!(!choice::bad_in(&root).contains_key("1.0.0"));
+        assert!(!bad_of(&root).contains_key("1.0.0"));
 
         // A newer release: taken, and the old turning away forgotten.
         assert_eq!(pass_at(&root, "0", "3.0.0"), Ok(None));
         assert_eq!(current_version_in(&root).as_deref(), Some("3.0.0"));
-        assert!(choice::bad_in(&root).is_empty());
+        assert!(bad_of(&root).is_empty());
         let _ = remove_tree(&root);
     }
 
@@ -1929,16 +1901,13 @@ mod tests {
         // A helper of 1.0.0 altered at its size: sizes pass, the hash does not.
         let helper = root.join("versions").join("1.0.0").join(FILES[1].0);
         fs::write(&helper, b"THE SANDBOX HELPER").unwrap();
-        assert!(previous_in(&root, BIN).is_some(), "intact by size");
+        assert!(previous_of(&root).is_some(), "intact by size");
         assert!(back("0", "2.0.0").unwrap_err().contains("no longer matches its sha256"));
         fs::write(&helper, FILES[1].1).unwrap();
-        {
-            let held = switching(&root).unwrap();
-            choice::mark_bad_in(&held, &root, "1.0.0", choice::By::Rollback, "by hand in 0.19").unwrap();
-        }
+        mark(&root, "1.0.0", "by hand in 0.19");
         assert!(back("0", "2.0.0").unwrap_err().contains("was turned away too"));
         assert_eq!(current_version_in(&root).as_deref(), Some("2.0.0"), "each refused, nothing moved");
-        assert!(!choice::bad_in(&root).contains_key("2.0.0"));
+        assert!(!bad_of(&root).contains_key("2.0.0"));
 
         // A record from before every file had a sha256: nothing to vouch for
         // it by.
@@ -1968,49 +1937,52 @@ mod tests {
         let _ = remove_tree(&root);
     }
 
-    /// What Luna 0.19 left at the root (its channel, a version held by hand,
-    /// marks good, the floor that rose here, the canary's `dismissed`)
-    /// neither breaks the first pass nor holds it: the leftovers go, a bad
-    /// mark still counts until a newer version is current.
+    /// A tree Luna 0.19 left (its `current`, a one-line `previous`, a bad mark
+    /// by hand, its channel, pins, marks good and rising floor, a canary the
+    /// person kept with `dismissed`) starts as it was, migrates into the record
+    /// at the first pass, its files gone, and moves on to the newest: the bad
+    /// mark holds while the pointer names that version, and nothing rolls back
+    /// from the canary of then.
     #[test]
     fn a_tree_from_0_19_starts_and_moves_on_to_the_newest() {
         let root = scratch("from-0-19");
         update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
         update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
-        for (name, text) in [
+        fs::remove_file(root.join("state.json")).unwrap();
+        let left = [
+            ("current", "2.0.0"),
+            ("previous", "1.0.0"),
+            ("recorded", "versions here are installed with completion records\n"),
+            ("bad.json", r#"{"2.5.0":"marked bad by hand"}"#),
+            ("canary.json", r#"{"version":"2.0.0","watched":3,"failures":["a","b"],"warned":true,"dismissed":true}"#),
+            ("canary.lock", ""),
             ("channel", "known-good"),
             ("pinned", "1.0.0"),
             ("good.json", r#"{"1.0.0":"marked good by hand"}"#),
             ("marks.lock", ""),
             ("floor", "9.9.9"),
             ("signed-floor", "9.9.9"),
-            ("bad.json", r#"{"2.5.0":"marked bad by hand"}"#),
-            // 0.19's `previous`: one line.
-            ("previous", "1.0.0"),
-        ] {
+        ];
+        for (name, text) in left {
             fs::write(root.join(name), text).unwrap();
         }
-        assert_eq!(previous_in(&root, BIN).as_deref(), Some("1.0.0"));
-        let canary = read_to_string_or_panic(&root.join("canary.json")).replace("\"warned\"", "\"dismissed\":true,\"warned\"");
-        fs::write(root.join("canary.json"), canary).unwrap();
-        assert!(canary::read_in(&root).is_some(), "0.19's canary.json reads");
-        assert!(launch_in(&root, BIN, "0").is_ok_and(|(_, v, _)| v == "2.0.0"));
+        assert!(launch_in(&root, BIN, "0").is_ok_and(|(_, v, _)| v == "2.0.0"), "it runs before anything is written");
+        assert_eq!(previous_of(&root).as_deref(), Some("1.0.0"));
+        assert!(resume_in(Provider::Codex, &root, BIN, "0").is_none(), "no rollback from the canary of then");
 
-        // The pass itself clears them, a pass that stays included.
         let stayed = pass_at(&root, floor(Provider::Codex), "2.5.0").unwrap();
         assert!(stayed.unwrap().contains("marked bad by hand"));
-        for name in ["channel", "pinned", "good.json", "marks.lock", "floor", "signed-floor"] {
+        for (name, _) in left {
             assert!(!root.join(name).exists(), "{name}");
         }
+        let record = state::read_in(&root).unwrap();
+        assert_eq!((record.current.unwrap().dir, record.previous.unwrap().dir, record.canary), ("2.0.0".into(), "1.0.0".into(), None));
+        assert_eq!(record.bad["2.5.0"].by, state::By::Earlier);
         // Above 9.9.9's floor of then or not, the newest release is taken.
         assert_eq!(pass_at(&root, floor(Provider::Codex), "3.0.0"), Ok(None));
         assert_eq!(current_version_in(&root).as_deref(), Some("3.0.0"));
-        assert!(choice::bad_in(&root).is_empty());
+        assert!(bad_of(&root).is_empty(), "the pointer moved past the marked version");
         let _ = remove_tree(&root);
-    }
-
-    fn read_to_string_or_panic(path: &Path) -> String {
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 
     /// A new version gets a canary of its own; Settings shows it while that
@@ -2046,90 +2018,102 @@ mod tests {
         assert!(held.is_some_and(|w| w.contains("as administrator") && w.contains(why)));
     }
 
-    /// Runs `f` with the switch's step `at` failing on this thread.
-    fn cut_at<T>(at: &'static str, f: impl FnOnce() -> T) -> T {
-        FAIL_AT.with(|s| s.set(Some(at)));
-        let out = f();
-        FAIL_AT.with(|s| s.set(None));
-        out
-    }
-
-    /// A flip cut short before any of its writes (a crash, a failed write)
-    /// leaves a tree that holds together: what runs is whole, its way back
-    /// is the version before it and stays on disk through a sweep, a new
-    /// version is watched before it runs, and the next pass finishes it.
+    /// A flip that dies before the record's write leaves the record as it
+    /// was; one that dies between the write and the sweep leaves it as it was
+    /// to be, the old folders still on disk. Either way what runs is whole,
+    /// its way back is on disk, and the next pass ends where an uncut one
+    /// would have.
     #[test]
-    fn a_flip_cut_short_at_any_step_leaves_a_tree_that_holds_together() {
-        for at in ["canary", "current", "previous", "forget"] {
+    fn a_flip_cut_short_leaves_one_of_its_two_states_and_the_next_pass_converges() {
+        for at in ["state", "sweep"] {
             let root = scratch(&format!("flip-cut-{at}"));
             update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
             update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+            let before = state::read_in(&root).unwrap();
             let cut = cut_at(at, || update_in(&root, BIN, pointer("3.0.0"), &mut hashed));
             assert!(cut.unwrap_err().contains(&format!("stopped before {at}")), "{at}");
-            let (_, running, _) = launch_in(&root, BIN, "0").unwrap();
-            let before = if running == "3.0.0" { "2.0.0" } else { "1.0.0" };
-            assert_eq!(previous_in(&root, BIN).as_deref(), Some(before), "cut before {at}, {running} runs");
-            if running == "3.0.0" {
-                assert_eq!(canary::read_in(&root).unwrap().version, "3.0.0", "watched before it ran");
+            let after = state::read_in(&root).unwrap();
+            let names = |s: &state::State| (s.current.clone().unwrap().dir, s.previous.clone().map(|p| p.dir));
+            match at {
+                "state" => assert_eq!(after, before, "nothing written"),
+                _ => assert_eq!(names(&after), ("3.0.0".into(), Some("2.0.0".into())), "written whole"),
             }
-            prune(&root);
-            assert!(root.join("versions").join(before).join(BIN).is_file(), "{at}: the way back survives a sweep");
+            assert!(after.named().iter().all(|d| root.join("versions").join(d).join(BIN).is_file()), "{at}: all it names is there");
+            assert!(launch_in(&root, BIN, "0").is_ok(), "{at}");
             update_in(&root, BIN, pointer("3.0.0"), &mut hashed).unwrap();
-            assert_eq!(current_version_in(&root).as_deref(), Some("3.0.0"), "{at}");
-            assert_eq!(previous_in(&root, BIN).as_deref(), Some("2.0.0"), "{at}");
+            assert_eq!(names(&state::read_in(&root).unwrap()), ("3.0.0".into(), Some("2.0.0".into())), "{at}");
+            assert_eq!(dirs(&root), ["2.0.0", "3.0.0"], "{at}: swept");
             let _ = remove_tree(&root);
         }
     }
 
-    /// 2.0.0's canary tripped, as `fail_in` leaves it before the rollback.
-    fn tripped(root: &Path, version: &str) {
-        let mut c = canary::read_in(root).unwrap();
-        assert_eq!(c.version, version);
-        (c.failures, c.watched, c.warned) = (vec!["a".into(), "b".into()], 2, true);
-        fs::write(root.join("canary.json"), serde_json::to_vec(&c).unwrap()).unwrap();
-    }
-
-    /// A rollback cut short at any step (the core gone mid-way) is finished
-    /// by the next core (`resume_in`): the failed version turned away, the
-    /// one before current, and nothing more to finish after.
+    /// A rollback that dies before its write leaves the trip recorded and
+    /// nothing else, which the next core takes up (`resume_in`); one that
+    /// dies between the write and the sweep leaves it done. Either way the
+    /// failed version ends turned away and the one before current.
     #[test]
-    fn a_rollback_cut_short_at_any_step_is_finished_by_the_next_core() {
-        for at in ["mark", "canary", "current", "previous", "prune"] {
+    fn a_rollback_cut_short_is_finished_or_done_and_the_next_core_converges() {
+        for at in ["state", "sweep"] {
             let root = scratch(&format!("rollback-cut-{at}"));
             update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
             update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
-            tripped(&root, "2.0.0");
+            trip(&root);
             let cut = cut_at(at, || roll_back_in(&root, BIN, "0", "2.0.0", "rolled back: test"));
             assert!(cut.unwrap_err().contains(&format!("stopped before {at}")), "{at}");
-            match resume_in(&root, BIN, "0", "Codex") {
-                // Cut before `current` moved: still on the failed version.
-                Some((version, _, rolled)) => {
-                    assert_eq!(version, "2.0.0", "{at}");
-                    assert_eq!(rolled, Ok(Rolled { to: "1.0.0".into(), unnoted: None }), "{at}");
-                }
-                None => assert!(["previous", "prune"].contains(&at), "{at}: nothing taken up"),
+            let resumed = resume_in(Provider::Codex, &root, BIN, "0");
+            match at {
+                "state" => assert_eq!(resumed.map(|(v, _, r)| (v, r)), Some(("2.0.0".into(), Ok("1.0.0".into())))),
+                _ => assert!(resumed.is_none(), "done already"),
             }
             assert_eq!(current_version_in(&root).as_deref(), Some("1.0.0"), "{at}");
-            assert!(choice::bad_in(&root).contains_key("2.0.0"), "{at}");
-            assert!(resume_in(&root, BIN, "0", "Codex").is_none(), "{at}: finished");
+            assert!(bad_of(&root).contains_key("2.0.0") && previous_of(&root).is_none(), "{at}");
+            assert!(resume_in(Provider::Codex, &root, BIN, "0").is_none(), "{at}: finished");
+            prune(&root);
+            assert_eq!(dirs(&root), ["1.0.0"], "{at}");
             let _ = remove_tree(&root);
         }
     }
 
-    /// A turning away that will not write is said, and the rollback still
-    /// made: the version before beats every session on the failed one.
+    /// A flip away from a version whose canary tripped (its rollback still
+    /// to come) keeps the one before it to go back to: the failed version is
+    /// never made the way back.
     #[test]
-    fn a_mark_that_will_not_write_does_not_stop_the_rollback() {
-        let root = scratch("rollback-unnoted");
+    fn a_flip_away_from_a_tripped_version_keeps_the_one_before_it() {
+        let root = scratch("flip-from-tripped");
         update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
         update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
-        fs::create_dir(root.join("bad.json")).unwrap();
-        fs::write(root.join("bad.json").join("keep"), b"x").unwrap();
-        let rolled = roll_back_in(&root, BIN, "0", "2.0.0", "test").unwrap();
-        assert_eq!(rolled.to, "1.0.0");
-        assert!(rolled.unnoted.is_some_and(|e| e.contains("bad.json")));
-        assert_eq!(current_version_in(&root).as_deref(), Some("1.0.0"));
+        trip(&root);
+        update_in(&root, BIN, pointer("3.0.0"), &mut hashed).unwrap();
+        assert_eq!(previous_of(&root).as_deref(), Some("1.0.0"));
+        assert!(resume_in(Provider::Codex, &root, BIN, "0").is_none(), "nothing left to roll back from");
+        assert_eq!(dirs(&root), ["1.0.0", "3.0.0"], "2.0.0 swept");
         let _ = remove_tree(&root);
+    }
+
+    /// The window's pass flipping to 3.0.0 and the core rolling back from a
+    /// tripped 2.0.0 at once, on two threads, each under the record's lock:
+    /// whichever goes first, the record ends with 3.0.0 current, 1.0.0 to go
+    /// back to, and every folder it names on disk.
+    #[test]
+    fn a_pass_and_a_rollback_at_once_end_in_one_record() {
+        for round in 0..8 {
+            let root = scratch(&format!("race-{round}"));
+            update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+            update_in(&root, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+            trip(&root);
+            let (a, b) = (root.clone(), root.clone());
+            let pass = std::thread::spawn(move || pass_at(&a, "0", "3.0.0"));
+            let back = std::thread::spawn(move || roll_back_in(&b, BIN, "0", "2.0.0", "rolled back: race"));
+            let (passed, _rolled) = (pass.join().unwrap(), back.join().unwrap());
+
+            assert_eq!(passed, Ok(None), "round {round}");
+            let record = state::read_in(&root).unwrap();
+            assert_eq!(record.current.as_ref().map(|c| c.dir.as_str()), Some("3.0.0"), "round {round}");
+            assert_eq!(record.previous.as_ref().map(|p| p.dir.as_str()), Some("1.0.0"), "round {round}");
+            assert!(record.named().iter().all(|d| root.join("versions").join(d).join(BIN).is_file()), "round {round}");
+            assert!(resume_in(Provider::Codex, &root, BIN, "0").is_none(), "round {round}");
+            let _ = remove_tree(&root);
+        }
     }
 
     /// The probe not run to its end (out of time, its scratch home not to
@@ -2144,7 +2128,7 @@ mod tests {
         };
         let e = pass_in(&root, BIN, "0", Ok("2.0.0"), &late, &mut |_: &str, dir: &Path| hashed(dir)).unwrap_err();
         assert!(e.contains("2.0.0 could not be probed") && e.contains("the next pass tries again"), "{e}");
-        assert!(choice::bad_in(&root).is_empty());
+        assert!(bad_of(&root).is_empty());
         assert_eq!(pass_in(&root, BIN, "0", Ok("2.0.0"), &passes_any, &mut |_: &str, _: &Path| panic!("fetched again")), Ok(None));
         assert_eq!(current_version_in(&root).as_deref(), Some("2.0.0"));
         let _ = remove_tree(&root);
@@ -2193,21 +2177,20 @@ mod tests {
         };
         assert_eq!(pass_in(&root, BIN, "0", Ok("3.0.0"), &probe, &mut |_: &str, dir: &Path| hashed(dir)), Ok(None));
         assert_eq!(current_version_in(&root).as_deref(), Some("3.0.0"));
-        assert_eq!(previous_in(&root, BIN).as_deref(), Some("1.0.0"), "back to what the rollback left current");
-        assert!(choice::bad_in(&root).is_empty(), "2.0.0, below the version now current, is forgotten");
+        assert_eq!(previous_of(&root).as_deref(), Some("1.0.0"), "back to what the rollback left current");
+        assert_eq!(bad_of(&root).keys().collect::<Vec<_>>(), ["2.0.0"], "until the next pointer read names another");
         let _ = remove_tree(&root);
     }
 
     /// The core turns away the very version the pass is about to make
-    /// current, after the pass chose it: the flip, under the switch lock,
-    /// sees it and refuses.
+    /// current, after the pass chose it: the flip, a change of the record
+    /// under its lock, sees it and refuses.
     #[test]
     fn a_version_turned_away_meanwhile_is_not_made_current() {
         let root = scratch("meanwhile");
         update_in(&root, BIN, pointer("1.0.0"), &mut hashed).unwrap();
         let probe = |_: &Path, version: &str| -> Result<(), probe::Failed> {
-            let held = switching(&root).unwrap();
-            choice::mark_bad_in(&held, &root, version, choice::By::Rollback, "rolled back in the core").unwrap();
+            mark(&root, version, "rolled back in the core");
             Ok(())
         };
         let e = pass_in(&root, BIN, "0", Ok("2.0.0"), &probe, &mut |_: &str, dir: &Path| hashed(dir)).unwrap_err();

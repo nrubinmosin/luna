@@ -15,12 +15,10 @@
 //! version that dies as it starts is the very thing this is for, and a pane's
 //! CLI gives no sign of a finished startup both CLIs share.
 //!
-//! The window flips `current` and starts a canary for the new version
-//! (`reset_in`); the core starts and reaps the sessions, counts them and
-//! rolls back. So the count lives in `<root>/canary.json`, read and written
-//! under the file lock `<root>/canary.lock` by both, and the rollback takes
-//! the switch lock the update pass takes (`cli.rs` `switching`), never while
-//! it holds the canary's.
+//! The window's update pass starts a canary for the version it makes current
+//! (`fresh`, in the same write as the flip); the core starts and reaps the
+//! sessions, counts them and rolls back. So the count lives in the tree's
+//! one record (`cli/state.rs`), each change of it one write under its lock.
 
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -30,8 +28,6 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const FILE: &str = "canary.json";
-const LOCK: &str = "canary.lock";
 /// In the test build only: a file of this name at the provider's root makes
 /// each watched session a failure as it starts, for the live check of the
 /// rollback.
@@ -65,16 +61,19 @@ const SIGN_IN: &str = "a sign-in missing or expired";
 const LIMIT: &str = "a usage limit";
 const SERVICE: &str = "the network or the provider's service";
 
-/// What a CLI says, anywhere in a line, when a turn ends for want of a
-/// sign-in, of usage left, or of the network or the API: none of it the
-/// version's doing, and each ends a session fast. Lowercase, a typographic
-/// apostrophe read as a plain one; each as the binary carries it, Claude
-/// Code 2.1.325 and Codex 0.169.0 (docs/cli-compatibility.md). A helper's
-/// words are its stderr's end and what its own stream said the turn failed
-/// on (background/run.rs); a pane's, its last screen. Words someone typed
-/// that happen to read so let a real failure go uncounted: the canary then
-/// errs on the side of not rolling back.
+/// What a CLI says, anywhere in one of its last lines (`LAST_LINES`), when a
+/// turn ends for want of a sign-in, of usage left, or of the network or the
+/// API: none of it the version's doing, and each ends a session fast.
+/// Lowercase, a typographic apostrophe read as a plain one; each as the
+/// binary carries it, Claude Code 2.1.325 and Codex 0.169.0
+/// (docs/cli-compatibility.md). A helper's words are its stderr's end and,
+/// last, what its own stream said the turn failed on (background/run.rs); a
+/// pane's, its last screen. Only the last lines, where a CLI says what it
+/// stopped on: such words further up (a reconnect it got past, a prompt)
+/// do not hide a crash below them.
 const OUTSIDE_ANYWHERE: &[(&str, &str)] = &[
+    // Codex: "unexpected status 401 Unauthorized", its `turn.failed`.
+    ("401 unauthorized", SIGN_IN),
     // Claude Code: "Not logged in · Please run /login", "Session expired.
     // Please run /login to sign in again.", "Not logged in · Run /login",
     // "Invalid API key · Fix external API key", "Authentication required ·
@@ -111,18 +110,25 @@ const OUTSIDE_ANYWHERE: &[(&str, &str)] = &[
     ("http status server error", SERVICE),
 ];
 
-/// The cause outside the CLI that `said` names, if a line of it is one of
-/// `NOT_THE_VERSION`'s from the line's start, or holds one of
-/// `OUTSIDE_ANYWHERE`'s: `NOT_THE_VERSION`'s words anywhere else (a prompt
+/// How many of the last lines that are not blank `OUTSIDE_ANYWHERE` is read
+/// in.
+const LAST_LINES: usize = 3;
+
+/// The cause outside the CLI that `said` names: a line that begins as one of
+/// `NOT_THE_VERSION`'s, or one of the last `LAST_LINES` that holds one of
+/// `OUTSIDE_ANYWHERE`'s. `NOT_THE_VERSION`'s words anywhere else (a prompt
 /// on the screen, a folder named so, a path in another error) name nothing,
 /// and an exit beside them still counts. Colors are taken out first. A
 /// pane's screen keeps a line its width wrapped as one; a line broken before
 /// its first words end is not known, and counts.
 pub(crate) fn cause_outside(said: &str) -> Option<&'static str> {
-    said.lines().map(without_escapes).find_map(|line| {
+    let lines: Vec<String> = said.lines().map(without_escapes).collect();
+    let start = lines.iter().find_map(|line| {
         let line = line.trim_start();
-        let start = NOT_THE_VERSION.iter().find(|(start, _)| line.starts_with(start)).map(|&(_, cause)| cause);
-        start.or_else(|| {
+        NOT_THE_VERSION.iter().find(|(start, _)| line.starts_with(start)).map(|&(_, cause)| cause)
+    });
+    start.or_else(|| {
+        lines.iter().rev().filter(|l| !l.trim().is_empty()).take(LAST_LINES).find_map(|line| {
             let lower = line.to_lowercase().replace('\u{2019}', "'");
             OUTSIDE_ANYWHERE.iter().find(|(words, _)| lower.contains(words)).map(|&(_, cause)| cause)
         })
@@ -169,44 +175,37 @@ pub struct Canary {
     pub settled: u32,
     /// Why each watched session failed.
     pub failures: Vec<String>,
-    /// `ROLL_BACK_AT` failures were seen, and Luna set out to roll back from
-    /// it. 0.19's `canary.json` also has `dismissed`, which nothing reads any
-    /// more.
+    /// `ROLL_BACK_AT` failures were seen: it tripped, and Luna is to roll
+    /// back from it.
     pub warned: bool,
-    /// Why the rollback it set out on could not be made. None while it is
-    /// to be made: a core gone before it was is followed by one that makes
-    /// it (`cli.rs` `finish_rollbacks`). A rollback made starts the canary of
-    /// the version gone back to, so this one is gone with it.
+    /// Why the rollback it calls for could not be made. None while it is to
+    /// be made: a core gone before it was is followed by one that makes it
+    /// (`cli.rs` `finish_rollbacks`). A rollback made starts the canary of
+    /// the version gone back to in the same write, so this one goes with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
 }
 
-/// Reads, changes and writes back the canary under its lock.
+/// Reads, changes and writes back the canary, as one change of the record.
 fn locked<T>(root: &Path, f: impl FnOnce(&mut Option<Canary>) -> T) -> Result<T, String> {
-    fs::create_dir_all(root).map_err(|e| format!("mkdir {}: {e}", root.display()))?;
-    let lock = crate::secret::open_private(&root.join(LOCK)).map_err(|e| format!("{LOCK}: {e}"))?;
-    lock.lock().map_err(|e| format!("{LOCK}: {e}"))?;
-    let mut canary = read_in(root);
-    let before = canary.clone();
-    let out = f(&mut canary);
-    if canary != before {
-        let bytes = match &canary {
-            Some(c) => serde_json::to_vec_pretty(c).map_err(|e| e.to_string())?,
-            None => b"null".to_vec(),
-        };
-        crate::secret::write_private(&root.join(FILE), &bytes).map_err(|e| format!("write {FILE}: {e}"))?;
-    }
-    Ok(out)
+    super::state::change(root, |s| f(&mut s.canary))
 }
 
+#[cfg(test)]
 pub(crate) fn read_in(root: &Path) -> Option<Canary> {
-    serde_json::from_slice(&fs::read(root.join(FILE)).ok()?).ok().flatten()
+    super::state::read_in(root).ok()?.canary
 }
 
-/// A version has just become current: watch its first sessions.
+/// The watch over a version that has just become current, for the write
+/// that makes it so.
+pub(super) fn fresh(version: &str) -> Canary {
+    Canary { version: version.to_string(), run: crate::secret::random_hex(8), ..Default::default() }
+}
+
+/// A canary of `version` and nothing else, as a flip would leave it.
+#[cfg(test)]
 pub(super) fn reset_in(root: &Path, version: &str) -> Result<(), String> {
-    let run = crate::secret::random_hex(8);
-    locked(root, |c| *c = Some(Canary { version: version.to_string(), run, ..Default::default() }))
+    locked(root, |c| *c = Some(fresh(version)))
 }
 
 /// Which watch a session counts for: a version, as one reset began watching it.
@@ -425,19 +424,25 @@ pub(super) fn name_of(provider: Provider) -> &'static str {
 
 /// The canary of `canary.version` has tripped: back to the version kept
 /// before (`cli.rs` `roll_back`), and the person told what came of it.
-fn tripped(provider: Provider, root: &Path, canary: &Canary) {
+pub(super) fn tripped(provider: Provider, root: &Path, canary: &Canary) {
     let version = &canary.version;
-    let seen = format!(
-        "{} of the {} sessions started on {} {version} so far failed soon after starting.",
-        canary.failures.len(),
-        canary.watched,
-        name_of(provider)
-    );
+    let seen = seen_of(provider, canary);
     let rolled = super::roll_back(provider, root, version, &format!("rolled back: {seen}"));
     if let Err(e) = &rolled {
         note_outcome(root, version, e);
     }
     tell(provider, version, &seen, &rolled);
+}
+
+/// What the canary saw, in words.
+pub(super) fn seen_of(provider: Provider, canary: &Canary) -> String {
+    format!(
+        "{} of the {} sessions started on {} {} so far failed soon after starting.",
+        canary.failures.len(),
+        canary.watched,
+        name_of(provider),
+        canary.version
+    )
 }
 
 /// A rollback from `version` could not be made, for `why`: not to be tried
@@ -456,16 +461,12 @@ pub(super) fn note_outcome(root: &Path, version: &str, why: &str) {
 /// What a rollback from `version` came to, after `seen`: in the log, to the
 /// window (`cli://canary`, which reads the versions again) and as a desktop
 /// notice.
-pub(super) fn tell(provider: Provider, version: &str, seen: &str, rolled: &Result<super::Rolled, String>) {
+pub(super) fn tell(provider: Provider, version: &str, seen: &str, rolled: &Result<String, String>) {
     let name = name_of(provider);
     let (title, body) = match rolled {
-        Ok(super::Rolled { to, unnoted: None }) => (
+        Ok(to) => (
             format!("{name} rolled back to {to}"),
-            format!("{seen} Luna went back to {to} and takes no {version} again until a newer release is out (or for a week). Running sessions keep their version."),
-        ),
-        Ok(super::Rolled { to, unnoted: Some(e) }) => (
-            format!("{name} rolled back to {to}"),
-            format!("{seen} Luna went back to {to}, but could not note {version} as failed ({e}), so a later check may install it again. Running sessions keep their version."),
+            format!("{seen} Luna went back to {to} and takes no {version} again while it is the newest release. Running sessions keep their version."),
         ),
         Err(e) => (format!("{name} {version} may be broken"), format!("{seen} Luna could not roll back: {e}.")),
     };
@@ -569,10 +570,6 @@ mod tests {
         unwatch_in(&root, &w).unwrap();
         let c = read_in(&root).unwrap();
         assert_eq!((c.watched, c.settled, c.failures.len()), (0, 0, 0), "{c:?}");
-        // A canary.json from before the field, 0.19's with `dismissed`: none
-        // settled, and the field it no longer has is passed over.
-        fs::write(root.join(FILE), r#"{"version":"4.0.0","watched":3,"failures":[],"warned":false,"dismissed":true}"#).unwrap();
-        assert_eq!(read_in(&root).unwrap().settled, 0);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -695,8 +692,13 @@ mod tests {
         ] {
             assert_eq!(cause_outside(&format!("starting\n\u{1b}[31m{said}\u{1b}[39m\n")), Some(cause), "{said}");
         }
+        // Codex's own retries run out on a refused token (background/events.rs).
+        assert_eq!(cause_outside("Reconnecting... 2/5\nunexpected status 401 Unauthorized"), Some(SIGN_IN));
         // An API refusal of what Luna sent is the version's to answer for.
         assert_eq!(cause_outside("API Error: 400 due to tool use concurrency issues."), None);
+        // Such words above the CLI's last lines do not hide what it died of.
+        let earlier = "API Error: Connection error.\nretrying\n> go on\n\nthread 'main' panicked at src/main.rs:1:1:\nindex out of range";
+        assert_eq!(cause_outside(earlier), None);
     }
 
     /// A helper stopped by a usage limit, and a chat whose sign-in expired,
@@ -721,8 +723,7 @@ mod tests {
     }
 
     /// A tripped canary whose rollback could not be made says why, and is
-    /// then not taken up by the next core; a `canary.json` without the field
-    /// reads as one whose rollback is still to be made.
+    /// then not taken up by the next core.
     #[test]
     fn a_rollback_that_could_not_be_made_is_noted_once() {
         let root = scratch("outcome");
@@ -731,8 +732,6 @@ mod tests {
         assert_eq!(read_in(&root).unwrap().outcome, None);
         note_outcome(&root, "2.0.0", "no version before it is kept");
         assert_eq!(read_in(&root).unwrap().outcome.as_deref(), Some("no version before it is kept"));
-        fs::write(root.join(FILE), r#"{"version":"2.0.0","run":"r","watched":3,"failures":["a","b"],"warned":true}"#).unwrap();
-        assert_eq!(read_in(&root).unwrap().outcome, None);
         let _ = fs::remove_dir_all(&root);
     }
 }

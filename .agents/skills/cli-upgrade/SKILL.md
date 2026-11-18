@@ -5,12 +5,13 @@ description: Bring Luna up to a new Claude Code or Codex CLI version — find wh
 
 # CLI upgrade
 
-Luna installs each CLI's newest release on its own, within six hours of it
-coming out, once it passes an offline probe of its flags; it rolls back by
-itself when two of a new version's first three sessions fail soon after
-starting (ADR-0030, `src-tauri/src/cli.rs`, `cli/canary.rs`). There is no
-list of checked versions to put a release on: by the time you run this, users
-may already be on it. So the work is catch-up, and fast: Luna depends on much
+Luna installs each CLI's newest release on its own at its next check (as
+Luna's window starts, then every six hours while it runs), once it passes an
+offline probe of its flags; it rolls back by itself when two of a new
+version's first three sessions fail soon after starting (ADR-0030,
+`src-tauri/src/cli.rs`, `cli/canary.rs`). There is no list of checked
+versions to put a release on: by the time you run this, users may already be
+on it. So the work is catch-up, and fast: Luna depends on much
 more than flags. It reads the CLI's stream, transcripts, rollouts and even its
 screen, and each of those is pinned by a test against what one version did;
 the probe sees only flags, and the canary only a CLI that cannot start a
@@ -23,13 +24,15 @@ it from running.
 
 - **The binary.** The test build's managed copy is the one to look at:
   `test-build/claude-cli/versions/<v>/claude.exe`,
-  `test-build/codex-cli/versions/<v>/bin/codex.exe` (`current` names the
-  version). The test build installs the newest release like any Luna: start
-  it with `-Background` (or "Check now" in Settings → CLIs) and it fetches
-  the new version. A version the probe found wrong is turned away for a day
-  in `test-build/<cli>-cli/bad.json` with why: that is already a finding.
-  One rolled back from after its first sessions failed is there too, by
-  `rollback`, and the log says what the sessions died of.
+  `test-build/codex-cli/versions/<v>/bin/codex.exe` (`state.json` there
+  names the current one). The test build installs the newest release like
+  any Luna: start it with `-Background` (or "Check now" in Settings → CLIs)
+  and it fetches the new version. A version the probe found wrong is in
+  `state.json`'s `bad`, by `probe`, with the check it failed: that is already
+  a finding. One rolled back from is there too, by `rollback`; the log names
+  the sessions that failed and when they exited, not why, so to find what
+  they died of, start a session on that version and read its screen or its
+  stderr.
   Diff the `--help` of every command Luna launches (the launch files below
   say which: `claude`, `codex`, `codex exec` and so on) between the old and
   the new version; keep both outputs under `test-build/` as evidence.

@@ -363,10 +363,10 @@ trusted for these downloads until the next start.
   ([ADR-0030](../adr/0030-scope-of-0-20.md), `cli/choice.rs` `plan`), never
   below the floor compiled into the Luna release (`cli.rs` `floor`, raised
   only by a release), never older than the version current here (no step
-  down), never one turned away (`bad.json`: rolled back from, or failed by
-  the probe). Nothing below the floor is installed, made current, rolled
-  back to or started: a launch refuses a current version below it, with no
-  fall back to PATH (`launch_in`). Before a
+  down), never one turned away (rolled back from, or failed by the probe,
+  while the pointer names it). Nothing below the floor is installed, made
+  current, rolled back to or started: a launch refuses a current version
+  below it, with no fall back to PATH (`launch_in`). Before a
   version becomes current, the offline probe runs it (`cli/probe.rs`:
   `--version`, each command's `--help`, Codex's `features list` with Luna's
   overrides) in a scratch home under `staging/`, with the CLI's own variables
@@ -376,36 +376,37 @@ trusted for these downloads until the next start.
   stream, everything it started ended after (on Windows a kill-on-close Job
   Object of the probe's own, the CLI created suspended and never run outside
   it, every member terminated, windowed ones included; on Unix its own
-  process group); one whose answers are wrong is turned away (for a day,
-  or until a newer one is current) and swept, while one that could not be
-  asked (not run, out of time) is not turned away, and is asked again.
-  The only way back to an older version is the
-  canary's rollback, in the core (`cli.rs` `roll_back_in`), to the folder
-  `previous` names, not below the floor, once every file matches the sha256
-  its record kept (a record without one per file is refused).
+  process group); one whose answers are wrong is turned away while the
+  pointer names it and swept, while one that could not be asked (not run,
+  out of time, output unread or past its cap) is not turned away, and is
+  asked again. The only way back to an older version is the canary's
+  rollback, in the core (`cli.rs` `roll_back_in`), to the folder the record
+  keeps to go back to, not below the floor, once every file matches the
+  sha256 its record kept (a record without one per file is refused).
 
 **The installation protocol** (`cli.rs`, `install_in`; detail in
 [providers.md](../architecture/providers.md#cli-binaries)): fetched into
 `<root>/staging/`, held to what the source vouched for (`validate`), every
-file and the completion record `luna-install.json` flushed to disk, renamed
-into `versions/` under a name no folder has (under `switch.lock`, which
-every change of `versions/`, `current`, `previous` and `bad.json` takes, the
-core's rollback and its sweep included) and held in use from then to its
-flip, probed, then under `switch.lock` the canary reset, `current` flushed
-and renamed into place, and `previous` written, each step leaving a tree
-that holds together if the next never comes. An install found already in
-`versions/` is held to every recorded sha256 before it is taken up. A
-version runs only with its record intact; once `recorded` is at the root, one
-without its record never runs. Cleanup and the sweep check every component
-below the CLI root for a link before deleting (`link_free_below`), and the
-sweep takes no folder a process of Luna's still holds (`cli/in_use.rs`: a
-shared lock per running process on `in-use/<dir>`, made private and never
+file and the completion record `luna-install.json` flushed to disk, held in
+use and renamed into `versions/` under a name no folder has, probed, then
+made current in one write of the tree's record, `<root>/state.json`
+(`cli/state.rs`), which holds what is current, the one to go back to, the
+versions turned away and the canary, every change of it one atomic write
+(temp file, flush, rename) under `state.lock`, by the window's pass and the
+core's canary and rollback alike. An install found already in `versions/` is
+held to every recorded sha256 before it is taken up. A version runs only with
+its completion record intact; a folder without one is run only as the
+migration found it current in a tree from before records. Cleanup and the
+sweep check every component below the CLI root for a link before deleting
+(`link_free_below`), and the sweep takes no folder the record names nor one
+an in-use lock covers (`cli/in_use.rs`: a shared lock per running process,
+and per promotion until its flip, on `in-use/<dir>`, made private and never
 through a link, and never removed, so a start waiting through a sweep holds
-the same file every later sweep locks). The state at the root (`bad.json`,
-`canary.json`) is written private like `current`; a `bad.json` that does not
-parse turns nothing away, which only lets the pointer's version be taken
-again. Luna 0.19's state for channels, pins, marks and the rising floor is
-removed at the first pass and never read.
+the same file every later sweep locks). The record is written private like
+the files it replaced; one that does not parse refuses every launch as
+damaged until the next pass starts it over, which loses only refusals. Luna
+0.19's files are read into it once and removed; no canary of then is carried
+over.
 
 **What an origin compromise gets.** The bucket or its CDN alone: no new code
 runs. A replaced exe fails the signed checksum, a replaced manifest the
@@ -423,10 +424,10 @@ binary and checksum replaced together, installed and run (F10).
 | --- | --- | --- |
 | T, S | Claude Code's bucket or CDN serves a forged exe or manifest | mitigated: the manifest is verified against the pinned release key before its checksum is used (`claude/manifest_sig.rs`), must name the requested version, and must not be below the floor (`cli.rs` `floor`, compiled into the release) |
 | T | A release pointer names an older version | mitigated: one below the floor is refused, installed or not; one below the version current here is not taken (no step down); nothing below the floor runs (`cli.rs` `floor`, `launch_in`, `cli/choice.rs` `plan`). Residual: on a fresh install the pointer picks any release from the floor up, as there is no list of checked versions since 0.20 (ADR-0030) |
-| T, D | A same-user process writes `bad.json`, or makes a new version's first sessions fail, to keep Luna off newer versions | accepted with R3: it can only turn versions away (a mark it dates far ahead holds as long as it says, until a newer version is current) or roll back to the version kept before, never below the floor, never to a folder whose files no longer match their recorded sha256 (`cli.rs` `roll_back_in`, `reverify`); a newer release is still taken |
+| T, D | A same-user process writes `state.json`, or makes a new version's first sessions fail, to keep Luna off newer versions | accepted with R3: it can only turn versions away (while the pointer names them) or roll back to the version kept before, never below the floor, never to a folder whose files no longer match their recorded sha256 (`cli.rs` `roll_back_in`, `reverify`); a newer release is still taken |
 | T, E | A version rolled back to was altered on disk since it ran | mitigated: the rollback holds every file to its recorded sha256 first, and refuses a record without one per file (`cli.rs` `reverify`) |
-| D | A new version breaks every session started on it | mitigated: an offline probe before it becomes current (`cli/probe.rs`), a canary over its first sessions (`cli/canary.rs`) that rolls back on its own to the previous version, always kept, and turns the failed one away until a newer one is current or for a week (ADR-0030); a rollback a core went away in the middle of is finished by the next core before any session (`cli.rs` `finish_rollbacks`). Exits for a sign-in, a usage limit, the network or the API, known by the CLI's own words, do not count (`canary::cause_outside`). Residual: early failures of another cause that is not the version's roll back too, for at most a week; the version gone back to then stays even if its own sessions fail |
-| T, D | The window's update pass and the core's rollback change the tree at once (a flip over a rollback, a sweep taking the version being probed or rolled back to) | mitigated: every change of `current`, `previous`, `bad.json` or what is in `versions/` (a promotion, a flip, a mark, a sweep) is made under `switch.lock`; a version is held in use from its promotion to its flip, so no sweep takes it mid-probe, and a probe that could not run turns nothing away; the pass refuses a version turned away since it chose it (`cli.rs` `switching`, `install_in`, `update_in`) |
+| D | A new version breaks every session started on it | mitigated: an offline probe before it becomes current (`cli/probe.rs`), a canary over its first sessions (`cli/canary.rs`) that rolls back on its own to the previous version, always kept, and turns the failed one away while the pointer names it (ADR-0030); a trip a core went away before rolling back from is rolled back by the next core before any session (`cli.rs` `finish_rollbacks`). Exits whose last lines say a sign-in, a usage limit, the network or the API, in the CLI's own words, do not count (`canary::cause_outside`). Residual: early failures of another cause that is not the version's roll back too, until the pointer names a newer release; the version gone back to then stays even if its own sessions fail |
+| T, D | The window's update pass and the core's rollback change the tree at once (a flip over a rollback, a sweep taking the version being probed or rolled back to, a crash between two writes) | mitigated: what changes together is one record (`cli/state.rs`), each change one atomic write under `state.lock`, so a crash leaves the old state or the new one; the rollback re-checks the record in its write and the flip refuses a version turned away since the pass chose it; a version is held in use from before its promotion's rename to its flip, and the sweep spares every folder the record names; a probe that could not run turns nothing away. Tested: a flip and a rollback cut before and after their write, and a pass and a rollback on two threads (`cli.rs` tests) |
 | D, E | The sweep deletes a version folder under a running session (Unix: a Codex session's helpers) | mitigated: a shared lock per running process, the sweep only under the exclusive one (`cli/in_use.rs`); a launch whose lock cannot be had is refused, never started unheld (`cli.rs` `launch_in`) |
 | E | The update pass, in a window started as administrator, runs a new CLI for its probe elevated | mitigated: `probe` refuses through `elevation::guard`, and an elevated window's pass fetches, probes and marks nothing (`cli.rs` `held_for_elevation`) |
 | D | A probed CLI hangs, writes without end, or leaves a process holding its output | mitigated: one deadline over the run and its output, 1 MiB kept per stream, its whole tree ended (`cli/probe.rs` `run_within`; on Windows a mandatory `procs::KillJob`, terminated whole, the CLI created suspended and taken down unrun if it will not resume in it) |

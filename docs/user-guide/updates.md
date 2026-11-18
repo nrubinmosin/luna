@@ -19,8 +19,8 @@ Luna carries its own copies of `claude` and `codex` and keeps them current, so
 nothing depends on a global install.
 
 - Each CLI is kept at its newest release. Luna asks the CLI's own release
-  channel every six hours (or when you click **Check now** in Settings →
-  CLIs); a newer version installs into `<data>/claude-cli/versions/<ver>/` or
+  channel as its window starts and every six hours while the window runs (or
+  when you click **Check now** in Settings → CLIs); a newer version installs into `<data>/claude-cli/versions/<ver>/` or
   `<data>/codex-cli/versions/<ver>/` beside the old one. A download is checked
   whole before it counts, so one cut short (Luna closed, the PC off) is simply
   fetched again on the next check.
@@ -33,17 +33,17 @@ nothing depends on a global install.
   does at once.
 - Before a new version is used, Luna runs it once offline to see that it
   still knows every flag Luna passes it (and, for Codex, takes the hooks Luna
-  gives it). One that answers wrong is not used, and not tried again until a
-  newer release is out or a day has passed. One that could not be run to its
-  end (a virus scanner still holding the fresh download, say) is simply asked
-  again at the next check.
+  gives it). One that answers wrong is not used, and not tried again while it
+  is the newest release. One that could not be run to its end (a virus scanner
+  still holding the fresh download, say) is simply asked again at the next
+  check.
 - The version before is always kept, and so is any version a session still
   runs on; older ones go once nothing runs them. Running sessions keep the
   version they started with; new ones start on the current one.
 - The first three sessions on a new version are watched. If two of them fail
   soon after starting, Luna goes back to the version before on its own, says
-  so in a desktop notice, and does not take the failed version again for a
-  week, or until a newer release is out, which installs as usual. With no
+  so in a desktop notice, and does not take the failed version again while it
+  is the newest release; a newer one installs as usual. With no
   version before to go back to (or one Luna cannot vouch for: older than the
   oldest it runs, or its files no longer matching their checksums), the
   notice says so and the version stays. If Luna is closed in the middle of
@@ -57,8 +57,10 @@ nothing depends on a global install.
 - Luna 0.19's **Known-good** and **Latest** channels, **Use**, **Mark bad**,
   **Mark good** and the rest are gone from Luna; until Luna's new window
   comes, the old window still shows some of them in Settings → CLIs, and they
-  only fail. What they left on disk is removed at the first check; a version
-  marked bad then stays skipped until a newer one is installed.
+  only fail. What they left on disk is read in and removed at the first
+  check; a version marked bad then stays skipped while it is the newest
+  release, and the watch over the first sessions of the version you had is not
+  carried over, so nothing rolls back from it.
 - While Luna runs as administrator it does not update the CLIs: the check
   before a new version is used would run it with administrator rights.
 - Claude Code comes as a bare exe from the official release bucket, verified

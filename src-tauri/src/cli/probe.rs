@@ -148,8 +148,9 @@ fn codex_overrides() -> Vec<String> {
 /// CLI that hangs on `--help`, or leaves something running that holds its
 /// output open, fails the probe rather than the update pass.
 const RUN_FOR: Duration = Duration::from_secs(30);
-/// The most of each stream that is kept: a help is some 20 KB. Past it the
-/// pipe is let go, and a CLI that will not stop writing fails by the clock.
+/// The most of each stream that is read: a help is some 20 KB. A run that
+/// reaches it was not read whole and asks nothing (`Failed::Unasked`); one
+/// that will not stop writing fails by the clock.
 const OUTPUT_CAP: u64 = 1 << 20;
 
 /// Runs `exe` with `args` in `home`, nothing on stdin, and returns its exit
@@ -255,15 +256,23 @@ impl Tree {
 fn run_within(mut cmd: Process, shown: &str, within: Duration) -> Result<(Option<i32>, String), String> {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut tree = Tree::spawn(cmd).map_err(|e| format!("could not run {shown}: {e}"))?;
-    let (tx, rx) = std::sync::mpsc::channel::<(usize, Vec<u8>)>();
+    // Each stream whole, or why not: a read that failed, or one cut at the
+    // cap, would be judged as if the CLI had said only that much.
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, Result<Vec<u8>, String>)>();
     let read = |at: usize, pipe: Option<Box<dyn Read + Send>>| {
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut out = Vec::new();
-            if let Some(p) = pipe {
-                let _ = Read::take(p, OUTPUT_CAP).read_to_end(&mut out);
-            }
-            let _ = tx.send((at, out));
+            let read = match pipe {
+                Some(p) => Read::take(p, OUTPUT_CAP).read_to_end(&mut out).map_err(|e| e.to_string()),
+                None => Ok(0),
+            };
+            let whole = match read {
+                Ok(_) if out.len() as u64 >= OUTPUT_CAP => Err(format!("wrote more than {OUTPUT_CAP} bytes")),
+                Ok(_) => Ok(out),
+                Err(e) => Err(format!("its output could not be read: {e}")),
+            };
+            let _ = tx.send((at, whole));
         });
     };
     read(0, tree.child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
@@ -286,7 +295,11 @@ fn run_within(mut cmd: Process, shown: &str, within: Duration) -> Result<(Option
     let mut streams = [Vec::new(), Vec::new()];
     for _ in 0..2 {
         match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok((at, out)) => streams[at] = out,
+            Ok((at, Ok(out))) => streams[at] = out,
+            Ok((_, Err(why))) => {
+                tree.end();
+                return Err(format!("{shown}: {why}"));
+            }
             Err(_) => return late(&mut tree, "left its output open"),
         }
     }
@@ -550,12 +563,11 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
     fn output_is_kept_to_its_cap_and_a_plain_run_comes_back_whole() {
         let (code, text) = run_within(sh("echo hello; echo there >&2; exit 3"), "stand-in", Duration::from_secs(10)).unwrap();
         assert_eq!((code, text.as_str()), (Some(3), "hello\nthere\n"));
-        // Four times the cap of output: kept to the cap, or failed by the
-        // clock for writing on once nobody reads, never all of it.
+        // Four times the cap of output: a run that could not be read whole,
+        // never one judged on its first megabyte.
         let big = run_within(sh("head -c 4194304 /dev/zero"), "stand-in", Duration::from_secs(10));
-        if let Ok((_, text)) = big {
-            assert!(text.len() as u64 <= OUTPUT_CAP);
-        }
+        let refused = big.expect_err("not read whole");
+        assert!(refused.contains("wrote more than") || refused.contains("within 10s"), "{refused}");
     }
 
     #[test]

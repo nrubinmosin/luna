@@ -13,17 +13,21 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Each CLI is kept at its newest release, and rolls back on its own: when
   two of a new version's first three sessions fail soon after starting, Luna
   goes back to the version before (once its files match their checksums),
-  says so in a desktop notice and the log, and skips the failed version until
-  a newer one is out, or for a week. A session that ended for a sign-in, a
-  usage limit, or the network or the provider's service does not count. A
-  rollback Luna was closed in the middle of is finished at its next start. A
-  version whose answers fail the offline check is skipped until a newer one
-  is out, or for a day; one the check could not run to its end (a scanner
-  holding the fresh download) is asked again at the next check. Each Luna
-  release names the oldest version of each CLI it runs (Claude Code 2.1.325,
-  Codex 0.167.0), compiled in; nothing on the machine raises it any more,
-  and Luna never steps down from the version it runs
-  ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+  says so in a desktop notice and the log, and skips the failed version while
+  it is the newest release. A session whose last words are a sign-in, a usage
+  limit, or the network or the provider's service failing does not count. A
+  rollback Luna was closed before it made is made at its next start. A
+  version whose answers fail the offline check is skipped the same way; one
+  the check could not read to its end (a scanner holding the fresh download)
+  is asked again at the next check. Each Luna release names the oldest
+  version of each CLI it runs (Claude Code 2.1.325, Codex 0.167.0), compiled
+  in; nothing on the machine raises it any more, and Luna never steps down
+  from the version it runs ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+- What Luna keeps of each CLI's versions is one file, `state.json` at its
+  root, every change of it one whole write, so a crash or the window and the
+  core changing it at once never leave it half made. The files it replaces
+  (`current`, `previous`, `recorded`, `bad.json`, `canary.json` and their
+  locks) are read in at the first check and removed.
 
 ### Removed
 
@@ -33,8 +37,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   it** in Settings → CLIs: until the new window comes, the old one still
   shows those controls, and they only fail. What 0.19 kept for them at each
   CLI's root (`channel`, `pinned`, `good.json`, `marks.lock`, `floor`,
-  `signed-floor`) is removed at the first check; its `bad.json` is still
-  read until a newer version is current.
+  `signed-floor`) is removed at the first check; its marks bad still hold
+  while the release channel names their version, and its watch over the
+  version you had (one you chose to keep) is not carried over.
 
 ## [0.19.0] - 2026-11-18
 

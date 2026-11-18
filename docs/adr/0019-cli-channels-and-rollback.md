@@ -12,8 +12,10 @@
 > became current, the known-good list (`cli-known-good.json`), the channels,
 > "Use", the marks by hand and `good.json` are gone. The canary now rolls
 > back on its own to the previous version and turns the failed one away
-> (`bad.json`) until a newer one is current or a week has passed; a probe's
-> verdict holds a day, and a probe that could not run says nothing. How it works now:
+> while the release pointer names it, as a probe's verdict does; a probe that
+> could not run says nothing. What this ADR kept in several files at the
+> root (`current`, `previous`, `bad.json`, `canary.json`, the floor) is one
+> record, `state.json`, written whole at every change. How it works now:
 > [providers](../architecture/providers.md#cli-binaries).
 
 ## Context
