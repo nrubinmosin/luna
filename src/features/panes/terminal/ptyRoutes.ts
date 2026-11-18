@@ -40,11 +40,14 @@ function listening(): Promise<void> {
       throw e;
     }
   );
+  // Refused input only adds a notice to a pane, and sign-in takes none, so a
+  // failure here holds no route back: it is logged and tried again by the
+  // next route.
   refusedIn ??= onPtyInputRefused(p => routes.get(p.id)?.forEach(r => r.refused?.(p.waitingKb))).then(
     () => {},
     (e: unknown) => {
       refusedIn = null;
-      throw e;
+      console.warn('[luna] pty input-refused listener failed', e);
     }
   );
   return Promise.all([outputIn, exitIn, refusedIn]).then(() => {});
@@ -53,8 +56,9 @@ function listening(): Promise<void> {
 /**
  * Sends session `id`'s output, exit and refused input to `route` from now
  * until `unroute`. `ready` settles once every listener is in: a session
- * started before then could print what nobody hears. It rejects if any failed
- * to register; the route stays until `unroute` all the same.
+ * started before then could print what nobody hears. It rejects if the output
+ * or exit listener failed to register, not the refused-input one; the route
+ * stays until `unroute` all the same.
  */
 export function routePty(id: string, route: PtyRoute): { ready: Promise<void>; unroute: () => void } {
   let set = routes.get(id);

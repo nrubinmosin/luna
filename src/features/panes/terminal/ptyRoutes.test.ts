@@ -98,4 +98,26 @@ describe('ptyRoutes', () => {
     events.exit[0]!({ id: 'b', code: 1 });
     expect(b.got).toEqual(['exit 1']);
   });
+
+  it('routes output and exit even when the refused-input listen fails, and retries it', async () => {
+    const routePty = await freshRouter();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    events.fail.refused = true;
+    const a = recorder();
+    await expect(routePty('a', a.route).ready).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(events.refused).toHaveLength(0);
+    events.output[0]!({ id: 'a', data: 'for a' });
+    events.exit[0]!({ id: 'a', code: 0 });
+    expect(a.got).toEqual(['for a', 'exit 0']);
+
+    const kb: number[] = [];
+    await routePty('b', { ...recorder().route, refused: (w: number) => kb.push(w) }).ready;
+    expect(events.output).toHaveLength(1);
+    expect(events.exit).toHaveLength(1);
+    expect(events.refused).toHaveLength(1);
+    events.refused[0]!({ id: 'b', waitingKb: 64 });
+    expect(kb).toEqual([64]);
+    warn.mockRestore();
+  });
 });
