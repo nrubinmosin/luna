@@ -506,6 +506,40 @@ pub fn set_parent(id: &str, parent: Option<String>, change: u64) {
 mod tests {
     use super::*;
 
+    /// A helper sent into a new worktree is waited for while its turn runs
+    /// with nowhere said yet, from when that turn started; not once it has
+    /// said where it works, not between turns, and not one sent to its
+    /// folder as it is.
+    #[test]
+    fn a_helper_making_a_worktree_is_waited_for_while_its_turn_runs_unplaced() {
+        let folder = r"C:\unplaced-helpers";
+        let since = crate::throttle::now_ms() - 60_000;
+        let helper = |provider, worktree: bool, cwd: Option<&str>, running: bool| {
+            let mut e = entry(provider);
+            (e.spec.folder, e.spec.worktree, e.cwd) = (folder.into(), worktree, cwd.map(str::to_owned));
+            e.run = running.then(|| Run::claimed(None, since));
+            e
+        };
+        let ids = ["up-claude", "up-codex", "up-placed", "up-between", "up-plain"];
+        for (id, e) in ids.into_iter().zip([
+            helper(Provider::Claude, true, None, true),
+            helper(Provider::Codex, true, None, true),
+            helper(Provider::Claude, true, Some(r"C:\unplaced-helpers\.claude\worktrees\w"), true),
+            helper(Provider::Codex, true, None, false),
+            helper(Provider::Claude, false, None, true),
+        ]) {
+            lock().entries.insert(id.into(), e);
+        }
+        let waited: Vec<_> = unplaced_worktrees().into_iter().filter(|u| u.folder == folder).collect();
+        for id in ids {
+            lock().entries.remove(id);
+        }
+        let mut providers: Vec<&str> = waited.iter().map(|u| u.provider.as_str()).collect();
+        providers.sort();
+        assert_eq!(providers, ["claude", "codex"], "{waited:?}");
+        assert!(waited.iter().all(|u| u.since_ms == since && u.account_path == r"C:\acc"), "{waited:?}");
+    }
+
     #[test]
     fn a_batch_on_its_way_is_kept_if_the_core_stops_it_and_goes_if_a_kill_does() {
         let mut e = entry(Provider::Codex);

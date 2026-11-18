@@ -1015,6 +1015,11 @@ mod tests {
         instructions: Option<String>,
         /// What Luna applied, as (key, class, value), placeholders in.
         applied: Vec<(String, crate::applied::Class, String)>,
+        /// The worktree it goes into by name (`Launch::enters`), as spelled.
+        enters: Option<String>,
+        /// It asks its CLI for a new worktree whose path the CLI picks
+        /// (`Launch::makes_worktree`).
+        makes_worktree: bool,
     }
 
     impl Started {
@@ -1053,7 +1058,19 @@ mod tests {
         };
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
         let instructions = golden::instructions(id, &args);
-        Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, args, applied }
+        Started {
+            envs,
+            cwd: r.text(&l.cwd),
+            resume: l.resume,
+            describe: l.describe,
+            settings,
+            mcp,
+            instructions,
+            args,
+            applied,
+            enters: l.enters,
+            makes_worktree: l.makes_worktree,
+        }
     }
 
     /// A CLI is given nothing of the core's: not its endpoint, nothing of its
@@ -1216,6 +1233,7 @@ mod tests {
         assert_eq!(s.mcp, None);
         assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
         assert_eq!(s.describe, "model opus perm default worktree false");
+        assert_eq!((s.enters, s.makes_worktree), (None, false), "no worktree");
         use crate::applied::Class::*;
         let want = [
             ("account", Runtime, "CLAUDE_CONFIG_DIR=/golden/acc-claude"),
@@ -1325,8 +1343,14 @@ mod tests {
         );
         assert_eq!(s.describe, "model opus perm default worktree true");
         assert_eq!(s.cwd, FOLDER, "it starts in the project and moves itself");
+        // In the worktree of that name from its start, there yet or not; its
+        // place is Luna's to know, not its CLI's to pick.
+        assert_eq!(s.enters, Some(crate::worktree::named_path(&golden::project(), "feature-x")));
+        assert!(!std::path::Path::new(s.enters.as_ref().unwrap()).exists(), "made again");
+        assert!(!s.makes_worktree);
         // No name of Luna's: the CLI names it.
         let s = ClaudeAsk { worktree: true, ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!((s.enters.as_deref(), s.makes_worktree), (None, true), "its place the CLI's to pick");
         assert_eq!(
             s.args,
             strings(&[
@@ -1831,6 +1855,7 @@ mod tests {
         assert_eq!(s.args, codex_args(&["resume", THREAD], flags, Vec::new()));
         assert_eq!(s.envs, codex_envs(ID, true));
         assert_eq!(s.resume.as_deref(), Some(THREAD));
+        assert!(!s.makes_worktree, "a resumed thread has its worktree");
     }
 
     #[test]
@@ -1843,6 +1868,7 @@ mod tests {
         assert_eq!(s.args, codex_args(&[], flags, Vec::new()));
         assert_eq!(s.cwd, FOLDER, "it starts in the project and moves itself");
         assert_eq!(s.describe, "model default effort medium approval on-request sandbox workspace-write");
+        assert_eq!((s.enters.as_deref(), s.makes_worktree), (None, true), "its place Codex's to pick");
     }
 
     #[test]
