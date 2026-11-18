@@ -39,7 +39,9 @@ export function HelperPill({ helpers, now }: { helpers: BackgroundHelperDto[]; n
   const c = countHelpers(helpers);
   const names = summaryNames(helpers, now);
   const box = useRef<HTMLSpanElement>(null);
-  const key = names.map(n => n.text).join('\n');
+  // Ids too: a helper replaced by another of the same name and counts is a
+  // new node to measure, and an asking one is bolder and wider.
+  const key = names.map(n => `${n.id}\t${n.asks ? 1 : 0}\t${n.text}`).join('\n');
 
   useLayoutEffect(() => {
     const el = box.current;
@@ -47,7 +49,10 @@ export function HelperPill({ helpers, now }: { helpers: BackgroundHelperDto[]; n
     const slot = el?.closest<HTMLElement>(SLOT);
     if (!el || !pill || !slot) return;
     const items = [...el.querySelectorAll<HTMLElement>('[data-name]')];
-    const fit = () => {
+    /** Fits the names to `room`, the slot's width as last laid out: the slot
+     *  takes no width from what it holds (`flex: 1 1 0`), so the measuring
+     *  below does not move it, and it is not read again after a write. */
+    const fit = (room: number) => {
       // Every write, then every read: one layout for all of them. Measured
       // with every name shown and at its own width, not the slot's, which
       // may be squeezed.
@@ -60,29 +65,31 @@ export function HelperPill({ helpers, now }: { helpers: BackgroundHelperDto[]; n
       pill.style.maxWidth = '';
       // The counts' own width is the least the slot may shrink to: the names
       // give way first, then the settings, never the counts. Written only
-      // when it moves, as the observer below watches this very box.
+      // when it moves, as the observer below watches this very box; a slot
+      // it widens has that much room, and the observer hears of it.
       if (slot.style.minWidth !== `${counts}px`) slot.style.minWidth = `${counts}px`;
-      const shown = namesThatFit(whole, widths, slot.clientWidth);
+      const shown = namesThatFit(whole, widths, Math.max(room, counts));
       items.forEach((item, n) => {
         if (n >= shown) item.style.display = 'none';
       });
       if (shown === 0) el.style.display = 'none';
     };
-    fit();
+    let width = slot.getBoundingClientRect().width;
+    fit(width);
     // The pill gone (no helpers left), the slot holds nothing to keep room for.
     const done = () => {
       slot.style.minWidth = '';
     };
     if (typeof ResizeObserver === 'undefined') return done;
     // Only for a slot that changed width, not for the answer to a fit that
-    // left it as it was.
-    let width = slot.clientWidth;
-    const ro = new ResizeObserver(() => {
-      if (slot.clientWidth === width) return;
-      width = slot.clientWidth;
-      fit();
+    // left it as it was; its width as the observer saw it, read off no layout.
+    const ro = new ResizeObserver(entries => {
+      const size = entries[entries.length - 1]?.borderBoxSize?.[0];
+      if (!size || size.inlineSize === width) return;
+      width = size.inlineSize;
+      fit(width);
     });
-    ro.observe(slot);
+    ro.observe(slot, { box: 'border-box' });
     return () => {
       ro.disconnect();
       done();
