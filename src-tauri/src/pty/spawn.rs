@@ -670,14 +670,22 @@ fn hand_on(tx: &std::sync::mpsc::SyncSender<Vec<u8>>, piece: Vec<u8>, behind: &m
 /// registration clears the exit, and so never land on the session after.
 pub(super) fn reader_exited(id: &str, generation: u64, code: Option<u32>, end: &ReaderEnd) {
     end.finish(|| {
-        let generations = manager().generations.lock().unwrap_or_else(|e| e.into_inner());
+        let mut generations = manager().generations.lock().unwrap_or_else(|e| e.into_inner());
         if generations.get(id) == Some(&generation) {
-            crate::agents::session_exited(id, code);
-            crate::emit::to_ui("pty://exit", PtyExit { id, code, generation });
-            #[cfg(test)]
-            said::note(&format!("exit {id}"));
+            say_exit(&mut generations, id, generation, code);
         }
     });
+}
+
+/// Says that `id`'s session of spawn `generation`, still the one in
+/// `generations`, exited with `code`: to the registry and to the window,
+/// and once, its number taken away under the same lock.
+pub(super) fn say_exit(generations: &mut std::collections::HashMap<String, u64>, id: &str, generation: u64, code: Option<u32>) {
+    generations.remove(id);
+    crate::agents::session_exited(id, code);
+    crate::emit::to_ui("pty://exit", PtyExit { id, code, generation });
+    #[cfg(test)]
+    said::note(&format!("exit {id}"));
 }
 
 /// The child's exit code once it has exited, None if that cannot be read.

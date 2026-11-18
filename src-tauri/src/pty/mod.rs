@@ -155,7 +155,8 @@ impl InputTx {
 /// over a session that exited by itself) waits for its reader thread to have
 /// said it exited (`ReaderEnd`), before the chat's id goes to anyone else.
 /// The reader is through within moments of its process ending; past this it
-/// says nothing more.
+/// says nothing more, and a delete or a kill says its exit for it (`retire`);
+/// a start over it gives the chat's pane a session of its own instead.
 const READER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A session's reader thread on its way out. Its word that the session
@@ -166,7 +167,7 @@ const READER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// is not through by then says nothing: one that has not begun to is
 /// disowned here, and one already saying it is through before the chat's
 /// spawn number changes (`PtyManager::generations`), which a word begun
-/// later finds changed.
+/// later finds changed. A delete or a kill says one not said by then itself.
 #[derive(Default)]
 struct ReaderEnd {
     state: Mutex<EndState>,
@@ -323,12 +324,13 @@ pub struct PtyManager {
     /// The chats deleted in this core's life, which no start brings back
     /// (`delete`, `spawn`).
     deleted: Mutex<std::collections::HashSet<String>>,
-    /// Each chat's session that may still say it exited, by its spawn's
-    /// number (`Session::generation`); none once whoever took it has done
-    /// waiting for it. A reader says its session's exit under this lock and
-    /// only while its number is the one here (`spawn::reader_exited`), and a
-    /// start or a taker changes it under the same lock (`next_generation`,
-    /// `retire`): an exit said late cannot land on the session after it.
+    /// Each chat's session whose exit is still to be said, by its spawn's
+    /// number (`Session::generation`); none once it has been, or once whoever
+    /// took it has done waiting for it and said it in its stead. A reader
+    /// says its session's exit under this lock and only while its number is
+    /// the one here (`spawn::reader_exited`), and a start or a taker changes
+    /// it under the same lock (`next_generation`, `retire`): an exit said
+    /// late cannot land on the session after it, and none is said twice.
     generations: Mutex<HashMap<String, u64>>,
 }
 
@@ -348,11 +350,17 @@ impl PtyManager {
         n
     }
 
-    /// `id`'s session taken and waited for: whatever it has not said of its
-    /// exit by now it never says, and what it is saying is through before
-    /// this returns.
-    fn retire(&self, id: &str) {
-        self.generations.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    /// `id`'s session of spawn `generation` taken and waited for: an exit
+    /// its reader has not said by now it never says, and this says it in
+    /// its stead, once, with `code` (None where it cannot be read): a reader
+    /// stuck past its wait would otherwise leave its pane, or the login
+    /// window, never told the session is gone. What a reader is saying is
+    /// through before this returns.
+    fn retire(&self, id: &str, generation: u64, code: Option<u32>) {
+        let mut generations = self.generations.lock().unwrap_or_else(|e| e.into_inner());
+        if generations.get(id) == Some(&generation) {
+            spawn::say_exit(&mut generations, id, generation, code);
+        }
     }
 }
 

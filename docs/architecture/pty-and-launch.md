@@ -282,11 +282,15 @@ the command quotes `"@-"` and calls curl by full path.
   a session out of the map (a delete, a kill, a start over a session that
   exited by itself) waits under the gate, up to 5 s (`READER_WAIT`), for its
   reader thread to have said it exited (`ReaderEnd`). Each start gives the
-  chat a new number before its launch (`next_generation`), and a taker done
-  waiting takes the number away (`retire`); the reader says the registry's
-  exit and the `pty://exit` event under that number's lock and only while
-  its number is the chat's, so one already saying it when the wait ran out
-  is through before the start goes on, and one later says nothing. A
+  chat a new number before its launch (`next_generation`); the reader says
+  the registry's exit and the `pty://exit` event under that number's lock
+  and only while its number is the chat's, taking it away as it does, so
+  one already saying it when the wait ran out is through before the start
+  goes on, and one later says nothing. A taker done waiting (`retire`)
+  says the exit itself, with the code if the process has one, where the
+  number is still there: a reader stuck past the wait would otherwise leave
+  the pane or the login window never told the session is gone. Each exit
+  is said once. A
   respawn never hears the old session's exit, and the window applies an
   exit only to the session whose start answered with its number. The
   reader asks for the exit code by `try_wait` rather than holding the

@@ -278,16 +278,17 @@ impl PtyManager {
         let Some(s) = session else { return };
         // Its exit is Luna's doing, not its CLI version's.
         crate::cli::session_stopped(id);
-        let end = Arc::clone(&s.reader_end);
+        let (end, child, generation) = (Arc::clone(&s.reader_end), Arc::clone(&s.child), s.generation);
         shut_down(s, GRACE);
         if !end.wait(READER_WAIT) {
             let who = crate::agents::label(id);
-            crate::log::warn("pty", &format!("{who}'s reader was not through {READER_WAIT:?} after its end; it says nothing now"));
+            crate::log::warn("pty", &format!("{who}'s reader was not through {READER_WAIT:?} after its end; its exit is said for it"));
         }
         // One already saying it is through by the time this returns, and
         // none says it after: a delete's cleanup and a kill's start that
-        // follows come after the exit or without it.
-        self.retire(id);
+        // follows come after the exit. One not said yet is said here.
+        let code = child.lock().unwrap_or_else(|e| e.into_inner()).try_wait().ok().flatten().map(|status| status.exit_code());
+        self.retire(id, generation, code);
     }
 }
 
@@ -947,10 +948,32 @@ mod tests {
         assert!(told().is_empty());
         reader_exited(id, new, Some(0), &ReaderEnd::default());
         assert_eq!(told(), [serde_json::json!({ "id": id, "code": 0, "generation": new })]);
-        // Taken and let go (a kill's wait over): nothing of it is said after.
-        manager().retire(id);
+        // Taken and let go (a kill's wait over): said already, it is not said
+        // again, by the taker or after.
+        manager().retire(id, new, Some(0));
         reader_exited(id, new, Some(0), &ReaderEnd::default());
         assert_eq!(told().len(), 1);
+    }
+
+    /// A kill whose session's reader is not through in time says the exit
+    /// itself, once: the pane, or the login window, learns the session is
+    /// gone, and the reader coming through after says nothing more.
+    #[test]
+    fn a_kill_past_its_wait_for_the_reader_says_the_exit_itself() {
+        let id = "dl-reader-stuck";
+        let dir = scratch("stuck");
+        let quit = fake_session(id, &dir.to_string_lossy(), Fake { reader_lag: READER_WAIT + Duration::from_secs(1), ..PROMPT });
+        let generation = manager().sessions.lock().unwrap_or_else(|e| e.into_inner())[id].generation;
+        let killing = std::thread::spawn(move || tauri::async_runtime::block_on(kill_session(id.into())));
+        taken(id);
+        quit.store(true, Ordering::SeqCst);
+        killing.join().unwrap().unwrap();
+        let told = || crate::emit::sent_for_test("pty://exit").into_iter().filter(|e| e["id"] == id).collect::<Vec<_>>();
+        assert_eq!(told(), [serde_json::json!({ "id": id, "code": 0, "generation": generation })]);
+        // The reader, through at last, finds its exit said.
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(told().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A start into a worktree that a delete has found free and is removing
