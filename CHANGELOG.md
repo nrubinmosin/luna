@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- After an update, the new window no longer finds the old core still
+  counting a session and waits for you to restart it: stopping the sessions
+  for the update now also ends what helpers' turns left running (a shell, a
+  watcher, a build), Claude Code's and Codex's alike, so the old core is
+  replaced at once. While a core is being replaced, the panes wait for the
+  new one instead of failing.
+
 ## [0.19.0] - 2026-11-18
 
 Nothing in Luna's window moves any more, so an idle window draws no frames,

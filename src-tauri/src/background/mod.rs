@@ -289,7 +289,12 @@ pub fn promoting(id: &str) -> bool {
 /// keeps the core no more than it keeps the machine.
 pub fn running() -> usize {
     let now = crate::throttle::now_ms();
-    lock().entries.values().filter(|e| e.run.is_some() || leftovers_hold(e, now)).count()
+    lock().entries.values().filter(|e| keeps_core(e, now)).count()
+}
+
+/// Whether this one helper is one `running` counts.
+fn keeps_core(e: &Entry, now: u64) -> bool {
+    e.run.is_some() || leftovers_hold(e, now)
 }
 
 /// Whether a helper runs on this account folder, between turns too: its next

@@ -295,9 +295,10 @@ impl PtyManager {
 /// Asks every session to quit the way a delete does, before an update: the
 /// installer ends the process, and a CLI given its exit hooks leaves a whole
 /// transcript where one killed mid-write would not. A background helper's
-/// turn is stopped too: one still running would keep the old core from being
-/// replaced, and its parent chat has just been stopped. Returns how many it
-/// stopped. The chats' ties stay frozen until the update is called off
+/// turn is stopped too, and what helpers' turns left running is ended
+/// (`background::stop_for_update`): either would count as a session and keep
+/// the old core from being replaced, and the parent chats have just been
+/// stopped. Returns how many it stopped. The chats' ties stay frozen until the update is called off
 /// (`update_called_off`), the installer ends the process, or the freeze's
 /// bound after the stop is up (`agents::freeze_for_update`).
 #[tauri::command]
@@ -305,7 +306,7 @@ pub async fn stop_all_sessions() -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(|| {
         // What a chat was doing is written down before quitting changes it.
         crate::background::save();
-        stopped_for_update(|| manager().shut_down_all(GRACE) + crate::background::stop_turns(false))
+        stopped_for_update(|| manager().shut_down_all(GRACE) + crate::background::stop_for_update())
     })
     .await
     .map_err(|e| e.to_string())

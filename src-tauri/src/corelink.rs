@@ -35,6 +35,10 @@ use std::time::Duration;
 const START_WAIT: Duration = Duration::from_secs(10);
 /// How long a core asked to stop gets: its sessions' grace and then some.
 const STOP_WAIT: Duration = Duration::from_secs(30);
+/// How long a request waits for a core while one is found or started, and
+/// while the one running is replaced (a restart, or another build's after an
+/// update): the old one's stop and the new one's start, with their hellos.
+const LINK_WAIT: Duration = Duration::from_secs(STOP_WAIT.as_secs() + 2 * START_WAIT.as_secs());
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -518,8 +522,9 @@ fn stop<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32) {
 /// Asks the core a command and waits for the answer.
 pub(crate) fn request(cmd: String, args: Value) -> Result<Value, String> {
     // The panes ask for their sessions as soon as the page is up, which can be
-    // before the core is: while it is being found or started, they wait.
-    let deadline = std::time::Instant::now() + START_WAIT * 2;
+    // before the core is: while it is being found, started or replaced, they
+    // wait rather than fail.
+    let deadline = std::time::Instant::now() + LINK_WAIT;
     let conn = loop {
         if let Some(conn) = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             break conn;
