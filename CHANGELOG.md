@@ -61,9 +61,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - The terminals no longer get slower to draw the longer Luna runs: once the
   WebGL renderer's glyph atlas, shared by the terminals, had merged its pages
   (it grows with every new character and color seen), every frame of every
-  terminal rebuilt all its cells; now each rebuilds once per merge. Luna
-  carries the WebGL addon patched with xterm.js's own fix until a release of
-  the addon has it.
+  terminal rebuilt all its cells; now each rebuilds once per merge. Nor does
+  the atlas grow for as long as Luna runs any more: once full it starts over,
+  as does its cache of drawn glyphs past 32,768, which kept the window's
+  memory climbing with every new color seen. Luna carries the WebGL addon
+  patched with xterm.js's own fixes until a release of the addon has them.
 - Closing an account's sign-in window while its session is still starting
   ends that session once it has started, instead of leaving it running; a
   sign-in window opened again on the account meanwhile starts its own once

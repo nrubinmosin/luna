@@ -158,16 +158,35 @@ titles, context and drafts come from the core (`session_meta`), polled by
   every cell, the cost growing with the atlas. On a harness of four
   terminals fed bursts of colorful output (xterm.js 6.0.0, ten bursts), a
   render took 0.38 ms before the first merge and 0.89 ms by the tenth burst;
-  patched, 0.28 to 0.32 ms throughout, with two full rebuilds per merge. The
-  atlas itself still grows with each new glyph and color pair, patched or
-  not, until the addon's own limit. The patch backports
-  xterm.js's own fix after 6.0.0: a layout version on the atlas (bumped on a
-  merge, an overflow page and `clearTexture`), and each glyph renderer
-  rebuilds once per version it has not seen (`beginFrame`), and again after
-  `setAtlas`. Only `lib/addon-webgl.mjs`, the module Vite bundles, is
-  patched. It goes when an addon release carries the fix (`pageLayoutVersion`
-  in its `TextureAtlas`); pnpm refuses an install where the patch no longer
-  applies.
+  patched, 0.28 to 0.32 ms throughout, with two full rebuilds per merge.
+  0.19.0's atlas never shrank either: it merged pages up to the GPU's largest
+  texture and, once none would merge, went on adding pages past the
+  renderer's texture units, and its glyph cache kept every glyph and color
+  pair it ever drew. The patch backports xterm.js's fixes after 6.0.0: a
+  layout version on the atlas (bumped on a merge, an overflow page,
+  `clearTexture` and an eviction); each glyph renderer rebuilds once per
+  version it has not seen (`beginFrame`, and again after `setAtlas`) and
+  uploads every page again; a frame whose update merged or evicted is rebuilt
+  before it is drawn (`_settleModel`, at most 32 times), as cells already
+  placed would point at the old layout; and `_evictAllPages`, which drops
+  every page and the glyph cache and starts over when no four pages of one
+  size are left to merge, or before an oversized glyph's page would pass the
+  renderer's texture units. Two bounds are Luna's own: pages merge to 4096 px
+  at most, and the glyph cache evicts the same way past 32,768 entries. So
+  the atlas holds at most the renderer's texture units in pages (16 on the
+  harness), each at most 4096 px square, but for one page for oversized
+  glyphs at the GPU's size, and the cache at most 32,768 glyphs. On the
+  harness's ten bursts the JS heap had grown from 10 to 55 MB and the
+  renderer's private memory from 86 to 138 MB (127,000 glyphs cached);
+  patched, over twelve bursts the heap stays between 11 and 21 MB and the
+  renderer between 86 and 104 MB, the cache evicting every two or three
+  bursts. The patch also restores the canvas state the drawing of an
+  invisible glyph saved. Only `lib/addon-webgl.mjs`, the module Vite bundles,
+  is patched: the package's `main`, `lib/addon-webgl.js`, is in no build of
+  Luna (the tests mock the addon). It goes when
+  an addon release carries the fixes (`pageLayoutVersion` and
+  `_evictAllPages` in its `TextureAtlas`), with Luna's two bounds measured
+  again then; pnpm refuses an install where the patch no longer applies.
 - Shortcuts are claimed in the capture phase (`app/keymap.ts`), otherwise xterm
   swallows them; everything unclaimed goes to the CLI. Escape is never claimed.
 

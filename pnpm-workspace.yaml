@@ -6,10 +6,12 @@ allowBuilds:
   esbuild: false
 
 patchedDependencies:
-  # A backport of xterm.js's fix after 6.0.0 (`pageLayoutVersion` in
-  # addons/addon-webgl): in 0.19.0 an atlas page merge sets a flag on the
-  # texture atlas, shared by every terminal of one font and theme, that is
-  # never cleared, so every render from then on rebuilds the whole viewport.
-  # The patch makes it a version each renderer rebuilds for once. Drop it with
-  # the first addon release that has the fix (docs/architecture/frontend.md).
+  # Backports of xterm.js's fixes after 6.0.0 to the texture atlas, shared by
+  # every terminal of one font and theme (`pageLayoutVersion` and
+  # `_evictAllPages` in addons/addon-webgl): in 0.19.0 a page merge sets a
+  # flag that is never cleared, so every render from then on rebuilds the
+  # whole viewport, and the atlas and its glyph cache never shrink. The patch
+  # makes the flag a version each renderer rebuilds for once and evicts the
+  # atlas when it is full, with two bounds of Luna's own. Drop it with the
+  # first addon release that has the fixes (docs/architecture/frontend.md).
   '@xterm/addon-webgl@0.19.0': patches/@xterm__addon-webgl@0.19.0.patch
