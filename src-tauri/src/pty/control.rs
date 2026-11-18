@@ -485,8 +485,12 @@ impl PtyManager {
     /// started in it or into it (`Session::enters`: Claude Code's registry
     /// says so only once the CLI is up) or moved into it itself, or a
     /// background helper sent to it or working in it, between its turns too.
+    /// By where each path leads as well as by its spelling
+    /// (`worktree::Place`): a session started through a link to the project
+    /// is in the worktree a delete names by its real path.
     pub fn worktree_shared(&self, id: &str, wt: &str) -> bool {
-        let inside = |p: &str| crate::worktree::within(p, wt);
+        let wt = crate::worktree::Place::of(wt);
+        let inside = |p: &str| crate::worktree::Place::of(p).within(&wt);
         // Probed off the session map: the disk reads below must not hold it.
         self.activity_probes()
             .iter()
@@ -828,6 +832,30 @@ mod tests {
         let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
         taken(id);
         let came = fake_session(other, &wt_path, PROMPT);
+        quit.store(true, Ordering::SeqCst);
+        assert_eq!(deleting.join().unwrap(), Ok(None), "kept, and no path given back to remove");
+        assert!(wt.exists());
+        came.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session in a worktree by way of a link or junction to its project
+    /// keeps it from a delete that names it by its real path.
+    #[test]
+    fn a_worktree_reached_through_a_link_is_kept_from_a_delete_by_its_real_path() {
+        let (id, other) = ("dl-wt-real", "dl-wt-linked");
+        let dir = scratch("linked");
+        let wt = dir.join("real").join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        crate::worktree::link_dir(&dir.join("link"), &dir.join("real"));
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let (folder, wt_path) = (s(&dir.join("real")), s(&wt));
+        let came = fake_session(other, &s(&dir.join("link").join("wt")), PROMPT);
+        let quit = fake_session(id, &wt_path, PROMPT);
+        let (f, w) = (folder.clone(), wt_path.clone());
+        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
+        taken(id);
         quit.store(true, Ordering::SeqCst);
         assert_eq!(deleting.join().unwrap(), Ok(None), "kept, and no path given back to remove");
         assert!(wt.exists());

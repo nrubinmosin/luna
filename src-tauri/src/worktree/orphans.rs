@@ -42,10 +42,12 @@ fn born_ms(path: &Path) -> Option<u64> {
 /// Whether the worktree `wt` of `folder` may be the one `u` is making: where
 /// its CLI makes one for that folder (Claude Code under the folder, Codex
 /// under its account), and appeared since it was started. One whose time
-/// cannot be read is taken for it.
+/// cannot be read is taken for it. Folders are compared as places
+/// (`Place`), as where a miss is the mistake: a worktree missed here is
+/// offered and removed as an orphan.
 fn awaits(u: &Unplaced, folder: &str, wt: &Path) -> bool {
     use crate::provider::Provider;
-    if norm(&u.folder) != norm(folder) {
+    if !Place::of(&u.folder).is(&Place::of(folder)) {
         return false;
     }
     let root = match u.provider {
@@ -56,7 +58,7 @@ fn awaits(u: &Unplaced, folder: &str, wt: &Path) -> bool {
         Provider::Claude => claude_worktrees(&u.folder),
         Provider::Codex => Path::new(&u.account_path).join("worktrees"),
     };
-    if !root.is_some_and(|r| norm(&r.to_string_lossy()) == norm(&place.to_string_lossy())) {
+    if !root.is_some_and(|r| Place::of(&r.to_string_lossy()).is(&Place::of(&place.to_string_lossy()))) {
         return false;
     }
     born_ms(wt).is_none_or(|born| born >= u.since_ms.saturating_sub(BORN_SLACK_MS))
@@ -284,6 +286,14 @@ mod tests {
         assert_eq!(orphans(&[asked(Provider::Codex, now + 60_000, &repo, &account)]), both, "there before it asked");
         assert_eq!(orphans(&[asked(Provider::Codex, before, &repo, &native(r"C:\other\account"))]), both, "another account");
         assert_eq!(orphans(&[asked(Provider::Claude, before, &native(r"C:\other\repo"), &account)]), both, "another folder");
+        // Its folder as the session was started in it: through a link, or in
+        // another case where the platform takes that for the same folder.
+        let linked = root.join("linked-repo");
+        link_dir(&linked, Path::new(&repo));
+        let linked = linked.to_string_lossy().into_owned();
+        assert_eq!(orphans(&[asked(Provider::Claude, before, &linked, &account)]), [place(&wt)], "its folder through a link");
+        let cased = if cfg!(any(windows, target_os = "macos")) { vec![place(&wt)] } else { both.clone() };
+        assert_eq!(orphans(&[asked(Provider::Claude, before, &repo.to_uppercase(), &account)]), cased, "its folder in another case");
         let _ = std::fs::remove_dir_all(&root);
     }
 

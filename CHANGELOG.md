@@ -142,6 +142,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Codex chat or helper started with a new worktree before its first prompt,
   or of a Claude Code one started into an unnamed worktree, while Luna does
   not yet know which worktree is theirs.
+- A chat's or helper's delete and the orphan sweep keep a worktree a session
+  reached through a link or junction to its project, where they name it by
+  its real path, and the other way about; on Linux a path in another case is
+  no longer taken for the same worktree.
 
 ## [0.18.5] - 2026-11-17
 

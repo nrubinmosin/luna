@@ -10,14 +10,16 @@
 //! worktree a start is on its way into, and a start into a worktree being
 //! removed fails, saying so.
 
+use super::{claims, norm_in_use};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Default)]
 struct Ways {
     /// Each start on its way in, by a number of its own: the folders it goes
     /// into.
-    entering: Vec<(u64, Vec<String>)>,
-    removing: Vec<String>,
+    entering: Vec<(u64, Vec<Place>)>,
+    removing: Vec<(String, Place)>,
     next: u64,
 }
 
@@ -27,16 +29,48 @@ fn ways() -> std::sync::MutexGuard<'static, Ways> {
     WAYS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A path as compared here: either slash, no trailing one, and case aside,
-/// as `worktree_shared` has always compared them.
-fn key(p: &str) -> String {
-    p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
+/// A path as the holds compare it, where a miss is the mistake (a worktree
+/// removed with a session in it or on its way in): its spelling by
+/// `path_key_loose`, and where it leads, resolved through links and
+/// junctions (`resolved`). A start through a linked project folder and a
+/// delete naming the real one are of one worktree.
+pub(crate) struct Place {
+    key: String,
+    real: Option<String>,
 }
 
-/// Whether `path` is the worktree `wt` or inside it.
-pub(crate) fn within(path: &str, wt: &str) -> bool {
-    let (p, wt) = (key(path), key(wt));
-    p == wt || p.starts_with(&format!("{wt}\\"))
+impl Place {
+    /// Reads the disk: taken before the holds' lock where it can be.
+    pub(crate) fn of(path: &str) -> Place {
+        Place { key: norm_in_use(path), real: resolved(Path::new(path)).map(|r| norm_in_use(&r.to_string_lossy())) }
+    }
+
+    /// Whether this is the worktree `wt` or inside it, by either spelling or
+    /// by where both lead.
+    pub(crate) fn within(&self, wt: &Place) -> bool {
+        claims(&self.key, &wt.key) || matches!((&self.real, &wt.real), (Some(p), Some(w)) if claims(p, w))
+    }
+
+    /// Whether this and `other` are one place, by either spelling or by
+    /// where both lead.
+    pub(crate) fn is(&self, other: &Place) -> bool {
+        self.key == other.key || matches!((&self.real, &other.real), (Some(a), Some(b)) if a == b)
+    }
+}
+
+/// Where `path` leads: the nearest of it and the folders above it that is
+/// there, resolved, and the rest of it on top. A worktree a CLI has not made
+/// yet resolves as it will once it is there.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return Some(rest.iter().rev().fold(real, |r, part| r.join(part)));
+        }
+        rest.push(at.file_name()?);
+        at = at.parent()?;
+    }
 }
 
 /// A start on its way into folders, until it is dropped.
@@ -52,13 +86,14 @@ impl Drop for Entering {
 /// listed where a delete looks (the guard dropped then); refused, saying
 /// why, where one of them is in a worktree being removed.
 pub(crate) fn entering(paths: &[&str]) -> Result<Entering, String> {
+    let places: Vec<Place> = paths.iter().map(|p| Place::of(p)).collect();
     let mut w = ways();
-    if let Some(wt) = w.removing.iter().find(|wt| paths.iter().any(|p| within(p, wt))) {
+    if let Some((wt, _)) = w.removing.iter().find(|(_, wt)| places.iter().any(|p| p.within(wt))) {
         return Err(format!("{wt} is being removed with the chat that was in it; start again once it is gone"));
     }
     w.next += 1;
     let n = w.next;
-    w.entering.push((n, paths.iter().map(|p| p.to_string()).collect()));
+    w.entering.push((n, places));
     Ok(Entering(n))
 }
 
@@ -68,7 +103,7 @@ pub(crate) struct Removing(String);
 impl Drop for Removing {
     fn drop(&mut self) {
         let mut w = ways();
-        if let Some(i) = w.removing.iter().position(|wt| *wt == self.0) {
+        if let Some(i) = w.removing.iter().position(|(wt, _)| *wt == self.0) {
             w.removing.remove(i);
         }
     }
@@ -78,17 +113,22 @@ impl Drop for Removing {
 /// `others_in_it` (asked under the same lock) finds someone there: then None,
 /// and the worktree stays.
 pub(crate) fn removing(wt: &str, others_in_it: impl FnOnce() -> bool) -> Option<Removing> {
+    let place = Place::of(wt);
     let mut w = ways();
-    if w.entering.iter().any(|(_, paths)| paths.iter().any(|p| within(p, wt))) || others_in_it() {
+    if w.entering.iter().any(|(_, paths)| paths.iter().any(|p| p.within(&place))) || others_in_it() {
         return None;
     }
-    w.removing.push(wt.to_string());
+    w.removing.push((wt.to_string(), place));
     Some(Removing(wt.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn within(path: &str, wt: &str) -> bool {
+        Place::of(path).within(&Place::of(wt))
+    }
 
     /// A start into a worktree held for removal is refused, saying so, and
     /// let in once the removal is over; a delete keeps a worktree a start is
@@ -102,10 +142,40 @@ mod tests {
         assert!(refused.contains("being removed"), "{refused}");
         assert!(entering(&[wt.trim_end_matches("entry-a")]).is_ok(), "the folder it is in is not it");
         drop(held);
-        let on_the_way = entering(&[&inside.to_uppercase()]).expect("let in once it is gone");
+        let on_the_way = entering(&[&inside]).expect("let in once it is gone");
         assert!(removing(wt, || false).is_none(), "kept for the start on its way in");
         drop(on_the_way);
         assert!(removing(wt, || true).is_none(), "kept for whoever is in it");
         assert!(removing(wt, || false).is_some());
+    }
+
+    /// One worktree, however it is reached: through a link or a junction to
+    /// the project, there yet or not, and in another case or with the other
+    /// separator where the platform takes those for one place. On Linux
+    /// another case is another folder, and a backslash part of a name.
+    #[test]
+    fn a_worktree_is_held_however_it_is_reached() {
+        let root = std::env::temp_dir().join(format!("luna-entry-place-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let worktrees = |project: &str| root.join(project).join(".claude").join("worktrees");
+        let wt = worktrees("real").join("w");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        super::super::link_dir(&root.join("link"), &root.join("real"));
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let (wt, linked) = (s(&wt), worktrees("link").join("w"));
+        assert!(within(&s(&linked.join("src")), &wt), "in it through the link");
+        assert!(within(&wt, &s(&linked)), "and the other way about");
+        assert!(within(&s(&worktrees("link").join("later")), &s(&worktrees("real").join("later"))), "one not made yet");
+        assert!(!within(&s(&worktrees("link").join("other")), &wt));
+        assert_eq!(within(&wt.to_uppercase(), &wt), cfg!(any(windows, target_os = "macos")), "another case");
+        assert_eq!(within(&format!("{wt}\\src"), &wt), cfg!(windows), "a backslash");
+
+        let on_the_way = entering(&[&s(&linked.join("src"))]).unwrap();
+        assert!(removing(&wt, || false).is_none(), "kept for a start on its way in through the link");
+        drop(on_the_way);
+        let held = removing(&s(&linked), || false).expect("nobody there");
+        assert!(entering(&[&wt]).is_err(), "a start by the real path is refused while it goes by the link");
+        drop(held);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -43,6 +43,8 @@ pub(crate) use paths::*;
 pub(crate) use refs::*;
 pub(crate) use remove::*;
 #[cfg(test)]
+pub(crate) use testkit::link_dir;
+#[cfg(test)]
 use testkit::*;
 
 fn git(folder: &str) -> Command {

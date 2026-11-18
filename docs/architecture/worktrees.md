@@ -49,7 +49,13 @@ lose, and to sweep the ones no chat claims.
   they remove the same way, the sweep asking again whether anyone is in it.
   A Claude Code chat started into a worktree by name (`--worktree <name>`
   from the project folder) is in it from its start (`Session::enters`), not
-  only once its registry says so.
+  only once its registry says so. The holds and the sharing check compare
+  places, not spellings (`entry.rs` `Place`): a path is in a worktree by its
+  spelling as `path_key_loose` has it (case and either separator alike on
+  Windows, case alike on macOS, neither on Linux) or by where both lead,
+  resolved through links and junctions (the nearest folder of it there, the
+  rest on top, for a worktree not made yet), so a session started through a
+  linked project folder keeps the worktree a delete names by its real path.
   Removal is
   `git worktree remove -f -f`, since Claude Code locks its worktree and a killed
   one does not release the lock. Only `worktree-*` branches are ever deleted.

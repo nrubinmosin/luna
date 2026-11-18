@@ -44,3 +44,15 @@ pub(super) fn codex_layout(tag: &str) -> Option<(PathBuf, String, String)> {
     let wt_s = wt.to_string_lossy().into_owned();
     ok(git(&repo_s).args(["worktree", "add", "-q", "--detach", &wt_s])).then_some((root, repo_s, wt_s))
 }
+
+/// `link` made a link to the folder `target`: a junction on Windows, which
+/// takes no privilege, a symlink elsewhere.
+pub(crate) fn link_dir(link: &Path, target: &Path) {
+    #[cfg(windows)]
+    {
+        let made = Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stdout));
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
