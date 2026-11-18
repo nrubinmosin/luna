@@ -82,26 +82,31 @@ lose, and to sweep the ones no chat claims.
   removal that still fails is `worktreeLeft` + `worktreeError` in the result,
   not an error. The log names branches deleted and kept.
 - The orphan sweep scans every folder and each account's `worktrees/`; nothing a
-  live session or helper sits in is deleted. A worktree younger than 5 minutes
+  live session or helper sits in is deleted. In use is every chat's worktree
+  the window knows, every live cwd in each account's Claude Code registry and
+  the user's own (sessions started in a terminal too), and Luna's live
+  sessions and helpers, all compared with each worktree as places (`Place`),
+  each path resolved once a look (`orphans.rs` `Keepers`): a chat parked in a
+  worktree by its real path keeps it from a sweep of the project opened
+  through a link, and the other way about. A worktree younger than 5 minutes
   is no orphan (`GRACE_SECS`), nor, however old, is one that may be a live
   session's whose path Luna has not learned yet (`Unplaced`): a chat or a
   helper's running turn started with a new worktree whose place its CLI picks
   (Codex's `--worktree`, a bucket named for the first 4 hex of a fresh UUID
   under `<CODEX_HOME>/worktrees/`, said only in the rollout of its first turn;
   Claude Code's `--worktree` with no name, said in its registry once it is
-  up) keeps every worktree that appeared since it started (by creation time,
-  2 s of slack) where that CLI makes them for that folder: under the folder's
-  `.claude/worktrees/`, or under that account's `worktrees/`, folders compared
-  as places (`Place`). Its start is stamped just before its process is
-  spawned, and taken as the earlier of that stamp and now less its age on the
-  monotonic clock (`Unplaced::since`), so a wall clock stepped either way since
-  does not make what it made look older than it. Once the session's folder
-  says where it went, or it ends, the usual check applies. The makers are read
-  before the folders in use, so one that learns its path between the two
-  reads is in one of them, and the sweep's last look under the removal's hold
-  asks both again (`kept_from_removal`). Deletes take only the deleted chat's
-  or helper's own worktree, which no such session can be making: theirs is
-  new.
+  up) keeps every worktree where that CLI makes them for that folder: under
+  the folder's `.claude/worktrees/`, or under that account's `worktrees/`.
+  Whenever it appeared, by no clock: a wall clock stepped back while the CLI
+  made its checkout and put right before Luna looked dates it before the
+  session's start. Once the session's folder says where it went, or it ends,
+  the usual check applies; a Codex session never given a prompt holds its
+  folder's worktrees in that account from the sweep for as long as it runs,
+  which only leaves them unoffered. The makers are read before the folders
+  in use, so one that learns its path between the two reads is in one of
+  them, and the sweep's last look before each removal reads all of it again
+  (`kept_from_removal`). Deletes take only the deleted chat's or helper's own
+  worktree, which no such session can be making: theirs is new.
 
 ## Fetch before a Claude Code worktree
 

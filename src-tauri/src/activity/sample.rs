@@ -524,7 +524,6 @@ mod tests {
             enters: None,
             makes_worktree: false,
             spawned_at_ms: 0,
-            spawned_at: std::time::Instant::now(),
             resume: None,
             account_path: String::new(),
             last_output_ms,

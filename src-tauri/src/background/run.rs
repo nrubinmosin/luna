@@ -457,7 +457,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     drop(reserved);
     // Ahead of the process: what it starts is born after this (`turn_over`).
     let started_ms = crate::throttle::now_ms();
-    let started_at = std::time::Instant::now();
     let mut child = cmd.spawn().map_err(|e| {
         crate::log::error("background", &format!("could not start {}: {e}", crate::agents::label(id)));
         format!("could not start {}: {e}", provider.as_str())
@@ -535,7 +534,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
                     feed: claude.then_some(feed),
                     line: claude.then_some(line),
                     moved: carried,
-                    started_at,
                     ..Run::claimed(pid, started_ms)
                 });
                 e.observed.begin_turn();

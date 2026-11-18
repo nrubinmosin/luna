@@ -705,7 +705,6 @@ mod tests {
             enters: None,
             makes_worktree: false,
             spawned_at_ms: now_ms() as u128,
-            spawned_at: std::time::Instant::now(),
             resume: None,
             account_path: String::new(),
             job: None,
@@ -904,7 +903,6 @@ mod tests {
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(making).unwrap().makes_worktree = true;
         let waited: Vec<_> = super::super::unplaced_worktrees().into_iter().filter(|u| u.folder == folder).collect();
         assert_eq!(waited.len(), 1, "{waited:?}");
-        assert!(waited[0].since_ms > 0 && waited[0].since_ms <= now_ms());
         for (id, quit) in [making, plain].into_iter().zip(quits) {
             quit.store(true, Ordering::SeqCst);
             manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
@@ -923,10 +921,32 @@ mod tests {
         let quit = fake_session(id, &folder, PROMPT);
         let wt = crate::worktree::named_path(&folder, "made-by-its-cli");
         std::fs::create_dir_all(&wt).unwrap();
-        assert!(!crate::worktree::kept_from_removal(&folder, &wt), "nobody making one: an orphan still");
+        assert!(!crate::worktree::kept_from_removal(&folder, &wt, &[], &[]), "nobody making one: an orphan still");
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).unwrap().makes_worktree = true;
         assert!(!manager().worktree_shared("", &wt), "nobody is in it");
-        assert!(crate::worktree::kept_from_removal(&folder, &wt), "kept for the session making one");
+        assert!(crate::worktree::kept_from_removal(&folder, &wt, &[], &[]), "kept for the session making one");
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The sweep's removal looks again before it removes each orphan: one a
+    /// session went into after Luna's sessions were read for the listing is
+    /// kept, said as in use again, and nothing of it goes.
+    #[test]
+    fn the_sweep_keeps_an_orphan_a_session_went_into_since_the_listing() {
+        let id = "dl-swept";
+        let dir = scratch("swept");
+        let folder = dir.to_string_lossy().into_owned();
+        let wt = crate::worktree::named_path(&folder, "gone-into");
+        std::fs::create_dir_all(&wt).unwrap();
+        let quit = fake_session(id, &format!("{wt}/src"), PROMPT);
+        // Read before the session went in: nobody there.
+        let swept = crate::worktree::remove_orphans_now(folder, vec![], vec![], vec![wt.clone()], vec![], &[], 0).unwrap();
+        assert!(swept.removed.is_empty());
+        let failed: Vec<_> = swept.failed.iter().map(|f| (f.path.as_str(), f.error.as_str())).collect();
+        assert_eq!(failed, [(wt.as_str(), crate::worktree::IN_USE_AGAIN)]);
+        assert!(std::path::Path::new(&wt).exists());
         quit.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         let _ = std::fs::remove_dir_all(&dir);

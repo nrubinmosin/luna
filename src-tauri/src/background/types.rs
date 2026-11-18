@@ -251,8 +251,6 @@ pub(super) struct Run {
     pub(super) pid: Option<u32>,
     /// When the turn started, for the window's "working 4 min".
     pub(super) started_ms: u64,
-    /// The same moment on the monotonic clock (`worktree::Unplaced::since`).
-    pub(super) started_at: std::time::Instant,
     /// A stop came while the turn was claimed but had no process yet: it
     /// has no pid to kill, so `spawn_turn` does not start it, or kills what
     /// it just started.
@@ -316,7 +314,6 @@ impl Run {
         Run {
             pid,
             started_ms,
-            started_at: std::time::Instant::now(),
             stopped: false,
             feed: None,
             line: None,

@@ -293,26 +293,22 @@ pub fn uses_account(account_path: &str) -> bool {
 }
 
 /// The helpers sent into a new worktree whose turn is running and has not
-/// said where it works yet (`worktree::Unplaced`, from the turn's start):
+/// said where it works yet (`worktree::Unplaced`):
 /// Claude Code says it as the turn starts, Codex only in its rollout, read
 /// here as `working_dirs` reads it.
 pub fn unplaced_worktrees() -> Vec<crate::worktree::Unplaced> {
-    let found: Vec<(Provider, String, String, Option<String>, u64)> = lock()
+    let found: Vec<(Provider, String, String, Option<String>)> = lock()
         .entries
         .values()
-        .filter(|e| e.spec.worktree && e.cwd.is_none())
-        .filter_map(|e| {
-            let run = e.run.as_ref()?;
-            let since = crate::worktree::Unplaced::since(run.started_ms, run.started_at.elapsed());
-            Some((e.spec.provider, e.spec.folder.clone(), e.spec.account_path.clone(), e.session.clone(), since))
-        })
+        .filter(|e| e.spec.worktree && e.cwd.is_none() && e.run.is_some())
+        .map(|e| (e.spec.provider, e.spec.folder.clone(), e.spec.account_path.clone(), e.session.clone()))
         .collect();
     found
         .into_iter()
-        .filter(|(provider, _, account, session, _)| {
+        .filter(|(provider, _, account, session)| {
             *provider != Provider::Codex || session.as_deref().and_then(|t| crate::codex::session::thread_cwd(account, t)).is_none()
         })
-        .map(|(provider, folder, account_path, _, since_ms)| crate::worktree::Unplaced { provider, folder, account_path, since_ms })
+        .map(|(provider, folder, account_path, _)| crate::worktree::Unplaced { provider, folder, account_path })
         .collect()
 }
 
@@ -507,7 +503,7 @@ mod tests {
     use super::*;
 
     /// A helper sent into a new worktree is waited for while its turn runs
-    /// with nowhere said yet, from when that turn started; not once it has
+    /// with nowhere said yet; not once it has
     /// said where it works, not between turns, and not one sent to its
     /// folder as it is.
     #[test]
@@ -537,7 +533,7 @@ mod tests {
         let mut providers: Vec<&str> = waited.iter().map(|u| u.provider.as_str()).collect();
         providers.sort();
         assert_eq!(providers, ["claude", "codex"], "{waited:?}");
-        assert!(waited.iter().all(|u| u.since_ms == since && u.account_path == r"C:\acc"), "{waited:?}");
+        assert!(waited.iter().all(|u| u.account_path == r"C:\acc"), "{waited:?}");
     }
 
     #[test]
