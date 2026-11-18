@@ -163,7 +163,11 @@ async function promote(p: PromotedDto): Promise<void> {
           settings: {
             model: modelFromSetting(word('model')) ?? (defaults as ClaudeSettings).model,
             effort: effortFromSetting(word('effort')) ?? (defaults as ClaudeSettings).effort,
-            perm: permFromSetting(word('permissionMode')) ?? (defaults as ClaudeSettings).perm
+            // A mode no chat runs in (`dontAsk`) opens on Ask, its rung, never on
+            // the account's default, which may go further.
+            perm: word('permissionMode')
+              ? (permFromSetting(word('permissionMode')) ?? 'Ask')
+              : (defaults as ClaudeSettings).perm
           }
         }
       : {

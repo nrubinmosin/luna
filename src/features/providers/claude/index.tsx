@@ -58,7 +58,8 @@ export const settingsNote =
  * for this account in this folder, settled by the core: a value Luna has no
  * equivalent for — a model it does not list, an effort the CLI has since
  * renamed — comes back as the stock default rather than a chat that cannot
- * be described in the title bar. A stock value names no file to come from.
+ * be described in the title bar; a permission mode does not, as the stock
+ * one is the widest. A stock value names no file to come from.
  */
 export async function settingsDefaults(
   accountPath: string,
@@ -79,10 +80,15 @@ export async function settingsDefaults(
     const src = sourceOf(dto.effort);
     if (src) from.effort = src;
   }
-  const perm = dto?.permissionMode ? permFromSetting(dto.permissionMode.value) : null;
-  if (perm && dto?.permissionMode) {
-    values.perm = perm;
-    if (dto.permissionMode.source !== 'stock') from.perm = SOURCE_LABELS[dto.permissionMode.source];
+  // A file's mode no chat starts in (`dontAsk`) opens on Ask, its rung, never
+  // on the stock Bypass.
+  const mode = dto?.permissionMode;
+  if (mode && mode.source !== 'stock') {
+    const perm = permFromSetting(mode.value);
+    values.perm = perm ?? 'Ask';
+    from.perm = perm ? SOURCE_LABELS[mode.source] : `${SOURCE_LABELS[mode.source]}, its ${mode.value} read as Ask`;
+  } else if (mode) {
+    values.perm = permFromSetting(mode.value) ?? values.perm;
   }
   // The effort the model takes, by the same rule as the dialog's
   // (`effortMovedTo`): every start reads its defaults here, a quick chat's

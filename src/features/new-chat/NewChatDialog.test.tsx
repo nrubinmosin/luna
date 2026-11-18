@@ -168,6 +168,17 @@ describe('NewChatDialog: creating', () => {
     expect(allChats(useChats.getState().folders)[0]).toMatchObject({ perm: 'Auto' });
   });
 
+  it('opens on Ask where the settings’ mode is none a chat starts in, never on Bypass', async () => {
+    mocked.claudeDefaults.mockResolvedValue({ model: null, effort: null, permissionMode: fromAccount('dontAsk') });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('radio', { name: 'Ask' })).toBeChecked();
+    expect(screen.getByText("from the account's settings.json, its dontAsk read as Ask")).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ perm: 'Ask' });
+  });
+
   it('takes Codex’s model, effort, approval and sandbox from the account’s config', async () => {
     mocked.codexDefaults.mockResolvedValue({
       model: fromAccount('gpt-5.4-codex'),

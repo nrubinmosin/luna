@@ -383,7 +383,11 @@ and across CLIs the highest helper mode its privilege covers on the one scale
 (`privilege.rs` `inherited`, `CLAUDE_LADDER`, `CODEX_LADDER`): a Codex chat
 that asks a person gives `never` with its sandbox; a Claude Code `acceptEdits`
 chat a Codex `read-only`. "The account's default" (`HelperMode::Account`)
-takes the account's and project's default, as before. Either way the mode is
+takes the account's and project's default, as before: `claude/defaults.rs`
+reads a settings file's `defaultMode` as any mode the CLI takes, `dontAsk`
+included, and one it does not know as `default`, so a file never starts a
+helper wider than it says (the stock `bypassPermissions` only where no file
+names one). Either way the mode is
 held to the caller's (`cap`) and pinned; `settings.modeFrom` says `caller`,
 `callerNearest` or `account`. The dev caller has no mode and always takes the
 account's. Claude Code helpers start in `auto` and `dontAsk` too

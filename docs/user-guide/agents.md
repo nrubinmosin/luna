@@ -199,7 +199,9 @@ hooks run unasked.
   it the account's default instead; either way it is held to the caller's.
   The spawn's `settings.modeFrom` says which (`caller`, `callerNearest`,
   `account`). A Claude Code helper may also run in `auto`, as a chat may
-  (Auto), or in `dontAsk`.
+  (Auto), or in `dontAsk`. On the account's default, a settings file's
+  `defaultMode` is taken as it is, `dontAsk` included; one Luna does not know
+  counts as `default` (asks), never as Bypass.
 - Helpers that each make a worktree in the same repository start one after
   another, each once its CLI has made its worktree, as two made at once could
   fail.

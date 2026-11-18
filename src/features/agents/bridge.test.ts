@@ -204,6 +204,12 @@ describe('agent bridge: opening a background helper as a chat', () => {
     expect(useChats.getState().findChat('bg1')).toMatchObject({ provider: 'claude', perm: 'Auto' });
   });
 
+  it('opens a helper in a mode no chat runs in (dontAsk) on Ask, not on the account’s Bypass', async () => {
+    mocked.backgroundPromote.mockResolvedValue(helper({ settings: { model: 'haiku', permissionMode: 'dontAsk' } }));
+    await openAsChat('bg1');
+    expect(useChats.getState().findChat('bg1')).toMatchObject({ provider: 'claude', perm: 'Ask' });
+  });
+
   it('opens a Codex helper the same way, its approval and sandbox as it ran', async () => {
     mocked.backgroundPromote.mockResolvedValue(
       helper({
