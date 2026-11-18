@@ -184,15 +184,6 @@ impl Hold {
         self.places.push(Place::of(path));
     }
 
-    pub(crate) fn add_place(&mut self, place: Place) {
-        self.places.push(place);
-    }
-
-    /// A session making a worktree whose path its CLI picks, read now.
-    pub(crate) fn add_maker(&mut self, u: &Unplaced) {
-        self.makers.push(Maker::of(u));
-    }
-
     /// `other`'s places, and its makers where it is still `making` (has not
     /// said where its worktree is).
     pub(crate) fn add(&mut self, other: &Hold, making: bool) {
@@ -202,20 +193,24 @@ impl Hold {
         }
     }
 
-    /// Where `path` leads for this hold's session: one under a place it was
-    /// started in, by that place's spelling, leads where that place led as it
-    /// started (its CLI is there, whatever has become of the spelling since);
-    /// any other as it leads now.
-    pub(crate) fn place_of(&self, path: &str) -> Place {
+    /// Someone in `path` who started as `start` holds: one under a place it
+    /// was started in, by that place's spelling, is where that place led as
+    /// it started with the rest of `path` on top (its CLI is there, whatever
+    /// has become of the spelling since), and where `path` leads now as well:
+    /// the rest may go through a link or a junction of its own (a
+    /// `.claude/worktrees` junctioned elsewhere), which only the disk says.
+    /// Any other `path` is where it leads now.
+    pub(crate) fn add_at(&mut self, start: &Hold, path: &str) {
         let key = norm_in_use(path);
-        for p in &self.places {
+        for p in &start.places {
             if let (Some(rest), Real::At(real)) = (key.strip_prefix(p.key.as_str()), &p.real) {
                 if rest.is_empty() || rest.starts_with(KEY_SEP) {
-                    return Place { real: Real::At(format!("{real}{rest}")), key };
+                    self.places.push(Place { real: Real::At(format!("{real}{rest}")), key });
+                    break;
                 }
             }
         }
-        Place::of(path)
+        self.add_path(path);
     }
 
     /// Whether one of its places is the worktree `wt` or inside it.
@@ -438,6 +433,29 @@ mod tests {
         assert!(!place(&session, false).within(&place(&wt, false), Look::Sweep), "not there yet: by where it would be");
     }
 
+    /// A session that moved under a place it was started in, into a folder
+    /// that is a junction or a link of its own (a `.claude/worktrees` kept
+    /// elsewhere), is in the worktree where that leads too: a delete naming
+    /// it by its real path keeps it.
+    #[test]
+    fn a_move_through_a_link_below_a_start_place_is_held_where_it_leads() {
+        let root = std::env::temp_dir().join(format!("luna-entry-below-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let project = root.join("project");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(project.join(".claude")).unwrap();
+        std::fs::create_dir_all(elsewhere.join("w").join("src")).unwrap();
+        super::super::link_dir(&project.join(".claude").join("worktrees"), &elsewhere);
+        let started = Hold::start(&[&s(&project)], None);
+        let mut now = Hold::default();
+        now.add_at(&started, &s(&project.join(".claude").join("worktrees").join("w").join("src")));
+        assert!(now.keeps(&Target::of(&s(&elsewhere.join("w")), None), Look::Delete), "by the real path");
+        assert!(now.keeps(&Target::of(&s(&project.join(".claude").join("worktrees").join("w")), None), Look::Delete));
+        super::super::unlink_dir(&project.join(".claude").join("worktrees"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// One worktree, however it is reached: through a link or a junction to
     /// the project, there yet or not, and in another case or with the other
     /// separator where the platform takes those for one place. On Linux
@@ -487,7 +505,7 @@ mod tests {
         let real = |name: &str| Target::of(&s(&worktrees("real").join(name)), None);
         assert!(started.keeps(&real("w"), Look::Delete), "the worktree it was started into");
         let mut now = Hold::default();
-        now.add_place(started.place_of(&s(&worktrees("link").join("moved").join("src"))));
+        now.add_at(&started, &s(&worktrees("link").join("moved").join("src")));
         assert!(now.keeps(&real("moved"), Look::Delete), "the one it moved to, by the link's spelling");
         let late = Hold::start(&[&s(&worktrees("link").join("w"))], None);
         assert!(!late.keeps(&real("w"), Look::Delete), "read once the link is gone, it would be missed");

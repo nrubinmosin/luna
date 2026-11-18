@@ -36,7 +36,8 @@ lose, and to sweep the ones no chat claims.
 - Where a session actually works is `pty::ActivityProbe::working_dir()` (Claude
   registry / Codex rollout); the root is found from anywhere inside
   (`worktree::root_of`), as Claude Code moves its cwd with the shell's `cd`.
-  Background helpers report theirs via `background::working_dirs`.
+  Background helpers report theirs via `background::working_dirs`, and what
+  they hold against a removal via `background::holds`.
 
 ## Removal
 
@@ -54,14 +55,18 @@ lose, and to sweep the ones no chat claims.
   path the CLI picks, where that CLI makes them (`Unplaced`, below). The
   start holds the same `Hold` on its way in (`entering`), from before its
   launch until its session is in the map, which then carries it
-  (`Session::hold`); a helper's start holds its folder (and, sent into a new
-  worktree, where its CLI makes them) until it is in the registry. A folder
-  the CLI says it moved to later (Claude Code's registry, Codex's rollout)
-  is resolved as it is read, and one under a place the session started in,
-  by that place's spelling, leads where that place led as it started
-  (`Hold::place_of`): a session started through a linked project folder
-  keeps its worktree from a delete by the real path, the link removed since
-  or not. A helper's folders are resolved as each look reads them.
+  (`Session::hold`). A helper holds the same of its folder (and, sent into
+  a new worktree, where its CLI makes them), resolved as it starts, on its
+  way into the registry and then with its entry for as long as it is there
+  (`Entry::hold`); one a new core takes up is resolved as that core takes it
+  up. A folder the CLI says it moved to later (Claude Code's registry, Codex's
+  rollout, a helper's stream) is held where it leads as it is read and, if
+  it is under a place the session started in by that place's spelling, also
+  where that place led as it started, the rest on top (`Hold::add_at`): a
+  session or helper started through a linked project folder keeps its
+  worktree from a delete by the real path, the link removed since or not,
+  and a `.claude/worktrees` that is itself a junction elsewhere is followed.
+  A helper's folder is held as it leads now as well.
 - **Places.** Paths are compared by their spelling as `path_key_loose` has
   it (case and either separator alike on Windows, case alike on macOS,
   neither on Linux) or by where both lead, resolved through links and
@@ -132,6 +137,14 @@ lose, and to sweep the ones no chat claims.
   removal, under the removal's hold, reads Luna's own and the registries
   again (`kept_from_removal`); the chats' worktrees are the window's, as it
   sent them when the sweep began.
+- **A link retargeted at the start.** A start's places are resolved just
+  before its CLI is spawned (`pty/spawn.rs`), and the CLI is spawned in the
+  path as spelled, not in where it resolved: a junction or symlink on the way
+  retargeted between the two can start the CLI in another worktree than the
+  one held, until the CLI says where it works (Claude Code's registry,
+  Codex's rollout), which is then held as well. Spawning in the resolved path
+  would change the cwd the CLI sees, and Claude Code keys its project folders
+  (transcripts, memory, settings) by that cwd, so it is not done.
 - What the sweep cannot see: a Claude Code session started in a terminal
   after the last look read its registry (an outside process takes no lock
   of Luna's), a Claude Code session on a config folder that is neither one

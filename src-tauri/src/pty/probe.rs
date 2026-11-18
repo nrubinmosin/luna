@@ -164,28 +164,20 @@ pub fn holds(except: Option<&str>) -> crate::worktree::Hold {
 impl PtyManager {
     /// What the live sessions and helpers but `except` hold against a
     /// worktree's removal: each session's hold, resolved as it started, with
-    /// the folder its CLI says it works in now (a worktree it made, where its
+    /// the folder its CLI says it works in now (a worktree it made: as its
     /// start's places led then if it is under one of them by their spelling,
-    /// `Hold::place_of`) and, until it has said one, where its CLI makes the
-    /// worktree it asked for; each helper's folders and the worktrees its
-    /// running turn may be making (`worktree::Unplaced`), as they lead now.
-    /// A helper's makers are read before its folders, so one that says where
-    /// it works between the two reads is in one of them; a session's both
-    /// come of one read of its folder.
+    /// and as it leads now, `Hold::add_at`) and, until it has said one, where
+    /// its CLI makes the worktree it asked for; each helper's alike
+    /// (`background::holds`). Both of a session come of one read of its
+    /// folder, both of a helper of one read of where it works.
     pub fn holds(&self, except: Option<&str>) -> crate::worktree::Hold {
-        let mut held = crate::worktree::Hold::default();
-        for u in crate::background::unplaced_worktrees() {
-            held.add_maker(&u);
-        }
-        for dir in crate::background::working_dirs(except) {
-            held.add_path(&dir);
-        }
+        let mut held = crate::background::holds(except);
         // Probed off the session map: the disk reads below must not hold it.
         for p in self.activity_probes().into_iter().filter(|p| Some(p.id.as_str()) != except) {
             let moved = p.working_dir();
             held.add(&p.hold, moved.as_deref().is_none_or(|w| super::same_dir(w, &p.cwd)));
             if let Some(moved) = moved {
-                held.add_place(p.hold.place_of(&moved));
+                held.add_at(&p.hold, &moved);
             }
         }
         held

@@ -266,7 +266,11 @@ A spawn with `worktree: true` waits up to 20 s for the CLI to say where
 `branch`, or `worktreePending`. `background::working_dirs` gives the folder it
 was sent to and the worktree it made (its first `init`'s cwd; a later one says
 where the shell went, `home_of` maps it back), between turns too, for
-`worktree_shared`, `live_cwds` and `account_in_use`.
+`live_cwds` and `account_in_use`. What a helper holds against a worktree's
+removal (`worktree_shared`, the orphan sweep) is `background::holds`: its
+folder resolved as it started, or as a new core took it up (`Entry::hold`),
+so a link to its project removed since leaves its worktree held, with the
+worktree it made and its folder as they lead now.
 
 ## Outliving the core
 
