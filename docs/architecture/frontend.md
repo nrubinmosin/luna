@@ -150,7 +150,9 @@ titles, context and drafts come from the core (`session_meta`), polled by
   sign-in window start their session only once both listen, and a listener
   that failed to register is tried again by the next terminal; a sign-in
   window closed while its start is under way kills the session once it has
-  started, and one opened again on that account starts only after that kill),
+  started, and one opened again on that account listens to the session's id
+  and starts its own only after that kill, or after 15 s without it, which
+  it says in the window),
   `webgl.ts` (the webgl renderer; a context lost for good disposes the addon,
   which puts the DOM renderer back, and the pane is repainted), `title.ts` (a
   title from what is typed), `safely.ts`.

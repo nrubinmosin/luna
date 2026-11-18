@@ -6,8 +6,10 @@ import type { Account } from '../../shared/types';
 const login = vi.hoisted(() => ({
   start: null as null | { answer: (backlog: string) => void; fail: (e: Error) => void },
   ready: Promise.resolve(),
-  /** The starts and kills, in the order they were asked for. */
-  order: [] as string[]
+  /** The routes, starts and kills, in the order they were asked for. */
+  order: [] as string[],
+  /** What the windows' terminals were given to show. */
+  shown: [] as string[]
 }));
 
 vi.mock('@xterm/xterm', () => ({
@@ -16,7 +18,9 @@ vi.mock('@xterm/xterm', () => ({
     rows = 24;
     loadAddon() {}
     open() {}
-    write() {}
+    write(data: string) {
+      login.shown.push(data);
+    }
     onData() {
       return { dispose() {} };
     }
@@ -29,7 +33,12 @@ vi.mock('@xterm/xterm', () => ({
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class {} }));
 vi.mock('../panes/terminal/webgl', () => ({ loadWebgl: () => () => {} }));
 vi.mock('../panes/terminal/keys', () => ({ attachLoginKeys() {} }));
-vi.mock('../panes/terminal/ptyRoutes', () => ({ routePty: () => ({ ready: login.ready, unroute() {} }) }));
+vi.mock('../panes/terminal/ptyRoutes', () => ({
+  routePty: () => {
+    login.order.push('route');
+    return { ready: login.ready, unroute() {} };
+  }
+}));
 vi.mock('../../ipc/sessions', () => ({
   killSession: vi.fn(() => {
     login.order.push('kill');
@@ -54,7 +63,7 @@ vi.mock('./accounts.store', () => ({
 }));
 
 const { killSession } = vi.mocked(await import('../../ipc/sessions'));
-const { LoginModal } = await import('./LoginModal');
+const { ENDING_WAIT_MS, LoginModal } = await import('./LoginModal');
 
 globalThis.ResizeObserver ??= class {
   observe() {}
@@ -70,6 +79,7 @@ beforeEach(() => {
   login.start = null;
   login.ready = Promise.resolve();
   login.order = [];
+  login.shown = [];
 });
 
 describe('LoginModal: closed while its session is starting', () => {
@@ -86,26 +96,49 @@ describe('LoginModal: closed while its session is starting', () => {
     expect(killSession).toHaveBeenCalledExactlyOnceWith('login:claude:work');
   });
 
-  it('has a window opened again on the account start its own once that kill has landed', async () => {
+  it('has a window opened again on the account listen and start its own once that kill has landed', async () => {
     const first = render(<LoginModal account={account} />);
     await settle();
     const firstStart = login.start!;
     first.unmount();
     // The first window's process is still starting, its kill not yet sent:
-    // the second must not attach to it.
+    // the second must neither hear it nor attach to it.
     const second = render(<LoginModal account={account} />);
     await settle();
-    expect(login.order).toEqual(['start']);
+    expect(login.order).toEqual(['route', 'start']);
 
     firstStart.answer('');
     await settle();
-    expect(login.order).toEqual(['start', 'kill', 'start']);
+    expect(login.order).toEqual(['route', 'start', 'kill', 'route', 'start']);
     expect(killSession).toHaveBeenCalledExactlyOnceWith('login:claude:work');
     // Its own start answered and ended, as it would be, so the next window
     // waits on nothing.
     second.unmount();
     login.start!.answer('');
     await settle();
+  });
+
+  it('starts its own past the deadline when that kill never lands, and says so', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = render(<LoginModal account={account} />);
+      await vi.advanceTimersByTimeAsync(0);
+      const firstStart = login.start!;
+      // Closed while its start never answers.
+      first.unmount();
+      const second = render(<LoginModal account={account} />);
+      await vi.advanceTimersByTimeAsync(ENDING_WAIT_MS - 1);
+      expect(login.order).toEqual(['route', 'start']);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(login.order).toEqual(['route', 'start', 'route', 'start']);
+      expect(login.shown.join('')).toContain('has not ended; starting anyway');
+      second.unmount();
+      login.start!.answer('');
+      firstStart.answer('');
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('kills nothing when the start failed', async () => {

@@ -71,8 +71,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   them.
 - Closing an account's sign-in window while its session is still starting
   ends that session once it has started, instead of leaving it running; a
-  sign-in window opened again on the account meanwhile starts its own once
-  that one is gone.
+  sign-in window opened again on the account meanwhile shows nothing of that
+  session and starts its own once it is gone, or after 15 s, saying so.
 
 ## [0.18.5] - 2026-11-17
 

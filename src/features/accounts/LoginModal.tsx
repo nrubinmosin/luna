@@ -15,9 +15,14 @@ import { PROVIDER_LABEL } from '../../shared/types';
 
 /** Login sessions a closed window is still ending, by id. The id is the
  *  account's, so a window opened on it again meanwhile would attach to the
- *  very process the kill is on its way to: it waits for that end, then starts
- *  its own (the kill takes the session out before it answers). */
+ *  very process the kill is on its way to, and hear its output and its exit:
+ *  it waits for that end before it listens to the id at all, then starts its
+ *  own (the kill takes the session out before it answers). */
 const ending = new Map<string, Promise<void>>();
+/** How long a window waits for that end: the kill gives the CLI 10 s to quit
+ *  (pty/control.rs `GRACE`), and a start that never answers would hold the
+ *  window forever. Past it the window starts its own and says so. */
+export const ENDING_WAIT_MS = 15_000;
 
 // The provider's login session inside the account's config dir — a bare
 // `claude`, or `codex login` — so credentials land in that folder.
@@ -59,23 +64,38 @@ export function LoginModal({ account }: { account: Account }) {
     };
     refit();
 
-    const route = routePty(id, {
-      output: data => term.write(data),
-      exit: () => {
-        sessionLive = false;
-        term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
-      }
-    });
+    let route: ReturnType<typeof routePty> | null = null;
     // The login session, from the moment it is asked for: closing the window
     // ends it, and one closed before the start has answered is ended once it
     // has (a kill sent sooner finds no session and leaves it running).
     let starting: Promise<string> | null = null;
 
     void (async () => {
+      const before = ending.get(id);
+      if (before) {
+        term.write('\x1b[2m[waiting for the last sign-in session to end…]\x1b[0m\r\n');
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const ended = await Promise.race([
+          before.then(() => true),
+          new Promise<boolean>(answer => (timer = setTimeout(() => answer(false), ENDING_WAIT_MS)))
+        ]);
+        clearTimeout(timer);
+        if (disposed) return;
+        if (!ended)
+          term.write(
+            '\x1b[33m[the last sign-in session has not ended; starting anyway — if this one exits, close the window and open it again]\x1b[0m\r\n'
+          );
+      }
+      route = routePty(id, {
+        output: data => term.write(data),
+        exit: () => {
+          sessionLive = false;
+          term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
+        }
+      });
       let backlog: string;
       try {
         await route.ready;
-        await ending.get(id);
         if (disposed) return;
         starting = ui(account.provider).loginSession(id, account);
         backlog = await starting;
@@ -107,7 +127,7 @@ export function LoginModal({ account }: { account: Account }) {
       safely(() => ro.disconnect());
       safely(() => dataSub.dispose());
       safely(() => resizeSub.dispose());
-      safely(route.unroute);
+      safely(() => route?.unroute());
       disposeWebgl();
       safely(() => term.dispose());
       // Usually already gone by now (login flows exit on their own); a
