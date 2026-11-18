@@ -36,7 +36,7 @@ import { onExiting, onNotify, onOpenChat } from '../ipc/events';
 import { keepKeyboardHome, peekFromNotice } from '../features/panes/navigate';
 import { notify } from '../shared/lib/notify';
 import { flushPendingWrites } from '../shared/lib/throttledStorage';
-import { useChats } from '../features/chats/chats.store';
+import { chatsChanged, useChats } from '../features/chats/chats.store';
 import type { Folder } from '../shared/types';
 import { usePanes } from '../features/panes/panes.store';
 
@@ -190,7 +190,8 @@ export function App() {
   // A chat listed in a group the title bar does not offer could never be
   // reached; whatever put it there, the group is made rather than the chat
   // lost.
-  // Only when the folders change, not on every other change to the chats.
+  // Only when a chat comes, goes or changes group, not on a status or context
+  // tick.
   useEffect(() => {
     const cover = (folders: Folder[]) => {
       let top = 0;
@@ -199,7 +200,7 @@ export function App() {
     };
     cover(useChats.getState().folders);
     return useChats.subscribe((s, prev) => {
-      if (s.folders !== prev.folders) cover(s.folders);
+      if (chatsChanged(prev.folders, s.folders, (was, now) => was.group === now.group)) cover(s.folders);
     });
   }, []);
 

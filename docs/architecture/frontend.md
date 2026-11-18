@@ -72,7 +72,9 @@ titles, context and drafts come from the core (`session_meta`), polled by
   memoized on them, so a status change renders one row; the list numbers come
   down from `ChatList`. Subscribers that walk the chats (the status bar's
   counts, the core's names and groups, the groups to cover) run on a change
-  of the folders or of what they show, not on every change of the store. The
+  of what they show, not on every change of the store: the last two ask
+  `chatsChanged`, which looks only into the folder and the chat an edit
+  replaced, so a status or context tick costs them one chat's compare. The
   helpers' root index is built once per `agent://background` snapshot
   (`background.store` `helperRoots`). A per-chat map of this run
   (`restarts.store`, `moveHints.store`) forgets a chat as it is deleted, and

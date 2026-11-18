@@ -30,7 +30,7 @@ import {
   type CodexSettings
 } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
-import { allChats, useChats } from '../chats/chats.store';
+import { allChats, chatsChanged, useChats } from '../chats/chats.store';
 import { useCore } from '../core/core.store';
 import { createChat } from '../new-chat/create';
 import { usePanes } from '../panes/panes.store';
@@ -252,8 +252,13 @@ export function useAgentBridge() {
     };
     push();
     const offChats = useChats.subscribe((s, prev) => {
-      // A send that failed is tried again at whatever change comes next.
-      if (s.folders !== prev.folders || !last) push();
+      // A send that failed is tried again at whatever change comes next; a
+      // status or context tick otherwise looks no further than its own chat.
+      if (
+        !last ||
+        chatsChanged(prev.folders, s.folders, (was, now) => was.group === now.group && was.name === now.name)
+      )
+        push();
     });
     const offCore = onCoreUp(() => {
       last = '';

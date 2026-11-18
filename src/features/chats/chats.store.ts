@@ -118,6 +118,30 @@ export const numberedChats = (folders: Folder[], group: GroupId): Chat[] =>
     .filter(f => f.open)
     .flatMap(f => f.chats);
 
+/**
+ * Whether `next` holds other chats than `prev`, or one that `same` tells from
+ * what it was: for a subscriber that cares about a few fields (a group, a
+ * name) and not the status and context ticks that make up most changes. An
+ * edit of one chat replaces only its folder and that chat (`editChat`), so
+ * only a folder that is a new object is looked into, and in it only a chat
+ * that is.
+ */
+export function chatsChanged(prev: Folder[], next: Folder[], same: (was: Chat, now: Chat) => boolean): boolean {
+  if (prev === next) return false;
+  if (prev.length !== next.length) return true;
+  for (let i = 0; i < next.length; i++) {
+    if (prev[i] === next[i]) continue;
+    const was = prev[i]!.chats;
+    const now = next[i]!.chats;
+    if (was === now) continue;
+    if (was.length !== now.length) return true;
+    for (let j = 0; j < now.length; j++) {
+      if (was[j] !== now[j] && (was[j]!.id !== now[j]!.id || !same(was[j]!, now[j]!))) return true;
+    }
+  }
+  return false;
+}
+
 /** Every chat, whatever group it belongs to — for the session watcher and for
  *  working out which running sessions nothing claims. */
 export const allChats = (folders: Folder[]): Chat[] => folders.flatMap(f => f.chats);

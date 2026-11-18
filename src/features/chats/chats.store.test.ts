@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Chat, Folder } from '../../shared/types';
 import { useRestarts } from '../panes/restarts.store';
-import { foldersOfGroup, useChats } from './chats.store';
+import { chatsChanged, foldersOfGroup, useChats } from './chats.store';
 import { useMoveHints } from './moveHints.store';
 
 // The chats store reaches the terminals; xterm cannot run in jsdom.
@@ -159,6 +159,33 @@ describe('chats store: persistence', () => {
     vi.advanceTimersByTime(600);
     expect(writes()).toBe(first + 1);
     expect(saved()!.state.folders[0]!.chats[0]!.name).toBe('three');
+    setItem.mockRestore();
+  });
+
+  it('writes a session id at once, after a status the same poll set', () => {
+    vi.useFakeTimers();
+    seed(folder('a', [chat('c1')]));
+    vi.advanceTimersByTime(1000);
+    useChats.getState().setStatus('c1', 'working');
+    useChats.getState().setSessionId('c1', 'sess-1');
+    const c = saved()!.state.folders[0]!.chats[0]!;
+    expect(c.sessionId).toBe('sess-1');
+    expect(c.status).toBe('working');
+  });
+
+  it('writes a new chat and a worktree at once, and the same session id again not at all', () => {
+    vi.useFakeTimers();
+    seed(folder('a', [chat('c1', { sessionId: 's' })]));
+    vi.advanceTimersByTime(1000);
+    useChats.getState().setStatus('c1', 'working');
+    useChats.getState().addChat('/a', chat('c2'), true);
+    expect(saved()!.state.folders[0]!.chats.map(c => c.id)).toEqual(['c1', 'c2']);
+    useChats.getState().setWorktreePath('c2', '/w');
+    expect(saved()!.state.folders[0]!.chats[1]!.worktreePath).toBe('/w');
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    useChats.getState().setStatus('c1', 'waiting');
+    useChats.getState().setSessionId('c1', 's');
+    expect(setItem.mock.calls.filter(c => c[0] === 'luna.chats')).toHaveLength(0);
     setItem.mockRestore();
   });
 
