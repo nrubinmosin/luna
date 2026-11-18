@@ -1,17 +1,30 @@
 import { useEffect, useRef } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import type { Account } from '../../shared/types';
-import { killSession, resizeSession, writeSession } from '../../ipc/sessions';
-import { onPtyExit, onPtyOutput } from '../../ipc/events';
-import { logWarn } from '../../shared/lib/log';
+import { killSession, resizeSession, writeSession, type Attached } from '../../ipc/sessions';
+import { routePty } from '../panes/terminal/ptyRoutes';
+import { attachLoginKeys } from '../panes/terminal/keys';
 import { safely } from '../panes/terminal/safely';
+import { loadWebgl } from '../panes/terminal/webgl';
 import { dark, themeFor, TERM_FONT_FAMILY, TERM_FONT_SIZE } from '../panes/terminal/theme';
 import { useAccounts } from './accounts.store';
 import { ui } from '../providers';
 import { PROVIDER_LABEL } from '../../shared/types';
+
+/** Login sessions a closed window is still ending, by id. The id is the
+ *  account's, so a window opened on it again meanwhile would attach to the
+ *  very process the kill is on its way to, and hear its output and its exit:
+ *  it waits for that end before it listens to the id at all, then starts its
+ *  own (the kill takes the session out before it answers). */
+const ending = new Map<string, Promise<void>>();
+/** How long a window waits for that end before it says it is still waiting
+ *  (the kill gives the CLI 10 s to quit, pty/control.rs `GRACE`). It never
+ *  starts before that end, however long: a start on the id while the last
+ *  one's is still under way would get that very session back from the core,
+ *  and the kill would then take it out. */
+export const ENDING_WAIT_MS = 15_000;
 
 // The provider's login session inside the account's config dir — a bare
 // `claude`, or `codex login` — so credentials land in that folder.
@@ -28,47 +41,17 @@ export function LoginModal({ account }: { account: Account }) {
       fontSize: TERM_FONT_SIZE,
       lineHeight: 1.35,
       allowTransparency: false,
-      cursorBlink: true,
+      cursorBlink: false,
       minimumContrastRatio: 3,
       theme: themeFor(dark())
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
-    let webgl: WebglAddon | null = null;
-    let ctxLossSub: { dispose(): void } | null = null;
-    // Same story as the chat terminals (see Terminal.tsx): dispose through the
-    // AddonManager's idempotent wrapper so term.dispose() skips the addon, and
-    // swallow the known-benign TypeError the addon's own teardown throws after
-    // its renderer is already gone.
-    const disposeWebgl = () => {
-      const addon = webgl;
-      webgl = null;
-      if (!addon) return;
-      safely(() => ctxLossSub?.dispose());
-      ctxLossSub = null;
-      try {
-        addon.dispose();
-      } catch (e) {
-        // A throw escaping a React effect cleanup takes the root down, so even
-        // the unexpected case only gets logged.
-        if (!(e instanceof TypeError)) {
-          logWarn('terminal', `webgl dispose failed: ${(e as Error)?.stack ?? String(e)}`);
-        }
-      }
-    };
-    try {
-      webgl = new WebglAddon();
-      ctxLossSub = webgl.onContextLoss(disposeWebgl);
-      term.loadAddon(webgl);
-    } catch (e) {
-      // Slower, and otherwise invisible: the terminal still draws.
-      logWarn('terminal', `webgl renderer unavailable, using the DOM renderer: ${(e as Error)?.message ?? String(e)}`);
-      webgl = null;
-    }
+    attachLoginKeys(term);
+    const disposeWebgl = loadWebgl(term);
 
     let disposed = false;
-    const unlisteners: Array<() => void> = [];
     // Same gate as the chat terminals: the session only exists between
     // ensure_session resolving and pty://exit, and talking to it outside that
     // window logged a "no such session" pair on every login window close.
@@ -83,26 +66,47 @@ export function LoginModal({ account }: { account: Account }) {
     };
     refit();
 
+    let route: ReturnType<typeof routePty> | null = null;
+    // The login session, from the moment it is asked for: closing the window
+    // ends it, and one closed before the start has answered is ended once it
+    // has (a kill sent sooner finds no session and leaves it running).
+    let starting: Promise<Attached> | null = null;
+
     void (async () => {
-      const un1 = await onPtyOutput(p => {
-        if (p.id === id) term.write(p.data);
-      });
-      const un2 = await onPtyExit(p => {
-        if (p.id === id) {
-          sessionLive = false;
-          term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
+      const before = ending.get(id);
+      if (before) {
+        term.write('\x1b[2m[waiting for the last sign-in session to end…]\x1b[0m\r\n');
+        const timer = setTimeout(() => {
+          if (!disposed)
+            term.write(
+              '\x1b[33m[the last sign-in session has not ended yet; this window starts its own once it has, or close it and try again later]\x1b[0m\r\n'
+            );
+        }, ENDING_WAIT_MS);
+        await before;
+        clearTimeout(timer);
+        if (disposed) return;
+      }
+      // Its own session's exit only (`generation`): one heard before the
+      // start answers waits for it, as it may be an earlier session's.
+      let generation: number | null = null;
+      const heard: number[] = [];
+      const ended = () => {
+        sessionLive = false;
+        term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
+      };
+      route = routePty(id, {
+        output: data => term.write(data),
+        exit: (_code, spawned) => {
+          if (generation === null) heard.push(spawned);
+          else if (spawned === generation) ended();
         }
       });
-      if (disposed) {
-        safely(un1);
-        safely(un2);
-        return;
-      }
-      unlisteners.push(un1, un2);
-
-      let backlog: string;
+      let started: Attached;
       try {
-        backlog = await ui(account.provider).loginSession(id, account);
+        await route.ready;
+        if (disposed) return;
+        starting = ui(account.provider).loginSession(id, account);
+        started = await starting;
       } catch {
         // Already logged by the ipc layer; keep the rejection out of the
         // global unhandled-promise log and say what happened in the window.
@@ -110,8 +114,13 @@ export function LoginModal({ account }: { account: Account }) {
         return;
       }
       if (disposed) return;
+      generation = started.generation;
       sessionLive = true;
-      if (backlog) term.write(backlog);
+      if (started.backlog) term.write(started.backlog);
+      if (heard.includes(generation)) {
+        ended();
+        return;
+      }
       sendResize(term.cols, term.rows);
     })();
 
@@ -131,17 +140,27 @@ export function LoginModal({ account }: { account: Account }) {
       safely(() => ro.disconnect());
       safely(() => dataSub.dispose());
       safely(() => resizeSub.dispose());
-      unlisteners.forEach(u => safely(u));
+      safely(() => route?.unroute());
       disposeWebgl();
       safely(() => term.dispose());
+      // Usually already gone by now (login flows exit on their own); a
+      // failed kill is not worth an unhandled-rejection entry.
+      if (starting) {
+        const end = starting.then(
+          () => killSession(id).catch(() => {}),
+          () => {}
+        );
+        ending.set(id, end);
+        void end.then(() => {
+          if (ending.get(id) === end) ending.delete(id);
+        });
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // Unmounting ends the session (the effect's cleanup).
   const close = () => {
-    // The session is usually already gone by now (login flows exit on their
-    // own); a failed kill is not worth an unhandled-rejection entry.
-    killSession(id).catch(() => {});
     useAccounts.getState().setLoginFor(null);
     void useAccounts.getState().refresh();
   };

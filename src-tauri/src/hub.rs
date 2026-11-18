@@ -474,41 +474,52 @@ mod live {
     fn a_posted_hook_reaches_the_tracker() {
         start();
         let url = hook_url("chat-hub-test").expect("listener up");
-        // ureq's own error, large as it is, only ever unwrapped here.
-        #[allow(clippy::result_large_err)]
-        let post = |body: &str| ureq::post(&url).send_string(body).map(|r| r.status());
+        let http = crate::http::Agent::new(crate::http::Timeouts {
+            connect: Duration::from_secs(5),
+            read: Duration::from_secs(10),
+            total: Some(Duration::from_secs(20)),
+        })
+        .unwrap();
+        // The status that came back, a refusal's included.
+        let status = |r: Result<crate::http::Response, crate::http::Error>| match r {
+            Ok(r) => Some(r.status()),
+            Err(crate::http::Error::Status(code, ..)) => Some(code),
+            Err(crate::http::Error::Transport(_)) => None,
+        };
+        let post_to = |url: &str, body: &str| status(http.post(url).body(body).call());
+        let post = |body: &str| post_to(&url, body);
 
-        assert_eq!(post(r#"{"hook_event_name":"UserPromptSubmit","session_id":"s"}"#).unwrap(), 204);
+        assert_eq!(post(r#"{"hook_event_name":"UserPromptSubmit","session_id":"s"}"#), Some(204));
         assert_eq!(crate::activity::hook_turn("chat-hub-test"), Some(crate::activity::Turn::Busy));
-        assert_eq!(post(r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#).unwrap(), 204);
+        assert_eq!(post(r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#), Some(204));
         assert_eq!(crate::activity::hook_turn("chat-hub-test"), Some(crate::activity::Turn::Waiting));
         // What a permission prompt is for reaches the agent layer too.
         let ask = r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
-        assert_eq!(post(ask).unwrap(), 204);
+        assert_eq!(post(ask), Some(204));
         assert_eq!(crate::activity::hook_turn("chat-hub-test"), Some(crate::activity::Turn::Waiting));
-        assert_eq!(post(r#"{"hook_event_name":"Stop"}"#).unwrap(), 204);
+        assert_eq!(post(r#"{"hook_event_name":"Stop"}"#), Some(204));
         assert_eq!(crate::activity::hook_turn("chat-hub-test"), Some(crate::activity::Turn::Idle));
 
         // A bad secret, a bad body and a bad method are told apart from a good one.
         let (base, _secret) = url.rsplit_once('/').unwrap();
         let bad = format!("{base}/nope");
-        assert_eq!(ureq::post(&bad).send_string("{}").unwrap_err().into_response().map(|r| r.status()), Some(403));
+        assert_eq!(post_to(&bad, "{}"), Some(403));
         // Its own secret is no key to another chat, the guard's door included.
         let (_, own) = url.rsplit_once('/').unwrap();
         let other = hook_url("chat-hub-other").unwrap();
         assert_ne!(other.rsplit_once('/').unwrap().1, own);
         let forged = format!("{}/{own}", other.rsplit_once('/').unwrap().0);
         let stop = r#"{"hook_event_name":"Stop"}"#;
-        assert_eq!(ureq::post(&forged).send_string(stop).unwrap_err().into_response().map(|r| r.status()), Some(403));
+        assert_eq!(post_to(&forged, stop), Some(403));
         assert_eq!(crate::activity::hook_turn("chat-hub-other"), None, "nothing reached the tracker as that chat");
         let guard = guard_url("chat-hub-other").unwrap().replace(other.rsplit_once('/').unwrap().1, own);
-        assert_eq!(ureq::post(&guard).send_string("{}").unwrap_err().into_response().map(|r| r.status()), Some(403));
-        assert!(ureq::post(&other).send_string(stop).is_ok_and(|r| r.status() == 204), "its own secret lets it in");
-        assert_eq!(post("not json").unwrap_err().into_response().map(|r| r.status()), Some(400));
-        assert_eq!(ureq::get(&url).call().unwrap_err().into_response().map(|r| r.status()), Some(405));
+        assert_eq!(post_to(&guard, "{}"), Some(403));
+        assert_eq!(post_to(&other, stop), Some(204), "its own secret lets it in");
+        assert_eq!(post("not json"), Some(400));
+        assert_eq!(status(http.get(&url).call()), Some(405));
         // An MCP call without a token, and one past the hooks' body cap.
         let mcp = mcp_url().unwrap();
-        assert_eq!(ureq::post(&mcp).send_string("{}").unwrap_err().into_response().map(|r| r.status()), Some(401));
+        assert_eq!(post_to(&mcp, "{}"), Some(401));
         let addr: SocketAddr = format!("127.0.0.1:{}", LISTENER.get().unwrap().port).parse().unwrap();
         let path = url.split_once("127.0.0.1").unwrap().1.split_once('/').unwrap().1;
         let big = send(addr, format!("POST /{path} HTTP/1.1\r\nContent-Length: {}\r\n\r\n", HOOK_BODY_MAX + 1).as_bytes());

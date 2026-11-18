@@ -16,8 +16,14 @@
   terminal the deepest of them, ANSI colors softened but at 4.5:1 or better.
   Light is XP's warm beige under blue title bars; dark is neutral graphite.
 - Only the pane you are working in wears its full color; the others go pale, as
-  XP drew inactive windows. A chat waiting for you flashes its title bar orange,
-  and over a pane you are not in a balloon says so.
+  XP drew inactive windows. A chat waiting for you wears an orange title bar,
+  and over a pane you are not in a balloon says so. Nothing on screen moves:
+  states are told by color, shape and words, never by a pulse or a flash, and
+  the terminals' cursors hold still unless the program in one asks for a
+  blinking cursor. The one thing that blinks is the text cursor of a field
+  you are typing in, as Windows draws it. In a Windows contrast theme the
+  status dots take the theme's colors: filled for working, the highlight
+  color for waiting, a ring for background, gray for idle.
 - The chrome does not select as text, so a drag across the sidebar paints
   nothing blue.
 
@@ -28,7 +34,7 @@
 - The window's title bar carries the board's controls: the sidebar button, the
   four layouts, the window groups, Even out, Clear and the theme.
 - A hidden sidebar takes no room: resting the pointer at the window's left edge
-  slides it out over the board until the pointer leaves; the title bar's button
+  brings it out over the board until the pointer leaves; the title bar's button
   pins it back.
 
 ## Panes and the board

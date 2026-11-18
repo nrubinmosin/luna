@@ -266,7 +266,11 @@ A spawn with `worktree: true` waits up to 20 s for the CLI to say where
 `branch`, or `worktreePending`. `background::working_dirs` gives the folder it
 was sent to and the worktree it made (its first `init`'s cwd; a later one says
 where the shell went, `home_of` maps it back), between turns too, for
-`worktree_shared`, `live_cwds` and `account_in_use`.
+`live_cwds` and `account_in_use`. What a helper holds against a worktree's
+removal (`worktree_shared`, the orphan sweep) is `background::holds`: its
+folder resolved as it started, or as a new core took it up (`Entry::hold`),
+so a link to its project removed since leaves its worktree held, with the
+worktree it made and its folder as they lead now.
 
 ## Outliving the core
 
@@ -276,7 +280,9 @@ Every 2 s, as the core leaves (`stop_all`), and at once on what a killed core
 must not undo (a spawn, a conversation named, a delete, a question, a
 handover), the registry is written to `<data>/helpers.json` when changed, one
 save at a time. It holds the spec without its token, the session id, the
-worktree, the turn count, queued text with each sender (`Queued`), and the
+worktree, the turn count, queued text with each sender (`Queued`; a `send` or
+`interrupt` past 16 MB waiting for the helper, queued or joined on its stdin
+and not yet taken in, is refused, saying why, `room_for`), and the
 agent ties (`agents::Ties`: parent, name, settings, debts, counts shown, all
 helpers' read in one hold of the agent registry, `ties_of_each`, so a save
 never keeps a line half moved); the
@@ -327,6 +333,29 @@ reported as not started again. A chat is never anyone's helper: one an earlier
 Luna saved with a parent (a visible helper) comes back with none, and none of a
 helper's settings. `save_chats` stops while sessions are being stopped
 (`freeze_chats`), so the next core does not read what quitting did to them.
+Each save takes its snapshot and writes it under one lock (`save_in_order`),
+so the newest snapshot is the one left on disk, and the freeze takes the same
+lock: a save under way is written before the stopping starts, and none after.
+Each stop holds the freeze for its own reason (`Stop`) until its caller knows
+the process goes on, and only then lifts it (`thaw_chats`), once no other
+stop holds it: an update whose install failed (the window's
+`update_called_off`, which, said while the sessions are still being stopped,
+takes effect as the stop returns), a PC shutdown the OS is seen to take back
+(power `start_over`). An update's freeze is also bounded: not called off, it
+lifts by itself `UPDATE_FREEZE_FOR` (10 min, on the monotonic clock) after
+its stop returned, checked at every save (`lapse`), so an update that never
+came (the window gone mid-stop, the installer never started) costs at most
+that much of the ties unsaved. Nothing bounds an unanswered UAC prompt:
+an installer still waiting past the bound lets the next save write what the
+stopping did, and the turns it cut are recorded as ended, the price of a
+bounded freeze. A call-off said before the update's stop has begun (the
+window reconnecting during the save `stop_all_sessions` makes first) is not
+remembered, so that freeze lifts only by the bound. The core leaving never
+lifts it, and neither does a shutdown
+whose fate is unclear, whose chats stay closed for the next core to take up.
+A session starting or running meanwhile (a pane asking for its chat again, a
+helper's turn) is no sign the process goes on, and lifts nothing: a save
+then would write what the stopping did.
 
 Neither CLI continues a turn a core killed (Claude Code's `--resume` needs an
 environment variable Luna does not set; Codex's continuation lives in the daemon

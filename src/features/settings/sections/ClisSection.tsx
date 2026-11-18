@@ -248,7 +248,7 @@ function CliGroup({ provider, about }: { provider: Provider; about?: About }) {
         }
         control={
           <select
-            className="set-browser"
+            className="set-select"
             aria-label={`${name} channel`}
             value={channel}
             disabled={busy}

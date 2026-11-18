@@ -161,6 +161,11 @@ another program's and is left alone.
 
 ## Keep-awake and "when done"
 
+- **The chip's state** (`power://state`) goes to the window only when it
+  differs from the last one sent (`power::publish`), as the window sees it: a
+  session's `hook`, `disk` and `output_age_ms` are for the log alone and left
+  out of the comparison (`SessionActivity`'s `PartialEq`), or the screen's age
+  would send it again at every sample.
 - **Keep awake:** `PowerSetRequest(SystemRequired)` with a reason visible in
   `powercfg /requests` while busy > 0, released 60 s after quiet. `waiting` does
   not hold the machine but blocks shutdown; stalled does neither. While the rule
@@ -178,7 +183,8 @@ another program's and is left alone.
   Win32 error. The privilege is on for the call alone: its previous state is
   taken from `AdjustTokenPrivileges` and put back after. On a yes the core winds
   down inside the grace (`coreproc::wind_down`: helper turns stopped, the chats
-  frozen, each CLI asked to quit with `pty::GRACE`, 10 s). `InitiateShutdownW`
+  frozen until a cancellation is seen, each CLI asked to quit with
+  `pty::GRACE`, 10 s). `InitiateShutdownW`
   returns at once and the shutdown follows on its own, or not at all, so what
   became of it is read off the OS (`Fate`), never off the clock: from the grace's
   end the core polls `GetSystemMetrics(SM_SHUTTINGDOWN)` ("nonzero if the
@@ -322,7 +328,19 @@ another program's and is left alone.
   `cli-known-good.json` and the handoff's instructions in `resources/`; `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
   window. Any other stops the sessions (each asked to quit with its exit hooks,
   `stop_all_sessions` also stopping helper turns) and the chats resume from
-  their transcripts.
+  their transcripts. The chats' ties stay frozen from that stop until the
+  installer ends the process, until the window says the install failed
+  (`update_called_off`; said while the stop is still under way, it takes
+  effect as the stop returns), or until 10 minutes after the stop returned
+  (`agents/persist.rs` `UPDATE_FREEZE_FOR`, on the monotonic clock), so an
+  update that never came (the window gone mid-stop, the installer never
+  started) leaves the core's saves off for at most that long. Nothing bounds
+  how long a UAC prompt waits for an answer: one left past the bound lets the
+  next save write what the stopping did, and the turns it cut are recorded as
+  ended, a tradeoff taken for a bounded freeze. A call-off said before the
+  stop has begun (the window reconnecting during the save that
+  `stop_all_sessions` makes before it stops anything, `pty/control.rs`) is
+  not remembered: that freeze lifts only by the bound.
 - The CLIs update separately ([providers](providers.md#cli-binaries)).
 
 ## Logging
@@ -335,7 +353,10 @@ WARN). A helper turn's line gives the CLI's arguments with the chat's hook and
 guard URLs, which carry its secret, as `<hook-url>` and `<guard-url>`, and the
 helper's identity line as its length (`background/run.rs` `args_for_log`).
 Sessions are named by id and chat name (`agents::label`). Every line names the version; each launch opens with a
-`START` line.
+`START` line. The page's own lines (`append_log`) go to a writer thread of the
+window's, in the order they came and stamped when they came, never written on
+its main thread; past 1 MB waiting a line is refused, and the log says how many
+were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`).
 
 ## Failure modes
 

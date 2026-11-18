@@ -258,6 +258,10 @@ pub struct Removed {
 /// Files git ignores do not stop a delete: build output would stop every one.
 const IGNORED_GO: &str = "files git ignores went with it";
 
+/// Why a worktree asked to go with its helper stayed, where someone else is
+/// in it (`PtyManager::worktree_shared`) or on their way in.
+const WORKTREE_IN_USE: &str = "kept: another session is in it or on its way in";
+
 impl Removed {
     /// `ignored`: whether the worktree held files git ignores, as looked at
     /// before it went (`worktree::ignored_in`); not known, the note is said.
@@ -304,17 +308,21 @@ fn remove(
     crate::activity::forget(id);
     crate::log::info("delete", &format!("helper {who}, worktree {made:?}, dropping {drop_worktree}"));
     Ok(match made {
-        // As for a chat (`PtyManager::delete`): a worktree another
-        // session or helper is in stays, its work with it.
-        Some(wt) if drop_worktree && pty.worktree_shared(id, &wt) => {
-            crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it"));
-            Removed::of(None, None)
-        }
+        // As for a chat (`PtyManager::delete`): a worktree another session or
+        // helper is in, or is on its way into, stays, its work with it; held
+        // from that look to the end of the removal (`worktree::removing`), so
+        // a start that comes meanwhile is refused.
         Some(wt) if drop_worktree => {
-            let ignored = crate::worktree::ignored_in(&wt);
-            match crate::worktree::remove_worktree_now(folder, wt.clone()) {
-                Ok(()) => Removed::of(Some(wt), ignored),
-                Err(why) => Removed::left(Some(wt), why),
+            let target = crate::worktree::Target::of(&wt, Some(crate::worktree::Place::of(&folder)));
+            match crate::worktree::removing(target, crate::worktree::Look::Delete, || pty.worktree_shared(id, &wt)) {
+                Some(_removing) => {
+                    let ignored = crate::worktree::ignored_in(&wt);
+                    match crate::worktree::remove_worktree_now(folder, wt.clone()) {
+                        Ok(()) => Removed::of(Some(wt), ignored),
+                        Err(why) => Removed::left(Some(wt), why),
+                    }
+                }
+                None => Removed::left(Some(wt), WORKTREE_IN_USE.to_string()),
             }
         }
         _ => Removed::of(None, None),
@@ -763,6 +771,45 @@ mod tests {
         reap_these(pty, vec![kid.to_string()]);
         assert!(!reg().lock().unwrap().known.contains_key(kid), "told: it goes");
         forget(parent);
+    }
+
+    /// A helper's delete with its worktree keeps a worktree a start or helper
+    /// is on its way into, not yet listed where the sharing check looks; with
+    /// the start gone, the same delete goes on to the removal.
+    #[test]
+    fn a_helper_delete_keeps_a_worktree_a_start_is_entering() {
+        let wt = std::env::temp_dir().join(format!("luna-helper-wt-{}", std::process::id()));
+        std::fs::create_dir_all(&wt).unwrap();
+        let wt_path = wt.to_string_lossy().into_owned();
+        for (id, entering) in [("hw-kept", true), ("hw-gone", false)] {
+            register("hw-c", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+            register(
+                id,
+                Provider::Claude,
+                "C:\\p",
+                "C:\\acc\\anthropic\\one",
+                Some("hw-c"),
+                false,
+                serde_json::json!({ "background": true }),
+            );
+            let start = entering.then(|| {
+                crate::worktree::entering(std::sync::Arc::new(crate::worktree::Hold::start(&[&format!("{wt_path}/src")], None))).unwrap()
+            });
+            let known = authorize("hw-c", id).unwrap();
+            let claim = crate::background::claim_delete(id).unwrap();
+            let removed = remove(id, known, true, Some(wt_path.clone()), &claim).unwrap();
+            if entering {
+                assert_eq!((removed.worktree_removed, removed.worktree_left), (None, Some(wt_path.clone())), "kept, said as kept");
+                assert_eq!(removed.worktree_error.as_deref(), Some(WORKTREE_IN_USE));
+                assert!(wt.exists());
+            } else {
+                // Not a worktree of any repository: the removal is tried, and refused.
+                assert!(removed.worktree_error.is_some_and(|e| e.contains("refusing")), "went on to the removal");
+            }
+            drop(start);
+            forget("hw-c");
+        }
+        let _ = std::fs::remove_dir_all(&wt);
     }
 
     /// A helper the person is opening as a chat is theirs to be: its parent can

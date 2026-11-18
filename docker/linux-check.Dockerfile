@@ -5,7 +5,7 @@
 # Usage:  see scripts/linux-check.ps1
 # Rust is pinned here and in src-tauri/rust-toolchain.toml; the gate checks that
 # they agree (scripts/gate.ps1). The digest holds the tag to one build of it.
-FROM rust:1.99.1-slim-trixie@sha256:7eab7ce19273ce785e0ca7578bdf7bc1fcbae621775a8197379a04c9f6e03cd5
+FROM rust:1.100.0-slim-trixie@sha256:e9d95b74296f7126a83ae3d041aeaba1ff4c478f13abc5cc034fcf7c131c3d4a
 
 # What the crate links on Linux: webkit2gtk brings GTK and libsoup along, tao
 # needs libdbus. git, sh, sleep and kill are what the tests themselves run.

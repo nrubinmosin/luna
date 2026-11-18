@@ -12,9 +12,10 @@ import {
 } from '../../ipc/agents';
 import { deleteSession } from '../../ipc/worktrees';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
-import { rootOf, useBackground } from '../agents/background.store';
+import { helpersUnder, useBackground } from '../agents/background.store';
 import { useNameOf } from '../agents/useNameOf';
 import { useDeletePrefs } from './deletePrefs.store';
+import { useKeptWorktrees } from './keptWorktrees.store';
 import { helperDeletes, helperLines, helperMoves, movingWith, preselectPass } from './helperDeletes';
 import { logWarn } from '../../shared/lib/log';
 
@@ -31,9 +32,13 @@ function deleteOne(chat: Chat, dropWorktree: boolean) {
     // worktree and its branch only if that was asked for. It resolves the
     // worktree itself, so deleting a chat seconds after creating it no longer
     // orphans one.
-    void deleteSession(chat.id, folder.path, chat.worktreePath ?? null, dropWorktree).catch(err =>
-      console.warn('[luna] delete failed', err)
-    );
+    // A worktree asked to go that another session is in stays, and the status
+    // bar says so.
+    void deleteSession(chat.id, folder.path, chat.worktreePath ?? null, dropWorktree)
+      .then(deleted => {
+        if (deleted?.worktreeKept && deleted.worktree) useKeptWorktrees.getState().keep(deleted.worktree);
+      })
+      .catch(err => console.warn('[luna] delete failed', err));
   }
   // Both stores clear the panes themselves, open or not.
   useChats.getState().deleteChat(chat.id);
@@ -92,10 +97,7 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
   const [stopWorking, setStopWorking] = useState(false);
   const [dropUnsaved, setDropUnsaved] = useState(false);
   const allBackground = useBackground(s => s.helpers);
-  const helpers = useMemo(
-    () => allBackground.filter(h => rootOf(h, allBackground) === chat.id),
-    [allBackground, chat.id]
-  );
+  const helpers = useMemo(() => helpersUnder(allBackground, chat.id), [allBackground, chat.id]);
   const ids = helpers.map(h => h.id).join('\n');
   // Only the chat's own helpers pass to another chat; the helpers under one go with it.
   const own = helpers
@@ -215,10 +217,7 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
     // show a move just made yet, so what was passed stays out by its own list,
     // and the core refuses one that hangs from another chat by now (`ofChat`).
     const now = useBackground.getState().helpers;
-    const still = helperLines(
-      now.filter(h => rootOf(h, now) === chat.id),
-      stake
-    );
+    const still = helperLines(helpersUnder(now, chat.id), stake);
     const passed = new Set([...moving, ...movingWith(still, passing)]);
     for (const d of helperDeletes(still, choices, passed, shown)) {
       void backgroundDelete(d.id, { ...d, ofChat: chat.id })

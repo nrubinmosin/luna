@@ -56,22 +56,55 @@ pub(super) fn needle_of(typed: &str, text: &str) -> String {
     (if typed.contains(&text) { text } else { typed }).chars().take(NEEDLE).collect()
 }
 
-/// Puts a caller's text by for the held sender to type in (`deliver_held`).
-pub(super) fn hold(caller: &str, id: &str, text: &str) {
+/// The text that may be held for one chat, in bytes, before more is refused:
+/// each send is at most the hub's 4 MB, but how many come while a person
+/// types is up to the callers, and all of it is kept in memory and in
+/// `chat-ties.json`, written whole at each change.
+const HELD_MAX: usize = 16 * 1024 * 1024;
+
+/// Puts a caller's text by for the held sender to type in (`deliver_held`),
+/// or refuses it, saying why, past `HELD_MAX` held for the chat: text held
+/// for a chat with none held always goes by.
+pub(super) fn hold(caller: &str, id: &str, text: &str) -> Result<(), String> {
+    {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(held) = room_for(&r.held, id, text) {
+            drop(r);
+            crate::log::warn(
+                "agents",
+                &format!("send from {} to {} refused: {} KB held for it already", label(caller), label(id), held / 1024),
+            );
+            return Err(format!(
+                "{} KB of text are held for {id} already, to go in once its person stops typing; send again once they have",
+                held / 1024
+            ));
+        }
+        r.held.push(Held {
+            caller: caller.to_string(),
+            id: id.to_string(),
+            text: text.to_string(),
+            since: now_ms(),
+            told: false,
+            going_in: None,
+        });
+    }
     crate::log::info(
         "agents",
         &format!("send from {} to {} held: the user is typing or has a draft, or other text is going in", label(caller), label(id)),
     );
-    reg().lock().unwrap_or_else(|e| e.into_inner()).held.push(Held {
-        caller: caller.to_string(),
-        id: id.to_string(),
-        text: text.to_string(),
-        since: now_ms(),
-        told: false,
-        going_in: None,
-    });
     // "Do not send it again" goes back with the result: it must hold.
     crate::background::save();
+    Ok(())
+}
+
+/// Whether `text` may be held for chat `id` beside what `held` holds for it;
+/// if not, the bytes held for it already.
+fn room_for(held: &[Held], id: &str, text: &str) -> Result<(), usize> {
+    let bytes: usize = held.iter().filter(|h| h.id == id).map(|h| h.text.len()).sum();
+    if bytes > 0 && bytes + text.len() > HELD_MAX {
+        return Err(bytes);
+    }
+    Ok(())
 }
 
 /// What Luna holds for a chat: sends waiting to go into it, and notices a
@@ -316,6 +349,19 @@ mod tests {
     use crate::agents::teardown::forget;
     use crate::agents::test_support::notice_for;
     use crate::provider::Provider;
+
+    /// Text past what may be held for one chat is refused, with what is held
+    /// already; another chat's held text does not count, and a chat with
+    /// none held takes any.
+    #[test]
+    fn text_past_what_a_chat_may_have_held_is_refused() {
+        let held = |id: &str, text: String| Held { caller: "c".into(), id: id.into(), text, since: 1, told: false, going_in: None };
+        assert_eq!(room_for(&[], "hb-chat", &"x".repeat(HELD_MAX + 1)), Ok(()));
+        let now = vec![held("hb-chat", "x".repeat(HELD_MAX - 1)), held("hb-other", "y".repeat(HELD_MAX))];
+        assert_eq!(room_for(&now, "hb-chat", "z"), Ok(()), "up to the bound");
+        assert_eq!(room_for(&now, "hb-chat", "zz"), Err(HELD_MAX - 1));
+        assert_eq!(room_for(&now, "hb-third", "z"), Ok(()));
+    }
 
     #[test]
     fn text_going_in_is_found_in_what_the_session_was_told() {

@@ -420,6 +420,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
     let undelivered = [first, s.undelivered, s.in_flight, s.fed, s.queue].concat();
     let cwd = s.cwd.map(|c| home_of(&s.spec, c));
     let mut e = Entry {
+        hold: hold_of(&s.spec),
         spec: s.spec,
         started_ms: s.started_ms,
         session: s.session,

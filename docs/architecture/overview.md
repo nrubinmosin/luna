@@ -29,7 +29,7 @@ Two principles shape everything else:
 
 | Process | What it is | Lives in |
 | --- | --- | --- |
-| **Window** | `luna.exe`: the Tauri app with the WebView, tray, title bar handling, updater | `lib.rs`, `corelink.rs`, `watchdog.rs`, `sysmenu.rs`, `lifecycle.rs` |
+| **Window** | `luna.exe`: the Tauri app with the WebView, tray, title bar handling, updater | `lib.rs`, `corelink.rs`, `watchdog.rs`, `sysmenu.rs`, `lifecycle.rs`, `links.rs` |
 | **Core** | the same exe with `--core`, no window; on Windows started from a copy under `<data>/core/<fingerprint>/` | `coreproc.rs`, `corecmd.rs`, everything that runs sessions |
 | **CLI children** | `claude` / `codex` in a pty, or `claude -p` / `codex exec` per turn for background helpers | `pty/`, `background/` |
 | **Exit watcher** | `--watch-exit <pid>`: logs how the previous process ended | `lifecycle.rs` |
@@ -97,7 +97,8 @@ flowchart LR
   the commands its capability grants
   ([ADR-0015](../adr/0015-the-page-gets-only-what-it-calls.md)).
 - **Events.** Code that emits does not hold an `AppHandle`: everything goes
-  through `emit.rs`. In the core each window has its own queue; a window that
+  through `emit.rs`. In the core each window has its own queue, of 8,192
+  frames and 64 MB at most; a window that
   falls behind is disconnected rather than allowed to stall a pty, and goes
   straight back (`corelink.rs` `rejoin`), its panes redrawn from the scrollback.
   Main event families: `pty://output`, `pty://exit`, `power://state`,
@@ -204,9 +205,10 @@ Smaller modules:
 | `settings.rs` | `<data>/settings.json`, written under its lock re-reading the file; the cache checked against mtime, as more than one process writes it |
 | `emit.rs` | the one door for events; `pty::manager()` is likewise the process's only `PtyManager`, no Tauri state |
 | `secret.rs`, `admit.rs` | minted secrets and constant-time checks; what the loopback listeners let in before authentication |
-| `browsers.rs` | which browser a link opens in: a command line with `%1` per browser, found on Windows (StartMenuInternet, each Chromium browser's Local State profiles, Firefox's `profiles.ini`, the https UserChoice handler) plus the user's own; chosen chat → account → folder → default; run by `open_link` (`lib.rs`) with the link as its own argument and no shell |
+| `links.rs` | `open_link`: a link clicked in a terminal, to the system's handler; http, https and mailto only, parsed and passed on percent-encoded, no control characters, at most 8 KB, no mail attachments; no part of the link in an error, the opener's own error included |
 | `media.rs` | files pasted or dropped into a pane, copied into the data folder |
 | `throttle.rs` | the cool-off after a 429 from the usage endpoints, shared by both providers |
+| `http.rs` | Luna's own requests (CLI downloads, usage and model lookups, the OAuth refresh): a blocking face over the reqwest the updater brings, rustls on ring against the OS's trust store, no proxy, each call's timeouts its own. Its clients live until exit; on Linux they read the trust roots when made, so a CA added to or removed from the system's store takes effect at Luna's next start (Windows and macOS ask the OS on each handshake) |
 | `log.rs`, `agentlog.rs` | `luna.log`; `agents.jsonl` |
 | `sysmenu.rs` | Windows' own window menu and frame messages for the undecorated window |
 | `watchdog.rs` | rebuilds a window whose WebView died |

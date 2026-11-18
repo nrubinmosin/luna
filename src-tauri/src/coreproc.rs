@@ -32,6 +32,10 @@ const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 /// reading must not make a session's output wait. It reconnects and each of
 /// its terminals reattaches from the scrollback.
 const QUEUE: usize = 8192;
+/// The same in bytes: a frame of a session's output, or a reattach's
+/// scrollback, can run to megabytes, and `QUEUE` of them is more than a
+/// window that stopped reading should have the core hold.
+const QUEUE_BYTES: u64 = 64 * 1024 * 1024;
 /// Connections let in at once before their hello: only this user's own
 /// processes get this far (peer.rs), but one of them stuck, or many at once,
 /// gets no more than this. Windows and one-off commands each say hello at
@@ -47,8 +51,35 @@ const HELLO_MAX: usize = 4096;
 /// close if it falls behind.
 struct Window {
     id: u64,
-    tx: SyncSender<Vec<u8>>,
+    tx: Outbox,
     stream: Stream,
+}
+
+/// A connection's outgoing queue, bounded both in frames (`QUEUE`) and in
+/// the bytes not written yet (`QUEUE_BYTES`); past either it is full, as a
+/// window that stopped reading. One frame alone may be larger than the bound.
+#[derive(Clone)]
+struct Outbox {
+    tx: SyncSender<Vec<u8>>,
+    /// Bytes queued and not written; the connection's writer gives back
+    /// what it has written.
+    waiting: Arc<crate::backlog::Backlog>,
+}
+
+impl Outbox {
+    /// A queue of `frames` and the end its writer reads.
+    fn new(frames: usize) -> (Outbox, std::sync::mpsc::Receiver<Vec<u8>>) {
+        let (tx, rx) = sync_channel(frames);
+        (Outbox { tx, waiting: Arc::default() }, rx)
+    }
+
+    fn try_send(&self, frame: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
+        let len = frame.len() as u64;
+        if self.waiting.reserve(len, QUEUE_BYTES).is_err() {
+            return Err(TrySendError::Full(frame));
+        }
+        self.tx.try_send(frame).inspect_err(|_| self.waiting.release(len))
+    }
 }
 
 static WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
@@ -256,16 +287,17 @@ fn leave(reason: &str) -> ! {
     if let Some(socket) = ENDPOINT.get() {
         let _ = std::fs::remove_file(socket);
     }
-    wind_down();
+    wind_down(crate::agents::Stop::Leaving);
     crate::lifecycle::end_process()
 }
 
 /// Stops every session so that the next core takes them up where they stood: what
-/// a core leaving does, and a shutdown or restart of the PC. Returns how many chats
-/// were closed.
-pub fn wind_down() -> usize {
+/// a core leaving does, and a shutdown or restart of the PC. The chats' ties stay
+/// frozen until `why` is called off (`agents::thaw_chats`), or the process ends.
+/// Returns how many chats were closed.
+pub fn wind_down(why: crate::agents::Stop) -> usize {
     crate::background::stop_all();
-    crate::agents::freeze_chats();
+    crate::agents::freeze_chats(why);
     crate::pty::manager().shut_down_all(crate::pty::GRACE)
 }
 
@@ -393,13 +425,15 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
 
     // Everything this connection is sent from here on goes through its queue
     // and one writer thread, so answers and events never interleave mid-frame.
-    let (tx, rx) = sync_channel::<Vec<u8>>(QUEUE);
+    let (tx, rx) = Outbox::new(QUEUE);
     let mut out = stream.try_clone()?;
+    let waiting = Arc::clone(&tx.waiting);
     std::thread::spawn(move || {
         for frame in rx {
             if out.write_all(&frame).and_then(|()| out.flush()).is_err() {
                 break;
             }
+            waiting.release(frame.len() as u64);
         }
         out.shutdown();
     });
@@ -436,7 +470,7 @@ pub(crate) fn serve_for_test(stream: Stream) -> io::Result<()> {
 /// rather than wait for good.
 #[derive(Clone)]
 struct Replies {
-    tx: SyncSender<Vec<u8>>,
+    tx: Outbox,
     stream: Arc<Stream>,
 }
 
@@ -507,6 +541,22 @@ fn answer(replies: &Replies, id: u64, result: Result<serde_json::Value, String>)
 mod tests {
     use super::*;
     use std::io::Read;
+
+    /// A window's queue is full past its bytes as well as past its frames;
+    /// what the writer has written makes room again.
+    #[test]
+    fn a_window_queue_is_full_past_its_bytes() {
+        let (tx, rx) = Outbox::new(QUEUE);
+        let half = (QUEUE_BYTES / 2) as usize;
+        assert!(tx.try_send(vec![0; half]).is_ok());
+        assert!(tx.try_send(vec![0; half]).is_ok());
+        assert!(matches!(tx.try_send(vec![0; 1]), Err(TrySendError::Full(_))));
+        let written = rx.recv().unwrap();
+        tx.waiting.release(written.len() as u64);
+        assert!(tx.try_send(vec![0; 1]).is_ok());
+        let (alone, _rx) = Outbox::new(QUEUE);
+        assert!(alone.try_send(vec![0; QUEUE_BYTES as usize + 1]).is_ok(), "one frame alone may be larger");
+    }
 
     #[test]
     fn with_no_window_only_what_must_not_be_missed_is_held() {
@@ -642,7 +692,7 @@ mod tests {
             ipc::send(&mut c, ipc::REQ, &Req { id: 9, cmd, args: serde_json::Value::Null }).unwrap();
             std::thread::sleep(Duration::from_millis(200));
         });
-        let (tx, rx) = sync_channel(4);
+        let (tx, rx) = Outbox::new(4);
         let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
         crate::elevation::refuse_here(why);
         let _ = requests(&mut stream, &replies, 0, stop_only);
@@ -694,7 +744,7 @@ mod tests {
 
     /// What build.rs leaves beside the exe, read when this build was compiled:
     /// the file the release publishes in `latest.json` without running the exe.
-    const LEFT_BESIDE_THE_EXE: &str = include_str!(concat!(env!("OUT_DIR"), "/../../../core-fingerprint.txt"));
+    const LEFT_BESIDE_THE_EXE: &str = include_str!(env!("LUNA_CORE_FP_FILE"));
 
     #[test]
     fn the_flag_reports_the_fingerprint_left_beside_the_exe() {

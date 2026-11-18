@@ -4,9 +4,9 @@
 //! a bare executable per platform.
 
 use crate::cli::{download_to, sane_version, Package, PackageFile, Source};
+use crate::http::Agent;
 use crate::provider::Provider;
 use std::fs;
-use std::io::Read;
 use std::path::Path;
 
 const RELEASES: &str = "https://downloads.claude.ai/claude-code-releases";
@@ -34,13 +34,13 @@ fn platform() -> &'static str {
 /// The `latest` pointer is not signed: what it names is held to the floor
 /// (cli.rs `update_in`), which keeps a bucket in other hands from offering an
 /// old signed release with its known flaws.
-fn latest(agent: &ureq::Agent) -> Result<String, String> {
+fn latest(agent: &Agent) -> Result<String, String> {
     let text = agent
         .get(&format!("{RELEASES}/{CHANNEL}"))
         .call()
         .map_err(|e| format!("version lookup: {e}"))?
-        .into_string()
-        .map_err(|e| e.to_string())?;
+        .text()
+        .map_err(|e| format!("version lookup: {e}"))?;
     sane_version(&text, CHANNEL)
 }
 
@@ -67,21 +67,16 @@ fn accept_manifest(root: &Path, min_safe: &str, bytes: &[u8], sig: &[u8], versio
 
 /// A small file off the bucket, whole and as served: the signature is over
 /// the manifest's exact bytes.
-fn get_small(agent: &ureq::Agent, url: &str, what: &str) -> Result<Vec<u8>, String> {
-    const LIMIT: u64 = 1 << 20;
+fn get_small(agent: &Agent, url: &str, what: &str) -> Result<Vec<u8>, String> {
+    const LIMIT: usize = 1 << 20;
     let resp = agent.get(url).call().map_err(|e| format!("{what}: {e}"))?;
-    let mut bytes = Vec::new();
-    resp.into_reader().take(LIMIT + 1).read_to_end(&mut bytes).map_err(|e| format!("{what}: {e}"))?;
-    if bytes.len() as u64 > LIMIT {
-        return Err(format!("{what}: larger than {LIMIT} bytes"));
-    }
-    Ok(bytes)
+    resp.bytes(LIMIT).map_err(|e| format!("{what}: {e}"))
 }
 
 /// The sha256 and the size the manifest gives our platform's exe, once the
 /// manifest is accepted (`accept_manifest`). Manifests carry both; the size
 /// is taken as optional all the same, the hash being what pins the file.
-fn expected(agent: &ureq::Agent, version: &str) -> Result<(String, Option<u64>), String> {
+fn expected(agent: &Agent, version: &str) -> Result<(String, Option<u64>), String> {
     let bytes = get_small(agent, &format!("{RELEASES}/{version}/manifest.json"), "manifest")?;
     let sig = get_small(agent, &format!("{RELEASES}/{version}/manifest.json.sig"), "manifest signature")?;
     accept_manifest(&crate::cli::root(Provider::Claude), crate::cli::min_safe(Provider::Claude), &bytes, &sig, version)
@@ -89,7 +84,7 @@ fn expected(agent: &ureq::Agent, version: &str) -> Result<(String, Option<u64>),
 
 /// Downloads `version` into `dir`, verifying the sha256 from the manifest
 /// before the file gets its real name. The package is that one file.
-fn fetch(agent: &ureq::Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Package, String> {
+fn fetch(agent: &Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Package, String> {
     let (checksum, size) = expected(agent, version)?;
     let dest = dir.join(BIN_NAME);
     let part = dir.join(format!("{BIN_NAME}.part"));

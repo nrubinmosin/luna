@@ -3,9 +3,9 @@
 // src/info/plugins.rs): the crate `tauri` against `@tauri-apps/api`, and each
 // `tauri-plugin-<name>` against `@tauri-apps/plugin-<name>`, by the versions
 // actually locked, which must agree in major and minor; the patch may differ.
-// The gate builds neither the app nor a bundle, and Dependabot moves the cargo
-// and npm sides in separate PRs, so this applies the same rule to the lockfiles
-// and fails the gate where tauri build would. No network, no install: what is
+// The gate builds neither the app nor a bundle, and the cargo and npm sides are
+// locked in separate files, each bumped on its own, so this applies the same rule
+// to the lockfiles and fails the gate where tauri build would. No network, no install: what is
 // compared is what src-tauri/Cargo.lock and pnpm-lock.yaml say.
 //
 // A pair counts only when both sides are there, as in tauri-cli: a plugin with
@@ -54,40 +54,59 @@ export function cargoVersions(lockText) {
   return out;
 }
 
+/** The sections of a project in pnpm-lock.yaml that list what it depends on. */
+const DEP_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies'];
+
 /**
  * The version pnpm installs for each direct dependency of the root project,
  * from pnpm-lock.yaml's `importers: .:` section: what `pnpm list`, which
- * tauri-cli asks, reports. Throws on a lockfile it does not read.
+ * tauri-cli asks, reports. Since pnpm 11 the file may hold more than one YAML
+ * document, the first for pnpm itself and the config dependencies (their own
+ * `importers: .:`, under `packageManagerDependencies` and
+ * `configDependencies`); each is read, and only the dependency sections count.
+ * Throws on a lockfile it does not read.
  */
 export function npmVersions(lockText) {
   const out = new Map();
-  const lines = lockText.replaceAll('\r\n', '\n').split('\n');
-  const format = lines.map(l => /^lockfileVersion: '?([^'\s]+)'?$/.exec(l)?.[1]).find(Boolean);
-  if (format === undefined) throw new Error('pnpm-lock.yaml: no lockfileVersion');
-  if (format !== PNPM_FORMAT) {
-    throw new Error(`pnpm-lock.yaml: lockfileVersion '${format}', and only '${PNPM_FORMAT}' is read here`);
-  }
-  const start = lines.indexOf('importers:');
-  if (start < 0) throw new Error("pnpm-lock.yaml: no root project (importers: '.')");
-  let inRoot = false;
   let sawRoot = false;
-  let name = null;
-  for (const line of lines.slice(start + 1)) {
-    if (/^\S/.test(line)) break; // the next top-level key
-    if (/^ {2}\S/.test(line)) {
-      inRoot = line === '  .:';
-      sawRoot ||= inRoot;
-      continue;
+  const docs = lockText.replaceAll('\r\n', '\n').split(/^---$/m);
+  const formats = docs.map(d => /^lockfileVersion: '?([^'\s]+)'?$/m.exec(d)?.[1]).filter(Boolean);
+  if (!formats.length) throw new Error('pnpm-lock.yaml: no lockfileVersion');
+  const other = formats.find(f => f !== PNPM_FORMAT);
+  if (other !== undefined) {
+    throw new Error(`pnpm-lock.yaml: lockfileVersion '${other}', and only '${PNPM_FORMAT}' is read here`);
+  }
+  for (const doc of docs) {
+    const lines = doc.split('\n');
+    const start = lines.indexOf('importers:');
+    if (start < 0) continue;
+    let inRoot = false;
+    let inDeps = false;
+    let name = null;
+    for (const line of lines.slice(start + 1)) {
+      if (/^\S/.test(line)) break; // the next top-level key
+      if (/^ {2}\S/.test(line)) {
+        inRoot = line === '  .:';
+        sawRoot ||= inRoot;
+        continue;
+      }
+      if (!inRoot) continue;
+      const section = /^ {4}(\S+):/.exec(line);
+      if (section) {
+        inDeps = DEP_SECTIONS.includes(section[1]);
+        name = null;
+        continue;
+      }
+      if (!inDeps) continue;
+      const dep = /^ {6}'?([^':]+)'?:$/.exec(line);
+      if (dep) {
+        name = dep[1];
+        continue;
+      }
+      const version = /^ {8}version: (\S+)$/.exec(line);
+      // A version may carry its peers in parentheses: 1.2.3(react@19.0.0).
+      if (version && name) out.set(name, version[1].replace(/\(.*$/, ''));
     }
-    if (!inRoot) continue;
-    const dep = /^ {6}'?([^':]+)'?:$/.exec(line);
-    if (dep) {
-      name = dep[1];
-      continue;
-    }
-    const version = /^ {8}version: (\S+)$/.exec(line);
-    // A version may carry its peers in parentheses: 1.2.3(react@19.0.0).
-    if (version && name) out.set(name, version[1].replace(/\(.*$/, ''));
   }
   if (!sawRoot) throw new Error("pnpm-lock.yaml: no root project (importers: '.')");
   return out;

@@ -80,6 +80,11 @@ pub struct ActivityProbe {
     pub provider: Provider,
     pub pid: Option<u32>,
     pub cwd: String,
+    /// The worktree it was started into, where that is not its `cwd`
+    /// (`Session::enters`).
+    pub enters: Option<String>,
+    /// What it holds against a worktree's removal (`Session::hold`).
+    pub hold: Arc<crate::worktree::Hold>,
     pub spawned_at_ms: u128,
     pub resume: Option<String>,
     pub account_path: String,
@@ -121,6 +126,8 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
         provider: s.provider,
         pid: s.pid,
         cwd: s.cwd.clone(),
+        enters: s.enters.clone(),
+        hold: Arc::clone(&s.hold),
         spawned_at_ms: s.spawned_at_ms,
         resume: s.resume.clone(),
         account_path: s.account_path.clone(),
@@ -132,20 +139,49 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
 }
 
 /// The cwd of every live session this app runs, and where every background
-/// helper works. A running session must never have its worktree swept, even
-/// if the UI has not yet learned where it lives, and a helper has no row to
-/// claim its own.
+/// helper works, as spelled: what a spawn cut off by a core going left is
+/// told from by them (agents/spawn). Whether a worktree may be removed goes
+/// by places (`holds`).
 pub fn live_cwds() -> Vec<String> {
     let mut cwds: Vec<String> = manager()
         .activity_probes()
         .into_iter()
         .flat_map(|p| {
             let moved = p.working_dir();
-            [Some(p.cwd), moved].into_iter().flatten()
+            [Some(p.cwd), p.enters, moved].into_iter().flatten()
         })
         .collect();
     cwds.extend(crate::background::working_dirs(None));
     cwds
+}
+
+/// What Luna's live sessions and helpers, all but `except`, hold against a
+/// worktree's removal (`worktree::Hold`).
+pub fn holds(except: Option<&str>) -> crate::worktree::Hold {
+    manager().holds(except)
+}
+
+impl PtyManager {
+    /// What the live sessions and helpers but `except` hold against a
+    /// worktree's removal: each session's hold, resolved as it started, with
+    /// the folder its CLI says it works in now (a worktree it made: as its
+    /// start's places led then if it is under one of them by their spelling,
+    /// and as it leads now, `Hold::add_at`) and, until it has said one, where
+    /// its CLI makes the worktree it asked for; each helper's alike
+    /// (`background::holds`). Both of a session come of one read of its
+    /// folder, both of a helper of one read of where it works.
+    pub fn holds(&self, except: Option<&str>) -> crate::worktree::Hold {
+        let mut held = crate::background::holds(except);
+        // Probed off the session map: the disk reads below must not hold it.
+        for p in self.activity_probes().into_iter().filter(|p| Some(p.id.as_str()) != except) {
+            let moved = p.working_dir();
+            held.add(&p.hold, moved.as_deref().is_none_or(|w| super::same_dir(w, &p.cwd)));
+            if let Some(moved) = moved {
+                held.add_at(&p.hold, &moved);
+            }
+        }
+        held
+    }
 }
 
 /// The last `max` bytes of a file as text, or None if it cannot be read.
@@ -251,66 +287,98 @@ pub(super) fn meta_from_disk(p: &Probe) -> Option<SessionMeta> {
     }
 }
 
-// Name, status and context of a live session, read off what its CLI leaves on
-// disk — free, no tokens.
-//
-// Async on purpose: this runs every few seconds for every open pane and reads
-// the tail of a transcript that grows into the megabytes. As a sync command it
-// would do that on the main thread, i.e. with the window frozen.
-#[tauri::command]
-//
-// A chat with no live session answers None rather than failing: the watcher
-// polls every chat every few seconds, resting ones included, so treating an
-// absent session as an error meant thousands of warnings a day in the log —
-// enough to push everything worth reading out of it.
-pub async fn session_meta(id: String, account_path: String) -> Result<Option<SessionMeta>, String> {
-    let state = manager();
+/// A chat the window asks about (`sessions_meta`): its id, and the account
+/// folder its row names.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaAsk {
+    pub id: String,
+    pub account_path: String,
+}
+
+/// What `sessions_meta` says of one chat.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLook {
+    pub id: String,
+    /// None: no live session (its CLI exited or never started), or an
+    /// account folder that is none of Luna's.
+    pub meta: Option<SessionMeta>,
+    /// With no meta to carry it, the ask for a handoff open on the chat
+    /// (`handoff_ask_of`): the ask is the core's whether a CLI runs or not,
+    /// and one that lapsed while it was down must not stay on the chip and in
+    /// the menu's refusal.
+    pub handoff_ask: Option<crate::agents::HandoffAsk>,
+}
+
+/// Name, status and context of every chat the window shows, read off what
+/// each CLI leaves on disk — free, no tokens — in one call a tick: the window
+/// used to ask for each chat in turn, every few seconds, one round trip and
+/// thread each, and each check of the same account folder again. A chat
+/// with no live session answers no meta rather than failing: resting chats
+/// are asked about too, and an error each meant thousands of warnings a day
+/// in the log. Each account path is held to an account folder of Luna's
+/// (`boundary::AccountPath`) once a call, before anything under it is read;
+/// a chat whose path is refused answers no meta, as one whose own call
+/// failed did. The files read are kept by their stamp (`stamped`), so at
+/// idle a tick reads next to nothing.
+pub fn sessions_meta(chats: Vec<MetaAsk>) -> Vec<ChatLook> {
+    looks(chats, |path| crate::boundary::AccountPath::try_from(path.to_string()).is_ok(), session_meta)
+}
+
+/// `sessions_meta`, the account check and the look at one chat given.
+fn looks(
+    chats: Vec<MetaAsk>,
+    mut account_ok: impl FnMut(&str) -> bool,
+    mut look: impl FnMut(&str, String) -> Option<SessionMeta>,
+) -> Vec<ChatLook> {
+    let mut checked: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    chats
+        .into_iter()
+        .map(|c| {
+            let ok = match checked.get(&c.account_path) {
+                Some(ok) => *ok,
+                None => *checked.entry(c.account_path.clone()).or_insert(account_ok(&c.account_path)),
+            };
+            let meta = if ok { look(&c.id, c.account_path) } else { None };
+            let handoff_ask = if meta.is_none() { crate::agents::handoff_ask_of(&c.id) } else { None };
+            ChatLook { id: c.id, meta, handoff_ask }
+        })
+        .collect()
+}
+
+/// Name, status and context of a live session, None for one that is not
+/// running. Account path checked by the caller (`sessions_meta`).
+fn session_meta(id: &str, account_path: String) -> Option<SessionMeta> {
     let probe = {
-        let sessions = state.sessions.lock().unwrap();
-        let Some(s) = sessions.get(&id) else {
-            return Ok(None);
-        };
-        if !s.alive.load(Ordering::SeqCst) {
-            return Ok(None);
-        }
-        let mut p = probe_of(&id, s);
+        let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let s = sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst))?;
+        let mut p = probe_of(id, s);
         // The caller's idea of the account wins, as it always has: the chat
         // row is the source of truth for which folder a chat belongs to.
-        if !account_path.is_empty() {
-            p.account_path = account_path;
-        }
+        p.account_path = account_path;
         p
     };
 
     let codex = probe.provider == Provider::Codex;
-    let mut meta = tauri::async_runtime::spawn_blocking(move || meta_from_disk(&probe)).await.map_err(|e| e.to_string())?;
+    let mut m = meta_from_disk(&probe)?;
     // Codex's approval dialog is not in its rollout and the screen does not
     // go quiet under it, so the rollout calls the session working; the
     // activity sampler reads the dialog off the screen (`codex::session::asks`).
-    if let Some(m) = meta.as_mut().filter(|m| codex && m.status.as_deref() == Some("working")) {
-        if crate::activity::turn_state(&id).is_some_and(|t| t.turn == crate::activity::Turn::Waiting) {
-            m.status = Some("waiting".into());
-        }
+    let asking = || crate::activity::turn_state(id).is_some_and(|t| t.turn == crate::activity::Turn::Waiting);
+    if codex && m.status.as_deref() == Some("working") && asking() {
+        m.status = Some("waiting".into());
     }
-    if let Some(m) = meta.as_mut() {
-        crate::asking::overlay(&id, m);
-        overlay_background(&id, m);
-        // The screen may be read for it, which replays the scrollback: off
-        // the main thread, like the disk.
-        let of = id.clone();
-        m.draft = tauri::async_runtime::spawn_blocking(move || manager().has_draft(&of)).await.unwrap_or(false);
-        m.held = crate::agents::held_count(&id);
-        m.handoff = crate::agents::mark_of(&id);
-        m.handoff_asked = crate::agents::asked_of(&id);
-        m.handoff_ask = crate::agents::handoff_ask_of(&id);
-        // A Codex rollout's tail is read for it: off the main thread too.
-        let of = id.clone();
-        m.limit = tauri::async_runtime::spawn_blocking(move || manager().provider(&of).and_then(|p| crate::activity::limit_of(&of, p)))
-            .await
-            .unwrap_or(None);
-        pin_name(m);
-    }
-    Ok(meta)
+    crate::asking::overlay(id, &mut m);
+    overlay_background(id, &mut m);
+    m.draft = manager().has_draft(id);
+    m.held = crate::agents::held_count(id);
+    m.handoff = crate::agents::mark_of(id);
+    m.handoff_asked = crate::agents::asked_of(id);
+    m.handoff_ask = crate::agents::handoff_ask_of(id);
+    m.limit = crate::activity::limit_of(id, probe.provider);
+    pin_name(&mut m);
+    Some(m)
 }
 
 /// A chat between turns with work of its own going on reads `background`, under
@@ -469,6 +537,29 @@ mod background_tests {
 mod pin_tests {
     use super::*;
 
+    /// Each account folder is checked once a call, and nothing of a chat
+    /// whose folder is refused is looked at.
+    #[test]
+    fn a_chat_on_a_refused_account_is_not_looked_at_and_each_account_is_checked_once() {
+        let ask = |id: &str, account: &str| MetaAsk { id: id.into(), account_path: account.into() };
+        let (mut checks, mut looked) = (Vec::new(), Vec::new());
+        let got = looks(
+            vec![ask("lk-1", "A"), ask("lk-2", "bad"), ask("lk-3", "A"), ask("lk-4", "bad")],
+            |path| {
+                checks.push(path.to_string());
+                path == "A"
+            },
+            |id, account| {
+                looked.push(format!("{id}@{account}"));
+                (id == "lk-1").then(SessionMeta::default)
+            },
+        );
+        assert_eq!(checks, ["A", "bad"]);
+        assert_eq!(looked, ["lk-1@A", "lk-3@A"]);
+        let ids: Vec<(&str, bool)> = got.iter().map(|l| (l.id.as_str(), l.meta.is_some())).collect();
+        assert_eq!(ids, [("lk-1", true), ("lk-2", false), ("lk-3", false), ("lk-4", false)]);
+    }
+
     #[test]
     fn a_conversation_a_handoff_opened_keeps_the_chats_name() {
         let named = |first: &str| {
@@ -480,12 +571,45 @@ mod pin_tests {
         assert_eq!(named("[Luna move 3fa9c2, not typed by the user] This chat goes on from…"), None, "nor a move's line");
         assert_eq!(named("Fix the updater"), Some("Fix the updater".into()), "a person's first prompt names it");
     }
+
+    /// `saved_title` reads nothing under a folder that is no account of
+    /// Luna's: its account path is refused as the page's arguments are read,
+    /// though a transcript with a title lies there to be found.
+    #[test]
+    fn a_saved_title_is_not_looked_for_outside_lunas_accounts() {
+        let root = std::env::temp_dir().join(format!("luna-saved-title-elsewhere-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("projects").join("E--p");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sid = "4d1f0e2a-9b7c-4c1e-8f3a-2b6d5e7f9a10";
+        std::fs::write(dir.join(format!("{sid}.jsonl")), format!(r#"{{"type":"ai-title","aiTitle":"Planted","sessionId":"{sid}"}}"#))
+            .unwrap();
+        let acct = root.to_string_lossy().into_owned();
+        assert!(crate::claude::session::saved_title(&acct, sid).is_some(), "there to be read, were the path let through");
+        type Arg = crate::boundary::OrEmpty<crate::boundary::AccountPath>;
+        let refused = serde_json::from_value::<Arg>(serde_json::json!(acct));
+        assert!(refused.is_err_and(|e| e.to_string().contains("account folder")), "the command's account path takes only Luna's");
+        let none = serde_json::from_value::<Arg>(serde_json::json!("")).unwrap();
+        assert_eq!(tauri::async_runtime::block_on(saved_title(Provider::Claude, none, sid.into())), None, "and no path is no title");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 /// The CLI's title for a session that is not running, by its id — how a chat
-/// restored from an earlier run picks up the title its CLI gave it.
+/// restored from an earlier run picks up the title its CLI gave it. The
+/// account path is held to an account folder of Luna's as it is read
+/// (`boundary::AccountPath`), before anything under it is; a chat with none
+/// has no title saved anywhere.
 #[tauri::command]
-pub async fn saved_title(provider: Provider, account_path: String, session_id: String) -> Option<CliTitle> {
+pub async fn saved_title(
+    provider: Provider,
+    account_path: crate::boundary::OrEmpty<crate::boundary::AccountPath>,
+    session_id: String,
+) -> Option<CliTitle> {
+    let account_path = account_path.into_string();
+    if account_path.is_empty() {
+        return None;
+    }
     tauri::async_runtime::spawn_blocking(move || match provider {
         Provider::Claude => crate::claude::session::saved_title(&account_path, &session_id),
         Provider::Codex => crate::codex::session::thread_title(&account_path, &session_id),

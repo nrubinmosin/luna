@@ -1,0 +1,19 @@
+# pnpm's settings for the repo: pnpm reads none from package.json since 11.
+allowBuilds:
+  # Its install script only checks the platform binary it already ships. Vite
+  # installs it as an optional peer it does not use to build, and pnpm
+  # refuses an install that leaves a package's build scripts undecided.
+  esbuild: false
+
+patchedDependencies:
+  # Backports of xterm.js's fixes after 6.0.0 to the texture atlas, shared by
+  # every terminal of one font and theme (`pageLayoutVersion` and
+  # `_evictAllPages` in addons/addon-webgl): in 0.19.0 a page merge sets a
+  # flag that is never cleared, so every render from then on rebuilds the
+  # whole viewport, and the atlas and its glyph cache never shrink. The patch
+  # makes the flag a version each renderer rebuilds for once and evicts the
+  # atlas when it is full, with two bounds of Luna's own. Only
+  # lib/addon-webgl.mjs, the build Vite bundles, is patched: nothing of Luna's
+  # loads the CommonJS one. Drop it with the first addon release that has the
+  # fixes (docs/architecture/frontend.md).
+  '@xterm/addon-webgl@0.19.0': patches/@xterm__addon-webgl@0.19.0.patch

@@ -286,7 +286,7 @@ pub fn turn_started_ms(chat_id: &str) -> Option<u64> {
 }
 
 /// One session's state, as the UI shows it in the power chip's tooltip.
-#[derive(Clone, Serialize, PartialEq)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionActivity {
     pub id: String,
@@ -309,6 +309,18 @@ pub struct SessionActivity {
     pub disk: Option<Turn>,
     #[serde(skip)]
     pub output_age_ms: u64,
+}
+
+/// Equal as the window sees it: the fields it is sent. `power://state` goes
+/// out only when the state differs from the last one sent (power/
+/// `publish`), and the screen's age alone, different at every sample, made
+/// every sample send it again, unchanged on the window's side.
+impl PartialEq for SessionActivity {
+    fn eq(&self, other: &Self) -> bool {
+        let Self { id, turn, procs, output_fresh, busy, stalled, hook: _, disk: _, output_age_ms: _ } = self;
+        (id, turn, procs, output_fresh, busy, stalled)
+            == (&other.id, &other.turn, &other.procs, &other.output_fresh, &other.busy, &other.stalled)
+    }
 }
 
 impl SessionActivity {

@@ -209,8 +209,199 @@ static CHATS_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 /// written down that would have the next core take it for one that finished.
 pub(super) static CHATS_FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-pub fn freeze_chats() {
-    CHATS_FROZEN.store(true, std::sync::atomic::Ordering::SeqCst);
+/// What `save_chats` last wrote, and the lock its saves take in turn
+/// (`save_in_order`).
+static CHATS_LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+/// Why every session is being stopped (`freeze_chats`). Each stop holds the
+/// freeze until its caller knows the process goes on after all
+/// (`thaw_chats`), or the process ends with it: a session started or still
+/// running meanwhile (a pane asking for its chat again, a helper's turn) is
+/// no sign of either, and a save then would write what the stopping did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// The core leaving (`coreproc::leave`): never called off.
+    Leaving,
+    /// The PC shut down or restarted at Luna's word: called off where the OS
+    /// is seen to take it back and the chats start over (power/machine.rs).
+    PowerOff,
+    /// An update about to be installed (`pty::stop_all_sessions`): called off
+    /// where the install fails (`pty::update_called_off`), and lifted by
+    /// itself `UPDATE_FREEZE_FOR` after the stop returned. Neither while the
+    /// sessions are still being stopped for it (`UpdateStopping`): a call-off
+    /// then takes effect as the stop returns.
+    Update,
+}
+
+/// How long after an update's stop of every session has returned its freeze
+/// lifts by itself, the update not called off: long enough for an installer
+/// that waits on a UAC prompt to end the process with the freeze still on,
+/// and short enough that an update that never came (the window gone, the
+/// installer never started) costs at most this much of the chats' ties left
+/// unsaved, rather than all of the core's life.
+const UPDATE_FREEZE_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+impl Stop {
+    fn bit(self) -> u8 {
+        match self {
+            Stop::Leaving => 1,
+            Stop::PowerOff => 2,
+            Stop::Update => 4,
+        }
+    }
+}
+
+/// The stops under way; `CHATS_FROZEN` is set and cleared under their lock,
+/// so a stop called off never lifts another's freeze, and a stop said twice
+/// is one.
+struct Stops {
+    /// A `Stop::bit` each.
+    bits: u8,
+    /// How many stops of every session for an update have not returned yet
+    /// (`UpdateStopping`).
+    updating: usize,
+    /// The update called off while they had not (`call_off_update`): it is
+    /// called off as the last of them returns.
+    called_off: bool,
+    /// When the update's freeze lifts by itself (`lapse`): `UPDATE_FREEZE_FOR`
+    /// after the last of its stops returned, on the monotonic clock.
+    lifts_at: Option<std::time::Instant>,
+}
+
+static STOPS: Mutex<Stops> = Mutex::new(Stops::NONE);
+
+fn stops() -> std::sync::MutexGuard<'static, Stops> {
+    STOPS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Stops {
+    const NONE: Stops = Stops { bits: 0, updating: 0, called_off: false, lifts_at: None };
+
+    fn thaw(&mut self, why: Stop) {
+        self.bits &= !why.bit();
+        if why == Stop::Update {
+            self.lifts_at = None;
+        }
+        if self.bits == 0 {
+            CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// The last of the update's stops returned at `now`: a call-off said
+    /// meanwhile takes effect, or else the freeze's time starts.
+    fn update_returned(&mut self, now: std::time::Instant) {
+        self.updating = self.updating.saturating_sub(1);
+        if self.updating > 0 {
+            return;
+        }
+        if std::mem::take(&mut self.called_off) {
+            self.thaw(Stop::Update);
+        } else if self.bits & Stop::Update.bit() != 0 {
+            self.lifts_at = Some(now + UPDATE_FREEZE_FOR);
+        }
+    }
+
+    /// Lifts the update's freeze if its time is up by `now`.
+    fn lapse(&mut self, now: std::time::Instant) {
+        if self.updating == 0 && self.lifts_at.is_some_and(|at| now >= at) {
+            self.thaw(Stop::Update);
+        }
+    }
+}
+
+/// Lifts the update's freeze if its time is up (`UPDATE_FREEZE_FOR`): asked
+/// by every save, which the beat makes every few seconds.
+fn lapse(now: std::time::Instant) {
+    stops().lapse(now);
+}
+
+/// Freezes the chats' ties for the core's leaving or the PC's shutdown, until
+/// that stop is called off (`thaw_chats`) and no other is under way. An
+/// update freezes them through `freeze_for_update`, which bounds the freeze.
+pub fn freeze_chats(why: Stop) {
+    debug_assert_ne!(why, Stop::Update, "an update freezes through freeze_for_update");
+    let mut stops = stops();
+    stops.bits |= why.bit();
+    freeze(&CHATS_LAST, &CHATS_FROZEN);
+}
+
+/// The stop `why` called off, its caller knowing the process goes on: what
+/// the chats' ties say is news once more, unless another stop is under way.
+pub fn thaw_chats(why: Stop) {
+    stops().thaw(why);
+}
+
+/// Every session being stopped for an update (`freeze_for_update`), until it
+/// is dropped once they are.
+#[must_use = "the sessions are being stopped for as long as the guard lives"]
+pub struct UpdateStopping(());
+
+impl Drop for UpdateStopping {
+    fn drop(&mut self) {
+        stops().update_returned(std::time::Instant::now());
+    }
+}
+
+#[cfg(test)]
+impl UpdateStopping {
+    /// The stop returned at `now`, as the clock would have it.
+    fn returned_at(self, now: std::time::Instant) {
+        std::mem::forget(self);
+        stops().update_returned(now);
+    }
+}
+
+/// Freezes the chats' ties for an update (`Stop::Update`) as every session
+/// is stopped for it, until the update is called off (`call_off_update`) or
+/// `UPDATE_FREEZE_FOR` after the guard is dropped, once they are stopped:
+/// neither lifts it before then, as a save would write what the stopping
+/// still does.
+pub fn freeze_for_update() -> UpdateStopping {
+    let mut stops = stops();
+    stops.updating += 1;
+    stops.bits |= Stop::Update.bit();
+    stops.lifts_at = None;
+    freeze(&CHATS_LAST, &CHATS_FROZEN);
+    UpdateStopping(())
+}
+
+/// The window's word that the update the sessions were stopped for is not
+/// being installed (its install failed): the freeze lifts at once or, while
+/// the sessions are still being stopped for it, as that stop returns. Said
+/// by anyone else (a page script), it brings the lift forward from
+/// `UPDATE_FREEZE_FOR` after the stop to its return, and no further.
+pub fn call_off_update() {
+    let mut stops = stops();
+    if stops.updating > 0 {
+        stops.called_off = true;
+    } else {
+        stops.thaw(Stop::Update);
+    }
+}
+
+/// One test at a time that stops every session or reads the freeze, each
+/// starting with no stop under way and nothing frozen.
+#[cfg(test)]
+pub(crate) fn stops_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: Mutex<()> = Mutex::new(());
+    let alone = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    *stops() = Stops::NONE;
+    CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    alone
+}
+
+/// Whether the chats' ties are frozen.
+#[cfg(test)]
+pub(crate) fn chats_frozen() -> bool {
+    CHATS_FROZEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Sets `frozen` under the saves' lock: a save already taking its snapshot
+/// or writing it is through before the sessions are stopped, so nothing of
+/// the stopping goes into a snapshot or onto disk after the freeze.
+fn freeze(last: &Mutex<Vec<u8>>, frozen: &std::sync::atomic::AtomicBool) {
+    let _saving = last.lock().unwrap_or_else(|e| e.into_inner());
+    frozen.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// What there is to keep of the sessions the window runs, and the rest the next
@@ -262,19 +453,49 @@ pub(super) fn chats_now() -> SavedChats {
 /// `save` keeps the beat).
 pub fn save_chats() {
     use std::sync::atomic::Ordering;
-    static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-    if !CHATS_READ.load(Ordering::SeqCst) || CHATS_FROZEN.load(Ordering::SeqCst) {
+    if !CHATS_READ.load(Ordering::SeqCst) {
         return;
     }
-    let Ok(bytes) = serde_json::to_vec_pretty(&chats_now()) else { return };
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    // Before the saves' lock: a freeze takes it under the stops' lock.
+    lapse(std::time::Instant::now());
+    let path = chat_ties_file();
+    save_in_order(
+        &CHATS_LAST,
+        || snapshot_unless(&CHATS_FROZEN, || serde_json::to_vec_pretty(&chats_now()).ok()),
+        |bytes| match crate::secret::write_private(&path, bytes) {
+            Ok(()) => true,
+            Err(e) => {
+                crate::log::warn("agents", &format!("could not save the chats' ties to {}: {e}", path.display()));
+                false
+            }
+        },
+    );
+}
+
+/// `snapshot`, unless `frozen` is set: asked as the snapshot is taken, under
+/// the save's lock (`save_in_order`), so a save that waited there behind
+/// another while the sessions were stopped (`freeze_chats`) takes nothing of
+/// what the stopping did and writes nothing over what was written before it.
+fn snapshot_unless(frozen: &std::sync::atomic::AtomicBool, snapshot: impl FnOnce() -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+    if frozen.load(std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    snapshot()
+}
+
+/// Takes a snapshot and writes it if it differs from the last one written,
+/// all under `last`: a save that took its snapshot ahead of another's and
+/// wrote behind it would leave the older one on disk (the notifier's, a
+/// handoff's and the periodic save run at once), for a core killed before
+/// the next save to restore. `write` says whether the bytes are on disk.
+fn save_in_order(last: &Mutex<Vec<u8>>, snapshot: impl FnOnce() -> Option<Vec<u8>>, write: impl FnOnce(&[u8]) -> bool) {
+    let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(bytes) = snapshot() else { return };
     if *last == bytes {
         return;
     }
-    let path = chat_ties_file();
-    match crate::secret::write_private(&path, &bytes) {
-        Ok(()) => *last = bytes,
-        Err(e) => crate::log::warn("agents", &format!("could not save the chats' ties to {}: {e}", path.display())),
+    if write(&bytes) {
+        *last = bytes;
     }
 }
 
@@ -438,6 +659,211 @@ mod tests {
     use crate::agents::test_support::{owed_chat, spawn_taken, spawns_to_myself, take_up};
     use std::collections::HashMap;
 
+    /// Of two saves at once, the one that took its snapshot later writes
+    /// later: a snapshot taken while another save is writing waits for it.
+    #[test]
+    fn a_save_snapshotted_later_is_the_one_left_on_disk() {
+        static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+        let disk = std::sync::Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let write = |disk: std::sync::Arc<Mutex<Vec<Vec<u8>>>>| {
+            move |bytes: &[u8]| {
+                disk.lock().unwrap().push(bytes.to_vec());
+                true
+            }
+        };
+        let (snapping, snapped) = std::sync::mpsc::channel();
+        let (newer_done, newer_written) = std::sync::mpsc::channel::<()>();
+        let older = {
+            let write = write(disk.clone());
+            std::thread::spawn(move || {
+                let snapshot = || {
+                    snapping.send(()).unwrap();
+                    // Let in, the newer save writes in this time.
+                    let _ = newer_written.recv_timeout(std::time::Duration::from_millis(300));
+                    Some(b"older".to_vec())
+                };
+                save_in_order(&LAST, snapshot, write);
+            })
+        };
+        snapped.recv().unwrap();
+        let newer = {
+            let write = write(disk.clone());
+            std::thread::spawn(move || {
+                save_in_order(&LAST, || Some(b"newer".to_vec()), write);
+                let _ = newer_done.send(());
+            })
+        };
+        older.join().unwrap();
+        newer.join().unwrap();
+        assert_eq!(disk.lock().unwrap().last().map(Vec::as_slice), Some(&b"newer"[..]));
+        // Unchanged since the last write: nothing written.
+        save_in_order(&LAST, || Some(b"newer".to_vec()), |_| panic!("written again"));
+    }
+
+    /// A save that waited behind another while the chats were frozen takes
+    /// no snapshot and writes nothing over what was written before.
+    #[test]
+    fn a_save_queued_behind_the_freeze_writes_nothing() {
+        static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+        static FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let (writing, wrote) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let first = std::thread::spawn(move || {
+            save_in_order(
+                &LAST,
+                || snapshot_unless(&FROZEN, || Some(b"before".to_vec())),
+                |_| {
+                    writing.send(()).unwrap();
+                    wait.recv().unwrap();
+                    true
+                },
+            )
+        });
+        wrote.recv().unwrap();
+        let queued = std::thread::spawn(|| {
+            save_in_order(
+                &LAST,
+                || snapshot_unless(&FROZEN, || panic!("a snapshot after the freeze")),
+                |_| panic!("written after the freeze"),
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        FROZEN.store(true, std::sync::atomic::Ordering::SeqCst);
+        go.send(()).unwrap();
+        first.join().unwrap();
+        queued.join().unwrap();
+        assert_eq!(*LAST.lock().unwrap(), b"before");
+    }
+
+    /// A freeze that comes while a save is taking its snapshot waits for that
+    /// save to be written: nothing goes onto disk once the freeze has
+    /// returned and the sessions are being stopped.
+    #[test]
+    fn a_freeze_waits_for_the_save_under_way() {
+        static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+        static FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let said = std::sync::Arc::new(Mutex::new(Vec::<&str>::new()));
+        let (snapping, snapped) = std::sync::mpsc::channel();
+        let save = {
+            let said = said.clone();
+            std::thread::spawn(move || {
+                save_in_order(
+                    &LAST,
+                    || {
+                        snapshot_unless(&FROZEN, || {
+                            snapping.send(()).unwrap();
+                            // Let in, the freeze returns in this time.
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                            Some(b"before".to_vec())
+                        })
+                    },
+                    |_| {
+                        said.lock().unwrap().push("written");
+                        true
+                    },
+                )
+            })
+        };
+        snapped.recv().unwrap();
+        freeze(&LAST, &FROZEN);
+        said.lock().unwrap().push("frozen");
+        save.join().unwrap();
+        assert_eq!(*said.lock().unwrap(), ["written", "frozen"]);
+    }
+
+    /// A session that starts while every session is being stopped (a pane
+    /// asking for its chat again, a helper's turn), or after, leaves the
+    /// chats' ties frozen: the process may yet end with the stop, and a save
+    /// then would write what the stopping did. Only the stop called off lifts
+    /// it, and only once no other stop is under way; the core's leaving is
+    /// never called off.
+    #[test]
+    fn a_stop_keeps_the_chats_frozen_until_it_is_called_off() {
+        let _alone = stops_for_test();
+        let start = || register("fz-start", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
+        let stopping = freeze_for_update();
+        start();
+        assert!(chats_frozen(), "a start while it stops");
+        drop(stopping);
+        start();
+        thaw_chats(Stop::PowerOff);
+        assert!(chats_frozen(), "another stop called off");
+        call_off_update();
+        assert!(!chats_frozen(), "the update called off");
+        drop(freeze_for_update());
+        freeze_chats(Stop::Leaving);
+        call_off_update();
+        start();
+        assert!(chats_frozen(), "the core leaves all the same");
+        forget("fz-start");
+        // As a test that does not stop every session expects to find them.
+        *stops() = Stops::NONE;
+        CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The window's word that the update is off, said while the sessions
+    /// are still being stopped for it, takes effect as the stop returns and
+    /// not before, the clock past its bound or not: a save meanwhile would
+    /// write what the stopping does. It is not kept for the next update;
+    /// said once the stop has returned, it lifts the freeze at once.
+    #[test]
+    fn an_update_called_off_during_its_stop_is_called_off_as_it_returns() {
+        let _alone = stops_for_test();
+        let t0 = std::time::Instant::now();
+        let stopping = freeze_for_update();
+        call_off_update();
+        assert!(chats_frozen(), "not while the sessions are stopped");
+        lapse(t0 + 2 * UPDATE_FREEZE_FOR);
+        assert!(chats_frozen(), "nor by the clock while they are");
+        stopping.returned_at(t0);
+        assert!(!chats_frozen(), "as the stop returns");
+        freeze_for_update().returned_at(t0);
+        assert!(chats_frozen(), "the next update's freeze is its own");
+        call_off_update();
+        assert!(!chats_frozen(), "called off at once once the stop has returned");
+    }
+
+    /// An update's freeze not called off lifts by itself `UPDATE_FREEZE_FOR`
+    /// after its stop returned, and not before; a stop still under way, or
+    /// begun since, keeps it, its time starting as it returns. The freeze of
+    /// the core's leaving or a PC's shutdown never lifts by the clock.
+    #[test]
+    fn an_updates_freeze_lifts_by_itself_after_its_bound() {
+        let _alone = stops_for_test();
+        let t0 = std::time::Instant::now();
+        let second = std::time::Duration::from_secs(1);
+        freeze_for_update().returned_at(t0);
+        lapse(t0 + UPDATE_FREEZE_FOR - second);
+        assert!(chats_frozen(), "not before its bound");
+        lapse(t0 + UPDATE_FREEZE_FOR);
+        assert!(!chats_frozen(), "at its bound");
+        freeze_for_update().returned_at(t0);
+        let again = freeze_for_update();
+        lapse(t0 + 3 * UPDATE_FREEZE_FOR);
+        assert!(chats_frozen(), "not while another stop for it is under way");
+        let t1 = t0 + 3 * UPDATE_FREEZE_FOR;
+        again.returned_at(t1);
+        lapse(t1 + UPDATE_FREEZE_FOR - second);
+        assert!(chats_frozen(), "its time starts as the last stop returns");
+        lapse(t1 + UPDATE_FREEZE_FOR);
+        assert!(!chats_frozen());
+        for why in [Stop::PowerOff, Stop::Leaving] {
+            freeze_chats(why);
+            lapse(t1 + 100 * UPDATE_FREEZE_FOR);
+            assert!(chats_frozen(), "{why:?} is not lifted by the clock");
+            freeze_for_update().returned_at(t1);
+            lapse(t1 + UPDATE_FREEZE_FOR);
+            assert!(chats_frozen(), "{why:?} holds once the update's time is up");
+            if why == Stop::PowerOff {
+                thaw_chats(why);
+                assert!(!chats_frozen(), "called off as the OS takes the shutdown back");
+            }
+        }
+        // As a test that does not stop every session expects to find them.
+        *stops() = Stops::NONE;
+        CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,
     /// which is cut with the helper still there.
     #[test]
@@ -591,6 +1017,26 @@ mod tests {
             forget(id);
             crate::activity::forget(id);
         }
+    }
+
+    /// A chat the person started in Claude Code's auto mode is saved and taken
+    /// up with it, and ranks where a helper in auto does: its helpers may run
+    /// in auto or below, never in bypassPermissions.
+    #[test]
+    fn a_chat_saved_in_auto_mode_comes_back_in_it_at_its_rank() {
+        use crate::agents::privilege::{Privilege, Reach};
+        let mut chat = owed_chat("am-chat", "am-peer", 2, 10);
+        chat.ties.settings = serde_json::json!({ "model": "opus", "permissionMode": "auto" });
+        take_up(vec![chat], Vec::new(), Vec::new());
+        let settings = reg().lock().unwrap().known["am-chat"].settings.clone();
+        assert_eq!(settings["permissionMode"], "auto");
+        let has = Privilege::of_caller(Provider::Claude, &settings);
+        assert_eq!(has, Privilege { reach: Reach::Reviewed, net: true });
+        let edits = Privilege::of_caller(Provider::Claude, &serde_json::json!({ "permissionMode": "acceptEdits" }));
+        let bypass = Privilege::of_caller(Provider::Claude, &serde_json::json!({ "permissionMode": "bypassPermissions" }));
+        assert!(has.covers(edits) && !has.covers(bypass) && bypass.covers(has));
+        forget("am-chat");
+        crate::activity::forget("am-chat");
     }
 
     #[test]

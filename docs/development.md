@@ -11,15 +11,30 @@ in [testing.md](testing.md); cutting a release is in [releasing.md](releasing.md
 | --- | --- |
 | Rust | `src-tauri/rust-toolchain.toml` and the images' `FROM rust:<version>` |
 | Node | `.node-version` and the images' `FROM node:<version>` |
-| pnpm | `packageManager` in `package.json` (via corepack) |
+| pnpm | `packageManager` in `package.json`, run by corepack; its settings in `pnpm-workspace.yaml` |
+| corepack | `corepack@<version>` in `docker/windows-build.Dockerfile` and `docker/screenshots.Dockerfile` (Node ships without it from 25 on) |
 | cargo-xwin, NSIS | `docker/windows-build.Dockerfile` |
 | Rust nightly, cargo-fuzz (fuzzing only) | `docker/fuzz.Dockerfile` and `src-tauri/fuzz/rust-toolchain.toml`; `scripts/fuzz.ps1` fails when the two disagree |
 
 The gate fails when the pins disagree. Every `FROM` names its image by tag and
-digest; the gate's frontend steps run in the Windows image's Node stage, so one
-pin serves both. Images are tagged by a hash of what they are built from
-(`scripts/lib.ps1`), which also holds the shared plumbing: the
-one-build-at-a-time mutex, the build stamp, the docker runs.
+digest; the gate's frontend steps run in the Windows image's Node stage, built
+as an image of its own (`Get-FrontendImage`), so one pin serves both. Images are
+tagged by a hash of what they are built from (`scripts/lib.ps1`), which also
+holds the shared plumbing: the one-build-at-a-time mutex, the build stamp, the
+docker runs. The builds install the frontend's packages into a Docker volume
+every checkout shares, one per pnpm major (`luna-node-modules-pnpm<major>`): a
+pnpm without a terminal refuses to clear what another major laid out.
+
+A package Luna needs changed before its authors release the change is patched
+with pnpm's own patching: the diff in `patches/<name>@<version>.patch`, named
+under `patchedDependencies` in `pnpm-workspace.yaml` with why and when it goes,
+and the lockfile pinning its hash. pnpm applies it on every install and fails
+one where it no longer applies, so a version bump of the package is where the
+patch is looked at again. The images have no git, which `pnpm patch-commit`
+needs: make the diff with `git diff --no-index` between the published file and
+the edited one (`a/` and `b/` the package's root), then `pnpm install` once
+without `--frozen-lockfile` to record it. `.gitattributes` keeps the patches'
+LF endings as they are.
 
 ## First clone
 
@@ -41,7 +56,7 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
   AI attribution (`Co-Authored-By:`, the robot emoji, "Generated with ...").
   Merges, reverts and the release bump `Luna X.Y.Z` keep git's own form; a
   `fixup!`, `squash!` or `amend!` passes the hook and fails CI. CI checks every
-  pushed commit the same way, Dependabot's for attribution only. By hand:
+  pushed commit the same way. By hand:
   `sh scripts/check-commit-msg.sh FILE` or `--range A..B`; the check's own tests
   are `scripts/check-commit-msg.test.sh`, a step of the gate.
 
@@ -77,9 +92,9 @@ The Tauri version check (`pnpm check:tauri`, `scripts/check-tauri-versions.mjs`)
 holds each Tauri crate in `src-tauri/Cargo.lock` and its npm package in
 `pnpm-lock.yaml` (`tauri` and `@tauri-apps/api`, `tauri-plugin-<name>` and
 `@tauri-apps/plugin-<name>`) to one major.minor, the rule `tauri build` refuses
-a build by. The gate never runs `tauri build`, and Dependabot moves the cargo and
-npm sides in separate PRs, so a bump to one side fails here first: move the other
-side to match in the same PR.
+a build by. The gate never runs `tauri build`, and the cargo and npm sides are
+locked in separate files, so a bump of one side alone fails here first: move the
+other side to match in the same commit.
 
 ## The test build
 
@@ -118,6 +133,11 @@ shoot whatever is open in it, and the fixture retakes all three from one state.
 small screen is shot as it is seen: a 1280×720 screen at 150% is
 `-Size 853,480 -Scale 1.5`.
 
+Chromium draws the terminals' WebGL on SwiftShader, asked for by name
+(`--use-angle=swiftshader`): left to fall back to it on its own under
+`--disable-gpu`, it often shot the terminals blank and the page before it had
+settled, differently from one run to the next.
+
 ## Fit on small screens
 
 `./scripts/fit-check.ps1` serves the same demo in the same image and drives
@@ -126,7 +146,7 @@ steps it takes in the page are `scripts/fit-check-page.mjs`, which ESLint
 lints with the browser's globals and the rest with Node's). It
 opens every scene of `src/dev/demo/scenes.ts` (the `-dark` twins left out:
 the theme changes no size) and the popups that only a click opens (its
-`EXTRAS`: the account list, the library's pickers, the link chooser, a chat's
+`EXTRAS`: the account list, the library's pickers, a chat's
 long helper list from its row and its pane, a narrow pane's "…" menu, ...),
 each at 1280×720 and 1024×600, 1280×720 at 125% and 150%, and 1024×600 at
 150% (683×400 CSS pixels). It fails on:
@@ -167,9 +187,17 @@ every pull request, every push to master, weekly and by hand
 ([Supply chain](#supply-chain)).
 
 `.github/workflows/release.yml` runs only on `v*` tags and by hand
-([Releases](#releases)). Actions are pinned by commit; Dependabot (`.github/dependabot.yml`) moves them,
-the crates, the npm packages and the images monthly, one grouped PR per ecosystem; a new
-Node or Rust major is left to a hand-made migration (`.github/dependabot.yml` says why).
+([Releases](#releases)). Actions are pinned by commit and images by tag and digest.
+They, the crates, the npm packages and the toolchains move only in the project's own
+commits, by hand and through the gate; Dependabot authors no code
+([ADR-0029](adr/0029-dependencies-move-by-hand.md)). Advisories reach the project through
+cargo-deny and `pnpm audit` ([Supply chain](#supply-chain)), and through Dependabot alerts
+for the crates and possibly for the direct npm dependencies: GitHub's dependency graph
+detects nothing in the two-document `pnpm-lock.yaml` pnpm 12 writes, but reads
+`package.json`, where those are pinned exactly, so the transitive npm packages are watched by
+`pnpm audit` alone. It raises no alert for an Action pinned by SHA or for an image. The Actions, the images and the toolchains and tools in them are watched by
+nothing, so moving one means reading its releases for fixes. A new Node or Rust major is
+a migration of its own.
 
 ## Supply chain
 

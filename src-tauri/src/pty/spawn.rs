@@ -3,12 +3,14 @@
 //! its cursor queries and notice when it has gone.
 
 use super::control::end_leftovers;
-use super::screen::{as_key_events, cursor_at, render_screen, Modes};
-use super::{manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, Session, NEVER_NUDGED};
+use super::screen::{as_key_events, drawn_screen, render_screen, Drawn, Modes, Scrollback};
+use super::{
+    manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, InputTx, ReaderEnd, Session, NEVER_NUDGED,
+    READER_WAIT,
+};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
-use std::collections::VecDeque;
 use std::io::Read;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -18,6 +20,12 @@ const SCROLLBACK_CAP: usize = 2 * 1024 * 1024;
 /// Let the buffer run this far past the cap before trimming, so the trim costs
 /// one pass per slack rather than one per read.
 const SCROLLBACK_SLACK: usize = 256 * 1024;
+/// Reads (8 KB at most each) the reader may have waiting for the emitter
+/// before it waits itself: 4 MB, many frames' worth. The emitter only puts
+/// them into an event, which `emit::to_ui` hands on without waiting, so this
+/// is reached only when it is starved of time; the reader waiting then holds
+/// the CLI's writes back, and none of its output is dropped or reordered.
+const OUTPUT_PIECES: usize = 512;
 /// How long output is allowed to pile up before it is sent to the UI — one
 /// frame at 60Hz, short enough to feel immediate and long enough that a
 /// repainting TUI does not turn into hundreds of events per second.
@@ -75,10 +83,24 @@ struct PtyOutput<'a> {
     data: &'a str,
 }
 
+/// A session's exit, with its spawn's number (`Session::generation`): the
+/// window applies it to the session its start answered with that number
+/// (`Attached`), not to one started under the chat's id since.
 #[derive(Serialize, Clone)]
 struct PtyExit<'a> {
     id: &'a str,
     code: Option<u32>,
+    generation: u64,
+}
+
+/// What a start answers: what the session has printed so far (empty for one
+/// that has just started), and its spawn's number, which its exit event
+/// carries.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Attached {
+    pub backlog: String,
+    pub generation: u64,
 }
 
 /// Everything a spawn needs that is not the provider's business to work out.
@@ -97,6 +119,16 @@ pub(super) struct Launch {
     /// The account counted as in use since before the start's library pass
     /// (`library::lay_out_for`), until the process is counted itself.
     pub(super) reserved: Option<crate::account_use::Running>,
+    /// A worktree the process goes into though it is not its `cwd`: Claude
+    /// Code's by `--worktree <name>`, there already or made again. Held against its
+    /// removal as the `cwd` is, from before the session starts for as long
+    /// as it runs (`Session::hold`).
+    pub(super) enters: Option<String>,
+    /// It asks its CLI for a new worktree whose path the CLI picks: Codex's
+    /// `--worktree`, Claude Code's with no name. Where that CLI makes them is
+    /// held from the sweep from before the session starts until it has said
+    /// where it went (`Session::hold`).
+    pub(super) makes_worktree: bool,
 }
 
 impl Launch {
@@ -157,7 +189,7 @@ pub(super) mod capture {
 // and rewrites the files the process reads at start. A pane attaching to a
 // running chat ensures it too, and doing all that then left the running
 // process holding a token Luna no longer knew.
-pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> Result<String, String> {
+pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> Result<Attached, String> {
     // Before anything of the launch is built: nothing runs as administrator.
     // A test's captured launch is never run (`capture`), and only so may a
     // test, elevated on CI's runners, get past.
@@ -172,30 +204,67 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let gate = state.gate(&id);
     let _spawning = gate.lock().unwrap_or_else(|e| e.into_inner());
 
+    // A chat deleted is gone for good, whatever still asks for it: a pane
+    // that had not let go yet waited out the delete on the gate, and would
+    // otherwise start a session of a chat with no row, its registry entry,
+    // token and files cleared by the delete. Ids are never given out again.
+    if state.deleted.lock().unwrap_or_else(|e| e.into_inner()).contains(&id) {
+        crate::log::warn("pty", &format!("not starting {id}: the chat was deleted"));
+        return Err("this chat was deleted".into());
+    }
+
     // Under the gate: whoever waited here may find the session already spawned.
     let exited = {
-        let mut sessions = state.sessions.lock().unwrap();
-        if let Some(s) = sessions.get(&id) {
-            if s.alive.load(Ordering::SeqCst) {
-                let mut buf = s.scrollback.lock().unwrap();
-                return Ok(String::from_utf8_lossy(buf.make_contiguous()).into_owned());
-            }
+        let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        match sessions.get(&id) {
+            Some(s) if s.alive.load(Ordering::SeqCst) => Err((Arc::clone(&s.scrollback), s.generation)),
+            _ => Ok(sessions.remove(&id)),
         }
-        sessions.remove(&id)
+    };
+    // Its scrollback, up to two megabytes, copied out once the session map
+    // is let go: every other chat's keys go through the map. The gate still
+    // holds the session in place.
+    let exited = match exited {
+        Ok(exited) => exited,
+        Err((scrollback, generation)) => {
+            let bytes = scrollback.lock().unwrap_or_else(|e| e.into_inner()).all();
+            return Ok(Attached { backlog: String::from_utf8_lossy(&bytes).into_owned(), generation });
+        }
     };
     // A CLI that exited by itself: what it left running goes with the old
-    // session, before a new one takes the chat.
+    // session, before a new one takes the chat, and its reader has said it
+    // exited before the new one can be taken for it (`ReaderEnd`).
     if let Some(old) = exited {
         end_leftovers(&old);
+        if !old.reader_end.wait(READER_WAIT) {
+            crate::log::warn("pty", &format!("{id}'s last session did not finish exiting in {READER_WAIT:?}; starting anyway"));
+        }
     }
+    // Before the launch, whose registration clears the chat's last exit: an
+    // earlier session's exit is said by now or never (`next_generation`).
+    let generation = state.next_generation(&id);
     // Finished here, so a test's capture holds the process as it will run.
     let launch = launch()?.finished();
+    #[cfg(test)]
+    said::note(&format!("launch {id}"));
+    // Where it goes, resolved now, as it starts (`worktree::Hold`), and held
+    // from here until the session is in the map, which carries the same hold:
+    // a start going into a worktree being removed is refused
+    // (`worktree::entering`).
+    let into: Vec<&str> = [Some(launch.cwd.as_str()), launch.enters.as_deref()].into_iter().flatten().collect();
+    let making = launch.makes_worktree.then(|| crate::worktree::Unplaced {
+        provider: launch.provider,
+        folder: launch.cwd.clone(),
+        account_path: launch.account_path.clone(),
+    });
+    let hold = Arc::new(crate::worktree::Hold::start(&into, making.as_ref()));
+    let _entering = crate::worktree::entering(Arc::clone(&hold))?;
     // A test reads what a start would run, and nothing runs (`capture`).
     #[cfg(test)]
     let Some(launch) = capture::keep(&id, launch) else {
-        return Ok(String::new());
+        return Ok(Attached { backlog: String::new(), generation });
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters, makes_worktree: _ } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -243,6 +312,9 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         cmd.env(k, v);
     }
 
+    // Ahead of the process: what it makes (a rollout) is born after this,
+    // however long what follows its start waits on the registry's lock.
+    let spawned_at_ms = now_ms() as u128;
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
         e.to_string()
@@ -251,7 +323,6 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     crate::agents::set_applied(&id, applied, &account_path, &cwd);
 
     let pid = child.process_id();
-    let spawned_at_ms = now_ms() as u128;
     // Into a job before it has had time to spawn anything, so every child it
     // ever starts is listed with it.
     let job = pid.and_then(crate::procs::adopt).map(Arc::new);
@@ -276,7 +347,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // Drains on its own thread and ends when the session is dropped, which
     // drops the sender with it — and the master end, which the thread owns,
     // goes down with the thread, exactly when the session used to take it.
-    let (input_tx, input_rx) = std::sync::mpsc::channel::<Input>();
+    let (input_tx, input_rx, input_waiting) = InputTx::new(&id);
     // The reader answers cursor queries through a weak handle: a strong one
     // would keep the writer thread, and with it the pty, alive past the
     // session (see the note above).
@@ -298,6 +369,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             // out from under a child that may still be on its way out.
             let mut writable = true;
             for msg in input_rx {
+                let len = msg.len();
                 match msg {
                     Input::Bytes(chunk) if writable => {
                         // Focus moving into or out of a pane shown already
@@ -327,21 +399,25 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                         }
                     }
                 }
+                input_waiting.release(len);
             }
         });
     }
 
     // Sized once for the cap: grown by doubling, a deque settles at twice
     // what it holds, and drain never gives the slack back.
-    let scrollback = Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_CAP + SCROLLBACK_SLACK + 8192)));
+    let scrollback = Arc::new(Mutex::new(Scrollback::with_capacity(SCROLLBACK_CAP + SCROLLBACK_SLACK + 8192)));
+    let drawn = Arc::new(Mutex::new(Drawn::default()));
     let modes = Arc::new(Mutex::new(Modes::default()));
     let alive = Arc::new(AtomicBool::new(true));
+    let reader_end = Arc::new(ReaderEnd::default());
     let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
     let work_output_ms = Arc::new(AtomicU64::new(now_ms()));
 
     {
         let id = id.clone();
         let scrollback = Arc::clone(&scrollback);
+        let drawn = Arc::clone(&drawn);
         let modes = Arc::clone(&modes);
         let alive = Arc::clone(&alive);
         let last_output_ms = Arc::clone(&last_output_ms);
@@ -349,14 +425,18 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         let work_output_ms = Arc::clone(&work_output_ms);
         let child = Arc::clone(&child);
         let size = Arc::clone(&size);
+        let reader_end = Arc::clone(&reader_end);
 
         // The reader hands bytes to an emitter thread instead of emitting them
         // itself. A repainting TUI produces a steady stream of small reads, and
         // one event per read means one IPC message plus one JSON payload per
         // read, per chat, all landing on the webview's single thread — the app
         // got slower with every busy chat. The emitter coalesces whatever
-        // arrives inside a frame into one event.
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        // arrives inside a frame into one event. What waits for it is bounded
+        // (`OUTPUT_PIECES`): past that the reader waits, and the CLI's writes
+        // with it, rather than drop or reorder output.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(OUTPUT_PIECES);
+        let reading = id.clone();
         let emitter = std::thread::spawn(move || {
             // Carry bytes of a UTF-8 sequence split across reads.
             let mut carry: Vec<u8> = Vec::new();
@@ -415,6 +495,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             let mut chunk = [0u8; 8192];
             // The start of a cursor query cut off at the end of a read.
             let mut carry: Vec<u8> = Vec::new();
+            // The emitter has fallen behind once: said once a session.
+            let mut behind = false;
             'read: loop {
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
@@ -429,31 +511,33 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                         let last = pieces.len() - 1;
                         for (i, piece) in pieces.into_iter().enumerate() {
                             if !piece.is_empty() {
-                                let mut sb = scrollback.lock().unwrap();
+                                let mut sb = scrollback.lock().unwrap_or_else(|e| e.into_inner());
                                 // Trimming to the cap on every read used to move the
                                 // whole two megabytes each time; a deque drops from
                                 // the front without touching the rest, and trimming
                                 // in one go per overshoot keeps it off the hot path.
                                 // Before the append, so it never outgrows the
                                 // capacity it was made with.
-                                if sb.len() + piece.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
-                                    let excess = (sb.len() + piece.len() - SCROLLBACK_CAP).min(sb.len());
-                                    sb.drain(..excess);
+                                let kept = sb.bytes.len();
+                                if kept + piece.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
+                                    let excess = (kept + piece.len() - SCROLLBACK_CAP).min(kept);
+                                    sb.bytes.drain(..excess);
                                 }
-                                sb.extend(piece.iter().copied());
+                                sb.bytes.extend(piece.iter().copied());
+                                sb.written += piece.len() as u64;
                                 drop(sb);
-                                if tx.send(piece).is_err() {
+                                if !hand_on(&tx, piece, &mut behind, &reading) {
                                     break 'read;
                                 }
                             }
                             if i < last {
                                 // A query followed this piece: answer with where the
-                                // cursor stands after it, as a terminal would.
-                                let bytes = scrollback.lock().unwrap().make_contiguous().to_vec();
-                                let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
-                                let (row, col) = cursor_at(&bytes, rows, cols);
+                                // cursor stands after it, as a terminal would. The
+                                // screen kept is caught up with the output since.
+                                let size = *size.lock().unwrap_or_else(|e| e.into_inner());
+                                let (row, col) = drawn_screen(&drawn, &scrollback, size, |s| s.cursor_position());
                                 if let Some(input) = replies.upgrade() {
-                                    let _ = input.send(Input::Bytes(format!("\x1b[{};{}R", row + 1, col + 1).into_bytes()));
+                                    let _ = input.reply(format!("\x1b[{};{}R", row + 1, col + 1).into_bytes());
                                 }
                             }
                         }
@@ -464,41 +548,34 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             // Closing the channel ends the emitter; join it so the last output
             // of the session is on its way before the exit event goes out.
             drop(tx);
-            let Ok(id) = emitter.join() else { return };
-            let code = child.lock().unwrap_or_else(|e| e.into_inner()).wait().ok().map(|st| st.exit_code());
+            let Ok(id) = emitter.join() else {
+                reader_end.finish(|| {});
+                return;
+            };
+            let code = exit_code(&child);
             drop(on_account);
             drop(on_version);
             // For the canary over a new CLI version's first sessions, with the
             // screen it left for what it said as it went.
             crate::cli::session_ended(&id, code.is_some_and(|c| c != 0), || {
                 let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
-                last_screen(scrollback.lock().unwrap_or_else(|e| e.into_inner()).make_contiguous(), rows, cols)
+                last_screen(&scrollback.lock().unwrap_or_else(|e| e.into_inner()).last(LAST_SCREEN), rows, cols)
             });
             crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
-            // The exit names only the chat. A session already spawned under
-            // the same id since — a kill and a respawn quicker than this
-            // teardown — is the one its pane is listening to, and this exit
-            // would mark that running session dead.
-            let replaced = pm.sessions.lock().unwrap_or_else(|e| e.into_inner()).get(&id).is_some_and(|s| !Arc::ptr_eq(&s.alive, &alive));
-            if !replaced {
-                crate::agents::session_exited(&id, code);
-                crate::emit::to_ui("pty://exit", PtyExit { id: &id, code });
-            }
+            reader_exited(&id, generation, code, &reader_end);
             // The entry stays, for as long as the chat does: its transcript, its
             // folder and its last screen are still asked for (luna_message_list, the
             // exit notice, deleting it). What only a running session needs
             // goes now — the writer thread and the pty with it, and all but the
             // tail of the scrollback — or a CLI that quit on its own held
             // megabytes and a console host until Luna restarted.
-            let mut sessions = pm.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(s) = sessions.get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
-                s.input_tx = Arc::new(std::sync::mpsc::channel().0);
-                let mut sb = s.scrollback.lock().unwrap_or_else(|e| e.into_inner());
-                let excess = sb.len().saturating_sub(EXITED_TAIL);
-                sb.drain(..excess);
-                sb.shrink_to_fit();
+            if let Some(s) = pm.sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
+                s.input_tx = Arc::new(InputTx::closed(&id));
             }
+            // This session's own output, with the session map let go: a look
+            // drawing its screen anew holds `drawn` for as long as that takes.
+            let_go_of_output(&scrollback, &drawn);
         });
     }
 
@@ -527,27 +604,32 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                 let pm = manager();
                 let mut sessions = pm.sessions.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(s) = sessions.get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
-                    s.input_tx = Arc::new(std::sync::mpsc::channel().0);
+                    s.input_tx = Arc::new(InputTx::closed(&id));
                 }
                 break;
             }
         });
     }
 
-    state.sessions.lock().unwrap().insert(
+    state.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(
         id,
         Session {
             provider,
+            generation,
+            reader_end,
             input_tx,
             killer,
             child,
             scrollback,
+            drawn,
             modes,
             alive,
             last_output_ms,
             work_output_ms,
             pid,
             cwd,
+            enters,
+            hold,
             spawned_at_ms,
             resume,
             account_path,
@@ -563,7 +645,90 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         },
     );
 
-    Ok(String::new())
+    Ok(Attached { backlog: String::new(), generation })
+}
+
+/// Hands a piece of `who`'s output on to its emitter, waiting while the
+/// channel is full (`OUTPUT_PIECES`): the reader then reads nothing more, and
+/// the CLI's writes wait, but nothing is dropped and nothing overtakes. The
+/// first wait is logged (`behind`). False once the emitter is gone.
+fn hand_on(tx: &std::sync::mpsc::SyncSender<Vec<u8>>, piece: Vec<u8>, behind: &mut bool, who: &str) -> bool {
+    match tx.try_send(piece) {
+        Err(std::sync::mpsc::TrySendError::Full(piece)) => {
+            if !*behind {
+                *behind = true;
+                crate::log::warn("pty", &format!("{who}'s output is ahead of what goes to the window; reading it waits"));
+            }
+            tx.send(piece).is_ok()
+        }
+        sent => sent.is_ok(),
+    }
+}
+
+/// The reader's word that session `id` of spawn `generation` exited with
+/// `code`, said through its `ReaderEnd`: nothing once whoever took the
+/// session has stopped waiting for it, nor once the chat's spawn number has
+/// moved on (a session spawned under the same id since, after an exit of
+/// its own or past a taker's wait, or the session taken and let go). Said
+/// under that number's lock, all of it: the registry's exit and the event
+/// are in before a start of the chat goes on to its launch, whose
+/// registration clears the exit, and so never land on the session after.
+pub(super) fn reader_exited(id: &str, generation: u64, code: Option<u32>, end: &ReaderEnd) {
+    end.finish(|| exit_word(id, generation, code));
+}
+
+/// The reader's word itself, under the spawn numbers' lock: said only while
+/// `generation` is still `id`'s.
+pub(super) fn exit_word(id: &str, generation: u64, code: Option<u32>) {
+    let mut generations = manager().generations.lock().unwrap_or_else(|e| e.into_inner());
+    if generations.get(id) == Some(&generation) {
+        say_exit(&mut generations, id, generation, code);
+    }
+}
+
+/// Says that `id`'s session of spawn `generation`, still the one in
+/// `generations`, exited with `code`: to the registry and to the window,
+/// and once, its number taken away under the same lock.
+pub(super) fn say_exit(generations: &mut std::collections::HashMap<String, u64>, id: &str, generation: u64, code: Option<u32>) {
+    generations.remove(id);
+    crate::agents::session_exited(id, code);
+    crate::emit::to_ui("pty://exit", PtyExit { id, code, generation });
+    #[cfg(test)]
+    said::note(&format!("exit {id}"));
+}
+
+/// The child's exit code once it has exited, None if that cannot be read.
+/// Asked again and again rather than waited on: a wait holds the child's
+/// lock for as long as the process runs, and a shutdown asking whether it
+/// has exited (control.rs `shut_down`, before its kill) would wait on that
+/// lock for good where the output ended before the process did.
+fn exit_code(child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>) -> Option<u32> {
+    loop {
+        match child.lock().unwrap_or_else(|e| e.into_inner()).try_wait() {
+            Ok(Some(status)) => return Some(status.exit_code()),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// What the tests' sessions said, in order, across threads: an exit
+/// published, a start's launch built.
+#[cfg(test)]
+pub(super) mod said {
+    use std::sync::Mutex;
+
+    static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    pub(in crate::pty) fn note(what: &str) {
+        SAID.lock().unwrap_or_else(|e| e.into_inner()).push(what.to_string());
+    }
+
+    /// Where `what` was said, if it was.
+    pub(in crate::pty) fn at(what: &str) -> Option<usize> {
+        SAID.lock().unwrap_or_else(|e| e.into_inner()).iter().position(|s| s == what)
+    }
 }
 
 /// The same clean-up for a process started without a pty (background/).
@@ -598,6 +763,18 @@ pub(crate) fn finish_spec(envs: &mut Vec<(&'static str, String)>, applied: &mut 
     }
     applied.push(Item::Cwd.with(format!("cwd {cwd}")));
     applied.push(Item::InheritedCleared.with(format!("unset {}", removed_env().join(", "))));
+}
+
+/// What an exited session keeps of its output: the tail of the scrollback
+/// (`EXITED_TAIL`), its screen drawn again from that if anyone looks.
+fn let_go_of_output(scrollback: &Mutex<Scrollback>, drawn: &Mutex<Drawn>) {
+    {
+        let mut sb = scrollback.lock().unwrap_or_else(|e| e.into_inner());
+        let excess = sb.bytes.len().saturating_sub(EXITED_TAIL);
+        sb.bytes.drain(..excess);
+        sb.bytes.shrink_to_fit();
+    }
+    *drawn.lock().unwrap_or_else(|e| e.into_inner()) = Drawn::default();
 }
 
 /// The screen a CLI left as it exited, drawn from the end of its output: what
@@ -659,6 +836,32 @@ mod tests {
         assert!(live.is_err_and(|e| e != "built"), "refused before it was built");
     }
 
+    /// Output handed on faster than the emitter takes it waits, all of it in
+    /// order: nothing is dropped and nothing overtakes; the wait is noted once.
+    #[test]
+    fn output_ahead_of_the_emitter_waits_in_order() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(2);
+        let emitter = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            while let Ok(piece) = rx.recv() {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                got.push(piece);
+            }
+            got
+        });
+        let mut behind = false;
+        for n in 0..50u8 {
+            assert!(hand_on(&tx, vec![n], &mut behind, "out-test"));
+        }
+        drop(tx);
+        let got = emitter.join().unwrap();
+        assert_eq!(got, (0..50u8).map(|n| vec![n]).collect::<Vec<_>>());
+        assert!(behind, "the reader waited");
+        let (gone, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+        drop(rx);
+        assert!(!hand_on(&gone, vec![1], &mut behind, "out-test"), "an emitter gone ends the reader");
+    }
+
     #[test]
     fn cursor_queries_are_cut_out_even_across_reads() {
         let mut carry = Vec::new();
@@ -674,6 +877,28 @@ mod tests {
         // A held-back escape that turns out to be something else goes through.
         assert_eq!(split_dsr(&mut carry, b"\x1b"), vec![b"".to_vec()]);
         assert_eq!(split_dsr(&mut carry, b"[31m"), vec![b"\x1b[31m".to_vec()]);
+    }
+
+    /// An exited session keeps the tail of its output, and its kept screen
+    /// goes: drawn again, it is drawn from that tail.
+    #[test]
+    fn an_exited_sessions_output_is_cut_to_its_tail_and_its_screen_let_go() {
+        let scrollback = Mutex::new(Scrollback::with_capacity(16));
+        let drawn = Mutex::new(Drawn::default());
+        {
+            let mut sb = scrollback.lock().unwrap();
+            let out = b"x".repeat(EXITED_TAIL * 2);
+            sb.bytes.extend(out.iter().copied());
+            sb.written = out.len() as u64;
+        }
+        drawn_screen(&drawn, &scrollback, (5, 20), |_| ());
+        assert_eq!(drawn.lock().unwrap().replays(), 1);
+        let_go_of_output(&scrollback, &drawn);
+        assert_eq!(scrollback.lock().unwrap().bytes.len(), EXITED_TAIL);
+        assert_eq!(scrollback.lock().unwrap().written, (EXITED_TAIL * 2) as u64, "the generation goes on");
+        assert_eq!(drawn.lock().unwrap().replays(), 0, "the screen kept is gone");
+        drawn_screen(&drawn, &scrollback, (5, 20), |_| ());
+        assert_eq!(drawn.lock().unwrap().replays(), 1, "and drawn again from the tail");
     }
 
     #[test]

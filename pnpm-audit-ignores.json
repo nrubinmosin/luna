@@ -1,4 +1,11 @@
 {
   "$comment": "High or critical npm advisories scripts/supply-chain.ps1 lets pass, each as { id (GHSA-...), package, reason, expires (yyyy-MM-dd) }; past its expiry an ignore fails the check. See docs/development.md, Supply chain.",
-  "ignores": []
+  "ignores": [
+    {
+      "id": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "reason": "ReDoS in a pattern with repeated extglobs, every version to 4.0.7, the latest, with no fixed release yet. Only build tools pull it in (vite and vitest, directly and through tinyglobby and fdir, and typescript-eslint through tinyglobby), on glob patterns from the repo's own config; nothing of it ships in the app.",
+      "expires": "2027-02-18"
+    }
+  ]
 }

@@ -82,7 +82,9 @@ cp -r "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" "$(rustc 
 
         # The production packages as pnpm installs them from the lockfile, no
         # install script run, and of each the files that hold its license,
-        # under <name>@<version>/.
+        # under <name>@<version>/. pnpm-workspace.yaml and patches/ go with the
+        # lockfile, which records the patched packages: a frozen install
+        # refuses one whose patches the settings beside it do not name.
         Invoke-Checked 'npm licenses' {
             docker run --rm `
               -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
@@ -91,11 +93,11 @@ cp -r "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" "$(rustc 
               -v "${Source}:/app:ro" `
               -v "${stage}:/out" `
               -v luna-corepack:/corepack `
-              (Get-NodeImage) `
+              (Get-FrontendImage) `
               bash -c (ConvertTo-BashScript ($handBack + @'
 set -e
 mkdir /work
-cp /app/package.json /app/pnpm-lock.yaml /work/
+cp -r /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/patches /work/
 cd /work
 corepack pnpm install --frozen-lockfile --prod --ignore-scripts --reporter=silent
 corepack pnpm licenses list --prod --json > /out/npm.json

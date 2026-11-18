@@ -31,7 +31,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/lost.rs` | what never reached a helper |
 | `agents/privilege.rs` | the least-privilege layer (`settle_mode`, `reaches_luna`, `command_reach`) |
 | `agents/delivery.rs` | `luna_session_send`, typing into a chat's terminal (`TypingInto`, `type_text`, the draft put aside) |
-| `agents/held.rs` | text held for a person's draft (`hold`, `deliver_held`) and text a core went in the middle of typing (`reconcile_held`) |
+| `agents/held.rs` | text held for a person's draft (`hold`, `deliver_held`; past 16 MB held for one chat a send is refused, saying why) and text a core went in the middle of typing (`reconcile_held`) |
 | `agents/handover.rs` | a helper the person opens as a chat, handed over for good (`take_over`) |
 | `agents/reparent.rs` | the person's move of a helper, with its line, to another chat (`move_helper`, `move_targets`), the chats refused a write into it (`asked_to_move`), what a row says of whose it is (`ownership_of`) |
 | `agents/answer.rs`, `wait.rs`, `list.rs` | `luna_session_answer`, `luna_session_wait`, `luna_session_list` / `luna_session_list` |
@@ -383,11 +383,20 @@ and across CLIs the highest helper mode its privilege covers on the one scale
 (`privilege.rs` `inherited`, `CLAUDE_LADDER`, `CODEX_LADDER`): a Codex chat
 that asks a person gives `never` with its sandbox; a Claude Code `acceptEdits`
 chat a Codex `read-only`. "The account's default" (`HelperMode::Account`)
-takes the account's and project's default, as before. Either way the mode is
+takes the account's and project's default, as before: `claude/defaults.rs`
+reads a settings file's `defaultMode` as any mode the CLI takes, `dontAsk`
+included, and one it does not know as `default`, so a file never starts a
+helper wider than it says (the stock `bypassPermissions` only where no file
+names one). Either way the mode is
 held to the caller's (`cap`) and pinned; `settings.modeFrom` says `caller`,
 `callerNearest` or `account`. The dev caller has no mode and always takes the
 account's. Claude Code helpers start in `auto` and `dontAsk` too
-(`CLAUDE_MODES`: `claude -p --permission-mode` takes both, 2.1.322).
+(`CLAUDE_MODES`: `claude -p --permission-mode` takes both, 2.1.322). A
+person's Claude Code chat may start in `auto` as well (the dialog's Auto);
+`Privilege::of` ranks it as it ranks a helper's, one scale for both:
+`Reviewed` with the network, above `acceptEdits` and Codex's
+`workspace-write`, below `bypassPermissions`, so such a chat's helpers run in
+`auto` or below and it takes in a moved helper only that far.
 
 **One worktree at a time per repository.** Each CLI makes a helper's worktree
 with `git worktree add` as its first turn starts, and two of those in one
@@ -487,8 +496,9 @@ person's. `send` into a session on a blocking dialog refuses.
   MCP result past 25,000 tokens): from `since` it keeps the oldest messages
   that fit and moves the cursor to where they end; with `last` the newest;
   `leftOut` counts the rest.
-- `screen` is the pty scrollback run through `vt100` at the pty's size: the last
-  40 lines a person would see.
+- `screen` is the pty's output drawn by `vt100` at the pty's size, the
+  terminal kept per session (`pty::Drawn`): the last 40 lines a person would
+  see.
 - `wait(turn_done)` counts busy→idle transitions (`activity` `turns_ended`) and
   returns everything said past the debt's transcript offset, report first;
   past `MAX_TEXT` it names a file with the whole answer. `wait_many` (`ids`,
@@ -739,7 +749,7 @@ turn, stopped on a prompt (once per stop) or exited.
   sign it went), unless a stash is already shown (`› stashed`). Codex has no
   stash: the text is held (`Registry::held`, `deliver_held`, `held: true`), as is
   a send into a chat typed in within 5 s. A draft or text held a minute is
-  announced on the desktop once. `session_meta` carries `draft` and `held` for
+  announced on the desktop once. `sessions_meta` carries `draft` and `held` for
   the row tag and the pane balloon.
 - Terminals are the person's chats only: what types into one is a notice to a
   chat with tools, a `luna_session_send` with `scope: "all"`, or an answer to a question

@@ -74,6 +74,7 @@
 | [0026](adr/0026-session-roles-at-memory-level.md) | Give sessions a role, chat, lead or helper, each instructed at memory level | Accepted |
 | [0027](adr/0027-auto-handoff-for-leads.md) | Hand a lead off to a fresh conversation of its own at its turn's end | Accepted |
 | [0028](adr/0028-writes-into-a-helper-come-from-above.md) | Only the sessions above a helper write into it; the person moves it | Accepted |
+| [0029](adr/0029-dependencies-move-by-hand.md) | Move every pin in the project's own commits; Dependabot only alerts | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 

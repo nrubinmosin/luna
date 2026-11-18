@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Update } from '@tauri-apps/plugin-updater';
-import { noteExit, stopAllSessions } from '../../ipc/coreProcess';
+import { noteExit, stopAllSessions, updateCalledOff } from '../../ipc/coreProcess';
+import { exiting, flushPendingWrites } from '../../shared/lib/throttledStorage';
 import { useCore } from '../core/core.store';
 import { logInfo, logWarn } from '../../shared/lib/log';
 
@@ -119,21 +120,31 @@ export const useUpdates = create<UpdatesState>(set => ({
         await stopAllSessions();
       }
       // Said before, because the install never returns on Windows; taken back
-      // below if it fails.
+      // below if it fails. The chats' storage writes what it holds back
+      // first, for the same reason, and every change after it at once; and
+      // once more as the install starts, for one that came in meanwhile.
+      exiting('update');
       await noteExit(
         `installing the update to ${pending.version}${keep ? '; the sessions keep running in the core' : ''}`
       );
+      flushPendingWrites();
       await pending.install();
       // Unreachable on Windows: the plugin hands the installer to the shell and
       // ends the process itself with exit(0), because NSIS cannot replace the
       // exe of a running app. It passes /UPDATE and this process's own
       // arguments, which is what has the installer start Luna again afterwards.
       // So there is no "installed, restart when you like" state to offer, and
-      // nothing after this line runs.
+      // nothing after this line runs. Elsewhere this window stays, and so do
+      // its writes' gaps.
+      exiting('update', false);
       logInfo('updater', `${pending.version} installed`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      exiting('update', false);
       await noteExit(null).catch(() => {});
+      // The sessions stopped for it, the core freezes the chats' ties until
+      // it hears the update is off.
+      await updateCalledOff().catch(() => {});
       logWarn('updater', `install failed: ${msg}`);
       set({ phase: 'error', error: msg });
     }

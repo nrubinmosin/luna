@@ -179,6 +179,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     let free = {
         let mut r = lock();
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
+        room_for(id, e, text)?;
         e.held.clear();
         let free = e.run.is_none() && !e.ending_left && !e.held_back();
         if free {

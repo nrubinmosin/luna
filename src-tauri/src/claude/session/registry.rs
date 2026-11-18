@@ -3,8 +3,13 @@
 
 use super::*;
 
+/// A registry entry, read again only once the file has changed: the activity
+/// sampler and every look at the chat ask for it every few seconds.
 fn parse_session_file(path: &Path) -> Option<serde_json::Value> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+    static SEEN: std::sync::LazyLock<crate::stamped::ByStamp<Option<serde_json::Value>>> =
+        std::sync::LazyLock::new(|| crate::stamped::ByStamp::new(CACHE_CAP));
+    // A read that failed keeps nothing; one that read, whatever it parsed to, is kept.
+    SEEN.get(path, |path| std::fs::read_to_string(path).ok().map(|text| serde_json::from_str(&text).ok())).flatten()
 }
 
 /// Name, status, cwd, session id, context, title and opening prompt of a live
@@ -23,14 +28,13 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
     };
     if let (Some(scwd), Some(sid)) = (m.cwd.clone(), m.session_id.clone()) {
         let path = located_transcript(account_path, &scwd, &sid);
-        let text = crate::pty::tail(&path, 128 * 1024);
         let end = ending(&path);
         if let Some(c) = end.context {
             m.context_tokens = Some(c.tokens);
             m.context_window = Some(c.window);
             m.context = Some((c.tokens / c.window).min(1.0));
         }
-        let titles = titles_of(&sid, &path, text.as_deref());
+        let titles = titles_of(&sid, &path);
         // The registry name is the cwd folder when `derived` — a worktree's
         // random codename — and a kebab-case handle when `auto`, neither of
         // them a title; a rename there is as good as one in the transcript.
@@ -69,15 +73,8 @@ pub fn session_cwd(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at
     v["cwd"].as_str().map(str::to_owned)
 }
 
-/// Every cwd the CLI currently has a session in, per this account's registry.
-pub fn live_cwds(account_path: &str) -> Vec<String> {
-    let dir = Path::new(account_path).join("sessions");
-    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
-    entries.flatten().filter_map(|e| parse_session_file(&e.path())).filter_map(|v| v["cwd"].as_str().map(str::to_owned)).collect()
-}
-
-/// `live_cwds`, of the entries whose process is still there: one killed leaves its
-/// entry behind.
+/// Every cwd the CLI has a session in, per this account's registry, of the
+/// entries whose process is still there: one killed leaves its entry behind.
 pub fn running_cwds(account_path: &str) -> Vec<String> {
     let dir = Path::new(account_path).join("sessions");
     let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };

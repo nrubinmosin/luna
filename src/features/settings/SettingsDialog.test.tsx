@@ -1,24 +1,11 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
-import { ACCOUNTS, FOLDERS } from '../../dev/demo/fixtures';
-import type { BrowserSettingsDto } from '../../ipc/browsers';
-import { useAccounts } from '../accounts/accounts.store';
-import { useChats } from '../chats/chats.store';
+import { describe, expect, it } from 'vitest';
 import { useNewChat } from '../new-chat/newchat.store';
 import { UpdateConfirm } from '../updates/UpdateConfirm';
 import { useUpdates } from '../updates/updates.store';
 import { SettingsDialog } from './SettingsDialog';
 import { useSettings, type SettingsPage } from './settings.store';
-
-// The browsers as a machine with none but the system's would report them, and
-// a save that hands back what it was given, as the Rust side does.
-vi.mock('../../ipc/browsers', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../ipc/browsers')>()),
-  browsers: () =>
-    Promise.resolve({ system: null, found: [], settings: { custom: [], default: null, accounts: {}, folders: {} } }),
-  setBrowsers: (settings: BrowserSettingsDto) => Promise.resolve({ system: null, found: [], settings })
-}));
 
 function open(page: SettingsPage = 'general') {
   act(() => useSettings.getState().setOpen(true, page));
@@ -80,62 +67,6 @@ describe('SettingsDialog', () => {
   it('says so when a list is empty', async () => {
     open('agents');
     expect(await screen.findByText('No trusted folders. Codex asks in every project.')).toBeInTheDocument();
-    act(() => useSettings.getState().setPage('links'));
-    expect(await screen.findByText('No exceptions. Every chat uses the default browser.')).toBeInTheDocument();
-    expect(screen.getByText('Only the system default was found.')).toBeInTheDocument();
-  });
-
-  it('adds an exception from its menu, and Escape shuts the menu before Settings', async () => {
-    act(() => {
-      useAccounts.setState({ accounts: ACCOUNTS });
-      useChats.setState({ folders: FOLDERS });
-    });
-    const user = open('links');
-    await user.click(await screen.findByRole('button', { name: 'Add an exception…' }));
-    const menu = screen.getByRole('menu', { name: 'Add an exception' });
-    expect(within(menu).getByRole('menuitem', { name: 'Claude Code · personal' })).toHaveFocus();
-
-    await user.keyboard('{Escape}');
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-    expect(useSettings.getState().open).toBe(true);
-
-    await user.click(screen.getByRole('button', { name: 'Add an exception…' }));
-    await user.click(screen.getByRole('menuitem', { name: 'C:\\src\\notes' }));
-    const list = screen.getByRole('list', { name: 'Exceptions' });
-    expect(await within(list).findByText('C:\\src\\notes')).toBeInTheDocument();
-    expect(within(list).getByRole('button', { name: 'Remove the exception for C:\\src\\notes' })).toBeInTheDocument();
-
-    await user.keyboard('{Escape}');
-    expect(useSettings.getState().open).toBe(false);
-  });
-
-  it('walks the exception menu with the arrows; Tab and Shift+Tab close it and go on from its button', async () => {
-    act(() => {
-      useAccounts.setState({ accounts: ACCOUNTS });
-      useChats.setState({ folders: FOLDERS });
-    });
-    const user = open('links');
-    const button = await screen.findByRole('button', { name: 'Add an exception…' });
-    await user.click(button);
-    const items = within(screen.getByRole('menu')).getAllByRole('menuitem');
-    items.forEach(item => expect(item).toHaveAttribute('tabindex', '-1'));
-    expect(items[0]).toHaveFocus();
-    await user.keyboard('{ArrowDown}');
-    expect(items[1]).toHaveFocus();
-    await user.keyboard('{End}');
-    expect(items[items.length - 1]).toHaveFocus();
-    await user.keyboard('{ArrowDown}');
-    expect(items[0]).toHaveFocus();
-
-    await user.tab();
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-    expect(screen.getByText('How a chat’s browser is chosen')).toHaveFocus();
-
-    await user.click(button);
-    await user.tab({ shift: true });
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-    expect(button).toHaveFocus();
-    expect(useSettings.getState().open).toBe(true);
   });
 
   it('is modal: the app behind is inert, Tab goes round, and the focus goes back to the opener', async () => {
@@ -206,16 +137,9 @@ describe('SettingsDialog', () => {
     await user.clear(marker);
     await user.type(marker, 'STATUS: WAITING');
 
-    await user.click(tab('Links'));
-    await user.click(await screen.findByRole('button', { name: 'Add a browser' }));
-    const name = await screen.findByRole('textbox', { name: 'Browser name' });
-    await user.clear(name);
-    await user.type(name, 'Firefox — Work');
-
+    await user.click(tab('Chats'));
     await user.click(tab('General'));
     expect(screen.getByRole('textbox', { name: 'Waiting marker text' })).toHaveValue('STATUS: WAITING');
-    await user.click(tab('Links'));
-    expect(screen.getByRole('textbox', { name: 'Browser name' })).toHaveValue('Firefox — Work');
   });
 
   it('sets where the new-chat boxes start, the wait guard off unless asked', async () => {

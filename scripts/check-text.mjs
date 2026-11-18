@@ -38,10 +38,12 @@ const MARKER_LINE = new RegExp(String.raw`^\s*(?:\/\/+|#|<!--|\/\*+|\*|--)` + MA
 export const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // Not text anyone here writes (lockfiles, generated schemas, other projects'
-// license texts kept verbatim), and this checker and its tests, which spell out
-// the very words they look for.
+// license texts kept verbatim, patches to their published code, whose context
+// lines are theirs), and this checker and its tests, which spell out the very
+// words they look for.
 const SKIP_PATHS = [
   /(^|\/)pnpm-lock\.yaml$/,
+  /^patches\//,
   /(^|\/)Cargo\.lock$/,
   /^src-tauri\/gen\//,
   /^third-party-licenses\/(crates|npm|tools|installer)\//

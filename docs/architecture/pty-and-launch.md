@@ -33,10 +33,11 @@ How a session is started, what it is started with, and how its terminal is run.
 | --- | --- |
 | `pty/mod.rs` | the session map, `PtyManager`, `manager()` (the one per process) |
 | `pty/start.rs` | `ensure_claude_session` / `ensure_codex_session`: what a start settles under the chat's spawn gate, then the command line |
-| `pty/spawn.rs` | the shared spawn, scrollback, `pty://output` / `pty://exit`, cursor queries answered |
+| `pty/spawn.rs` | the shared spawn, scrollback (`Scrollback`), `pty://output` / `pty://exit`, cursor queries answered |
 | `pty/control.rs` | write, resize, keys, kill, quitting the way a person would, delete, orphans |
-| `pty/screen.rs` | the screen replayed (`vt100`), composer and draft, terminal modes and title, Codex key events on Windows; `SessionMeta` |
-| `pty/probe.rs` | `ActivityProbe::working_dir()`, `session_meta` by provider, tails, sweep of hook and MCP files |
+| `pty/screen.rs` | the screen drawn (`vt100`) and kept per session (`Drawn`), composer and draft, terminal modes and title, Codex key events on Windows; `SessionMeta` |
+| `pty/probe.rs` | `ActivityProbe::working_dir()`, `sessions_meta` (every chat's look, one call a tick) by provider, tails, sweep of hook and MCP files |
+| `stamped.rs` | what is read off a file, kept while its length and change time stand (`ByStamp`) |
 | `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and guard, the helper's system prompt line and settings (`claude_helper_args`, `HelperSettings`, used by `background/command.rs`) |
 | `codex/launch.rs` | Codex's arguments and environment, approval and sandbox overrides, `read-only-net`, the guard, Luna's MCP server |
 | `guard.rs` | the PreToolUse guard against waits that never end |
@@ -190,12 +191,50 @@ the command quotes `"@-"` and calls curl by full path.
 ## Scrollback and terminal state
 
 - The output buffer (2 MB cap) lives in the core, so moving a chat between panes
-  or recreating an xterm restores the screen (`ensure_session` returns the
-  backlog). Output streams as `pty://output`; termination as `pty://exit`.
+  or recreating an xterm restores the screen (`ensure_session` answers with the
+  backlog and the session's spawn number, `Attached`). Output streams as
+  `pty://output`; termination as `pty://exit`, with the spawn number.
 - **ConPTY and the cursor.** portable-pty opens ConPTY with `INHERIT_CURSOR`:
   until the terminal answers `ESC[6n`, ConPTY lets out nothing. A helper with no
   pane would hang. The core cuts each `ESC[6n` out of the stream and answers
   with the cursor position per `vt100`; the query never reaches the scrollback.
+- **The screen is drawn once and caught up.** The scrollback counts every byte
+  ever written to it (`Scrollback::written`, the output's generation). Each
+  session keeps one `vt100` terminal (`Drawn`) drawn to a generation at a size;
+  a look at the screen (the activity sampler's Codex dialog check every 5 s,
+  `has_draft`, `at_prompt`, `composer`, `luna_session_get`'s screen, a cursor
+  query) feeds it only what was written since. It is drawn anew from the whole
+  scrollback when the pty's size changed or what was written since has been
+  trimmed off already. Locks: `Drawn`, then the scrollback, held only to copy
+  out the new bytes; a look copies nothing under the session map. Both CLIs go
+  through it. Kept, the terminal has seen output from before where the
+  scrollback starts now, as a pane that stayed attached has.
+- **What is read off disk is kept by stamp.** `sessions_meta` and the sampler
+  ask after every live chat every few seconds. What they read of a file (a
+  Claude Code registry entry, the titles in a transcript's tail; a rollout's
+  tail, its first line's cwd and the limit its last turn met; Codex's
+  `session_index.jsonl`) is kept by the file's length, change time and identity
+  (inode, or creation time on Windows) (`stamped::ByStamp`) and read again once
+  those change, and in any case once a minute, which catches a file a tool put
+  back with its length and change time. A read that failed keeps nothing. A file
+  changed in the last 2 s is read every time, as git treats a racily clean file:
+  a change time is as coarse as the file system keeps it, and a registry entry
+  going from `busy` to `idle` keeps its length. An entry unused for 10 minutes
+  goes, swept at any look, and each cache has a cap. At idle a look is a `stat`
+  per file and a read a minute.
+- **Queues are bounded.** A session's input waits for its writer thread in a
+  queue of at most 8 MB (`InputTx`): past that, keys, pastes and Luna's text
+  are refused with an error, and so is everything after until the writer has
+  caught up, so what goes in keeps its order with no gap; one write alone may
+  be larger, and resizes always go. The first refusal of a stretch is logged
+  and sent to the window as `pty://input-refused`, which the pane shows as
+  `[keys not delivered: …]`: a keystroke is a send whose answer nobody reads.
+  The core's own answers to its CLI's cursor queries (`InputTx::reply`) are
+  never refused, or a CLI waiting on one would wait for good. Every byte bound
+  takes its room in one step under a lock (`backlog.rs`). The reader hands
+  output to the emitter through 512 reads (4 MB) at most; past that the
+  reader waits, and the CLI's writes with it, which the log says once:
+  output is never dropped or reordered.
 - **Input to Codex as key presses.** ConPTY turns each character into a key
   press on the console's layout, and a character the layout lacks (on a Russian
   layout brackets, `< > ' ~ @ # $ ^ & |`, backtick, dashes) never reached Codex.
@@ -222,6 +261,43 @@ the command quotes `"@-"` and calls curl by full path.
   or connectors turned off. Helpers start in `background/`.
 - MCP tokens are never written to disk; the config names `${LUNA_MCP_TOKEN}`.
 - `cwd` must exist.
+- A delete (`PtyManager::delete`) holds the chat's spawn gate from before it
+  takes the session until its cleanup is done: what it clears goes by the
+  chat's id alone (the registry entry and token, the hooks and MCP files, the
+  Codex rollout), and would clear a session spawned under that id meanwhile.
+  A start of a deleted chat waits for the delete and is refused ("this chat
+  was deleted"): the window never gives a chat id out twice, and a pane that
+  had not let go would otherwise bring back a session the delete had just
+  cleared. Whether the worktree is shared is asked once the deleted session
+  has quit, and the worktree is held from that question to the end of its
+  removal (`worktree::removing`); a start or a helper on its way into a
+  worktree holds its way in (`worktree::entering`) until it is listed where
+  that question looks, so the delete keeps a worktree one is entering, and
+  one entering a worktree being removed is refused, saying so. A Claude Code
+  chat started into a worktree by name runs in the project folder, and its
+  registry says where it went only once the CLI is up: its session keeps
+  that worktree (`Session::enters`) from the start, for the sharing check
+  and the orphan sweep (`live_cwds`).
+- A session's exit goes by its chat id, with its spawn number. Whoever takes
+  a session out of the map (a delete, a kill, a start over a session that
+  exited by itself) waits under the gate, up to 5 s (`READER_WAIT`), for its
+  reader thread to have said it exited (`ReaderEnd`). Each start gives the
+  chat a new number before its launch (`next_generation`); the reader says
+  the registry's exit and the `pty://exit` event under that number's lock
+  and only while its number is the chat's, taking it away as it does, so
+  one already saying it when the wait ran out is through before the start
+  goes on, and one later says nothing. A taker done waiting (`retire`)
+  says the exit itself, with the code if the process has one, where the
+  number is still there: a reader stuck past the wait would otherwise leave
+  the pane or the login window never told the session is gone. Each exit
+  is said once: by the taker where the reader had not begun by the end of
+  the wait, or began and comes to the word after the taker; by the reader
+  where it came first. A
+  respawn never hears the old session's exit, and the window applies an
+  exit only to the session whose start answered with its number. The
+  reader asks for the exit code by `try_wait` rather than holding the
+  child's lock in a `wait`, which a shutdown asking whether it exited
+  would block on.
 
 ## Failure modes
 

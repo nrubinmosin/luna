@@ -258,6 +258,30 @@ pub fn send_marked(id: &str, text: &str, from: Option<&str>, budget: Vec<BudgetM
     send_as(id, Queued::new(from.map(str::to_owned), text.to_string(), budget), false)
 }
 
+/// The text a helper may have queued behind its turn, in bytes, before more
+/// is refused: each send is at most the hub's 4 MB, but how many come is up
+/// to its callers, and every queued text is kept in memory and in
+/// `helpers.json`, written whole at each change.
+const QUEUED_MAX: usize = 16 * 1024 * 1024;
+
+/// Whether `text` may join what waits for helper `id`: refused, with the
+/// reason, past `QUEUED_MAX`. What waits is its queue and what joined its
+/// running turn on stdin that its CLI has not taken in yet (`Entry::fed`,
+/// let go as the CLI echoes it): a CLI that stopped reading its stdin would
+/// otherwise have every send join a turn that never takes them. Text when
+/// nothing waits always may.
+pub(super) fn room_for(id: &str, e: &Entry, text: &str) -> Result<(), String> {
+    let queued: usize = e.queue.iter().chain(&e.fed).map(|q| q.text.len()).sum();
+    if queued > 0 && queued + text.len() > QUEUED_MAX {
+        crate::log::warn("background", &format!("refused text for {id}: {} KB queued for it already", queued / 1024));
+        return Err(format!(
+            "helper {id} has {} KB of text queued already; send again once its turns have taken some of it",
+            queued / 1024
+        ));
+    }
+    Ok(())
+}
+
 fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String> {
     let marked = !q.budget.is_empty();
     let text = q.text.clone();
@@ -267,6 +291,7 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
         if !e.held.is_empty() {
             return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_session_answer"));
         }
+        room_for(id, e, &q.text)?;
         let may_join = may_join || listening(e);
         let placed = place(e, q, may_join);
         let kept_open = e.switch.is_none() && e.run.as_ref().is_some_and(|run| run.feed.is_some() && run.listening_since.is_some());
@@ -375,6 +400,37 @@ pub fn put_back(id: &str, taken: Vec<Queued>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Text past what a helper may have queued is refused, saying why; into
+    /// an empty queue any text goes.
+    #[test]
+    fn text_past_the_queue_bound_is_refused_with_the_reason() {
+        let mut e = entry(Provider::Claude);
+        assert!(room_for("bq-room", &e, &"x".repeat(QUEUED_MAX + 1)).is_ok(), "an empty queue takes it");
+        e.queue.push("y".repeat(QUEUED_MAX - 1).as_str().into());
+        assert!(room_for("bq-room", &e, "z").is_ok(), "up to the bound");
+        e.queue.push("z".into());
+        let refused = room_for("bq-room", &e, "w").unwrap_err();
+        assert!(refused.contains("queued already"), "{refused}");
+    }
+
+    /// Text that joined a running turn on a stdin its CLI does not read
+    /// counts until the CLI takes it: past the bound a send is refused, and
+    /// once the CLI has taken it in there is room again.
+    #[test]
+    fn text_joined_on_a_stdin_never_read_counts_against_the_bound() {
+        let mut e = entry(Provider::Claude);
+        let _unread = feeding(&mut e);
+        let big = "j".repeat(QUEUED_MAX / 2);
+        for _ in 0..2 {
+            room_for("bq-fed", &e, &big).unwrap();
+            assert_eq!(place(&mut e, big.as_str().into(), true), Placed::Joined);
+        }
+        assert!(e.queue.is_empty() && e.fed.len() == 2);
+        assert!(room_for("bq-fed", &e, "one more").unwrap_err().contains("queued already"));
+        e.fed.clear();
+        assert!(room_for("bq-fed", &e, "one more").is_ok(), "taken in: room again");
+    }
 
     #[test]
     fn text_joins_a_turn_with_its_stdin_open_and_goes_first_come_first_served() {

@@ -9,7 +9,7 @@ list and the board; the core owns sessions
 | Path | What it holds |
 | --- | --- |
 | `main.tsx` | entry; loads xp.css, then the app-wide sheets; `?demo` in a plain browser loads the fixture |
-| `app/` | `App` (sidebar dock: pinned, or slides out from the left edge), `AppFrame` + `BoardTools` (layouts, groups, Even out, Clear, theme in the window title bar), `shell.store.ts` (theme, sidebar pin and width), `keymap.ts`, `ErrorBoundary`, `dpi.ts` |
+| `app/` | `App` (sidebar dock: pinned, or out over the board from the left edge), `AppFrame` + `BoardTools` (layouts, groups, Even out, Clear, theme in the window title bar), `shell.store.ts` (theme, sidebar pin and width), `keymap.ts`, `ErrorBoundary`, `dpi.ts` |
 | `shared/` | `types.ts`, `lib/` (format, log, notify), `ui/` (`icons.tsx` XP icons and provider badges, title bar glyphs, `ModelSelect` native `<select>`, `ConfirmDialog`, `dialogHost.ts`, `chatColors.ts`, `status.ts`) |
 | `features/chats/` | sidebar (folders, rows, drag source), `chats.store.ts`, `useSessionWatch.ts`, `worktrees.store.ts` + `WorktreesDialog`, `drafts.store.ts`, `marked.store.ts`, `OrphanSessions`, `DeleteChatDialog` |
 | `features/panes/` | the 1/2/3/4 grid (`PaneGrid`, `Pane` drop target, `Terminal`), `panes.store.ts` (boards, auto-tile `TILE_ORDER`), peek, `altPeek.ts`, `navigate.ts`, `terminals.ts`, `terminal/` |
@@ -17,8 +17,8 @@ list and the board; the core owns sessions
 | `features/providers/` | `claude/` and `codex/`: stock values, defaults, dialog `Fields`, title bar `Meta`, `LimitBars`, login, trust, `worktreeRe`, `projectOf(cwd)`, `branchPrefix`; `index.ts` `ui(provider)` |
 | `features/accounts/` | Accounts window, limits, sign-in (`LoginModal`), `RecommendedDialog`, `ConfigEditor`, `SettingsSync` |
 | `features/library/` | Skills & instructions window: grids, `ReachPicker`, `FolderCell`, `AddFolder`, "Needs a look" with `diff.ts` (line LCS), `LibraryEditor`, System texts (`SystemSkills`) |
-| `features/settings/` | Settings dialog: its page list and pages (`SettingsDialog`), the shared row, list and disclosure pieces (`SettingsRows`), one file per group in `sections/` (Links in `browsers/BrowserSection`); Recommendations window and chip |
-| `features/status-bar/`, `power/`, `shortcuts/`, `updates/`, `browsers/`, `core/` | the status bar, power chip and menu (`power.store` only listens to `power://state`), the F1 list, app and CLI updates, link browsers, the core banner |
+| `features/settings/` | Settings dialog: its page list and pages (`SettingsDialog`), the shared row, list and disclosure pieces (`SettingsRows`), one file per group in `sections/`; Recommendations window and chip |
+| `features/status-bar/`, `power/`, `shortcuts/`, `updates/`, `core/` | the status bar, power chip and menu (`power.store` only listens to `power://state`), the F1 list, app and CLI updates, the core banner |
 | `features/agents/` | `bridge.ts` (agent events ↔ chats), `background.store.ts`, `BackgroundChip` (the row's chip, the pane's `HelperSummary` pill and the `HelperPanel` list both open), `HelperPill` (the pill's counts and the names that fit), `helperSummary.ts` (counts, tabs, lines), `agentAccounts.store.ts` |
 | `ipc/` | the only boundary with Rust |
 | `styles/` | app-wide sheets |
@@ -30,10 +30,16 @@ list and the board; the core owns sessions
 commands through `core_call` (and terminal input through `core_send`), times
 every call (a sync Tauri command runs on the main thread, so a slow one looks
 like a hang), logs failures, and in a plain browser answers from the demo or a
-fallback. One module per domain holds its commands and DTOs: `accounts`,
-`sessions`, `worktrees`, `defaults`, `trust`, `media`, `cli`, `power`,
-`coreProcess`, `agents`, `accountSettings`, `library`, `browsers`,
-`accountConfig`; `events.ts` wraps `listen`. Tests mock per module.
+fallback. A window command that only reads files is `async` or `command(async)`,
+off the main thread. One that changes a setting or a file stays sync, so the
+person's changes land in the order made: run on the async runtime, two quick
+ones could finish the other way round. `core_send` hands its frame to the
+connection's writer thread and `append_log` its line to the log's, each bounded
+by the bytes waiting and refusing past that with an error.
+One module per domain holds its commands and DTOs: `accounts`, `sessions`,
+`worktrees`, `defaults`, `trust`, `media`, `cli`, `power`, `coreProcess`,
+`agents`, `accountSettings`, `library`, `links`, `accountConfig`;
+`events.ts` wraps `listen`. Tests mock per module.
 
 What the page may call is fixed in Rust, not here
 ([ADR-0015](../adr/0015-the-page-gets-only-what-it-calls.md)):
@@ -61,8 +67,51 @@ What the page may call is fixed in Rust, not here
 
 Zustand stores, persisted to localStorage where they are UI state (chats,
 folders, boards). The page computes no session state of its own: status,
-titles, context and drafts come from the core (`session_meta`), polled by
-`useSessionWatch` and pushed by events.
+titles, context and drafts come from the core (`sessions_meta`), polled by
+`useSessionWatch` every 4 s for every chat with an account, in one call, and
+pushed by events. Its own per-chat memory (`titleLooked`, a saved title looked
+up once) lets go of a chat deleted at the next tick.
+
+- **Renders follow changes.** A setter that changes nothing returns the state
+  it was given, so it notifies nobody; one that changes a chat replaces that
+  chat and its folder and leaves every other folder the same object
+  (`chats.store.ts` `editChat`). `foldersOfGroup` hands back the same view of
+  an unchanged folder, and the sidebar's `FolderSection` and `ChatRow` are
+  memoized on them, so a status change renders one row; the list numbers come
+  down from `ChatList`. Subscribers that walk the chats (the status bar's
+  counts, the core's names and groups, the groups to cover) run on a change
+  of what they show, not on every change of the store: the last two ask
+  `chatsChanged`, which looks only into the folder and the chat an edit
+  replaced, so a status or context tick costs them one chat's compare. The
+  helpers' root index is built once per `agent://background` snapshot
+  (`background.store` `helperRoots`). A per-chat map of this run
+  (`restarts.store`, `moveHints.store`) forgets a chat as it is deleted, and
+  the watcher's set of saved titles already looked up lets go of a chat no
+  longer listed at its next round.
+- **The chats on disk** (`luna.chats`) are written through
+  `shared/lib/throttledStorage.ts`: a change after a quiet spell at once, then
+  at most one write per 500 ms with the latest state, and what waits on
+  `pagehide`. The gap runs from the last serialization, a write skipped as the
+  same text included: zustand's persist hands the storage the whole state on
+  every set, and a burst of context ticks, which store the same text, would
+  otherwise serialize the whole list once per tick. A change a window started
+  over after a hard exit could not do without is written at once (`atOnce`: a
+  chat added or deleted, its session id, worktree, account, group or move).
+  Luna's own ways out write what waits first and every change after it at
+  once (`exiting`): a tray Quit or Restart window, which tell the page
+  `ui://exiting` (`true`; `false` when a Restart could not start the new
+  window) and give it 300 ms (`lifecycle.rs`), and an update's install, which
+  writes again as it starts. Each way out (`'tray'`, `'update'`) takes back
+  only its own, when it fails or, off Windows, when the install returns:
+  writes go with gaps again once none is left, so an update failing during
+  a Restart's 300 ms leaves the Restart's at once. The event has no answer: a page too busy to take
+  it within those 300 ms, or a change after the process is gone, is lost. A
+  renderer that dies loses at most the last 500 ms of statuses and titles.
+  A chat is stored without its context (`context`,
+  `contextTokens`, `contextWindow`), which the watcher reads again within
+  seconds; one stored with it still loads. Its status is kept: it is what
+  tells the watcher a waiting chat was already announced, so a new window
+  raises no second notification for it.
 
 - **Status.** `ChatStatus` is `working`, `waiting`, `background` or `resting`.
   `mapStatus` folds the CLIs' words into it and passes on `background`, the
@@ -79,9 +128,15 @@ titles, context and drafts come from the core (`session_meta`), polled by
   ran a helper in keeps its sidebar row but is not offered.
 - **New-chat dialog.** Model from a drop-down for both providers, the one the
   files (or CLI) would pick marked "· default"; Codex's catalog in `priority`
-  order with level descriptions as tooltips; approval and sandbox as two radio
-  columns, `auto-review` holding the sandbox at `workspace-write`. The title bar
-  shows `bypass` for never + danger-full-access and `auto-review` for that.
+  order with level descriptions as tooltips; Claude Code's permission modes
+  as radios (`PermMode`, `PERM_CLI`: Ask, Edits, Plan only, Auto, Bypass;
+  `permFromSetting` reads them back, and a mode outside them is none, which a
+  settings file's mode and a helper opened as a chat take as Ask); Codex's
+  approval and sandbox as two radio columns, `auto-review` holding the
+  sandbox at `workspace-write`. The draft (`useSettingsDraft`) starts on the
+  provider's stock values, Bypass and full access, and Create waits for its
+  `ready`, the files' answer for that account and folder. The title bar shows
+  `bypass` for never + danger-full-access and `auto-review` for that.
 - **Agent bridge** (`features/agents/bridge.ts`): `agent://background` → the
   helpers' list (`background.store`), shown as a chip on their parent's row;
   `openAsChat` → `background_promote`, a top-level `createChat` of the person's
@@ -104,9 +159,87 @@ titles, context and drafts come from the core (`session_meta`), polled by
   switching chats costs no `ensure_session`, reset and redraw. The three most
   recently put away keep their subscriptions; older ones are evicted. Returning
   is a refit plus a nudge to redraw.
-- `terminal/`: `theme.ts`, `links.ts`, `keys.ts` (clipboard keys), `scrollback.ts`
-  (the replayed tail), `sizing.ts` (fit and repaint), `pty.ts` (the gated pty
-  sender), `webgl.ts`, `title.ts` (a title from what is typed), `safely.ts`.
+- What the pane says of its session it writes into the terminal itself, never
+  sent to the CLI: `[failed to start session: …]`, `[session exited]`, and
+  `[keys not delivered: …]` when the core refused its keys
+  (`pty://input-refused`), whose own error comes back to nobody.
+- A pane (and the login window) takes only its own session's exit: the one
+  whose `generation` its start answered with (`Attached`). An exit heard
+  before the start answers waits for that answer, since it may be the chat's
+  session before this one, said late, or this one ending at once.
+- `terminal/`: `theme.ts`, `links.ts` (an OSC 8 link goes to `open_link` in
+  `links.rs`, which opens web and mail links in the system's handler),
+  `keys.ts` (clipboard keys, Alt+arrow sent as Ctrl+arrow as xterm did before
+  6), `scrollback.ts` (the replayed tail), `sizing.ts` (fit and repaint),
+  `pty.ts` (the gated pty sender), `ptyRoutes.ts` (one listener each for
+  `pty://output`, `pty://exit` and `pty://input-refused`, handing each payload
+  to the terminal of its session; a terminal and the sign-in window start
+  their session only once all listen, and a listener that failed to register
+  is tried again by the next terminal; a sign-in
+  window closed while its start is under way kills the session once it has
+  started, and one opened again on that account listens to the session's id
+  and starts its own only after that kill, however long it takes, saying so
+  in the window past 15 s: a start of the id before it would get the very
+  session the kill takes out),
+  `webgl.ts` (the webgl renderer; a context lost for good disposes the addon,
+  which puts the DOM renderer back, and the pane is repainted), `title.ts` (a
+  title from what is typed), `safely.ts`.
+- The webgl addon (0.19.0) runs patched (`patches/`, `patchedDependencies`
+  in `pnpm-workspace.yaml`). Its texture atlas is shared by every terminal of
+  one font, size and theme, and when it merges pages (it grows with every new
+  glyph and color pair) or adds a page for an oversized glyph, every
+  renderer's vertex data points at the old layout, so each must rebuild its
+  whole viewport once. 0.19.0 asked for that with a flag on the atlas it never
+  cleared: from the first merge on, every render of every terminal rebuilt
+  every cell, the cost growing with the atlas. On a harness of four
+  terminals fed bursts of colorful output (xterm.js 6.0.0, ten bursts), a
+  render took 0.38 ms before the first merge and 0.89 ms by the tenth burst;
+  patched, 0.28 to 0.32 ms throughout, with two full rebuilds per merge.
+  0.19.0's atlas never shrank either: it merged pages up to the GPU's largest
+  texture and, once none would merge, went on adding pages past the
+  renderer's texture units, and its glyph cache kept every glyph and color
+  pair it ever drew. The patch backports xterm.js's fixes after 6.0.0: a
+  layout version on the atlas (bumped on a merge, an overflow page,
+  `clearTexture` and an eviction); each glyph renderer rebuilds once per
+  version it has not seen (`beginFrame`, and again after `setAtlas`) and
+  uploads every page again; a frame whose update merged or evicted is rebuilt
+  before it is drawn (`_settleModel`), as cells already placed would point at
+  the old layout, and one still not settled after eight rebuilds is not drawn
+  but asked for again whole; and `_evictAllPages`, which drops every page, the
+  glyph cache and the contrast colors worked out for `minimumContrastRatio`
+  (xterm's `contrastCache`, which kept every color pair drawn) and starts over
+  when no four pages of one size are left to merge, or before an oversized
+  glyph's page would pass the renderer's texture units. Two bounds are Luna's
+  own: pages merge to 4096 px at most, and the glyph cache is evicted the same
+  way past 32,768 entries or four times the cells of the largest terminal
+  on the atlas, whichever is more (a maximized terminal on a 4K screen has
+  over 50,000, each of which can be a glyph of its own). Each renderer keeps
+  its cell count on its atlas (`_owners`, as each frame begins) and takes it
+  off when it moves to another atlas or goes: bounded by its own cells, a
+  narrow pane beside a wide one evicted the wide one's glyphs on each of its
+  frames, and the wide one drew its whole viewport again on each of its own.
+  That bound is checked as a frame begins (`_boundAtlas`), never inside one:
+  evicting mid-frame, a frame with more glyphs than the bound evicted on
+  every rebuild and was drawn with cells pointing at pages gone. So the atlas holds at most the renderer's
+  texture units in pages (16 on the harness), each at most 4096 px square,
+  but for one page for oversized glyphs at the GPU's size, and the cache that
+  bound plus one frame's new glyphs. On the
+  harness's ten bursts the JS heap had grown from 10 to 55 MB and the
+  renderer's private memory from 86 to 138 MB (127,000 glyphs cached);
+  patched, over twelve bursts the heap stays between 11 and 21 MB and the
+  renderer between 86 and 104 MB, the cache evicting every two or three
+  bursts. Under truecolor output (every character a random foreground and
+  background, eight 25 s bursts into the test build's four terminals) the
+  heap after a collection stays between 8 and 23 MB, the renderer between 74
+  and 112 MB, and the contrast colors under 22,000, cleared with each
+  eviction. The patch also restores the canvas state the drawing of an
+  invisible glyph saved. Only `lib/addon-webgl.mjs`, the module Vite bundles,
+  is patched: the package's `main`, `lib/addon-webgl.js`, is in no build of
+  Luna (the tests mock the addon), and its one-line minified build alone
+  doubled the patch. It goes when
+  an addon release carries the fixes (`pageLayoutVersion` and
+  `_evictAllPages` in its `TextureAtlas`), with Luna's two bounds measured
+  again then; pnpm refuses an install where the patch no longer applies.
 - Shortcuts are claimed in the capture phase (`app/keymap.ts`), otherwise xterm
   swallows them; everything unclaimed goes to the CLI. Escape is never claimed.
 
@@ -116,7 +249,19 @@ titles, context and drafts come from the core (`session_meta`), polled by
 `--code-key` / `--code-string` / `--code-literal`), `base.css`, `controls.css`
 (every shared control), `windows.css` (window and dialog chrome); the features'
 own sheets beside their entry components (`panes.css`, `chats.css`,
-`status-bar.css`, `library.css`); `motion.css` last.
+`status-bar.css`, `library.css`). Nothing animates: Luna's sheets and
+components set no `@keyframes`, `animation` or `transition`, and run no Web
+Animations or frame loops, so an idle window draws no frames; a state is a
+static color, shape or word. The one thing left blinking is the caret of a
+focused text field, the WebView's own, which draws only while a field has
+the focus. `base.css` turns off, with `!important`, what
+xp.css brings of its own (a fade on the title-bar buttons, a sliding progress
+bar). The terminals start with a steady cursor (`cursorBlink: false`, chat
+and sign-in terminals alike); a program in one can still ask for a blinking
+cursor (DECSCUSR `CSI 1 q`/`3 q`/`5 q`, or `CSI ? 12 h`), which xterm.js
+honors over the option. Claude Code 2.1.325's binary holds neither sequence
+as a literal; Codex 0.169.0's holds the DECSCUSR table of its terminal
+library, so whether it asks for one is not known.
 
 Theme tokens are CSS custom properties on `[data-app][data-theme]`, switching
 system / light / dark without redrawing terminals (xterm gets its theme through

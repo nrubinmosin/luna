@@ -35,5 +35,5 @@ PowerShell 7.4+ scripts in `scripts/` that run the same on any host:
   SDK and `node_modules`.
 - `pnpm tauri dev` needs a Rust toolchain the project does not provide; the
   supported loop is the test build ([development](../development.md)).
-- Dependabot moves the images, crates, packages and pinned Actions monthly, short
-  of a new Node or Rust major.
+- The images, crates, packages and pinned Actions move by hand, in the
+  project's own commits ([ADR-0029](0029-dependencies-move-by-hand.md)).

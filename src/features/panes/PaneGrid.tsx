@@ -60,7 +60,6 @@ function Splitter({ axis, split }: { axis: 'x' | 'y'; split: SplitKey }) {
     alignSelf: 'stretch',
     borderRadius: 1,
     background: 'transparent',
-    transition: 'background .12s',
     cursor: axis === 'x' ? 'col-resize' : 'row-resize',
     ...(axis === 'x' ? { width: GAP, marginInline: -1 } : { height: GAP, marginBlock: -1 })
   };
@@ -106,7 +105,6 @@ const sheetStyle = (left: number): CSSProperties => ({
   position: 'absolute',
   inset: SHEET_INSET,
   left,
-  transition: 'left .12s ease-out',
   zIndex: 50,
   display: 'flex',
   flexDirection: 'column',
@@ -158,7 +156,6 @@ function PaneChip({ index }: { index: number }) {
         cursor: 'default',
         opacity: chat ? 1 : 0.5,
         color: on ? '#fff' : 'var(--dim)',
-        transition: 'background .14s, color .14s',
         background: on ? ACCENT : 'var(--chip)',
         border: `1px solid ${on ? ACCENT : 'var(--line)'}`
       }}
@@ -262,27 +259,6 @@ export function PaneGrid() {
   const { col, rowL, rowR } = usePanes(currentSplits);
   const peekChat = usePanes(s => s.peekChat);
   const up = usePanes(peeking);
-  const group = usePanes(s => s.group);
-
-  // Another group's board fades in rather than snapping over the last one.
-  // Web Animations, not a keyed remount: remounting would tear every pane's
-  // terminal off its session and back.
-  const root = useRef<HTMLDivElement>(null);
-  const firstGroup = useRef(true);
-  useEffect(() => {
-    if (firstGroup.current) {
-      firstGroup.current = false;
-      return;
-    }
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    root.current?.animate(
-      [
-        { opacity: 0.3, transform: 'scale(.994)' },
-        { opacity: 1, transform: 'none' }
-      ],
-      { duration: 260, easing: 'cubic-bezier(.2,.8,.3,1)' }
-    );
-  }, [group]);
 
   // A press anywhere in the app outside the sheet puts it back — the sidebar,
   // the dimmed board around it. Exceptions: a chat row, whose own
@@ -336,7 +312,6 @@ export function PaneGrid() {
 
   return (
     <div
-      ref={root}
       style={{ flex: 1, minHeight: 0, padding: GAP, background: 'var(--board)', display: 'flex', position: 'relative' }}
     >
       {layout === 1 && <div style={box('row')}>{pane(0)}</div>}

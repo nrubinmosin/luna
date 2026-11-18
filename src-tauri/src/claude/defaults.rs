@@ -10,7 +10,9 @@
 //!
 //! The values come out in the CLI's own spelling and already settled: one
 //! Luna has no equivalent for reads as nothing said, and nothing said is
-//! Luna's stock choice (`source: stock`). The dialog, a spawn and
+//! Luna's stock choice (`source: stock`). A permission mode is the exception:
+//! one it does not know reads as `default`, as the stock one is the widest.
+//! The dialog, a spawn and
 //! `luna_account_get` all take them from here, so what an agent is told it would
 //! get is what it gets.
 //!
@@ -66,7 +68,15 @@ const STOCK_PERMISSION_MODE: &str = "bypassPermissions";
 /// The levels a settings file may name (2.1.322's schema: `effortLevel` is one
 /// of these or nothing; `max` and `ultracode` are a session's only).
 const SETTINGS_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
-const PERMISSION_MODES: [&str; 4] = ["default", "acceptEdits", "plan", "bypassPermissions"];
+/// The modes Claude Code takes (2.1.322's list), each read as itself: a chat
+/// starts in one the new-chat dialog offers (`PERM_CLI` in
+/// src/shared/types.ts) and on Ask for `dontAsk`, a helper in any of them.
+/// `defaultMode: auto` starts Claude Code in its own review (2.1.323).
+const PERMISSION_MODES: [&str; 6] = ["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"];
+/// What a file's mode Luna does not know is read as: the least a chat is
+/// offered, never the stock `bypassPermissions`, which would allow more than
+/// the file could have meant.
+const UNKNOWN_PERMISSION_MODE: &str = "default";
 
 /// The models the account's top-level `effortLevel` still speaks for, by their
 /// canonical names (2.1.322's list; any other model it reads as named by none).
@@ -111,8 +121,10 @@ fn effort_level(raw: &str) -> Option<String> {
     SETTINGS_EFFORTS.iter().find(|e| **e == raw).map(|e| (*e).to_owned())
 }
 
+/// A file's mode as one Claude Code takes; any other said is `default`, so
+/// it is never stock (Some for anything said).
 fn permission_mode(raw: &str) -> Option<String> {
-    PERMISSION_MODES.iter().find(|m| **m == raw).map(|m| (*m).to_owned())
+    Some(PERMISSION_MODES.iter().find(|m| **m == raw).copied().unwrap_or(UNKNOWN_PERMISSION_MODE).to_owned())
 }
 
 /// The value the files settled on, in the spelling Luna passes on, or the
@@ -336,7 +348,7 @@ fn resolve(account_path: &str, folder: &str) -> (Defaults, Efforts) {
     (defaults, efforts)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn claude_defaults(account_path: String, folder: String) -> Defaults {
     resolve(&account_path, &folder).0
 }
@@ -403,7 +415,7 @@ mod tests {
             &account.join("settings.json"),
             r#"{ "model": "claude-Sonnet-5-5[1m]", "effortLevel": "turbo",
                  "modelSettings": { "sonnet": { "effortLevel": "High" } },
-                 "permissions": { "defaultMode": "dontAsk" } }"#,
+                 "permissions": { "defaultMode": "Turbo" } }"#,
         );
         let d = claude_defaults(account.to_string_lossy().into_owned(), String::new());
         // A managed file on the machine may have its own say over any of them.
@@ -414,9 +426,51 @@ mod tests {
         if d.effort.source != "managed" {
             assert_eq!((d.effort.value.as_str(), d.effort.source.as_str()), (STOCK_EFFORT, "stock"));
         }
+        // A mode Luna does not know is the least, not the stock bypass.
         if d.permission_mode.source != "managed" {
-            assert_eq!(d.permission_mode.value, STOCK_PERMISSION_MODE);
+            assert_eq!((d.permission_mode.value.as_str(), d.permission_mode.source.as_str()), ("default", "account"));
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every mode the CLI takes is read as itself, `dontAsk` too (2.1.322's
+    /// list); anything else said is `default`; nothing said is the stock.
+    #[test]
+    fn a_settings_files_mode_never_reads_wider_than_it_says() {
+        for mode in PERMISSION_MODES {
+            assert_eq!(permission_mode(mode).as_deref(), Some(mode));
+        }
+        for other in ["manual", "BypassPermissions", "yolo"] {
+            assert_eq!(permission_mode(other).as_deref(), Some("default"), "{other}");
+        }
+        let root = std::env::temp_dir().join(format!("luna-defaults-dontask-{}", std::process::id()));
+        let account = root.join("account");
+        write(&account.join("settings.json"), r#"{ "permissions": { "defaultMode": "dontAsk" } }"#);
+        let d = claude_defaults(account.to_string_lossy().into_owned(), String::new());
+        if d.permission_mode.source != "managed" {
+            assert_eq!((d.permission_mode.value.as_str(), d.permission_mode.source.as_str()), ("dontAsk", "account"));
+            assert_eq!(flags(&account.to_string_lossy(), "")["permissionMode"], "dontAsk");
+        }
+        write(&account.join("settings.json"), r#"{ "permissions": {} }"#);
+        let d = claude_defaults(account.to_string_lossy().into_owned(), String::new());
+        if d.permission_mode.source != "managed" {
+            assert_eq!((d.permission_mode.value.as_str(), d.permission_mode.source.as_str()), (STOCK_PERMISSION_MODE, "stock"));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A file naming auto mode starts a chat in it, not in Luna's stock
+    /// bypassPermissions, which would allow more than the file asked for.
+    #[test]
+    fn a_settings_files_auto_mode_is_read_as_auto() {
+        let root = std::env::temp_dir().join(format!("luna-defaults-auto-{}", std::process::id()));
+        let account = root.join("account");
+        write(&account.join("settings.json"), r#"{ "permissions": { "defaultMode": "auto" } }"#);
+        let d = claude_defaults(account.to_string_lossy().into_owned(), String::new());
+        if d.permission_mode.source != "managed" {
+            assert_eq!((d.permission_mode.value.as_str(), d.permission_mode.source.as_str()), ("auto", "account"));
+        }
+        assert_eq!(permission_mode("auto").as_deref(), Some("auto"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

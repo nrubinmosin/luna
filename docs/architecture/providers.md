@@ -322,7 +322,9 @@ transcript `projects/<cwd>/<sid>.jsonl`.
   A registry name with `nameSource: auto`, and the second `ai-title` written
   after a plan is accepted (the plan's handle, repeated by `agent-name`), are not
   titles. Both are rewritten into the tail, so they are read with the context.
-  `saved_title` finds a transcript by session id once per launch.
+  `saved_title` finds a transcript by session id once per launch; the window's
+  command of that name takes its account path as an `AccountPath`
+  (`boundary.rs`), for Codex's thread titles too.
 - `reading.rs`: `read_transcript`, all of the above of a transcript's bytes
   alone, by the same per-line functions the file-based readers call.
 
@@ -346,7 +348,9 @@ live registry.
   `task_started` / `task_complete` → working / resting and the turn count;
   `request_user_input` (holds the turn) and `request_user_input_async` (open
   until the next `UserMessage`) → the question. The turn count goes on over
-  every file the process has been on.
+  every file the process has been on. Each chat's tracker, and its record of
+  its subagents' rollouts, has a lock of its own, held over the read: one
+  chat's read never holds up another's look.
 - **From the tail** (128 KiB, `read.rs`): `token_count.info` → context
   (`last_token_usage.total_tokens − reasoning_output_tokens` against
   `model_context_window`, as Codex counts it); `turn_context.model` → model;
@@ -367,6 +371,9 @@ live registry.
   of a live chat's thread and its descendants (threads begun since the process
   spawned, two weeks at most): one is at work while its last turn has not
   ended.
+- A thread's rollout once found (`rollout_of_thread`, `thread_file`), and a
+  thread looked for in vain, are kept, up to 1,024 of each before the lookup
+  starts over.
 - `reading.rs`: `read_rollout`, all that the running read and the tail read
   take of a rollout, of its bytes alone, by the same per-line functions.
 

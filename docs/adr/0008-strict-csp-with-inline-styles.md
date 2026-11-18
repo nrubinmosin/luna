@@ -18,8 +18,9 @@ inline script, no `eval`), `connect-src ipc: http://ipc.localhost`,
 `base-uri 'self'`, `form-action 'none'`, `frame-ancestors 'none'`. Refused
 loads are logged as `[csp]` warnings (`src/shared/lib/log.ts`).
 
-`style-src` keeps `'unsafe-inline'`: the pinned xterm.js 5.5.0 creates
-`<style>` elements and has no nonce option, and a nonce would make the browser
+`style-src` keeps `'unsafe-inline'`: the pinned xterm.js (6.0.0) creates
+`<style>` elements (its DOM renderer's and its scrollbar's) and has no nonce
+option, and a nonce would make the browser
 ignore `'unsafe-inline'`, so Tauri's style nonce is off
 (`dangerousDisableAssetCspModification: ["style-src"]`). `devCsp` (only
 `pnpm tauri dev`) adds `'unsafe-inline'` scripts for the Vite preamble and

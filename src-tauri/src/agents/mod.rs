@@ -49,9 +49,9 @@ pub use answer::answer;
 pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion, AskSource};
 pub use delivery::{notes_dir, send};
 pub use handoff::{
-    asked_of, handoff, handoff_ask, handoff_ask_of, handoff_file, handoff_now, handoff_transcript, mark_of, move_ask,
-    move_build_from_records, move_cancel, move_confirm, move_facts, move_list, move_prepare, move_preview, move_step, set_auto_handoff,
-    HandoffAsk, HandoffAsked, HandoffMark,
+    asked_of, handoff, handoff_ask_of, handoff_file, handoff_now, handoff_transcript, mark_of, move_ask, move_build_from_records,
+    move_cancel, move_confirm, move_facts, move_list, move_prepare, move_preview, move_step, set_auto_handoff, HandoffAsk, HandoffAsked,
+    HandoffMark,
 };
 pub use handover::{carried_into, opening_lapsed, started_in, take_over};
 pub use held::held_count;
@@ -63,7 +63,12 @@ pub use lost::undelivered_left;
 pub(crate) use notifier::riders_go;
 pub use notifier::{notify, NOTICE_TAG};
 pub use owed::{callers_owed, moved_onto_stdin, resumed, retried};
-pub use persist::{freeze_chats, restore_chats, save_chats, take_up_spawns, tie_back, ties_of_each, Ties};
+pub use persist::{
+    call_off_update, freeze_chats, freeze_for_update, restore_chats, save_chats, take_up_spawns, thaw_chats, tie_back, ties_of_each, Stop,
+    Ties,
+};
+#[cfg(test)]
+pub(crate) use persist::{chats_frozen, stops_for_test};
 pub(crate) use privilege::{command_prefix, command_reach_now};
 pub use read::{read, report_get, Message};
 pub(crate) use registry::mint;

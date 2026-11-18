@@ -12,9 +12,12 @@ export interface PtyOutput {
   data: string;
 }
 
+/** A session's exit. `generation`: its spawn's number, as its start answered
+ *  it (`Attached`); a session of the same chat before or after it has another. */
 export interface PtyExit {
   id: string;
   code: number | null;
+  generation: number;
 }
 
 export const onPtyOutput = (cb: (p: PtyOutput) => void): Promise<UnlistenFn> =>
@@ -31,6 +34,16 @@ export const onCliCanary = (cb: (c: { provider: Provider; version: string }) => 
 
 export const onPtyExit = (cb: (p: PtyExit) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<PtyExit>('pty://exit', e => cb(e.payload)) : Promise.resolve(() => {});
+
+/** A session refused input: its CLI is not reading what waits for it
+ *  (pty/mod.rs `InputTx`). Said once a stretch, on its first refusal. */
+export interface PtyInputRefused {
+  id: string;
+  waitingKb: number;
+}
+
+export const onPtyInputRefused = (cb: (p: PtyInputRefused) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<PtyInputRefused>('pty://input-refused', e => cb(e.payload)) : Promise.resolve(() => {});
 
 export const onPowerState = (cb: (s: PowerStateDto) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<PowerStateDto>('power://state', e => cb(e.payload)) : Promise.resolve(() => {});
@@ -54,6 +67,12 @@ export interface Notice {
 /** A desktop notification the Rust side wants shown (power/machine.rs, agents/). */
 export const onNotify = (cb: (n: Notice) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<Notice>('ui://notify', e => cb(e.payload)) : Promise.resolve(() => {});
+
+/** Luna is going from the tray, a Quit or a Restart window, and ends the
+ *  process without the page going away first (`true`); `false` when a
+ *  Restart could not start the new window and this one stays (lifecycle.rs). */
+export const onExiting = (cb: (going: boolean) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<boolean>('ui://exiting', e => cb(e.payload !== false)) : Promise.resolve(() => {});
 
 /** A notification about a chat was clicked (lib.rs). */
 export const onOpenChat = (cb: (p: { chatId: string }) => void): Promise<UnlistenFn> =>

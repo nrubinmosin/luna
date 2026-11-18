@@ -24,10 +24,9 @@ if (-not $Group) {
 }
 
 $build = Get-BuildStamp
-$nodeImage = Get-NodeImage
 
-# A package.json script, in the official Node image of the pinned version and
-# digest: the frontend needs nothing else. pnpm itself is the one packageManager names,
+# A package.json script, in the Node stage of the Windows image (Get-FrontendImage):
+# the frontend needs nothing else. pnpm itself is the one packageManager names,
 # through corepack, whose downloads stay in a volume of their own.
 function Invoke-Frontend([string]$What, [string]$Script) {
     Initialize-HostDirs 'test-build', 'node_modules'
@@ -36,10 +35,10 @@ function Invoke-Frontend([string]$What, [string]$Script) {
           -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
           -e COREPACK_HOME=/corepack `
           -v "${RepoRoot}:/app" `
-          -v luna-node-modules:/app/node_modules `
+          -v "$(Get-NodeModulesVolume):/app/node_modules" `
           -v luna-corepack:/corepack `
           -w /app `
-          $nodeImage `
+          $images.node `
           bash -c (ConvertTo-BashScript "set -e`n$Script")
     }
 }
@@ -63,6 +62,11 @@ $steps = @(
         Name  = 'toolchain pins agree'
         Group = '*'
         Run   = { Assert-ToolchainPins }
+    }
+    @{
+        Name  = 'Node toolchain image'
+        Group = 'frontend'
+        Run   = { $images.node = Get-FrontendImage }
     }
     @{
         Name  = 'pnpm install --frozen-lockfile'

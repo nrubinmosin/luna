@@ -95,6 +95,29 @@ test('only the root project is read from pnpm-lock, its peers suffix dropped', (
   );
 });
 
+test("pnpm's own document in the lockfile is not read as the project's", () => {
+  const env = [
+    '---',
+    "lockfileVersion: '9.0'",
+    '',
+    'importers:',
+    '',
+    '  .:',
+    '    configDependencies: {}',
+    '    packageManagerDependencies:',
+    '      pnpm:',
+    '        specifier: 12.21.0',
+    '        version: 12.21.0',
+    '',
+    'packages:',
+    '',
+    '---'
+  ].join('\n');
+  const npm = npmVersions(`${env}\n${pnpmLock([])}`);
+  assert.deepEqual([...npm], [['@tauri-apps/api', '2.12.4']]);
+  assert.throws(() => npmVersions(`${env}\n${pnpmLock([], { format: '6.0' })}`), /lockfileVersion '6\.0'/);
+});
+
 test('every locked version of a crate is compared', () => {
   const cargo = cargoLock([
     ['tauri-plugin-fs', '2.7.1'],

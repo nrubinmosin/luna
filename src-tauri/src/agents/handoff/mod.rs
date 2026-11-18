@@ -442,7 +442,7 @@ fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Res
     // copy and its record (a number reserved is not saved) is never reused.
     let free = file::next_free(&dir);
     let (n, served) = {
-        let mut r = store::records();
+        let mut r = store::records_mut();
         let rec = r.entry(caller.to_string()).or_default();
         if let Some(s) = &rec.switch {
             return Err(format!("handoff {} is under way already; end your turn", s.n));
@@ -456,7 +456,7 @@ fn schedule(caller: &str, provider: Provider, file: &str, before: Before) -> Res
         (n, rec.served.clone())
     };
     let unreserve = || {
-        if let Some(rec) = store::records().get_mut(caller).filter(|r| r.reserved == Some(n)) {
+        if let Some(rec) = store::records_mut().get_mut(caller).filter(|r| r.reserved == Some(n)) {
             rec.reserved = None;
         }
     };
@@ -1018,7 +1018,7 @@ fn finish(chat: &str, n: u32, ended: Ended, prompt: &dyn Fn() -> String) {
         Ok(closed) => closed,
         Err(e) => {
             crate::log::warn("handoff", &format!("{}: handoff {n} could not be saved as ended: {e}", label(chat)));
-            store::records().get_mut(chat).and_then(end)
+            store::records_mut().get_mut(chat).and_then(end)
         }
     };
     let Some((s, gone)) = closed else { return };
@@ -1098,7 +1098,7 @@ fn bind_continued(chat: &str, line: &str, conversation: Option<String>, short: S
     };
     if let Err(e) = store::change(chat, add) {
         crate::log::warn("handoff", &format!("{}: which conversation a failure line is for could not be saved: {e}", label(chat)));
-        if let Some(r) = store::records().get_mut(chat) {
+        if let Some(r) = store::records_mut().get_mut(chat) {
             add(r);
         }
     }
@@ -1174,7 +1174,7 @@ pub(in crate::agents) fn taken_late(chat: &str, line: &str) -> bool {
     };
     if let Err(e) = store::change(chat, through) {
         crate::log::warn("handoff", &format!("{}: handoff {n} could not be saved as through: {e}", label(chat)));
-        if let Some(r) = store::records().get_mut(chat) {
+        if let Some(r) = store::records_mut().get_mut(chat) {
             through(r);
         }
     }
@@ -1533,8 +1533,21 @@ fn ask_auto(chat: &str, r: &mut store::Record, threshold: u8, told: store::Told,
     // The notice bound to this ask: a copy the notifier holds goes in only
     // while it is the one open (`withheld`).
     r.asked = Some(store::Asked { notice: Some(sha256_of(&line)), ..asked });
-    reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat.to_string(), line));
+    // Queued as the ask it is bound to goes in: queued before, the notifier
+    // could find it with the old ask still standing and drop it (`withheld`).
+    let chat = chat.to_string();
+    store::when_in(move || reg().lock().unwrap_or_else(|e| e.into_inner()).news.push((chat, line)));
     true
+}
+
+/// `chat`'s threshold notices not typed yet, dropped from what the notifier
+/// has to tell as the change of its record they go with is put in
+/// (`store::when_in`).
+pub(super) fn notices_dropped(chat: &str) {
+    let chat = chat.to_string();
+    store::when_in(move || {
+        reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(*c == chat && facts::is_notice(line)));
+    });
 }
 
 /// The threshold auto-handoff is set at on `id` now, a chat that may be
@@ -1856,14 +1869,14 @@ pub fn set_auto_handoff(id: String, threshold: Option<u8>) -> Result<AutoHandoff
         // Its notice not yet typed would ask for what nobody asks any more,
         // and the tool would refuse it: dropped under the lock it was queued
         // under (`ask_auto`).
-        reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(c == &id && facts::is_notice(line)));
+        notices_dropped(&id);
         (tools, close(r, None, false, Some(why.clone()), only_scheduled))
     };
     let (tools, closed) = match store::change(&id, apply) {
         Ok(done) => done,
         Err(e) => {
             crate::log::warn("handoff", &format!("{}: auto-handoff's change could not be saved: {e}", label(&id)));
-            let mut r = store::records();
+            let mut r = store::records_mut();
             apply(r.entry(id.clone()).or_default())
         }
     };
@@ -1965,7 +1978,7 @@ fn open_manual(chat: &str) -> Result<HandoffNow, String> {
         }
         r.ask_closed = None;
         r.asked = Some(store::Asked::new(store::AskKind::Manual, now_ms(), turns));
-        reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|(c, line)| !(c == chat && facts::is_notice(line)));
+        notices_dropped(chat);
         true
     })
     .map_err(|e| format!("the ask could not be saved: {e}"))?;
@@ -2088,14 +2101,6 @@ pub fn handoff_ask_of(id: &str) -> Option<HandoffAsk> {
         typed: a.typed.filter(|_| manual),
         lapses_at: a.typed.filter(|_| manual).map(|t| t + MANUAL_ASK_MS),
     })
-}
-
-/// The window's look at the ask open on a chat (`handoff_ask_of`) where
-/// `session_meta` has nothing to say, its CLI not running: the ask is the
-/// core's whether a CLI runs or not, and one that lapsed meanwhile must not
-/// stay on the chip and in the menu's refusal.
-pub fn handoff_ask(chat_id: String) -> Option<HandoffAsk> {
-    handoff_ask_of(&chat_id)
 }
 
 /// Handoff `n` of `chat` as the record has it.

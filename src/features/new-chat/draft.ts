@@ -13,6 +13,10 @@ export interface Draft<S extends object> {
   settings: S;
   resolved: S;
   from: From<S>;
+  /** Whether the files' answer for this account and folder is in. Until it
+   *  is, `settings` holds the stock values, which may go further than the
+   *  files say (Bypass, no sandbox), so no chat is to be made from them. */
+  ready: boolean;
   pick: <K extends keyof S>(key: K, value: S[K]) => void;
   /** Sets a value that follows from another pick — unless the user has set
    *  this one by hand. Leaves it untouched, so it keeps following. */
@@ -44,11 +48,15 @@ export function useSettingsDraft<S extends object>(
   // In a ref because the resolver should not re-run just because something
   // was touched.
   const touched = useRef<Partial<Record<keyof S, true>>>({});
+  const current = `${accountPath}\u0000${folder}`;
+  const [readyFor, setReadyFor] = useState<string | null>(null);
 
   useEffect(() => {
     let stale = false;
+    const asked = `${accountPath}\u0000${folder}`;
     void resolve(accountPath, folder).then(({ values, from: sources }) => {
       if (stale) return;
+      setReadyFor(asked);
       setResolved(values);
       setFrom(sources);
       setSettings(prev => {
@@ -70,6 +78,7 @@ export function useSettingsDraft<S extends object>(
     settings,
     resolved,
     from,
+    ready: readyFor === current,
     pick: (key, value) => {
       touched.current[key] = true;
       setSettings(s => ({ ...s, [key]: value }));

@@ -55,8 +55,6 @@ pub struct Settings {
     /// The user's skills and instructions, and where they are laid out
     /// (library/).
     pub library: LibrarySettings,
-    /// Which browser a terminal's links open in (browsers.rs).
-    pub browsers: crate::browsers::BrowserSettings,
     /// A chat whose last message ends on a line holding this text is waiting
     /// for its user (asking.rs).
     pub waiting_marker_on: bool,
@@ -495,7 +493,6 @@ impl Default for Settings {
             codex_hooks_unasked_in: Default::default(),
             codex_trusted_roots: Vec::new(),
             library: LibrarySettings::default(),
-            browsers: Default::default(),
             waiting_marker_on: true,
             waiting_marker: "AWAITING OPERATOR".into(),
             recommendations_dismissed: Vec::new(),
@@ -596,7 +593,7 @@ fn info() -> Result<AccountsRootInfo, String> {
     Ok(AccountsRootInfo { path: crate::accounts::accounts_root()?.to_string_lossy().into_owned(), is_default: s.accounts_root.is_none() })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_accounts_root() -> Result<AccountsRootInfo, String> {
     info()
 }
@@ -643,6 +640,28 @@ mod tests {
         std::fs::write(&path, r#"{"quietWindowS": 60, "keepAwake": false}"#).unwrap();
         assert_ne!(stamp(&path), before);
         assert_eq!(read(&path).unwrap().quiet_window_s, 60);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_from_when_luna_chose_browsers_reads_and_drops_them_on_write() {
+        let dir = std::env::temp_dir().join(format!("luna-settings-browsers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"quietWindowS": 300, "browsers": {
+                "custom": [{"id": "work", "name": "Work", "command": "\"C:\\B\\brave.exe\" --profile-directory=\"Profile 1\" %1"}],
+                "default": "found:chrome:Default",
+                "accounts": {"claude/work": "work"},
+                "folders": {"C:\\src": "found:firefox"}
+            }}"#,
+        )
+        .unwrap();
+        let old = read(&path).expect("an old file reads");
+        assert_eq!(old.quiet_window_s, 300, "the rest of it as written");
+        let json = serde_json::to_value(&old).unwrap();
+        assert!(json.get("browsers").is_none(), "nothing keeps them, so a write leaves them out");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

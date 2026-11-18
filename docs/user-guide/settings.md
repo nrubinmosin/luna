@@ -7,16 +7,16 @@ page’s title stay where they are. The dialog is 920 px wide and as tall as its
 page, up to 720 px, or the window less a margin where that is smaller; its top
 edge stays put as pages change. It reopens on the page it was left on. Escape
 or a click beside it closes it. Something typed and not yet saved on one page
-(the waiting marker's text, a browser of your own) is still there after a look
-at another, until Settings closes.
+(the waiting marker's text) is still there after a look at another, until
+Settings closes.
 
 Each setting is a row: its name and one line on what it does on the left, its
-control on the right. A list (trusted folders, link exceptions, browsers) sits
-under its row, with its own buttons (Add folder…, Add an exception…, Add a
-browser) under it on the left; each list says so when it is empty. What a
-change costs stays in view under its row, marked with a warning sign where it
-loses work or lets an agent do more. The rest of each group's explanation is
-folded into a "How … works" line at the foot of its card.
+control on the right. A list (trusted folders, the CLIs' versions) sits under
+its row, with its own buttons (Add folder…) under it on the left; each list
+says so when it is empty. What a change costs stays in view under its row,
+marked with a warning sign where it loses work or lets an agent do more. The
+rest of each group's explanation is folded into a "How … works" line at the
+foot of its card.
 
 ## Pages
 
@@ -25,7 +25,6 @@ folded into a "How … works" line at the foot of its card.
 | General | Board, Notifications, Waiting for you, Accounts | Auto-tile the board; play a sound; the waiting marker and its text; the accounts folder |
 | Chats | New chats start with, Worktrees | Git worktree, Luna tools, Codex hooks without asking and Wait guard, as the new-chat dialog starts them; fetch origin before Claude Code makes a worktree; delete worktrees by default |
 | Agents & trust | Helpers, Trusted folders | Allow helpers more permissions than their parent chat; helpers per chat (the places a chat's line of helpers shares, 1 to 32, 8 by default); helpers' mode when not given (the spawning chat's, the default, or the account's); auto-handoff for leads and its threshold (on, at 60% of a lead's context, by default: [agents](agents.md#handoff)); the folders whose projects Codex sessions start trusted |
-| Links | Open links in, Browsers | The default browser and the accounts and project folders that take another; the browsers found on this computer and your own |
 | CLIs | Claude Code, Codex | The channel each follows (Known-good or Latest); its version and Check now; each installed version tagged current, previous, known-good, marked good, "first 3 sessions ok", in use or bad, with Use, Mark good, Mark bad, Clear bad and Unmark good (no Use or Mark good on one below the minimum safe version, which says so), and the marks on versions no longer installed with their own Clear bad or Unmark good; a new version's failed first sessions with Roll back (unless the version before is below the minimum) and Keep it ([updates](updates.md#the-clis)) |
 | Updates | — | Luna and the core: each version, its state and its button |
 
@@ -38,11 +37,6 @@ folded into a "How … works" line at the foot of its card.
   saved with Save or Enter.
 - **Accounts folder:** Change… and Default move where Luna looks for accounts.
   The accounts themselves are moved by hand.
-- **Exceptions:** Add an exception… lists the accounts and the project folders
-  that have no browser of their own yet; the one picked starts on the default
-  browser, and Remove sends it back to the default.
-- **Browsers:** a long command line is cut off at the end; Show all shows it in
-  full and Copy copies it whole.
 
 ## Keyboard
 

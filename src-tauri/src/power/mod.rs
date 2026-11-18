@@ -188,3 +188,30 @@ fn publish(st: &mut State, summary: &Summary) {
         st.last_sent = Some(now);
     }
 }
+
+#[cfg(test)]
+mod publish_tests {
+    use super::*;
+    use crate::activity::{SessionActivity, Turn};
+
+    fn board(busy: bool, age: u64) -> Summary {
+        let mut s = SessionActivity::of_turn("pub-1", Turn::Busy, busy);
+        s.output_age_ms = age;
+        Summary { busy: busy as usize, sessions: vec![s], ..Default::default() }
+    }
+
+    /// The screen's age differs at every sample and the window is never sent
+    /// it: a sample that changes nothing else sends nothing.
+    #[test]
+    fn a_sample_that_changes_only_the_screens_age_is_not_sent_again() {
+        let mut st = State::default();
+        let sent = |st: &State| st.last_sent.as_ref().map(|p| p.summary.sessions[0].output_age_ms);
+        publish(&mut st, &board(true, 100));
+        assert_eq!(sent(&st), Some(100));
+        publish(&mut st, &board(true, 5_100));
+        assert_eq!(sent(&st), Some(100), "the same state: not sent again");
+        publish(&mut st, &board(false, 10_100));
+        assert_eq!(sent(&st), Some(10_100), "a change the window sees is sent");
+        assert!(board(true, 1) == board(true, 2) && board(true, 1) != board(false, 1));
+    }
+}

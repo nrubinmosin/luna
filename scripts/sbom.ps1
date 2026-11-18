@@ -59,6 +59,9 @@ cp sbom.json /out/luna-$version-cargo.cdx.json
     # scripts run; nothing here is built. Not --output-reproducible: that leaves
     # the serial number and timestamp out, and actions/attest takes a CycloneDX
     # file only with a serial number, which is how v0.10.0's first run failed.
+    # pnpm-workspace.yaml and patches/ go with the lockfile: it records the
+    # patched packages, and a frozen install refuses a lockfile whose patches
+    # the settings beside it do not name (ERR_PNPM_LOCKFILE_CONFIG_MISMATCH).
     Invoke-Checked 'npm SBOM' {
         docker run --rm `
           -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
@@ -67,11 +70,11 @@ cp sbom.json /out/luna-$version-cargo.cdx.json
           -v "${RepoRoot}:/app:ro" `
           -v "${Out}:/out" `
           -v luna-corepack:/corepack `
-          (Get-NodeImage) `
+          (Get-FrontendImage) `
           bash -c (ConvertTo-BashScript @"
 set -e
 mkdir /work
-cp /app/package.json /app/pnpm-lock.yaml /work/
+cp -r /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/patches /work/
 cd /work
 corepack pnpm install --frozen-lockfile --prod --ignore-scripts --config.node-linker=hoisted --reporter=silent
 npx --yes @cyclonedx/cyclonedx-npm@$CycloneDxNpm --omit dev --spec-version 1.5 --mc-type application --validate --output-format JSON --output-file /out/luna-$version-npm.cdx.json

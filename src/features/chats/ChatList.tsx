@@ -12,6 +12,16 @@ export function ChatList() {
   // with none of them stays out of the sidebar while remaining in the launch
   // list the new-chat dialog offers.
   const folders = useMemo(() => foldersOfGroup(all, group), [all, group]);
+  // Where each open folder's rows start in the numbered run (numberedChats):
+  // with one pane a row wears its place in it.
+  const firstNo = useMemo(() => {
+    const at: number[] = [];
+    for (let i = 0, n = 0; i < folders.length; i++) {
+      at.push(n);
+      if (folders[i]!.open) n += folders[i]!.chats.length;
+    }
+    return at;
+  }, [folders]);
 
   return (
     <div
@@ -25,8 +35,8 @@ export function ChatList() {
         gap: 6
       }}
     >
-      {folders.map(f => (
-        <FolderSection key={f.id} folder={f} />
+      {folders.map((f, i) => (
+        <FolderSection key={f.id} folder={f} firstNo={firstNo[i]!} />
       ))}
       {folders.length === 0 && (
         <div

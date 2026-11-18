@@ -30,7 +30,7 @@ import {
   type CodexSettings
 } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
-import { allChats, useChats } from '../chats/chats.store';
+import { allChats, chatsChanged, useChats } from '../chats/chats.store';
 import { useCore } from '../core/core.store';
 import { createChat } from '../new-chat/create';
 import { usePanes } from '../panes/panes.store';
@@ -163,7 +163,11 @@ async function promote(p: PromotedDto): Promise<void> {
           settings: {
             model: modelFromSetting(word('model')) ?? (defaults as ClaudeSettings).model,
             effort: effortFromSetting(word('effort')) ?? (defaults as ClaudeSettings).effort,
-            perm: permFromSetting(word('permissionMode')) ?? (defaults as ClaudeSettings).perm
+            // A mode no chat runs in (`dontAsk`) opens on Ask, its rung, never on
+            // the account's default, which may go further.
+            perm: word('permissionMode')
+              ? (permFromSetting(word('permissionMode')) ?? 'Ask')
+              : (defaults as ClaudeSettings).perm
           }
         }
       : {
@@ -232,8 +236,13 @@ export function useAgentBridge() {
   // whenever one changes.
   useEffect(() => {
     let last = '';
+    // The name and group each chat had at the last push: a status or context
+    // change, the most of what moves the chats, compares and goes no further.
+    let seen = new Map<string, string>();
     const push = () => {
       const chats = allChats(useChats.getState().folders);
+      if (last && chats.length === seen.size && chats.every(c => seen.get(c.id) === `${c.group} ${c.name}`)) return;
+      seen = new Map(chats.map(c => [c.id, `${c.group} ${c.name}`]));
       const names = Object.fromEntries(chats.map(c => [c.id, c.name]));
       const groups = Object.fromEntries(chats.map(c => [c.id, c.group]));
       const key = JSON.stringify([names, groups]);
@@ -246,7 +255,15 @@ export function useAgentBridge() {
       });
     };
     push();
-    const offChats = useChats.subscribe(push);
+    const offChats = useChats.subscribe((s, prev) => {
+      // A send that failed is tried again at whatever change comes next; a
+      // status or context tick otherwise looks no further than its own chat.
+      if (
+        !last ||
+        chatsChanged(prev.folders, s.folders, (was, now) => was.group === now.group && was.name === now.name)
+      )
+        push();
+    });
     const offCore = onCoreUp(() => {
       last = '';
       push();

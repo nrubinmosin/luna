@@ -80,12 +80,14 @@ vi.mock('@xterm/addon-webgl', () => ({
   }
 }));
 
-/** The pty's events as the terminals subscribed to them. While `hold` is on,
- *  a subscription's answer waits in `waiting` until `release`. */
+/** The pty's events as the router (terminal/ptyRoutes.ts) subscribed to
+ *  them. While `hold` is on, a subscription's answer waits in `waiting` until
+ *  `release`. */
 const pty = vi.hoisted(() => {
   const output = new Set<(p: { id: string; data: string }) => void>();
-  const exit = new Set<(p: { id: string; code: number | null }) => void>();
-  const state = { hold: false, waiting: [] as Array<() => void>, unlistened: 0 };
+  const exit = new Set<(p: { id: string; code: number | null; generation: number }) => void>();
+  const refused = new Set<(p: { id: string; waitingKb: number }) => void>();
+  const state = { hold: false, waiting: [] as Array<() => void> };
   const release = () => {
     state.hold = false;
     state.waiting.splice(0).forEach(go => go());
@@ -95,16 +97,28 @@ const pty = vi.hoisted(() => {
     (cb: (p: T) => void) => {
       set.add(cb);
       const unlisten = () => {
-        state.unlistened++;
         set.delete(cb);
       };
       if (!state.hold) return Promise.resolve(unlisten);
       return new Promise<() => void>(resolve => state.waiting.push(() => resolve(unlisten)));
     };
-  return { output, exit, state, release, onPtyOutput: subscribe(output), onPtyExit: subscribe(exit) };
+  return {
+    output,
+    exit,
+    refused,
+    state,
+    release,
+    onPtyOutput: subscribe(output),
+    onPtyExit: subscribe(exit),
+    onPtyInputRefused: subscribe(refused)
+  };
 });
 
-vi.mock('../../ipc/events', () => ({ onPtyOutput: pty.onPtyOutput, onPtyExit: pty.onPtyExit }));
+vi.mock('../../ipc/events', () => ({
+  onPtyOutput: pty.onPtyOutput,
+  onPtyExit: pty.onPtyExit,
+  onPtyInputRefused: pty.onPtyInputRefused
+}));
 vi.mock('../../ipc/sessions', () => ({
   ensureClaudeSession: vi.fn(),
   ensureCodexSession: vi.fn(),
@@ -137,12 +151,21 @@ const chat = (id: string): Chat => ({
   perm: 'Bypass'
 });
 
+/** The spawn number the tests' sessions start with. */
+const GEN = 7;
+
+/** What a start answers: `backlog`, and the session's spawn number. */
+const attached = (backlog: string, generation = GEN) => ({ backlog, generation });
+
 /** A session start that answers when the test says. */
 function deferredStart() {
-  let answer: (backlog: string) => void = () => {};
-  sessions.ensureClaudeSession.mockImplementationOnce(() => new Promise<string>(resolve => (answer = resolve)));
-  return (backlog: string) => answer(backlog);
+  let answer: (a: ReturnType<typeof attached>) => void = () => {};
+  sessions.ensureClaudeSession.mockImplementationOnce(() => new Promise(resolve => (answer = resolve)));
+  return (backlog: string, generation = GEN) => answer(attached(backlog, generation));
 }
+
+/** `id`'s session of spawn `generation` exited, as the core says it. */
+const exitOf = (id: string, generation = GEN) => pty.exit.forEach(cb => cb({ id, code: 0, generation }));
 
 /** The terminal for a chat, as a pane would take it, and its fake xterm. */
 function open(id: string) {
@@ -156,18 +179,16 @@ const resizesFor = (id: string) => sessions.resizeSession.mock.calls.filter(c =>
 
 beforeEach(() => {
   vi.clearAllMocks();
-  sessions.ensureClaudeSession.mockResolvedValue('');
+  sessions.ensureClaudeSession.mockResolvedValue(attached(''));
   sessions.sessionModes.mockResolvedValue('');
   xterm.FakeTerminal.made = [];
   pty.state.hold = false;
   pty.state.waiting = [];
-  pty.state.unlistened = 0;
 });
 
+// The router's listeners stay for the module's life, as they do for the page's.
 afterEach(() => {
   forgetAll();
-  pty.output.clear();
-  pty.exit.clear();
 });
 
 describe('terminals: the pty behind a terminal', () => {
@@ -196,10 +217,51 @@ describe('terminals: the pty behind a terminal', () => {
   it('stops sending once the session has exited, and says so on screen', async () => {
     const { term } = open('exits');
     await settle();
-    pty.exit.forEach(cb => cb({ id: 'exits', code: 0 }));
+    exitOf('exits');
     term.data.fire('x');
     expect(writesFor('exits')).toEqual([]);
     expect(term.log.at(-1)).toContain('[session exited]');
+  });
+
+  it('takes only its own session’s exit, one heard before its start answered included', async () => {
+    const start = deferredStart();
+    const { term } = open('again');
+    await settle();
+    // The chat's last session, said late while this one was starting.
+    exitOf('again', GEN - 1);
+    start('');
+    await settle();
+    term.data.fire('typed');
+    expect(writesFor('again')).toEqual(['typed']);
+    expect(term.log.join('')).not.toContain('[session exited]');
+    // A later session's exit is not this one's either; its own is.
+    exitOf('again', GEN + 1);
+    expect(term.log.join('')).not.toContain('[session exited]');
+    exitOf('again');
+    term.data.fire('gone');
+    expect(writesFor('again')).toEqual(['typed']);
+    expect(term.log.at(-1)).toContain('[session exited]');
+  });
+
+  it('ends at once when its own session exited before its start answered', async () => {
+    const start = deferredStart();
+    const { term } = open('quick');
+    await settle();
+    exitOf('quick');
+    start('');
+    await settle();
+    term.data.fire('x');
+    expect(writesFor('quick')).toEqual([]);
+    expect(term.log.at(-1)).toContain('[session exited]');
+  });
+
+  it('says in the pane when its session refused keys, and only for its own', async () => {
+    const { term } = open('stuck');
+    await settle();
+    pty.refused.forEach(cb => cb({ id: 'other', waitingKb: 1 }));
+    expect(term.log.join('')).not.toContain('keys not delivered');
+    pty.refused.forEach(cb => cb({ id: 'stuck', waitingKb: 8192 }));
+    expect(term.log.at(-1)).toContain('keys not delivered: the session is not taking input, 8192 KB waiting');
   });
 
   it('sends nothing for a session that failed to start, and shows why', async () => {
@@ -214,7 +276,7 @@ describe('terminals: the pty behind a terminal', () => {
 
 describe('terminals: reattaching to a running session', () => {
   it('resets only once the replayed tail is parsed, then puts the modes back, then asks for a repaint', async () => {
-    sessions.ensureClaudeSession.mockResolvedValueOnce('TAIL');
+    sessions.ensureClaudeSession.mockResolvedValueOnce(attached('TAIL'));
     sessions.sessionModes.mockResolvedValueOnce('MODES');
     const { term } = open('replay');
     await settle();
@@ -237,7 +299,7 @@ describe('terminals: reattaching to a running session', () => {
   });
 
   it('does nothing more to a terminal disposed while the tail was being parsed', async () => {
-    sessions.ensureClaudeSession.mockResolvedValueOnce('TAIL');
+    sessions.ensureClaudeSession.mockResolvedValueOnce(attached('TAIL'));
     const { term } = open('replay-gone');
     await settle();
     forget('replay-gone');
@@ -249,15 +311,21 @@ describe('terminals: reattaching to a running session', () => {
 });
 
 describe('terminals: disposed while starting', () => {
-  it('starts no session when disposed before its event subscriptions are in, and drops them as they arrive', async () => {
+  it('starts no session when disposed before the pty listeners are in, and hears nothing after', async () => {
+    // A page whose router has not listened yet: modules loaded afresh.
+    vi.resetModules();
+    const fresh = await import('./terminals');
+    const freshSessions = vi.mocked(await import('../../ipc/sessions'));
     pty.state.hold = true;
-    const { term } = open('early-gone');
-    forget('early-gone');
+    fresh.acquire({ chat: chat('early-gone'), folderPath: '/repo', accountPath: '/acc/work' });
+    const term = xterm.FakeTerminal.made.at(-1)!;
+    fresh.forget('early-gone');
     expect(term.disposed).toBe(true);
     pty.release();
     await settle();
-    expect(sessions.ensureClaudeSession).not.toHaveBeenCalled();
-    expect(pty.state.unlistened).toBe(2);
+    expect(freshSessions.ensureClaudeSession).not.toHaveBeenCalled();
+    pty.output.forEach(cb => cb({ id: 'early-gone', data: 'late' }));
+    expect(term.log).toEqual([]);
   });
 
   it('writes nothing and sends nothing when disposed while its session was starting', async () => {
@@ -265,9 +333,9 @@ describe('terminals: disposed while starting', () => {
     const { term } = open('mid-gone');
     await settle();
     forget('mid-gone');
-    expect(pty.state.unlistened).toBe(2);
     start('TAIL');
     await settle();
+    pty.output.forEach(cb => cb({ id: 'mid-gone', data: 'late' }));
     term.data.fire('x');
     expect(term.log).toEqual([]);
     expect(writesFor('mid-gone')).toEqual([]);
@@ -288,7 +356,7 @@ describe('terminals: two chats at once', () => {
     expect(writesFor('chat-b')).toEqual(['typed in b']);
     expect(writesFor('chat-a')).toEqual([]);
 
-    pty.exit.forEach(cb => cb({ id: 'chat-a', code: 0 }));
+    exitOf('chat-a');
     b.term.data.fire('still live');
     a.term.data.fire('gone');
     expect(writesFor('chat-b')).toEqual(['typed in b', 'still live']);

@@ -160,7 +160,8 @@ function Get-RustInTreeLicenses([string]$Html) {
 $HelperSignatures = [ordered]@{
     'vite-preload-helper'            = 'vite:preloadError'
     'vite-map-deps'                  = '__vite__mapDeps'
-    'vite-modulepreload-polyfill'    = '\.supports\("modulepreload"\)\)return'
+    'vite-modulepreload-polyfill'    = '\.supports\(["`]modulepreload["`]\)\)return'
+    'rolldown-runtime'               = '\{exports:\{\}\}\)\.exports,\w+,\w+\.exports\),\w+=null\),\w+\.exports'
     'rollup-commonjs-default-export' = '__esModule&&Object\.prototype\.hasOwnProperty\.call\(\w+,"default"\)\?\w+\.default:\w+'
     'rollup-commonjs-global'         = 'typeof globalThis!=="undefined"\?globalThis:typeof window!=="undefined"\?window:typeof global'
     'rollup-commonjs-namespace'      = 'Object\.defineProperty\(\w+,"__esModule",\{value:!0\}\),Object\.keys\(\w+\)\.forEach'

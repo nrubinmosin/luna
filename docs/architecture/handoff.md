@@ -23,7 +23,7 @@ hands off too, at its turn's end with no terminal: [Leads](#leads),
 | `agents/handoff/facts.rs` | what the notices, the tool's answer and the prompt say; the checklist (`SECTIONS`) and the look at a file for it (`missing_sections`) |
 | `agents/handoff/file.rs` | the handoff file checked and copied |
 | `agents/handoff/phase.rs` | the switch's machine |
-| `agents/handoff/store.rs` | what is saved, `<data>/handoffs/handoffs.json`; the ask (`Asked`, `AskKind`) and the re-arm of a record from before asks were kept (`rearmed_unasked`) |
+| `agents/handoff/store.rs` | what is saved, `<data>/handoffs/handoffs.json`; the ask (`Asked`, `AskKind`) and the re-arm of a record from before asks were kept (`rearmed_unasked`); changes one at a time (`change`, `records_mut`), each written with every one before it and seen only once on disk, the write made with the records' lock let go so a look at them (`records`, `sessions_meta`'s) never waits on it; what a change does in the agent registry (a notice queued with its ask, notices dropped as an ask opens) goes in with the record (`when_in`), never before it or without it |
 | `library/system.rs` | the instructions resolved: Luna's own or the library's override (`handoff_instructions`) |
 | `resources/skills/session-handoff/SKILL.md` | Luna's own instructions, compiled in (`LUNA_HANDOFF`) |
 | `src/features/chats/Handoff.tsx` | the panel's box, the divider, the chip's words (`askedWords`, `instructionsWords`) |
@@ -487,18 +487,18 @@ until they are through.
 
 ## The window
 
-- `session_meta` carries the latest `HandoffMark` (under way, done, failed) for
-  the pane's divider, `HandoffAsked` (the asks of the conversation and its
-  compactions since, while no handoff is under way or through) for the pane's
-  `handoff N%` chip, which then reads `· asked` and says when in its tooltip,
-  and `HandoffAsk` (`handoff_ask_of`: the ask open, its kind, when it was
-  opened and, for the person's, when its request was typed and when it
-  lapses). The menu's Hand off now and the `handoff asked` chip go by it
-  alone, with no clock of the window's: a reload, or the person's `/clear`
-  closing the ask, shows what the core holds. With the chat's CLI not
-  running `session_meta` says nothing, and the window asks `handoff_ask`
-  (the same `handoff_ask_of`) instead, so an ask that lapsed meanwhile leaves
-  the chip and the menu.
+- A chat's meta (`sessions_meta`) carries the latest `HandoffMark` (under way,
+  done, failed) for the pane's divider, `HandoffAsked` (the asks of the
+  conversation and its compactions since, while no handoff is under way or
+  through) for the pane's `handoff N%` chip, which then reads `· asked` and
+  says when in its tooltip, and `HandoffAsk` (`handoff_ask_of`: the ask open,
+  its kind, when it was opened and, for the person's, when its request was
+  typed and when it lapses). The menu's Hand off now and the `handoff asked`
+  chip go by it alone, with no clock of the window's: a reload, or the
+  person's `/clear` closing the ask, shows what the core holds. With the
+  chat's CLI not running there is no meta, and the chat's look carries
+  `handoffAsk` alone (the same `handoff_ask_of`), so an ask that lapsed
+  meanwhile leaves the chip and the menu.
 - `applied_by_luna` carries `HandoffApplied` for a chat with it on: the
   instructions it would be served now (`SystemSkillState`: Luna's with its
   version and hash, the override with its path, or the override broken and

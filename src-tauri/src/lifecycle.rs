@@ -67,7 +67,7 @@ fn now_ms() -> u64 {
 fn clock(ms: u64) -> String {
     jiff::Timestamp::from_millisecond(ms as i64)
         .ok()
-        .map(|t| t.to_zoned(jiff::tz::TimeZone::system()).strftime("%Y-%m-%d %H:%M:%S").to_string())
+        .map(|t| t.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime("%Y-%m-%d %H:%M:%S").to_string())
         .unwrap_or_else(|| "?".into())
 }
 
@@ -238,6 +238,7 @@ pub fn exiting(reason: &str) {
 pub fn note_exit(reason: Option<String>) {
     match reason {
         Some(r) => {
+            crate::log::flush_page_lines(Duration::from_secs(2));
             exiting(&r);
             // On Windows the install ends the process with exit(0), past the
             // event loop's end where Luna's other ways out wait for it.
@@ -261,6 +262,15 @@ pub fn note_exit(reason: Option<String>) {
 /// A tray Quit already under way.
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
+/// Told to the page as a way out from the tray begins (`true`): it ends the
+/// process without the page going away first, and the page writes on it what
+/// it holds back (the chats' storage writes a burst of changes once, after a
+/// gap) and every change after it at once. `false` takes that back, for a
+/// Restart that could not start the new window.
+const EXITING: &str = "ui://exiting";
+/// How long a way out from the tray gives the page to do so.
+const PAGE_WRITE: Duration = Duration::from_millis(300);
+
 /// Quit from the tray takes all of Luna along: the core is asked to stop,
 /// which has every session quit as a delete would, each leaving a whole
 /// transcript behind, and the window goes once it is gone. The window hides
@@ -270,12 +280,15 @@ pub fn quit_from_tray(app: &AppHandle) {
         return;
     }
     exiting("Quit from the tray menu");
+    crate::emit::to_ui(EXITING, true);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
     let app = app.clone();
     std::thread::spawn(move || {
+        let told = std::time::Instant::now();
         crate::corelink::shut_down();
+        std::thread::sleep(PAGE_WRITE.saturating_sub(told.elapsed()));
         app.exit(0);
     });
 }
@@ -288,11 +301,22 @@ pub fn restart_from_tray(app: &AppHandle) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
     }
+    // Off the event loop, which has to carry the event to the page meanwhile.
+    crate::emit::to_ui(EXITING, true);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(PAGE_WRITE);
+        restart_now(&app);
+    });
+}
+
+fn restart_now(app: &AppHandle) {
     let exe = match tauri::process::current_binary(&app.env()) {
         Ok(exe) => exe,
         Err(e) => {
             crate::log::warn("app", &format!("cannot restart: {e}"));
             QUITTING.store(false, Ordering::SeqCst);
+            crate::emit::to_ui(EXITING, false);
             return;
         }
     };
@@ -306,6 +330,7 @@ pub fn restart_from_tray(app: &AppHandle) {
     if let Err(e) = started {
         crate::log::warn("app", &format!("cannot restart: {} did not start: {e}", exe.display()));
         QUITTING.store(false, Ordering::SeqCst);
+        crate::emit::to_ui(EXITING, false);
         return;
     }
     exiting("Restart from the tray menu; the core and its sessions stay");
@@ -331,6 +356,7 @@ pub fn wait_for_previous() {
 /// PC being shut down under Luna. Does what the app's own exit would: no new
 /// events, the power request let go.
 pub fn end_process() -> ! {
+    crate::log::flush_page_lines(Duration::from_secs(2));
     crate::emit::stop();
     crate::power::clear();
     std::process::exit(0)

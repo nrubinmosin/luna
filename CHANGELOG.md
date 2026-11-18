@@ -8,6 +8,247 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-18
+
+Nothing in Luna's window moves any more, so an idle window draws no frames,
+and the window and the core do less as chats change: a chat waiting for you
+turns orange instead of flashing. A link clicked in a terminal opens in the
+system's default browser, and Settings → Links is gone. Luna is on the latest
+toolchains and packages, xterm.js 6 and Tauri 2.12.6 among them, and its own
+requests check certificates against the system's trust store. The terminals
+no longer slow down the longer Luna runs, what waits in the core is bounded,
+and a delete or the orphan sweep no longer removes a worktree another session
+is in or starting into.
+
+### Added
+
+- A Claude Code chat can be started in auto mode: the new-chat dialog offers
+  **Auto** (`--permission-mode auto`) beside Ask, Edits, Plan only and Bypass,
+  and the pane's chip shows it. Claude Code then decides for itself, with its
+  own review of risky actions: where that review cannot run it starts in its
+  Manual mode, which asks, and an action the review cannot judge later on it
+  refuses. Luna ranks such a chat where it ranks a helper in `auto`, above
+  Edits and below Bypass, so its helpers run in `auto` or below; the rank
+  follows the mode picked, and a start in Manual does not lower it. A
+  settings file's `defaultMode: auto` now opens the dialog on Auto (it opened
+  on Bypass) and starts a helper on the account's default in `auto` (it
+  started in `bypassPermissions`), and a helper running in `auto` that you
+  open as a chat keeps it (it took the account's default).
+
+### Changed
+
+- Luna builds on Rust 1.100.0, Node 26.13.1 (the current LTS) and pnpm 12.21.0,
+  and its packages and crates are at their latest releases: among them
+  xterm.js 6 with its WebGL and fit addons (the WebGL addon had been made for 6
+  and run on 5.5), Vite 8, TypeScript 6, Tauri 2.12.6 with its plug-ins and
+  jiff 1.0. Two stay behind: TypeScript on 6, as typescript-eslint does not
+  support 7 yet, and sha2 0.10 and hmac 0.12, the digest stack wry still links
+  into the exe.
+- The terminals, a login window's too, look and type as they did: the
+  scrollbar xterm.js 6 draws of its own is hidden, as the old one was, and Alt
+  with an arrow key still sends what Ctrl with it sends, which xterm.js 6
+  leaves to the app.
+- Luna's own requests (the CLI downloads, the usage and model lookups, the
+  sign-in refresh) go over the HTTP client the updater already uses, with its
+  TLS, instead of a second one of their own. Certificates are now checked
+  against the system's trust store rather than a list built into Luna, and the
+  requests name themselves `luna/<version>`, but for three that keep the name
+  they sent before: Codex's usage lookup says `codex_cli_rs`, and the lookup
+  of Codex's latest release and the download of its checksums say `luna`. A
+  certificate authority added to or removed from Linux's trust store reaches
+  these requests when Luna restarts. The timeouts are as before, gzip is still
+  asked for and undone, and no proxy is used, as before. A request that
+  carries a token (the usage lookups, the model lookup, the sign-in refresh)
+  follows no redirect: one comes back as the error it is.
+- Nothing in Luna's window moves any more, so an idle window draws no frames:
+  a chat waiting for you wears an orange title bar and status-bar field
+  instead of flashing them, a working chat's dot keeps its color without
+  pulsing and a background chat's is a ring, as is the status bar's dot
+  beside the background count, a helper just spawned rings its chip for a few
+  seconds
+  without glowing, a button at work says so in words and goes gray instead of
+  spinning (an account's refresh button says "Refreshing…"), and dialogs,
+  menus, the sidebar and folders open and close at once.
+  The terminals' cursors no longer blink unless the program in one asks for
+  it: each blinking cursor redrew its terminal twice a second.
+- The window does less as chats change: a change to one chat (its status,
+  context, title, a handoff mark) re-renders its own row rather than the whole
+  list, the status bar measures
+  itself only when what it shows changes, the chat list is written to disk at
+  most twice a second and without the chats' context (read again within
+  seconds), and each session's output goes to its own terminal only. A new
+  chat, its session id, worktree or account is still written at once, and a
+  Quit or Restart window from the tray, or an update, writes what waits
+  first and every change after it at once. Chats stored by an earlier Luna
+  load as before.
+- The window asks after all its chats in one call every few seconds rather
+  than one call a chat, and the core reads a transcript's or rollout's end
+  again only once the file has changed or a minute has passed.
+- A session's screen is caught up with its new output rather than drawn again
+  from up to 2 MB of it each time something looks at it.
+- The power chip's state goes to the window only when it changes, not at
+  every sample.
+- The window's commands that only read files run off its main thread, and
+  so do its log lines and the keystrokes it passes to the core, so a slow
+  disk or a busy core no longer holds the window up. Keystrokes a core does
+  not take are refused past 8 MB waiting, with an error, rather than held.
+- A chat's handoff record is written to disk with the records free to be
+  read, so the window's look at its chats no longer waits on that write.
+- Each Codex chat's rollout is read under a lock of its own, so one chat's
+  long read no longer holds up every other Codex chat's status.
+- What waits in the core is bounded in bytes: a session's input (8 MB, then
+  refused with an error until its CLI has taken it), its output on the way to
+  the window (the reader waits, nothing is dropped), each window's queue
+  (64 MB, then the window reconnects), text queued for a helper and text held
+  for a person's chat (16 MB each, then a send is refused, saying why), and
+  the Codex rollouts looked up by thread (1,024 kept).
+- Dependabot opens no more pull requests: the crates, npm packages, pinned
+  Actions and Docker images move by hand, in the project's own commits through
+  the gate, and Dependabot only alerts on advisories, for the crates and at
+  most the direct npm dependencies in `package.json` (GitHub reads neither the
+  lockfile pnpm 12 writes nor Actions pinned by SHA; `pnpm audit` is what
+  sees advisories for transitive npm packages)
+  ([ADR-0029](docs/adr/0029-dependencies-move-by-hand.md)). The commit-message
+  check holds every commit to the rules, with no exemption for Dependabot's.
+
+### Removed
+
+- Luna no longer chooses a browser for a link: a link clicked in a terminal
+  opens in the system's default browser (a mail link in the mail app), and
+  Shift+click does the same. Settings → Links, its default browser, its
+  per-account and per-folder exceptions, the browsers found on Windows, your
+  own browser command lines and a chat's remembered browser are gone. A
+  settings file or a chat that still holds them loads as before, and the
+  next write leaves them out.
+
+### Fixed
+
+- A chat terminal whose graphics context the WebView takes away (too many
+  open at once) goes back to drawing without WebGL instead of staying blank,
+  and closing a terminal no longer fails inside the WebGL addon.
+- The terminals no longer get slower to draw the longer Luna runs: once the
+  WebGL renderer's glyph atlas, shared by the terminals, had merged its pages
+  (it grows with every new character and color seen), every frame of every
+  terminal rebuilt all its cells; now each rebuilds once per merge. Nor does
+  the atlas grow for as long as Luna runs any more: once full it starts over,
+  as does its cache of drawn glyphs past 32,768 (or four times the cells of
+  the largest terminal sharing it) and the colors it worked out for contrast,
+  which kept the window's memory climbing with every new color seen. Luna
+  carries the WebGL addon patched with xterm.js's own fixes until a release
+  of the addon has them.
+- Closing an account's sign-in window while its session is still starting
+  ends that session once it has started, instead of leaving it running; a
+  sign-in window opened again on the account meanwhile shows nothing of that
+  session and starts its own only once it is gone, saying so when that takes
+  over 15 s.
+- The chats' status dots, and the status bar's, show in Windows' contrast
+  themes, in the theme's colors, a background chat's as a ring: they were
+  not drawn there at all.
+- A panic in the core while it held its list of sessions no longer makes
+  every later keystroke, resize, reattach and start panic too.
+- A chat started again under the id of one being deleted waits for the delete
+  rather than losing its registration, hooks file and Codex rollout to the
+  delete's cleanup; and a worktree another session went into while the
+  deleted chat was quitting is kept.
+- Two saves of the chats' ties at once (`chat-ties.json`) can no longer leave
+  the older of the two on disk.
+- The window looks for a resting chat's saved title only under an account
+  folder of Luna's, as its other commands that take one do.
+- Writers at once can no longer queue more between them than a byte bound
+  lets through, and one page log line longer than its 1 MB bound is written
+  when nothing else waits.
+- Keys a session does not take are said in its pane (`[keys not delivered:
+  …]`), and the core's answer to a CLI's cursor query is never refused with
+  them.
+- A deleted chat is not started again by a pane that had not let go of it; a
+  session killed and started again no longer hears the old one's exit; and a
+  chat or helper starting in a worktree being removed with a deleted chat is
+  refused, saying so, or keeps it.
+- A handoff's threshold notice is queued only once its ask is saved, so the
+  notifier no longer drops it as one that no ask stands for.
+- A save of the chats' ties waiting behind another as the sessions are
+  stopped no longer writes over what was saved before.
+- Text joined to a helper's running turn on a stdin its CLI does not read
+  counts against the 16 MB a helper may have waiting.
+- A resting chat's saved title is looked for in the next round when a round
+  stopped before it.
+- A helper's delete with its worktree and the sweep of orphan worktrees keep
+  a worktree a chat or helper is starting in, and refuse a start into one
+  they are removing, as a chat's delete does.
+- A Claude Code chat resumed into its worktree by name keeps that worktree
+  from a delete or the orphan sweep from its start, not only once its CLI has
+  said where it is.
+- A session's exit said late, as the chat was started again, no longer marks
+  the new session exited in its pane or in what agents are told: each exit
+  carries its session's spawn number, and the pane takes only its own.
+- Stopping the sessions waits for a save of the chats' ties under way, so
+  nothing the stopping did is written after it.
+- The sweep of orphan worktrees no longer offers or removes the worktree of a
+  Codex chat or helper started with a new worktree before its first prompt,
+  or of a Claude Code one started into an unnamed worktree, while Luna does
+  not yet know which worktree is theirs.
+- A chat's or helper's delete and the orphan sweep keep a worktree a session
+  reached through a link or junction to its project, where they name it by
+  its real path, and the other way about; on Linux a path in another case is
+  no longer taken for the same worktree. The sweep does the same for a chat
+  parked in a worktree and for a Claude Code session in a terminal, asks
+  all of them again before each removal, and takes a path through a folder
+  that no longer reads for in use.
+- The sweep of orphan worktrees keeps a Codex chat's new worktree that its
+  CLI made while Luna's own start waited, or while the wall clock was set
+  back, by no clock at all, and asks again under its last look whether a
+  session making one may have made it. The user guide says which sessions
+  the sweep cannot see: Codex sessions Luna did not start, and Claude Code
+  sessions started in a terminal after its last look or on a config folder
+  that is neither Luna's nor the user's own.
+- A session started or still running while every session is stopped for an
+  update, a core leaving or the PC shutting down no longer lets the chats'
+  ties be saved as the stopping left them before the process ends; they are
+  saved again only once the update's install fails or the OS is seen to take
+  the shutdown back, or, for an update that never came (the installer never
+  started, or the window was gone mid-stop), 10 minutes after the stop. The
+  window's word that the install failed, said while the sessions are still
+  being stopped, takes effect only once they are.
+- A session or helper started through a link to its project keeps its
+  worktree from a delete by the real path even once the link is gone, and
+  one that moved into a `.claude/worktrees` that is a junction elsewhere is
+  found there; a start whose folder does not read is not let into a
+  worktree while one is being removed, and one already on its way in has
+  the removal keep the worktree, saying so; a Codex or Claude Code
+  start making a new worktree keeps what its CLI may have made from the
+  orphan sweep before its session is listed too. A start held off by a
+  removal says why: the worktree it goes into is being removed, or a folder
+  on the way does not read, so it cannot be told to be outside it.
+- A Claude Code session killed long ago, whose registry entry stayed behind,
+  no longer keeps worktrees from the orphan sweep; a folder that does not
+  read keeps worktrees only from the sweep, not from a chat's or helper's
+  delete; and starts elsewhere no longer have a delete or the sweep keep a
+  worktree for want of a quiet moment to look.
+- A chat's delete that keeps its worktree, another session being in it, says
+  so on the status bar ("worktree kept"), and a helper's delete answers
+  `worktreeLeft` with why, where both said nothing before.
+- A start no longer waits for a delete or the orphan sweep reading a slow or
+  dropped network drive.
+- A pane or the login window whose session was killed while its reader was
+  stuck is told the session ended, rather than left waiting on a dead one.
+
+### Security
+
+- A settings file's `defaultMode` that Luna does not offer a chat in no
+  longer becomes Luna's stock `bypassPermissions`: `dontAsk` starts a helper
+  on the account's default in `dontAsk` and opens the new-chat dialog on Ask,
+  and a mode Luna does not know counts as `default`, which asks. A helper in
+  `dontAsk` opened as a chat starts on Ask, not on the account's default.
+- The new-chat dialog's Create waits until the account's settings files have
+  answered, so a quick click no longer makes a Claude Code chat in Bypass, or
+  a Codex one with no sandbox, before the files' own mode arrived.
+- A link from a terminal is parsed before it opens and reaches the browser
+  or mail app percent-encoded; one with a control character, longer than
+  8 KB, a mail link asking to attach a file, or one that still holds a quote
+  (the parser keeps one in a host) is refused, and the log gets
+  no more of a link than the scheme of one refused, and none of the system's
+  error about one.
+
 ## [0.18.5] - 2026-11-17
 
 Luna no longer depends on chrono, which RustSec now lists as unmaintained:
@@ -1370,7 +1611,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.18.5...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/nrubinmosin/luna/compare/v0.18.5...v0.19.0
 [0.18.5]: https://github.com/nrubinmosin/luna/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.4
 [0.18.2]: https://github.com/nrubinmosin/luna/compare/v0.18.1...v0.18.2

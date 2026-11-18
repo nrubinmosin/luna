@@ -228,7 +228,7 @@ function AccountsPanel() {
         return (
           <div
             key={accountKey(acc.provider, acc.name)}
-            style={{ padding: '9px 0 8px', borderTop: '1px solid var(--line)', animation: 'pop-in .2s ease-out' }}
+            style={{ padding: '9px 0 8px', borderTop: '1px solid var(--line)' }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: dot }} />
@@ -330,7 +330,9 @@ function AccountsPanel() {
               <ToolButton
                 icon="refresh"
                 size={24}
-                spin={busy}
+                // Words while at work, as the Sync buttons say "Syncing…":
+                // the icon no longer spins.
+                label={busy ? 'Refreshing…' : undefined}
                 disabled={busy}
                 title={
                   busy

@@ -961,6 +961,28 @@ d8e1  latest.json
         Assert-Throws { Assert-AttestableSbom (& $sbom 'list.json' '[]') } 'not a JSON object'
     }
 
+    Check 'the scripts load in the sign job''s checkout, which holds only its own files' {
+        # The files its sparse checkout takes, as the allowlist above has them.
+        $files = @($SignSteps[0].with -split '\r?\n' | Where-Object { $_ -match '^/' } | ForEach-Object { $_.TrimStart('/') })
+        if (-not ($files -contains 'scripts/lib.ps1')) { throw 'the allowlist no longer names scripts/lib.ps1' }
+        # An apostrophe in the path, as a checkout under O'Brien would have:
+        # the path goes to the child as an argument, never into its source.
+        $tree = Join-Path $work "sign-checkout-O'Brien"
+        foreach ($file in $files) {
+            $to = Join-Path $tree $file
+            New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
+            Copy-Item -LiteralPath (Join-Path $RepoRoot $file) -Destination $to
+        }
+        $out = pwsh -NoProfile -Command {
+            param($tree)
+            . (Join-Path $tree 'scripts/lib.ps1')
+            . (Join-Path $tree 'scripts/release-lib.ps1')
+            Get-NodeImage
+        } -args $tree 2>&1
+        if ($LASTEXITCODE) { throw "loading failed: $out" }
+        if ("$out" -notmatch '^node:') { throw "Get-NodeImage gave '$out'" }
+    }
+
     Check 'a core fingerprint is 16 lowercase hex digits' {
         Assert-CoreFingerprint '0123456789abcdef' 'test'
         Assert-Throws { Assert-CoreFingerprint '0123456789ABCDEF' 'x.txt' } 'x.txt holds'

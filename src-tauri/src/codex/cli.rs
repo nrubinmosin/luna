@@ -19,6 +19,7 @@
 //! back to the version later holds it to again (`cli::reverify`).
 
 use crate::cli::{download_to, sane_version, Package, PackageFile, Source};
+use crate::http::Agent;
 use std::fs;
 use std::path::{Component, Path};
 
@@ -47,14 +48,14 @@ fn asset_name() -> String {
     format!("codex-package-{}.tar.gz", target())
 }
 
-fn latest(agent: &ureq::Agent) -> Result<String, String> {
+fn latest(agent: &Agent) -> Result<String, String> {
     let rel: serde_json::Value = agent
         .get(&format!("https://api.github.com/repos/{REPO}/releases/latest"))
-        .set("User-Agent", "luna")
-        .set("Accept", "application/vnd.github+json")
+        .header("User-Agent", "luna")
+        .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| format!("release lookup: {e}"))?
-        .into_json()
+        .json()
         .map_err(|e| format!("release lookup: {e}"))?;
     let tag = rel["tag_name"].as_str().ok_or("release lookup: no tag_name")?;
     let ver = tag.strip_prefix(TAG_PREFIX).ok_or_else(|| format!("unexpected tag {tag:?}"))?;
@@ -72,19 +73,19 @@ pub fn checksum_from_sums(sums: &str, asset: &str) -> Option<String> {
     })
 }
 
-fn expected_checksum(agent: &ureq::Agent, version: &str) -> Result<String, String> {
+fn expected_checksum(agent: &Agent, version: &str) -> Result<String, String> {
     let url = format!("https://github.com/{REPO}/releases/download/{TAG_PREFIX}{version}/codex-package_SHA256SUMS");
     let text = agent
         .get(&url)
-        .set("User-Agent", "luna")
+        .header("User-Agent", "luna")
         .call()
         .map_err(|e| format!("checksums: {e}"))?
-        .into_string()
+        .text()
         .map_err(|e| format!("checksums: {e}"))?;
     checksum_from_sums(&text, &asset_name()).ok_or_else(|| format!("{} not in SHA256SUMS for {version}", asset_name()))
 }
 
-fn fetch(agent: &ureq::Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Package, String> {
+fn fetch(agent: &Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Package, String> {
     let checksum = expected_checksum(agent, version)?;
     let asset = asset_name();
     let part = dir.join(format!("{asset}.part"));

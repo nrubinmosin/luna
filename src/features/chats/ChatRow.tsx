@@ -1,24 +1,25 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { Chat } from '../../shared/types';
 import { StatusDot } from '../../shared/ui/StatusDot';
 import { chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, shortSessionId } from '../../shared/lib/format';
 import { ToolButton } from '../../shared/ui/icons';
-import { numberedChats, useChats } from './chats.store';
+import { useChats } from './chats.store';
 import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
 import { draftTag, useDrafts } from './drafts.store';
 import { CLEAR_WAITING_TITLE, clearWaiting, useMarked } from './marked.store';
 import { BackgroundChip } from '../agents/BackgroundChip';
 
-export function ChatRow({ chat }: { chat: Chat }) {
+/** One chat's row. `listNo` is its place in the numbered run, 1 to 9, or null
+ *  past it. Memoized: a chat the store did not touch is the same object. */
+export const ChatRow = memo(function ChatRow({ chat, listNo }: { chat: Chat; listNo: number | null }) {
   const active = useChats(s => s.active === chat.id);
   const tag = draftTag(useDrafts(s => s.by[chat.id]));
   const marked = useMarked(s => !!s.by[chat.id]);
   const setActive = useChats(s => s.setActive);
   const dragging = usePanes(s => s.drag === chat.id);
   const layout = usePanes(currentLayout);
-  const group = usePanes(s => s.group);
   // Which tile of the board on screen holds this chat, 1-based to match the
   // "pane N of M" wording in an empty pane; null when it isn't on this board.
   const paneNo = usePanes(s => {
@@ -27,11 +28,6 @@ export function ChatRow({ chat }: { chat: Chat }) {
   });
   // With one pane there are no pane numbers worth showing, so the row wears its
   // own place in the list instead — which is what Ctrl+<digit> counts through.
-  const listNo = useChats(s => {
-    if (layout > 1) return null;
-    const i = numberedChats(s.folders, group).findIndex(c => c.id === chat.id);
-    return i >= 0 && i < 9 ? i + 1 : null;
-  });
   const badge = layout === 1 ? listNo : paneNo;
   const onScreen = paneNo != null;
 
@@ -152,8 +148,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
             color: onScreen ? '#fff' : 'inherit',
             opacity: onScreen ? 1 : 0.6,
             background: onScreen ? ACCENT : 'transparent',
-            border: `1px solid ${onScreen ? (active ? '#fff' : ACCENT) : 'currentColor'}`,
-            transition: 'background .2s, color .2s'
+            border: `1px solid ${onScreen ? (active ? '#fff' : ACCENT) : 'currentColor'}`
           }}
         >
           {badge}
@@ -187,4 +182,4 @@ export function ChatRow({ chat }: { chat: Chat }) {
       {confirming && <DeleteChatDialog chat={chat} onClose={() => setConfirming(false)} />}
     </div>
   );
-}
+});

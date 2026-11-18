@@ -24,7 +24,6 @@ import { useKeymap } from './keymap';
 import { useAltPeek } from '../features/panes/altPeek';
 import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog';
 import { SettingsDialog } from '../features/settings/SettingsDialog';
-import { LinkChooser } from '../features/browsers/LinkChooser';
 import { LibraryWindow } from '../features/library/LibraryWindow';
 import { RecommendationsDialog } from '../features/settings/RecommendationsWindow';
 import { useLibrary } from '../features/library/library.store';
@@ -32,10 +31,12 @@ import { healScaleDrift } from './dpi';
 import { Icon } from '../shared/ui/icons';
 import { STRIP, useShell } from './shell.store';
 import { uiHeartbeat } from '../ipc/agents';
-import { onNotify, onOpenChat } from '../ipc/events';
+import { onExiting, onNotify, onOpenChat } from '../ipc/events';
 import { keepKeyboardHome, peekFromNotice } from '../features/panes/navigate';
 import { notify } from '../shared/lib/notify';
-import { allChats, useChats } from '../features/chats/chats.store';
+import { exiting } from '../shared/lib/throttledStorage';
+import { chatsChanged, useChats } from '../features/chats/chats.store';
+import type { Folder } from '../shared/types';
 import { usePanes } from '../features/panes/panes.store';
 
 /** How far in from the window's left edge the pointer brings a hidden
@@ -45,8 +46,8 @@ const EDGE = 24;
 
 /**
  * The sidebar. Pinned, it holds its width in the row. Unpinned, it takes none:
- * resting the pointer at the window's left edge slides it out over the board
- * (which keeps its size), and leaving it slides it away again — never pinned
+ * resting the pointer at the window's left edge brings it out over the board
+ * (which keeps its size), and leaving it puts it away again — never pinned
  * by the hover itself. The title bar's button pins and unpins.
  */
 function Dock() {
@@ -133,7 +134,7 @@ function Dock() {
       data-shown={shown ? 'yes' : 'no'}
       onMouseEnter={enter}
       onMouseLeave={leave}
-      style={{ width: pinned ? width : STRIP, transition: resizing ? 'none' : undefined }}
+      style={{ width: pinned ? width : STRIP }}
     >
       {!pinned && <div className="dock-strip" />}
       {/* Hidden rather than unmounted: the list keeps its scroll, and coming
@@ -175,20 +176,31 @@ export function App() {
   useEffect(() => {
     const off = onNotify(n => void notify(n.title, n.body, n.chatId));
     const offOpen = onOpenChat(p => peekFromNotice(p.chatId));
+    // What the chats' storage holds back goes to disk before the tray's
+    // way out ends the process, and every change after it at once.
+    const offExit = onExiting(going => exiting('tray', going));
     return () => {
       void off.then(f => f());
       void offOpen.then(f => f());
+      void offExit.then(f => f());
     };
   }, []);
 
   // A chat listed in a group the title bar does not offer could never be
   // reached; whatever put it there, the group is made rather than the chat
   // lost.
+  // Only when a chat comes, goes or changes group, not on a status or context
+  // tick.
   useEffect(() => {
-    const cover = () =>
-      usePanes.getState().coverGroup(Math.max(0, ...allChats(useChats.getState().folders).map(c => c.group)));
-    cover();
-    return useChats.subscribe(cover);
+    const cover = (folders: Folder[]) => {
+      let top = 0;
+      for (const f of folders) for (const c of f.chats) if (c.group > top) top = c.group;
+      usePanes.getState().coverGroup(top);
+    };
+    cover(useChats.getState().folders);
+    return useChats.subscribe((s, prev) => {
+      if (chatsChanged(prev.folders, s.folders, (was, now) => was.group === now.group)) cover(s.folders);
+    });
   }, []);
 
   // Tells the Rust side the page is alive; a window that goes quiet while on
@@ -261,7 +273,6 @@ export function App() {
       <ShortcutsDialog />
       <SettingsDialog />
       <RecommendationsDialog />
-      <LinkChooser />
       <WorktreesDialog />
       <LibraryWindow />
     </div>

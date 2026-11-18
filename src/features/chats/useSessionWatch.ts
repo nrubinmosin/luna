@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
-import { handoffAsk } from '../../ipc/handoff';
-import { savedTitle, sessionMeta } from '../../ipc/sessions';
+import { savedTitle, sessionsMeta, type ChatLookDto } from '../../ipc/sessions';
 import { notifyWaiting } from '../../shared/lib/notify';
 import { PROVIDER_LABEL, type Chat } from '../../shared/types';
 import { accountOfChat, useAccounts } from '../accounts/accounts.store';
@@ -13,7 +12,8 @@ import { useMoveHints } from './moveHints.store';
 const EVERY_MS = 4000;
 
 /** Chats whose saved title has been looked up this run — once is enough for
- *  a session that is not running, since nothing is writing to it. */
+ *  a session that is not running, since nothing is writing to it. A chat
+ *  deleted leaves it at the next tick. */
 const titleLooked = new Set<string>();
 
 // The CLI registry reports its own status vocabulary; fold it into the
@@ -34,7 +34,9 @@ export const mapStatus = (s: string | null): Chat['status'] => {
  * that doesn't show the chat, and its row in the sidebar froze on whatever it
  * last said — most visibly "working" long after the agent had finished.
  * Polling from here covers every chat, visible or not, and does it once rather
- * than once per pane.
+ * than once per pane: one call a tick for all of them (`sessions_meta`), which
+ * the core answers off what it has kept of each CLI's files while they are
+ * unchanged.
  */
 export function useSessionWatch() {
   useEffect(() => {
@@ -44,19 +46,34 @@ export function useSessionWatch() {
       const { folders } = useChats.getState();
       const { accounts } = useAccounts.getState();
       const chats = folders.flatMap(f => f.chats);
+      // The set lives as long as the page; a chat deleted leaves it here.
+      const listed = new Set(chats.map(c => c.id));
+      for (const id of titleLooked) if (!listed.has(id)) titleLooked.delete(id);
 
-      // Sequential on purpose: each read touches the filesystem, and a burst of
-      // them across many chats is exactly the main-thread hiccup we just fixed.
-      for (const chat of chats) {
-        if (stopped) return;
+      const asked = chats.flatMap(chat => {
         const accountPath = accountOfChat(accounts, chat)?.path;
-        if (!accountPath) continue;
+        return accountPath ? [{ chat, accountPath }] : [];
+      });
+      if (asked.length === 0) return;
+      // A call that failed (no core) says no chat is running, as each chat's
+      // own failed call used to; the ask for a handoff stays as it was.
+      const looks: ChatLookDto[] = await sessionsMeta(
+        asked.map(({ chat, accountPath }) => ({ id: chat.id, accountPath }))
+      ).catch(() => []);
+      const byId = new Map(looks.map(l => [l.id, l]));
 
+      // Every chat's look goes in at once, with no wait between: a wait (a
+      // saved title's) would leave the chats after it on what the core said
+      // before it. The saved titles come after.
+      const titles: { id: string; accountPath: string }[] = [];
+      for (const { chat, accountPath } of asked) {
+        if (stopped) return;
         const store = useChats.getState();
         const fresh = store.findChat(chat.id);
         if (!fresh) continue;
 
-        const meta = await sessionMeta(chat.id, accountPath).catch(() => null);
+        const look = byId.get(chat.id);
+        const meta = look?.meta ?? null;
         if (!meta) {
           // No live session — the pty exited or was never started. Anything
           // other than resting would be a lie the sidebar keeps telling.
@@ -65,14 +82,11 @@ export function useSessionWatch() {
           useMarked.getState().set(chat.id, null);
           // The ask for a handoff is the core's, CLI or none: one that lapsed
           // while it was down must not keep the chip and the menu's refusal.
-          const ask = await handoffAsk(chat.id).catch(() => undefined);
-          if (ask !== undefined) store.setHandoffAsk(chat.id, ask);
+          if (look) store.setHandoffAsk(chat.id, look.handoffAsk ?? null);
           // A chat restored from an earlier run may still wear the opening
           // prompt it was named after; the CLI's title is on disk by now.
           if (fresh.sessionId && fresh.nameSource !== 'user' && !titleLooked.has(chat.id)) {
-            titleLooked.add(chat.id);
-            const saved = await savedTitle(fresh.provider, accountPath, fresh.sessionId).catch(() => null);
-            if (saved) store.setName(chat.id, saved.title, saved.renamed ? 'rename' : 'cli');
+            titles.push({ id: chat.id, accountPath });
           }
           continue;
         }
@@ -113,6 +127,17 @@ export function useSessionWatch() {
         if (fresh.provider === 'codex' && meta.model && meta.model !== fresh.modelSeen) {
           store.setModelSeen(chat.id, meta.model);
         }
+      }
+
+      for (const { id, accountPath } of titles) {
+        if (stopped) return;
+        const fresh = useChats.getState().findChat(id);
+        if (!fresh?.sessionId || fresh.nameSource === 'user') continue;
+        // Marked as it is looked for, not as it is listed: a round stopped
+        // before this look leaves it for the next.
+        titleLooked.add(id);
+        const saved = await savedTitle(fresh.provider, accountPath, fresh.sessionId).catch(() => null);
+        if (saved) useChats.getState().setName(id, saved.title, saved.renamed ? 'rename' : 'cli');
       }
     };
 

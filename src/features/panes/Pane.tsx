@@ -343,7 +343,6 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
         // and left a wedge of pane background showing in each corner.
         borderRadius: '9px 9px 3px 3px',
         overflow: 'hidden',
-        transition: 'box-shadow .12s, border-color .12s',
         opacity: beingDragged ? 0.4 : 1,
         boxShadow: over
           ? `0 0 0 3px ${tint(28, 'transparent')}`
@@ -646,8 +645,6 @@ ${chat.worktreePath}`
           <OpeningHint chat={chat} />
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
             <Terminal chat={chat} folderPath={folder.path} />
-            {/* Keyed on the chat: a pane handed a new chat fades it in. */}
-            <div key={chat.id} className="pane-cover" />
             {chat.status === 'waiting' && !focused && (
               <div className="balloon">
                 <b>Waiting for you</b>

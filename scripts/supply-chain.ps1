@@ -95,7 +95,7 @@ function Invoke-Audit {
           -v "${RepoRoot}:/app:ro" `
           -v luna-corepack:/corepack `
           -w /app `
-          (Get-NodeImage) `
+          (Get-FrontendImage) `
           bash -c 'corepack pnpm audit --json'
     }
     $report = try { ($json -join "`n") | ConvertFrom-Json } catch { $null }

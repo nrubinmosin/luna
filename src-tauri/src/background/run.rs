@@ -5,8 +5,18 @@ use super::*;
 
 /// Starts a helper on its opening prompt.
 pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
+    // Resolved now, as it starts, and held until the helper is in the
+    // registry, which carries the same hold for as long as it is there
+    // (`Entry::hold`), where a delete asking whether its worktree is shared
+    // sees it: a helper sent into a worktree being removed is refused
+    // (`worktree::entering`). One sent into a new worktree keeps where its
+    // CLI makes them from the sweep until then, as its running turn does
+    // after (`holds`).
+    let hold = hold_of(&spec);
+    let _entering = crate::worktree::entering(std::sync::Arc::clone(&hold))?;
     let mut e = Entry {
         spec,
+        hold,
         started_ms: crate::throttle::now_ms(),
         session: None,
         cwd: None,

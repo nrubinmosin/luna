@@ -5,7 +5,7 @@ import * as defaults from '../../ipc/defaults';
 import * as sessions from '../../ipc/sessions';
 import * as trust from '../../ipc/trust';
 import type { ClaudeDefaultsDto, ClaudeModelDto, CodexDefaultsDto } from '../../ipc/defaults';
-import type { Account } from '../../shared/types';
+import { PERM_CLI, type Account } from '../../shared/types';
 import { expectInDialogFoot } from '../../test/dialog';
 import { useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from '../chats/chats.store';
@@ -136,6 +136,89 @@ describe('NewChatDialog: creating', () => {
     await user.click(screen.getByRole('button', { name: 'Create' }));
     const [chat] = allChats(useChats.getState().folders);
     expect(chat).toMatchObject({ provider: 'claude', model: 'Sonnet', effort: 'low', perm: 'Plan only' });
+  });
+
+  it('offers Claude Code’s auto mode, and starts the chat in it', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getAllByRole('radio', { name: /^(Ask|Edits|Plan only|Auto|Bypass)$/ }).map(r => r.id)).toEqual([
+      'perm-Ask',
+      'perm-Edits',
+      'perm-Plan only',
+      'perm-Auto',
+      'perm-Bypass'
+    ]);
+    expect(screen.getByText('Claude Code reviews risky actions itself')).toBeInTheDocument();
+    await user.click(screen.getByRole('radio', { name: 'Auto' }));
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ provider: 'claude', perm: 'Auto' });
+    // What its start passes as `--permission-mode` (ipc/sessions.ts).
+    expect(chat?.provider === 'claude' && PERM_CLI[chat.perm]).toBe('auto');
+  });
+
+  it('opens on auto where the account’s settings say so', async () => {
+    mocked.claudeDefaults.mockResolvedValue({ model: null, effort: null, permissionMode: fromAccount('auto') });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('radio', { name: 'Auto' })).toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ perm: 'Auto' });
+  });
+
+  it('opens on Ask where the settings’ mode is none a chat starts in, never on Bypass', async () => {
+    mocked.claudeDefaults.mockResolvedValue({ model: null, effort: null, permissionMode: fromAccount('dontAsk') });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('radio', { name: 'Ask' })).toBeChecked();
+    expect(screen.getByText("from the account's settings.json, its dontAsk read as Ask")).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ perm: 'Ask' });
+  });
+
+  it('creates nothing on the stock Bypass before the account’s settings have answered', async () => {
+    let answer: (dto: ClaudeDefaultsDto) => void = () => {};
+    const late = new Promise<ClaudeDefaultsDto>(resolve => (answer = resolve));
+    mocked.claudeDefaults.mockImplementation(() => late);
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    // The folder and trust checks are in; the settings are not.
+    await settle();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await user.keyboard('{Enter}');
+    expect(allChats(useChats.getState().folders)).toEqual([]);
+    act(() => answer({ model: null, effort: null, permissionMode: fromAccount('auto') }));
+    await settle();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ provider: 'claude', perm: 'Auto' });
+  });
+
+  it('creates nothing on Codex’s stock full access before its config has answered', async () => {
+    let answer: (dto: CodexDefaultsDto) => void = () => {};
+    const late = new Promise<CodexDefaultsDto>(resolve => (answer = resolve));
+    mocked.codexDefaults.mockImplementation(() => late);
+    useNewChat.getState().remember('/repo', { provider: 'codex', name: 'gpt' });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)).toEqual([]);
+    act(() =>
+      answer({ model: null, effort: null, approval: fromAccount('on-request'), sandbox: fromAccount('read-only') })
+    );
+    await settle();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({
+      provider: 'codex',
+      approval: 'on-request',
+      sandbox: 'read-only'
+    });
   });
 
   it('takes Codex’s model, effort, approval and sandbox from the account’s config', async () => {

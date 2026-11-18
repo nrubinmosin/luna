@@ -22,7 +22,6 @@ import {
   AT_STAKE,
   moveTargets,
   APPLIED,
-  BROWSERS,
   MOVE_PREVIEW,
   ORPHANS
 } from './fixtures';
@@ -115,7 +114,6 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'check_account_config') return null as unknown as T;
   // Settings' lists, so their shots show rows rather than empty states.
   if (cmd === 'codex_trusted_roots') return [String.raw`C:\src`, String.raw`D:\work\clients`] as unknown as T;
-  if (cmd === 'browsers') return BROWSERS as unknown as T;
   if (cmd === 'settings_sync_state') return { claude: 'personal', codex: null, onStart: true } as unknown as T;
   return fallback;
 }

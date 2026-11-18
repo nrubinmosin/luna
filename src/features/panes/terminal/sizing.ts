@@ -59,8 +59,8 @@ export function sizing(
     }, 60);
   };
 
-  // At most one fit per 80ms while a size is animating (the sidebar sliding,
-  // a split dragged), plus one when it settles: every fit is a pty resize, and
+  // At most one fit per 80ms while a size keeps changing (a split or the
+  // sidebar dragged), plus one when it settles: every fit is a pty resize, and
   // every resize makes the CLI repaint its whole screen.
   let lastFit = 0;
   let fitTimer: ReturnType<typeof setTimeout> | undefined;

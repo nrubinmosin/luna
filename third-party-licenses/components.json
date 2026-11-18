@@ -4,35 +4,35 @@
     {
       "section": "interface",
       "name": "Vite runtime helpers (preload helper, __vite__mapDeps)",
-      "version": "7.3.7",
+      "version": "8.3.8",
       "license": "MIT",
-      "source": "https://github.com/vitejs/vite/tree/v7.3.7/packages/vite/src/client",
+      "source": "https://github.com/vitejs/vite/blob/v8.3.8/packages/vite/src/node/plugins/importAnalysisBuild.ts",
       "note": "Emitted by Vite into the built interface: code for loading its chunks, not the build tool itself.",
       "texts": "tools/vite",
       "markers": ["vite-preload-helper", "vite-map-deps"],
-      "tiedTo": { "npm": "vite", "version": "7.3.7" }
+      "tiedTo": { "npm": "vite", "version": "8.3.8" }
     },
     {
       "section": "interface",
-      "name": "Vite module preload polyfill (adapted from es-module-shims)",
-      "version": "7.3.7",
+      "name": "Module preload polyfill (Rolldown's, for Vite; adapted from es-module-shims)",
+      "version": "1.2.19 (Rolldown, in Vite 8.3.8)",
       "license": "MIT",
-      "source": "https://github.com/vitejs/vite/blob/v7.3.7/packages/vite/src/node/plugins/modulePreloadPolyfill.ts",
-      "note": "Emitted by Vite into the built interface; its notice is Guy Bedford's, as the source carries it.",
+      "source": "https://github.com/rolldown/rolldown/blob/v1.2.19/crates/rolldown_plugin_vite_module_preload_polyfill/src/module-preload-polyfill.js",
+      "note": "Emitted by Rolldown, Vite's bundler, into the built interface. It is the polyfill Vite carried until 7, whose source gave Guy Bedford's notice for it; Rolldown's license, beside it, covers the port.",
       "texts": "tools/vite-modulepreload-polyfill",
       "markers": ["vite-modulepreload-polyfill"],
-      "tiedTo": { "npm": "vite", "version": "7.3.7" }
+      "tiedTo": { "npm": "rolldown", "version": "1.2.19" }
     },
     {
       "section": "interface",
-      "name": "CommonJS interop helper (@rollup/plugin-commonjs, bundled in Vite)",
-      "version": "29 (in Vite 7.3.7)",
+      "name": "Rolldown runtime helpers (CommonJS interop, module namespaces)",
+      "version": "1.2.19 (in Vite 8.3.8)",
       "license": "MIT",
-      "source": "https://github.com/rollup/plugins/tree/master/packages/commonjs",
-      "note": "Emitted into the built interface for the CommonJS packages it bundles (React among them).",
-      "texts": "tools/rollup-plugin-commonjs",
-      "markers": ["rollup-commonjs-default-export"],
-      "tiedTo": { "npm": "vite", "version": "7.3.7" }
+      "source": "https://github.com/rolldown/rolldown/blob/v1.2.19/crates/rolldown/src/runtime/runtime-base.js",
+      "note": "Emitted by Rolldown, Vite's bundler, into the built interface for the CommonJS packages it bundles (React among them). Derived from esbuild's runtime: Rolldown's THIRD-PARTY-LICENSE, with esbuild's and Rollup's notices, goes with its own.",
+      "texts": "tools/rolldown-runtime",
+      "markers": ["rolldown-runtime"],
+      "tiedTo": { "npm": "rolldown", "version": "1.2.19" }
     },
     {
       "section": "installer",
@@ -51,7 +51,7 @@
       "source": "https://github.com/tauri-apps/nsis-tauri-utils/tree/nsis_tauri_utils-v0.5.3",
       "note": "An NSIS plug-in that Tauri's bundler embeds in setup.exe. It is built with windows-sys, whose license texts are among the crates above.",
       "texts": "installer/nsis-tauri-utils",
-      "tiedTo": { "npm": "@tauri-apps/cli", "version": "2.12.3" }
+      "tiedTo": { "npm": "@tauri-apps/cli", "version": "2.12.5" }
     },
     {
       "section": "installer",

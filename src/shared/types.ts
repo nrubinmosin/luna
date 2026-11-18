@@ -30,7 +30,12 @@ export const PROVIDER_VENDOR: Record<Provider, string> = { claude: 'Anthropic', 
  *  `ultracode`, so it is not closed here. */
 export type Effort = string;
 
-export type PermMode = 'Ask' | 'Edits' | 'Plan only' | 'Bypass';
+/** Claude Code's permission modes as a chat names them (`PERM_CLI` spells
+ *  each as the CLI takes it). `Auto` leaves what would go further to Claude
+ *  Code's own review: it starts in its Manual mode, which asks, where that
+ *  review cannot run (2.1.323), and refuses an action the review cannot
+ *  judge later on (2.1.325). */
+export type PermMode = 'Ask' | 'Edits' | 'Plan only' | 'Auto' | 'Bypass';
 
 /** A Claude model as a chat keeps it: a family by its label (`Opus`), which
  *  goes to `--model` as its alias and so follows the family to its next
@@ -98,9 +103,6 @@ interface ChatBase {
   /** The guard against endless waits, asked for in the new-chat dialog: a
    *  shell command that would wait forever is refused before it runs. */
   guard?: boolean;
-  /** The browser this chat's links open in, remembered from a Shift+click;
-   *  unset means its account's, its folder's or the default. */
-  browser?: string | null;
   /** Auto-handoff, asked for in the new-chat dialog or its What Luna applied
    *  panel: past `handoffAt` percent of its context Luna asks the chat for a
    *  handoff and offers it the tool that starts its next conversation from
@@ -269,6 +271,7 @@ export const PERM_CLI: Record<PermMode, string> = {
   Ask: 'default',
   Edits: 'acceptEdits',
   'Plan only': 'plan',
+  Auto: 'auto',
   Bypass: 'bypassPermissions'
 };
 
@@ -276,6 +279,7 @@ export const PERM_HINTS: Record<PermMode, string> = {
   Ask: 'confirm every action',
   Edits: 'write files, ask for commands',
   'Plan only': 'no disk writes',
+  Auto: 'Claude Code reviews risky actions itself',
   Bypass: 'full access, no prompts'
 };
 
@@ -284,6 +288,7 @@ const PERM_OF_CLI: Record<string, PermMode> = {
   default: 'Ask',
   acceptEdits: 'Edits',
   plan: 'Plan only',
+  auto: 'Auto',
   bypassPermissions: 'Bypass'
 };
 

@@ -1,12 +1,12 @@
 [package]
 name = "luna"
-version = "0.18.5"
+version = "0.19.0"
 description = "Thin desktop UI over Claude Code and Codex CLI sessions"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nrubinmosin/luna"
 edition = "2021"
 # The toolchain in rust-toolchain.toml, the only one the crate is built with.
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 
 [lib]
 name = "luna_lib"
@@ -14,11 +14,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-# The core fingerprint (build.rs); already in the tree as a dependency.
+# The core fingerprint (build.rs), on the sha2 the exe links (below).
 sha2 = "0.10"
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
@@ -26,13 +26,22 @@ tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 base64 = "0.23"
-jiff = "0.2"
+jiff = "1"
 serde = { version = "1", features = ["derive"] }
 # preserve_order: a settings file Luna edits keeps its keys where the user put them.
 serde_json = { version = "1", features = ["preserve_order"] }
 dirs = "7"
 portable-pty = "0.9"
-ureq = { version = "2", features = ["json"] }
+# Luna's own requests (src/http.rs): the HTTP client the updater already
+# brings, on its TLS as the updater sets it up, rustls on ring with the OS's
+# trust store, so the tree holds one HTTP stack and one TLS stack. gzip
+# decodes through the flate2 below.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# SHA-256 throughout (downloads, tokens, file names, the HMAC). 0.10, the digest
+# stack wry links into the exe; tauri-codegen resolves 0.11, but only at build
+# time, and 0.11 here would link a second stack. It moves, with hmac, when wry
+# does.
 sha2 = "0.10"
 # RSA verification of the Claude Code release manifest's signature
 # (src/claude/manifest_sig.rs). The version rustls already brings in.
@@ -43,7 +52,7 @@ getrandom = "0.4.3"
 # Compares a presented secret with Luna's in constant time (src/secret.rs).
 subtle = "2.6.1"
 # Each chat's hook secret, HMAC-SHA256 of its id (src/secret.rs, hub.rs).
-# Pinned exactly; it builds on the digest, sha2 and subtle already in the tree.
+# Pinned exactly; it builds on the digest, sha2 and subtle the exe already links.
 hmac = "=0.12.1"
 # The hub's request heads (src/hub.rs), parsed strictly.
 httparse = "1.10.1"

@@ -15,7 +15,6 @@ export async function pageSteps(steps) {
     await sleep(200);
     el.click();
   };
-  const linkChooser = () => [...document.querySelectorAll('.window')].find(w => w.textContent.includes('Copy link'));
   const holds = (el, text) => !!el && (text == null || el.textContent.includes(text));
   const actions = {
     wait: sleep,
@@ -52,20 +51,6 @@ export async function pageSteps(steps) {
       await sleep(200);
       face.click();
     },
-    link: async url =>
-      (await store('features/browsers/browsers.store.ts')).useLinkChooser
-        .getState()
-        .show(url, 'demo-1', innerWidth - 120, innerHeight - 60),
-    browsers: async count => {
-      const s = await store('features/browsers/browsers.store.ts');
-      const d = s.useBrowsers.getState().data;
-      const found = Array.from({ length: count }, (_, i) => ({
-        id: 'b' + i,
-        name: 'Browser profile ' + i,
-        command: 'x %1'
-      }));
-      s.useBrowsers.setState({ data: { ...d, found } });
-    },
     // The first chat's helpers, each a copy of its first under one of `names`;
     // `done` leaves them idle with nothing left running.
     helpers: async (names, done) => {
@@ -74,8 +59,7 @@ export async function pageSteps(steps) {
       const idle = done ? { state: 'idle', leftRunning: [] } : {};
       s.setState({ helpers: names.map((name, i) => ({ ...h, id: h.id + '-' + i, name, ...idle })) });
     },
-    has: (selector, text) => holds(document.querySelector(selector), text),
-    linkChooser: text => holds(linkChooser(), text)
+    has: (selector, text) => holds(document.querySelector(selector), text)
   };
   let last;
   for (const [name, ...args] of steps) {

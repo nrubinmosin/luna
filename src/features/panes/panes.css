@@ -6,10 +6,6 @@
    ------------------------------------------------------------------------ */
 [data-app] .pane {
   container-type: inline-size;
-  transition:
-    border-color 0.12s,
-    box-shadow 0.12s,
-    opacity 0.12s;
 }
 [data-app] .pane-bar {
   --c: var(--luna-blue);
@@ -29,9 +25,6 @@
     var(--c) 86%,
     color-mix(in oklab, var(--c) 75%, black) 100%
   );
-  transition:
-    background 0.15s,
-    box-shadow 0.15s;
 }
 [data-app] .pane-bar .title-bar-controls {
   flex: none;
@@ -121,7 +114,6 @@
   min-width: 8.5ch;
   text-align: center;
   cursor: copy;
-  transition: background 0.14s;
 }
 [data-app] .pane-sid:hover {
   background: rgba(255, 255, 255, 0.2);
@@ -256,39 +248,16 @@
   }
 }
 
-/* Waiting for you: the bar flashes orange the way an XP taskbar button did,
-   and a balloon says so over a pane you are not looking at. */
+/* Waiting for you: the bar wears orange the way a flashing XP taskbar button
+   did at its brightest, and a balloon says so over a pane you are not looking
+   at. Static: nothing on screen moves. */
 [data-app] .pane[data-waiting="yes"] .pane-bar {
-  animation: taskbar-flash 2.4s ease-in-out infinite;
-}
-@keyframes taskbar-flash {
-  0%,
-  50%,
-  100% {
-    box-shadow: inset 0 0 0 40px rgba(255, 128, 0, 0);
-  }
-  62%,
-  88% {
-    box-shadow: inset 0 0 0 40px rgba(255, 128, 0, 0.62);
-  }
+  box-shadow: inset 0 0 0 40px rgba(255, 128, 0, 0.62);
 }
 [data-app][data-theme="dark"] .pane[data-waiting="yes"] .pane-bar {
-  animation-name: taskbar-flash-dark;
-}
-@keyframes taskbar-flash-dark {
-  0%,
-  50%,
-  100% {
-    box-shadow:
-      inset 0 -3px 0 var(--c),
-      inset 0 0 0 40px rgba(255, 140, 20, 0);
-  }
-  62%,
-  88% {
-    box-shadow:
-      inset 0 -3px 0 var(--c),
-      inset 0 0 0 40px rgba(255, 140, 20, 0.4);
-  }
+  box-shadow:
+    inset 0 -3px 0 var(--c),
+    inset 0 0 0 40px rgba(255, 140, 20, 0.4);
 }
 [data-app] .balloon {
   position: absolute;
@@ -305,13 +274,6 @@
   line-height: 1.35;
   box-shadow: 2px 3px 7px rgba(0, 0, 0, 0.28);
   pointer-events: none;
-  animation: balloon-in 0.16s ease-out;
-}
-@keyframes balloon-in {
-  from {
-    opacity: 0;
-    transform: translateY(-8px) scale(0.9);
-  }
 }
 [data-app] .balloon b {
   display: flex;
@@ -462,9 +424,9 @@
 [data-app][data-theme="dark"] .pane[data-focus="no"] .hpill {
   color: #a3a3a3;
 }
-/* A helper just spawned: glows as the row's chip does (kids-new, chats.css). */
+/* A helper just spawned: ringed as the row's chip is (chats.css). */
 [data-app] .hpill[data-new="yes"] {
-  animation: kids-new 1.2s ease-in-out 4;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 45%, transparent);
 }
 
 /* The title bar's "…" menu (Pane.tsx `PaneMenu`). */

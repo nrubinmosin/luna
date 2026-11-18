@@ -200,7 +200,7 @@ pub(super) fn back_up(dirs: &Dirs, from: &Path, files: &Files) -> Result<PathBuf
 /// two accounts' `skills/review` backed up in one millisecond would otherwise
 /// share one, the second written over the first. A name taken gets a count.
 pub(super) fn backup_slot(dirs: &Dirs, from: &Path) -> Result<PathBuf, String> {
-    let stamp = jiff::Zoned::now().strftime("%Y%m%d-%H%M%S-%3f");
+    let stamp = jiff::ZonedDateTime::now().strftime("%Y%m%d-%H%M%S-%3f");
     let tail: Vec<String> = from.components().rev().take(2).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
     let tail: String = tail.into_iter().rev().collect::<Vec<_>>().join("-").chars().filter(|c| !matches!(c, ':' | '\\' | '/')).collect();
     let backups = dirs.backups();

@@ -56,7 +56,6 @@ const manyHelpers = [['helpers', Array.from({ length: 14 }, (_, i) => `helper ${
 const hoverPill = [['hover', '.pane .hpill'], wait(500)];
 /** Holds the first pane to `px` wide, whatever the board gives it. */
 const narrowPane = px => [['maxWidth', '.pane', px], wait(200)];
-const LINK = 'https://example.com/a/rather/long/link?with=query';
 
 /** What only a click (or a store a click would set) opens: a scene to start
  *  from, the steps to take in it, and what must then be open (`opens`, steps
@@ -73,12 +72,6 @@ const EXTRAS = [
     opens: has('.picker-list'),
     then: scrollBody,
     closes: true
-  },
-  {
-    name: 'settings-links-menu',
-    scene: 'settings-links',
-    setup: [click('[aria-haspopup="menu"]')],
-    opens: has('[role=menu]')
   },
   {
     name: 'library-editor',
@@ -130,14 +123,6 @@ const EXTRAS = [
     scene: 'main',
     setup: [click('.pane [data-glyph="more"]'), wait(200), clickText('.pane-menu [role=menuitem]', 'Chat color…')],
     opens: has('.popover .swatch')
-  },
-  { name: 'link', scene: 'main', setup: [['link', LINK]], opens: [['linkChooser']] },
-  {
-    // More browsers than any window is tall.
-    name: 'link-many',
-    scene: 'main',
-    setup: [['link', LINK], wait(400), ['browsers', 24]],
-    opens: [['linkChooser', 'Browser profile 23']]
   },
   {
     // Three helpers done: every button of each row enabled, Open as chat too.

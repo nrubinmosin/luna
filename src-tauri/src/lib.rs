@@ -8,8 +8,8 @@ mod agents;
 mod applied;
 mod asking;
 mod background;
+mod backlog;
 mod boundary;
-mod browsers;
 mod checks;
 mod claude;
 mod cli;
@@ -28,12 +28,14 @@ mod fingerprint;
 #[cfg(test)]
 mod golden;
 mod guard;
+mod http;
 mod hub;
 mod ipc;
 #[cfg(unix)]
 mod keeper;
 mod library;
 mod lifecycle;
+mod links;
 #[cfg(test)]
 mod live;
 mod log;
@@ -47,6 +49,7 @@ mod provider;
 mod pty;
 mod secret;
 mod settings;
+mod stamped;
 mod sysmenu;
 mod throttle;
 mod watchdog;
@@ -135,22 +138,6 @@ pub(crate) fn build_main(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
     // shell may give it one back then.
     let _ = w.set_skip_taskbar(true);
     Ok(w)
-}
-
-/// A link a terminal was clicked on, in a browser of the user's (browsers.rs)
-/// or the mail app: a window the WebView opened would be a browser of Luna's
-/// own, with none of the user's sign-ins. Web and mail links only; a
-/// terminal prints anything.
-#[tauri::command]
-fn open_link(url: String, ctx: Option<browsers::Context>) -> Result<(), String> {
-    let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default();
-    match scheme.as_str() {
-        "http" | "https" => browsers::open(&url, &ctx.unwrap_or_default()),
-        "mailto" => tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|e| e.to_string()),
-        // Not the link itself: the log gets this, and a link may carry a
-        // sign-in code.
-        _ => Err(format!("not a web or mail link ({scheme}:)")),
-    }
 }
 
 /// The tray while the PC is held awake: a dot on the icon, and who holds it
@@ -267,9 +254,7 @@ macro_rules! app_handler {
             library::library_open,
             log::append_log,
             media::save_media,
-            open_link,
-            browsers::browsers,
-            browsers::set_browsers,
+            links::open_link,
             tray_awake,
             corelink::core_call,
             corelink::core_send,
@@ -431,6 +416,8 @@ pub fn run() {
                 }
             }
             if let tauri::RunEvent::Exit = &event {
+                // The page's last lines go in before the way out is said.
+                log::flush_page_lines(std::time::Duration::from_secs(2));
                 // Every way out that names itself has done so by now.
                 lifecycle::exiting("the event loop ended");
                 // A Claude Code model ask may still be saving a renewed

@@ -6,7 +6,7 @@ import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { HoverPopover } from '../../shared/ui/HoverPopover';
 import { logWarn } from '../../shared/lib/log';
 import { allChats, useChats } from '../chats/chats.store';
-import { rootOf, useBackground } from './background.store';
+import { helperRoots, helpersUnder, useBackground } from './background.store';
 import { openAsChat } from './bridge';
 import { HelperView } from './HelperView';
 import {
@@ -28,7 +28,7 @@ import { ownershipLine, suggestedChats } from './ownership';
 import { useNameOf } from './useNameOf';
 import './helpers.css';
 
-/** How long a chip glows after a helper of its chat was spawned. */
+/** How long a chip wears its ring after a helper of its chat was spawned. */
 const NEW_MS = 5000;
 
 /** A helper's four buttons (slim, each as wide as its label on one line) share
@@ -56,7 +56,7 @@ function useNow(ms: number): number {
 
 /** The helpers hanging from a chat, its helpers' helpers with them. */
 export function useHelpersOf(parentId: string): BackgroundHelperDto[] {
-  return useBackground(useShallow(s => s.helpers.filter(h => rootOf(h, s.helpers) === parentId)));
+  return useBackground(s => helpersUnder(s.helpers, parentId));
 }
 
 /**
@@ -82,10 +82,9 @@ export function LooseHelpers() {
   const helpers = useBackground(
     useShallow(s => {
       const rows = new Set(allChats(chats).map(c => c.id));
-      return s.helpers.filter(h => {
-        const root = rootOf(h, s.helpers);
-        return root === null || !rows.has(root);
-      });
+      const loose: BackgroundHelperDto[] = [];
+      for (const [root, under] of helperRoots(s.helpers)) if (root === null || !rows.has(root)) loose.push(...under);
+      return loose;
     })
   );
   if (helpers.length === 0) return null;
@@ -128,16 +127,16 @@ export function HelperSummary({ parentId }: { parentId: string }) {
 }
 
 /** Whether a helper of these was spawned within NEW_MS: the one moment nothing
- *  else on screen marks, so the face glows for a while. */
+ *  else on screen marks, so the face wears a ring for a while (a still one). */
 function useFresh(helpers: BackgroundHelperDto[]): boolean {
   const newest = Math.max(0, ...helpers.map(h => h.startedMs));
   const [fresh, setFresh] = useState(false);
   useEffect(() => {
     const left = newest + NEW_MS - Date.now();
-    // Also when the newest helper went inside its glow: the cleanup took the
-    // timer that would have put the glow out.
+    // Also when the newest helper went inside its ring's time: the cleanup
+    // took the timer that would have taken the ring off.
     if (left <= 0) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- the glow runs on the clock, outside React: it is set as the timer is armed or skipped
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the ring runs on the clock, outside React: it is set as the timer is armed or skipped
       setFresh(false);
       return;
     }

@@ -5,52 +5,48 @@ import { safely } from './safely';
 
 /**
  * Puts the terminal on the webgl renderer where there is one, and returns the
- * call that takes it off again. `onLoss` runs once the renderer has been
- * dropped for a lost context, the terminal back on the DOM renderer.
+ * call that takes it off again, to make before the terminal is disposed.
+ *
+ * Taking the addon off is what puts the terminal back on its DOM renderer: the
+ * addon's own teardown hands the terminal a new one. So a context the browser
+ * takes away for good (Chromium force-loses the oldest once too many are live,
+ * and the pane that owns it is usually still on screen) disposes the addon,
+ * and `onLoss` runs after, with the DOM renderer in place, to have the pane
+ * repainted.
  */
-export function loadWebgl(term: XTerm, onLoss: () => void): () => void {
+export function loadWebgl(term: XTerm, onLoss: () => void = () => {}): () => void {
   let webgl: WebglAddon | null = null;
-  let ctxLossSub: { dispose(): void } | null = null;
-  // Dispose the addon through its own dispose(): loadAddon replaced that
-  // method with the AddonManager's wrapper, which is idempotent and marks the
-  // addon disposed so term.dispose() skips it later. The previous fix here
-  // bound the wrapper, then swapped in a no-op — which worked, but only by
-  // accident of the wrapper's own bookkeeping, and it hid the real story:
-  // the addon's genuine first dispose throws a TypeError from deep inside
-  // its listener teardown (upstream @xterm/addon-webgl, after the renderer
-  // and its GL context are already released). That known-benign throw was
-  // being logged as a teardown warning on every single pane close — 2k+
-  // lines a day. Drop our own context-loss subscription first (it is the
-  // teardown path the throw walks through), and if the addon still throws a
-  // bare TypeError, swallow it; anything else is a real failure and is kept.
+  // Through the addon's dispose, which loadAddon replaced with the terminal's
+  // own wrapper: it runs the teardown once, and term.dispose() skips an addon
+  // already disposed. The addon's emitters, its context-loss one among them,
+  // go with it.
   const disposeWebgl = () => {
     const addon = webgl;
     webgl = null;
     if (!addon) return;
-    safely(() => ctxLossSub?.dispose());
-    ctxLossSub = null;
     try {
       addon.dispose();
     } catch (e) {
-      if (!(e instanceof TypeError)) {
-        logWarn('terminal', `webgl dispose failed: ${(e as Error)?.stack ?? String(e)}`);
-      }
+      // A throw escaping a React effect cleanup takes the root down, so a
+      // failure here is logged and goes no further.
+      logWarn('terminal', `webgl dispose failed: ${(e as Error)?.stack ?? String(e)}`);
     }
   };
+  let addon: WebglAddon | null = null;
   try {
-    webgl = new WebglAddon();
-    ctxLossSub = webgl.onContextLoss(() => {
-      // Chromium force-loses the oldest context once too many are live, and
-      // the pane that owns it is usually still on screen. Falling back to the
-      // DOM renderer silently would leave it blank until the next keystroke.
+    addon = new WebglAddon();
+    addon.onContextLoss(() => {
       disposeWebgl();
       onLoss();
     });
-    term.loadAddon(webgl);
+    term.loadAddon(addon);
+    webgl = addon;
   } catch (e) {
     // Slower, and otherwise invisible: the terminal still draws.
     logWarn('terminal', `webgl renderer unavailable, using the DOM renderer: ${(e as Error)?.message ?? String(e)}`);
-    webgl = null;
+    // Loaded but never activated, it still sits in the terminal's addons.
+    const failed = addon;
+    if (failed) safely(() => failed.dispose());
   }
   return disposeWebgl;
 }

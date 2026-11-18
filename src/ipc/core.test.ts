@@ -88,6 +88,21 @@ describe('call() inside Tauri', () => {
     expect(inner.args).toMatchObject({ id: 'c1', model: 'sonnet', permissionMode: 'plan', resume: null, tools: false });
   });
 
+  it('starts a Claude chat in auto mode as `--permission-mode auto`', async () => {
+    const ipc = await inTauri(() => 'session');
+    await ipc.ensureClaudeSession({
+      chatId: 'c1',
+      folder: '/repo',
+      accountPath: '/acc/work',
+      model: 'Opus',
+      effort: 'high',
+      perm: 'Auto',
+      worktree: false
+    });
+    const inner = asked[0]!.args as { cmd: string; args: Record<string, unknown> };
+    expect(inner.args).toMatchObject({ permissionMode: 'auto' });
+  });
+
   it('rejects with the error the command failed with, and logs it', async () => {
     const ipc = await inTauri(failing('account exists'));
     await expect(ipc.createAccount('claude', 'work')).rejects.toBe('account exists');

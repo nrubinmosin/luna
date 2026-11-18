@@ -9,7 +9,6 @@ tmp=$(mktemp)
 repo=$(mktemp -d)
 trap 'rm -rf "$tmp" "$repo"' EXIT
 robot=$(printf '\360\237\244\226')
-dependabot='49699333+dependabot[bot]@users.noreply.github.com'
 fail=0
 
 if ! command -v git >/dev/null 2>&1; then
@@ -39,10 +38,10 @@ check() { # $1 = refuse|accept, $2 = message
 }
 
 # One commit with the message on top of the base, checked as a range, then
-# taken off again. $3 is the author's email when it matters.
-check_range() { # $1 = refuse|accept, $2 = message, [$3 = author email]
+# taken off again.
+check_range() { # $1 = refuse|accept, $2 = message
     printf '%s\n' "$2" >"$tmp"
-    GIT_AUTHOR_EMAIL=${3:-test@example.com} g commit -q --allow-empty --no-verify -F "$tmp"
+    g commit -q --allow-empty --no-verify -F "$tmp"
     if (cd "$repo" && sh "$here/check-commit-msg.sh" --range "$base..HEAD") >/dev/null 2>&1; then got=accept; else got=refuse; fi
     [ "$got" = "$1" ] || report range "$1" "$got" "$2"
     g reset -q --hard "$base"
@@ -198,13 +197,6 @@ check_range refuse 'amend! Fix the gate
 
 Fix the gate'
 check_range accept 'Luna 0.10.0'
-check_range accept 'build(deps): bump the npm group across 1 directory with 3 updates
-
-Bumps the npm group with 3 updates in the / directory: [vite](https://github.com/vitejs/vite), [vitest](https://github.com/vitest-dev/vitest) and [typescript](https://github.com/microsoft/TypeScript).' "$dependabot"
-check_range refuse 'build(deps): bump the npm group across 1 directory with 3 updates
-
-Co-Authored-By: Someone <a@b.c>' "$dependabot"
-check_range refuse 'build(deps): bump the npm group across 1 directory with 3 updates' 'someone@example.com'
 
 # The range as it is stored: no comment lines, no scissors, and a bad range is
 # an error, not an empty one.

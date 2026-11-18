@@ -89,7 +89,7 @@ hooks run unasked.
   `2 working · 1 idle · !1 asks │ !check-changelog · review-plan 4m`. A
   narrower pane shows `▸2 ◦1 !1`, the narrowest `3 !1`. A helper that asks
   counts as working: its turn waits on the answer. One that has exited is not
-  counted. Both glow a few seconds on a spawn.
+  counted. Both wear a ring for a few seconds after a spawn.
 - A chat that a helper, or a helper's helper, still owes an answer reads
   **background** between turns ([Chats: Status](chats.md#status)), also while
   that helper asks something: the question shows on the pill and in the list.
@@ -198,7 +198,10 @@ hooks run unasked.
   Settings → Agents & trust → Helpers → "Helpers' mode when not given" can make
   it the account's default instead; either way it is held to the caller's.
   The spawn's `settings.modeFrom` says which (`caller`, `callerNearest`,
-  `account`). A Claude Code helper may also run in `auto` or `dontAsk`.
+  `account`). A Claude Code helper may also run in `auto`, as a chat may
+  (Auto), or in `dontAsk`. On the account's default, a settings file's
+  `defaultMode` is taken as it is, `dontAsk` included; one Luna does not know
+  counts as `default` (asks), never as Bypass.
 - Helpers that each make a worktree in the same repository start one after
   another, each once its CLI has made its worktree, as two made at once could
   fail.

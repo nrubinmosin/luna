@@ -10,9 +10,6 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './app/App';
 import { ErrorBoundary } from './app/ErrorBoundary';
-// Last of all, after the features' sheets that App brings in: the reduced-motion
-// override has to outrank every animation and transition they set.
-import './styles/motion.css';
 import { installGlobalErrorLog, logInfo, watchMainThreadStalls } from './shared/lib/log';
 
 installGlobalErrorLog();

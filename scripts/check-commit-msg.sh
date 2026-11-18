@@ -19,7 +19,7 @@
 #   - line 2 is blank, and the body is wrapped at 72, except a line with a
 #     URL, an indented line and a line that is one unbreakable token.
 # Exempt from the form: a merge ("Merge ..."), a revert ('Revert "..."') and
-# the release bump ("Luna X.Y.Z"), and Dependabot's commits by their author.
+# the release bump ("Luna X.Y.Z").
 # "fixup!", "squash!" and "amend!" commits (git commit --fixup, --squash,
 # --fixup=amend: and --fixup=reword:) pass the hook, to be squashed, and fail
 # the range check, so they never merge.
@@ -40,7 +40,6 @@ LC_ALL=C
 export LC_ALL
 
 robot=$(printf '\360\237\244\226')
-dependabot='49699333+dependabot[bot]@users.noreply.github.com'
 types='feat|fix|docs|chore|refactor|test|build|ci|perf|style'
 
 # Characters, not bytes: with LC_ALL=C a shell counts bytes, so the UTF-8
@@ -79,7 +78,7 @@ comment_prefix() {
 # $comment, when set) and stops at the scissors line, and lets a fixup!,
 # squash! or amend! through; the range check takes the stored message as it
 # is. $2 is whether the form is checked at all, besides the attribution: a
-# merge's or a Dependabot commit's is not.
+# merge's is not.
 check_message() {
     mode=$1
     form=$2
@@ -189,12 +188,10 @@ case $1 in
         revs=$(git rev-list "$@") || exit 2
         bad=0
         for c in $revs; do
-            # A merge's message is git's own, and Dependabot's body is
-            # generated: neither is held to the form, both to the attribution.
+            # A merge's message is git's own: it is not held to the form,
+            # only to the attribution.
             form=yes
-            info=$(git show -s --format='%P|%ae' "$c")
-            case ${info%%|*} in *' '*) form=no ;; esac
-            [ "${info#*|}" = "$dependabot" ] && form=no
+            case $(git show -s --format=%P "$c") in *' '*) form=no ;; esac
             if ! out=$(git show -s --format=%B "$c" | check_message range $form); then
                 refuse "commit $(git rev-parse --short "$c")" "$out" 'Rewrite the commit message before merging.'
                 bad=1

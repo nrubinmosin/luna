@@ -104,7 +104,7 @@ pub struct Marker {
     pub text: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn waiting_marker() -> Marker {
     let s = crate::settings::get();
     Marker { on: s.waiting_marker_on, text: s.waiting_marker }

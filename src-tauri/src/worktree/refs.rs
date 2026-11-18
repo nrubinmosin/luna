@@ -206,7 +206,7 @@ pub fn fetch_origin(folder: &str) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fetch_before_worktree() -> bool {
     crate::settings::get().fetch_before_worktree
 }

@@ -59,7 +59,7 @@ pub(super) fn days_back(from: Date, n: usize) -> impl Iterator<Item = Date> {
 
 /// Today on the wall clock Codex names its day folders by (`local_at`).
 pub(super) fn local_today() -> Date {
-    local_at(jiff::Timestamp::now().as_millisecond()).map_or_else(|| jiff::Zoned::now().date(), |t| t.date())
+    local_at(jiff::Timestamp::now().as_millisecond()).map_or_else(|| jiff::ZonedDateTime::now().date(), |t| t.date())
 }
 
 /// The instant `ms` on the wall clock Codex names its rollouts by: the `time`
@@ -75,7 +75,7 @@ pub(super) fn local_at(ms: i64) -> Option<DateTime> {
     }
     #[cfg(not(windows))]
     {
-        Some(t.to_zoned(jiff::tz::TimeZone::system()).datetime())
+        Some(t.to_zoned_datetime(jiff::tz::TimeZone::system()).datetime())
     }
 }
 
@@ -83,7 +83,7 @@ pub(super) fn local_at(ms: i64) -> Option<DateTime> {
 fn windows_local(t: jiff::Timestamp) -> Option<DateTime> {
     use windows::Win32::Foundation::SYSTEMTIME;
     use windows::Win32::System::Time::SystemTimeToTzSpecificLocalTime;
-    let u = t.to_zoned(jiff::tz::TimeZone::UTC).datetime();
+    let u = t.to_zoned_datetime(jiff::tz::TimeZone::UTC).datetime();
     let utc = SYSTEMTIME {
         wYear: u16::try_from(u.year()).ok()?,
         wMonth: u.month() as u16,
@@ -150,13 +150,23 @@ fn rollout_where(account_path: &str, is: impl Fn(&str) -> bool) -> Option<PathBu
 pub fn rollout_of_thread(account_path: &str, id: &str) -> Option<PathBuf> {
     static FOUND: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
     let found = FOUND.get_or_init(Default::default);
-    if let Some(p) = found.lock().ok()?.get(id).filter(|p| p.is_file()) {
+    if let Some(p) = found.lock().unwrap_or_else(|e| e.into_inner()).get(id).filter(|p| p.is_file()) {
         return Some(p.clone());
     }
     let path = rollout_by_id(account_path, id)?;
-    found.lock().ok()?.insert(id.to_string(), path.clone());
+    let mut found = found.lock().unwrap_or_else(|e| e.into_inner());
+    if found.len() >= KEPT_LOOKUPS {
+        found.clear();
+    }
+    found.insert(id.to_string(), path.clone());
     Some(path)
 }
+
+/// How many threads' rollouts, found or looked for in vain, a lookup keeps at
+/// most before it starts over: the threads asked about over a core's life are
+/// not bounded, and one let go of costs only a walk of the account's folders
+/// when it is asked for again.
+const KEPT_LOOKUPS: usize = 1024;
 
 /// Where a thread works, per its rollout: a `--worktree` one names the
 /// checkout Codex made.
@@ -174,12 +184,8 @@ pub fn release(chat_id: &str) {
     if let Ok(mut m) = claims().lock() {
         m.remove(chat_id);
     }
-    if let Ok(mut m) = turn_counts().lock() {
-        m.remove(chat_id);
-    }
-    if let Ok(mut m) = children().lock() {
-        m.remove(chat_id);
-    }
+    turn_counts().lock().unwrap_or_else(|e| e.into_inner()).remove(chat_id);
+    children().lock().unwrap_or_else(|e| e.into_inner()).remove(chat_id);
 }
 
 /// Whether a rollout's cwd is this folder, or a worktree of it: under `--worktree`
@@ -204,7 +210,7 @@ fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
     static MISSED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     let key = format!("{account_path}\n{thread}");
     let found = FOUND.get_or_init(Default::default);
-    if let Some(p) = found.lock().ok()?.get(&key).filter(|p| p.is_file()) {
+    if let Some(p) = found.lock().unwrap_or_else(|e| e.into_inner()).get(&key).filter(|p| p.is_file()) {
         return Some(p.clone());
     }
     let mut recent = rollouts_on(account_path, days_back(local_today(), 2)).into_iter().filter(|(_, id, _)| id.starts_with(thread));
@@ -212,16 +218,24 @@ fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
         return recent.next().is_none().then_some(p);
     }
     let missed = MISSED.get_or_init(Default::default);
-    if missed.lock().ok()?.contains(&key) {
+    if missed.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
         return None;
     }
     match rollout_where(account_path, |id| id.starts_with(thread)) {
         Some(p) => {
-            found.lock().ok()?.insert(key, p.clone());
+            let mut found = found.lock().unwrap_or_else(|e| e.into_inner());
+            if found.len() >= KEPT_LOOKUPS {
+                found.clear();
+            }
+            found.insert(key, p.clone());
             Some(p)
         }
         None => {
-            missed.lock().ok()?.insert(key);
+            let mut missed = missed.lock().unwrap_or_else(|e| e.into_inner());
+            if missed.len() >= KEPT_LOOKUPS {
+                missed.clear();
+            }
+            missed.insert(key);
             None
         }
     }
@@ -393,7 +407,7 @@ mod tests {
         unsafe { FileTimeToLocalFileTime(&utc, &mut local) }.unwrap();
         let local_ticks = (u64::from(local.dwHighDateTime) << 32) | u64::from(local.dwLowDateTime);
         let wall_ms = (local_ticks / 10_000) as i64 - 11_644_473_600_000;
-        let os = jiff::Timestamp::from_millisecond(wall_ms).unwrap().to_zoned(jiff::tz::TimeZone::UTC).datetime();
+        let os = jiff::Timestamp::from_millisecond(wall_ms).unwrap().to_zoned_datetime(jiff::tz::TimeZone::UTC).datetime();
         assert_eq!(local_at(ms), Some(os));
     }
 

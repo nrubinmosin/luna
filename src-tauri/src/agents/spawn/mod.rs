@@ -623,7 +623,7 @@ pub struct HelperSettings {
 /// window filled to 89% before its caller thought to rotate it.
 pub const CONTEXT_PCT_DEFAULT: u32 = 50;
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn helper_settings() -> HelperSettings {
     let s = crate::settings::get();
     HelperSettings {

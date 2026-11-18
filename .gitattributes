@@ -41,3 +41,7 @@ src-tauri/src/claude/testdata/*  -text
 # Git hooks run under sh, which reads a CR as part of the command.
 .githooks/*                  eol=lf
 scripts/*.sh                 eol=lf
+
+# pnpm applies these to packages as published, with LF endings, and refuses a
+# hunk that does not match them byte for byte.
+patches/*.patch              -text

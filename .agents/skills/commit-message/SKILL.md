@@ -1,6 +1,6 @@
 ---
 name: commit-message
-description: Write or fix a commit message in the Luna repo so it passes scripts/check-commit-msg.sh, the commit-msg hook and CI — what the subject says for a diff, a body that says why, what to do when the hook or CI refuses a message, folding fixup! commits and rewording an older commit before a merge, and the revert, merge-revert and bump forms. Use it whenever you commit here or write, reword, amend or squash a commit message, revert a commit or a merge, or a commit-message check refused one, even if the ask is only "commit this" or "CI is red on my commits". Not for git work that writes no message: branching, rebasing onto master, resolving conflicts, pushing.
+description: Write or fix a commit message in the Luna repo so it passes scripts/check-commit-msg.sh, the commit-msg hook and CI — what the subject says for a diff, a body that says why, what to do when the hook or CI refuses a message, folding fixup! commits and rewording an older commit before a merge, the revert, merge-revert and release-bump forms, and a dependency moved by hand (a lockfile, an Action's SHA, an image digest). Use it whenever you commit here or write, reword, amend or squash a commit message, revert a commit or a merge, or a commit-message check refused one (a Dependabot commit too), even if the ask is only "commit this", "commit the lockfile bump" or "CI is red on my commits". Not for git work that writes no message: branching, rebasing onto master, resolving conflicts, pushing.
 ---
 
 # Commit message
@@ -46,6 +46,16 @@ nothing; the check lets them through, a reviewer does not.
   change. Move the "as", "because" or "so that" clause into the body's first
   line, or split. Don't buy room by abbreviating or swapping words: the
   subject would then say something else.
+- **A dependency moved by hand** (a lockfile, an Action's SHA, an image tag
+  or digest, a toolchain pin) is a commit like any other: no form is exempt
+  by its author any more, so Dependabot's `build(deps): bump X from A to B`
+  is refused like any type prefix. Say where the package is now and, in the
+  subject when it fits, why: `The rustix crate goes to 1.1.6, out of
+  RUSTSEC-2026-0486`. The body says what made it move (the advisory, the
+  tool that needs it), how (`pnpm update tldts` in the pinned Node image)
+  and what moved with it (the other half of a Tauri pair, a toolchain pin),
+  or that nothing else did. Pins moved for separate reasons are separate
+  commits.
 
 ## The body says why
 
@@ -110,6 +120,14 @@ sh scripts/check-commit-msg.sh --range origin/master..HEAD
 A branch that merged master in needs `--rebase-merges`, or the merge is
 flattened.
 
+Dependabot's old commits on master (`build(deps): bump ...`) are not checked
+again: CI checks the commits a push or a pull request brings, never those
+master already holds, so leave them alone. If CI names one, your branch
+carries a copy master does not have, such as a cherry-pick from its old pull
+request. Redo the bump as a commit of your own (above) and drop the copy:
+no code here is Dependabot's any more (ADR-0029), and a reword would keep
+the bot as its author.
+
 Rewritten commits need a force push (`--force-with-lease`) of a branch others
 may have fetched: that is a push, so it waits for a yes.
 
@@ -128,8 +146,8 @@ keep git's lines as they are and add your why beneath them.
   / `changes made to <parent 1>.`; keep both lines. Say in the body that
   landing the branch again means reverting this revert: merging the branch a
   second time brings nothing back, since git sees its commits as merged.
-- **Bump**: exactly `Luna X.Y.Z`, written by `scripts/release.ps1 -Bump`.
-- **Dependabot**: known by its author and left in its own form.
+- **Release bump**: exactly `Luna X.Y.Z`, written by
+  `scripts/release.ps1 -Bump`. A dependency bump is not one of these forms.
 
 ## Pairs from this history
 
@@ -142,4 +160,5 @@ Each teaches one thing the rules alone do not show.
 | `accountChoice always says why it took the one it took, and an askId a helper never had is called unknown` | `An accountChoice always says why; an askId a helper never had is unknown` | A bare identifier reads as prose; give it an article |
 | `Tests: settings defaults that are not stock, a late answer that must lose, and no state leaking between bridge tests` | `Tests of non-stock defaults, a losing late answer, bridge tests apart` | Related parts of one change compress into one sentence |
 | `Review fixes: the library pass holds no helper up and freezes no window, a window the core let go goes back to it, ...` | three commits: `The library pass holds no helper up and freezes no window`, ... | "Review fixes" is a label over several changes; split them |
+| `build(deps): bump rustls from 0.23.43 to 0.23.46 in /src-tauri` (Dependabot) | `The rustls crate goes to 0.23.46`, why in the body | A bot's form is a type prefix too; say where the crate is now |
 | `Luna 0.8.3: a turn gone quiet is told of, agents turn the PC off the way Luna does, ...` | `Luna 0.8.3` | The bump is the bare form; the list is the CHANGELOG's |

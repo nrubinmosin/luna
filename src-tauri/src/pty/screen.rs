@@ -7,9 +7,10 @@ use super::start::without_note;
 use super::{manager, now_ms, PtyManager};
 use crate::provider::Provider;
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::num::NonZeroU16;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -113,13 +114,115 @@ fn replay(bytes: &[u8], rows: u16, cols: u16) -> vt100::Parser {
     parser
 }
 
+/// A session's output: as much of the end of it as is kept (spawn.rs
+/// `SCROLLBACK_CAP`), and how many bytes were ever written, what was trimmed
+/// off the front included. That count is the output's generation: a screen
+/// drawn from it (`Drawn`) is good for as long as it stands.
+pub(super) struct Scrollback {
+    pub(super) bytes: VecDeque<u8>,
+    pub(super) written: u64,
+}
+
+impl Scrollback {
+    pub(super) fn with_capacity(n: usize) -> Self {
+        Self { bytes: VecDeque::with_capacity(n), written: 0 }
+    }
+
+    /// The last `n` bytes kept (all of them when there are fewer), copied out
+    /// as they lie: no `make_contiguous`, which moves the deque's two halves
+    /// into one while the reader waits on the lock.
+    pub(super) fn last(&self, n: usize) -> Vec<u8> {
+        let n = n.min(self.bytes.len());
+        let (a, b) = self.bytes.as_slices();
+        let from_b = n.min(b.len());
+        let mut out = Vec::with_capacity(n);
+        out.extend_from_slice(&a[a.len() - (n - from_b)..]);
+        out.extend_from_slice(&b[b.len() - from_b..]);
+        out
+    }
+
+    /// Everything kept.
+    pub(super) fn all(&self) -> Vec<u8> {
+        self.last(self.bytes.len())
+    }
+}
+
+/// A session's screen as last drawn, kept by the output's generation and the
+/// pty's size. Asked for again, it is caught up with only what was written
+/// since; it is drawn anew from the whole scrollback when the size changed
+/// (the replay draws the output at the size the pty has now) or when what
+/// was written since has been trimmed off the scrollback already. Before it,
+/// every look at a screen — the activity sampler's at each Codex session
+/// every few seconds, a draft's, a prompt's, a cursor query's — replayed up
+/// to two megabytes of output through a fresh terminal. Caught up rather
+/// than replayed, the terminal has also seen output from before where the
+/// scrollback starts now, as a pane that stayed attached has; a TUI repaints
+/// what it shows.
+#[derive(Default)]
+pub(super) struct Drawn {
+    parser: Option<vt100::Parser>,
+    /// The generation (`Scrollback::written`) it is drawn to.
+    at: u64,
+    size: (u16, u16),
+    /// How many times it was drawn from the whole scrollback.
+    #[cfg(test)]
+    replays: u32,
+}
+
+#[cfg(test)]
+impl Drawn {
+    pub(super) fn replays(&self) -> u32 {
+        self.replays
+    }
+}
+
+/// `f` on the screen the output in `scrollback` draws at `size` now, through
+/// the one kept in `drawn`. Lock order: `drawn`, then `scrollback`, which is
+/// held only to copy out what the screen has not seen.
+pub(super) fn drawn_screen<R>(
+    drawn: &Mutex<Drawn>,
+    scrollback: &Mutex<Scrollback>,
+    size: (u16, u16),
+    f: impl FnOnce(&vt100::Screen) -> R,
+) -> R {
+    let mut d = drawn.lock().unwrap_or_else(|e| e.into_inner());
+    let d = &mut *d;
+    let (anew, bytes, written) = {
+        let sb = scrollback.lock().unwrap_or_else(|e| e.into_inner());
+        let behind = sb.written.checked_sub(d.at).and_then(|n| usize::try_from(n).ok());
+        match behind.filter(|n| d.parser.is_some() && d.size == size && *n <= sb.bytes.len()) {
+            Some(n) => (false, sb.last(n), sb.written),
+            None => (true, sb.all(), sb.written),
+        }
+    };
+    (d.at, d.size) = (written, size);
+    let parser = match d.parser.take() {
+        Some(mut p) if !anew => {
+            p.process(&bytes);
+            p
+        }
+        _ => {
+            #[cfg(test)]
+            {
+                d.replays += 1;
+            }
+            replay(&bytes, size.0, size.1)
+        }
+    };
+    f(d.parser.insert(parser).screen())
+}
+
 /// Replays raw pty output through a terminal emulator and returns the visible
 /// screen as text, blank trailing lines dropped. The scrollback is capped
 /// (SCROLLBACK_CAP), so a very long session starts mid-stream; a fullscreen
 /// TUI repaints everything on each frame, so that costs nothing visible.
 pub fn render_screen(bytes: &[u8], rows: u16, cols: u16) -> String {
-    let parser = replay(bytes, rows, cols);
-    let contents = parser.screen().contents();
+    screen_text(replay(bytes, rows, cols).screen())
+}
+
+/// A screen as text, blank trailing lines dropped.
+fn screen_text(screen: &vt100::Screen) -> String {
+    let contents = screen.contents();
     let mut lines: Vec<&str> = contents.lines().map(str::trim_end).collect();
     while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
         lines.pop();
@@ -237,9 +340,13 @@ pub struct Composer {
 /// runs down to Claude Code's rule under it or to Codex's first blank row.
 /// None with the cursor hidden or anywhere else: a dialog, a picker, a mode
 /// with a mark of its own (`!`), a screen not drawn yet.
+#[cfg(test)]
 pub fn read_composer(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> Option<Composer> {
-    let parser = replay(bytes, rows, cols);
-    let screen = parser.screen();
+    composer_on(replay(bytes, rows, cols).screen(), rows, cols, provider)
+}
+
+/// `read_composer` of a screen drawn already.
+fn composer_on(screen: &vt100::Screen, rows: u16, cols: u16, provider: Provider) -> Option<Composer> {
     if screen.hide_cursor() {
         return None;
     }
@@ -304,15 +411,19 @@ pub fn read_composer(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> 
 /// in a helper no pane has ever shown. So its composer is also the last `❯` on
 /// screen, under a rule and with a rule or the screen's end below it, nothing but
 /// a dim placeholder after it. A dialog's `❯` picks a line with words on it.
+#[cfg(test)]
 pub fn at_empty_prompt(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> bool {
-    if let Some(c) = read_composer(bytes, rows, cols, provider) {
+    at_empty_prompt_on(replay(bytes, rows, cols).screen(), rows, cols, provider)
+}
+
+/// `at_empty_prompt` of a screen drawn already.
+fn at_empty_prompt_on(screen: &vt100::Screen, rows: u16, cols: u16, provider: Provider) -> bool {
+    if let Some(c) = composer_on(screen, rows, cols, provider) {
         return c.text.is_empty();
     }
     if provider != Provider::Claude {
         return false;
     }
-    let parser = replay(bytes, rows, cols);
-    let screen = parser.screen();
     let first = |r: u16| screen.cell(r, 0).map_or("", |c| c.contents());
     let rule = |r: u16| first(r) == "─";
     let Some(top) = (0..rows).rev().find(|&r| first(r) == "❯") else { return false };
@@ -355,12 +466,16 @@ fn claude_placeholder(screen: &vt100::Screen, top: u16, cols: u16) -> bool {
 /// `at_empty_prompt` about rules and footers, which a cramped pane may not
 /// draw as expected; as strict about a dialog, a picker or a first-run screen,
 /// whose marked row names a choice. What a person's "Type it now" goes by.
+#[cfg(test)]
 pub fn composer_empty_loose(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> bool {
-    if let Some(c) = read_composer(bytes, rows, cols, provider) {
+    composer_empty_loose_on(replay(bytes, rows, cols).screen(), rows, cols, provider)
+}
+
+/// `composer_empty_loose` of a screen drawn already.
+fn composer_empty_loose_on(screen: &vt100::Screen, rows: u16, cols: u16, provider: Provider) -> bool {
+    if let Some(c) = composer_on(screen, rows, cols, provider) {
         return c.text.is_empty() && !c.stashed;
     }
-    let parser = replay(bytes, rows, cols);
-    let screen = parser.screen();
     let mark = match provider {
         Provider::Claude => "❯",
         Provider::Codex => "›",
@@ -479,7 +594,8 @@ pub(super) fn keys_after(state: u64, data: &str) -> u64 {
 /// empty or not: where it does not, a dialog, a picker or a first-run screen
 /// has the keys.
 pub(super) fn composer_seen(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> bool {
-    read_composer(bytes, rows, cols, provider).is_some() || composer_empty_loose(bytes, rows, cols, provider)
+    let parser = replay(bytes, rows, cols);
+    composer_on(parser.screen(), rows, cols, provider).is_some() || composer_empty_loose_on(parser.screen(), rows, cols, provider)
 }
 
 /// `keys_after` where the keys may go to a dialog rather than the composer:
@@ -502,6 +618,7 @@ pub(super) fn composer_keys(state: u64, in_dialog: bool, data: &str, dialog: imp
 
 /// Where the cursor stands once `bytes` have been drawn at this size, zero-based
 /// (row, col).
+#[cfg(test)]
 pub(super) fn cursor_at(bytes: &[u8], rows: u16, cols: u16) -> (u16, u16) {
     let parser = replay(bytes, rows, cols);
     parser.screen().cursor_position()
@@ -626,7 +743,7 @@ impl Modes {
 pub fn session_modes(id: String) -> String {
     let state = manager();
     let modes = {
-        let sessions = state.sessions.lock().unwrap();
+        let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
             Some(s) => Arc::clone(&s.modes),
             None => return String::new(),
@@ -704,14 +821,19 @@ impl PtyManager {
     /// The session's composer as its screen shows it, None where the screen
     /// does not show one (see `read_composer`).
     pub fn composer(&self, id: &str) -> Option<Composer> {
-        let (provider, scrollback, size) = {
+        self.with_screen(id, composer_on).flatten()
+    }
+
+    /// `f` on the session's screen as it stands now, at the pty's size
+    /// (`drawn_screen`); None for a session that is not there.
+    fn with_screen<R>(&self, id: &str, f: impl FnOnce(&vt100::Screen, u16, u16, Provider) -> R) -> Option<R> {
+        let (provider, scrollback, size, drawn) = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let s = sessions.get(id)?;
-            (s.provider, Arc::clone(&s.scrollback), Arc::clone(&s.size))
+            (s.provider, Arc::clone(&s.scrollback), Arc::clone(&s.size), Arc::clone(&s.drawn))
         };
-        let bytes: Vec<u8> = scrollback.lock().unwrap_or_else(|e| e.into_inner()).make_contiguous().to_vec();
         let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
-        read_composer(&bytes, rows, cols, provider)
+        Some(drawn_screen(&drawn, &scrollback, (rows, cols), |screen| f(screen, rows, cols, provider)))
     }
 
     /// The thread a Codex session's TUI says it is on now (`CODEX_TITLE`), by
@@ -738,51 +860,122 @@ impl PtyManager {
     /// Whether its screen shows an empty composer by its mark alone (see
     /// `composer_empty_loose`).
     pub fn composer_visible(&self, id: &str) -> bool {
-        let found = {
-            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            sessions.get(id).map(|s| (s.provider, Arc::clone(&s.scrollback), Arc::clone(&s.size)))
-        };
-        let Some((provider, scrollback, size)) = found else { return false };
-        let bytes: Vec<u8> = scrollback.lock().unwrap_or_else(|e| e.into_inner()).make_contiguous().to_vec();
-        let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
-        composer_empty_loose(&bytes, rows, cols, provider)
+        self.with_screen(id, composer_empty_loose_on).unwrap_or(false)
     }
 
     /// Whether its CLI stands at an empty prompt (see `at_empty_prompt`).
     pub fn at_prompt(&self, id: &str) -> bool {
-        let found = {
-            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            sessions.get(id).map(|s| (s.provider, Arc::clone(&s.scrollback), Arc::clone(&s.size)))
-        };
-        let Some((provider, scrollback, size)) = found else { return false };
-        let bytes: Vec<u8> = scrollback.lock().unwrap_or_else(|e| e.into_inner()).make_contiguous().to_vec();
-        let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
-        at_empty_prompt(&bytes, rows, cols, provider)
+        self.with_screen(id, at_empty_prompt_on).unwrap_or(false)
     }
 
-    /// What the session's terminal shows right now: the scrollback replayed
-    /// through a terminal emulator at the pty's size, as plain text, rows
-    /// joined by newlines. This is how an agent sees what its helper is
+    /// What the session's terminal shows right now: its output drawn by a
+    /// terminal emulator at the pty's size (`drawn_screen`), as plain text,
+    /// rows joined by newlines. This is how an agent sees what its helper is
     /// stuck on — a first-run notice, a picker, an error the transcript will
     /// never carry — and what a person would see in the pane.
     pub fn screen(&self, id: &str) -> Option<String> {
-        let (scrollback, size) = {
-            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            let s = sessions.get(id)?;
-            (Arc::clone(&s.scrollback), Arc::clone(&s.size))
-        };
-        let bytes: Vec<u8> = {
-            let mut sb = scrollback.lock().unwrap_or_else(|e| e.into_inner());
-            sb.make_contiguous().to_vec()
-        };
-        let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
-        Some(render_screen(&bytes, rows, cols))
+        self.with_screen(id, |screen, _, _, _| screen_text(screen))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn written(sb: &Mutex<Scrollback>, bytes: &[u8]) {
+        let mut sb = sb.lock().unwrap();
+        sb.bytes.extend(bytes.iter().copied());
+        sb.written += bytes.len() as u64;
+    }
+
+    #[test]
+    fn the_end_of_the_scrollback_is_copied_as_it_lies_wrapped_or_not() {
+        let mut sb = Scrollback::with_capacity(8);
+        sb.bytes.extend(b"abcdef".iter().copied());
+        sb.bytes.drain(..4);
+        sb.bytes.extend(b"ghijk".iter().copied());
+        assert_eq!(sb.bytes.iter().copied().collect::<Vec<u8>>(), b"efghijk");
+        assert_eq!(sb.last(3), b"ijk");
+        assert_eq!(sb.last(6), b"fghijk");
+        assert_eq!(sb.last(100), b"efghijk");
+        assert_eq!(sb.all(), b"efghijk");
+        assert_eq!(sb.last(0), b"");
+    }
+
+    /// Output with something of everything a TUI does: colors, characters of
+    /// two and three bytes, a scroll region (DECSTBM) scrolled inside, the
+    /// alternate screen (1049) left and taken again.
+    fn busy_output() -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice("caf\u{e9} \u{2713} \u{65e5}\u{672c}\r\n".as_bytes());
+        out.extend_from_slice(b"\x1b[31mred\x1b[0m and \x1b[1;4mbold\x1b[0m\r\n");
+        out.extend_from_slice(b"\x1b[2;4r\x1b[4;1Ha\r\nb\r\nc\r\nd\r\n\x1b[r");
+        out.extend_from_slice(b"\x1b[?1049h\x1b[H\x1b[2Jalt\x1b[3;5Hthere\x1b[?1049l");
+        out.extend_from_slice(b"\x1b[6;1Hback \x1b[?25l\x1b[?1049h\x1b[Hstill alt \xe2\x9c\x93");
+        out
+    }
+
+    /// What a screen shows, its looks and where the cursor is included.
+    fn shown(s: &vt100::Screen) -> (String, (u16, u16), bool, bool) {
+        (s.contents_formatted(), s.cursor_position(), s.alternate_screen(), s.hide_cursor())
+    }
+
+    /// Caught up a piece at a time, however the output is cut (a sequence or
+    /// a character split between two pieces), the screen is the one a replay
+    /// of all of it draws, and it is drawn once. So it is with the front of
+    /// the scrollback trimmed as it goes, so long as each look comes before
+    /// what it has not seen is trimmed.
+    #[test]
+    fn a_screen_caught_up_in_pieces_is_the_one_all_the_output_draws() {
+        let out = busy_output();
+        let whole = shown(replay(&out, 8, 30).screen());
+        for keep in [usize::MAX, 24] {
+            for piece in 1..=9 {
+                let sb = Mutex::new(Scrollback::with_capacity(64));
+                let drawn = Mutex::new(Drawn::default());
+                for chunk in out.chunks(piece) {
+                    written(&sb, chunk);
+                    {
+                        let mut sb = sb.lock().unwrap();
+                        let excess = sb.bytes.len().saturating_sub(keep.max(piece));
+                        sb.bytes.drain(..excess);
+                    }
+                    drawn_screen(&drawn, &sb, (8, 30), |_| ());
+                }
+                assert_eq!(drawn_screen(&drawn, &sb, (8, 30), shown), whole, "pieces of {piece}, keeping {keep}");
+                assert_eq!(drawn.lock().unwrap().replays, 1, "pieces of {piece}, keeping {keep}: drawn once");
+            }
+        }
+    }
+
+    #[test]
+    fn a_screen_is_drawn_once_and_then_caught_up_with_new_output() {
+        let sb = Mutex::new(Scrollback::with_capacity(256));
+        let drawn = Mutex::new(Drawn::default());
+        let text = |size: (u16, u16)| drawn_screen(&drawn, &sb, size, screen_text);
+        let replays = || drawn.lock().unwrap().replays;
+        written(&sb, b"hello");
+        assert_eq!(text((5, 20)), "hello");
+        assert_eq!(text((5, 20)), "hello");
+        assert_eq!(replays(), 1, "the same output: not drawn again");
+
+        written(&sb, b"\r\nworld\x1b[1;3H");
+        assert_eq!(text((5, 20)), "hello\nworld");
+        assert_eq!(drawn_screen(&drawn, &sb, (5, 20), |s| s.cursor_position()), (0, 2));
+        assert_eq!(replays(), 1, "new output: caught up, not replayed");
+        let whole = sb.lock().unwrap().all();
+        assert_eq!(text((5, 20)), render_screen(&whole, 5, 20), "as a replay of all of it draws it");
+
+        assert_eq!(text((5, 30)), "hello\nworld");
+        assert_eq!(replays(), 2, "a new size: drawn anew");
+
+        // More written since the last look than the scrollback still holds:
+        // the screen cannot be caught up, and is drawn from what is kept.
+        written(&sb, b"\x1b[2J\x1b[Hfresh");
+        sb.lock().unwrap().bytes.drain(..19);
+        assert_eq!(text((5, 30)), "fresh");
+        assert_eq!(replays(), 3);
+    }
 
     #[test]
     fn modes_survive_split_reads_and_keep_only_the_last_word() {

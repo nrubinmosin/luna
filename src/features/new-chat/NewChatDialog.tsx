@@ -207,7 +207,11 @@ export function NewChatDialog() {
   const folderAnswer = check?.key === checkKey ? check : null;
   const refused = folderAnswer?.refusal ?? null;
   const warned = folderAnswer?.warning ?? null;
-  const canCreate = !!folder && !!account && !trustPending && !trustNeeded && folderAnswer !== null && !refused;
+  // Nor until the account's settings files have answered: the stock values
+  // shown before go further than they may (Bypass, no sandbox).
+  const settingsReady = (provider === 'codex' ? codexDraft : claudeDraft).ready;
+  const canCreate =
+    !!folder && !!account && !trustPending && !trustNeeded && folderAnswer !== null && !refused && settingsReady;
 
   const browse = async () => {
     const picked = await pickFolder();
@@ -341,8 +345,7 @@ export function NewChatDialog() {
                       borderRadius: 4,
                       background: on ? 'var(--row-sel)' : 'transparent',
                       color: on ? 'var(--row-sel-ink)' : 'var(--fg)',
-                      fontWeight: on ? 600 : 400,
-                      transition: 'background .14s'
+                      fontWeight: on ? 600 : 400
                     }}
                     className={on ? undefined : 'hover-bg'}
                   >

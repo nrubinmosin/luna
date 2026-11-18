@@ -201,6 +201,14 @@ pub(crate) fn limit_at_in(text: &str) -> Option<(&'static str, Option<String>)> 
     reached.flatten()
 }
 
+/// `limit_at_in` of the last 256 KB of a rollout, read again only once the
+/// file has changed: every live chat's limit is asked for every few seconds.
+pub(crate) fn rollout_limit(path: &Path) -> Option<(&'static str, Option<String>)> {
+    type Limit = Option<(&'static str, Option<String>)>;
+    static SEEN: std::sync::LazyLock<crate::stamped::ByStamp<Limit>> = std::sync::LazyLock::new(|| crate::stamped::ByStamp::new(256));
+    SEEN.get(path, |path| tail(path, 256 * 1024).map(|text| limit_at_in(&text))).flatten()
+}
+
 /// A Codex limit's name as Luna words it, if it is one that stops a turn.
 fn limit_word(kind: &str) -> Option<&'static str> {
     match kind {
@@ -217,16 +225,34 @@ fn limit_word(kind: &str) -> Option<&'static str> {
 /// once on its own, from the opening prompt; a name that differs from that
 /// first one is the user's `/rename`.
 pub fn thread_title(account_path: &str, thread_id: &str) -> Option<CliTitle> {
-    let text = std::fs::read_to_string(Path::new(account_path).join("session_index.jsonl")).ok()?;
-    let names: Vec<String> = text
-        .lines()
-        .filter(|l| l.contains(thread_id))
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|v| v["id"] == thread_id)
-        .filter_map(|v| v["thread_name"].as_str().and_then(sane_title))
-        .collect();
-    let title = names.last()?.clone();
-    Some(CliTitle { renamed: title != names[0], title })
+    let names = thread_names(&Path::new(account_path).join("session_index.jsonl"));
+    let (first, title) = names.get(thread_id)?;
+    Some(CliTitle { renamed: title != first, title: title.clone() })
+}
+
+/// Each thread's first and last name in a `session_index.jsonl`, by id. The
+/// file is read whole, and so read again only once it has changed: every
+/// live chat's title is asked for every few seconds, and the index grows by
+/// a line a thread.
+fn thread_names(path: &Path) -> std::sync::Arc<HashMap<String, (String, String)>> {
+    static SEEN: std::sync::LazyLock<crate::stamped::ByStamp<std::sync::Arc<HashMap<String, (String, String)>>>> =
+        std::sync::LazyLock::new(|| crate::stamped::ByStamp::new(32));
+    SEEN.get(path, |path| {
+        let mut names: HashMap<String, (String, String)> = HashMap::new();
+        // A read that failed keeps nothing (`ByStamp::get`).
+        let text = std::fs::read_to_string(path).ok()?;
+        for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+            let (Some(id), Some(name)) = (v["id"].as_str(), v["thread_name"].as_str().and_then(sane_title)) else { continue };
+            match names.get_mut(id) {
+                Some((_, last)) => *last = name,
+                None => {
+                    names.insert(id.to_string(), (name.clone(), name));
+                }
+            }
+        }
+        Some(std::sync::Arc::new(names))
+    })
+    .unwrap_or_default()
 }
 
 /// What the tail of a rollout says right now.
@@ -239,8 +265,11 @@ pub struct Tail {
     pub rate_limits: Option<(Value, String)>,
 }
 
+/// Read again only once the file has changed: every live chat's tail is
+/// asked for every few seconds, and at idle none of them moves.
 pub fn read_tail(path: &Path) -> Tail {
-    tail(path, 128 * 1024).map(|text| tail_in(&text)).unwrap_or_default()
+    static SEEN: std::sync::LazyLock<crate::stamped::ByStamp<Tail>> = std::sync::LazyLock::new(|| crate::stamped::ByStamp::new(256));
+    SEEN.get(path, |path| tail(path, 128 * 1024).map(|text| tail_in(&text))).unwrap_or_default()
 }
 
 /// The context the last `token_count` in `text` states, as (tokens, window),
@@ -521,7 +550,16 @@ pub fn status(live: &Live) -> Option<String> {
 /// Where the session works, per its rollout: the folder it was started in,
 /// or the worktree `--worktree` made for it.
 pub fn rollout_cwd(live: &Live) -> Option<String> {
-    first_line(&rollout_for(live)?)?["payload"]["cwd"].as_str().map(str::to_owned)
+    first_cwd(&rollout_for(live)?)
+}
+
+/// The cwd a rollout's first line names, read again only once the file has
+/// changed: the line runs to tens of KB with Codex's instructions.
+fn first_cwd(path: &Path) -> Option<String> {
+    static SEEN: std::sync::LazyLock<crate::stamped::ByStamp<Option<String>>> =
+        std::sync::LazyLock::new(|| crate::stamped::ByStamp::new(256));
+    // A first line that does not read (not there, half written) keeps nothing.
+    SEEN.get(path, |path| first_line(path).map(|v| v["payload"]["cwd"].as_str().map(str::to_owned))).flatten()
 }
 
 /// Status, thread id, model, context, name and opening prompt of a live session.
@@ -538,7 +576,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
 
     let mut m = SessionMeta {
         status: status.map(str::to_owned),
-        cwd: first_line(&path).and_then(|v| v["payload"]["cwd"].as_str().map(str::to_owned)).or_else(|| Some(live.cwd.to_string())),
+        cwd: first_cwd(&path).or_else(|| Some(live.cwd.to_string())),
         title_renamed: named.as_ref().is_some_and(|n| n.renamed),
         title: named.map(|n| n.title),
         session_id: Some(id),

@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 import { act, cleanup } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
+import { dropPendingWrites } from '../shared/lib/throttledStorage';
 import { storeResets } from './zustand';
 
 // Every store starts each test as it was made (see ./zustand).
@@ -12,5 +13,7 @@ vi.mock('zustand', () => import('./zustand'));
 afterEach(() => {
   cleanup();
   act(() => storeResets.forEach(reset => reset()));
+  // A throttled write the resets queued must not land in the next test.
+  dropPendingWrites();
   localStorage.clear();
 });

@@ -68,11 +68,25 @@ account, since whether to trust it is yours to say.
   The account's top-level `effortLevel` counts only for older models, as in
   Claude Code; a project's or a managed one counts for every model. Picking a
   model moves to its level unless you picked one by hand; one that does not
-  take the level shown moves it to that model's own default. Isolation runs
-`claude --worktree` in `<folder>/.claude/worktrees/<name>`, on a
-`worktree-<name>` branch. Before Claude Code makes one, Luna fetches origin's
-default branch (10 s at most, never asking for a password; off in Settings);
-Claude Code branches off it and refetches only once a day itself.
+  take the level shown moves it to that model's own default.
+- Permission mode, passed as `--permission-mode`: **Ask** (`default`, confirm
+  every action), **Edits** (`acceptEdits`), **Plan only** (`plan`), **Auto**
+  (`auto`) and **Bypass** (`bypassPermissions`). In Auto Claude Code decides
+  for itself, with its own review of risky actions. Where that review cannot
+  run at all, it starts in its Manual mode, which asks first; where it cannot
+  judge one action later on, it refuses that action ("Auto mode could not
+  evaluate this action and is blocking it for safety"). Luna ranks the chat,
+  and shows its chip, as Auto either way: a start in Manual lowers neither,
+  and its helpers may still run in `auto` (Codex's `auto-review`), which is
+  what you granted by picking Auto. A settings file's `defaultMode` of one of
+  these opens the dialog on it; its `dontAsk`, or a mode Luna does not know,
+  opens it on Ask; no `defaultMode` at all, on Bypass. Create waits until the
+  files have answered.
+
+Isolation runs `claude --worktree` in `<folder>/.claude/worktrees/<name>`, on
+a `worktree-<name>` branch. Before Claude Code makes one, Luna fetches
+origin's default branch (10 s at most, never asking for a password; off in
+Settings); Claude Code branches off it and refetches only once a day itself.
 
 **Codex:**
 
@@ -389,8 +403,9 @@ notification says why.
   registry, so it is right whether or not the chat has a pane.
 - **Background:** the chat's turn is over, but work of its own goes on: a
   subagent, a job its turns started (a dev server, a watcher), or a helper, or
-  a helper's helper, that still owes it an answer. Its dot is blue with a slow
-  pulse, and the status bar counts these chats and names them on hover. A chat
+  a helper's helper, that still owes it an answer. Its dot is a blue ring,
+  where a working chat's is a filled green dot, and the status bar counts
+  these chats and names them on hover. A chat
   that is waiting or working reads that instead. A job that has done nothing
   for 2 hours on end stops counting, at the moment it stops keeping the PC
   awake. When the work ends the dot goes back to resting, with no notification.
@@ -423,11 +438,8 @@ double-click on its name; a name you set is never overwritten.
   their absolute paths typed into the prompt.
 - Ctrl+C over a selection copies it; with nothing selected it interrupts the CLI.
   Selecting alone copies nothing.
-- A link opens in your browser, chosen in Settings → Links: a default, and one
-  per account or per project folder. Shift+click lists every browser, can
-  remember the pick for that chat, and copies the link. Order: the chat's pick,
-  its account's, its folder's, the default. A browser is a command line with
-  `%1` where the link goes, so a profile is a flag
-  (`--profile-directory="Profile 1"` for Chrome, Edge and Brave, `-P name` for
-  Firefox). On Windows installed browsers and their profiles are listed
-  automatically; elsewhere it is the system's handler and your own.
+- Alt with an arrow key sends what Ctrl with it sends: Alt+Left and Alt+Right
+  move a word, where the CLI's input takes such a move.
+- A link opens in your system's default browser, or a mail link in your mail
+  app, without a question. Only web (`http`, `https`) and mail (`mailto`) links
+  open, and no mail link that asks to attach a file; any other is ignored.

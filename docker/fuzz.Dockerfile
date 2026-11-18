@@ -8,7 +8,7 @@
 # Rust tag against rust-toolchain.toml); the nightly is pinned by date, here and
 # in src-tauri/fuzz/rust-toolchain.toml, and scripts/fuzz.ps1 fails when the two
 # disagree.
-FROM rust:1.99.1-slim-trixie@sha256:7eab7ce19273ce785e0ca7578bdf7bc1fcbae621775a8197379a04c9f6e03cd5
+FROM rust:1.100.0-slim-trixie@sha256:e9d95b74296f7126a83ae3d041aeaba1ff4c478f13abc5cc034fcf7c131c3d4a
 
 # What the crate links on Linux, as in linux-check.Dockerfile; g++ builds the
 # libFuzzer runtime libfuzzer-sys compiles from source.

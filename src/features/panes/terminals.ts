@@ -22,13 +22,13 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { handoffOf, type Chat } from '../../shared/types';
-import { ensureClaudeSession, ensureCodexSession, killSession } from '../../ipc/sessions';
-import { onPtyExit, onPtyOutput } from '../../ipc/events';
+import { ensureClaudeSession, ensureCodexSession, killSession, type Attached } from '../../ipc/sessions';
 import { useChats } from '../chats/chats.store';
 import { claude } from '../providers';
-import { attachClipboardKeys } from './terminal/keys';
+import { attachKeys } from './terminal/keys';
 import { linkHandler } from './terminal/links';
 import { ptySender } from './terminal/pty';
+import { routePty } from './terminal/ptyRoutes';
 import { safely } from './terminal/safely';
 import { SCROLLBACK, pinToBottom, replayTail } from './terminal/scrollback';
 import { sizing } from './terminal/sizing';
@@ -42,14 +42,14 @@ const WARM = 3;
 
 /**
  * Starts a chat's CLI where it left off, or if it runs already answers with what
- * it has printed. If it lived in a worktree it relaunches in that worktree instead
+ * it has printed; either way with the session's spawn number. If it lived in a worktree it relaunches in that worktree instead
  * of creating a new one. A worktree Codex made is started in; it stays until Luna
  * removes it. A worktree Claude Code made is asked for by name from the project
  * folder (its own `--worktree <name> --resume <id>`) rather than by starting inside
  * it: Claude Code removes a clean worktree when its session quits, which Luna's quit
  * and every update make it do, and by name it is put back where it was.
  */
-export function startSession(chat: Chat, folderPath: string, accountPath: string): Promise<string> {
+export function startSession(chat: Chat, folderPath: string, accountPath: string): Promise<Attached> {
   const claudeWorktree =
     chat.provider === 'claude' && chat.worktree ? claude.worktreeName(folderPath, chat.worktreePath) : null;
   return chat.provider === 'codex'
@@ -160,17 +160,18 @@ function create(spec: TermSpec): Entry {
     fontSize: TERM_FONT_SIZE,
     lineHeight: 1.25,
     allowTransparency: false,
-    cursorBlink: true,
+    // A steady cursor: a blinking one redraws the terminal twice a second.
+    cursorBlink: false,
     scrollback: SCROLLBACK,
     // Nudge unreadable theme-vs-content combinations without flattening colors.
     minimumContrastRatio: 3,
     theme: themeFor(dark()),
-    linkHandler: linkHandler(chatId)
+    linkHandler
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(host);
-  attachClipboardKeys(term);
+  attachKeys(term);
   const bufferSub = pinToBottom(term);
 
   let disposed = false;
@@ -214,8 +215,8 @@ function create(spec: TermSpec): Entry {
     safely(stopTheme);
     safely(() => bufferSub.dispose());
     unlisteners.forEach(u => safely(u));
-    // Drop the webgl context before the terminal: disposing it afterwards
-    // hits already-freed renderer state and throws.
+    // The webgl addon before the terminal, so its context goes now, through
+    // the call that loaded it (webgl.ts), rather than with the terminal.
     disposeWebgl();
     safely(() => term.dispose());
     host.remove();
@@ -243,29 +244,41 @@ function create(spec: TermSpec): Entry {
     () => resizeSub.dispose()
   );
 
-  void (async () => {
-    const un1 = await onPtyOutput(p => {
-      if (p.id === chatId) term.write(p.data);
-    });
-    const un2 = await onPtyExit(p => {
-      if (p.id === chatId) {
-        pty.setLive(false);
-        entry.dead = true;
-        useChats.getState().setStatus(chatId, 'resting');
-        term.write('\r\n\x1b[2m[session exited]\x1b[0m\r\n');
-      }
-    });
-    // The dispose may already have run while these were still in flight.
-    if (disposed) {
-      safely(un1);
-      safely(un2);
-      return;
+  // Its own session's exit only, by the spawn's number its start answers
+  // with (`generation`): one of the chat's sessions before it, said late,
+  // or after it, is not this one's. One heard before the start answers
+  // waits for that answer.
+  let generation: number | null = null;
+  const heard: number[] = [];
+  const exited = () => {
+    pty.setLive(false);
+    entry.dead = true;
+    useChats.getState().setStatus(chatId, 'resting');
+    term.write('\r\n\x1b[2m[session exited]\x1b[0m\r\n');
+  };
+  const route = routePty(chatId, {
+    output: data => term.write(data),
+    exit: (_code, spawned) => {
+      if (generation === null) heard.push(spawned);
+      else if (spawned === generation) exited();
+    },
+    // Keys the session refused were not typed: said in the pane, as a start
+    // that failed is, since a keystroke's error comes back to nobody.
+    refused: waitingKb => {
+      const said = `[keys not delivered: the session is not taking input, ${waitingKb} KB waiting]`;
+      term.write(`\r\n\x1b[31m${said}\x1b[0m\r\n`);
     }
-    unlisteners.push(un1, un2);
+  });
+  unlisteners.push(route.unroute);
 
-    let backlog: string;
+  void (async () => {
+    let started: Attached;
     try {
-      backlog = await startSession(chat, folderPath, accountPath);
+      // Heard before the session can print anything.
+      await route.ready;
+      // The dispose may already have run while the listeners were coming in.
+      if (disposed) return;
+      started = await startSession(chat, folderPath, accountPath);
     } catch (e) {
       // The ipc layer already logged the cause. Without this catch the
       // failure escaped the async block as an unhandled rejection and the
@@ -279,7 +292,15 @@ function create(spec: TermSpec): Entry {
       return;
     }
     if (disposed) return;
+    const { backlog } = started;
+    generation = started.generation;
     pty.setLive(true);
+    // It ended before its start had answered: what it printed, then that.
+    if (heard.includes(generation)) {
+      if (backlog) term.write(backlog);
+      exited();
+      return;
+    }
 
     if (!backlog) {
       // Fresh session: the pty starts at a placeholder size, so this is also

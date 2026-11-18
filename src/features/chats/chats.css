@@ -1,6 +1,6 @@
 /* ------------------------------------------------------------------------
    Sidebar: Explorer's task pane. Pinned, it sits in the row; hidden, it
-   leaves a strip, and hovering the strip slides it out over the board.
+   leaves a strip, and hovering the strip brings it out over the board.
    ------------------------------------------------------------------------ */
 [data-app] .taskpane {
   background: var(--taskpane);
@@ -12,7 +12,6 @@
   /* Clipped on the left only: the slid-away sidebar must not show over the
      window's frame, while the slid-out one overhangs the board on the right. */
   clip-path: inset(0 -100vw 0 0);
-  transition: width 0.13s ease-out;
 }
 /* Slid out over the board, it goes over the peek sheet too. */
 [data-app] .dock[data-mode="hidden"][data-shown="yes"] {
@@ -26,9 +25,6 @@
   gap: 6px;
   padding: 7px 7px 8px;
   border-right: 1px solid var(--line);
-  transition:
-    transform 0.13s ease-out,
-    box-shadow 0.13s;
 }
 [data-app] .dock[data-shown="no"] > .taskpane {
   transform: translateX(-100%);
@@ -55,7 +51,6 @@
   width: 6px;
   z-index: 2;
   cursor: col-resize;
-  transition: background 0.15s;
 }
 [data-app] .dock-grip:hover,
 [data-app] .dock-grip[data-on="yes"] {
@@ -67,7 +62,6 @@
   border-radius: 6px 6px 0 0;
   overflow: hidden;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
-  animation: pop-in 0.12s ease-out;
 }
 [data-app] .tp-head {
   display: flex;
@@ -80,7 +74,6 @@
   font-size: var(--fs-4);
   font-weight: 700;
   cursor: default;
-  transition: color 0.14s;
 }
 [data-app] .tp-head:hover {
   color: var(--group-ink-hover);
@@ -115,28 +108,12 @@
   background: var(--card);
   border: 1px solid var(--line);
   color: var(--group-ink);
-  transition:
-    transform 0.13s ease-out,
-    background 0.12s;
 }
 [data-app] .tp-head:hover .tp-chev {
   background: var(--hover);
 }
 [data-app] .tp-chev[data-open="no"] {
   transform: rotate(180deg);
-}
-/* The body folds by animating its row height, not by vanishing. */
-[data-app] .tp-fold {
-  display: grid;
-  grid-template-rows: 1fr;
-  transition: grid-template-rows 0.14s ease-out;
-}
-[data-app] .tp-fold[data-open="no"] {
-  grid-template-rows: 0fr;
-}
-[data-app] .tp-fold > div {
-  min-height: 0;
-  overflow: hidden;
 }
 [data-app] .tp-body {
   background: var(--group-body);
@@ -145,8 +122,7 @@
   padding: 2px;
 }
 
-/* New chat: the one green button, shaped after XP's Start. A gloss sweeps
-   across it on hover. */
+/* New chat: the one green button, shaped after XP's Start. */
 [data-app] button.start-btn {
   position: relative;
   overflow: hidden;
@@ -169,26 +145,9 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.4),
     0 1px 2px rgba(0, 0, 0, 0.3) !important;
 }
-[data-app] button.start-btn::after {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 -60%;
-  width: 45%;
-  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
-  transform: skewX(-18deg);
-  pointer-events: none;
-}
 [data-app] button.start-btn:hover {
   filter: brightness(1.08);
   transform: translateY(-1px);
-}
-[data-app] button.start-btn:hover::after {
-  animation: gloss 0.45s ease-out;
-}
-@keyframes gloss {
-  to {
-    left: 120%;
-  }
 }
 [data-app] button.start-btn:active {
   filter: brightness(0.92);
@@ -205,11 +164,6 @@
   padding: 0 2px 0 5px;
   border-radius: 4px;
   cursor: grab;
-  transition:
-    background 0.15s,
-    color 0.15s,
-    transform 0.15s;
-  animation: row-in 0.12s ease-out;
 }
 [data-app] .chat-row:hover {
   background: var(--row-hover);
@@ -250,9 +204,6 @@
   font: 700 var(--fs-1) var(--sans-serif);
   font-variant-numeric: tabular-nums;
   cursor: default;
-  transition:
-    background 0.12s,
-    border-color 0.12s;
 }
 [data-app] .chat-row .kids:hover {
   background: var(--hover);
@@ -263,19 +214,10 @@
   border-color: rgba(255, 255, 255, 0.45);
   color: #fff;
 }
-/* A helper just spawned: the chip glows a few times, so a start is seen
-   (the pane's chip too, panes.css). */
+/* A helper just spawned: the chip wears a ring for a few seconds, so a start
+   is seen (the pane's chip too, panes.css). */
 [data-app] .chat-row .kids[data-new="yes"] {
-  animation: kids-new 1.2s ease-in-out 4;
-}
-@keyframes kids-new {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
-  50% {
-    box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 45%, transparent);
-  }
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 45%, transparent);
 }
 /* A background helper waits on an answer: its agent is told, the chip shows it. */
 [data-app] .chat-row:not([data-active="yes"]) .kids[data-asking="yes"] {
@@ -299,7 +241,6 @@
   background: linear-gradient(90deg, transparent, var(--row-ground) 14px);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.15s;
 }
 [data-app] .chat-row[data-active="yes"] .row-tools {
   --row-ground: var(--row-sel);

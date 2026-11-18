@@ -9,7 +9,7 @@
 
 use super::folder::folder_refusal;
 use super::same_dir;
-use super::spawn::{spawn, Launch};
+use super::spawn::{spawn, Attached, Launch};
 use crate::claude::launch::{self as claude_launch, claude_settings, with_role, HelperSettings, CLAUDE_MCP_TOKEN_ENV};
 use crate::codex::launch::{self as codex_launch, AUTO_REVIEW, AUTO_REVIEW_SANDBOX, READ_ONLY_NET};
 use crate::provider::Provider;
@@ -607,7 +607,7 @@ pub async fn ensure_claude_session(
     // Auto-handoff's threshold, in percent of the context (agents/handoff):
     // only with Luna's tools, whose server offers its tool.
     handoff: Option<u8>,
-) -> Result<String, String> {
+) -> Result<Attached, String> {
     not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -639,6 +639,9 @@ pub async fn ensure_claude_session(
         if worktree && resume.is_none() && !there {
             crate::worktree::fetch_origin(&folder);
         }
+        // The worktree it goes into by name, there already or made again: in
+        // use from the start (`Launch::enters`), not once its registry says so.
+        let enters = worktree_name.as_deref().filter(|_| worktree).map(|name| crate::worktree::named_path(&folder, name));
         // The skills the library gives sessions in this folder and keeps from
         // them, at every start (library/folders.rs `session_args`); not to a login
         // session.
@@ -757,6 +760,9 @@ pub async fn ensure_claude_session(
             describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
             applied,
             reserved,
+            enters,
+            // With no name its CLI picks one, which its registry tells.
+            makes_worktree: worktree && worktree_name.is_none() && !login,
         })
     })
     .await
@@ -787,7 +793,7 @@ pub async fn ensure_codex_session(
     guard: Option<bool>,
     // Auto-handoff's threshold, as for a Claude Code chat.
     handoff: Option<u8>,
-) -> Result<String, String> {
+) -> Result<Attached, String> {
     not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -806,6 +812,8 @@ pub async fn ensure_codex_session(
                 describe,
                 applied,
                 reserved: None,
+                enters: None,
+                makes_worktree: false,
             });
         }
         // A folder Codex could not start in, refused before anything of the
@@ -907,7 +915,19 @@ pub async fn ensure_codex_session(
             applied.push(crate::applied::Item::RoleLayersKept.with(format!("this conversation still carries {carried}")));
         }
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
-        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied, reserved: Some(reserved) })
+        Ok(Launch {
+            provider: Provider::Codex,
+            cwd: folder,
+            account_path,
+            args,
+            envs,
+            resume,
+            describe,
+            applied,
+            reserved: Some(reserved),
+            enters: None,
+            makes_worktree: new_worktree,
+        })
     })
     .await
 }
@@ -995,6 +1015,11 @@ mod tests {
         instructions: Option<String>,
         /// What Luna applied, as (key, class, value), placeholders in.
         applied: Vec<(String, crate::applied::Class, String)>,
+        /// The worktree it goes into by name (`Launch::enters`), as spelled.
+        enters: Option<String>,
+        /// It asks its CLI for a new worktree whose path the CLI picks
+        /// (`Launch::makes_worktree`).
+        makes_worktree: bool,
     }
 
     impl Started {
@@ -1006,7 +1031,7 @@ mod tests {
         }
     }
 
-    fn started(id: &str, r: &Redact, start: impl std::future::Future<Output = Result<String, String>>) -> Started {
+    fn started(id: &str, r: &Redact, start: impl std::future::Future<Output = Result<Attached, String>>) -> Started {
         capture::expect(id);
         let built = tauri::async_runtime::block_on(start);
         let launch = capture::take(id);
@@ -1014,7 +1039,7 @@ mod tests {
         // token has to be the one Luna knows it by.
         let envs = launch.as_ref().map(|l| r.envs(&l.envs));
         crate::agents::forget(id);
-        assert_eq!(built, Ok(String::new()));
+        assert_eq!(built.map(|a| a.backlog), Ok(String::new()));
         let (l, mut envs) = (launch.expect("the start was caught"), envs.unwrap());
         no_way_into_the_core(&l.args, &l.envs);
         Redact::assert_shown(&l.args, &l.envs, &l.cwd, &l.applied);
@@ -1033,7 +1058,19 @@ mod tests {
         };
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
         let instructions = golden::instructions(id, &args);
-        Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, args, applied }
+        Started {
+            envs,
+            cwd: r.text(&l.cwd),
+            resume: l.resume,
+            describe: l.describe,
+            settings,
+            mcp,
+            instructions,
+            args,
+            applied,
+            enters: l.enters,
+            makes_worktree: l.makes_worktree,
+        }
     }
 
     /// A CLI is given nothing of the core's: not its endpoint, nothing of its
@@ -1089,7 +1126,7 @@ mod tests {
             started(id, r, self.ensure(id))
         }
 
-        fn ensure(self, id: &str) -> impl std::future::Future<Output = Result<String, String>> {
+        fn ensure(self, id: &str) -> impl std::future::Future<Output = Result<Attached, String>> {
             let s = |v: Option<&str>| v.map(str::to_owned);
             ensure_claude_session(
                 id.into(),
@@ -1112,7 +1149,7 @@ mod tests {
 
     /// A start refused before anything of it was built: no launch caught,
     /// and so no CLI started, nothing for the canary to watch. Its reason back.
-    fn refused(id: &str, start: impl std::future::Future<Output = Result<String, String>>) -> String {
+    fn refused(id: &str, start: impl std::future::Future<Output = Result<Attached, String>>) -> String {
         capture::expect(id);
         let got = tauri::async_runtime::block_on(start);
         let launch = capture::take(id);
@@ -1196,6 +1233,7 @@ mod tests {
         assert_eq!(s.mcp, None);
         assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
         assert_eq!(s.describe, "model opus perm default worktree false");
+        assert_eq!((s.enters, s.makes_worktree), (None, false), "no worktree");
         use crate::applied::Class::*;
         let want = [
             ("account", Runtime, "CLAUDE_CONFIG_DIR=/golden/acc-claude"),
@@ -1305,8 +1343,14 @@ mod tests {
         );
         assert_eq!(s.describe, "model opus perm default worktree true");
         assert_eq!(s.cwd, FOLDER, "it starts in the project and moves itself");
+        // In the worktree of that name from its start, there yet or not; its
+        // place is Luna's to know, not its CLI's to pick.
+        assert_eq!(s.enters, Some(crate::worktree::named_path(&golden::project(), "feature-x")));
+        assert!(!std::path::Path::new(s.enters.as_ref().unwrap()).exists(), "made again");
+        assert!(!s.makes_worktree);
         // No name of Luna's: the CLI names it.
         let s = ClaudeAsk { worktree: true, ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!((s.enters.as_deref(), s.makes_worktree), (None, true), "its place the CLI's to pick");
         assert_eq!(
             s.args,
             strings(&[
@@ -1595,7 +1639,7 @@ mod tests {
             started(id, r, self.ensure(id))
         }
 
-        fn ensure(self, id: &str) -> impl std::future::Future<Output = Result<String, String>> {
+        fn ensure(self, id: &str) -> impl std::future::Future<Output = Result<Attached, String>> {
             let s = |v: Option<&str>| v.map(str::to_owned);
             ensure_codex_session(
                 id.into(),
@@ -1811,6 +1855,7 @@ mod tests {
         assert_eq!(s.args, codex_args(&["resume", THREAD], flags, Vec::new()));
         assert_eq!(s.envs, codex_envs(ID, true));
         assert_eq!(s.resume.as_deref(), Some(THREAD));
+        assert!(!s.makes_worktree, "a resumed thread has its worktree");
     }
 
     #[test]
@@ -1823,6 +1868,7 @@ mod tests {
         assert_eq!(s.args, codex_args(&[], flags, Vec::new()));
         assert_eq!(s.cwd, FOLDER, "it starts in the project and moves itself");
         assert_eq!(s.describe, "model default effort medium approval on-request sandbox workspace-write");
+        assert_eq!((s.enters.as_deref(), s.makes_worktree), (None, true), "its place Codex's to pick");
     }
 
     #[test]

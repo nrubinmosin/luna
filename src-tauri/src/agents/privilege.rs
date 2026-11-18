@@ -404,7 +404,7 @@ fn within_or_above(a: &str, b: &str) -> bool {
 }
 
 /// The user lets helpers run with more privilege than the session spawning them.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn helpers_above_caller() -> bool {
     crate::settings::get().helpers_above_caller
 }
@@ -705,29 +705,60 @@ mod tests {
             ("acceptEdits", claude("acceptEdits")),
             ("ww", codex("workspace-write", "on-request")),
             ("review", codex("workspace-write", "auto-review")),
+            ("auto", claude("auto")),
             ("bypass", claude("bypassPermissions")),
             ("full", codex("danger-full-access", "never")),
         ];
         // Each helper mode, and the callers that may spawn it.
-        let helpers: [((Provider, &str, Option<&str>), &[&str]); 9] = [
+        let helpers: [((Provider, &str, Option<&str>), &[&str]); 10] = [
             (
                 (Provider::Claude, "plan", None),
-                &["plan", "ro", "ro-net", "default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+                &[
+                    "plan",
+                    "ro",
+                    "ro-net",
+                    "default",
+                    "dontAsk",
+                    "manual",
+                    "ro-ask",
+                    "acceptEdits",
+                    "ww",
+                    "review",
+                    "auto",
+                    "bypass",
+                    "full",
+                ],
             ),
             (
                 (Provider::Codex, "read-only", Some("never")),
-                &["plan", "ro", "ro-net", "default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+                &[
+                    "plan",
+                    "ro",
+                    "ro-net",
+                    "default",
+                    "dontAsk",
+                    "manual",
+                    "ro-ask",
+                    "acceptEdits",
+                    "ww",
+                    "review",
+                    "auto",
+                    "bypass",
+                    "full",
+                ],
             ),
             // The network is an escalation of its own.
-            ((Provider::Codex, "read-only-net", Some("never")), &["ro-net", "review", "bypass", "full"]),
+            ((Provider::Codex, "read-only-net", Some("never")), &["ro-net", "review", "auto", "bypass", "full"]),
             (
                 (Provider::Claude, "default", None),
-                &["default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+                &["default", "dontAsk", "manual", "ro-ask", "acceptEdits", "ww", "review", "auto", "bypass", "full"],
             ),
-            ((Provider::Claude, "acceptEdits", None), &["acceptEdits", "ww", "review", "bypass", "full"]),
+            ((Provider::Claude, "acceptEdits", None), &["acceptEdits", "ww", "review", "auto", "bypass", "full"]),
             // Commands in a sandbox go further than edits.
-            ((Provider::Codex, "workspace-write", Some("never")), &["ww", "review", "bypass", "full"]),
-            ((Provider::Codex, "workspace-write", Some("auto-review")), &["review", "bypass", "full"]),
+            ((Provider::Codex, "workspace-write", Some("never")), &["ww", "review", "auto", "bypass", "full"]),
+            ((Provider::Codex, "workspace-write", Some("auto-review")), &["review", "auto", "bypass", "full"]),
+            // A model, not a person, answers: above edits and a sandbox's commands, below bypass.
+            ((Provider::Claude, "auto", None), &["review", "auto", "bypass", "full"]),
             ((Provider::Claude, "bypassPermissions", None), &["bypass", "full"]),
             ((Provider::Codex, "danger-full-access", Some("on-request")), &["bypass", "full"]),
         ];
@@ -872,6 +903,31 @@ mod tests {
         let mut p = SpawnParams::default();
         let _ = settle_mode(&mut p, Provider::Claude, (c, &auto), "C:\\no\\such\\account", "", false, false);
         assert_eq!(p.mode_from, Some("account"));
+    }
+
+    /// A helper on the account's default takes the file's mode as the CLI
+    /// would: `dontAsk` as itself, on the rung of `default`, and one Luna does
+    /// not know as `default`; never the stock bypassPermissions, which a caller
+    /// that asks could not spawn.
+    #[test]
+    fn a_helper_on_the_accounts_unlisted_mode_runs_no_wider_than_it() {
+        use serde_json::json;
+        let root = std::env::temp_dir().join(format!("luna-privilege-mode-{}", std::process::id()));
+        let account = root.join("account");
+        std::fs::create_dir_all(&account).unwrap();
+        let path = account.to_string_lossy().into_owned();
+        let asks = json!({ "permissionMode": "default" });
+        for (said, runs) in [("dontAsk", "dontAsk"), ("yolo", "default")] {
+            std::fs::write(account.join("settings.json"), format!(r#"{{ "permissions": {{ "defaultMode": "{said}" }} }}"#)).unwrap();
+            if crate::claude::defaults::claude_defaults(path.clone(), String::new()).permission_mode.source == "managed" {
+                continue;
+            }
+            let mut p = SpawnParams::default();
+            settle_mode(&mut p, Provider::Claude, (Provider::Claude, &asks), &path, "", false, false).unwrap();
+            assert_eq!((p.permission_mode.as_deref(), p.mode_from), (Some(runs), Some("account")), "{said}");
+            assert_eq!(Privilege::of(Provider::Claude, runs, None), Some(Privilege { reach: Reach::Asks, net: false }));
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Helpers run in the background, so a Codex policy that asks a person has
