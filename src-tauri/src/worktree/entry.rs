@@ -20,9 +20,10 @@ use std::sync::{Arc, Mutex};
 pub(crate) enum Look {
     /// A chat's or a helper's own worktree, removed with it as asked: kept
     /// for a session in it, by its spelling or by where both lead. A path
-    /// whose way does not read is compared by its spelling alone: none of
-    /// Luna's sessions has one, their places resolved as they started, and
-    /// an unrelated one would keep every worktree from every delete.
+    /// whose way does not read is compared by its spelling alone, as an
+    /// unrelated one would keep every worktree from every delete. A session
+    /// whose place did not read as it started keeps it so (`Real::Unknown`),
+    /// and once listed is compared by its spelling alone too.
     Delete,
     /// The sweep of orphans, which only offers what the person confirms:
     /// kept for whatever may be in it, a path whose way does not read among

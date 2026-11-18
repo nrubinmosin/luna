@@ -103,9 +103,11 @@ next core takes them up after an update, a restart or a reboot.
   the CLI says where it works; a chat started through a link to the project
   that moved into a folder reached through a second link of its own (a
   `.claude/worktrees` junctioned elsewhere), the first link removed before
-  Luna read the move, can be missed by a delete naming that worktree by its
-  real path; and a folder that does not read (access denied) keeps a
-  worktree from the list, not from a chat's or helper's delete. Kept too is
+  the delete looks, can be missed by a delete naming that worktree by its
+  real path, even if Luna had read the move before the link went (Luna
+  reads where the move leads afresh at each look); and a folder that does
+  not read (access denied) keeps a worktree from the list, not from a
+  chat's or helper's delete. Kept too is
   where a Claude Code session started in a terminal sits as Claude Code's
   registry has it when the list is made and again just before each removal.
   Luna cannot see a

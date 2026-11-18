@@ -159,16 +159,19 @@ lose, and to sweep the ones no chat claims.
   started with the rest of the path on top as spelled, and where the whole
   path leads as it is read (`Hold::add_at`). A rest that goes through a link
   of its own (a project reached through an alias, its `.claude/worktrees` a
-  junction elsewhere), read only after the outer alias was removed, is
-  followed by neither: a delete naming the worktree by its real path can
-  miss that session and remove the worktree it is in.
+  junction elsewhere) is followed by neither once the outer alias is
+  removed, however early the move was read: the hold is built afresh at
+  each look (`pty/probe.rs` `holds`), so a delete naming the worktree by
+  its real path can miss that session and remove the worktree it is in.
 - **A path that does not read, to a delete.** Only the sweep counts a
   listed session's or helper's path whose way does not read (access denied,
   a link that loops) as in every worktree. A delete of a chat's or helper's
   own worktree compares it by its spelling alone, so a session in that
-  worktree by such a path alone is not seen there; Luna's own sessions have
-  their places resolved as they started, so this takes a folder made
-  unreadable after the start, or a CLI's word of a move through one.
+  worktree by such a path alone is not seen there. A session's places are
+  resolved as it starts, and one that does not read then is kept as not
+  read: on its way in it keeps every worktree a delete looks at, but once
+  it is listed a delete compares it by its spelling alone, as it does a
+  CLI's word of a move through a folder that does not read.
 - What the sweep cannot see: a Claude Code session started in a terminal
   after the last look read its registry (an outside process takes no lock
   of Luna's), a Claude Code session on a config folder that is neither one

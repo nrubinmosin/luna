@@ -345,8 +345,13 @@ takes effect as the stop returns), a PC shutdown the OS is seen to take back
 lifts by itself `UPDATE_FREEZE_FOR` (10 min, on the monotonic clock) after
 its stop returned, checked at every save (`lapse`), so an update that never
 came (the window gone mid-stop, the installer never started) costs at most
-that much of the ties unsaved; the installer, UAC prompt and all, ends the
-process well within it. The core leaving never lifts it, and neither does a shutdown
+that much of the ties unsaved. Nothing bounds an unanswered UAC prompt:
+an installer still waiting past the bound lets the next save write what the
+stopping did, and the turns it cut are recorded as ended, the price of a
+bounded freeze. A call-off said before the update's stop has begun (the
+window reconnecting during the save `stop_all_sessions` makes first) is not
+remembered, so that freeze lifts only by the bound. The core leaving never
+lifts it, and neither does a shutdown
 whose fate is unclear, whose chats stay closed for the next core to take up.
 A session starting or running meanwhile (a pane asking for its chat again, a
 helper's turn) is no sign the process goes on, and lifts nothing: a save

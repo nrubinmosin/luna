@@ -332,10 +332,15 @@ another program's and is left alone.
   installer ends the process, until the window says the install failed
   (`update_called_off`; said while the stop is still under way, it takes
   effect as the stop returns), or until 10 minutes after the stop returned
-  (`agents/persist.rs` `UPDATE_FREEZE_FOR`, on the monotonic clock): an installer waiting
-  on a UAC prompt ends the process well within that, and an update that never
-  came (the window gone mid-stop, the installer never started) leaves the
-  core's saves off for at most that long.
+  (`agents/persist.rs` `UPDATE_FREEZE_FOR`, on the monotonic clock), so an
+  update that never came (the window gone mid-stop, the installer never
+  started) leaves the core's saves off for at most that long. Nothing bounds
+  how long a UAC prompt waits for an answer: one left past the bound lets the
+  next save write what the stopping did, and the turns it cut are recorded as
+  ended, a tradeoff taken for a bounded freeze. A call-off said before the
+  stop has begun (the window reconnecting during the save that
+  `stop_all_sessions` makes before it stops anything, `pty/control.rs`) is
+  not remembered: that freeze lifts only by the bound.
 - The CLIs update separately ([providers](providers.md#cli-binaries)).
 
 ## Logging
