@@ -2,6 +2,10 @@
 # release build, the app started with its editor window (and the terminal pane
 # when the tree has one), a screenshot of the runner's desktop, an in-app
 # render_to_image shot, and the app's own stats, uploaded as one artifact.
+# The terminal runs four times, for its frame gaps: as it is, with App Nap
+# held off (--no-app-nap), activated (--activate and System Events), and both;
+# each with a per-second --diag log (app active, occlusion, display-link ticks,
+# renders, feeder ticks). summary.txt puts the telling figures in a few lines.
 # Lives on the spike/gpui branch only; nothing on master runs it.
 name: gpui-spike
 
@@ -46,14 +50,16 @@ jobs:
           { sw_vers; uname -m; xcodebuild -version; rustc -V; cargo -V; } | tee out/versions.txt
 
       # gpui-pre-windows, the one patched crate (vendor/), is a Windows-only
-      # dependency: it is not in this graph, which the step shows.
+      # dependency: it is not in this graph, which the step shows. zed-font-kit
+      # (gpui-pre-macos's text system, the font-kit feature) is; summary.txt
+      # says whether.
       - name: Dependency graph
         run: |
           cargo tree --locked -e normal --prefix none | sort -u > out/cargo-tree.txt
           if grep -q '^gpui-pre-windows ' out/cargo-tree.txt; then
             echo 'gpui-pre-windows is in the macOS graph' >&2; exit 1
           fi
-          grep -E '^gpui-(pre|pre-macos|pre-apple|pre-platform|component|base) ' out/cargo-tree.txt
+          grep -E '^(gpui-(pre|pre-macos|pre-apple|pre-platform|component|base)|zed-font-kit) ' out/cargo-tree.txt
 
       - name: Build (release)
         run: |
@@ -66,25 +72,40 @@ jobs:
       - name: Unit tests
         run: cargo test --release --locked 2>&1 | tee out/tests.txt
 
-      # Two runs, each with its own --stats file: the terminal pane on a 20 s
-      # burst feed (its JSON summary: frame times, latency, the checksum against
-      # a headless Term), and the editor window left idle (its JSON line: open
-      # time, notifications while idle). Each quits through --exit-after,
-      # set well past what it measures, and is killed only if it does not.
+      # Each run has its own --stats file, a --diag log (one JSON line a
+      # second, src/diag.rs) and gpui's log at info on stderr. The terminal
+      # pane on a 20 s burst feed (its JSON summary: frame times, latency, the
+      # checksum against a headless Term), four ways: as before, --no-app-nap
+      # (an NSProcessInfo activity, so no App Nap or timer coalescing),
+      # activated (--activate, then System Events 2 s in, in case AppKit's
+      # cooperative activation refuses), and both. Then the editor window left
+      # idle (its JSON line: open time, notifications while idle). Each quits
+      # through --exit-after, set well past what it measures, and is killed
+      # only if it does not. The runner's desktop is its own: activating a
+      # window there takes nothing from anyone.
       - name: Run and photograph
         run: |
-          run() { # name, seconds to wait, desktop shot after N s (0: none), args...
-            local name=$1 wait=$2 shot=$3; shift 3
+          run() { # name, seconds to wait, desktop shot after N s (0: none), activate (0/1), args...
+            local name=$1 wait=$2 shot=$3 activate=$4; shift 4
             echo "spike $*" | tee -a out/run.txt
-            ./out/spike "$@" > "out/$name-stdout.txt" 2> "out/$name-stderr.txt" &
-            local pid=$! t=0
+            ./out/spike "$@" --log info --diag "out/$name-diag.jsonl" > "out/$name-stdout.txt" 2> "out/$name-stderr.txt" &
+            local pid=$! t=0 osa=
             while kill -0 "$pid" 2>/dev/null && [ "$t" -lt "$wait" ]; do
               sleep 1; t=$((t + 1))
+              if [ "$activate" = 1 ] && [ "$t" -eq 2 ]; then
+                osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $pid) to true" \
+                  > "out/$name-osascript.txt" 2>&1 &
+                osa=$!
+              fi
               # The runner's own desktop; on a hosted runner nothing else is on it.
               if [ "$t" -eq "$shot" ]; then
                 screencapture -x "out/$name-desktop.png" || echo "$name: screencapture failed" | tee -a out/run.txt
               fi
             done
+            if [ -n "$osa" ] && kill -0 "$osa" 2>/dev/null; then
+              echo "$name: osascript still running; killed" | tee -a out/run.txt
+              kill -9 "$osa" || true
+            fi
             if kill -0 "$pid" 2>/dev/null; then
               echo "$name: did not quit by itself; killed" | tee -a out/run.txt
               kill -9 "$pid"
@@ -92,8 +113,12 @@ jobs:
             local code=0; wait "$pid" || code=$?
             echo "$name: exit code $code" | tee -a out/run.txt
           }
-          run term 45 10 --term --feed burst:20 --stats out/term-stats.json --exit-after 30
-          run editor 30 8 --editor samples/sample.md --stats out/editor-stats.json --exit-after 15
+          term=(--term --feed burst:20 --exit-after 30)
+          run term 45 10 0 "${term[@]}" --stats out/term-stats.json
+          run term-nonap 45 10 0 "${term[@]}" --stats out/term-nonap-stats.json --no-app-nap
+          run term-active 45 10 1 "${term[@]}" --stats out/term-active-stats.json --activate
+          run term-both 45 10 1 "${term[@]}" --stats out/term-both-stats.json --no-app-nap --activate
+          run editor 30 8 0 --editor samples/sample.md --stats out/editor-stats.json --exit-after 15
 
       - name: Check the stats
         run: |
@@ -128,14 +153,25 @@ jobs:
           PY
 
       # render_to_image needs gpui's test-support, so it is a second build.
+      # inapp.txt has the app's `label_pixels=N` line: pixels of the main
+      # window's "GPUI spike" label unlike the background (0: no text drawn).
       - name: In-app shot (render_to_image)
+        if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
           start=$(date +%s)
           cargo build --release --locked --features shot
           echo "build_shot_seconds=$(( $(date +%s) - start ))" >> out/build.txt
           ./target/release/spike --editor samples/sample.md --shot out/inapp.png \
-            --exit-after 30 2>&1 | tee out/inapp.txt
+            --exit-after 30 --log debug > out/inapp.txt 2> out/inapp-stderr.txt
+          cat out/inapp.txt
+
+      # The facts that settle the run, from the files above (ci/COPY.md says
+      # how to read them); never fails the job.
+      - name: Summary
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: python3 ci/summary.py out | tee out/summary.txt
 
       - name: Upload
         if: always()
@@ -146,4 +182,5 @@ jobs:
             spike/gpui/out/*.png
             spike/gpui/out/*.txt
             spike/gpui/out/*.json
+            spike/gpui/out/*.jsonl
           if-no-files-found: warn

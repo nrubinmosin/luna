@@ -202,7 +202,9 @@ pub fn spawn_feed(feed: Feed, term: Shared, listener: Listener, state: Arc<FeedS
         loop {
             let tick_at = Instant::now();
             if let Some(last) = last_tick {
-                state.tick_ms.lock().unwrap().push((tick_at - last).as_secs_f64() * 1000.0);
+                let ms = (tick_at - last).as_secs_f64() * 1000.0;
+                state.tick_ms.lock().unwrap().push(ms);
+                crate::diag::feeder_tick(ms);
             }
             last_tick = Some(tick_at);
             let t = start.elapsed().as_secs_f64();

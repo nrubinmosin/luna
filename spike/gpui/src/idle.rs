@@ -18,6 +18,8 @@ use gpui::{
 pub static MAIN_RENDERS: AtomicUsize = AtomicUsize::new(0);
 /// Renders of the editor window's view.
 pub static EDITOR_RENDERS: AtomicUsize = AtomicUsize::new(0);
+/// Renders of the terminal window's root view (TermView).
+pub static TERM_RENDERS: AtomicUsize = AtomicUsize::new(0);
 
 pub fn count(counter: &AtomicUsize) {
     counter.fetch_add(1, Ordering::Relaxed);

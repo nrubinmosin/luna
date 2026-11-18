@@ -15,14 +15,14 @@ own repo, so `build.ps1 -Base` does not work in the copy.
 | From | To |
 | --- | --- |
 | `Cargo.toml`, `Cargo.lock` | `spike/gpui/` |
-| `src/` (all of it: `main.rs`, `editor.rs`, `idle.rs`, `win.rs`, `term/`) | `spike/gpui/src/` |
+| `src/` (all of it: `main.rs`, `diag.rs`, `editor.rs`, `idle.rs`, `win.rs`, `term/`) | `spike/gpui/src/` |
 | `vendor/gpui-pre-windows/` (all of it) | `spike/gpui/vendor/gpui-pre-windows/` |
 | `samples/` | `spike/gpui/samples/` |
 | `docker/Dockerfile`, `docker/build.sh` | `spike/gpui/docker/` |
 | `build.ps1`, `shot.ps1`, `term-check.ps1`, `measure-idle.ps1`, `soak.ps1`, `sampler.ps1`, `ab-burst.ps1`, `after-soak.ps1` | `spike/gpui/` |
 | `results/burst.json` (term-check.ps1's reference run; nothing else from `results/`) | `spike/gpui/results/` |
 | `README.md`, `.gitignore`, `.gitattributes` | `spike/gpui/` |
-| `ci/COPY.md` | `spike/gpui/ci/` |
+| `ci/COPY.md`, `ci/summary.py` | `spike/gpui/ci/` |
 | `ci/gpui-spike.yml` | `.github/workflows/gpui-spike.yml` (not under `spike/gpui/`) |
 
 `build.ps1` reaches Luna's `scripts/lib.ps1` as `../../scripts/lib.ps1`,
@@ -63,21 +63,65 @@ Copy-Item "$from/ci/gpui-spike.yml" .github/workflows/gpui-spike.yml
 - `build.txt`: release build seconds, binary size, the `shot` build's seconds.
 - `tests.txt`: `cargo test --release` output (the editor's undo/redo,
   1 MB paste and steady-caret tests among them).
-- `run.txt`, `term-stdout.txt`, `term-stderr.txt`, `term-stats.json`: the
-  terminal pane on `--feed burst:20`, quitting itself at 30 s;
-  `term-stats.json` is its feed summary (frames, frame ms, latency, the
-  checksum against a headless Term).
-- `editor-stdout.txt`, `editor-stderr.txt`, `editor-stats.json`: the editor
-  window on `samples/sample.md`, quitting itself at 15 s; its `--stats` line
-  (bytes, open time, notifications while idle).
-- `term-desktop.png`, `editor-desktop.png`: `screencapture -x` of the
-  runner's desktop during each run.
-- The "Check the stats" step fails the job when either stats file is missing
-  or unreadable, the terminal's checksum or byte count does not match, it drew
-  no frames, the editor loaded no text, or the idle editor notified.
-- `inapp.png`, `inapp-editor.png`, `inapp.txt`: the main and editor windows
-  rendered in-app with `Window::render_to_image` (a second build with
-  `--features shot`; the step may fail without failing the job).
+- `run.txt`: each run's command line and exit code.
+- The terminal pane on `--feed burst:20`, quitting itself at 30 s, four
+  times: `term` (as before), `term-nonap` (`--no-app-nap`), `term-active`
+  (`--activate`, and System Events' `set frontmost` 2 s in:
+  `term-active-osascript.txt`) and `term-both`. Each has `<run>-stats.json`
+  (its feed summary: frames, frame ms, latency, feeder ticks, the checksum
+  against a headless Term), `<run>-diag.jsonl` (`--diag`, src/diag.rs),
+  `<run>-stderr.txt` (gpui's log at info), `<run>-stdout.txt` and
+  `<run>-desktop.png` (`screencapture -x` of the runner's desktop 10 s in).
+- `editor-*`: the same for the editor window on `samples/sample.md`,
+  quitting itself at 15 s; `editor-stats.json` is its `--stats` line (bytes,
+  open time, notifications while idle).
+- The "Check the stats" step fails the job when `term-stats.json` or
+  `editor-stats.json` is missing or unreadable, the terminal's checksum or
+  byte count does not match, it drew no frames, the editor loaded no text, or
+  the idle editor notified. The other runs' figures fail nothing.
+- `inapp.png`, `inapp-editor.png`, `inapp.txt`, `inapp-stderr.txt`: the main
+  and editor windows rendered in-app with `Window::render_to_image` (a second
+  build with `--features shot`), gpui's log at debug; `inapp.txt` has
+  `label_pixels=N`. The step may fail without failing the job.
+- `summary.txt` (`ci/summary.py`, also on the run's summary page): the lines
+  below. It never fails the job.
+
+## Reading summary.txt
+
+Text (the first run drew none: `font-kit` was off, README "macOS"):
+
+- `zed-font-kit in the macOS graph: yes`, the font-kit warning `no`, and
+  `label_pixels` over 50 (`TEXT DRAWN`): text renders; the cause was the
+  missing feature, ours, not the runner.
+- `zed-font-kit` yes but `NO TEXT`: something past the text system; then
+  `fonts:` (`all_font_names` should be in the hundreds, Menlo resolving to
+  Menlo) and the ERROR lines in `inapp-stderr.txt` say where.
+- `gpu/display:` is the Metal device's name (a runner shows Apple's
+  paravirtual GPU), whether it is headless, the main screen's top frame rate
+  and scale.
+
+Frame gaps, one line per run, measured over the seconds the feed ran:
+
+- `display ticks/s`: frame callbacks gpui ran (one per display-link update
+  that reached the window, drawing or not). `s window occluded`: seconds the
+  window's `occlusionState` lacked Visible (gpui then detaches the display
+  link). `s app active`: seconds `NSApp.isActive` held. `fg timer late`: how
+  late a 50 ms foreground timer fired. Feeder ticks are the feed thread's own
+  16 ms sleeps, outside gpui.
+- The runner, not us: the gaps (interval max in seconds, frames far under
+  ~1200) shrink to vsync-sized ones in `term-nonap` and/or `term-active`/
+  `term-both`, the feeder's p50/mean fall to ~16 ms with them (App Nap /
+  timer coalescing of a background app; a real user's app in front is not
+  napped), or ticks/s drop to 0 exactly in the seconds the window is
+  occluded. Which variant fixes it says which mechanism.
+- A real problem: the gaps stay in `term-both` with the app active, the window
+  visible and the feeder on time. Ticks/s near 60 then (renders missing while
+  the display link runs) points at gpui's frame scheduling or ours; ticks/s
+  also gone with nothing occluded points at the display link on that GPU
+  (`gpu/display:`).
+- `osascript:` an error there (no Accessibility/Automation grant on the
+  runner) only means System Events could not activate; `s app active` tells
+  whether anything did.
 
 ## Other workflows a push to `spike/gpui` starts
 

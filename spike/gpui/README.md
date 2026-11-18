@@ -18,6 +18,12 @@ spike.exe                    a normal window, centered, focused
                              (with --editor, also the editor's, to <stem>-editor.png)
   --editor PATH              also opens PATH (Markdown) in an editor window
   --stats PATH               writes a JSON line of stats to PATH when --exit-after quits
+  --log LEVEL                a logger on stderr (error..trace), for gpui's own warnings
+  --diag PATH                JSON lines (src/diag.rs): GPU, display and fonts at start, then
+                             one a second: app/window state, display-link ticks, renders,
+                             notifies, feeder ticks, foreground timer lateness
+  --no-app-nap, --activate   macOS only (ignored elsewhere): an NSProcessInfo activity that
+                             keeps App Nap off; the app activated at start
 ```
 
 `pwsh ./shot.ps1` starts it with `--background`, finds its window by its own
@@ -272,6 +278,16 @@ macOS gpui-pre-windows and its patches are not in the graph (`cargo tree
 --target aarch64-apple-darwin`, checked here), and `gpui_platform`'s
 `runtime_shaders` makes the Metal shaders compile at startup, so the build
 needs no Metal toolchain.
+
+`gpui_platform` also needs its `font-kit` feature on macOS: it is what gives
+gpui-pre-macos its CoreText text system, it is not a default, and without it
+gpui-pre-macos uses gpui's `NoopTextSystem`, which lays text out but draws no
+glyph. The first macOS run (2026-11-18) had it off: every window showed its
+quads and borders but no text, and the warning gpui logs for it went unseen,
+the spike having no logger then (`--log` now). The second run checks the fix
+(`label_pixels` in `summary.txt`) and looks into the terminal's frame gaps
+there (35 frames in 20 s, gaps up to 6 s, the feeder's 16 ms sleeps stretched
+to 143 ms): ci/COPY.md, "Reading summary.txt".
 
 ## First results (phase 1, 2026-11-18)
 

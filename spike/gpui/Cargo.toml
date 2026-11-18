@@ -21,16 +21,29 @@ futures = "0.3"
 gpui = { package = "gpui-pre", version = "=0.3.12" }
 # runtime_shaders: on macOS (and only there) the Metal shaders are compiled at
 # startup, so a build needs no Metal toolchain (Xcode 26 ships without one).
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["runtime_shaders"] }
+# font-kit: gpui-pre-macos's CoreText text system (gpui-pre-apple's
+# AppleTextSystem). It is not a default of gpui-pre-platform, and without it
+# gpui-pre-macos falls back to gpui's NoopTextSystem: text is laid out but no
+# glyph is ever drawn (its platform.rs, MacPlatform::new). gpui-pre's own
+# `font-kit` default feature is empty and does not turn it on. Only the macOS
+# crate reads it.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["runtime_shaders", "font-kit"] }
 # tree-sitter-markdown: the editor window's highlighting (src/editor.rs), C
 # grammars that cargo-xwin compiles with clang-cl.
 gpui-component = { version = "=0.10.0", features = ["tree-sitter-markdown"] }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# src/diag.rs: --log's logger, for gpui's own warnings.
+log = "0.4"
 unicode-width = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # src/win.rs: the virtual screen and the primary display's DPI, for off-screen bounds.
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# src/diag.rs: App Nap opt-out, app and window state, the Metal device, through
+# msg_send! (already in the macOS graph through gpui-pre-macos).
+objc2 = "0.6"
 
 [dev-dependencies]
 # TestAppContext, VisualTestContext and #[gpui::test] for the unit tests.

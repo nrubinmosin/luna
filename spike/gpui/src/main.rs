@@ -4,6 +4,7 @@
 //   spike.exe [--background] [--hidden] [--exit-after SECS] [--size WxH]
 //             [--editor PATH] [--stats PATH] [--shot PATH] (--features shot)
 //             [--term | --pty | --feed burst[:SECS] | --feed-file PATH ...] (src/term/mod.rs)
+//             [--log LEVEL] [--diag PATH] [--no-app-nap] [--activate] (src/diag.rs)
 //
 // --background opens the window off every display, never activated and off
 // the taskbar (the patched gpui-pre-windows does this for a window opened
@@ -16,8 +17,11 @@
 // --term and the other terminal flags open the terminal pane's window
 // (src/term/) instead of the main one; with a feed it writes its summary to
 // --term-stats, or to --stats when no editor window is open.
+// --shot also prints how many pixels of the main window's "GPUI spike" label
+// differ from the background (`label_pixels`), so a run without text shows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod diag;
 mod editor;
 mod idle;
 mod term;
@@ -44,6 +48,7 @@ struct Args {
     size: (f32, f32),
     idle: idle::IdleArgs,
     term: term::TermArgs,
+    diag: diag::DiagArgs,
 }
 
 fn parse_args(mut it: impl Iterator<Item = String>) -> Args {
@@ -57,6 +62,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Args {
         size: (800.0, 500.0),
         idle: idle::IdleArgs::default(),
         term: term::TermArgs::default(),
+        diag: diag::DiagArgs::default(),
     };
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -75,6 +81,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Args {
             }
             other if args.term.parse(other, &mut it) => {}
             other if args.idle.parse(other, &mut it) => {}
+            other if args.diag.parse(other, &mut it) => {}
             other => eprintln!("spike: ignoring unknown argument {other}"),
         }
     }
@@ -117,6 +124,7 @@ impl Render for Spike {
 
 fn main() {
     let args = parse_args(std::env::args().skip(1));
+    diag::before_app(&args.diag);
     gpui_platform::application().run(move |cx: &mut App| {
         // --bare leaves gpui-component out altogether, init included.
         if !args.idle.bare {
@@ -170,15 +178,18 @@ fn main() {
         });
 
         if let Some(path) = args.shot.clone() {
-            let mut shots = vec![(window, path.clone())];
+            // The label is the main window's only when no terminal or bare window replaces it.
+            let label = !args.term.enabled && !args.idle.bare;
+            let mut shots = vec![(window, path.clone(), label)];
             if let Some((editor_window, _)) = &editor {
                 let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-                shots.push(((*editor_window).into(), path.with_file_name(format!("{stem}-editor.png"))));
+                shots.push(((*editor_window).into(), path.with_file_name(format!("{stem}-editor.png")), false));
             }
             shot(shots, cx);
         }
 
         idle::start(&args.idle, cx);
+        diag::start(&args.diag, window, cx);
 
         // The editor's idle count starts once it has settled (first frames,
         // the first highlight pass), and runs until --exit-after quits.
@@ -226,23 +237,31 @@ fn main() {
 // Renders each window's last frame to its path once it has had time to draw,
 // prints the outcome and quits (exit code 1 if any failed).
 #[cfg(feature = "shot")]
-fn shot(shots: Vec<(gpui::AnyWindowHandle, PathBuf)>, cx: &mut App) {
+fn shot(shots: Vec<(gpui::AnyWindowHandle, PathBuf, bool)>, cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor()
             .timer(Duration::from_millis(2500))
             .await;
         let mut code = 0;
-        for (window, path) in shots {
+        for (window, path, label) in shots {
             let result = window
-                .update(cx, |_, window, _| window.render_to_image())
+                .update(cx, |_, window, _| {
+                    window.render_to_image().map(|image| (image, window.scale_factor()))
+                })
                 .and_then(|image| image)
-                .and_then(|image| {
+                .and_then(|(image, scale)| {
                     let (w, h) = image.dimensions();
+                    let pixels = label.then(|| label_pixels(&image, scale));
                     image.save(&path)?;
-                    Ok((w, h))
+                    Ok((w, h, pixels))
                 });
             match result {
-                Ok((w, h)) => println!("spike: rendered {w}x{h} to {}", path.display()),
+                Ok((w, h, pixels)) => {
+                    println!("spike: rendered {w}x{h} to {}", path.display());
+                    if let Some(pixels) = pixels {
+                        println!("spike: label_pixels={pixels}");
+                    }
+                }
                 Err(e) => {
                     eprintln!("spike: render_to_image of {} failed: {e:#}", path.display());
                     code = 1;
@@ -255,8 +274,28 @@ fn shot(shots: Vec<(gpui::AnyWindowHandle, PathBuf)>, cx: &mut App) {
     .detach();
 }
 
+/// Pixels of the "GPUI spike" label (text_2xl at the window's p_6 padding:
+/// 24 px in, about 32 px tall, well under 300 px wide) that differ from the
+/// background beside it: 0 means no glyph was drawn.
+#[cfg(feature = "shot")]
+fn label_pixels(image: &image::RgbaImage, scale: f32) -> usize {
+    let (w, h) = image.dimensions();
+    let at = |v: f32| (v * scale) as u32;
+    let bg = image.get_pixel(at(8.).min(w - 1), at(8.).min(h - 1)).0;
+    let mut n = 0;
+    for y in at(24.)..at(60.).min(h) {
+        for x in at(24.)..at(324.).min(w) {
+            let p = image.get_pixel(x, y).0;
+            if (0..3).any(|c| (p[c] as i32 - bg[c] as i32).abs() > 40) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 #[cfg(not(feature = "shot"))]
-fn shot(_: Vec<(gpui::AnyWindowHandle, PathBuf)>, _: &mut App) {
+fn shot(_: Vec<(gpui::AnyWindowHandle, PathBuf, bool)>, _: &mut App) {
     eprintln!("spike: --shot needs a build with --features shot");
     std::process::exit(2);
 }

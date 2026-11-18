@@ -330,6 +330,7 @@ impl TermView {
             }
         }
         if redraw {
+            crate::diag::NOTIFIES.fetch_add(1, Ordering::Relaxed);
             cx.notify();
         }
     }
@@ -729,6 +730,7 @@ impl Focusable for TermView {
 impl Render for TermView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.stats.borrow_mut().render_start(Instant::now());
+        crate::idle::count(&crate::idle::TERM_RENDERS);
         let title = match (self.exited, self.title.is_empty()) {
             (true, _) => format!("{} [exited]", if self.title.is_empty() { "gpui spike terminal" } else { &self.title }),
             (false, true) => "gpui spike terminal".to_string(),
