@@ -1052,12 +1052,18 @@ mod tests {
 
     /// A kill of a session whose reader, held, has its word that the
     /// session exited said or not by the kill's end, and is let through
-    /// after it, if it was held: what the window was told of `id`'s exit,
-    /// once the reader is through, and the session's spawn number.
-    fn kill_with_a_held_reader(id: &'static str, saying: bool, through_first: bool) -> (Vec<serde_json::Value>, u64) {
+    /// after it, if it was held: what the window was told of `id`'s exit as
+    /// the kill returned, with a reader still held by then held all along,
+    /// and once the reader is through; and the session's spawn number.
+    fn kill_with_a_held_reader(
+        id: &'static str,
+        saying: bool,
+        through_first: bool,
+    ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>, u64) {
         let dir = scratch(id);
         let (quit, reader) = held_session(id, &dir.to_string_lossy(), saying);
         let generation = manager().sessions.lock().unwrap_or_else(|e| e.into_inner())[id].generation;
+        let told = || crate::emit::sent_for_test("pty://exit").into_iter().filter(|e| e["id"] == id).collect::<Vec<_>>();
         let killing = std::thread::spawn(move || tauri::async_runtime::block_on(kill_session(id.into())));
         taken(id);
         quit.store(true, Ordering::SeqCst);
@@ -1067,37 +1073,44 @@ mod tests {
             reader.through.recv().unwrap();
         }
         killing.join().unwrap().unwrap();
+        let at_the_kills_end = told();
         if !through_first {
             reader.go.send(()).unwrap();
             reader.through.recv().unwrap();
         }
         let _ = std::fs::remove_dir_all(&dir);
-        (crate::emit::sent_for_test("pty://exit").into_iter().filter(|e| e["id"] == id).collect(), generation)
+        (at_the_kills_end, told(), generation)
     }
 
     /// A kill whose session's reader has not begun to say the exit by the
     /// end of its wait says it itself: the pane, or the login window, learns
-    /// the session is gone, and the reader coming through after says nothing.
+    /// the session is gone, from the kill, the reader still held; and the
+    /// reader coming through after says nothing.
     #[test]
     fn a_kill_past_its_wait_says_the_exit_for_a_reader_not_begun() {
-        let (told, generation) = kill_with_a_held_reader("dl-reader-stuck", false, false);
-        assert_eq!(told, [serde_json::json!({ "id": "dl-reader-stuck", "code": 0, "generation": generation })]);
+        let (by_the_kill, told, generation) = kill_with_a_held_reader("dl-reader-stuck", false, false);
+        let exit = serde_json::json!({ "id": "dl-reader-stuck", "code": 0, "generation": generation });
+        assert_eq!(by_the_kill, std::slice::from_ref(&exit), "said by the kill");
+        assert_eq!(told, [exit], "and by nobody after");
     }
 
     /// A reader in the middle of saying the exit as the kill's wait ends,
     /// and its word coming after the kill's: said once, by the kill.
     #[test]
     fn a_reader_saying_the_exit_after_the_kill_said_it_says_nothing() {
-        let (told, generation) = kill_with_a_held_reader("dl-reader-late", true, false);
-        assert_eq!(told, [serde_json::json!({ "id": "dl-reader-late", "code": 0, "generation": generation })]);
+        let (by_the_kill, told, generation) = kill_with_a_held_reader("dl-reader-late", true, false);
+        let exit = serde_json::json!({ "id": "dl-reader-late", "code": 0, "generation": generation });
+        assert_eq!(by_the_kill, std::slice::from_ref(&exit), "said by the kill");
+        assert_eq!(told, [exit], "and by nobody after");
     }
 
     /// A reader that said the exit before the kill came to say it: said
     /// once, by the reader.
     #[test]
     fn a_kill_after_the_reader_said_the_exit_says_nothing() {
-        let (told, generation) = kill_with_a_held_reader("dl-reader-first", true, true);
-        assert_eq!(told, [serde_json::json!({ "id": "dl-reader-first", "code": 0, "generation": generation })]);
+        let (by_then, told, generation) = kill_with_a_held_reader("dl-reader-first", true, true);
+        let exit = serde_json::json!({ "id": "dl-reader-first", "code": 0, "generation": generation });
+        assert_eq!((by_then, told), (vec![exit.clone()], vec![exit]));
     }
 
     /// A start into a worktree that a delete has found free and is removing
