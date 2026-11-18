@@ -84,7 +84,8 @@ jobs:
 
       # Every demo scene in both themes, off screen, rendered in the app.
       - name: Shots
-        if: ${{ !cancelled() }}
+        # The function is GitHub's, spelled as GitHub spells it.
+        if: ${{ !cancelled() }} # lang-check: allow
         run: |
           cargo build --locked --profile shots -p luna-window --features shots --bin luna-window-shots
           ./target/shots/luna-window-shots ../out/shots 2>&1 | tee ../out/shots.txt
