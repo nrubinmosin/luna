@@ -602,7 +602,7 @@ impl PtyManager {
 
 #[cfg(test)]
 mod tests {
-    use super::super::spawn::{capture, reader_exited, said, spawn, Attached, Launch};
+    use super::super::spawn::{capture, exit_word, reader_exited, said, spawn, Attached, Launch};
     use super::super::{InputTx, ReaderEnd};
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -660,13 +660,66 @@ mod tests {
     /// the flag returned is set, with a reader thread that then says it
     /// exited as the real one does (`reader_exited`), `reader_lag` later.
     fn fake_session(id: &str, cwd: &str, how: Fake) -> Arc<AtomicBool> {
+        fake_session_ending(
+            id,
+            cwd,
+            how.drains,
+            Box::new(move |id, generation, end| {
+                std::thread::sleep(how.reader_lag);
+                reader_exited(id, generation, Some(0), end);
+            }),
+        )
+    }
+
+    /// A reader the test lets through a step at a time: it says it is at
+    /// its end (`at_end`), waits for `go` and says when it is through.
+    struct HeldReader {
+        at_end: std::sync::mpsc::Receiver<()>,
+        go: std::sync::mpsc::Sender<()>,
+        through: std::sync::mpsc::Receiver<()>,
+    }
+
+    /// A session of the test's whose reader waits for the test at its end:
+    /// before it begins to say the exit, or with `saying`, once it has
+    /// begun (`ReaderEnd::finish`) and before the word itself.
+    fn held_session(id: &str, cwd: &str, saying: bool) -> (Arc<AtomicBool>, HeldReader) {
+        use std::sync::mpsc::channel;
+        let ((at_end_tx, at_end), (go, go_rx), (through_tx, through)) = (channel(), channel(), channel());
+        let hold = move || {
+            let _ = at_end_tx.send(());
+            let _ = go_rx.recv();
+        };
+        let quit = fake_session_ending(
+            id,
+            cwd,
+            true,
+            Box::new(move |id, generation, end| {
+                if saying {
+                    end.finish(|| {
+                        hold();
+                        exit_word(id, generation, Some(0));
+                    });
+                } else {
+                    hold();
+                    reader_exited(id, generation, Some(0), end);
+                }
+                let _ = through_tx.send(());
+            }),
+        );
+        (quit, HeldReader { at_end, go, through })
+    }
+
+    /// How a test's reader says its session exited, once its process is gone.
+    type Ending = Box<dyn FnOnce(&str, u64, &ReaderEnd) + Send>;
+
+    fn fake_session_ending(id: &str, cwd: &str, drains: bool, ending: Ending) -> Arc<AtomicBool> {
         let quit = Arc::new(AtomicBool::new(false));
         let child: Box<dyn portable_pty::Child + Send + Sync> = Box::new(FakeChild { quit: Arc::clone(&quit) });
         let (input_tx, input_rx, written) = InputTx::new(id);
         std::thread::spawn(move || {
             let mut never_written = Vec::new();
             for input in input_rx {
-                if how.drains {
+                if drains {
                     written.release(input.len());
                 } else {
                     never_written.push(input);
@@ -683,8 +736,7 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 alive.store(false, Ordering::SeqCst);
-                std::thread::sleep(how.reader_lag);
-                reader_exited(&id, generation, Some(0), &end);
+                ending(&id, generation, &end);
             });
         }
         let session = Session {
@@ -998,25 +1050,54 @@ mod tests {
         assert_eq!(told().len(), 1);
     }
 
-    /// A kill whose session's reader is not through in time says the exit
-    /// itself, once: the pane, or the login window, learns the session is
-    /// gone, and the reader coming through after says nothing more.
-    #[test]
-    fn a_kill_past_its_wait_for_the_reader_says_the_exit_itself() {
-        let id = "dl-reader-stuck";
-        let dir = scratch("stuck");
-        let quit = fake_session(id, &dir.to_string_lossy(), Fake { reader_lag: READER_WAIT + Duration::from_secs(1), ..PROMPT });
+    /// A kill of a session whose reader, held, has its word that the
+    /// session exited said or not by the kill's end, and is let through
+    /// after it, if it was held: what the window was told of `id`'s exit,
+    /// once the reader is through, and the session's spawn number.
+    fn kill_with_a_held_reader(id: &'static str, saying: bool, through_first: bool) -> (Vec<serde_json::Value>, u64) {
+        let dir = scratch(id);
+        let (quit, reader) = held_session(id, &dir.to_string_lossy(), saying);
         let generation = manager().sessions.lock().unwrap_or_else(|e| e.into_inner())[id].generation;
         let killing = std::thread::spawn(move || tauri::async_runtime::block_on(kill_session(id.into())));
         taken(id);
         quit.store(true, Ordering::SeqCst);
+        reader.at_end.recv().unwrap();
+        if through_first {
+            reader.go.send(()).unwrap();
+            reader.through.recv().unwrap();
+        }
         killing.join().unwrap().unwrap();
-        let told = || crate::emit::sent_for_test("pty://exit").into_iter().filter(|e| e["id"] == id).collect::<Vec<_>>();
-        assert_eq!(told(), [serde_json::json!({ "id": id, "code": 0, "generation": generation })]);
-        // The reader, through at last, finds its exit said.
-        std::thread::sleep(Duration::from_millis(1500));
-        assert_eq!(told().len(), 1);
+        if !through_first {
+            reader.go.send(()).unwrap();
+            reader.through.recv().unwrap();
+        }
         let _ = std::fs::remove_dir_all(&dir);
+        (crate::emit::sent_for_test("pty://exit").into_iter().filter(|e| e["id"] == id).collect(), generation)
+    }
+
+    /// A kill whose session's reader has not begun to say the exit by the
+    /// end of its wait says it itself: the pane, or the login window, learns
+    /// the session is gone, and the reader coming through after says nothing.
+    #[test]
+    fn a_kill_past_its_wait_says_the_exit_for_a_reader_not_begun() {
+        let (told, generation) = kill_with_a_held_reader("dl-reader-stuck", false, false);
+        assert_eq!(told, [serde_json::json!({ "id": "dl-reader-stuck", "code": 0, "generation": generation })]);
+    }
+
+    /// A reader in the middle of saying the exit as the kill's wait ends,
+    /// and its word coming after the kill's: said once, by the kill.
+    #[test]
+    fn a_reader_saying_the_exit_after_the_kill_said_it_says_nothing() {
+        let (told, generation) = kill_with_a_held_reader("dl-reader-late", true, false);
+        assert_eq!(told, [serde_json::json!({ "id": "dl-reader-late", "code": 0, "generation": generation })]);
+    }
+
+    /// A reader that said the exit before the kill came to say it: said
+    /// once, by the reader.
+    #[test]
+    fn a_kill_after_the_reader_said_the_exit_says_nothing() {
+        let (told, generation) = kill_with_a_held_reader("dl-reader-first", true, true);
+        assert_eq!(told, [serde_json::json!({ "id": "dl-reader-first", "code": 0, "generation": generation })]);
     }
 
     /// A start into a worktree that a delete has found free and is removing

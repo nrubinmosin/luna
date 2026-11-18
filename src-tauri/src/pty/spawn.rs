@@ -666,12 +666,16 @@ fn hand_on(tx: &std::sync::mpsc::SyncSender<Vec<u8>>, piece: Vec<u8>, behind: &m
 /// are in before a start of the chat goes on to its launch, whose
 /// registration clears the exit, and so never land on the session after.
 pub(super) fn reader_exited(id: &str, generation: u64, code: Option<u32>, end: &ReaderEnd) {
-    end.finish(|| {
-        let mut generations = manager().generations.lock().unwrap_or_else(|e| e.into_inner());
-        if generations.get(id) == Some(&generation) {
-            say_exit(&mut generations, id, generation, code);
-        }
-    });
+    end.finish(|| exit_word(id, generation, code));
+}
+
+/// The reader's word itself, under the spawn numbers' lock: said only while
+/// `generation` is still `id`'s.
+pub(super) fn exit_word(id: &str, generation: u64, code: Option<u32>) {
+    let mut generations = manager().generations.lock().unwrap_or_else(|e| e.into_inner());
+    if generations.get(id) == Some(&generation) {
+        say_exit(&mut generations, id, generation, code);
+    }
 }
 
 /// Says that `id`'s session of spawn `generation`, still the one in

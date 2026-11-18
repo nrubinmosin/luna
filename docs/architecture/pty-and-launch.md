@@ -290,7 +290,9 @@ the command quotes `"@-"` and calls curl by full path.
   says the exit itself, with the code if the process has one, where the
   number is still there: a reader stuck past the wait would otherwise leave
   the pane or the login window never told the session is gone. Each exit
-  is said once. A
+  is said once: by the taker where the reader had not begun by the end of
+  the wait, or began and comes to the word after the taker; by the reader
+  where it came first. A
   respawn never hears the old session's exit, and the window applies an
   exit only to the session whose start answered with its number. The
   reader asks for the exit code by `try_wait` rather than holding the
