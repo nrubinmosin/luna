@@ -19,9 +19,11 @@ import { PROVIDER_LABEL } from '../../shared/types';
  *  it waits for that end before it listens to the id at all, then starts its
  *  own (the kill takes the session out before it answers). */
 const ending = new Map<string, Promise<void>>();
-/** How long a window waits for that end: the kill gives the CLI 10 s to quit
- *  (pty/control.rs `GRACE`), and a start that never answers would hold the
- *  window forever. Past it the window starts its own and says so. */
+/** How long a window waits for that end before it says it is still waiting
+ *  (the kill gives the CLI 10 s to quit, pty/control.rs `GRACE`). It never
+ *  starts before that end, however long: a start on the id while the last
+ *  one's is still under way would get that very session back from the core,
+ *  and the kill would then take it out. */
 export const ENDING_WAIT_MS = 15_000;
 
 // The provider's login session inside the account's config dir — a bare
@@ -74,17 +76,15 @@ export function LoginModal({ account }: { account: Account }) {
       const before = ending.get(id);
       if (before) {
         term.write('\x1b[2m[waiting for the last sign-in session to end…]\x1b[0m\r\n');
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const ended = await Promise.race([
-          before.then(() => true),
-          new Promise<boolean>(answer => (timer = setTimeout(() => answer(false), ENDING_WAIT_MS)))
-        ]);
+        const timer = setTimeout(() => {
+          if (!disposed)
+            term.write(
+              '\x1b[33m[the last sign-in session has not ended yet; this window starts its own once it has, or close it and try again later]\x1b[0m\r\n'
+            );
+        }, ENDING_WAIT_MS);
+        await before;
         clearTimeout(timer);
         if (disposed) return;
-        if (!ended)
-          term.write(
-            '\x1b[33m[the last sign-in session has not ended; starting anyway — if this one exits, close the window and open it again]\x1b[0m\r\n'
-          );
       }
       route = routePty(id, {
         output: data => term.write(data),

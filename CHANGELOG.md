@@ -73,7 +73,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Closing an account's sign-in window while its session is still starting
   ends that session once it has started, instead of leaving it running; a
   sign-in window opened again on the account meanwhile shows nothing of that
-  session and starts its own once it is gone, or after 15 s, saying so.
+  session and starts its own only once it is gone, saying so when that takes
+  over 15 s.
 - The chats' status dots, and the status bar's, show in Windows' contrast
   themes, in the theme's colors, a background chat's as a ring: they were
   not drawn there at all.

@@ -9,7 +9,12 @@ const login = vi.hoisted(() => ({
   /** The routes, starts and kills, in the order they were asked for. */
   order: [] as string[],
   /** What the windows' terminals were given to show. */
-  shown: [] as string[]
+  shown: [] as string[],
+  /** The core's session of the id, as pty/spawn.rs keeps it: a start makes
+   *  one before it answers, a start while one lives gets that one back, and a
+   *  kill takes it out. */
+  live: null as null | number,
+  made: 0
 }));
 
 vi.mock('@xterm/xterm', () => ({
@@ -42,6 +47,7 @@ vi.mock('../panes/terminal/ptyRoutes', () => ({
 vi.mock('../../ipc/sessions', () => ({
   killSession: vi.fn(() => {
     login.order.push('kill');
+    login.live = null;
     return Promise.resolve();
   }),
   resizeSession: vi.fn(() => Promise.resolve()),
@@ -49,13 +55,17 @@ vi.mock('../../ipc/sessions', () => ({
 }));
 vi.mock('../providers', () => ({
   ui: () => ({
-    loginSession: vi.fn(
-      () =>
-        new Promise<string>((answer, fail) => {
-          login.order.push('start');
-          login.start = { answer, fail };
-        })
-    )
+    loginSession: vi.fn(() => {
+      if (login.live !== null) {
+        login.order.push('reuse');
+        return Promise.resolve('');
+      }
+      login.live = ++login.made;
+      return new Promise<string>((answer, fail) => {
+        login.order.push('start');
+        login.start = { answer, fail };
+      });
+    })
   })
 }));
 vi.mock('./accounts.store', () => ({
@@ -80,6 +90,8 @@ beforeEach(() => {
   login.ready = Promise.resolve();
   login.order = [];
   login.shown = [];
+  login.live = null;
+  login.made = 0;
 });
 
 describe('LoginModal: closed while its session is starting', () => {
@@ -111,6 +123,7 @@ describe('LoginModal: closed while its session is starting', () => {
     await settle();
     expect(login.order).toEqual(['route', 'start', 'kill', 'route', 'start']);
     expect(killSession).toHaveBeenCalledExactlyOnceWith('login:claude:work');
+    expect(login.live).toBe(2);
     // Its own start answered and ended, as it would be, so the next window
     // waits on nothing.
     second.unmount();
@@ -118,23 +131,32 @@ describe('LoginModal: closed while its session is starting', () => {
     await settle();
   });
 
-  it('starts its own past the deadline when that kill never lands, and says so', async () => {
+  it('waits past the deadline for a start slow to answer, and never gets that session back', async () => {
     vi.useFakeTimers();
     try {
       const first = render(<LoginModal account={account} />);
       await vi.advanceTimersByTimeAsync(0);
       const firstStart = login.start!;
-      // Closed while its start never answers.
+      // Closed while its start is slow to answer: the core already holds
+      // its session.
       first.unmount();
       const second = render(<LoginModal account={account} />);
       await vi.advanceTimersByTimeAsync(ENDING_WAIT_MS - 1);
-      expect(login.order).toEqual(['route', 'start']);
+      expect(login.shown.join('')).not.toContain('has not ended yet');
       await vi.advanceTimersByTimeAsync(1);
-      expect(login.order).toEqual(['route', 'start', 'route', 'start']);
-      expect(login.shown.join('')).toContain('has not ended; starting anyway');
+      expect(login.order).toEqual(['route', 'start']);
+      expect(login.shown.join('')).toContain('has not ended yet');
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(login.order).toEqual(['route', 'start']);
+
+      // The start answers at last, the kill takes that session out, and only
+      // then does the second window start its own, which stays.
+      firstStart.answer('');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(login.order).toEqual(['route', 'start', 'kill', 'route', 'start']);
+      expect(login.live).toBe(2);
       second.unmount();
       login.start!.answer('');
-      firstStart.answer('');
       await vi.advanceTimersByTimeAsync(0);
     } finally {
       vi.useRealTimers();
