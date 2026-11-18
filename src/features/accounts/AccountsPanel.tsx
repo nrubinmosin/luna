@@ -330,6 +330,9 @@ function AccountsPanel() {
               <ToolButton
                 icon="refresh"
                 size={24}
+                // Words while at work, as the Sync buttons say "Syncing…":
+                // the icon no longer spins.
+                label={busy ? 'Refreshing…' : undefined}
                 disabled={busy}
                 title={
                   busy

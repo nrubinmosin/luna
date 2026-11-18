@@ -16,4 +16,15 @@ describe('StatusDot', () => {
       unmount();
     }
   });
+
+  it('tells working from background by shape too: a dot and a ring', () => {
+    const { unmount } = render(<StatusDot status="working" />);
+    // (jsdom drops the colors, oklch(), so the shape is read off its mark.)
+    const working = screen.getByTitle('working');
+    expect(working).toHaveAttribute('data-shape', 'dot');
+    unmount();
+    render(<StatusDot status="background" />);
+    const background = screen.getByTitle('background');
+    expect(background).toHaveAttribute('data-shape', 'ring');
+  });
 });

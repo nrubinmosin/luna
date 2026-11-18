@@ -389,8 +389,9 @@ notification says why.
   registry, so it is right whether or not the chat has a pane.
 - **Background:** the chat's turn is over, but work of its own goes on: a
   subagent, a job its turns started (a dev server, a watcher), or a helper, or
-  a helper's helper, that still owes it an answer. Its dot is blue, and the
-  status bar counts these chats and names them on hover. A chat
+  a helper's helper, that still owes it an answer. Its dot is a blue ring,
+  where a working chat's is a filled green dot, and the status bar counts
+  these chats and names them on hover. A chat
   that is waiting or working reads that instead. A job that has done nothing
   for 2 hours on end stops counting, at the moment it stops keeping the PC
   awake. When the work ends the dot goes back to resting, with no notification.

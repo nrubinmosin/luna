@@ -35,10 +35,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   follows no redirect: one comes back as the error it is.
 - Nothing in Luna's window moves any more, so an idle window draws no frames:
   a chat waiting for you wears an orange title bar and status-bar field
-  instead of flashing them, a working or background chat's dot keeps its color
-  without pulsing, a helper just spawned rings its chip for a few seconds
+  instead of flashing them, a working chat's dot keeps its color without
+  pulsing and a background chat's is a ring, a helper just spawned rings its
+  chip for a few seconds
   without glowing, a button at work says so in words and goes gray instead of
-  spinning, and dialogs, menus, the sidebar and folders open and close at once.
+  spinning (an account's refresh button says "Refreshing…"), and dialogs,
+  menus, the sidebar and folders open and close at once.
   The terminals' cursors no longer blink unless the program in one asks for
   it: each blinking cursor redrew its terminal twice a second.
 - The window does less as chats change: a change to one chat (its status,
