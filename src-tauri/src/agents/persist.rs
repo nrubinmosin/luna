@@ -226,7 +226,10 @@ pub enum Stop {
     /// is seen to take it back and the chats start over (power/machine.rs).
     PowerOff,
     /// An update about to be installed (`pty::stop_all_sessions`): called off
-    /// where the install fails (`pty::update_called_off`).
+    /// where the install fails (`pty::update_called_off`), or where a window
+    /// of this build comes to the core (`window_came`), which the install
+    /// would have replaced. Never while the sessions are still being stopped
+    /// for it (`UpdateStopping`).
     Update,
 }
 
@@ -240,26 +243,108 @@ impl Stop {
     }
 }
 
-/// The stops under way, a `Stop::bit` each; `CHATS_FROZEN` is set and
-/// cleared under this lock, so a stop called off never lifts another's
-/// freeze, and a stop said twice is one.
-static STOPS: Mutex<u8> = Mutex::new(0);
+/// The stops under way; `CHATS_FROZEN` is set and cleared under their lock,
+/// so a stop called off never lifts another's freeze, and a stop said twice
+/// is one.
+struct Stops {
+    /// A `Stop::bit` each.
+    bits: u8,
+    /// How many stops of every session for an update have not returned yet
+    /// (`UpdateStopping`).
+    updating: usize,
+    /// A window of this build came while they had not (`window_came`): the
+    /// update is called off as the last of them returns.
+    window_came: bool,
+}
+
+static STOPS: Mutex<Stops> = Mutex::new(Stops::NONE);
+
+fn stops() -> std::sync::MutexGuard<'static, Stops> {
+    STOPS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Stops {
+    const NONE: Stops = Stops { bits: 0, updating: 0, window_came: false };
+
+    fn thaw(&mut self, why: Stop) {
+        self.bits &= !why.bit();
+        if self.bits == 0 {
+            CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
 
 /// Freezes the chats' ties for a stop of every session, until that stop is
 /// called off (`thaw_chats`) and no other is under way.
 pub fn freeze_chats(why: Stop) {
-    let mut stops = STOPS.lock().unwrap_or_else(|e| e.into_inner());
-    *stops |= why.bit();
+    let mut stops = stops();
+    stops.bits |= why.bit();
     freeze(&CHATS_LAST, &CHATS_FROZEN);
 }
 
 /// The stop `why` called off, its caller knowing the process goes on: what
 /// the chats' ties say is news once more, unless another stop is under way.
 pub fn thaw_chats(why: Stop) {
-    let mut stops = STOPS.lock().unwrap_or_else(|e| e.into_inner());
-    *stops &= !why.bit();
-    if *stops == 0 {
-        CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    stops().thaw(why);
+}
+
+/// Every session being stopped for an update (`freeze_for_update`), until it
+/// is dropped once they are.
+#[must_use = "the sessions are being stopped for as long as the guard lives"]
+pub struct UpdateStopping(());
+
+impl Drop for UpdateStopping {
+    fn drop(&mut self) {
+        let mut stops = stops();
+        stops.updating = stops.updating.saturating_sub(1);
+        if stops.updating == 0 && std::mem::take(&mut stops.window_came) {
+            stops.thaw(Stop::Update);
+        }
+    }
+}
+
+/// Freezes the chats' ties for an update (`Stop::Update`) as every session
+/// is stopped for it: until the guard is dropped, the update is not called
+/// off (`call_off_update`), and a window that comes meanwhile calls it off
+/// only as the stop returns (`window_came`).
+pub fn freeze_for_update() -> UpdateStopping {
+    let mut stops = stops();
+    if stops.updating == 0 {
+        stops.window_came = false;
+    }
+    stops.updating += 1;
+    stops.bits |= Stop::Update.bit();
+    freeze(&CHATS_LAST, &CHATS_FROZEN);
+    UpdateStopping(())
+}
+
+/// The window's word that the update the sessions were stopped for is not
+/// being installed (its install failed). Refused while they are still being
+/// stopped for it: a word then is none of the window's install (it starts
+/// only once the stop has returned), and lifting the freeze would have a
+/// save write down what the stopping still does.
+pub fn call_off_update() -> Result<(), String> {
+    let mut stops = stops();
+    if stops.updating > 0 {
+        return Err("the sessions are still being stopped for the update".into());
+    }
+    stops.thaw(Stop::Update);
+    Ok(())
+}
+
+/// A window of this build has come to the core, one starting up rather than
+/// one going back to it (coreproc.rs `stays_with`): there is one window at a
+/// time, so the window that would have installed an update is gone, and
+/// the core it came to is still here, which the install would have replaced.
+/// The update is called off, at once or, while the sessions are still being
+/// stopped for it, as that stop returns. A stop for the core's leaving or
+/// the PC's shutdown is no business of a window's and stays.
+pub fn window_came() {
+    let mut stops = stops();
+    if stops.updating > 0 {
+        stops.window_came = true;
+    } else {
+        stops.thaw(Stop::Update);
     }
 }
 
@@ -269,7 +354,7 @@ pub fn thaw_chats(why: Stop) {
 pub(crate) fn stops_for_test() -> std::sync::MutexGuard<'static, ()> {
     static ONE: Mutex<()> = Mutex::new(());
     let alone = ONE.lock().unwrap_or_else(|e| e.into_inner());
-    *STOPS.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+    *stops() = Stops::NONE;
     CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
     alone
 }
@@ -679,8 +764,39 @@ mod tests {
         assert!(CHATS_FROZEN.load(Ordering::SeqCst), "the core leaves all the same");
         forget("fz-start");
         // As the next test expects to find them.
-        *STOPS.lock().unwrap() = 0;
+        *stops() = Stops::NONE;
         CHATS_FROZEN.store(false, Ordering::SeqCst);
+    }
+
+    /// While the sessions are still being stopped for an update, the
+    /// window's word that it is off is refused, and a window of this build
+    /// coming calls it off only as the stop returns: a save meanwhile would
+    /// write what the stopping does. Once the stop has returned, either
+    /// calls it off at once; neither lifts another stop's freeze.
+    #[test]
+    fn an_update_is_called_off_only_once_its_stop_has_returned() {
+        let _alone = stops_for_test();
+        let stopping = freeze_for_update();
+        assert!(call_off_update().is_err(), "refused while the sessions are stopped");
+        assert!(chats_frozen(), "and the freeze holds");
+        window_came();
+        assert!(chats_frozen(), "a window coming waits for the stop");
+        drop(stopping);
+        assert!(!chats_frozen(), "and calls it off as the stop returns");
+        drop(freeze_for_update());
+        assert!(chats_frozen(), "a stop returned with no window come keeps it");
+        assert_eq!(call_off_update(), Ok(()), "called off once the stop has returned");
+        assert!(!chats_frozen());
+        drop(freeze_for_update());
+        window_came();
+        assert!(!chats_frozen(), "a window coming after the stop calls it off at once");
+        drop(freeze_for_update());
+        freeze_chats(Stop::Leaving);
+        window_came();
+        assert_eq!(call_off_update(), Ok(()));
+        assert!(chats_frozen(), "the core leaves all the same");
+        *stops() = Stops::NONE;
+        CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,

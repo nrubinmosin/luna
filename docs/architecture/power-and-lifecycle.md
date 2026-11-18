@@ -330,7 +330,14 @@ another program's and is left alone.
   `stop_all_sessions` also stopping helper turns) and the chats resume from
   their transcripts. The chats' ties stay frozen from that stop until the
   installer ends the process, or until the window says the install failed
-  (`update_called_off`).
+  (`update_called_off`, refused while the stop is still under way), or a
+  window of this build starting up comes to the core (its hello names the
+  core's fingerprint, `coreproc.rs` `stays_with`): there is one window at a
+  time, so the one that was installing is gone and the core still here, the
+  installer never having started or the window having died mid-stop. One
+  coming while the stop is under way lifts it only as the stop returns; a
+  window going back to the core that let it go (`rejoin`) names no
+  fingerprint.
 - The CLIs update separately ([providers](providers.md#cli-binaries)).
 
 ## Logging

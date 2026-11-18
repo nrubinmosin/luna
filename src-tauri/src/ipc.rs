@@ -59,6 +59,13 @@ pub struct Hello {
     pub proto: u32,
     /// `ui` for the window that stays connected, `ctl` for a one-off command.
     pub role: String,
+    /// The core build a window works with (`Welcome::fingerprint`), said by a
+    /// window as it starts up, not by one going back to the core that let it
+    /// go (corelink.rs `rejoin`): a core of that build learns that the window
+    /// that would have installed an update is gone and the core is still here
+    /// (coreproc.rs `stays_with`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 /// Who the core is: the answer to `hello` and to `info`.
