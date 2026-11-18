@@ -173,6 +173,7 @@ pub(super) fn peer_facts(stream: &Stream) -> Option<PeerFacts> {
         integrity: integrity_of(uid),
         foreign_userns: false,
         no_new_privs: false,
+        seccomp: Seccomp::default(),
     })
 }
 
