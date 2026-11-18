@@ -46,6 +46,7 @@ then updating the entry and its folder.
 | `installer/nsis` | NSIS 3.11, the installer's stub and plug-ins | `COPYING` of kichik/nsis at v311 (c4f43c5a7fe2) |
 | `installer/nsis-tauri-utils` | `nsis_tauri_utils.dll` 0.5.3, which Tauri's bundler embeds | `LICENSE_MIT`, `LICENSE_APACHE-2.0` of tauri-apps/nsis-tauri-utils at nsis_tauri_utils-v0.5.3 (13d9edd27b69) |
 | `installer/webview2-loader` | the WebView2 loader linked into `luna.exe` | `LICENSE.txt`, `NOTICE.txt` of the Microsoft.Web.WebView2 1.0.3800.47 NuGet package, whose `WebView2LoaderStatic.lib` webview2-com-sys 0.39.1 ships byte for byte |
+| `installer/cascadia-mono` | Cascadia Mono, the native window's font, compiled into `luna.exe` | `LICENSE` of microsoft/cascadia-code at v2407.24 (56bcca3f2c1e) |
 
 The Microsoft Visual C++ runtime, linked statically, has no folder: its terms
 are Microsoft's Visual Studio license terms, linked from its entry.

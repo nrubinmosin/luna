@@ -39,6 +39,8 @@
 - [Power and lifecycle](architecture/power-and-lifecycle.md): busyness, jobs,
   keep-awake, core and window lifecycle, updates
 - [Frontend](architecture/frontend.md): layout, stores, IPC modules, styles
+- [The native window](architecture/native-window.md): the GPUI window crate, its
+  host, models, theme and font, the mode switch, the screenshot harness
 - [CLI compatibility notes](cli-compatibility.md): observed Claude Code and Codex
   behavior by version
 

@@ -65,6 +65,15 @@
     },
     {
       "section": "installer",
+      "name": "Cascadia Mono (Regular and Bold, static TrueType)",
+      "version": "2407.24",
+      "license": "OFL-1.1",
+      "source": "https://github.com/microsoft/cascadia-code/releases/tag/v2407.24 (ttf/static of CascadiaCode-2407.24.zip)",
+      "note": "The native window's one font, compiled into luna.exe unmodified (src-tauri/crates/window/assets/fonts, its font.rs). The Reserved Font Name is Cascadia Code.",
+      "texts": "installer/cascadia-mono"
+    },
+    {
+      "section": "installer",
       "name": "Microsoft Visual C++ runtime (vcruntime, static library)",
       "version": "14.44 (Visual Studio 2022 17.14, as cargo-xwin fetches it)",
       "license": "Microsoft Visual Studio license terms, Distributable Code",

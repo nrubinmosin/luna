@@ -4,6 +4,11 @@ React 19 + TypeScript + Vite, feature-sliced, in `src/`. The page owns the chat
 list and the board; the core owns sessions
 ([ADR-0001](../adr/0001-session-state-lives-in-the-cli.md)).
 
+This is the WebView window, which `luna.exe --webview` opens. The exe opens
+the native GPUI window by default ([native-window.md](native-window.md)),
+which asks the app for what this page asks, by the same command and event
+names: `src/ipc/` stays the spec of their shapes until the page goes.
+
 ## Layout
 
 | Path | What it holds |

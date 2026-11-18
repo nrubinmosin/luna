@@ -8,6 +8,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- A native window on GPUI, which Luna opens by default: its own title bar
+  (Luna's name, the theme button, minimize, maximize and close), the core
+  banner, and an empty board for now, in one font (Cascadia Mono, carried in
+  the exe) and a retro, high-contrast, static look in light and dark, or as
+  the system is. It finds or starts the core as the WebView window does, and
+  while a core is being found or replaced it says it is waiting for it,
+  never that the core is not running. `luna --webview` (or
+  `LUNA_WINDOW=webview`) opens the WebView window, which still has
+  everything else. The window is a crate of its own
+  (`src-tauri/crates/window`) over a host in the app, on GPUI's Windows
+  crate with Luna's three patches (`src-tauri/vendor/`).
+- `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
+  off screen inside the app; `.github/workflows/gpui.yml` builds and tests
+  the window on macOS.
+
 ## [0.19.0] - 2026-11-18
 
 Nothing in Luna's window moves any more, so an idle window draws no frames,

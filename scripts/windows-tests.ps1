@@ -1,5 +1,5 @@
 #Requires -Version 7.4
-# The crate's unit tests as Windows executables: built in the Windows toolchain
+# The unit tests of the crate and its window crate as Windows executables: built in the Windows toolchain
 # image, run on a Windows host. The two halves run apart, on a Linux and a Windows
 # machine in CI (.github/workflows/ci.yml), or one after the other here.
 #
@@ -64,7 +64,7 @@ if ($Build) {
             Invoke-WinBuild 'Windows test build' $stamp $image @"
 mkdir -p dist
 cd src-tauri
-cargo xwin test --locked --release --no-run --lib --bins --target x86_64-pc-windows-msvc --message-format=json-render-diagnostics > /app/test-build/$name
+cargo xwin test --locked --release --no-run --workspace --lib --bins --target x86_64-pc-windows-msvc --message-format=json-render-diagnostics > /app/test-build/$name
 "@ $TestBuildEnv
 
             # Paths in the messages are the container's; /app is the repo root here.

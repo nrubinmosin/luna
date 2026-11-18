@@ -107,16 +107,21 @@ fn booted_ms() -> Option<u64> {
     }
 }
 
+/// Runs a closure on the window's event loop, whichever window it is (the
+/// WebView's or the native one); false once there is no loop to run it.
+/// The heartbeat pings the loop through it.
+pub type Ping = Box<dyn Fn(Box<dyn FnOnce() + Send>) -> bool + Send>;
+
 /// Reports the previous run if it ended without saying why, then starts
 /// keeping this one's record, its watcher and its heartbeat. From setup: a
 /// second launch that only focuses the running Luna exits before it, and must
 /// not take over the running one's record.
-pub fn start(app: AppHandle) {
+pub fn start(ping: Ping) {
     // A scripted dev build may run beside another Luna from the same folder.
     if std::env::var_os("LUNA_DEV_TOKEN").is_some() {
         return;
     }
-    begin(Some(app));
+    begin(Some(ping));
 }
 
 /// The same for the core, which has no event loop to ping: its heartbeat is
@@ -127,7 +132,7 @@ pub fn start_core() {
     begin(None);
 }
 
-fn begin(app: Option<AppHandle>) {
+fn begin(ping: Option<Ping>) {
     if let Some(prev) = read() {
         if prev.exit.is_none() && prev.pid != std::process::id() {
             crate::log::warn("app", &describe_unannounced(&prev, booted_ms()));
@@ -146,7 +151,7 @@ fn begin(app: Option<AppHandle>) {
     std::thread::spawn(|| {
         watcher::spawn();
     });
-    std::thread::spawn(move || heartbeat(app));
+    std::thread::spawn(move || heartbeat(ping));
 }
 
 fn describe_unannounced(prev: &Run, booted: Option<u64>) -> String {
@@ -169,7 +174,7 @@ fn describe_unannounced(prev: &Run, booted: Option<u64>) -> String {
     s
 }
 
-fn heartbeat(app: Option<AppHandle>) {
+fn heartbeat(ping: Option<Ping>) {
     let mut last_tick = now_ms();
     let mut hung_logged = false;
     loop {
@@ -196,12 +201,12 @@ fn heartbeat(app: Option<AppHandle>) {
         }
         // One ping in flight at a time: a stuck loop must not pile them up.
         // Without an event loop there is nothing to ping, and nothing to hang.
-        match &app {
-            Some(app) if !PINGING.swap(true, Ordering::Relaxed) => {
-                let _ = app.run_on_main_thread(|| {
+        match &ping {
+            Some(ping) if !PINGING.swap(true, Ordering::Relaxed) => {
+                let _ = ping(Box::new(|| {
                     ANSWERED.store(now_ms(), Ordering::Relaxed);
                     PINGING.store(false, Ordering::Relaxed);
-                });
+                }));
             }
             Some(_) => {}
             None => ANSWERED.store(now, Ordering::Relaxed),
@@ -320,9 +325,12 @@ fn restart_now(app: &AppHandle) {
             return;
         }
     };
+    // The WebView window restarts as itself, not as the native window a
+    // launch without the flag opens.
     let started = std::process::Command::new(&exe)
         .arg(AFTER_FLAG)
         .arg(std::process::id().to_string())
+        .arg(crate::WEBVIEW_FLAG)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

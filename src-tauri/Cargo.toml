@@ -64,6 +64,14 @@ tar = "0.4"
 # A terminal emulator in memory, for showing an agent what its helper's
 # screen says (src/pty/screen.rs `screen`): the scrollback replayed into a grid.
 vt100 = "0.18"
+# The native window (crates/window), which src/native.rs hosts: its calls'
+# answers go back on a futures oneshot, and its and gpui's warnings come
+# through the `log` facade (renamed: `log` is Luna's own module). Both already
+# in the tree.
+# A version as well as the path: cargo-deny refuses a requirement without one.
+luna-window = { version = "0.1.0", path = "crates/window" }
+futures = "0.3"
+log-facade = { package = "log", version = "0.4" }
 
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it
@@ -139,3 +147,21 @@ unimplemented = "warn"
 strip = true
 lto = true
 codegen-units = 1
+
+# The native window's screenshot harness (scripts/gpui-shots.ps1): optimized
+# as the release is, built in a fraction of its time.
+[profile.shots]
+inherits = "release"
+lto = false
+codegen-units = 16
+
+# The app and its native window, on one lockfile (Cargo.lock here). The
+# vendored crates are patches, not members.
+[workspace]
+members = [".", "crates/window"]
+exclude = ["vendor"]
+resolver = "2"
+
+# GPUI's Windows platform crate with Luna's patches (vendor/PATCHES.md).
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

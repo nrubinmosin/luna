@@ -41,6 +41,7 @@ mod live;
 mod log;
 mod mcp;
 mod media;
+mod native;
 mod paths;
 mod peer;
 mod power;
@@ -274,6 +275,16 @@ macro_rules! app_handler {
     };
 }
 
+/// Asks for the WebView window instead of the native one.
+pub(crate) const WEBVIEW_FLAG: &str = "--webview";
+
+/// The WebView window was asked for: `--webview` on the command line, or
+/// `LUNA_WINDOW=webview` in the environment (for a shortcut or a script that
+/// cannot pass arguments). The native window otherwise.
+fn wants_webview() -> bool {
+    std::env::args().skip(1).any(|a| a == WEBVIEW_FLAG) || std::env::var("LUNA_WINDOW").is_ok_and(|v| v == "webview")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // The exit watcher, the keeper and the core are this same exe; none may
@@ -288,7 +299,16 @@ pub fn run() {
     }
     lifecycle::wait_for_previous();
     log::install_panic_hook();
+    if wants_webview() {
+        run_webview();
+    } else {
+        native::run();
+    }
+}
 
+/// The WebView window (Tauri + React), as Luna had it before the native one:
+/// its tray, single instance, notifications, window state and updater too.
+fn run_webview() {
     // A dev build driven by a script runs beside the Luna a person is using,
     // possibly under the same identifier, and the second launch would only
     // focus the first. The same variable turns on the dev caller (agents/);
@@ -349,7 +369,8 @@ pub fn run() {
             // them apart.
             log::start(&format!("starting luna {} build {} core {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD"), env!("LUNA_CORE_FP")));
             // The previous run's end is reported before anything new is logged.
-            lifecycle::start(app.handle().clone());
+            let handle = app.handle().clone();
+            lifecycle::start(Box::new(move |f| handle.run_on_main_thread(f).is_ok()));
             // The sessions, the hooks' listener, the agents, activity and power
             // all run in the core (coreproc.rs); the window finds or starts it.
             corelink::start();

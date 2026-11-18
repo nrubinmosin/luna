@@ -15,7 +15,10 @@
 #   ./scripts/test-build.ps1 -Run -Background
 #       the window off screen, unfocused and off the taskbar (LUNA_TEST_WINDOW,
 #       lib.rs background), out of the way of whoever is at the screen; the
-#       tray icon brings it up. -DevCaller implies it unless -Foreground is given.
+#       WebView window's tray icon brings it up. -DevCaller implies it unless
+#       -Foreground is given.
+#   ./scripts/test-build.ps1 -Run -WebView
+#       the WebView window (lib.rs `--webview`) instead of the native one
 #
 # -Run also keeps a "Luna Test" shortcut in the Start menu carrying the test
 # identifier, as the installer does for Luna: Windows drops the toasts of an
@@ -30,6 +33,7 @@ param(
     [switch]$DevCaller,
     [switch]$Background,
     [switch]$Foreground,
+    [switch]$WebView,
     [string]$DevFolder = '',
     [string]$DevAccount = ''
 )
@@ -159,5 +163,10 @@ public static class AppIdShortcut {
     $appId = (Get-Content (Join-Path $root 'src-tauri/tauri.test.conf.json') -Raw | ConvertFrom-Json).identifier
     $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Luna Test.lnk'
     [AppIdShortcut]::Save($lnk, $exe, $appId)
-    Start-Process -FilePath $exe -WorkingDirectory $out
+    $windowArgs = if ($WebView) { @('--webview') } else { @() }
+    if ($windowArgs) {
+        Start-Process -FilePath $exe -ArgumentList $windowArgs -WorkingDirectory $out
+    } else {
+        Start-Process -FilePath $exe -WorkingDirectory $out
+    }
 }

@@ -64,15 +64,16 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 
 | Command | What it does |
 | --- | --- |
-| `./scripts/gate.ps1` | the gate a change passes before commit: rustfmt, clippy `-D warnings`, the Linux unit tests, the commit-message check's tests, and the frontend's install, lint, format check, typecheck, text check, Tauri version check, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
+| `./scripts/gate.ps1` | the gate a change passes before commit: rustfmt, clippy `-D warnings` (the app, the window crate, and the window crate with its `shots` feature), the Linux unit tests of both crates, the commit-message check's tests, and the frontend's install, lint, format check, typecheck, text check, Tauri version check, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
 | `./scripts/gate.ps1 -Group frontend` | one group only (`frontend`, `rust`, `windows`) |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
-| `./scripts/windows-tests.ps1 -Build -Run` | the unit tests cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
+| `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
 | `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there: the only place the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) compiles. Checkout mounted read-only; caches in named volumes |
 | `./scripts/test-build.ps1` | the test build, `test-build/luna-test.exe` (below); `-Test` is the Windows tests |
 | `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained; needs only the system WebView2) |
 | `./scripts/build-windows.ps1 -Installer` | the signed NSIS setup, `…/release/bundle/nsis/Luna_*_x64-setup.exe` |
 | `./scripts/screenshots.ps1 -Out test-build/shots` | headless shots of the UI on the demo data |
+| `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild` |
 | `./scripts/fit-check.ps1` | every demo scene and popup at small screen sizes; fails on a control out of reach ([below](#fit-on-small-screens)) |
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
@@ -105,6 +106,7 @@ Test only on the test build, never on the Luna in use
 ./scripts/test-build.ps1 -Run                  # build and start it
 ./scripts/test-build.ps1 -Run -Background      # window off screen, unfocused, off the taskbar
 ./scripts/test-build.ps1 -Run -DevCaller       # plus a scripted MCP caller (implies -Background)
+./scripts/test-build.ps1 -Run -WebView         # the WebView window instead of the native one
 ./scripts/test-build.ps1 -Test                 # the Rust tests, built for Windows, run here
 ```
 
@@ -137,6 +139,48 @@ Chromium draws the terminals' WebGL on SwiftShader, asked for by name
 (`--use-angle=swiftshader`): left to fall back to it on its own under
 `--disable-gpu`, it often shot the terminals blank and the page before it had
 settled, differently from one run to the next.
+
+### Native window shots
+
+`./scripts/gpui-shots.ps1` shoots the native window: it builds
+`test-build/luna-window-shots.exe` (the window crate's `shots` feature, in the
+`shots` profile: release without its link-time optimization) in the Windows
+image and runs it here. Each scene of `crates/window/src/demo.rs`, in light
+and dark, is opened over a fake host past the right edge of the displays,
+never activated, and rendered in the app (`Window::render_to_image`) to
+`test-build/shots/gpui/<scene>-<theme>.png`; a frame with nothing drawn
+fails the run. It needs gpui's test support, so the app's exe never carries
+it. The macOS workflow (`.github/workflows/gpui.yml`) runs the same harness.
+
+## The native window
+
+The window crate, `src-tauri/crates/window` (package `luna-window`), is a
+member of the workspace `src-tauri/Cargo.toml` makes, on its lockfile, and
+builds with the app: every script above that builds the exe builds it. Its
+pins are exact (`gpui-pre`, `gpui-pre-platform` and `gpui-component`, one
+snapshot), and GPUI's Windows crate is vendored and patched
+(`src-tauri/vendor/`, PATCHES.md says what and why; `cargo fmt` and clippy
+leave it alone, and so does the text check). How the window works:
+[architecture/native-window.md](architecture/native-window.md).
+
+### The window's font
+
+Cascadia Mono, the window's one font, is carried in the exe from
+`src-tauri/crates/window/assets/fonts/`: the static TrueType Regular and Bold
+of Microsoft's release 2407.24 (`ttf/static/` of `CascadiaCode-2407.24.zip`,
+https://github.com/microsoft/cascadia-code/releases/tag/v2407.24), with its
+SIL Open Font License 1.1 beside them (`OFL.txt`, the repository's `LICENSE`
+at that tag) and in `third-party-licenses/installer/cascadia-mono/`.
+
+| File | SHA-256 |
+| --- | --- |
+| `CascadiaCode-2407.24.zip` | `e67a68ee3386db63f48b9054bd196ea752bc6a4ebb4df35adce6733da50c8474` |
+| `CascadiaMono-Regular.ttf` | `06520d032ec274fa5040b22c6f4a1d829081b24ba40b2da56dae89bf10c7b481` |
+| `CascadiaMono-Bold.ttf` | `b22cb603ed23cac36e8444846e1841caca21719a5e852780a8d37ae7a49b0a36` |
+| `OFL.txt` | `51882cd3cdba4e16f220f44ddb08a635c38c44ea6e0975db2574f4be6f958238` |
+
+A new release of the font replaces both files and the table, and moves the
+entry in `third-party-licenses/components.json`.
 
 ## Fit on small screens
 
@@ -177,6 +221,13 @@ hand, with the same scripts:
 | `rust-linux` | `gate.ps1 -Group rust` in `docker/linux-check.Dockerfile`'s image |
 | `windows-build` | `gate.ps1 -Group windows` and `windows-tests.ps1 -Build`, uploading the test executables; then `third-party-notices.ps1`, as the release makes it on a Linux runner |
 | `windows-tests` | runs those executables on a `windows-2025` runner |
+
+`.github/workflows/gpui.yml` builds the app with its native window on a
+`macos-15` runner (Apple silicon), on pushes to `gpui/**` branches and by
+hand: the dependency graph checked (no gpui-pre-windows, CoreText's
+zed-font-kit present), the window crate's tests, the app's unit tests
+(reported, not yet required) and the window's shots, uploaded as one artifact.
+macOS is built and tested there only ([ADR-0030](adr/0030-scope-of-0-20.md)).
 
 `.github/workflows/fuzz.yml` runs each fuzz target for five minutes on Mondays
 and by hand, keeping only what one finds as an artifact (see

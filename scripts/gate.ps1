@@ -162,15 +162,19 @@ $steps = @(
     @{
         Name  = 'cargo fmt --check'
         Group = 'rust'
-        Run   = { Invoke-LinuxCargo 'cargo fmt' $build $images.linux 'cargo fmt --check' }
+        # The app and its window crate, by name: a plain `cargo fmt` would
+        # take the root package alone, and `--all` the vendored crates too.
+        Run   = { Invoke-LinuxCargo 'cargo fmt' $build $images.linux 'cargo fmt -p luna -p luna-window -- --check' }
     }
     @{
         Name  = 'cargo clippy (Linux)'
         Group = 'rust'
         Run   = {
+            # The screenshot harness's code only builds with its feature.
             Invoke-LinuxCargo 'cargo clippy' $build $images.linux @'
-cargo clean --locked -p luna
-cargo clippy --locked --all-targets -- -D warnings
+cargo clean --locked -p luna -p luna-window
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked -p luna-window --features shots --all-targets -- -D warnings
 '@
         }
     }
@@ -179,8 +183,8 @@ cargo clippy --locked --all-targets -- -D warnings
         Group = 'rust'
         Run   = {
             Invoke-LinuxCargo 'cargo test' $build $images.linux @'
-cargo clean --locked -p luna
-cargo test --locked --lib --bins
+cargo clean --locked -p luna -p luna-window
+cargo test --locked --workspace --lib --bins
 '@
         }
     }
@@ -198,7 +202,8 @@ cargo test --locked --lib --bins
             Invoke-WinBuild 'cargo xwin clippy' $build $images.windows @'
 mkdir -p dist
 cd src-tauri
-cargo xwin clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+cargo xwin clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+cargo xwin clippy --locked -p luna-window --features shots --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 '@ $TestBuildEnv
         }
     }

@@ -50,3 +50,6 @@ patches/*.patch              -text
 # byte so its first commit diffs clean against the published .crate and every
 # change since is Luna's own.
 src-tauri/vendor/**          -text
+
+# The native window's font goes into the exe byte for byte (font.rs `include_bytes!`).
+src-tauri/crates/window/assets/fonts/*.ttf  binary

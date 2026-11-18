@@ -18,7 +18,7 @@ Two principles shape everything else:
 
 | Layer | Choice |
 | --- | --- |
-| Shell | Tauri 2: Rust core + system WebView (WebView2 on Windows) |
+| Shell | Tauri 2: Rust core + system WebView (WebView2 on Windows); the native window on GPUI (`crates/window`, [native-window.md](native-window.md)), the default from 0.20 |
 | UI | React 19, TypeScript, Vite; Zustand (+ `persist` in localStorage) for UI state |
 | Terminals | xterm.js + FitAddon (+ WebGL addon) |
 | Editor | CodeMirror 6, for account settings files and the library |
@@ -29,7 +29,7 @@ Two principles shape everything else:
 
 | Process | What it is | Lives in |
 | --- | --- | --- |
-| **Window** | `luna.exe`: the Tauri app with the WebView, tray, title bar handling, updater | `lib.rs`, `corelink.rs`, `watchdog.rs`, `sysmenu.rs`, `lifecycle.rs`, `links.rs` |
+| **Window** | `luna.exe`: the native GPUI window, or with `--webview` the Tauri app with the WebView, tray, title bar handling, updater | `native.rs` and `crates/window/`; `lib.rs`, `corelink.rs`, `watchdog.rs`, `sysmenu.rs`, `lifecycle.rs`, `links.rs` |
 | **Core** | the same exe with `--core`, no window; on Windows started from a copy under `<data>/core/<fingerprint>/` | `coreproc.rs`, `corecmd.rs`, everything that runs sessions |
 | **CLI children** | `claude` / `codex` in a pty, or `claude -p` / `codex exec` per turn for background helpers | `pty/`, `background/` |
 | **Exit watcher** | `--watch-exit <pid>`: logs how the previous process ended | `lifecycle.rs` |

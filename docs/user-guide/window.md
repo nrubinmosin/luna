@@ -1,5 +1,13 @@
 # The window and panes
 
+Luna 0.20 is moving to a native window, which Luna opens from now on. It has
+so far its title bar (Luna's name, the theme button, minimize, maximize and
+close; drag it to move the window, double-click it to maximize), the core
+banner and an empty board, in one font, Cascadia Mono, light, dark or as the
+system is. Closing it leaves the core and its sessions running. Start Luna
+with `--webview` for the window this page describes, which still has
+everything else.
+
 ![Four chats in one window](../screenshots/panes.png)
 
 ## Look

@@ -1,7 +1,7 @@
 #Requires -Version 7.4
-# Builds the crate for Linux in Docker and runs its whole unit test suite there:
-# the Unix code (keeper/, procs/unix.rs and parts of pty/) that test-build.ps1
-# -Test, with its Windows binaries, never compiles.
+# Builds the crate and its window crate for Linux in Docker and runs their whole
+# unit test suites there: the Unix code (keeper/, procs/unix.rs and parts of
+# pty/) that test-build.ps1 -Test, with its Windows binaries, never compiles.
 #
 #   ./scripts/linux-check.ps1
 #
@@ -17,7 +17,7 @@ Use-BuildLock {
     # Single-quoted: the container's shell owns every $ in here. Why the crate is
     # rebuilt each time: Invoke-LinuxCargo.
     Invoke-LinuxCargo 'linux check' $build $image @'
-cargo clean --locked -p luna
-cargo test --locked --lib --bins
+cargo clean --locked -p luna -p luna-window
+cargo test --locked --workspace --lib --bins
 '@
 }
