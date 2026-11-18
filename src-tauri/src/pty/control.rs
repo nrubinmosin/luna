@@ -302,7 +302,7 @@ pub async fn stop_all_sessions() -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(|| {
         // What a chat was doing is written down before quitting changes it.
         crate::background::save();
-        crate::agents::freeze_chats();
+        let _stopping = crate::agents::freeze_chats();
         manager().shut_down_all(GRACE) + crate::background::stop_turns(false)
     })
     .await

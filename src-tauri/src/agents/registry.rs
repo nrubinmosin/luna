@@ -7,7 +7,6 @@ use crate::agents::held::Held;
 use crate::agents::notifier::lines::{NoticeTurn, Woken};
 use crate::agents::notifier::usage::QuotaTold;
 use crate::agents::owed::{Owed, Receipt, Requests};
-use crate::agents::persist::CHATS_FROZEN;
 use crate::agents::reparent::{asked_to_move, movable_root, moved_away, moved_error, Moved, Suggested};
 use crate::agents::spawn::{free_first, max_descendants, refused_a_place, under_cap, PlacesRefused, SpawnTaken};
 use crate::agents::teardown::{forget, Auto};
@@ -305,8 +304,9 @@ pub fn register(
             }
         }
     }
-    // A session running again: what the chats' ties say is news once more.
-    CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    // A session running again: what the chats' ties say is news once more,
+    // unless every session is being stopped.
+    crate::agents::persist::thaw_chats();
     r.known.insert(
         id.to_string(),
         Known {

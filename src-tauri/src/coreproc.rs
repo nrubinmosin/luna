@@ -296,7 +296,7 @@ fn leave(reason: &str) -> ! {
 /// were closed.
 pub fn wind_down() -> usize {
     crate::background::stop_all();
-    crate::agents::freeze_chats();
+    let _stopping = crate::agents::freeze_chats();
     crate::pty::manager().shut_down_all(crate::pty::GRACE)
 }
 

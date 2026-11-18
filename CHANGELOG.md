@@ -150,6 +150,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   CLI made while Luna's own start waited, or after the wall clock was set
   back, and asks again under its last look whether a session making one may
   have made it.
+- A session started while every session is being stopped (an update, a core
+  leaving, the PC shutting down) no longer lets the chats' ties be saved as
+  the stopping left them.
 
 ## [0.18.5] - 2026-11-17
 

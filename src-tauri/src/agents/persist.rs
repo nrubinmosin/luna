@@ -213,8 +213,42 @@ pub(super) static CHATS_FROZEN: std::sync::atomic::AtomicBool = std::sync::atomi
 /// (`save_in_order`).
 static CHATS_LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
-pub fn freeze_chats() {
+/// How many stops of every session are under way (`freeze_chats`): while
+/// one is, a session starting does not lift the freeze (`thaw_chats`).
+static WINDING: Mutex<usize> = Mutex::new(0);
+
+/// Every session being stopped, from `freeze_chats` until it is dropped.
+pub struct Winding(());
+
+impl Drop for Winding {
+    fn drop(&mut self) {
+        let mut winding = WINDING.lock().unwrap_or_else(|e| e.into_inner());
+        *winding = winding.saturating_sub(1);
+    }
+}
+
+/// Freezes the chats' ties for a stop of every session (a core leaving, the
+/// PC shutting down, an update), held until the guard is dropped once the
+/// sessions are stopped. The freeze itself stays until a session starts
+/// after that: the core goes on where an update or a shutdown did not come.
+#[must_use = "the stop lasts as long as the guard"]
+pub fn freeze_chats() -> Winding {
+    // Counted before the freeze, and neither under the other's lock: a start
+    // that finds no stop counted thaws before the freeze, never after it.
+    *WINDING.lock().unwrap_or_else(|e| e.into_inner()) += 1;
     freeze(&CHATS_LAST, &CHATS_FROZEN);
+    Winding(())
+}
+
+/// A session running again: what the chats' ties say is news once more,
+/// unless every session is being stopped, where it is one more that will
+/// be and the freeze holds. Called under the registry's lock, which nothing
+/// takes under `WINDING`.
+pub(super) fn thaw_chats() {
+    let winding = WINDING.lock().unwrap_or_else(|e| e.into_inner());
+    if *winding == 0 {
+        CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Sets `frozen` under the saves' lock: a save already taking its snapshot
@@ -588,6 +622,23 @@ mod tests {
         said.lock().unwrap().push("frozen");
         save.join().unwrap();
         assert_eq!(*said.lock().unwrap(), ["written", "frozen"]);
+    }
+
+    /// A session that starts while every session is being stopped (a pane
+    /// asking for its chat again, a helper's turn) leaves the chats' ties
+    /// frozen: a save then would write what the stopping did. One that
+    /// starts once the stop is over lifts the freeze.
+    #[test]
+    fn a_start_while_the_sessions_are_stopped_leaves_the_chats_frozen() {
+        use std::sync::atomic::Ordering;
+        let start = || register("fz-start", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
+        let stopping = freeze_chats();
+        start();
+        assert!(CHATS_FROZEN.load(Ordering::SeqCst), "still frozen");
+        drop(stopping);
+        start();
+        assert!(!CHATS_FROZEN.load(Ordering::SeqCst), "a start after the stop lifts it");
+        forget("fz-start");
     }
 
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,

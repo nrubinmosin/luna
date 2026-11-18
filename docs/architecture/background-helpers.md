@@ -332,6 +332,10 @@ helper's settings. `save_chats` stops while sessions are being stopped
 Each save takes its snapshot and writes it under one lock (`save_in_order`),
 so the newest snapshot is the one left on disk, and the freeze takes the same
 lock: a save under way is written before the stopping starts, and none after.
+A session that starts lifts the freeze (`register`), the core going on where
+an update or a shutdown did not come, but not while the stop is under way
+(`freeze_chats` holds it until the sessions are stopped): a pane asking for
+its chat again then, or a helper's turn, is one more session to be stopped.
 
 Neither CLI continues a turn a core killed (Claude Code's `--resume` needs an
 environment variable Luna does not set; Codex's continuation lives in the daemon
