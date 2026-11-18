@@ -1,0 +1,149 @@
+# The GPUI spike (spike/gpui/, see its README.md) built and run on macOS: a
+# release build, the app started with its editor window (and the terminal pane
+# when the tree has one), a screenshot of the runner's desktop, an in-app
+# render_to_image shot, and the app's own stats, uploaded as one artifact.
+# Lives on the spike/gpui branch only; nothing on master runs it.
+name: gpui-spike
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [spike/gpui]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpui-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Rust of Luna's Windows image (docker/windows-build.Dockerfile), which
+  # the spike's Windows builds use.
+  RUST_VERSION: 1.100.0
+  CARGO_TERM_COLOR: never
+
+jobs:
+  macos:
+    # Pinned, not macos-latest, so the image does not move under the spike.
+    # Apple silicon (arm64).
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        # Named, bash runs as `bash --noprofile --norc -eo pipefail`: a failing
+        # command before a `| tee` fails its step (unnamed, it is `bash -e`).
+        shell: bash
+        working-directory: spike/gpui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          mkdir -p out
+          { sw_vers; uname -m; xcodebuild -version; rustc -V; cargo -V; } | tee out/versions.txt
+
+      # gpui-pre-windows, the one patched crate (vendor/), is a Windows-only
+      # dependency: it is not in this graph, which the step shows.
+      - name: Dependency graph
+        run: |
+          cargo tree --locked -e normal --prefix none | sort -u > out/cargo-tree.txt
+          if grep -q '^gpui-pre-windows ' out/cargo-tree.txt; then
+            echo 'gpui-pre-windows is in the macOS graph' >&2; exit 1
+          fi
+          grep -E '^gpui-(pre|pre-macos|pre-apple|pre-platform|component|base) ' out/cargo-tree.txt
+
+      - name: Build (release)
+        run: |
+          start=$(date +%s)
+          cargo build --release --locked
+          echo "build_release_seconds=$(( $(date +%s) - start ))" >> out/build.txt
+          cp target/release/spike out/spike
+          echo "spike_bytes=$(stat -f %z out/spike)" >> out/build.txt
+
+      - name: Unit tests
+        run: cargo test --release --locked 2>&1 | tee out/tests.txt
+
+      # Two runs, each with its own --stats file: the terminal pane on a 20 s
+      # burst feed (its JSON summary: frame times, latency, the checksum against
+      # a headless Term), and the editor window left idle (its JSON line: open
+      # time, notifications while idle). Each quits through --exit-after,
+      # set well past what it measures, and is killed only if it does not.
+      - name: Run and photograph
+        run: |
+          run() { # name, seconds to wait, desktop shot after N s (0: none), args...
+            local name=$1 wait=$2 shot=$3; shift 3
+            echo "spike $*" | tee -a out/run.txt
+            ./out/spike "$@" > "out/$name-stdout.txt" 2> "out/$name-stderr.txt" &
+            local pid=$! t=0
+            while kill -0 "$pid" 2>/dev/null && [ "$t" -lt "$wait" ]; do
+              sleep 1; t=$((t + 1))
+              # The runner's own desktop; on a hosted runner nothing else is on it.
+              if [ "$t" -eq "$shot" ]; then
+                screencapture -x "out/$name-desktop.png" || echo "$name: screencapture failed" | tee -a out/run.txt
+              fi
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "$name: did not quit by itself; killed" | tee -a out/run.txt
+              kill -9 "$pid"
+            fi
+            local code=0; wait "$pid" || code=$?
+            echo "$name: exit code $code" | tee -a out/run.txt
+          }
+          run term 45 10 --term --feed burst:20 --stats out/term-stats.json --exit-after 30
+          run editor 30 8 --editor samples/sample.md --stats out/editor-stats.json --exit-after 15
+
+      - name: Check the stats
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          failed = []
+          def load(path):
+              try:
+                  with open(path) as f:
+                      return json.load(f)
+              except Exception as e:
+                  failed.append(f"{path}: {e}")
+          term = load("out/term-stats.json")
+          if term is not None:
+              print("term:", json.dumps({k: term.get(k) for k in ("frames", "frame_ms", "latency_ms", "bytes", "checksum")}))
+              if not term.get("checksum", {}).get("match"):
+                  failed.append("term: the pane's grid does not match the headless Term's")
+              if not term.get("bytes", {}).get("equal"):
+                  failed.append("term: bytes parsed differ from bytes generated")
+              if not term.get("frames"):
+                  failed.append("term: no frames")
+          editor = load("out/editor-stats.json")
+          if editor is not None:
+              print("editor:", json.dumps(editor))
+              if editor.get("editor_bytes", 0) <= 0:
+                  failed.append("editor: no text loaded")
+              if editor.get("editor_idle_notifications") != 0:
+                  failed.append(f"editor: {editor.get('editor_idle_notifications')} notifications while idle")
+          for f in failed:
+              print("FAILED:", f)
+          sys.exit(1 if failed else 0)
+          PY
+
+      # render_to_image needs gpui's test-support, so it is a second build.
+      - name: In-app shot (render_to_image)
+        continue-on-error: true
+        run: |
+          start=$(date +%s)
+          cargo build --release --locked --features shot
+          echo "build_shot_seconds=$(( $(date +%s) - start ))" >> out/build.txt
+          ./target/release/spike --editor samples/sample.md --shot out/inapp.png \
+            --exit-after 30 2>&1 | tee out/inapp.txt
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gpui-spike-macos
+          path: |
+            spike/gpui/out/*.png
+            spike/gpui/out/*.txt
+            spike/gpui/out/*.json
+          if-no-files-found: warn

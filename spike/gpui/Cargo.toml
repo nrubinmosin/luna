@@ -1,0 +1,57 @@
+# A throwaway spike: GPUI (gpui-pre, the crates.io snapshot of Zed's gpui) and
+# gpui-component on Windows, cross-compiled from Linux. Not part of Luna's build.
+[package]
+name = "spike"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "spike"
+path = "src/main.rs"
+
+[dependencies]
+# The terminal pane (src/term/): grid, parser and PTY (ConPTY on Windows).
+alacritty_terminal = "=0.26.0"
+anyhow = "1"
+futures = "0.3"
+# gpui-component 0.10.0 pins gpui-pre =0.3.12 (its Cargo.toml); the platform
+# crate is pinned to the same snapshot. gpui-pre-windows is patched below.
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+# runtime_shaders: on macOS (and only there) the Metal shaders are compiled at
+# startup, so a build needs no Metal toolchain (Xcode 26 ships without one).
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["runtime_shaders"] }
+# tree-sitter-markdown: the editor window's highlighting (src/editor.rs), C
+# grammars that cargo-xwin compiles with clang-cl.
+gpui-component = { version = "=0.10.0", features = ["tree-sitter-markdown"] }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+unicode-width = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# src/win.rs: the virtual screen and the primary display's DPI, for off-screen bounds.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+# TestAppContext, VisualTestContext and #[gpui::test] for the unit tests.
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
+
+[features]
+# `--shot PATH`: the app renders its own window to a PNG with
+# Window::render_to_image, which gpui-pre keeps behind test-support.
+shot = ["dep:image", "gpui/test-support", "gpui_platform/test-support"]
+
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+
+[profile.release]
+opt-level = 3
+debug = false
+codegen-units = 16
+panic = "abort"
+
+# Its own workspace, so the Luna repo above does not claim it. Later crates
+# (a terminal pane, an editor window) go under crates/ and are listed here.
+[workspace]
+members = ["."]
+resolver = "3"
