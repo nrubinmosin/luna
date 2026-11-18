@@ -43,6 +43,7 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'kill_session',
   'delete_session',
   'stop_all_sessions',
+  'update_called_off',
   'orphan_sessions',
   'sessions_meta',
   'session_modes',

@@ -332,14 +332,15 @@ helper's settings. `save_chats` stops while sessions are being stopped
 Each save takes its snapshot and writes it under one lock (`save_in_order`),
 so the newest snapshot is the one left on disk, and the freeze takes the same
 lock: a save under way is written before the stopping starts, and none after.
-A session that starts lifts the freeze (`register`), the core going on where
-an update or a shutdown did not come, but not while the stop is under way
-(`freeze_chats` holds it until the sessions are stopped): a pane asking for
-its chat again then, or a helper's turn, is one more session to be stopped.
-One that the stop missed (its start registered during it, its session in the
-map only once the stop had taken the sessions) runs on: the stop's end lifts
-the freeze where it finds a session running (`Winding`), and a session listed
-after that end lifts it as it is listed (`PtyManager::list`).
+Each stop holds the freeze for its own reason (`Stop`) until its caller knows
+the process goes on, and only then lifts it (`thaw_chats`), once no other
+stop holds it: an update whose install failed (the window's
+`update_called_off`), a PC shutdown the OS is seen to take back (power
+`start_over`). The core leaving never lifts it, and neither does a shutdown
+whose fate is unclear, whose chats stay closed for the next core to take up.
+A session starting or running meanwhile (a pane asking for its chat again, a
+helper's turn) is no sign the process goes on, and lifts nothing: a save
+then would write what the stopping did.
 
 Neither CLI continues a turn a core killed (Claude Code's `--resume` needs an
 environment variable Luna does not set; Codex's continuation lives in the daemon

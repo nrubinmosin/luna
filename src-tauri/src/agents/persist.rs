@@ -213,73 +213,71 @@ pub(super) static CHATS_FROZEN: std::sync::atomic::AtomicBool = std::sync::atomi
 /// (`save_in_order`).
 static CHATS_LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
-/// How many stops of every session are under way (`freeze_chats`): while
-/// one is, a session starting does not lift the freeze (`thaw_chats`).
-static WINDING: Mutex<usize> = Mutex::new(0);
+/// Why every session is being stopped (`freeze_chats`). Each stop holds the
+/// freeze until its caller knows the process goes on after all
+/// (`thaw_chats`), or the process ends with it: a session started or still
+/// running meanwhile (a pane asking for its chat again, a helper's turn) is
+/// no sign of either, and a save then would write what the stopping did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// The core leaving (`coreproc::leave`): never called off.
+    Leaving,
+    /// The PC shut down or restarted at Luna's word: called off where the OS
+    /// is seen to take it back and the chats start over (power/machine.rs).
+    PowerOff,
+    /// An update about to be installed (`pty::stop_all_sessions`): called off
+    /// where the install fails (`pty::update_called_off`).
+    Update,
+}
 
-/// Every session being stopped, from `freeze_chats` until it is dropped.
-pub struct Winding(());
-
-impl Drop for Winding {
-    fn drop(&mut self) {
-        let over = {
-            let mut winding = WINDING.lock().unwrap_or_else(|e| e.into_inner());
-            *winding = winding.saturating_sub(1);
-            *winding == 0
-        };
-        // A session still running once the stop is over came after it had
-        // taken the sessions, started while it was under way: it escaped
-        // the stop and runs on, and its registration, which found the stop
-        // counted, left the freeze. Lifted here, as a start after the stop
-        // lifts it; one listed after this lifts it itself (`thaw_chats`).
-        if over && crate::pty::manager().live_count() > 0 {
-            thaw_chats();
+impl Stop {
+    fn bit(self) -> u8 {
+        match self {
+            Stop::Leaving => 1,
+            Stop::PowerOff => 2,
+            Stop::Update => 4,
         }
     }
 }
 
-/// Freezes the chats' ties for a stop of every session (a core leaving, the
-/// PC shutting down, an update), held until the guard is dropped once the
-/// sessions are stopped. The freeze itself stays until a session starts
-/// after that: the core goes on where an update or a shutdown did not come.
-#[must_use = "the stop lasts as long as the guard"]
-pub fn freeze_chats() -> Winding {
-    // Counted before the freeze, and neither under the other's lock: a start
-    // that finds no stop counted thaws before the freeze, never after it.
-    *WINDING.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+/// The stops under way, a `Stop::bit` each; `CHATS_FROZEN` is set and
+/// cleared under this lock, so a stop called off never lifts another's
+/// freeze, and a stop said twice is one.
+static STOPS: Mutex<u8> = Mutex::new(0);
+
+/// Freezes the chats' ties for a stop of every session, until that stop is
+/// called off (`thaw_chats`) and no other is under way.
+pub fn freeze_chats(why: Stop) {
+    let mut stops = STOPS.lock().unwrap_or_else(|e| e.into_inner());
+    *stops |= why.bit();
     freeze(&CHATS_LAST, &CHATS_FROZEN);
-    Winding(())
 }
 
-/// A session running again: what the chats' ties say is news once more,
-/// unless every session is being stopped, where it is one more that will
-/// be, or one the stop's end finds running (`Winding`), and the freeze
-/// holds. Called as a session registers, under the registry's lock, and
-/// once it is listed in the session map; nothing takes either under
-/// `WINDING`.
-pub(crate) fn thaw_chats() {
-    let winding = WINDING.lock().unwrap_or_else(|e| e.into_inner());
-    if *winding == 0 {
+/// The stop `why` called off, its caller knowing the process goes on: what
+/// the chats' ties say is news once more, unless another stop is under way.
+pub fn thaw_chats(why: Stop) {
+    let mut stops = STOPS.lock().unwrap_or_else(|e| e.into_inner());
+    *stops &= !why.bit();
+    if *stops == 0 {
         CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
-/// One test at a time that stops every session or reads the freeze: each
-/// counts on no other stop being under way.
+/// One test at a time that stops every session or reads the freeze, each
+/// starting with no stop under way and nothing frozen.
 #[cfg(test)]
 pub(crate) fn stops_for_test() -> std::sync::MutexGuard<'static, ()> {
     static ONE: Mutex<()> = Mutex::new(());
-    ONE.lock().unwrap_or_else(|e| e.into_inner())
+    let alone = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    *STOPS.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+    CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    alone
 }
 
-/// Whether the chats' ties are frozen, and, given `to`, set so first.
+/// Whether the chats' ties are frozen.
 #[cfg(test)]
-pub(crate) fn chats_frozen(to: Option<bool>) -> bool {
-    use std::sync::atomic::Ordering;
-    if let Some(to) = to {
-        CHATS_FROZEN.store(to, Ordering::SeqCst);
-    }
-    CHATS_FROZEN.load(Ordering::SeqCst)
+pub(crate) fn chats_frozen() -> bool {
+    CHATS_FROZEN.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Sets `frozen` under the saves' lock: a save already taking its snapshot
@@ -656,21 +654,33 @@ mod tests {
     }
 
     /// A session that starts while every session is being stopped (a pane
-    /// asking for its chat again, a helper's turn) leaves the chats' ties
-    /// frozen: a save then would write what the stopping did. One that
-    /// starts once the stop is over lifts the freeze.
+    /// asking for its chat again, a helper's turn), or after, leaves the
+    /// chats' ties frozen: the process may yet end with the stop, and a save
+    /// then would write what the stopping did. Only the stop called off lifts
+    /// it, and only once no other stop is under way; the core's leaving is
+    /// never called off.
     #[test]
-    fn a_start_while_the_sessions_are_stopped_leaves_the_chats_frozen() {
+    fn a_stop_keeps_the_chats_frozen_until_it_is_called_off() {
         use std::sync::atomic::Ordering;
         let _alone = stops_for_test();
         let start = || register("fz-start", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
-        let stopping = freeze_chats();
+        freeze_chats(Stop::Update);
         start();
-        assert!(CHATS_FROZEN.load(Ordering::SeqCst), "still frozen");
-        drop(stopping);
+        assert!(CHATS_FROZEN.load(Ordering::SeqCst), "a start while it stops");
         start();
-        assert!(!CHATS_FROZEN.load(Ordering::SeqCst), "a start after the stop lifts it");
+        thaw_chats(Stop::PowerOff);
+        assert!(CHATS_FROZEN.load(Ordering::SeqCst), "another stop called off");
+        thaw_chats(Stop::Update);
+        assert!(!CHATS_FROZEN.load(Ordering::SeqCst), "the update called off");
+        freeze_chats(Stop::Update);
+        freeze_chats(Stop::Leaving);
+        thaw_chats(Stop::Update);
+        start();
+        assert!(CHATS_FROZEN.load(Ordering::SeqCst), "the core leaves all the same");
         forget("fz-start");
+        // As the next test expects to find them.
+        *STOPS.lock().unwrap() = 0;
+        CHATS_FROZEN.store(false, Ordering::SeqCst);
     }
 
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,

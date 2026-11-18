@@ -25,3 +25,5 @@ export const coreRestart = () => call<void>('core_restart');
 export const noteExit = (reason: string | null) => call<void>('note_exit', { reason });
 /** Asks every session to quit as a delete would; resolves with how many. */
 export const stopAllSessions = () => call<number>('stop_all_sessions', {}, 0);
+/** The update the sessions were stopped for is not being installed: the core goes on saving the chats' ties. */
+export const updateCalledOff = () => call<void>('update_called_off', {}, undefined);

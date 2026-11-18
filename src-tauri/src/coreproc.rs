@@ -287,16 +287,17 @@ fn leave(reason: &str) -> ! {
     if let Some(socket) = ENDPOINT.get() {
         let _ = std::fs::remove_file(socket);
     }
-    wind_down();
+    wind_down(crate::agents::Stop::Leaving);
     crate::lifecycle::end_process()
 }
 
 /// Stops every session so that the next core takes them up where they stood: what
-/// a core leaving does, and a shutdown or restart of the PC. Returns how many chats
-/// were closed.
-pub fn wind_down() -> usize {
+/// a core leaving does, and a shutdown or restart of the PC. The chats' ties stay
+/// frozen until `why` is called off (`agents::thaw_chats`), or the process ends.
+/// Returns how many chats were closed.
+pub fn wind_down(why: crate::agents::Stop) -> usize {
     crate::background::stop_all();
-    let _stopping = crate::agents::freeze_chats();
+    crate::agents::freeze_chats(why);
     crate::pty::manager().shut_down_all(crate::pty::GRACE)
 }
 

@@ -297,17 +297,24 @@ impl PtyManager {
 /// transcript where one killed mid-write would not. A background helper's
 /// turn is stopped too: one still running would keep the old core from being
 /// replaced, and its parent chat has just been stopped. Returns how many it
-/// stopped.
+/// stopped. The chats' ties stay frozen until the update is called off
+/// (`update_called_off`) or the installer ends the process.
 #[tauri::command]
 pub async fn stop_all_sessions() -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(|| {
         // What a chat was doing is written down before quitting changes it.
         crate::background::save();
-        let _stopping = crate::agents::freeze_chats();
+        crate::agents::freeze_chats(crate::agents::Stop::Update);
         manager().shut_down_all(GRACE) + crate::background::stop_turns(false)
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// The update the sessions were stopped for is not being installed (its
+/// install failed): the core goes on, and the chats' ties are saved again.
+pub fn update_called_off() {
+    crate::agents::thaw_chats(crate::agents::Stop::Update);
 }
 
 /// Ends a chat's session, under its spawn gate (`take_and_quit`), on a
@@ -769,7 +776,7 @@ mod tests {
             held_keys: Arc::new(Mutex::new(None)),
             stashing: Arc::new(AtomicBool::new(false)),
         };
-        manager().list(id.to_string(), session);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
         quit
     }
 
@@ -1004,27 +1011,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A session whose start registered while every session was being
-    /// stopped, listed after the stop had taken the sessions, escaped it and
-    /// runs on: the chats' ties are news again once the stop is over, the
-    /// session listed before its end or after.
+    /// A session running once every session has been stopped for an update
+    /// (one started while the stop went on) leaves the chats' ties frozen:
+    /// the installer may yet end the process, and a save then would write
+    /// what the stopping did. The update called off lifts it.
     #[test]
-    fn a_session_that_escaped_a_stop_of_every_session_lifts_the_freeze() {
+    fn a_session_running_after_a_stop_leaves_the_chats_frozen_until_it_is_called_off() {
         let _alone = crate::agents::stops_for_test();
-        let stopping = crate::agents::freeze_chats();
+        crate::agents::freeze_chats(crate::agents::Stop::Update);
         let quit = fake_session("fz-escaped", "/nowhere", PROMPT);
-        assert!(crate::agents::chats_frozen(None), "frozen while the stop is under way");
-        drop(stopping);
-        assert!(!crate::agents::chats_frozen(None), "lifted at the stop's end: it runs on");
+        assert!(manager().live_count() > 0);
+        assert!(crate::agents::chats_frozen(), "frozen with a session running");
+        update_called_off();
+        assert!(!crate::agents::chats_frozen(), "lifted with the update called off");
         quit.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove("fz-escaped");
-        // Frozen still once the stop is over, with nothing found running:
-        // the session is listed only now.
-        crate::agents::chats_frozen(Some(true));
-        let quit = fake_session("fz-late", "/nowhere", PROMPT);
-        assert!(!crate::agents::chats_frozen(None), "lifted as it is listed");
-        quit.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove("fz-late");
     }
 
     /// An exit said for a session whose chat has a start under way since, or

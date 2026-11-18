@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Update } from '@tauri-apps/plugin-updater';
-import { noteExit, stopAllSessions } from '../../ipc/coreProcess';
+import { noteExit, stopAllSessions, updateCalledOff } from '../../ipc/coreProcess';
 import { exiting, flushPendingWrites } from '../../shared/lib/throttledStorage';
 import { useCore } from '../core/core.store';
 import { logInfo, logWarn } from '../../shared/lib/log';
@@ -142,6 +142,9 @@ export const useUpdates = create<UpdatesState>(set => ({
       const msg = e instanceof Error ? e.message : String(e);
       exiting('update', false);
       await noteExit(null).catch(() => {});
+      // The sessions stopped for it, the core freezes the chats' ties until
+      // it hears the update is off.
+      await updateCalledOff().catch(() => {});
       logWarn('updater', `install failed: ${msg}`);
       set({ phase: 'error', error: msg });
     }

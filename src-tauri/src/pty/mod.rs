@@ -26,7 +26,8 @@ mod spawn;
 mod start;
 
 pub(crate) use control::{
-    delete_session, kill_session, kill_tree, orphan_sessions, resize_session, stop_all_sessions, write_session, KeyHold, GRACE,
+    delete_session, kill_session, kill_tree, orphan_sessions, resize_session, stop_all_sessions, update_called_off, write_session, KeyHold,
+    GRACE,
 };
 #[cfg(test)]
 pub(crate) use control::{fake_person_keys, fake_terminal_for_test, fake_terminal_of};
@@ -346,15 +347,6 @@ impl PtyManager {
         let n = NEXT.get_or_init(|| AtomicU64::new(now_ms() << 10)).fetch_add(1, Ordering::SeqCst);
         generations.insert(id.to_string(), n);
         n
-    }
-
-    /// Puts a session that has started in the map, where whatever asks for
-    /// it looks, and lifts the chats' freeze unless every session is being
-    /// stopped (`agents::thaw_chats`): one whose start registered while a
-    /// stop was under way that is over by now escaped it, and runs on.
-    fn list(&self, id: String, session: Session) {
-        self.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id, session);
-        crate::agents::thaw_chats();
     }
 
     /// `id`'s session of spawn `generation` taken and waited for: an exit

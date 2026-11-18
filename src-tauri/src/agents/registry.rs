@@ -304,9 +304,6 @@ pub fn register(
             }
         }
     }
-    // A session running again: what the chats' ties say is news once more,
-    // unless every session is being stopped.
-    crate::agents::persist::thaw_chats();
     r.known.insert(
         id.to_string(),
         Known {

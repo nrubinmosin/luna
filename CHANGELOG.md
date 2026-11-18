@@ -153,10 +153,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   CLI made while Luna's own start waited, or while the wall clock was set
   back, by no clock at all, and asks again under its last look whether a
   session making one may have made it.
-- A session started while every session is being stopped (an update, a core
-  leaving, the PC shutting down) no longer lets the chats' ties be saved as
-  the stopping left them; one the stop missed lets them be saved again once
-  the stop is over.
+- A session started or still running while every session is stopped for an
+  update, a core leaving or the PC shutting down no longer lets the chats'
+  ties be saved as the stopping left them before the process ends; they are
+  saved again only once the update's install fails or the OS is seen to take
+  the shutdown back.
 - A start no longer waits for a delete or the orphan sweep reading a slow or
   dropped network drive.
 - A pane or the login window whose session was killed while its reader was

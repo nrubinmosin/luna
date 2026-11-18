@@ -17,7 +17,8 @@ vi.mock('@tauri-apps/plugin-updater', () => ({ check: () => Promise.resolve(upda
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: () => Promise.resolve('1.0.0') }));
 vi.mock('../../ipc/coreProcess', () => ({
   noteExit: vi.fn(() => Promise.resolve()),
-  stopAllSessions: vi.fn(() => Promise.resolve(0))
+  stopAllSessions: vi.fn(() => Promise.resolve(0)),
+  updateCalledOff: vi.fn(() => Promise.resolve())
 }));
 vi.mock('../core/core.store', () => ({ useCore: { getState: () => ({ link: { state: 'down' } }) } }));
 vi.mock('../../shared/lib/log', () => ({ logInfo() {}, logWarn() {} }));

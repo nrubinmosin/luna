@@ -183,7 +183,8 @@ another program's and is left alone.
   Win32 error. The privilege is on for the call alone: its previous state is
   taken from `AdjustTokenPrivileges` and put back after. On a yes the core winds
   down inside the grace (`coreproc::wind_down`: helper turns stopped, the chats
-  frozen, each CLI asked to quit with `pty::GRACE`, 10 s). `InitiateShutdownW`
+  frozen until a cancellation is seen, each CLI asked to quit with
+  `pty::GRACE`, 10 s). `InitiateShutdownW`
   returns at once and the shutdown follows on its own, or not at all, so what
   became of it is read off the OS (`Fate`), never off the clock: from the grace's
   end the core polls `GetSystemMetrics(SM_SHUTTINGDOWN)` ("nonzero if the
@@ -327,7 +328,9 @@ another program's and is left alone.
   `cli-known-good.json` and the handoff's instructions in `resources/`; `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
   window. Any other stops the sessions (each asked to quit with its exit hooks,
   `stop_all_sessions` also stopping helper turns) and the chats resume from
-  their transcripts.
+  their transcripts. The chats' ties stay frozen from that stop until the
+  installer ends the process, or until the window says the install failed
+  (`update_called_off`).
 - The CLIs update separately ([providers](providers.md#cli-binaries)).
 
 ## Logging

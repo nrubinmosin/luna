@@ -385,7 +385,7 @@ impl PowerSteps for Real {
     }
 
     fn close_sessions(&mut self) -> usize {
-        crate::coreproc::wind_down()
+        crate::coreproc::wind_down(crate::agents::Stop::PowerOff)
     }
 
     fn leaving(&mut self) {
@@ -421,6 +421,10 @@ impl PowerSteps for Real {
     }
 
     fn start_over(&mut self) {
+        // The process goes on: what the chats' ties say is news again. Kept
+        // frozen where the shutdown's fate is unclear, for the core a restart
+        // brings to take the chats up where they stood.
+        crate::agents::thaw_chats(crate::agents::Stop::PowerOff);
         // The helpers as the next core would take them up: their jobs tied again,
         // turns may start again, and those stopped mid-turn go on by themselves
         // where they were spawned to.
