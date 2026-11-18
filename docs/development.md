@@ -187,9 +187,10 @@ They, the crates, the npm packages and the toolchains move only in the project's
 commits, by hand and through the gate; Dependabot authors no code
 ([ADR-0029](adr/0029-dependencies-move-by-hand.md)). Advisories reach the project through
 cargo-deny and `pnpm audit` ([Supply chain](#supply-chain)), and through Dependabot alerts
-for the crates alone: GitHub's dependency graph detects nothing in the two-document
-`pnpm-lock.yaml` pnpm 12 writes, and raises no alert for an Action pinned by SHA or for an
-image. The Actions, the images and the toolchains and tools in them are watched by
+for the crates and possibly for the direct npm dependencies: GitHub's dependency graph
+detects nothing in the two-document `pnpm-lock.yaml` pnpm 12 writes, but reads
+`package.json`, where those are pinned exactly, so the transitive npm packages are watched by
+`pnpm audit` alone. It raises no alert for an Action pinned by SHA or for an image. The Actions, the images and the toolchains and tools in them are watched by
 nothing, so moving one means reading its releases for fixes. A new Node or Rust major is
 a migration of its own.
 

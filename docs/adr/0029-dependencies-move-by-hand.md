@@ -57,10 +57,12 @@ Dependabot authors no code.
 - What watches each pin for advisories:
   - the crates: cargo-deny in `.github/workflows/security.yml`, and
     Dependabot alerts, from `src-tauri/Cargo.lock`;
-  - the npm packages: `pnpm audit` in the same workflow, alone. pnpm 12
-    writes `pnpm-lock.yaml` as two YAML documents, from which GitHub's
-    dependency graph detects no dependencies, so no npm alert reaches the
-    Security tab;
+  - the npm packages: `pnpm audit` in the same workflow. pnpm 12 writes
+    `pnpm-lock.yaml` as two YAML documents, from which GitHub's dependency
+    graph detects no dependencies. GitHub's docs list `package.json` as an
+    input too, and it pins the direct dependencies exactly, so Dependabot
+    alerts may still come for those; the transitive ones are watched by
+    `pnpm audit` alone;
   - the Actions, the Docker base images and the toolchains and tools in them
     (Node, Rust, pnpm through `packageManager`, cargo-xwin, the cargo-deny
     binary, the gitleaks image): nothing. GitHub raises alerts for an Action
@@ -77,6 +79,7 @@ Dependabot authors no code.
   scanner for the images) could be added later; none runs now.
 - Nothing opens a fix on its own: between an advisory and its fix there is a
   person's turn.
-- Dependabot's earlier commits stay in master's history in their own form. CI
-  checks the commits a push or a pull request brings, never those master
-  already holds, so they are not checked again.
+- Dependabot's earlier commits in master's history keep their own form until
+  a later rewrite of that history rewords them. Until then CI does not check
+  them again: it checks the commits a push or a pull request brings, never
+  those master already holds.
