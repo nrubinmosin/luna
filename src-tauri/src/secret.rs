@@ -997,6 +997,18 @@ pub fn own_file(file: &std::fs::File) -> io::Result<Result<(), String>> {
     })
 }
 
+/// Whether the file open on `file` is Luna's alone, as `found` reads it
+/// through the handle: a plain file of one name, of a trusted owner, nobody
+/// else may open. Why not, where it is not. For a file checked and then
+/// used through the same handle (the updater's staged installer,
+/// desktop/updater.rs `hold`).
+pub fn private_file(file: &std::fs::File) -> io::Result<Result<(), String>> {
+    Ok(match found(file)? {
+        Found::Private => Ok(()),
+        Found::Loose(why) | Found::Foreign(why) => Err(why),
+    })
+}
+
 /// Makes the file open on `file` this user's alone, through its handle:
 /// 0600 on Unix (`fchmod`), the protected DACL on Windows.
 fn tighten(file: &std::fs::File) -> io::Result<()> {

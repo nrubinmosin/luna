@@ -14,15 +14,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Tauri's plugins, not wired in yet (`src-tauri/src/desktop/`,
   [desktop services](docs/architecture/desktop-services.md)): the tray, toasts
   and macOS notifications that open their chat when clicked, one window per
-  data folder with a second launch handing over to the first, folder and file
+  data folder with a second launch bringing the first up, folder and file
   pickers, a clipboard read that tells files, text and images apart, the
   window's size and place kept in the data folder, and an updater that reads
   the same `latest.json`, checks the same signature and runs the installer as
-  0.19's does, so 0.19 updates onto 0.20 and 0.20 onto later releases.
+  0.19's does, so 0.19 updates onto 0.20 and 0.20 onto later releases. The
+  updater takes only https, stages the setup privately under a name of its
+  own and keeps it open from its last check until it has started.
 - An NSIS installer built without Tauri's bundler
-  (`./scripts/build-windows.ps1 -Installer -Native`), installing as today's in
-  place over it, without the WebView2 bootstrap; and `scripts/macos-app.sh`,
-  which assembles an unsigned `Luna.app` for a macOS runner.
+  (`./scripts/build-windows.ps1 -Installer -Native`), adapted from Tauri's
+  template (credited, its license among the third-party notices), installing
+  as today's in place over it, without the WebView2 bootstrap, and starting
+  Luna again after an update unelevated, through the desktop's shell, with
+  the arguments it ran with as they stood; and `scripts/macos-app.sh`, which
+  assembles an unsigned `Luna.app` for a macOS runner.
 
 ## [0.19.0] - 2026-11-18
 

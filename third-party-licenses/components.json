@@ -55,6 +55,16 @@
     },
     {
       "section": "installer",
+      "name": "Tauri's NSIS installer template (adapted in src-tauri/windows/installer.nsi)",
+      "version": "tauri-bundler 2.10.5 (in the Tauri CLI 2.12.5)",
+      "license": "MIT OR Apache-2.0",
+      "source": "https://github.com/tauri-apps/tauri/blob/tauri-bundler-v2.10.5/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi",
+      "note": "The installer script, compiled into setup.exe: Tauri's bundler makes setup.exe from the template itself, and build-windows.ps1 -Native from installer.nsi, which reproduces parts of it with changes (its header lists them).",
+      "texts": "installer/tauri-nsis-template",
+      "tiedTo": { "npm": "@tauri-apps/cli", "version": "2.12.5" }
+    },
+    {
+      "section": "installer",
       "name": "WebView2 loader (WebView2LoaderStatic.lib, Microsoft.Web.WebView2 SDK)",
       "version": "1.0.3800.47",
       "license": "LicenseRef-Microsoft-WebView2-SDK (BSD-3-Clause-style, LICENSE.txt below)",

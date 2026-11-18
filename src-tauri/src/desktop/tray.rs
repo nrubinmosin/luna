@@ -11,9 +11,10 @@
 //!
 //! The menu's and the icon's events reach one handler each for the whole
 //! process (`MenuEvent::set_event_handler`, `TrayIconEvent::set_event_handler`),
-//! called on the loop's thread; the callbacks are `Send + Sync` because the
-//! crate asks that of them. They should hand the work to the window and
-//! return. No tray on Linux, which Luna does not support: `new` says so.
+//! called on the loop's thread. Luna sets them once and they call the newest
+//! tray's actions (`CURRENT`), so trays may overlap as one replaces another.
+//! The callbacks are `Send + Sync` because the crate asks that of its
+//! handlers. They should hand the work to the window and return. No tray on Linux, which Luna does not support: `new` says so.
 
 /// What the tray's menu and click do, supplied by the window.
 pub struct Actions {
@@ -103,10 +104,51 @@ const OPEN: &str = "open";
 const RESTART: &str = "restart";
 const QUIT: &str = "quit";
 
+/// The actions of the tray shown now, by its number. `tray-icon` keeps one
+/// menu handler and one icon handler for the whole process: Luna sets them
+/// once (`HANDLERS`), and they reach whichever tray is current through this,
+/// so that a tray made before the last one is dropped keeps working, and
+/// the last one's drop does not take the new one's handlers with it.
+static CURRENT: std::sync::Mutex<Option<(u64, std::sync::Arc<Actions>)>> = std::sync::Mutex::new(None);
+
+/// The number the next tray's actions go by.
+static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Makes `actions` the current tray's; returns the number they go by.
+fn make_current(actions: Actions) -> u64 {
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, std::sync::Arc::new(actions)));
+    id
+}
+
+/// Lets the actions numbered `id` go, if they are still the current ones.
+fn let_go(id: u64) {
+    let mut current = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+    if current.as_ref().is_some_and(|(now, _)| *now == id) {
+        *current = None;
+    }
+}
+
+/// Runs what the current tray's menu item `item` does, if anything; the
+/// lock is let go before the callback runs.
+fn on_menu(item: &str) {
+    let Some(actions) = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(_, a)| std::sync::Arc::clone(a)) else {
+        return;
+    };
+    match item {
+        OPEN => (actions.open)(),
+        RESTART => (actions.restart)(),
+        QUIT => (actions.quit)(),
+        _ => {}
+    }
+}
+
 /// The tray icon, shown for as long as this lives.
 pub struct Tray {
     #[cfg(any(windows, target_os = "macos"))]
     icon: tray_icon::TrayIcon,
+    #[cfg(any(windows, target_os = "macos"))]
+    id: u64,
     base: Rgba,
 }
 
@@ -134,21 +176,16 @@ impl Tray {
                 .build()
                 .map_err(|e| format!("no tray icon: {e}"))?;
 
-            let Actions { open, restart, quit } = actions;
-            let open: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::from(open);
-            let on_click = std::sync::Arc::clone(&open);
-            MenuEvent::set_event_handler(Some(move |event: MenuEvent| match event.id.as_ref() {
-                OPEN => open(),
-                RESTART => restart(),
-                QUIT => quit(),
-                _ => {}
-            }));
-            TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-                if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                    on_click();
-                }
-            }));
-            Ok(Tray { icon, base })
+            static HANDLERS: std::sync::Once = std::sync::Once::new();
+            HANDLERS.call_once(|| {
+                MenuEvent::set_event_handler(Some(|event: MenuEvent| on_menu(event.id.as_ref())));
+                TrayIconEvent::set_event_handler(Some(|event: TrayIconEvent| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        on_menu(OPEN);
+                    }
+                }));
+            });
+            Ok(Tray { icon, id: make_current(actions), base })
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         {
@@ -176,13 +213,11 @@ impl Tray {
 }
 
 impl Drop for Tray {
-    /// The handlers hold the window's callbacks; they go with the icon.
+    /// The window's callbacks go with the icon, unless a newer tray's have
+    /// taken their place; the process-wide handlers stay.
     fn drop(&mut self) {
         #[cfg(any(windows, target_os = "macos"))]
-        {
-            tray_icon::menu::MenuEvent::set_event_handler(None::<fn(tray_icon::menu::MenuEvent)>);
-            tray_icon::TrayIconEvent::set_event_handler(None::<fn(tray_icon::TrayIconEvent)>);
-        }
+        let_go(self.id);
     }
 }
 
@@ -198,6 +233,40 @@ mod tests {
     fn pixel(image: &Rgba, x: u32, y: u32) -> &[u8] {
         let at = ((y * image.width + x) * 4) as usize;
         &image.pixels[at..at + 4]
+    }
+
+    /// The handlers' dispatch, without an icon (the unit tests make none):
+    /// a tray made before the last is dropped keeps its actions.
+    #[test]
+    fn the_newest_trays_actions_answer_whatever_order_the_trays_go_in() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let (old, new) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let counting = |n: &Arc<AtomicUsize>| {
+            let (a, b, c) = (Arc::clone(n), Arc::clone(n), Arc::clone(n));
+            Actions {
+                open: Box::new(move || {
+                    a.fetch_add(1, Ordering::SeqCst);
+                }),
+                restart: Box::new(move || {
+                    b.fetch_add(10, Ordering::SeqCst);
+                }),
+                quit: Box::new(move || {
+                    c.fetch_add(100, Ordering::SeqCst);
+                }),
+            }
+        };
+        let first = make_current(counting(&old));
+        let second = make_current(counting(&new));
+        let_go(first);
+        on_menu(OPEN);
+        on_menu(RESTART);
+        on_menu(QUIT);
+        on_menu("something else");
+        assert_eq!((old.load(Ordering::SeqCst), new.load(Ordering::SeqCst)), (0, 111));
+        let_go(second);
+        on_menu(OPEN);
+        assert_eq!(new.load(Ordering::SeqCst), 111);
     }
 
     #[test]

@@ -53,12 +53,15 @@ $clearSigs = if ($Installer) { 'rm -f src-tauri/target/x86_64-pc-windows-msvc/re
 $makensis = ''
 if ($Native) {
     $manifest = Get-Content (Join-Path $Source 'src-tauri/Cargo.toml') -Raw
-    if ($manifest -notmatch '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"') { throw 'src-tauri/Cargo.toml has no x.y.z version for the installer' }
+    # x.y.z, or x.y.z-pre as release-lib.ps1 Assert-VersionFormat allows; Windows'
+    # version resource takes the numbers alone (VIVERSION).
+    if ($manifest -notmatch '(?m)^version\s*=\s*"((\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?)"') { throw 'src-tauri/Cargo.toml has no x.y.z version for the installer' }
     $version = $Matches[1]
+    $viVersion = "$($Matches[2]).0"
     $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
     $makensis = @"
 mkdir -p $release/bundle/nsis
-makensis -V3 -WX -DVERSION=$version -DMAINBINARYSRCPATH=/app/$release/luna.exe -DNOTICES=/app/src-tauri/target/THIRD-PARTY-NOTICES.txt -DINSTALLERICON=/app/src-tauri/icons/icon.ico -DOUTFILE=/app/$release/bundle/nsis/Luna_${version}_x64-setup.exe src-tauri/windows/installer.nsi
+makensis -V3 -WX -DVERSION=$version -DVIVERSION=$viVersion -DMAINBINARYSRCPATH=/app/$release/luna.exe -DNOTICES=/app/src-tauri/target/THIRD-PARTY-NOTICES.txt -DINSTALLERICON=/app/src-tauri/icons/icon.ico -DOUTFILE=/app/$release/bundle/nsis/Luna_${version}_x64-setup.exe src-tauri/windows/installer.nsi
 "@
 }
 

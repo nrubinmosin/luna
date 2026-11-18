@@ -1,6 +1,6 @@
-//! One Luna window per data dir: a second launch hands over to the first,
-//! which brings its window up, and exits. Tauri's single-instance plugin did
-//! this per identifier; here it is per identifier and data dir, which is one
+//! One Luna window per data dir: a second launch tells the first, which
+//! brings its window up, and exits. Tauri's single-instance plugin did this
+//! per identifier; here it is per identifier and data dir, which is one
 //! core's (overview.md), so the test build (an identifier and a data dir of
 //! its own) runs beside the Luna in use, and so does a second copy of Luna
 //! unpacked elsewhere.
@@ -10,20 +10,35 @@
 //! the background (`crate::background`) still claims, but a second launch,
 //! which is a script's, does not bring its window up.
 //!
+//! The hand-over is focus only: it carries nothing, and the first does
+//! nothing with a second launch but bring its window up. Its listener is not
+//! authenticated: on Windows any process on the same desktop at the same
+//! integrity or above can find its window and send it the message (Windows
+//! keeps a lower integrity's message out, UIPI), and on Unix any process of
+//! this user can reach its socket. Such a process can already bring up any
+//! of this user's windows, so the listener gives it nothing new; that holds
+//! only while the hand-over stays focus only, which is why it carries no
+//! arguments, no path, nothing the first would act on.
+//!
 //! Windows: a named mutex in the session's namespace says who is first, and
 //! the first keeps a message-only window, found by its class and title,
-//! that takes the second's arguments by WM_COPYDATA. The second lets the
-//! first take the foreground (`AllowSetForegroundWindow`), which Windows
+//! that a second launch sends a WM_COPYDATA tagged `LUNA`. The second lets
+//! the first take the foreground (`AllowSetForegroundWindow`), which Windows
 //! would otherwise refuse to a window brought up by a process in the
 //! background. The window lives on a thread of its own, with its own
-//! message loop, so nothing here depends on the window's toolkit.
+//! message loop, so nothing here depends on the window's toolkit. A first
+//! Luna run as administrator makes a mutex a normal second launch may not
+//! open (`ERROR_ACCESS_DENIED`): that one is second too, and its message is
+//! kept out by UIPI, which it says in the log before it exits.
 //!
-//! Unix: an exclusive lock on `luna.window.lock` in the data dir says who is
-//! first, and the first listens on `luna.window.sock` beside it.
+//! Unix: an exclusive lock on `window/lock` in the data dir says who is
+//! first, and the first listens on `window/sock` beside it; `window/` is a
+//! private folder of Luna's (`secret::private_dir`), and both are made there
+//! without following a link. The first takes a connection only from this
+//! user (`SO_PEERCRED`, `getpeereid`) that says `LUNA` within a second.
 //!
-//! The callback runs on that thread, not the window's; it should hand the
-//! work over and return. The arguments it gets are the second launch's own,
-//! its program name left out.
+//! The callback runs on the listener's thread, not the window's; it should
+//! hand the work over and return.
 
 use std::path::Path;
 
@@ -31,7 +46,7 @@ use std::path::Path;
 pub enum Claim {
     /// This is the first: hold the guard for as long as the window runs.
     First(Guard),
-    /// Another Luna on this data dir has the arguments now: exit.
+    /// Another Luna on this data dir has been told to come up: exit.
     Second,
 }
 
@@ -40,21 +55,20 @@ pub struct Guard {
     held: Option<imp::Held>,
 }
 
-/// The most a hand-over carries: arguments, not files.
-const MAX_PAYLOAD: usize = 64 << 10;
+/// What a hand-over says, and all it says.
+const MAGIC: &[u8; 4] = b"LUNA";
 
-/// Claims the window for this data dir, or hands over to the Luna that has
-/// it. `on_second` gets each later launch's arguments.
-pub fn claim(on_second: impl Fn(Vec<String>) + Send + Sync + 'static) -> Result<Claim, String> {
+/// Claims the window for this data dir, or tells the Luna that has it to
+/// come up. `on_second` runs for each later launch.
+pub fn claim(on_second: impl Fn() + Send + Sync + 'static) -> Result<Claim, String> {
     if std::env::var_os("LUNA_DEV_TOKEN").is_some() {
         return Ok(Claim::First(Guard { held: None }));
     }
     let quiet = crate::background();
     let dir = crate::paths::data_dir();
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    claim_as(&name(super::identifier(), &dir), &dir, &args, move |args| {
+    claim_as(&name(super::identifier(), &dir), &dir, move || {
         if !quiet {
-            on_second(args)
+            on_second()
         }
     })
 }
@@ -69,36 +83,25 @@ pub fn name(identifier: &str, data_dir: &Path) -> String {
     format!("{identifier}-{hex}")
 }
 
-/// What a hand-over carries: the arguments, NUL between them (no argument
-/// holds one).
-fn encode(args: &[String]) -> Vec<u8> {
-    args.join("\0").into_bytes()
-}
-
-fn decode(bytes: &[u8]) -> Vec<String> {
-    if bytes.is_empty() {
-        return Vec::new();
-    }
-    bytes.split(|&b| b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect()
-}
-
 /// `claim` with its place given: `name` on Windows, `dir` elsewhere.
-fn claim_as(name: &str, dir: &Path, args: &[String], on_second: impl Fn(Vec<String>) + Send + Sync + 'static) -> Result<Claim, String> {
-    let callback: Callback = Box::new(move |args| {
+fn claim_as(name: &str, dir: &Path, on_second: impl Fn() + Send + Sync + 'static) -> Result<Claim, String> {
+    let callback: Callback = Box::new(move || {
         // A panic in the window's callback must not cross the OS's call.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_second(args)));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&on_second));
     });
-    imp::claim(name, dir, &encode(args), callback)
+    imp::claim(name, dir, callback)
 }
 
-type Callback = Box<dyn Fn(Vec<String>) + Send + Sync>;
+type Callback = Box<dyn Fn() + Send + Sync>;
 
 #[cfg(windows)]
 mod imp {
-    use super::{decode, Callback, Claim, Guard, MAX_PAYLOAD};
+    use super::{Callback, Claim, Guard, MAGIC};
     use std::path::Path;
-    use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::core::{HRESULT, HSTRING, PCWSTR};
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+    };
     use windows::Win32::System::DataExchange::COPYDATASTRUCT;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId, GetCurrentThreadId};
@@ -110,7 +113,7 @@ mod imp {
     };
 
     /// WM_COPYDATA's dwData for a hand-over: "LUNA".
-    const MAGIC: usize = 0x4C55_4E41;
+    const TAG: usize = u32::from_be_bytes(*MAGIC) as usize;
 
     pub struct Held {
         mutex: HANDLE,
@@ -143,18 +146,27 @@ mod imp {
         (HSTRING::from(format!("Local\\{name}-sim")), HSTRING::from(format!("{name}-sic")), HSTRING::from(format!("{name}-siw")))
     }
 
-    pub fn claim(name: &str, _dir: &Path, payload: &[u8], callback: Callback) -> Result<Claim, String> {
+    pub fn claim(name: &str, _dir: &Path, callback: Callback) -> Result<Claim, String> {
         let (mutex_name, class, title) = names(name);
         // SAFETY: a name that outlives the call; the handle is closed by the
         // guard, or right here by the second.
-        let mutex = unsafe { CreateMutexW(None, false, &mutex_name) }.map_err(|e| format!("no single-instance mutex: {e}"))?;
+        let mutex = match unsafe { CreateMutexW(None, false, &mutex_name) } {
+            Ok(mutex) => mutex,
+            // There, made by a Luna run as administrator, whose mutex a
+            // normal run may not open: that one is first.
+            Err(e) if e.code() == HRESULT::from_win32(ERROR_ACCESS_DENIED.0) => {
+                hand_over(&class, &title);
+                return Ok(Claim::Second);
+            }
+            Err(e) => return Err(format!("no single-instance mutex: {e}")),
+        };
         // SAFETY: read right after the call that set it.
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
             // SAFETY: the handle just opened.
             unsafe {
                 let _ = CloseHandle(mutex);
             }
-            hand_over(&class, &title, payload);
+            hand_over(&class, &title);
             return Ok(Claim::Second);
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -175,9 +187,9 @@ mod imp {
         Err(failed)
     }
 
-    /// Sends `payload` to the first instance's window. It may not be made yet
-    /// when two launches come at once: a second to find it.
-    fn hand_over(class: &HSTRING, title: &HSTRING, payload: &[u8]) {
+    /// Tells the first instance's window to come up, best effort. It may not
+    /// be made yet when two launches come at once: a second to find it.
+    fn hand_over(class: &HSTRING, title: &HSTRING) {
         for _ in 0..40 {
             // SAFETY: names that outlive the call.
             if let Ok(hwnd) = unsafe { FindWindowExW(Some(HWND_MESSAGE), None, class, title) } {
@@ -188,11 +200,11 @@ mod imp {
                 if pid != 0 && pid != unsafe { GetCurrentProcessId() } {
                     let _ = unsafe { AllowSetForegroundWindow(pid) };
                 }
-                let cds = COPYDATASTRUCT { dwData: MAGIC, cbData: payload.len() as u32, lpData: payload.as_ptr() as *mut _ };
-                // SAFETY: the struct and the bytes outlive the call, which
-                // returns once the receiver is done with them.
-                unsafe {
-                    let _ = SendMessageTimeoutW(
+                let cds = COPYDATASTRUCT { dwData: TAG, cbData: 0, lpData: std::ptr::null_mut() };
+                // SAFETY: the struct outlives the call, which returns once
+                // the receiver is done with it. The error is read right after.
+                let (sent, error) = unsafe {
+                    let sent = SendMessageTimeoutW(
                         hwnd,
                         WM_COPYDATA,
                         WPARAM(0),
@@ -201,6 +213,13 @@ mod imp {
                         10_000,
                         None,
                     );
+                    (sent, GetLastError())
+                };
+                if sent.0 == 0 {
+                    // A first run as administrator (UIPI keeps the message
+                    // out), a hung or a timed-out one.
+                    let why = std::io::Error::from_raw_os_error(error.0 as i32);
+                    crate::log::warn("app", &format!("another Luna holds this data folder, but did not take the hand-over: {why}"));
                 }
                 return;
             }
@@ -280,18 +299,16 @@ mod imp {
             }
             WM_COPYDATA => {
                 // SAFETY: WM_COPYDATA's lParam is a COPYDATASTRUCT valid for
-                // the call; the user data is the callback's box, alive until
-                // the window is destroyed.
+                // the call, of which only the tag is read; the user data is
+                // the callback's box, alive until the window is destroyed.
                 unsafe {
                     let cds = &*(lparam.0 as *const COPYDATASTRUCT);
-                    let size = cds.cbData as usize;
-                    if cds.dwData != MAGIC || size > MAX_PAYLOAD || (size > 0 && cds.lpData.is_null()) {
+                    if cds.dwData != TAG {
                         return LRESULT(0);
                     }
-                    let bytes = if size == 0 { &[][..] } else { std::slice::from_raw_parts(cds.lpData as *const u8, size) };
                     let callback = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Callback;
                     if let Some(callback) = callback.as_ref() {
-                        callback(decode(bytes));
+                        callback();
                     }
                     LRESULT(1)
                 }
@@ -304,14 +321,18 @@ mod imp {
 
 #[cfg(unix)]
 mod imp {
-    use super::{decode, Callback, Claim, Guard, MAX_PAYLOAD};
+    use super::{Callback, Claim, Guard, MAGIC};
     use std::io::{Read, Write};
-    use std::os::unix::io::AsRawFd;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::io::{AsRawFd, RawFd};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    /// How long a connection has to say `MAGIC`, all told.
+    const SAY_WITHIN: Duration = Duration::from_secs(1);
 
     pub struct Held {
         // Holds the lock for as long as it is open.
@@ -333,14 +354,19 @@ mod imp {
         }
     }
 
-    pub fn claim(_name: &str, dir: &Path, payload: &[u8], callback: Callback) -> Result<Claim, String> {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let lock_path = dir.join("luna.window.lock");
-        let sock = dir.join("luna.window.sock");
+    pub fn claim(_name: &str, dir: &Path, callback: Callback) -> Result<Claim, String> {
+        // The data dir's own folder for the two, this user's alone: no link,
+        // nobody else's, 0700 (made so, or refused).
+        let place = dir.join("window");
+        crate::secret::private_dir(&place).map_err(|e| format!("{}: {e}", place.display()))?;
+        let lock_path = place.join("lock");
+        let sock = place.join("sock");
         let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(&lock_path)
             .map_err(|e| format!("{}: {e}", lock_path.display()))?;
         // SAFETY: a descriptor of a file held open here.
@@ -349,17 +375,16 @@ mod imp {
             if e.raw_os_error() != Some(libc::EWOULDBLOCK) {
                 return Err(format!("{}: {e}", lock_path.display()));
             }
-            hand_over(&sock, payload);
+            hand_over(&sock);
             return Ok(Claim::Second);
         }
         // Left by a Luna that did not end cleanly: the lock is ours, so it is
-        // nobody's.
+        // nobody's. A link there goes as itself.
         let _ = std::fs::remove_file(&sock);
         let listener = UnixListener::bind(&sock).map_err(|e| format!("{}: {e}", sock.display()))?;
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
-        }
+        // Just made in a folder only this user can change, so the name is
+        // still the socket's.
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).map_err(|e| format!("{}: {e}", sock.display()))?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         let join = std::thread::Builder::new()
@@ -369,11 +394,9 @@ mod imp {
                     if stopped.load(Ordering::SeqCst) {
                         break;
                     }
-                    let Ok(conn) = conn else { continue };
-                    let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
-                    let mut bytes = Vec::new();
-                    if conn.take(MAX_PAYLOAD as u64 + 1).read_to_end(&mut bytes).is_ok() && bytes.len() <= MAX_PAYLOAD {
-                        callback(decode(&bytes));
+                    let Ok(mut conn) = conn else { continue };
+                    if same_user(conn.as_raw_fd()) && says_magic(&mut conn, Instant::now() + SAY_WITHIN) {
+                        callback();
                     }
                 }
             })
@@ -381,17 +404,91 @@ mod imp {
         Ok(Claim::First(Guard { held: Some(Held { _lock: lock, sock, stop, join: Some(join) }) }))
     }
 
-    /// Sends `payload` to the first instance. Its socket may not be up yet
+    /// Whether the process at the other end of `fd` runs as this user.
+    fn same_user(fd: RawFd) -> bool {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        #[cfg(target_os = "linux")]
+        {
+            crate::endpoint::peer_cred(fd).is_ok_and(|cred| cred.uid == me)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let (mut uid, mut gid) = (0, 0);
+            // SAFETY: a socket of this process; both out-parameters are written once.
+            unsafe { libc::getpeereid(fd, &mut uid, &mut gid) == 0 && uid == me }
+        }
+    }
+
+    /// Whether `conn` says `MAGIC` before `deadline`: one deadline for the
+    /// whole read, however the bytes come.
+    fn says_magic(conn: &mut UnixStream, deadline: Instant) -> bool {
+        let mut got = [0u8; 4];
+        let mut have = 0;
+        while have < got.len() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || conn.set_read_timeout(Some(left)).is_err() {
+                return false;
+            }
+            match conn.read(&mut got[have..]) {
+                Ok(0) => return false,
+                Ok(n) => have += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return false,
+            }
+        }
+        got == *MAGIC
+    }
+
+    /// Tells the first instance to come up. Its socket may not be up yet
     /// when two launches come at once: a second to find it.
-    fn hand_over(sock: &Path, payload: &[u8]) {
+    fn hand_over(sock: &Path) {
         for _ in 0..40 {
             if let Ok(mut conn) = UnixStream::connect(sock) {
-                let _ = conn.write_all(payload);
+                if let Err(e) = conn.write_all(MAGIC) {
+                    crate::log::warn("app", &format!("another Luna holds this data folder, but did not take the hand-over: {e}"));
+                }
                 return;
             }
             std::thread::sleep(Duration::from_millis(25));
         }
         crate::log::warn("app", "another Luna holds this data folder, but it does not answer");
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_connection_must_say_the_word_within_one_deadline() {
+            let (mut a, mut b) = UnixStream::pair().unwrap();
+            a.write_all(MAGIC).unwrap();
+            assert!(says_magic(&mut b, Instant::now() + SAY_WITHIN));
+            a.write_all(b"LUNX").unwrap();
+            assert!(!says_magic(&mut b, Instant::now() + SAY_WITHIN));
+            // A byte at a time, each in time for a per-read timeout, but not
+            // all four before the one deadline.
+            let writer = std::thread::spawn(move || {
+                for byte in MAGIC {
+                    std::thread::sleep(Duration::from_millis(150));
+                    let _ = a.write_all(&[*byte]);
+                }
+            });
+            assert!(!says_magic(&mut b, Instant::now() + Duration::from_millis(400)));
+            writer.join().unwrap();
+            assert!(same_user(b.as_raw_fd()));
+        }
+
+        #[test]
+        fn a_link_in_place_of_the_folder_is_refused() {
+            let root = std::env::temp_dir().join(format!("luna-single-link-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+            std::os::unix::fs::symlink(root.join("elsewhere"), root.join("window")).unwrap();
+            assert!(claim("x", &root, Box::new(|| {})).is_err());
+            assert_eq!(std::fs::read_dir(root.join("elsewhere")).unwrap().count(), 0);
+            std::fs::remove_dir_all(&root).unwrap();
+        }
     }
 }
 
@@ -414,29 +511,22 @@ mod tests {
     }
 
     #[test]
-    fn arguments_cross_whole() {
-        let args = vec!["--flag".to_string(), "a b".to_string(), "".to_string(), "été".to_string()];
-        assert_eq!(decode(&encode(&args)), args);
-        assert!(decode(&encode(&[])).is_empty());
-    }
-
-    #[test]
-    fn a_second_launch_hands_its_arguments_to_the_first_and_the_place_frees_with_it() {
+    fn a_second_launch_brings_the_first_up_and_the_place_frees_with_it() {
         let tag = format!("luna-single-test-{}", std::process::id());
         let dir = std::env::temp_dir().join(&tag);
         let (tx, rx) = mpsc::channel();
         let tx = std::sync::Mutex::new(tx);
-        let first = claim_as(&tag, &dir, &[], move |args| {
-            let _ = tx.lock().unwrap().send(args);
+        let first = claim_as(&tag, &dir, move || {
+            let _ = tx.lock().unwrap().send(());
         })
         .unwrap();
         let Claim::First(guard) = first else { panic!("the first claim was not first") };
-        let args = vec!["--hello".to_string(), "two words".to_string()];
-        let second = claim_as(&tag, &dir, &args, |_| panic!("the second's callback ran")).unwrap();
+        let second = claim_as(&tag, &dir, || panic!("the second's callback ran")).unwrap();
         assert!(matches!(second, Claim::Second));
-        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), args);
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "one launch, one call");
         drop(guard);
-        let again = claim_as(&tag, &dir, &[], |_| {}).unwrap();
+        let again = claim_as(&tag, &dir, || {}).unwrap();
         assert!(matches!(again, Claim::First(_)), "the place was not freed");
         drop(again);
         let _ = std::fs::remove_dir_all(&dir);

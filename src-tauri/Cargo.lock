@@ -2429,6 +2429,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tauri-winrt-notification",
  "toml_edit 0.25.19+spec-1.1.0",
  "tray-icon",
  "vt100",

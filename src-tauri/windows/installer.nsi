@@ -10,26 +10,44 @@
 ; the folder's DACL and the core's stop, are hooks.nsh's, as in Tauri's.
 ;
 ; What the build passes (makensis -D...):
-;   VERSION            x.y.z
+;   VERSION            x.y.z, or x.y.z-pre (semver, as Cargo.toml has it)
+;   VIVERSION          x.y.z.0, the numeric version Windows' version
+;                      resource takes
 ;   MAINBINARYSRCPATH  the luna.exe to install
 ;   NOTICES            THIRD-PARTY-NOTICES.txt, installed beside it
 ;   INSTALLERICON      icons/icon.ico
 ;   OUTFILE            the setup to write
 ;
+; Adapted from Tauri's NSIS template: tauri-bundler 2.10.5 (as the Tauri
+; CLI 2.12.5 that built 0.19 embeds it),
+; crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi of
+; https://github.com/tauri-apps/tauri, Copyright (c) 2017 - Present Tauri
+; Apps Contributors, MIT OR Apache-2.0 (third-party-licenses/installer/
+; tauri-nsis-template, and the installed THIRD-PARTY-NOTICES.txt). Taken
+; from it, some of it word for word: the pages, .onInit's choice of the
+; folder, the install and uninstall sections, the macros that set a
+; shortcut's AUMID, test its target, unpin it and clear the AUMID's lists,
+; the Restart Manager check (CheckIfAppIsRunning there), the uninstall
+; page's box for the app data and .onInstSuccess. What was changed, as the
+; Apache License asks a modified file to say, is listed here.
+;
 ; Left out from Tauri's: the WebView2 bootstrap (no WebView any more), the
 ; page offering to uninstall a previous version first (an install always
 ; goes in place, as an update does), WiX migration (Luna never shipped an
 ; MSI), file associations and deep links (none), and its helper DLL: the
-; version compare, de-elevated start and string replace it did are
-; plain NSIS here.
+; version compare and string replace it did are plain NSIS here, and its
+; de-elevated start (RunAsUser) is `LunaRunAsUser`, through the System
+; plug-in. Luna's: the `/ARGS` tail handed on as it stands
+; (`SplitCmdLine`), where the template read it with ${GetOptions}, which
+; takes the quotes off a tail that opens and ends with a quoted argument.
 
 Unicode true
 ManifestDPIAware true
 ManifestDPIAwareness PerMonitorV2
 SetCompressor /SOLID lzma
 
-!ifndef VERSION | MAINBINARYSRCPATH | NOTICES | INSTALLERICON | OUTFILE
-  !error "pass VERSION, MAINBINARYSRCPATH, NOTICES, INSTALLERICON and OUTFILE"
+!ifndef VERSION | VIVERSION | MAINBINARYSRCPATH | NOTICES | INSTALLERICON | OUTFILE
+  !error "pass VERSION, VIVERSION, MAINBINARYSRCPATH, NOTICES, INSTALLERICON and OUTFILE"
 !endif
 
 !include MUI2.nsh
@@ -58,6 +76,11 @@ Var NoShortcutMode
 Var OldMainBinaryName
 Var DeleteAppDataCheckbox
 Var DeleteAppDataCheckboxState
+; $CMDLINE up to the updater's " /ARGS", and what follows it (SplitCmdLine).
+Var CmdHead
+Var RestartArgs
+; What LunaRunAsUser starts Luna with.
+Var RunArgs
 
 !include "hooks.nsh"
 
@@ -70,7 +93,7 @@ InstallDir "${PLACEHOLDER_INSTALL_DIR}"
 ; Per user, as tauri.conf.json's default installMode, currentUser, has it.
 RequestExecutionLevel user
 
-VIProductVersion "${VERSION}.0"
+VIProductVersion "${VIVERSION}"
 VIAddVersionKey "ProductName" "${PRODUCTNAME}"
 VIAddVersionKey "FileDescription" "${PRODUCTNAME}"
 VIAddVersionKey "LegalCopyright" ""
@@ -114,6 +137,7 @@ LangString deleteAppData ${LANG_ENGLISH} "Delete the application data"
 LangString appRunning ${LANG_ENGLISH} "${PRODUCTNAME} is running. Close it first, then try again."
 LangString appRunningOkKill ${LANG_ENGLISH} "${PRODUCTNAME} is running.$\nClick OK to close it."
 LangString failedToKillApp ${LANG_ENGLISH} "Could not close ${PRODUCTNAME}. Close it yourself, then try again."
+LangString notRestarted ${LANG_ENGLISH} "${PRODUCTNAME} was not started again: this setup runs as administrator, and the desktop's shell could not start it as you. Start it from the Start menu."
 LangString noPermissionToCloseApp ${LANG_ENGLISH} "${PRODUCTNAME} is running as another user or as administrator, and this setup may not close it. Close it yourself, then try again."
 
 ; The shell and registry views of a per-user, 64-bit install.
@@ -270,16 +294,72 @@ FunctionEnd
   ${EndIf}
 !macroend
 
+; Splits $CMDLINE at the updater's " /ARGS" (a word of its own, after the
+; program's name): $CmdHead, the part before it, where the setup's own
+; options are read, so that nothing in the tail is taken for one; and
+; $RestartArgs, everything after it as it stands, Windows' quoting and all,
+; for Luna's restart. ${GetOptions} would take the quotes off a tail that
+; opens and ends with a quoted argument. No " /ARGS": all of it is the head.
+Function SplitCmdLine
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  StrCpy $CmdHead $CMDLINE
+  StrCpy $RestartArgs ""
+  StrLen $1 $CMDLINE
+  ; Past the program's name: to its closing quote, or from the start when
+  ; it is not quoted, as a name without a space needs not be.
+  StrCpy $0 0
+  StrCpy $2 $CMDLINE 1
+  ${If} $2 == '"'
+    StrCpy $0 1
+    ${Do}
+      ${If} $0 >= $1
+        ${ExitDo}
+      ${EndIf}
+      StrCpy $2 $CMDLINE 1 $0
+      IntOp $0 $0 + 1
+      ${If} $2 == '"'
+        ${ExitDo}
+      ${EndIf}
+    ${Loop}
+  ${EndIf}
+  ${Do}
+    ${If} $0 >= $1
+      ${ExitDo}
+    ${EndIf}
+    StrCpy $2 $CMDLINE 6 $0
+    ${If} $2 == " /ARGS"
+      IntOp $3 $0 + 6
+      StrCpy $2 $CMDLINE 1 $3
+      ${If} $2 == " "
+      ${OrIf} $2 == ""
+        StrCpy $CmdHead $CMDLINE $0
+        IntOp $3 $3 + 1
+        StrCpy $RestartArgs $CMDLINE "" $3
+        ${ExitDo}
+      ${EndIf}
+    ${EndIf}
+    IntOp $0 $0 + 1
+  ${Loop}
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
 Function .onInit
-  ${GetOptions} $CMDLINE "/P" $PassiveMode
+  Call SplitCmdLine
+  ${GetOptions} $CmdHead "/P" $PassiveMode
   ${IfNot} ${Errors}
     StrCpy $PassiveMode 1
   ${EndIf}
-  ${GetOptions} $CMDLINE "/NS" $NoShortcutMode
+  ${GetOptions} $CmdHead "/NS" $NoShortcutMode
   ${IfNot} ${Errors}
     StrCpy $NoShortcutMode 1
   ${EndIf}
-  ${GetOptions} $CMDLINE "/UPDATE" $UpdateMode
+  ${GetOptions} $CmdHead "/UPDATE" $UpdateMode
   ${IfNot} ${Errors}
     StrCpy $UpdateMode 1
   ${EndIf}
@@ -349,22 +429,178 @@ Section Install
 SectionEnd
 
 ; /R, with /P or /S (the updater's): Luna starts again, with what /ARGS
-; carries, the arguments the updating Luna ran with.
+; carries, the arguments the updating Luna ran with, as they stand.
 Function .onInstSuccess
   ${If} $PassiveMode = 1
   ${OrIf} ${Silent}
-    ${GetOptions} $CMDLINE "/R" $R0
+    ${GetOptions} $CmdHead "/R" $R0
     ${IfNot} ${Errors}
-      ${GetOptions} $CMDLINE "/ARGS" $R0
-      Exec '"$INSTDIR\${MAINBINARYNAME}.exe" $R0'
+      StrCpy $RunArgs $RestartArgs
+      Call LunaRunAsUser
     ${EndIf}
   ${EndIf}
 FunctionEnd
 
-; The finish page's Run box. The setup runs as the user who started it, a
-; per-user install not asking for more, so Luna starts as that user too.
+; The finish page's Run box.
 Function RunMainBinary
-  Exec '"$INSTDIR\${MAINBINARYNAME}.exe"'
+  StrCpy $RunArgs ""
+  Call LunaRunAsUser
+FunctionEnd
+
+; The shell objects LunaRunAsUser goes through (shldisp.h, shobjidl.h,
+; servprov.h), and the values it passes them.
+!define LUNA_CLSID_ShellWindows "{9BA05972-F6A8-11CF-A442-00A0C90A8F39}"
+!define LUNA_IID_IShellWindows "{85CB6900-4D95-11CF-960C-0080C7F4EE85}"
+!define LUNA_IID_IServiceProvider "{6D5140C1-7436-11CE-8034-00AA006009FA}"
+!define LUNA_SID_STopLevelBrowser "{4C96BE40-915C-11CF-99D3-00AA004AE837}"
+!define LUNA_IID_IShellBrowser "{000214E2-0000-0000-C000-000000000046}"
+!define LUNA_IID_IDispatch "{00020400-0000-0000-C000-000000000046}"
+!define LUNA_IID_IShellFolderViewDual "{E7A1AF80-4D96-11CF-960C-0080C7F4EE85}"
+!define LUNA_IID_IShellDispatch2 "{A4C6892C-3BA9-11D2-9DEA-00C04FB16162}"
+!define LUNA_CLSCTX_LOCAL_SERVER 4
+!define LUNA_SWC_DESKTOP 8
+!define LUNA_SWFO_NEEDDISPATCH 1
+!define LUNA_SVGIO_BACKGROUND 0
+!define LUNA_VT_BSTR 8
+!define LUNA_VT_I4 3
+!define LUNA_SW_SHOWNORMAL 1
+
+; Starts "$INSTDIR\luna.exe" $RunArgs as the desktop's own user, never
+; elevated, with the environment the shell has rather than this setup's,
+; which is the updating Luna's: what Tauri's template does through
+; nsis_tauri_utils::RunAsUser. The desktop's shell (explorer) is asked to do
+; the start itself: IShellWindows finds its desktop window, whose view
+; hands out the shell's IShellDispatch2, and ShellExecute there runs in
+; explorer, as explorer runs (Raymond Chen, "How can I launch an
+; unelevated process from my elevated process and vice versa?", The Old
+; New Thing, 2013-11-18). Each COM call goes through its vtable slot, on
+; the 32-bit stub: ShellExecute's four VARIANTs are passed by value, 16
+; bytes each, as four dwords (vt and its reserved words, then the value).
+; With no shell to ask (no explorer, a setup run under another desktop):
+; started directly when this setup is not elevated, since it then runs as
+; the desktop's user anyway; when it is, Luna is not started rather than
+; started elevated, and the details say so.
+Function LunaRunAsUser
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  Push $7
+  Push $8
+  Push $9
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R5
+  Push $R6
+  Push $R7
+  Push $R8
+  ; Started or not.
+  StrCpy $9 0
+  ; S_OK, or S_FALSE where this thread already had COM: either is undone.
+  System::Call 'ole32::CoInitializeEx(p 0, i 2) i .r0'
+  StrCpy $R8 $0
+  System::Call 'ole32::CoCreateInstance(g "${LUNA_CLSID_ShellWindows}", p 0, i ${LUNA_CLSCTX_LOCAL_SERVER}, g "${LUNA_IID_IShellWindows}", *p .r1) i .r0'
+  ${If} $0 = 0
+    ; An empty VARIANT (VT_EMPTY, all zero) for both locations.
+    System::Alloc 16
+    Pop $2
+    StrCpy $4 0
+    ; IShellWindows::FindWindowSW, slot 15.
+    System::Call '$1->15(p r2, p r2, i ${LUNA_SWC_DESKTOP}, *i .r3, i ${LUNA_SWFO_NEEDDISPATCH}, *p .r4) i .r0'
+    System::Free $2
+    ${If} $0 = 0
+    ${AndIf} $4 P<> 0
+      System::Call '$4->0(g "${LUNA_IID_IServiceProvider}", *p .r5) i .r0'
+      ${If} $0 = 0
+        ; IServiceProvider::QueryService, slot 3.
+        System::Call '$5->3(g "${LUNA_SID_STopLevelBrowser}", g "${LUNA_IID_IShellBrowser}", *p .r6) i .r0'
+        ${If} $0 = 0
+          ; IShellBrowser::QueryActiveShellView, slot 15.
+          System::Call '$6->15(*p .r7) i .r0'
+          ${If} $0 = 0
+            ; IShellView::GetItemObject, slot 15.
+            System::Call '$7->15(i ${LUNA_SVGIO_BACKGROUND}, g "${LUNA_IID_IDispatch}", *p .r8) i .r0'
+            ${If} $0 = 0
+              System::Call '$8->0(g "${LUNA_IID_IShellFolderViewDual}", *p .R1) i .r0'
+              ${If} $0 = 0
+                ; IShellFolderViewDual::get_Application, slot 7.
+                System::Call '$R1->7(*p .R2) i .r0'
+                ${If} $0 = 0
+                  System::Call '$R2->0(g "${LUNA_IID_IShellDispatch2}", *p .R3) i .r0'
+                  ${If} $0 = 0
+                    ; Through registers, not spelled into the call: a
+                    ; path or an argument may hold what the call's syntax uses.
+                    StrCpy $R7 "$INSTDIR\${MAINBINARYNAME}.exe"
+                    System::Call 'oleaut32::SysAllocString(w R7) p .R4'
+                    StrCpy $R7 $RunArgs
+                    System::Call 'oleaut32::SysAllocString(w R7) p .R5'
+                    StrCpy $R7 $INSTDIR
+                    System::Call 'oleaut32::SysAllocString(w R7) p .R6'
+                    StrCpy $R7 "open"
+                    System::Call 'oleaut32::SysAllocString(w R7) p .r3'
+                    ; IShellDispatch2::ShellExecute, slot 31: the file, then
+                    ; the arguments, the folder and the verb as VT_BSTR, the
+                    ; window's show state as VT_I4.
+                    System::Call '$R3->31(p R4, i ${LUNA_VT_BSTR}, i 0, p R5, i 0, i ${LUNA_VT_BSTR}, i 0, p R6, i 0, i ${LUNA_VT_BSTR}, i 0, p r3, i 0, i ${LUNA_VT_I4}, i 0, i ${LUNA_SW_SHOWNORMAL}, i 0) i .r0'
+                    ${If} $0 = 0
+                      StrCpy $9 1
+                    ${EndIf}
+                    System::Call 'oleaut32::SysFreeString(p R4)'
+                    System::Call 'oleaut32::SysFreeString(p R5)'
+                    System::Call 'oleaut32::SysFreeString(p R6)'
+                    System::Call 'oleaut32::SysFreeString(p r3)'
+                    System::Call '$R3->2()'
+                  ${EndIf}
+                  System::Call '$R2->2()'
+                ${EndIf}
+                System::Call '$R1->2()'
+              ${EndIf}
+              System::Call '$8->2()'
+            ${EndIf}
+            System::Call '$7->2()'
+          ${EndIf}
+          System::Call '$6->2()'
+        ${EndIf}
+        System::Call '$5->2()'
+      ${EndIf}
+      System::Call '$4->2()'
+    ${EndIf}
+    System::Call '$1->2()'
+  ${EndIf}
+  ${If} $R8 >= 0
+    System::Call 'ole32::CoUninitialize()'
+  ${EndIf}
+  ${If} $9 = 0
+    System::Call 'shell32::IsUserAnAdmin() i .r0'
+    ${If} $0 = 0
+      Exec '"$INSTDIR\${MAINBINARYNAME}.exe" $RunArgs'
+    ${Else}
+      DetailPrint "$(notRestarted)"
+    ${EndIf}
+  ${EndIf}
+  Pop $R8
+  Pop $R7
+  Pop $R6
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $9
+  Pop $8
+  Pop $7
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
 FunctionEnd
 
 Function SkipIfPassive

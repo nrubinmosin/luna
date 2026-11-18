@@ -258,7 +258,11 @@ Two installers can be built, and install the same way
   without Tauri's bundling; the setup lands at
   `…/release/bundle/nsis/Luna_<version>_x64-setup.exe`, beside the third-party
   notices it carries, where the release scripts look for it. makensis runs
-  with `-WX`: any warning fails the build. It downloads nothing.
+  with `-WX`: any warning fails the build. It downloads nothing. A
+  pre-release version (`x.y.z-pre`) names the setup in full and gives its
+  version resource `x.y.z.0`. The script is adapted from Tauri's template,
+  which its header credits and `third-party-licenses/` carries the license
+  of.
 
 Neither is ever run on the development machine: an install writes the
 registry and the Start menu. The script is checked by compiling it, and by

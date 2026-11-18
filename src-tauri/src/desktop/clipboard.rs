@@ -56,6 +56,15 @@ pub fn write_text(text: &str) -> Result<(), String> {
     }
 }
 
+/// The most pixels an image off the clipboard may have: 64 megapixels,
+/// 256 MiB as RGBA. Above any screen's or screenshot's, and checked before
+/// anything of the size is allocated.
+pub const MAX_PIXELS: u64 = 64 << 20;
+
+/// The most bytes of one format read off the clipboard: such an image as a
+/// DIB, with room for its header.
+pub const MAX_BYTES: usize = (MAX_PIXELS as usize) * 4 + (1 << 20);
+
 /// An image from PNG bytes, its size read from the header.
 pub fn image_from_png(png: Vec<u8>) -> Result<Image, String> {
     // The signature, then IHDR first: length, type, width, height.
@@ -64,7 +73,18 @@ pub fn image_from_png(png: Vec<u8>) -> Result<Image, String> {
     }
     let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
     let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(format!("an image of {width}x{height}, over {MAX_PIXELS} pixels"));
+    }
     Ok(Image { width, height, png })
+}
+
+/// Whether a path off the clipboard may be typed into a CLI as a quoted
+/// path: no `"`, which would end the quotes early, and no control character
+/// (CR, LF, tab, NUL and the rest), which a terminal would act on. A list
+/// with one such path is not taken as files at all.
+pub fn typeable_path(path: &str) -> bool {
+    !path.is_empty() && !path.contains('"') && !path.chars().any(char::is_control)
 }
 
 /// RGBA pixels, row by row from the top, as PNG.
@@ -85,23 +105,52 @@ pub fn utf16_text(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
-/// CF_HDROP's bytes, a DROPFILES: its header, then at `pFiles` the paths,
-/// each ended by a NUL and the list by another, in UTF-16 when `fWide`.
-pub fn drop_files(bytes: &[u8]) -> Result<Vec<PathBuf>, String> {
-    // pFiles (4), pt (8), fNC (4), fWide (4).
-    if bytes.len() < 20 {
+/// The size of DROPFILES' header: pFiles (4), pt (8), fNC (4), fWide (4).
+const DROPFILES_SIZE: usize = 20;
+
+/// CF_HDROP's bytes, a DROPFILES: its header, then at `pFiles`, past the
+/// header, the paths, each ended by a NUL and the list by another, in UTF-16
+/// when `fWide`, else in the system's ANSI code page, which `ansi` decodes.
+/// A list that runs off its end before its closing NUL, a name that does not
+/// decode and a path `typeable_path` refuses make it an error, and the
+/// clipboard is read for its next format.
+pub fn drop_files(bytes: &[u8], ansi: &dyn Fn(&[u8]) -> Option<String>) -> Result<Vec<PathBuf>, String> {
+    if bytes.len() < DROPFILES_SIZE {
         return Err("a file list too short for its header".into());
     }
     let start = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    if start < DROPFILES_SIZE {
+        return Err(format!("a file list that starts inside its header (at {start})"));
+    }
     let wide = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) != 0;
     let list = bytes.get(start..).ok_or("a file list that starts past its end")?;
-    let names: Vec<String> = if wide {
+    let unended = || "a file list without its closing NUL".to_string();
+    let mut names = Vec::new();
+    if wide {
         let units: Vec<u16> = list.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
-        units.split(|&u| u == 0).take_while(|s| !s.is_empty()).map(String::from_utf16_lossy).collect()
+        let mut rest = &units[..];
+        loop {
+            let end = rest.iter().position(|&u| u == 0).ok_or_else(unended)?;
+            if end == 0 {
+                break;
+            }
+            names.push(String::from_utf16(&rest[..end]).map_err(|_| "a file name that is not UTF-16".to_string())?);
+            rest = &rest[end + 1..];
+        }
     } else {
-        // The ANSI code page's; a path outside ASCII is lost to it anyway.
-        list.split(|&b| b == 0).take_while(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect()
-    };
+        let mut rest = list;
+        loop {
+            let end = rest.iter().position(|&b| b == 0).ok_or_else(unended)?;
+            if end == 0 {
+                break;
+            }
+            names.push(ansi(&rest[..end]).ok_or("a file name the code page does not decode")?);
+            rest = &rest[end + 1..];
+        }
+    }
+    if let Some(bad) = names.iter().find(|n| !typeable_path(n)) {
+        return Err(format!("a file name with a quote or a control character: {bad:?}"));
+    }
     Ok(names.into_iter().map(PathBuf::from).collect())
 }
 
@@ -127,6 +176,9 @@ pub fn dib_to_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     const BI_BITFIELDS: u32 = 3;
     if width <= 0 || height == 0 || width > 1 << 15 || height.unsigned_abs() > 1 << 15 {
         return Err(format!("a bitmap of {width}x{height}"));
+    }
+    if width as u64 * u64::from(height.unsigned_abs()) > MAX_PIXELS {
+        return Err(format!("a bitmap of {width}x{height}, over {MAX_PIXELS} pixels"));
     }
     let (w, h) = (width as usize, height.unsigned_abs() as usize);
     // Bottom-up unless the height is negative.
@@ -219,12 +271,14 @@ pub fn file_url_path(url: &str) -> Option<PathBuf> {
 mod win {
     use super::*;
     use windows::core::w;
-    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+    use windows::Win32::Globalization::{MultiByteToWideChar, CP_ACP, MB_ERR_INVALID_CHARS};
     use windows::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW,
         SetClipboardData,
     };
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE};
 
     const CF_DIB: u32 = 8;
     const CF_UNICODETEXT: u32 = 13;
@@ -236,11 +290,14 @@ mod win {
     struct Open;
 
     impl Open {
-        fn new() -> Result<Open, String> {
+        /// Opened for `owner`: none to read; a window of this thread's to
+        /// write (`Owner`).
+        fn new(owner: Option<HWND>) -> Result<Open, String> {
             let mut last = String::new();
             for _ in 0..10 {
-                // SAFETY: no owner window; closed again by Drop on this thread.
-                match unsafe { OpenClipboard(None) } {
+                // SAFETY: a window of this thread's or none; closed again by
+                // Drop on this thread.
+                match unsafe { OpenClipboard(owner) } {
                     Ok(()) => return Ok(Open),
                     Err(e) => last = e.to_string(),
                 }
@@ -257,7 +314,33 @@ mod win {
         }
     }
 
-    /// A format's bytes, if the clipboard has it. With the clipboard open.
+    /// A message-only window that owns the clipboard while text is put
+    /// there. Opened with no owner, EmptyClipboard leaves the clipboard
+    /// owned by none, and SetClipboardData may then fail (OpenClipboard's
+    /// remarks). Destroyed once the clipboard is closed; what was set stays,
+    /// as none of it is rendered late.
+    struct Owner(HWND);
+
+    impl Owner {
+        fn new() -> Result<Owner, String> {
+            // SAFETY: a window of the system's STATIC class, under
+            // HWND_MESSAGE, destroyed by Drop on this thread.
+            let made = unsafe {
+                CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), WINDOW_STYLE(0), 0, 0, 0, 0, Some(HWND_MESSAGE), None, None, None)
+            };
+            made.map(Owner).map_err(|e| format!("no window to own the clipboard: {e}"))
+        }
+    }
+
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            // SAFETY: made by this thread in `Owner::new`.
+            let _ = unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    /// A format's bytes, if the clipboard has it and they are no more than
+    /// `MAX_BYTES`. With the clipboard open.
     fn bytes(_open: &Open, format: u32) -> Option<Vec<u8>> {
         // SAFETY: the clipboard is open; the handle it gives is its own and
         // stays valid until it is closed, and is only read here, locked.
@@ -266,6 +349,9 @@ mod win {
             let handle = GetClipboardData(format).ok()?;
             let global = HGLOBAL(handle.0);
             let size = GlobalSize(global);
+            if size > MAX_BYTES {
+                return None;
+            }
             let at = GlobalLock(global) as *const u8;
             if at.is_null() {
                 return None;
@@ -276,10 +362,31 @@ mod win {
         }
     }
 
+    /// Bytes in the system's ANSI code page, decoded; None where they do not
+    /// decode.
+    fn ansi(bytes: &[u8]) -> Option<String> {
+        // SAFETY: the input is a slice; the output buffer is of the size the
+        // first call gave.
+        unsafe {
+            let n = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, bytes, None);
+            if n <= 0 {
+                return None;
+            }
+            let mut wide = vec![0u16; n as usize];
+            let n = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, bytes, Some(&mut wide));
+            if n <= 0 {
+                return None;
+            }
+            String::from_utf16(&wide[..n as usize]).ok()
+        }
+    }
+
+    /// The first format that reads; one that does not (a file list that
+    /// does not parse, a bitmap of a kind not read here) gives way to the
+    /// next.
     pub fn read() -> Result<Clip, String> {
-        let open = Open::new()?;
-        if let Some(b) = bytes(&open, CF_HDROP) {
-            let files = drop_files(&b)?;
+        let open = Open::new(None)?;
+        if let Some(files) = bytes(&open, CF_HDROP).and_then(|b| drop_files(&b, &ansi).ok()) {
             if !files.is_empty() {
                 return Ok(Clip::Files(files));
             }
@@ -299,9 +406,9 @@ mod win {
             }
         }
         for format in [CF_DIBV5, CF_DIB] {
-            if let Some(b) = bytes(&open, format) {
-                let (width, height, rgba) = dib_to_rgba(&b)?;
-                return Ok(Clip::Image(Image { width, height, png: encode_png(width, height, &rgba)? }));
+            let Some((width, height, rgba)) = bytes(&open, format).and_then(|b| dib_to_rgba(&b).ok()) else { continue };
+            if let Ok(png) = encode_png(width, height, &rgba) {
+                return Ok(Clip::Image(Image { width, height, png }));
             }
         }
         Ok(Clip::Empty)
@@ -309,12 +416,11 @@ mod win {
 
     pub fn write_text(text: &str) -> Result<(), String> {
         let units: Vec<u16> = text.encode_utf16().chain([0]).collect();
-        let _open = Open::new()?;
-        // SAFETY: the clipboard is open on this thread. The memory is
-        // filled under its lock and, once SetClipboardData takes it, the
-        // system's; freed here only when it did not.
-        unsafe {
-            EmptyClipboard().map_err(|e| e.to_string())?;
+        // Made and filled before the clipboard is touched: a failure here
+        // leaves what is there as it was.
+        // SAFETY: the memory is filled under its lock; freed here unless
+        // SetClipboardData takes it, after which it is the system's.
+        let global = unsafe {
             let global = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2).map_err(|e| e.to_string())?;
             let at = GlobalLock(global) as *mut u16;
             if at.is_null() {
@@ -323,8 +429,35 @@ mod win {
             }
             std::ptr::copy_nonoverlapping(units.as_ptr(), at, units.len());
             let _ = GlobalUnlock(global);
+            global
+        };
+        let free = || {
+            // SAFETY: not taken by the clipboard.
+            let _ = unsafe { GlobalFree(Some(global)) };
+        };
+        let owner = match Owner::new() {
+            Ok(owner) => owner,
+            Err(e) => {
+                free();
+                return Err(e);
+            }
+        };
+        // Closed before the owner goes (dropped in reverse order).
+        let _open = match Open::new(Some(owner.0)) {
+            Ok(open) => open,
+            Err(e) => {
+                free();
+                return Err(e);
+            }
+        };
+        // SAFETY: the clipboard is open on this thread, owned by `owner`.
+        unsafe {
+            if let Err(e) = EmptyClipboard() {
+                free();
+                return Err(e.to_string());
+            }
             if let Err(e) = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(global.0))) {
-                let _ = GlobalFree(Some(global));
+                free();
                 return Err(e.to_string());
             }
         }
@@ -368,7 +501,8 @@ mod mac {
                     }
                 }
             }
-            if !files.is_empty() {
+            // A path that cannot be typed as a quoted one: not files, then.
+            if !files.is_empty() && files.iter().all(|f| f.to_str().is_some_and(typeable_path)) {
                 return Ok(Clip::Files(files));
             }
             if let Some(text) = pb.stringForType(NSPasteboardTypeString) {
@@ -515,17 +649,74 @@ mod tests {
         b
     }
 
+    /// The ANSI code page as Windows-1252 has it, as far as the tests go:
+    /// Latin-1 for the bytes they use.
+    fn latin1(bytes: &[u8]) -> Option<String> {
+        Some(bytes.iter().map(|&b| char::from(b)).collect())
+    }
+
     #[test]
     fn a_file_list_gives_every_path_it_holds() {
         let names = [r"C:\Users\a\Pictures\shot 1.png", r"D:\Bücher\notes.md"];
-        let got = drop_files(&dropfiles(&names, true)).unwrap();
+        let got = drop_files(&dropfiles(&names, true), &latin1).unwrap();
         assert_eq!(got, names.iter().map(PathBuf::from).collect::<Vec<_>>());
-        assert_eq!(drop_files(&dropfiles(&[r"C:\a.txt"], false)).unwrap(), [PathBuf::from(r"C:\a.txt")]);
-        assert!(drop_files(&dropfiles(&[], true)).unwrap().is_empty());
-        assert!(drop_files(&[0; 8]).is_err());
+        assert_eq!(drop_files(&dropfiles(&[r"C:\a.txt"], false), &latin1).unwrap(), [PathBuf::from(r"C:\a.txt")]);
+        assert!(drop_files(&dropfiles(&[], true), &latin1).unwrap().is_empty());
+        // ANSI names go through the code page, not as UTF-8.
+        let mut ansi = dropfiles(&[], false);
+        ansi.truncate(20);
+        ansi.extend(b"C:\\B\xfccher\0\0");
+        assert_eq!(drop_files(&ansi, &latin1).unwrap(), [PathBuf::from(r"C:\Bücher")]);
+    }
+
+    #[test]
+    fn a_file_list_that_breaks_its_own_layout_is_refused() {
+        assert!(drop_files(&[0; 8], &latin1).is_err());
         let mut past = dropfiles(&["x"], true);
         past[0..4].copy_from_slice(&le32(4096));
-        assert!(drop_files(&past).is_err());
+        assert!(drop_files(&past, &latin1).is_err());
+        // pFiles inside the header: the header read as names.
+        let mut inside = dropfiles(&["x"], true);
+        inside[0..4].copy_from_slice(&le32(4));
+        assert!(drop_files(&inside, &latin1).unwrap_err().contains("inside its header"));
+        // No closing NUL: the last name, or the list, runs off the end.
+        let mut open = dropfiles(&[r"C:\a"], true);
+        open.truncate(open.len() - 2);
+        assert!(drop_files(&open, &latin1).unwrap_err().contains("closing NUL"));
+        open.truncate(open.len() - 2);
+        assert!(drop_files(&open, &latin1).unwrap_err().contains("closing NUL"));
+        let mut open = dropfiles(&[r"C:\a"], false);
+        open.truncate(open.len() - 2);
+        assert!(drop_files(&open, &latin1).is_err());
+        // A lone surrogate is no path.
+        let mut odd = dropfiles(&[], true);
+        odd.truncate(20);
+        odd.extend([0x00, 0xD8, 0, 0, 0, 0]);
+        assert!(drop_files(&odd, &latin1).is_err());
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_typed_in_quotes_is_no_file() {
+        for bad in ["C:\\a\"b.txt", "C:\\a\rb", "C:\\a\nb", "C:\\a\tb", "C:\\a\u{1b}[2J", "C:\\a\u{85}b"] {
+            assert!(!typeable_path(bad), "{bad:?}");
+            assert!(drop_files(&dropfiles(&[r"C:\fine.txt", bad], true), &latin1).is_err(), "{bad:?}");
+        }
+        assert!(typeable_path(r"C:\Users\a b\c'd (1).png"));
+        assert!(!typeable_path(""));
+    }
+
+    #[test]
+    fn an_image_too_large_is_refused_before_it_is_allocated() {
+        // 32768 x 32768: within the old bounds, 4 GiB as RGBA.
+        let mut dib = info_header(40, 1 << 15, 1 << 15, 32, 0);
+        dib.extend([0; 64]);
+        assert!(dib_to_rgba(&dib).unwrap_err().contains("pixels"));
+        // At the limit it is the rows that are missing.
+        assert!(dib_to_rgba(&info_header(40, 8192, 8192, 32, 0)).unwrap_err().contains("rows"));
+        let mut png = encode_png(1, 1, &[0; 4]).unwrap();
+        png[16..20].copy_from_slice(&65536u32.to_be_bytes());
+        png[20..24].copy_from_slice(&65536u32.to_be_bytes());
+        assert!(image_from_png(png).unwrap_err().contains("pixels"));
     }
 
     #[test]

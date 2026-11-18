@@ -77,9 +77,6 @@ tray-icon = { version = "0.25", default-features = false, features = ["libappind
 rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
 # The parent window a picker is modal to; rfd's own trait version.
 raw-window-handle = "0.6"
-# Windows toasts and macOS notifications (desktop/notify.rs), as
-# tauri-plugin-notification sends them.
-notify-rust = "4.18"
 # The updater's signature check (desktop/updater.rs), the crate
 # tauri-plugin-updater checks with, and its version compare.
 minisign-verify = "0.3"
@@ -100,15 +97,16 @@ png = "0.18"
 # src/peer/); the core started with the desktop user's token and profile
 # environment from a window run as administrator (src/elevation.rs); the
 # local wall clock Codex names its rollouts by (src/codex/session/rollouts.rs);
-# the clipboard and its global memory (src/desktop/clipboard.rs); the second
-# launch's hand-over, a message-only window and WM_COPYDATA
-# (src/desktop/single.rs); the installer started by the updater
-# (src/desktop/updater.rs).
+# the clipboard, its global memory and the ANSI code page a file list may
+# come in (src/desktop/clipboard.rs); the second launch's hand-over, a
+# message-only window and WM_COPYDATA (src/desktop/single.rs); the installer
+# started by the updater (src/desktop/updater.rs).
 # Pinned to the version tauri already resolves, so this adds features to a
 # crate in the tree rather than a second copy of it.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
@@ -131,10 +129,20 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Windows toasts (desktop/notify.rs), on the crate notify-rust and
+# tauri-plugin-notification show them with, at the version they resolve: its
+# own activation callback, with no thread left waiting on each toast.
+tauri-winrt-notification = "0.8"
+
 # The tie to the core off Windows: signals, and a look at every process
 # (src/keeper/). Already in the tree through most of the above.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Notifications off Windows (desktop/notify.rs), as
+# tauri-plugin-notification sends them.
+[target.'cfg(not(windows))'.dependencies]
+notify-rust = "4.18"
 
 # The pasteboard on macOS (src/desktop/clipboard.rs): text, file URLs and
 # images. The versions tao, muda and rfd already link there.

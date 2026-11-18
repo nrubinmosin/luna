@@ -98,9 +98,16 @@ pub fn fit(state: WindowState, displays: &[Bounds], min: (f64, f64)) -> WindowSt
         Some(_) => (b.x, b.y),
         None => (display.x + (display.width - width) / 2.0, display.y + (display.height - height) / 2.0),
     };
-    let x = x.clamp(display.x, display.x + display.width - width);
-    let y = y.clamp(display.y, display.y + display.height - height);
+    let x = within(x, display.x, display.x + display.width - width);
+    let y = within(y, display.y, display.y + display.height - height);
     WindowState { bounds: Bounds { x, y, width, height }, maximized: state.maximized }
+}
+
+/// `v` held to `lo..=hi`, `lo` winning where rounding put `hi` below it:
+/// `(x + w) - w` can come out under `x` for a fractional origin, and
+/// `f64::clamp` panics on a range the wrong way round (or with a NaN).
+fn within(v: f64, lo: f64, hi: f64) -> f64 {
+    v.min(hi).max(lo)
 }
 
 #[cfg(test)]
@@ -152,6 +159,17 @@ mod tests {
         // A display under the minimum: the window takes the display's size.
         let tiny = [b(0.0, 0.0, 800.0, 500.0)];
         assert_eq!(fit(s, &tiny, MIN).bounds, b(0.0, 0.0, 800.0, 500.0));
+    }
+
+    #[test]
+    fn a_display_with_a_fractional_origin_takes_a_window_as_wide_as_it() {
+        // (0.203 + 1279.7) - 1279.7 is 0.20299999999997453: the range the
+        // window's left edge is held to comes out the wrong way round.
+        let display = b(0.203, 0.5, 1279.7, 719.9);
+        assert!((display.x + display.width) - display.width < display.x);
+        let fitted = fit(state(b(-50.0, 0.0, 4000.0, 3000.0)), &[display], MIN);
+        assert_eq!(fitted.bounds, b(0.203, 0.5, 1279.7, 719.9));
+        assert!((1.0..=2.0).contains(&within(f64::NAN, 1.0, 2.0)));
     }
 
     #[test]
