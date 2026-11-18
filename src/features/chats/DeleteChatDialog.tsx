@@ -15,6 +15,7 @@ import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { helpersUnder, useBackground } from '../agents/background.store';
 import { useNameOf } from '../agents/useNameOf';
 import { useDeletePrefs } from './deletePrefs.store';
+import { useKeptWorktrees } from './keptWorktrees.store';
 import { helperDeletes, helperLines, helperMoves, movingWith, preselectPass } from './helperDeletes';
 import { logWarn } from '../../shared/lib/log';
 
@@ -31,9 +32,13 @@ function deleteOne(chat: Chat, dropWorktree: boolean) {
     // worktree and its branch only if that was asked for. It resolves the
     // worktree itself, so deleting a chat seconds after creating it no longer
     // orphans one.
-    void deleteSession(chat.id, folder.path, chat.worktreePath ?? null, dropWorktree).catch(err =>
-      console.warn('[luna] delete failed', err)
-    );
+    // A worktree asked to go that another session is in stays, and the status
+    // bar says so.
+    void deleteSession(chat.id, folder.path, chat.worktreePath ?? null, dropWorktree)
+      .then(deleted => {
+        if (deleted?.worktreeKept && deleted.worktree) useKeptWorktrees.getState().keep(deleted.worktree);
+      })
+      .catch(err => console.warn('[luna] delete failed', err));
   }
   // Both stores clear the panes themselves, open or not.
   useChats.getState().deleteChat(chat.id);

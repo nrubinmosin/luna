@@ -83,9 +83,8 @@ pub struct ActivityProbe {
     /// The worktree it was started into, where that is not its `cwd`
     /// (`Session::enters`).
     pub enters: Option<String>,
-    /// Started with a new worktree whose path its CLI picks
-    /// (`Session::makes_worktree`).
-    pub makes_worktree: bool,
+    /// What it holds against a worktree's removal (`Session::hold`).
+    pub hold: Arc<crate::worktree::Hold>,
     pub spawned_at_ms: u128,
     pub resume: Option<String>,
     pub account_path: String,
@@ -128,7 +127,7 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
         pid: s.pid,
         cwd: s.cwd.clone(),
         enters: s.enters.clone(),
-        makes_worktree: s.makes_worktree,
+        hold: Arc::clone(&s.hold),
         spawned_at_ms: s.spawned_at_ms,
         resume: s.resume.clone(),
         account_path: s.account_path.clone(),
@@ -140,9 +139,9 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
 }
 
 /// The cwd of every live session this app runs, and where every background
-/// helper works. A running session must never have its worktree swept, even
-/// if the UI has not yet learned where it lives, and a helper has no row to
-/// claim its own.
+/// helper works, as spelled: what a spawn cut off by a core going left is
+/// told from by them (agents/spawn). Whether a worktree may be removed goes
+/// by places (`holds`).
 pub fn live_cwds() -> Vec<String> {
     let mut cwds: Vec<String> = manager()
         .activity_probes()
@@ -156,19 +155,41 @@ pub fn live_cwds() -> Vec<String> {
     cwds
 }
 
-/// The live sessions and helpers that asked their CLI for a new worktree and
-/// have not said where it is yet (`worktree::Unplaced`): a session until its
-/// working folder has moved from where it started, a helper's turn until it
-/// says where it works.
-pub fn unplaced_worktrees() -> Vec<crate::worktree::Unplaced> {
-    let mut out: Vec<crate::worktree::Unplaced> = manager()
-        .activity_probes()
-        .into_iter()
-        .filter(|p| p.makes_worktree && p.working_dir().is_none_or(|w| super::same_dir(&w, &p.cwd)))
-        .map(|p| crate::worktree::Unplaced { provider: p.provider, folder: p.cwd, account_path: p.account_path })
-        .collect();
-    out.extend(crate::background::unplaced_worktrees());
-    out
+/// What Luna's live sessions and helpers, all but `except`, hold against a
+/// worktree's removal (`worktree::Hold`).
+pub fn holds(except: Option<&str>) -> crate::worktree::Hold {
+    manager().holds(except)
+}
+
+impl PtyManager {
+    /// What the live sessions and helpers but `except` hold against a
+    /// worktree's removal: each session's hold, resolved as it started, with
+    /// the folder its CLI says it works in now (a worktree it made, where its
+    /// start's places led then if it is under one of them by their spelling,
+    /// `Hold::place_of`) and, until it has said one, where its CLI makes the
+    /// worktree it asked for; each helper's folders and the worktrees its
+    /// running turn may be making (`worktree::Unplaced`), as they lead now.
+    /// A helper's makers are read before its folders, so one that says where
+    /// it works between the two reads is in one of them; a session's both
+    /// come of one read of its folder.
+    pub fn holds(&self, except: Option<&str>) -> crate::worktree::Hold {
+        let mut held = crate::worktree::Hold::default();
+        for u in crate::background::unplaced_worktrees() {
+            held.add_maker(&u);
+        }
+        for dir in crate::background::working_dirs(except) {
+            held.add_path(&dir);
+        }
+        // Probed off the session map: the disk reads below must not hold it.
+        for p in self.activity_probes().into_iter().filter(|p| Some(p.id.as_str()) != except) {
+            let moved = p.working_dir();
+            held.add(&p.hold, moved.as_deref().is_none_or(|w| super::same_dir(w, &p.cwd)));
+            if let Some(moved) = moved {
+                held.add_place(p.hold.place_of(&moved));
+            }
+        }
+        held
+    }
 }
 
 /// The last `max` bytes of a file as text, or None if it cannot be read.

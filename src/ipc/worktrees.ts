@@ -4,14 +4,22 @@ import { call } from './core';
 export const fetchBeforeWorktree = () => call<boolean>('fetch_before_worktree', {}, true);
 export const setFetchBeforeWorktree = (on: boolean) => call<boolean>('set_fetch_before_worktree', { on }, on);
 
+/** What a chat's delete did with its worktree (control.rs `Deleted`). */
+export interface DeletedDto {
+  /** The chat's worktree as the delete found it, gone or kept. */
+  worktree: string | null;
+  /** Asked to go with the chat, it stayed: another session is in it or on its way in. */
+  worktreeKept: boolean;
+}
+
 /**
  * Kills the session and cleans up after it in one call: the chat's attachments
  * always, its worktree and branch only when asked. Resolves the worktree
  * itself, so it works even when the UI never saw the path. Returns that
- * worktree whether or not it was removed.
+ * worktree whether or not it was removed, and whether one asked to go stayed.
  */
 export const deleteSession = (chatId: string, folder: string, worktreePath: string | null, dropWorktree: boolean) =>
-  call<string | null>('delete_session', { id: chatId, folder, worktreePath, dropWorktree }, null);
+  call<DeletedDto | null>('delete_session', { id: chatId, folder, worktreePath, dropWorktree }, null);
 
 /**
  * Worktree dirs under the folder that no live chat is using. `accountPaths`

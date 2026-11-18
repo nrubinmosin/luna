@@ -56,3 +56,11 @@ pub(crate) fn link_dir(link: &Path, target: &Path) {
     #[cfg(unix)]
     std::os::unix::fs::symlink(target, link).unwrap();
 }
+
+/// The link `link_dir` made taken away, what it led to left as it is.
+pub(crate) fn unlink_dir(link: &Path) {
+    #[cfg(windows)]
+    std::fs::remove_dir(link).unwrap();
+    #[cfg(unix)]
+    std::fs::remove_file(link).unwrap();
+}

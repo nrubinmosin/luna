@@ -16,7 +16,8 @@
 //! - `named`: a worktree asked for by name, whether it is still as made, who is
 //!   in one, and what a cut-off spawn may have begun.
 //! - `inspect`: what deleting one would throw away.
-//! - `entry`: a start on its way into a worktree and a removal of it, holding
+//! - `entry`: what holds a worktree against its removal, resolved as a session
+//!   starts; a start on its way into a worktree and a removal of it, holding
 //!   each other off.
 
 use crate::paths::{path_key as norm, path_key_loose as norm_in_use, KEY_SEP};
@@ -43,9 +44,9 @@ pub(crate) use paths::*;
 pub(crate) use refs::*;
 pub(crate) use remove::*;
 #[cfg(test)]
-pub(crate) use testkit::link_dir;
-#[cfg(test)]
 use testkit::*;
+#[cfg(test)]
+pub(crate) use testkit::{link_dir, unlink_dir};
 
 fn git(folder: &str) -> Command {
     let mut c = Command::new("git");

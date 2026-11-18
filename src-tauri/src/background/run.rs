@@ -7,8 +7,16 @@ use super::*;
 pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
     // Held until the helper is in the registry, where a delete asking whether
     // its worktree is shared sees it: a helper sent into a worktree being
-    // removed is refused (`worktree::entering`).
-    let _entering = crate::worktree::entering(&[spec.folder.as_str()])?;
+    // removed is refused (`worktree::entering`). One sent into a new worktree
+    // keeps where its CLI makes them from the sweep until then, as its
+    // running turn does after (`unplaced_worktrees`).
+    let making = spec.worktree.then(|| crate::worktree::Unplaced {
+        provider: spec.provider,
+        folder: spec.folder.clone(),
+        account_path: spec.account_path.clone(),
+    });
+    let hold = crate::worktree::Hold::start(&[spec.folder.as_str()], making.as_ref());
+    let _entering = crate::worktree::entering(std::sync::Arc::new(hold))?;
     let mut e = Entry {
         spec,
         started_ms: crate::throttle::now_ms(),

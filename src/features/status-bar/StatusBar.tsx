@@ -17,6 +17,7 @@ import { useShortcuts } from '../shortcuts/ShortcutsDialog';
 import { useSettings } from '../settings/settings.store';
 import { useLibrary, waiting } from '../library/library.store';
 import { RecommendationsChip } from '../settings/RecommendationsChip';
+import { useKeptWorktrees } from '../chats/keptWorktrees.store';
 import './status-bar.css';
 
 const chipStyle = (loud: boolean) => ({
@@ -163,6 +164,26 @@ function LibraryChip() {
     >
       <Icon name="library" />
       {lines}
+    </div>
+  );
+}
+
+/**
+ * A chat's delete that kept the worktree it was asked to take, another
+ * session being in it or on its way in: said until clicked away.
+ */
+function KeptWorktreeChip() {
+  const paths = useKeptWorktrees(s => s.paths);
+  if (!paths.length) return null;
+  return (
+    <div
+      onClick={() => useKeptWorktrees.getState().dismiss()}
+      title={`Kept with its chat deleted: another session is in it or on its way in.\n${paths.join('\n')}\nClick to dismiss.`}
+      className="sb-field click"
+      style={chipStyle(true)}
+    >
+      <Icon name="warn" />
+      {paths.length === 1 ? 'worktree kept' : `${paths.length} worktrees kept`}
     </div>
   );
 }
@@ -357,6 +378,7 @@ export function StatusBar() {
 
       <UpdateChips />
       <LibraryChip />
+      <KeptWorktreeChip />
       <RecommendationsChip />
       <PowerChip />
       <div

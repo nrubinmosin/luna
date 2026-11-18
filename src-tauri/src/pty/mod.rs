@@ -33,8 +33,8 @@ pub(crate) use control::{
 pub(crate) use control::{fake_person_keys, fake_terminal_for_test, fake_terminal_of};
 pub(crate) use folder::folder_refusal;
 pub(crate) use probe::{
-    complete_lines, complete_lines_in, live_cwds, lossy_lines, prune_session_files_periodically, read_lossy_lines, sessions_meta, tail,
-    unplaced_worktrees, ActivityProbe, MetaAsk,
+    complete_lines, complete_lines_in, holds, live_cwds, lossy_lines, prune_session_files_periodically, read_lossy_lines, sessions_meta,
+    tail, ActivityProbe, MetaAsk,
 };
 pub(crate) use screen::{sane_title, session_modes, title_from_prompt, CliTitle, Composer, SessionMeta};
 pub(crate) use spawn::{clean_env, finish_spec};
@@ -271,10 +271,12 @@ struct Session {
     /// worktree is in use, where Claude Code's registry says so only once the
     /// CLI has come up.
     enters: Option<String>,
-    /// Started with a new worktree whose path its CLI picks
-    /// (`Launch::makes_worktree`): until its working folder says where, what
-    /// appears where its CLI makes them may be its own (`unplaced_worktrees`).
-    makes_worktree: bool,
+    /// What it holds against a worktree's removal, resolved as it started
+    /// (`worktree::Hold`): its `cwd` and `enters` where they led then, and
+    /// where its CLI makes a new worktree whose path it picks
+    /// (`Launch::makes_worktree`). The same hold its start held on its way in
+    /// (`worktree::entering`).
+    hold: Arc<crate::worktree::Hold>,
     /// On the wall clock, taken just before the process was spawned.
     spawned_at_ms: u128,
     /// The session id this was resumed with, if any: Codex is found on disk

@@ -152,12 +152,27 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - The sweep of orphan worktrees keeps a Codex chat's new worktree that its
   CLI made while Luna's own start waited, or while the wall clock was set
   back, by no clock at all, and asks again under its last look whether a
-  session making one may have made it.
+  session making one may have made it. The user guide says which sessions
+  the sweep cannot see: Codex sessions Luna did not start, and Claude Code
+  sessions started in a terminal after its last look or on a config folder
+  that is neither Luna's nor the user's own.
 - A session started or still running while every session is stopped for an
   update, a core leaving or the PC shutting down no longer lets the chats'
   ties be saved as the stopping left them before the process ends; they are
   saved again only once the update's install fails or the OS is seen to take
   the shutdown back.
+- A session started through a link to its project keeps its worktree from a
+  delete by the real path even once the link is gone; a Codex or Claude Code
+  start making a new worktree keeps what its CLI may have made from the
+  orphan sweep before its session is listed too.
+- A Claude Code session killed long ago, whose registry entry stayed behind,
+  no longer keeps worktrees from the orphan sweep; a folder that does not
+  read keeps worktrees only from the sweep, not from a chat's or helper's
+  delete; and starts elsewhere no longer have a delete or the sweep keep a
+  worktree for want of a quiet moment to look.
+- A chat's delete that keeps its worktree, another session being in it, says
+  so on the status bar ("worktree kept"), and a helper's delete answers
+  `worktreeLeft` with why, where both said nothing before.
 - A start no longer waits for a delete or the orphan sweep reading a slow or
   dropped network drive.
 - A pane or the login window whose session was killed while its reader was

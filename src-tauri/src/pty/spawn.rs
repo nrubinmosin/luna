@@ -121,12 +121,13 @@ pub(super) struct Launch {
     pub(super) reserved: Option<crate::account_use::Running>,
     /// A worktree the process goes into though it is not its `cwd`: Claude
     /// Code's by `--worktree <name>`, there already or made again. Held against its
-    /// removal as the `cwd` is (`worktree::entering`) until the session is in
-    /// the map, and kept there with it (`Session::enters`) for as long as it
-    /// runs.
+    /// removal as the `cwd` is, from before the session starts for as long
+    /// as it runs (`Session::hold`).
     pub(super) enters: Option<String>,
     /// It asks its CLI for a new worktree whose path the CLI picks: Codex's
-    /// `--worktree`, Claude Code's with no name (`Session::makes_worktree`).
+    /// `--worktree`, Claude Code's with no name. Where that CLI makes them is
+    /// held from the sweep from before the session starts until it has said
+    /// where it went (`Session::hold`).
     pub(super) makes_worktree: bool,
 }
 
@@ -246,17 +247,24 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let launch = launch()?.finished();
     #[cfg(test)]
     said::note(&format!("launch {id}"));
-    // Held from here until the session is in the map, where a delete asking
-    // whether its worktree is shared sees it: a start going into a worktree
-    // being removed is refused (`worktree::entering`).
+    // Where it goes, resolved now, as it starts (`worktree::Hold`), and held
+    // from here until the session is in the map, which carries the same hold:
+    // a start going into a worktree being removed is refused
+    // (`worktree::entering`).
     let into: Vec<&str> = [Some(launch.cwd.as_str()), launch.enters.as_deref()].into_iter().flatten().collect();
-    let _entering = crate::worktree::entering(&into)?;
+    let making = launch.makes_worktree.then(|| crate::worktree::Unplaced {
+        provider: launch.provider,
+        folder: launch.cwd.clone(),
+        account_path: launch.account_path.clone(),
+    });
+    let hold = Arc::new(crate::worktree::Hold::start(&into, making.as_ref()));
+    let _entering = crate::worktree::entering(Arc::clone(&hold))?;
     // A test reads what a start would run, and nothing runs (`capture`).
     #[cfg(test)]
     let Some(launch) = capture::keep(&id, launch) else {
         return Ok(Attached { backlog: String::new(), generation });
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters, makes_worktree } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters, makes_worktree: _ } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -621,7 +629,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             pid,
             cwd,
             enters,
-            makes_worktree,
+            hold,
             spawned_at_ms,
             resume,
             account_path,

@@ -92,11 +92,19 @@ next core takes them up after an update, a restart or a reboot.
   behind with no chat in them, by folder and CLI, with a count on the button.
   Each is looked inside first: clean ones start ticked; ones with uncommitted
   files or commits that deleting would lose (on no branch that stays, nor a
-  remote) say so. Delete one by one or all ticked; nothing a live session or
-  helper sits in is ever deleted.
+  remote) say so. Delete one by one or all ticked. Nothing Luna's own chats
+  and helpers sit in or are starting in is deleted, nor where a Claude Code
+  session started in a terminal sits as Claude Code's registry has it when
+  the list is made and again just before each removal. Luna cannot see a
+  Codex session it did not start (Codex keeps no list of running sessions),
+  nor a Claude Code one started after that last look or on a config folder
+  that is neither one of Luna's accounts nor your own: check that no such
+  session is in a worktree before you delete it.
 - Deleting a chat takes its worktree, and the branch Claude Code made for it,
-  by default, unless another chat or helper still works there. The checkbox can
-  be unticked per chat; where it starts is set in Settings → Chats → Worktrees.
+  by default, unless another chat or helper still works there or is starting
+  there; the status bar then says **worktree kept** (hover it for the path,
+  click it away). The checkbox can be unticked per chat; where it starts is
+  set in Settings → Chats → Worktrees.
 
 ## The log
 

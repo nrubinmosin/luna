@@ -348,12 +348,24 @@ pub async fn delete_session(
     // branch. Returns the path either way, so the caller can say where the
     // kept worktree is.
     drop_worktree: bool,
-) -> Result<Option<String>, String> {
+) -> Result<Deleted, String> {
     // On a thread for blocking work: the delete holds the chat's gate while
     // the session quits, which takes up to `GRACE`.
     tauri::async_runtime::spawn_blocking(move || manager().delete(&id, &folder, worktree_path, drop_worktree))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// What a chat's delete did with its worktree.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Deleted {
+    /// The chat's worktree, as the delete found it, gone or kept.
+    pub worktree: Option<String>,
+    /// Asked to go with the chat, it stayed: another session is in it or on
+    /// its way in. The window says so; the worktree is the sweep's to offer
+    /// once nobody is in it.
+    pub worktree_kept: bool,
 }
 
 #[derive(Serialize)]
@@ -489,27 +501,22 @@ impl PtyManager {
         }
     }
 
-    /// Whether a session other than `id` is in this worktree: a running one
-    /// started in it or into it (`Session::enters`: Claude Code's registry
-    /// says so only once the CLI is up) or moved into it itself, or a
-    /// background helper sent to it or working in it, between its turns too.
-    /// By where each path leads as well as by its spelling
-    /// (`worktree::Place`): a session started through a link to the project
-    /// is in the worktree a delete names by its real path.
+    /// Whether a session other than `id` is in this worktree, for a delete
+    /// of its own (`worktree::Look::Delete`): a running one started in it or
+    /// into it (`Session::enters`: Claude Code's registry says so only once
+    /// the CLI is up) or moved into it itself, or a background helper sent to
+    /// it or working in it, between its turns too. By where each path leads
+    /// as well as by its spelling (`worktree::Hold`): a session started
+    /// through a link to the project is in the worktree a delete names by its
+    /// real path, the link gone since or not.
     pub fn worktree_shared(&self, id: &str, wt: &str) -> bool {
-        let wt = crate::worktree::Place::of(wt);
-        let inside = |p: &str| crate::worktree::Place::of(p).within(&wt);
-        // Probed off the session map: the disk reads below must not hold it.
-        self.activity_probes()
-            .iter()
-            .filter(|p| p.id != id)
-            .any(|p| inside(&p.cwd) || p.enters.as_deref().is_some_and(inside) || p.working_dir().is_some_and(|real| inside(&real)))
-            || crate::background::working_dirs(Some(id)).iter().any(|d| inside(d))
+        self.holds(Some(id)).keeps(&crate::worktree::Target::of(wt, None), crate::worktree::Look::Delete)
     }
 
     /// Tears a chat's session down: resolve its worktree, quit the process,
     /// drop attachments and the hooks file, and the worktree only if asked.
-    /// Returns the worktree path either way. Blocks while the session quits
+    /// Returns the worktree path either way, and whether one asked to go
+    /// stayed (`Deleted`). Blocks while the session quits
     /// (`GRACE` at most) and the worktree goes: callers run it off the main
     /// thread.
     ///
@@ -526,7 +533,7 @@ impl PtyManager {
     /// that has not let go yet waits out the delete on the gate and is then
     /// refused, where it would have brought back a session the delete had just
     /// cleared away. The window never gives a chat id out twice.
-    pub fn delete(&self, id: &str, folder: &str, worktree_path: Option<String>, drop_worktree: bool) -> Result<Option<String>, String> {
+    pub fn delete(&self, id: &str, folder: &str, worktree_path: Option<String>, drop_worktree: bool) -> Result<Deleted, String> {
         let gate = self.gate(id);
         let _deleting = gate.lock().unwrap_or_else(|e| e.into_inner());
         {
@@ -569,17 +576,23 @@ impl PtyManager {
         // removal (`worktree::removing`), so a start that is on its way in,
         // not yet listed where the look goes, keeps it as well, and one that
         // comes during the removal is refused.
-        match &resolved {
-            Some(wt) if drop_worktree => match crate::worktree::removing(wt, || self.worktree_shared(id, wt)) {
-                Some(_removing) => crate::worktree::remove_worktree_now(folder.to_string(), wt.clone()).map(|_| resolved.clone()),
-                None => {
-                    crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it or on its way in"));
-                    Ok(None)
+        let worktree_kept = match &resolved {
+            Some(wt) if drop_worktree => {
+                let target = crate::worktree::Target::of(wt, Some(crate::worktree::Place::of(folder)));
+                match crate::worktree::removing(target, crate::worktree::Look::Delete, || self.worktree_shared(id, wt)) {
+                    Some(_removing) => {
+                        crate::worktree::remove_worktree_now(folder.to_string(), wt.clone())?;
+                        false
+                    }
+                    None => {
+                        crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it or on its way in"));
+                        true
+                    }
                 }
-            },
-            Some(_) => Ok(resolved),
-            None => Ok(None),
-        }
+            }
+            _ => false,
+        };
+        Ok(Deleted { worktree: resolved, worktree_kept })
     }
 
     /// Asks every live session to quit, each with `grace` to do it on its
@@ -762,7 +775,7 @@ mod tests {
             pid: None,
             cwd: cwd.to_string(),
             enters: None,
-            makes_worktree: false,
+            hold: Arc::new(crate::worktree::Hold::start(&[cwd], None)),
             spawned_at_ms: now_ms() as u128,
             resume: None,
             account_path: String::new(),
@@ -778,6 +791,22 @@ mod tests {
         };
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
         quit
+    }
+
+    /// `id`'s session given what a start would have held (`Session::hold`):
+    /// the folders it went into and, given `making`, where its CLI makes the
+    /// worktree it asked for.
+    fn held_as(id: &str, into: &[&str], making: bool) {
+        let mut sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let s = sessions.get_mut(id).unwrap();
+        let making =
+            making.then(|| crate::worktree::Unplaced { provider: s.provider, folder: s.cwd.clone(), account_path: s.account_path.clone() });
+        s.hold = Arc::new(crate::worktree::Hold::start(into, making.as_ref()));
+    }
+
+    /// What a delete answers where it kept the chat's worktree `wt`.
+    fn kept(wt: &str) -> Result<Deleted, String> {
+        Ok(Deleted { worktree: Some(wt.to_string()), worktree_kept: true })
     }
 
     /// Until the delete or kill has taken `id`'s session out of the map.
@@ -837,7 +866,7 @@ mod tests {
         // Let through, the start would be done by now.
         std::thread::sleep(Duration::from_millis(300));
         quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), Ok(None));
+        assert_eq!(deleting.join().unwrap(), Ok(Deleted { worktree: None, worktree_kept: false }));
         let refused = respawn.join().unwrap().unwrap_err();
         assert!(refused.contains("deleted"), "{refused}");
         assert!(capture::take(id).is_none(), "nothing of a start was built");
@@ -893,7 +922,7 @@ mod tests {
         taken(id);
         let came = fake_session(other, &wt_path, PROMPT);
         quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), Ok(None), "kept, and no path given back to remove");
+        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
         assert!(wt.exists());
         came.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
@@ -917,7 +946,35 @@ mod tests {
         let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
         taken(id);
         quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), Ok(None), "kept, and no path given back to remove");
+        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
+        assert!(wt.exists());
+        came.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session started through a link to its project, the link gone
+    /// before its CLI has said anything, is still where the link led as it
+    /// started: a delete by the real path keeps the worktree it is in, and
+    /// the one it was started into by name.
+    #[test]
+    fn a_session_started_through_a_link_since_gone_keeps_its_worktree() {
+        let (id, other) = ("dl-wt-pinned", "dl-wt-unlinked");
+        let dir = scratch("unlinked");
+        let wt = dir.join("real").join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        crate::worktree::link_dir(&dir.join("link"), &dir.join("real"));
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let (folder, wt_path) = (s(&dir.join("real")), s(&wt));
+        let came = fake_session(other, &s(&dir.join("link")), PROMPT);
+        held_as(other, &[&s(&dir.join("link")), &s(&dir.join("link").join("wt"))], false);
+        crate::worktree::unlink_dir(&dir.join("link"));
+        let quit = fake_session(id, &wt_path, PROMPT);
+        let (f, w) = (folder.clone(), wt_path.clone());
+        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
+        taken(id);
+        quit.store(true, Ordering::SeqCst);
+        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
         assert!(wt.exists());
         came.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
@@ -937,32 +994,39 @@ mod tests {
         let (folder, wt_path) = (dir.to_string_lossy().into_owned(), wt.to_string_lossy().into_owned());
         let came = fake_session(other, &folder, PROMPT);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(other).unwrap().enters = Some(wt_path.clone());
-        assert!(super::super::live_cwds().contains(&wt_path), "in use to the orphan sweep too");
+        held_as(other, &[&folder, &wt_path], false);
+        let target = crate::worktree::Target::of(&wt_path, Some(crate::worktree::Place::of(&folder)));
+        assert!(super::super::holds(None).keeps(&target, crate::worktree::Look::Sweep), "in use to the orphan sweep too");
         let quit = fake_session(id, &wt_path, PROMPT);
         let (f, w) = (folder.clone(), wt_path.clone());
         let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
         taken(id);
         quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), Ok(None), "kept, and no path given back to remove");
+        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
         assert!(wt.exists());
         came.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A session started with a new worktree whose place its CLI picks is
-    /// waited for, its folder and account and start given, until its working
-    /// folder says where it went; one started without is not.
+    /// A session started with a new worktree whose place its CLI picks
+    /// keeps every worktree of its folder where that CLI makes them from the
+    /// sweep, while its working folder has not said where it went; one
+    /// started without does not, and neither keeps one from a delete.
     #[test]
     fn a_session_making_a_worktree_is_waited_for_until_it_says_where() {
         let (making, plain) = ("dl-unplaced", "dl-placed");
         let dir = scratch("unplaced");
         let folder = dir.to_string_lossy().into_owned();
-        let quits = [fake_session(making, &folder, PROMPT), fake_session(plain, &folder, PROMPT)];
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(making).unwrap().makes_worktree = true;
-        let waited: Vec<_> = super::super::unplaced_worktrees().into_iter().filter(|u| u.folder == folder).collect();
-        assert_eq!(waited.len(), 1, "{waited:?}");
-        for (id, quit) in [making, plain].into_iter().zip(quits) {
+        let wt = crate::worktree::named_path(&folder, "picked-by-its-cli");
+        let target = || crate::worktree::Target::of(&wt, Some(crate::worktree::Place::of(&folder)));
+        let plain_quit = fake_session(plain, &folder, PROMPT);
+        assert!(!super::super::holds(None).keeps(&target(), crate::worktree::Look::Sweep), "one started without");
+        let making_quit = fake_session(making, &folder, PROMPT);
+        held_as(making, &[&folder], true);
+        assert!(super::super::holds(None).keeps(&target(), crate::worktree::Look::Sweep), "waited for");
+        assert!(!super::super::holds(None).keeps(&target(), crate::worktree::Look::Delete), "not by a delete");
+        for (id, quit) in [(making, making_quit), (plain, plain_quit)] {
             quit.store(true, Ordering::SeqCst);
             manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         }
@@ -981,7 +1045,7 @@ mod tests {
         let wt = crate::worktree::named_path(&folder, "made-by-its-cli");
         std::fs::create_dir_all(&wt).unwrap();
         assert!(!crate::worktree::kept_from_removal(&folder, &wt, &[], &[]), "nobody making one: an orphan still");
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).unwrap().makes_worktree = true;
+        held_as(id, &[&folder], true);
         assert!(!manager().worktree_shared("", &wt), "nobody is in it");
         assert!(crate::worktree::kept_from_removal(&folder, &wt, &[], &[]), "kept for the session making one");
         quit.store(true, Ordering::SeqCst);
@@ -1001,7 +1065,8 @@ mod tests {
         std::fs::create_dir_all(&wt).unwrap();
         let quit = fake_session(id, &format!("{wt}/src"), PROMPT);
         // Read before the session went in: nobody there.
-        let swept = crate::worktree::remove_orphans_now(folder, vec![], vec![], vec![wt.clone()], vec![], &[], 0).unwrap();
+        let read_before = crate::worktree::Hold::default();
+        let swept = crate::worktree::remove_orphans_now(&folder, &[], &[], &[], vec![wt.clone()], &read_before, 0).unwrap();
         assert!(swept.removed.is_empty());
         let failed: Vec<_> = swept.failed.iter().map(|f| (f.path.as_str(), f.error.as_str())).collect();
         assert_eq!(failed, [(wt.as_str(), crate::worktree::IN_USE_AGAIN)]);
@@ -1121,7 +1186,9 @@ mod tests {
         let id = "dl-wt-late";
         let dir = scratch("removing");
         let wt = dir.join("wt").to_string_lossy().into_owned();
-        let removal = crate::worktree::removing(&wt, || manager().worktree_shared("dl-wt-owner", &wt)).expect("free");
+        let target = crate::worktree::Target::of(&wt, None);
+        let removal = crate::worktree::removing(target, crate::worktree::Look::Delete, || manager().worktree_shared("dl-wt-owner", &wt))
+            .expect("free");
         let refused = start(id, format!("{wt}/sub")).join().unwrap().unwrap_err();
         assert!(refused.contains("being removed"), "{refused}");
         assert!(capture::take(id).is_none());

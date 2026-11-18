@@ -51,7 +51,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 
 | Observation | What Luna does |
 | --- | --- |
-| Registry `<config>/sessions/<pid>.json`; `claude -p` writes one too | the cwd + start-time fallback takes only `entrypoint: cli` |
+| Registry `<config>/sessions/<pid>.json`; `claude -p` writes one too; a killed session leaves its entry behind | the cwd + start-time fallback takes only `entrypoint: cli`; the orphan sweep counts an entry only while its pid runs (`running_cwds`), and sees only the registries of Luna's accounts and the user's own config folder |
 | The registry says busy while `isLoading \|\| delegatedActive`, so it stays busy while background subagents work | subagents tracked apart from the turn |
 | A permission prompt answered "No" ends the turn with no `Stop`; Esc leaves a prompt with no `Stop` | a hook's "waiting" clears when the registry's idle is newer (`statusUpdatedAt`), else after 60 s |
 | A turn cut off by an API error sends `StopFailure`, not `Stop`; the transcript's last line has `isApiErrorMessage` | session reads stalled, turn reported failed |
@@ -176,7 +176,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 
 | Observation | What Luna does |
 | --- | --- |
-| No live registry; one rollout per thread at `sessions/YYYY/MM/DD/rollout-<local time>-<uuid>.jsonl`, lines `{timestamp,type,payload}`; it appears only with the first turn | file matched via the terminal title, then by cwd and time |
+| No live registry; one rollout per thread at `sessions/YYYY/MM/DD/rollout-<local time>-<uuid>.jsonl`, lines `{timestamp,type,payload}`; it appears only with the first turn | file matched via the terminal title, then by cwd and time; the orphan sweep cannot see a Codex session Luna did not start, on a Luna account or not, and may offer the worktree it is in ([worktrees](architecture/worktrees.md#removal)) |
 | `session_meta.source` is `cli` for the TUI, `exec` for `codex exec`, `{"subagent":{"thread_spawn":{"parent_thread_id":…}}}` for subagents | only `cli` rollouts are guessed |
 | `request_user_input` holds the turn; `request_user_input_async` stays open until the next `UserMessage` | both read as questions |
 | Approval requests are not written to the rollout; the spinner redraws continuously | waiting = a turn in flight with a screen unchanged for 3 s, or a recognized approval dialog |

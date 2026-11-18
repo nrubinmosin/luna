@@ -73,15 +73,8 @@ pub fn session_cwd(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at
     v["cwd"].as_str().map(str::to_owned)
 }
 
-/// Every cwd the CLI currently has a session in, per this account's registry.
-pub fn live_cwds(account_path: &str) -> Vec<String> {
-    let dir = Path::new(account_path).join("sessions");
-    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
-    entries.flatten().filter_map(|e| parse_session_file(&e.path())).filter_map(|v| v["cwd"].as_str().map(str::to_owned)).collect()
-}
-
-/// `live_cwds`, of the entries whose process is still there: one killed leaves its
-/// entry behind.
+/// Every cwd the CLI has a session in, per this account's registry, of the
+/// entries whose process is still there: one killed leaves its entry behind.
 pub fn running_cwds(account_path: &str) -> Vec<String> {
     let dir = Path::new(account_path).join("sessions");
     let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };

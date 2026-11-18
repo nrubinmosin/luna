@@ -15,7 +15,7 @@ const GRACE_SECS: u64 = 300;
 /// is written with the first turn; Claude Code given `--worktree` with no
 /// name picks one under `<repo>/.claude/worktrees/`, and says which in its
 /// registry once it is up. Any worktree of its folder where its CLI makes them
-/// may be its own (`Keepers`): no orphan there while it runs with its path
+/// may be its own (`Hold`, `Look::Sweep`): no orphan there while it runs with its path
 /// unknown, whenever it appeared. Told by when, a wall clock stepped back
 /// while the CLI made it and put right before Luna looked would date it
 /// before the session's start, and the sweep would take it.
@@ -25,76 +25,6 @@ pub(crate) struct Unplaced {
     /// The project folder it was started in.
     pub folder: String,
     pub account_path: String,
-}
-
-impl Unplaced {
-    /// Where its CLI makes the worktree: Claude Code under the folder, Codex
-    /// in a bucket under its account's `worktrees/`.
-    fn makes_in(&self) -> PathBuf {
-        match self.provider {
-            crate::provider::Provider::Claude => claude_worktrees(&self.folder),
-            crate::provider::Provider::Codex => Path::new(&self.account_path).join("worktrees"),
-        }
-    }
-}
-
-/// What keeps a worktree of a folder from being an orphan, read once for a
-/// look over its worktrees, each path resolved once (`Place`): the folders
-/// in use and where the sessions making a worktree whose path is not known
-/// yet have their CLI make them (`Unplaced`). Compared as places, as where a
-/// miss is the mistake: a chat parked in a worktree by its real path, or a
-/// Claude Code session in a terminal there, keeps it from a sweep of the
-/// project opened through a link, and the other way about.
-struct Keepers {
-    claimed: Vec<Place>,
-    awaited: Vec<(crate::provider::Provider, Place)>,
-    /// The folders the worktrees are in, each resolved once: a folder's
-    /// worktrees share theirs.
-    above: std::cell::RefCell<std::collections::HashMap<PathBuf, Place>>,
-}
-
-impl Keepers {
-    /// `in_use`: every chat's worktree the window knows; `live`: Luna's own
-    /// sessions and helpers (`pty::live_cwds`), read after `unplaced`.
-    fn read(folder: &str, in_use: &[String], account_paths: &[String], live: &[String], unplaced: &[Unplaced]) -> Keepers {
-        let mut paths = in_use.to_vec();
-        // Claude Code moves into its worktree on its own; only its registry says
-        // where. Where a Codex session moved, its rollout says (`pty::live_cwds`).
-        for account in account_paths.iter().cloned().chain(own_claude_dir()) {
-            paths.extend(crate::claude::session::live_cwds(&account));
-        }
-        paths.extend(live.iter().cloned());
-        paths.retain(|p| !p.is_empty());
-        paths.sort();
-        paths.dedup();
-        let here = Place::of(folder);
-        let awaited = unplaced
-            .iter()
-            .filter(|u| Place::of(&u.folder).is(&here))
-            .map(|u| (u.provider, Place::of(&u.makes_in().to_string_lossy())))
-            .collect();
-        Keepers { claimed: paths.iter().map(|p| Place::of(p)).collect(), awaited, above: Default::default() }
-    }
-
-    /// Whether the worktree `wt` stays: someone is in it, in a subfolder
-    /// too, or a session making one may have made it, as it is where that
-    /// session's CLI makes them.
-    fn keep(&self, wt: &Path) -> bool {
-        use crate::provider::Provider;
-        let place = Place::of(&wt.to_string_lossy());
-        if self.claimed.iter().any(|c| c.within(&place)) {
-            return true;
-        }
-        self.awaited.iter().any(|(provider, made_in)| {
-            let root = match provider {
-                Provider::Claude => wt.parent(),
-                Provider::Codex => wt.parent().and_then(Path::parent),
-            };
-            root.is_some_and(|r| {
-                self.above.borrow_mut().entry(r.to_path_buf()).or_insert_with(|| Place::of(&r.to_string_lossy())).is(made_in)
-            })
-        })
-    }
 }
 
 fn younger_than(path: &Path, secs: u64) -> bool {
@@ -112,13 +42,46 @@ fn younger_than(path: &Path, secs: u64) -> bool {
 /// `inspect_worktrees`' job, asked for when someone means to delete.
 #[tauri::command]
 pub async fn orphan_worktrees(folder: String, in_use: Vec<String>, account_paths: Vec<String>) -> Result<Vec<String>, String> {
-    // In this order: a session that learns where its worktree is between the
-    // two reads is still unplaced in the first or has its path in the second.
-    let unplaced = crate::pty::unplaced_worktrees();
-    let live = crate::pty::live_cwds();
-    tauri::async_runtime::spawn_blocking(move || orphan_worktrees_now(folder, in_use, account_paths, live, &unplaced, GRACE_SECS))
+    let held = luna_holds();
+    let registries = registries(&account_paths);
+    tauri::async_runtime::spawn_blocking(move || orphan_worktrees_now(&folder, &in_use, &account_paths, &registries, &held, GRACE_SECS))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// What Luna's own starts and sessions hold (`Hold`): the starts on their
+/// way in first, then the sessions and helpers listed, so a start listed
+/// between the two reads is in one of them.
+fn luna_holds() -> Hold {
+    let mut held = entering_now();
+    held.add(&crate::pty::holds(None), true);
+    held
+}
+
+/// The Claude Code registries to read for sessions in a worktree: each
+/// account's, and the user's own (sessions started in a terminal).
+fn registries(account_paths: &[String]) -> Vec<String> {
+    account_paths.iter().cloned().chain(own_claude_dir()).collect()
+}
+
+/// What keeps a folder's worktrees from the sweep: `held` (Luna's own,
+/// `luna_holds`), every chat's worktree the window knows (`in_use`), and
+/// each live session in a Claude Code `registries`' (Claude Code moves into
+/// its worktree on its own; only its registry says where), its process still
+/// there: a killed one leaves its entry behind.
+fn keepers(in_use: &[String], registries: &[String], held: &Hold) -> Hold {
+    let mut keepers = held.clone();
+    let mut paths = in_use.to_vec();
+    for registry in registries {
+        paths.extend(crate::claude::session::running_cwds(registry));
+    }
+    paths.retain(|p| !p.is_empty());
+    paths.sort();
+    paths.dedup();
+    for p in &paths {
+        keepers.add_path(p);
+    }
+    keepers
 }
 
 /// True when the `cwd` is the worktree or anywhere inside it, both by
@@ -138,34 +101,32 @@ pub(super) fn own_claude_dir() -> Option<String> {
 }
 
 /// The orphans of `folder`: worktrees older than `grace` seconds (`GRACE_SECS`)
-/// that no folder in use claims, and that no session making a worktree whose
-/// path is not known yet may have made (`Unplaced`).
+/// that nobody may be in and no session making a worktree whose path is not
+/// known yet may have made (`keepers`).
 fn orphan_worktrees_now(
-    folder: String,
-    in_use: Vec<String>,
-    account_paths: Vec<String>,
-    live_pty_cwds: Vec<String>,
-    unplaced: &[Unplaced],
+    folder: &str,
+    in_use: &[String],
+    account_paths: &[String],
+    registries: &[String],
+    held: &Hold,
     grace: u64,
 ) -> Result<Vec<String>, String> {
-    let keepers = Keepers::read(&folder, &in_use, &account_paths, &live_pty_cwds, unplaced);
-    let mut out: Vec<String> = candidates(&folder, &account_paths)
+    let keepers = keepers(in_use, registries, held);
+    let here = Place::of(folder);
+    let mut out: Vec<String> = candidates(folder, account_paths)
         .into_iter()
-        .filter(|path| !younger_than(path, grace) && !keepers.keep(path))
         .map(|path| path.to_string_lossy().into_owned())
+        .filter(|path| !younger_than(Path::new(path), grace) && !keepers.keeps(&Target::of(path, Some(here.clone())), Look::Sweep))
         .collect();
     out.sort();
     Ok(out)
 }
 
-/// Whether the orphan `path` of `folder` is to stay after all, looked at
-/// again for its removal's hold (`removing`) from what the listing looks at,
-/// read anew: the folders in use, the sessions making a worktree whose path
-/// is not known yet, the makers first, as `orphan_worktrees` reads them.
-pub(crate) fn kept_from_removal(folder: &str, path: &str, in_use: &[String], account_paths: &[String]) -> bool {
-    let unplaced = crate::pty::unplaced_worktrees();
-    let live = crate::pty::live_cwds();
-    Keepers::read(folder, in_use, account_paths, &live, &unplaced).keep(Path::new(path))
+/// Whether the orphan `path` of `folder` is to stay after all: the sweep's
+/// last look, under its removal's hold (`removing`), at what the listing
+/// looked at, Luna's own read anew (`luna_holds`).
+pub(crate) fn kept_from_removal(folder: &str, path: &str, in_use: &[String], registries: &[String]) -> bool {
+    keepers(in_use, registries, &luna_holds()).keeps(&Target::of(path, Some(Place::of(folder))), Look::Sweep)
 }
 
 fn subdirs(dir: &Path) -> Vec<PathBuf> {
@@ -227,29 +188,28 @@ pub async fn remove_orphan_worktrees(
     account_paths: Vec<String>,
     paths: Vec<String>,
 ) -> Result<SweepResult, String> {
-    // In this order, as `orphan_worktrees` reads them.
-    let unplaced = crate::pty::unplaced_worktrees();
-    let live = crate::pty::live_cwds();
-    tauri::async_runtime::spawn_blocking(move || remove_orphans_now(folder, in_use, account_paths, paths, live, &unplaced, GRACE_SECS))
-        .await
-        .map_err(|e| e.to_string())?
+    let held = luna_holds();
+    let registries = registries(&account_paths);
+    tauri::async_runtime::spawn_blocking(move || {
+        remove_orphans_now(&folder, &in_use, &account_paths, &registries, paths, &held, GRACE_SECS)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-/// `remove_orphan_worktrees` on what it read of Luna's sessions first
-/// (`live`, `unplaced`), which the last look before each removal reads anew.
+/// `remove_orphan_worktrees` on what it read of Luna's own first (`held`),
+/// which the last look before each removal reads anew.
 pub(crate) fn remove_orphans_now(
-    folder: String,
-    in_use: Vec<String>,
-    account_paths: Vec<String>,
+    folder: &str,
+    in_use: &[String],
+    account_paths: &[String],
+    registries: &[String],
     paths: Vec<String>,
-    live: Vec<String>,
-    unplaced: &[Unplaced],
+    held: &Hold,
     grace: u64,
 ) -> Result<SweepResult, String> {
-    let orphans: Vec<String> = orphan_worktrees_now(folder.clone(), in_use.clone(), account_paths.clone(), live, unplaced, grace)?
-        .iter()
-        .map(|p| norm(p))
-        .collect();
+    let orphans: Vec<String> =
+        orphan_worktrees_now(folder, in_use, account_paths, registries, held, grace)?.iter().map(|p| norm(p)).collect();
     let mut result = SweepResult { removed: vec![], failed: vec![] };
     for path in paths {
         // Held from the look to the end of its removal, as a chat's delete
@@ -258,13 +218,15 @@ pub(crate) fn remove_orphans_now(
         // listed keeps it, and one that comes meanwhile is refused.
         let held = orphans
             .contains(&norm(&path))
-            .then(|| removing(&path, || kept_from_removal(&folder, &path, &in_use, &account_paths)))
+            .then(|| {
+                removing(Target::of(&path, Some(Place::of(folder))), Look::Sweep, || kept_from_removal(folder, &path, in_use, registries))
+            })
             .flatten();
         let Some(_removing) = held else {
             result.failed.push(SweepFailure { path, error: IN_USE_AGAIN.into() });
             continue;
         };
-        match remove_worktree_now(folder.clone(), path.clone()) {
+        match remove_worktree_now(folder.to_string(), path.clone()) {
             Ok(()) => result.removed.push(path),
             Err(error) => {
                 crate::log::warn("worktree", &format!("could not remove {path}: {error}"));
@@ -314,32 +276,32 @@ mod tests {
         let claude_wt = claude_worktrees(&repo).join("named-by-claude");
         std::fs::create_dir_all(&claude_wt).unwrap();
         let claude_wt = claude_wt.to_string_lossy().into_owned();
-        let orphans = |unplaced: &[Unplaced]| {
-            let mut found: Vec<String> = orphan_worktrees_now(repo.clone(), vec![], vec![account.clone()], vec![], unplaced, 0)
-                .unwrap()
-                .iter()
-                .map(|p| place(p))
-                .collect();
+        let orphans = |unplaced: Option<Unplaced>| {
+            let held = Hold::start(&[], unplaced.as_ref());
+            let accounts = std::slice::from_ref(&account);
+            let mut found: Vec<String> =
+                orphan_worktrees_now(&repo, &[], accounts, &[], &held, 0).unwrap().iter().map(|p| place(p)).collect();
             found.sort();
             found
         };
         let mut both = vec![place(&wt), place(&claude_wt)];
         both.sort();
-        assert_eq!(orphans(&[]), both, "nobody waiting: both orphans");
-        let asked =
-            |provider, folder: &str, account: &str| Unplaced { provider, folder: folder.to_string(), account_path: account.to_string() };
-        assert_eq!(orphans(&[asked(Provider::Codex, &repo, &account)]), [place(&claude_wt)], "Codex's");
-        assert_eq!(orphans(&[asked(Provider::Claude, &repo, &account)]), [place(&wt)], "Claude Code's");
-        assert_eq!(orphans(&[asked(Provider::Codex, &repo, &native(r"C:\other\account"))]), both, "another account");
-        assert_eq!(orphans(&[asked(Provider::Claude, &native(r"C:\other\repo"), &account)]), both, "another folder");
+        assert_eq!(orphans(None), both, "nobody waiting: both orphans");
+        let asked = |provider, folder: &str, account: &str| {
+            Some(Unplaced { provider, folder: folder.to_string(), account_path: account.to_string() })
+        };
+        assert_eq!(orphans(asked(Provider::Codex, &repo, &account)), [place(&claude_wt)], "Codex's");
+        assert_eq!(orphans(asked(Provider::Claude, &repo, &account)), [place(&wt)], "Claude Code's");
+        assert_eq!(orphans(asked(Provider::Codex, &repo, &native(r"C:\other\account"))), both, "another account");
+        assert_eq!(orphans(asked(Provider::Claude, &native(r"C:\other\repo"), &account)), both, "another folder");
         // Its folder as the session was started in it: through a link, or in
         // another case where the platform takes that for the same folder.
         let linked = root.join("linked-repo");
         link_dir(&linked, Path::new(&repo));
         let linked = linked.to_string_lossy().into_owned();
-        assert_eq!(orphans(&[asked(Provider::Claude, &linked, &account)]), [place(&wt)], "its folder through a link");
+        assert_eq!(orphans(asked(Provider::Claude, &linked, &account)), [place(&wt)], "its folder through a link");
         let cased = if cfg!(any(windows, target_os = "macos")) { vec![place(&wt)] } else { both.clone() };
-        assert_eq!(orphans(&[asked(Provider::Claude, &repo.to_uppercase(), &account)]), cased, "its folder in another case");
+        assert_eq!(orphans(asked(Provider::Claude, &repo.to_uppercase(), &account)), cased, "its folder in another case");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -358,13 +320,15 @@ mod tests {
         link_dir(&link, &real);
         let wt = |folder: &Path| claude_worktrees(&s(folder)).join("w");
         let terminal = root.join("terminal");
-        std::fs::create_dir_all(terminal.join("sessions")).unwrap();
-        let entry = serde_json::json!({ "pid": 1, "cwd": s(&wt(&link)) });
-        std::fs::write(terminal.join("sessions").join("1.json"), entry.to_string()).unwrap();
-        let orphans = |folder: &Path, in_use: &[PathBuf], accounts: &[&Path], live: &[PathBuf]| {
+        terminal_session(&terminal, std::process::id(), &s(&wt(&link)));
+        let orphans = |folder: &Path, in_use: &[PathBuf], registries: &[&Path], live: &[PathBuf]| {
             let strings = |ps: &[PathBuf]| ps.iter().map(|p| s(p)).collect::<Vec<_>>();
-            let accounts = accounts.iter().map(|p| s(p)).collect();
-            orphan_worktrees_now(s(folder), strings(in_use), accounts, strings(live), &[], 0).unwrap()
+            let registries: Vec<String> = registries.iter().map(|p| s(p)).collect();
+            let mut held = Hold::default();
+            for p in strings(live) {
+                held.add_path(&p);
+            }
+            orphan_worktrees_now(&s(folder), &strings(in_use), &[], &registries, &held, 0).unwrap()
         };
         assert_eq!(orphans(&link, &[], &[], &[]), [s(&wt(&link))], "nobody in it: an orphan");
         assert!(orphans(&link, &[wt(&real)], &[], &[]).is_empty(), "a chat parked in it by its real path");
@@ -374,6 +338,64 @@ mod tests {
         assert!(!kept_from_removal(&s(&link), &wt_link, &[], &[]), "nobody in it");
         assert!(kept_from_removal(&s(&link), &wt_link, &in_use, &[]), "the last look asks the chats too");
         assert!(kept_from_removal(&s(&real), &s(&wt(&real)), &[], &[s(&terminal)]), "and the terminals' sessions");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A registry entry of a Claude Code session in a terminal, as its file
+    /// is laid out: by its pid, its cwd.
+    fn terminal_session(registry: &Path, pid: u32, cwd: &str) {
+        std::fs::create_dir_all(registry.join("sessions")).unwrap();
+        let entry = serde_json::json!({ "pid": pid, "cwd": cwd });
+        std::fs::write(registry.join("sessions").join(format!("{pid}.json")), entry.to_string()).unwrap();
+    }
+
+    /// A registry entry whose process is gone keeps nothing: one a killed
+    /// Claude Code left behind would keep its worktree from the sweep for
+    /// good, and every worktree where its cwd does not read.
+    #[test]
+    fn a_registry_entry_whose_process_is_gone_keeps_no_worktree() {
+        let root = std::env::temp_dir().join(format!("luna-wt-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let folder = root.join("project");
+        let wt = claude_worktrees(&s(&folder)).join("w");
+        std::fs::create_dir_all(&wt).unwrap();
+        // A process that has been and gone.
+        let mut gone = if cfg!(windows) { Command::new("cmd") } else { Command::new("true") };
+        if cfg!(windows) {
+            gone.args(["/d", "/c", "exit"]);
+        }
+        let mut child = gone.spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        let registry = root.join("registry");
+        terminal_session(&registry, pid, &s(&wt.join("src")));
+        let registries = [s(&registry)];
+        let found = orphan_worktrees_now(&s(&folder), &[], &[], &registries, &Hold::default(), 0).unwrap();
+        assert_eq!(found, [s(&wt)], "its entry left behind keeps nothing");
+        terminal_session(&registry, std::process::id(), &s(&wt.join("src")));
+        let found = orphan_worktrees_now(&s(&folder), &[], &[], &registries, &Hold::default(), 0).unwrap();
+        assert!(found.is_empty(), "one still running keeps it");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A start asking its CLI for a new worktree, on its way in and its
+    /// session not listed yet, keeps what its CLI may have made already from
+    /// the sweep's last look, as from its listing (`luna_holds`).
+    #[test]
+    fn the_sweeps_last_look_keeps_what_a_start_on_its_way_in_may_have_made() {
+        use crate::provider::Provider;
+        let root = std::env::temp_dir().join(format!("luna-wt-entering-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let folder = root.join("project").to_string_lossy().into_owned();
+        let wt = claude_worktrees(&folder).join("picked");
+        std::fs::create_dir_all(&wt).unwrap();
+        let wt = wt.to_string_lossy().into_owned();
+        assert!(!kept_from_removal(&folder, &wt, &[], &[]), "nobody making one");
+        let making = Unplaced { provider: Provider::Claude, folder: folder.clone(), account_path: "acc".into() };
+        let on_the_way = entering(std::sync::Arc::new(Hold::start(&[&folder], Some(&making)))).unwrap();
+        assert!(kept_from_removal(&folder, &wt, &[], &[]), "kept for the start making one");
+        drop(on_the_way);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -7,6 +7,7 @@ import type { Chat } from '../../shared/types';
 import { useBackground } from '../agents/background.store';
 import { useChats } from './chats.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
+import { useKeptWorktrees } from './keptWorktrees.store';
 
 // xterm cannot run in jsdom.
 vi.mock('../panes/terminals', () => ({
@@ -274,6 +275,15 @@ describe('DeleteChatDialog', () => {
     expect(vi.mocked(backgroundMove).mock.calls).toEqual([['watched', 'ops']]);
     expect(vi.mocked(backgroundDelete).mock.calls.map(c => c[0])).toEqual(['plain']);
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('says on the status bar when the worktree it was asked to take stayed', async () => {
+    const user = userEvent.setup();
+    useKeptWorktrees.setState({ paths: [] });
+    vi.mocked(deleteSession).mockResolvedValueOnce({ worktree: '/repo/.claude/worktrees/w', worktreeKept: true });
+    render(<DeleteChatDialog chat={chat('docs', 'Docs')} onClose={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(useKeptWorktrees.getState().paths).toEqual(['/repo/.claude/worktrees/w']));
   });
 
   it('asks where only the chat’s own helpers may go', async () => {
