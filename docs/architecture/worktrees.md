@@ -47,6 +47,11 @@ lose, and to sweep the ones no chat claims.
   listed, keeps it, and one that comes during the removal is refused. A
   helper's delete with `dropWorktree` and the orphan sweep hold each worktree
   they remove the same way, the sweep asking again whether anyone is in it.
+  The question reads the disk (where each session's folder leads), and a
+  share or a mapped drive slow to answer would hold every start behind the
+  holds' lock: it is asked before that lock, and asked again where a start
+  let go of its way in meanwhile (listed by then where the question looks),
+  up to 8 times, past which the worktree stays.
   A Claude Code chat started into a worktree by name (`--worktree <name>`
   from the project folder) is in it from its start (`Session::enters`), not
   only once its registry says so. The holds and the sharing check compare

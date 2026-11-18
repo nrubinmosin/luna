@@ -21,9 +21,12 @@ struct Ways {
     entering: Vec<(u64, Vec<Place>)>,
     removing: Vec<(String, Place)>,
     next: u64,
+    /// How many starts have let go of their way in: listed where a removal
+    /// looks for whoever is in a worktree, or failed (`removing`).
+    let_go: u64,
 }
 
-static WAYS: Mutex<Ways> = Mutex::new(Ways { entering: Vec::new(), removing: Vec::new(), next: 0 });
+static WAYS: Mutex<Ways> = Mutex::new(Ways { entering: Vec::new(), removing: Vec::new(), next: 0, let_go: 0 });
 
 fn ways() -> std::sync::MutexGuard<'static, Ways> {
     WAYS.lock().unwrap_or_else(|e| e.into_inner())
@@ -114,7 +117,9 @@ pub(crate) struct Entering(u64);
 
 impl Drop for Entering {
     fn drop(&mut self) {
-        ways().entering.retain(|(n, _)| *n != self.0);
+        let mut w = ways();
+        w.entering.retain(|(n, _)| *n != self.0);
+        w.let_go += 1;
     }
 }
 
@@ -145,17 +150,35 @@ impl Drop for Removing {
     }
 }
 
+/// How often a removal looks again for whoever is in its worktree when
+/// starts were listed while it looked; past that it keeps the worktree.
+const LOOKS: usize = 8;
+
 /// Holds `wt` for its removal, unless a start is on its way into it or
-/// `others_in_it` (asked under the same lock) finds someone there: then None,
-/// and the worktree stays.
-pub(crate) fn removing(wt: &str, others_in_it: impl FnOnce() -> bool) -> Option<Removing> {
+/// `others_in_it` finds someone there: then None, and the worktree stays.
+/// That look reads the disk (where each session's folder leads, `Place`),
+/// and a share or a mapped drive slow to answer would hold every start
+/// behind the lock: it is taken before the lock, and taken again where a
+/// start let go of its way in meanwhile, listed by then where the look
+/// goes but no longer on its way in.
+pub(crate) fn removing(wt: &str, mut others_in_it: impl FnMut() -> bool) -> Option<Removing> {
     let place = Place::of(wt);
-    let mut w = ways();
-    if w.entering.iter().any(|(_, paths)| paths.iter().any(|p| p.within(&place))) || others_in_it() {
-        return None;
+    for _ in 0..LOOKS {
+        let let_go = ways().let_go;
+        if others_in_it() {
+            return None;
+        }
+        let mut w = ways();
+        if w.entering.iter().any(|(_, paths)| paths.iter().any(|p| p.within(&place))) {
+            return None;
+        }
+        if w.let_go == let_go {
+            w.removing.push((wt.to_string(), place));
+            return Some(Removing(wt.to_string()));
+        }
     }
-    w.removing.push((wt.to_string(), place));
-    Some(Removing(wt.to_string()))
+    crate::log::warn("worktree", &format!("kept {wt}: starts kept coming while the removal looked whether anyone is in it"));
+    None
 }
 
 #[cfg(test)]
@@ -183,6 +206,34 @@ mod tests {
         drop(on_the_way);
         assert!(removing(wt, || true).is_none(), "kept for whoever is in it");
         assert!(removing(wt, || false).is_some());
+    }
+
+    /// Whoever is in the worktree is looked for outside the holds' lock, so
+    /// a start elsewhere is not held up by a look that reads a slow disk;
+    /// and a start into it that was listed while the removal looked, past
+    /// what the look saw and no longer on its way in, has it look again.
+    #[test]
+    fn a_removal_looks_outside_the_lock_and_again_for_a_start_listed_meanwhile() {
+        let wt = if cfg!(windows) { r"C:\p\.claude\worktrees\entry-look" } else { "/p/.claude/worktrees/entry-look" };
+        let mut looks = 0;
+        let held = removing(wt, || {
+            looks += 1;
+            if looks == 1 {
+                let (said, heard) = std::sync::mpsc::channel();
+                let inside = format!("{wt}/src");
+                std::thread::spawn(move || {
+                    // Listed as soon as it is in: its way in let go.
+                    let went_in = entering(&[&inside]).is_ok();
+                    let _ = said.send(went_in);
+                });
+                let went_in = heard.recv_timeout(std::time::Duration::from_secs(30));
+                assert_eq!(went_in, Ok(true), "a start was held up by the look");
+            }
+            // Seen from the second look on: in the session map by then.
+            looks > 1
+        });
+        assert!(held.is_none(), "kept for the start listed while it looked");
+        assert!(looks >= 2, "looked again");
     }
 
     /// A path through a folder that does not read (its traversal revoked

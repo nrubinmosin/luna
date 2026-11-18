@@ -154,6 +154,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A session started while every session is being stopped (an update, a core
   leaving, the PC shutting down) no longer lets the chats' ties be saved as
   the stopping left them.
+- A start no longer waits for a delete or the orphan sweep reading a slow or
+  dropped network drive.
 - A pane or the login window whose session was killed while its reader was
   stuck is told the session ended, rather than left waiting on a dead one.
 
