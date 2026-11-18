@@ -65,12 +65,8 @@ body {
   background-color: var(--scroll-thumb-hover);
 }
 
-.hover-bg {
-}
 .hover-bg:hover {
   background: var(--hover) !important;
-}
-.hover-danger {
 }
 .hover-danger:hover {
   background: oklch(0.63 0.19 25 / 0.16) !important;

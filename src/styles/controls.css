@@ -274,8 +274,6 @@
   color: inherit;
   font-size: var(--fs-3);
 }
-[data-app] button.tool-btn svg {
-}
 [data-app] button.tool-btn:not(:disabled):hover {
   background: var(--btn-face);
   border-color: color-mix(in oklab, var(--btn-rim) 70%, transparent);
