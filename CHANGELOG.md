@@ -25,12 +25,15 @@ is in or starting into.
 - A Claude Code chat can be started in auto mode: the new-chat dialog offers
   **Auto** (`--permission-mode auto`) beside Ask, Edits, Plan only and Bypass,
   and the pane's chip shows it. Claude Code then decides for itself, with its
-  own review of risky actions, and starts in its Manual mode, which asks,
-  where that review cannot run. Luna ranks such a chat where it ranks a helper
-  in `auto`, above Edits and below Bypass, so its helpers run in `auto` or
-  below. A settings file's `defaultMode: auto` now opens the dialog on Auto
-  (it opened on Bypass), and a helper running in `auto` that you open as a
-  chat keeps it (it took the account's default).
+  own review of risky actions: where that review cannot run it starts in its
+  Manual mode, which asks, and an action the review cannot judge later on it
+  refuses. Luna ranks such a chat where it ranks a helper in `auto`, above
+  Edits and below Bypass, so its helpers run in `auto` or below; the rank
+  follows the mode picked, and a start in Manual does not lower it. A
+  settings file's `defaultMode: auto` now opens the dialog on Auto (it opened
+  on Bypass) and starts a helper on the account's default in `auto` (it
+  started in `bypassPermissions`), and a helper running in `auto` that you
+  open as a chat keeps it (it took the account's default).
 
 ### Changed
 
@@ -231,6 +234,14 @@ is in or starting into.
 
 ### Security
 
+- A settings file's `defaultMode` that Luna does not offer a chat in no
+  longer becomes Luna's stock `bypassPermissions`: `dontAsk` starts a helper
+  on the account's default in `dontAsk` and opens the new-chat dialog on Ask,
+  and a mode Luna does not know counts as `default`, which asks. A helper in
+  `dontAsk` opened as a chat starts on Ask, not on the account's default.
+- The new-chat dialog's Create waits until the account's settings files have
+  answered, so a quick click no longer makes a Claude Code chat in Bypass, or
+  a Codex one with no sandbox, before the files' own mode arrived.
 - A link from a terminal is parsed before it opens and reaches the browser
   or mail app percent-encoded; one with a control character, longer than
   8 KB, a mail link asking to attach a file, or one that still holds a quote

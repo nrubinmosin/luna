@@ -130,9 +130,13 @@ up once) lets go of a chat deleted at the next tick.
   files (or CLI) would pick marked "· default"; Codex's catalog in `priority`
   order with level descriptions as tooltips; Claude Code's permission modes
   as radios (`PermMode`, `PERM_CLI`: Ask, Edits, Plan only, Auto, Bypass;
-  `permFromSetting` reads them back, and a mode outside them is none); Codex's
-  approval and sandbox as two radio columns, `auto-review` holding the sandbox at `workspace-write`. The title bar
-  shows `bypass` for never + danger-full-access and `auto-review` for that.
+  `permFromSetting` reads them back, and a mode outside them is none, which a
+  settings file's mode and a helper opened as a chat take as Ask); Codex's
+  approval and sandbox as two radio columns, `auto-review` holding the
+  sandbox at `workspace-write`. The draft (`useSettingsDraft`) starts on the
+  provider's stock values, Bypass and full access, and Create waits for its
+  `ready`, the files' answer for that account and folder. The title bar shows
+  `bypass` for never + danger-full-access and `auto-review` for that.
 - **Agent bridge** (`features/agents/bridge.ts`): `agent://background` → the
   helpers' list (`background.store`), shown as a chip on their parent's row;
   `openAsChat` → `background_promote`, a top-level `createChat` of the person's

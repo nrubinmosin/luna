@@ -32,8 +32,9 @@ export type Effort = string;
 
 /** Claude Code's permission modes as a chat names them (`PERM_CLI` spells
  *  each as the CLI takes it). `Auto` leaves what would go further to Claude
- *  Code's own review, and starts in its Manual mode, which asks, where that
- *  review cannot run (2.1.323). */
+ *  Code's own review: it starts in its Manual mode, which asks, where that
+ *  review cannot run (2.1.323), and refuses an action the review cannot
+ *  judge later on (2.1.325). */
 export type PermMode = 'Ask' | 'Edits' | 'Plan only' | 'Auto' | 'Bypass';
 
 /** A Claude model as a chat keeps it: a family by its label (`Opus`), which
@@ -278,7 +279,7 @@ export const PERM_HINTS: Record<PermMode, string> = {
   Ask: 'confirm every action',
   Edits: 'write files, ask for commands',
   'Plan only': 'no disk writes',
-  Auto: 'Claude Code reviews risky actions; asks if it cannot',
+  Auto: 'Claude Code reviews risky actions itself',
   Bypass: 'full access, no prompts'
 };
 

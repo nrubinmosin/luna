@@ -72,16 +72,21 @@ account, since whether to trust it is yours to say.
 - Permission mode, passed as `--permission-mode`: **Ask** (`default`, confirm
   every action), **Edits** (`acceptEdits`), **Plan only** (`plan`), **Auto**
   (`auto`) and **Bypass** (`bypassPermissions`). In Auto Claude Code decides
-  for itself, with its own review of risky actions; where that review cannot
-  run (Claude Code says "Auto mode is unavailable") it starts in its Manual
-  mode, which asks first. A settings file's `defaultMode` of one of these
-  opens the dialog on it; any other starts it on Bypass.
+  for itself, with its own review of risky actions. Where that review cannot
+  run at all, it starts in its Manual mode, which asks first; where it cannot
+  judge one action later on, it refuses that action ("Auto mode could not
+  evaluate this action and is blocking it for safety"). Luna ranks the chat,
+  and shows its chip, as Auto either way: a start in Manual lowers neither,
+  and its helpers may still run in `auto` (Codex's `auto-review`), which is
+  what you granted by picking Auto. A settings file's `defaultMode` of one of
+  these opens the dialog on it; its `dontAsk`, or a mode Luna does not know,
+  opens it on Ask; no `defaultMode` at all, on Bypass. Create waits until the
+  files have answered.
 
-Isolation runs
-`claude --worktree` in `<folder>/.claude/worktrees/<name>`, on a
-`worktree-<name>` branch. Before Claude Code makes one, Luna fetches origin's
-default branch (10 s at most, never asking for a password; off in Settings);
-Claude Code branches off it and refetches only once a day itself.
+Isolation runs `claude --worktree` in `<folder>/.claude/worktrees/<name>`, on
+a `worktree-<name>` branch. Before Claude Code makes one, Luna fetches
+origin's default branch (10 s at most, never asking for a password; off in
+Settings); Claude Code branches off it and refetches only once a day itself.
 
 **Codex:**
 

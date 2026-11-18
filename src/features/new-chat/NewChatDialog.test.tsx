@@ -149,7 +149,7 @@ describe('NewChatDialog: creating', () => {
       'perm-Auto',
       'perm-Bypass'
     ]);
-    expect(screen.getByText('Claude Code reviews risky actions; asks if it cannot')).toBeInTheDocument();
+    expect(screen.getByText('Claude Code reviews risky actions itself')).toBeInTheDocument();
     await user.click(screen.getByRole('radio', { name: 'Auto' }));
     await user.click(screen.getByRole('button', { name: 'Create' }));
     const [chat] = allChats(useChats.getState().folders);
