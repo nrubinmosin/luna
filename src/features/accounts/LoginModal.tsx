@@ -13,6 +13,12 @@ import { useAccounts } from './accounts.store';
 import { ui } from '../providers';
 import { PROVIDER_LABEL } from '../../shared/types';
 
+/** Login sessions a closed window is still ending, by id. The id is the
+ *  account's, so a window opened on it again meanwhile would attach to the
+ *  very process the kill is on its way to: it waits for that end, then starts
+ *  its own (the kill takes the session out before it answers). */
+const ending = new Map<string, Promise<void>>();
+
 // The provider's login session inside the account's config dir — a bare
 // `claude`, or `codex login` — so credentials land in that folder.
 export function LoginModal({ account }: { account: Account }) {
@@ -69,6 +75,7 @@ export function LoginModal({ account }: { account: Account }) {
       let backlog: string;
       try {
         await route.ready;
+        await ending.get(id);
         if (disposed) return;
         starting = ui(account.provider).loginSession(id, account);
         backlog = await starting;
@@ -105,10 +112,16 @@ export function LoginModal({ account }: { account: Account }) {
       safely(() => term.dispose());
       // Usually already gone by now (login flows exit on their own); a
       // failed kill is not worth an unhandled-rejection entry.
-      void starting?.then(
-        () => killSession(id).catch(() => {}),
-        () => {}
-      );
+      if (starting) {
+        const end = starting.then(
+          () => killSession(id).catch(() => {}),
+          () => {}
+        );
+        ending.set(id, end);
+        void end.then(() => {
+          if (ending.get(id) === end) ending.delete(id);
+        });
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);

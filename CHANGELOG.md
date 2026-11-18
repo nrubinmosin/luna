@@ -63,7 +63,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   carries the WebGL addon patched with xterm.js's own fix until a release of
   the addon has it.
 - Closing an account's sign-in window while its session is still starting
-  ends that session once it has started, instead of leaving it running.
+  ends that session once it has started, instead of leaving it running; a
+  sign-in window opened again on the account meanwhile starts its own once
+  that one is gone.
 
 ## [0.18.5] - 2026-11-17
 

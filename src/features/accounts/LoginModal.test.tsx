@@ -5,7 +5,9 @@ import type { Account } from '../../shared/types';
 /** A login start that answers when the test says, and the listeners' readiness likewise. */
 const login = vi.hoisted(() => ({
   start: null as null | { answer: (backlog: string) => void; fail: (e: Error) => void },
-  ready: Promise.resolve()
+  ready: Promise.resolve(),
+  /** The starts and kills, in the order they were asked for. */
+  order: [] as string[]
 }));
 
 vi.mock('@xterm/xterm', () => ({
@@ -29,7 +31,10 @@ vi.mock('../panes/terminal/webgl', () => ({ loadWebgl: () => () => {} }));
 vi.mock('../panes/terminal/keys', () => ({ attachLoginKeys() {} }));
 vi.mock('../panes/terminal/ptyRoutes', () => ({ routePty: () => ({ ready: login.ready, unroute() {} }) }));
 vi.mock('../../ipc/sessions', () => ({
-  killSession: vi.fn(() => Promise.resolve()),
+  killSession: vi.fn(() => {
+    login.order.push('kill');
+    return Promise.resolve();
+  }),
   resizeSession: vi.fn(() => Promise.resolve()),
   writeSession: vi.fn(() => Promise.resolve())
 }));
@@ -38,6 +43,7 @@ vi.mock('../providers', () => ({
     loginSession: vi.fn(
       () =>
         new Promise<string>((answer, fail) => {
+          login.order.push('start');
           login.start = { answer, fail };
         })
     )
@@ -63,6 +69,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   login.start = null;
   login.ready = Promise.resolve();
+  login.order = [];
 });
 
 describe('LoginModal: closed while its session is starting', () => {
@@ -77,6 +84,28 @@ describe('LoginModal: closed while its session is starting', () => {
     login.start!.answer('');
     await settle();
     expect(killSession).toHaveBeenCalledExactlyOnceWith('login:claude:work');
+  });
+
+  it('has a window opened again on the account start its own once that kill has landed', async () => {
+    const first = render(<LoginModal account={account} />);
+    await settle();
+    const firstStart = login.start!;
+    first.unmount();
+    // The first window's process is still starting, its kill not yet sent:
+    // the second must not attach to it.
+    const second = render(<LoginModal account={account} />);
+    await settle();
+    expect(login.order).toEqual(['start']);
+
+    firstStart.answer('');
+    await settle();
+    expect(login.order).toEqual(['start', 'kill', 'start']);
+    expect(killSession).toHaveBeenCalledExactlyOnceWith('login:claude:work');
+    // Its own start answered and ended, as it would be, so the next window
+    // waits on nothing.
+    second.unmount();
+    login.start!.answer('');
+    await settle();
   });
 
   it('kills nothing when the start failed', async () => {

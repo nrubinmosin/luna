@@ -142,7 +142,9 @@ titles, context and drafts come from the core (`session_meta`), polled by
   `ptyRoutes.ts` (one listener each for `pty://output` and `pty://exit`,
   handing each payload to the terminal of its session; a terminal and the
   sign-in window start their session only once both listen, and a listener
-  that failed to register is tried again by the next terminal),
+  that failed to register is tried again by the next terminal; a sign-in
+  window closed while its start is under way kills the session once it has
+  started, and one opened again on that account starts only after that kill),
   `webgl.ts` (the webgl renderer; a context lost for good disposes the addon,
   which puts the DOM renderer back, and the pane is repainted), `title.ts` (a
   title from what is typed), `safely.ts`.
