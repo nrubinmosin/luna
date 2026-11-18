@@ -45,3 +45,8 @@ scripts/*.sh                 eol=lf
 # pnpm applies these to packages as published, with LF endings, and refuses a
 # hunk that does not match them byte for byte.
 patches/*.patch              -text
+
+# A crate vendored as published on crates.io (src-tauri/vendor/), kept byte for
+# byte so its first commit diffs clean against the published .crate and every
+# change since is Luna's own.
+src-tauri/vendor/**          -text

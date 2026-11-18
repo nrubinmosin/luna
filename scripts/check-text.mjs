@@ -39,13 +39,14 @@ export const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // Not text anyone here writes (lockfiles, generated schemas, other projects'
 // license texts kept verbatim, patches to their published code, whose context
-// lines are theirs), and this checker and its tests, which spell out the very
-// words they look for.
+// lines are theirs, and a crate vendored as published), and this checker and
+// its tests, which spell out the very words they look for.
 const SKIP_PATHS = [
   /(^|\/)pnpm-lock\.yaml$/,
   /^patches\//,
   /(^|\/)Cargo\.lock$/,
   /^src-tauri\/gen\//,
+  /^src-tauri\/vendor\//,
   /^third-party-licenses\/(crates|npm|tools|installer)\//
 ];
 const SKIP_FILES = new Set(['scripts/check-text.mjs', 'scripts/check-text.test.mjs']);
