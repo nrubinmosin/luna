@@ -397,16 +397,6 @@ fn hello(stream: &Stream, _slot: Slot, within: Duration) -> io::Result<(u64, Hel
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no valid hello"))
 }
 
-/// Whether `hello` is a window of this build starting up (`Hello::fingerprint`),
-/// which attaches to this core: there is one window at a time, so an update
-/// the one before it was installing did not replace this core
-/// (`agents::window_came`). One going back to the core after it let it go
-/// says no fingerprint (corelink.rs `rejoin`), nor does a one-off command; a
-/// window of another build may yet replace the core.
-fn stays_with(hello: &Hello, stop_only: bool) -> bool {
-    hello.role == "ui" && !stop_only && hello.fingerprint.as_deref() == Some(env!("LUNA_CORE_FP"))
-}
-
 /// One connection: who opened it, the hello, then requests until the other
 /// end goes.
 fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
@@ -429,9 +419,6 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
         let err = format!("protocol {} spoken here, {} asked for", ipc::PROTO, hello.proto);
         ipc::send(&mut stream, ipc::RES, &Res { id: first_id, ok: None, err: Some(err) })?;
         return Ok(());
-    }
-    if stays_with(&hello, stop_only) {
-        crate::agents::window_came();
     }
     let welcome = serde_json::to_value(Welcome::of_this_process(started)).ok();
     ipc::send(&mut stream, ipc::RES, &Res { id: first_id, ok: welcome, err: None })?;
@@ -688,27 +675,6 @@ mod tests {
             drop(c);
             let _ = core.join();
         }
-    }
-
-    /// Only a window of this build starting up tells the core that the
-    /// update the window before it was installing did not replace it: not
-    /// one going back to the core (no fingerprint), a window of another
-    /// build, a one-off command, or one let in only to stop the core.
-    #[test]
-    fn only_a_window_of_this_build_starting_up_stays_with_the_core() {
-        let said = |role: &str, fingerprint: Option<&str>| Hello {
-            proto: ipc::PROTO,
-            role: role.into(),
-            fingerprint: fingerprint.map(String::from),
-        };
-        let ours = Some(env!("LUNA_CORE_FP"));
-        assert!(stays_with(&said("ui", ours), false));
-        assert!(!stays_with(&said("ui", None), false), "going back");
-        assert!(!stays_with(&said("ui", Some("another build")), false));
-        assert!(!stays_with(&said("ctl", ours), false));
-        assert!(!stays_with(&said("ui", ours), true), "let in only to stop it");
-        let read: Hello = serde_json::from_value(serde_json::json!({ "proto": ipc::PROTO, "role": "ui" })).unwrap();
-        assert_eq!(read.fingerprint, None, "a hello that names none");
     }
 
     /// What `requests` answers `cmd` with, in a core whose refusal

@@ -240,8 +240,7 @@ fn connect() {
 /// and each reattaches from the scrollback (core.store.ts).
 fn rejoin() -> Option<(Stream, Welcome)> {
     let Found::Current(found) = discover().filter(Found::running)? else { return None };
-    // Not as a window starting up: this one may be installing an update.
-    match hello(&found, said_as("ui", false)) {
+    match hello(&found, "ui") {
         Ok((stream, core)) if core.fingerprint == env!("LUNA_CORE_FP") => {
             crate::log::warn("core", "the core let this window go and is still running; going back to it");
             Some((stream, core))
@@ -379,7 +378,7 @@ fn attach() -> Result<Attached, String> {
         // The one just started speaks this protocol; a protocol-1 core that
         // some older window started meanwhile is not it.
         let Some(Found::Current(found)) = discover().filter(|d| Some(d.pid()) != before) else { continue };
-        let (stream, core) = hello(&found, said_as("ui", true)).map_err(|e| format!("the new core does not answer: {e}"))?;
+        let (stream, core) = hello(&found, "ui").map_err(|e| format!("the new core does not answer: {e}"))?;
         // Started elevated after all: it runs nothing, and is not left to idle.
         if let Some(why) = core.refused.clone() {
             stop(stream, found.pid);
@@ -424,7 +423,7 @@ impl Line {
 /// Says hello to the core `found` names, as `role`, in its protocol.
 fn greet(found: &Found, role: &str) -> io::Result<(Line, Welcome)> {
     match found {
-        Found::Current(d) => hello(d, said_as(role, true)).map(|(s, core)| (Line::Current(s), core)),
+        Found::Current(d) => hello(d, role).map(|(s, core)| (Line::Current(s), core)),
         Found::V1(d) => v1::hello(d, role).map(|(link, core)| (Line::V1(link), core)),
     }
 }
@@ -466,18 +465,11 @@ fn discover() -> Option<Found> {
     Found::parse(&std::fs::read(ipc::discovery_file()).ok()?)
 }
 
-/// What this window says of itself in its hello as `role`: as a window
-/// `starting` up, the core build it works with (`Hello::fingerprint`).
-fn said_as(role: &str, starting: bool) -> Hello {
-    let fingerprint = (role == "ui" && starting).then(|| env!("LUNA_CORE_FP").to_string());
-    Hello { proto: ipc::PROTO, role: role.into(), fingerprint }
-}
-
-/// Connects to the core `found` names and says hello, `said`. The endpoint's server
+/// Connects to the core `found` names and says hello. The endpoint's server
 /// must be the process the file names, or nothing is said: a name served by
 /// anyone else (one who took it while it was free) learns nothing, and the
 /// window opens it for identification only, so it can act as nobody.
-fn hello(found: &Discovery, said: Hello) -> io::Result<(Stream, Welcome)> {
+fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
     let mut stream = Stream::connect(&found.endpoint, Duration::from_secs(2))?;
     let server = stream.server_pid()?;
     if server != found.pid {
@@ -487,7 +479,7 @@ fn hello(found: &Discovery, said: Hello) -> io::Result<(Stream, Welcome)> {
         ));
     }
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let args = serde_json::to_value(said)?;
+    let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into() })?;
     ipc::send(&mut stream, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args })?;
     let res: Res = ipc::recv(&mut stream, ipc::RES)?;
     let core: Welcome = match (res.ok, res.err) {
@@ -795,15 +787,6 @@ mod tests {
         assert!(conn.send(b"more".to_vec()).is_err(), "the writer is gone");
     }
 
-    /// A window starting up names the core build it works with in its
-    /// hello; one going back to its core, and a one-off command, do not.
-    #[test]
-    fn only_a_window_starting_up_names_its_core_build() {
-        assert_eq!(said_as("ui", true).fingerprint.as_deref(), Some(env!("LUNA_CORE_FP")));
-        assert_eq!(said_as("ui", false).fingerprint, None, "going back");
-        assert_eq!(said_as("ctl", true).fingerprint, None);
-    }
-
     #[test]
     fn the_page_cannot_have_the_window_pass_on_what_the_core_does_not_list() {
         // Refused before any core is looked for. Passed on, the protocol's own
@@ -931,7 +914,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         // This process serves it; the file names another.
         let found = Discovery { pid: std::process::id() + 1, created_ms: 0, proto: ipc::PROTO, endpoint: name };
-        let err = hello(&found, said_as("ui", true)).err().expect("refused");
+        let err = hello(&found, "ui").err().expect("refused");
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
         let got = heard.recv_timeout(Duration::from_secs(10)).expect("the server saw the connection");
         assert!(got.is_empty(), "nothing was said to it: {got:?}");

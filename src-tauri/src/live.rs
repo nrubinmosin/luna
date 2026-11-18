@@ -536,7 +536,7 @@ fn probe_client() {
         }
     };
     let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
-    let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, role: "ctl".into(), fingerprint: None };
+    let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, role: "ctl".into() };
     let req = crate::ipc::Req { id: 1, cmd: "hello".into(), args: serde_json::to_value(hello).unwrap() };
     let answered =
         crate::ipc::send(&mut c, crate::ipc::REQ, &req).and_then(|()| crate::ipc::recv::<crate::ipc::Res>(&mut c, crate::ipc::RES));

@@ -160,10 +160,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   update, a core leaving or the PC shutting down no longer lets the chats'
   ties be saved as the stopping left them before the process ends; they are
   saved again only once the update's install fails or the OS is seen to take
-  the shutdown back, or once a new window comes to a core the update did not
-  replace (the installer never started, or the window was gone mid-stop).
-  The window's word that the install failed is refused while the sessions
-  are still being stopped.
+  the shutdown back, or, for an update that never came (the installer never
+  started, or the window was gone mid-stop), 10 minutes after the stop. The
+  window's word that the install failed, said while the sessions are still
+  being stopped, takes effect only once they are.
 - A session or helper started through a link to its project keeps its
   worktree from a delete by the real path even once the link is gone, and
   one that moved into a `.claude/worktrees` that is a junction elsewhere is

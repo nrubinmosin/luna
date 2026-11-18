@@ -179,7 +179,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "delete_session" => call!(wait res args, pty::delete_session,
             id: String, folder: AbsPath, worktree_path: Option<AbsPath>, drop_worktree: bool),
         "stop_all_sessions" => call!(wait res args, pty::stop_all_sessions),
-        "update_called_off" => call!(res args, pty::update_called_off),
+        "update_called_off" => call!(ok args, pty::update_called_off),
         "orphan_sessions" => call!(wait res args, pty::orphan_sessions, known: Vec<String>),
         // Each chat's account path is checked there, once a path a call.
         "sessions_meta" => call!(ok args, pty::sessions_meta, chats: Vec<pty::MetaAsk>),

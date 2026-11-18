@@ -339,10 +339,14 @@ lock: a save under way is written before the stopping starts, and none after.
 Each stop holds the freeze for its own reason (`Stop`) until its caller knows
 the process goes on, and only then lifts it (`thaw_chats`), once no other
 stop holds it: an update whose install failed (the window's
-`update_called_off`, refused until the stop has returned) or that a new
-window of this build finds did not replace the core (`window_came`), a PC
-shutdown the OS is seen to take back (power
-`start_over`). The core leaving never lifts it, and neither does a shutdown
+`update_called_off`, which, said while the sessions are still being stopped,
+takes effect as the stop returns), a PC shutdown the OS is seen to take back
+(power `start_over`). An update's freeze is also bounded: not called off, it
+lifts by itself `UPDATE_FREEZE_FOR` (10 min, on the monotonic clock) after
+its stop returned, checked at every save (`lapse`), so an update that never
+came (the window gone mid-stop, the installer never started) costs at most
+that much of the ties unsaved; the installer, UAC prompt and all, ends the
+process well within it. The core leaving never lifts it, and neither does a shutdown
 whose fate is unclear, whose chats stay closed for the next core to take up.
 A session starting or running meanwhile (a pane asking for its chat again, a
 helper's turn) is no sign the process goes on, and lifts nothing: a save

@@ -298,8 +298,8 @@ impl PtyManager {
 /// turn is stopped too: one still running would keep the old core from being
 /// replaced, and its parent chat has just been stopped. Returns how many it
 /// stopped. The chats' ties stay frozen until the update is called off
-/// (`update_called_off`, `agents::window_came`) or the installer ends the
-/// process.
+/// (`update_called_off`), the installer ends the process, or the freeze's
+/// bound after the stop is up (`agents::freeze_for_update`).
 #[tauri::command]
 pub async fn stop_all_sessions() -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -311,19 +311,19 @@ pub async fn stop_all_sessions() -> Result<usize, String> {
     .map_err(|e| e.to_string())
 }
 
-/// `stop` run with the chats' ties frozen for an update, the update not to
-/// be called off until it has returned (`agents::freeze_for_update`).
+/// `stop` run with the chats' ties frozen for an update, the freeze not to
+/// lift until it has returned (`agents::freeze_for_update`).
 fn stopped_for_update(stop: impl FnOnce() -> usize) -> usize {
     let _stopping = crate::agents::freeze_for_update();
     stop()
 }
 
 /// The update the sessions were stopped for is not being installed (its
-/// install failed): the core goes on, and the chats' ties are saved again.
-/// Refused while the sessions are still being stopped for it
+/// install failed): the core goes on, and the chats' ties are saved again,
+/// at once or once the sessions are no longer being stopped for it
 /// (`agents::call_off_update`).
-pub fn update_called_off() -> Result<(), String> {
-    crate::agents::call_off_update()
+pub fn update_called_off() {
+    crate::agents::call_off_update();
 }
 
 /// Ends a chat's session, under its spawn gate (`take_and_quit`), on a
@@ -1092,11 +1092,11 @@ mod tests {
     #[test]
     fn a_session_running_after_a_stop_leaves_the_chats_frozen_until_it_is_called_off() {
         let _alone = crate::agents::stops_for_test();
-        crate::agents::freeze_chats(crate::agents::Stop::Update);
+        stopped_for_update(|| 0);
         let quit = fake_session("fz-escaped", "/nowhere", PROMPT);
         assert!(manager().live_count() > 0);
         assert!(crate::agents::chats_frozen(), "frozen with a session running");
-        assert_eq!(update_called_off(), Ok(()));
+        update_called_off();
         assert!(!crate::agents::chats_frozen(), "lifted with the update called off");
         quit.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove("fz-escaped");
@@ -1104,22 +1104,18 @@ mod tests {
 
     /// The window's word that the update is off, said while the sessions
     /// are still being stopped for it (by a page script, say: the window's
-    /// install starts only once the stop has returned), is refused and
-    /// leaves the chats' ties frozen; said once the stop has returned, it
-    /// lifts the freeze.
+    /// install starts only once the stop has returned), leaves the chats'
+    /// ties frozen until the stop returns, and lifts the freeze then.
     #[test]
-    fn an_update_is_not_called_off_while_its_sessions_are_stopped() {
+    fn an_update_called_off_while_its_sessions_are_stopped_waits_for_the_stop() {
         let _alone = crate::agents::stops_for_test();
         let stopped = stopped_for_update(|| {
-            let refused = update_called_off().unwrap_err();
-            assert!(refused.contains("still being stopped"), "{refused}");
+            update_called_off();
             assert!(crate::agents::chats_frozen(), "the freeze holds while they are stopped");
             3
         });
         assert_eq!(stopped, 3);
-        assert!(crate::agents::chats_frozen(), "and after, until it is called off");
-        assert_eq!(update_called_off(), Ok(()));
-        assert!(!crate::agents::chats_frozen());
+        assert!(!crate::agents::chats_frozen(), "lifted as the stop returned");
     }
 
     /// An exit said for a session whose chat has a start under way since, or
