@@ -168,9 +168,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   worktree from a delete by the real path even once the link is gone, and
   one that moved into a `.claude/worktrees` that is a junction elsewhere is
   found there; a start whose folder does not read is not let into a
-  worktree while one is being removed; a Codex or Claude Code
+  worktree while one is being removed, and one already on its way in has
+  the removal keep the worktree, saying so; a Codex or Claude Code
   start making a new worktree keeps what its CLI may have made from the
-  orphan sweep before its session is listed too.
+  orphan sweep before its session is listed too. A start held off by a
+  removal says why: the worktree it goes into is being removed, or a folder
+  on the way does not read, so it cannot be told to be outside it.
 - A Claude Code session killed long ago, whose registry entry stayed behind,
   no longer keeps worktrees from the orphan sweep; a folder that does not
   read keeps worktrees only from the sweep, not from a chat's or helper's

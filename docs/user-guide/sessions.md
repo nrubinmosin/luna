@@ -97,12 +97,18 @@ next core takes them up after an update, a restart or a reboot.
   are in or are starting in: where their folders led as each started (a
   link to the project removed since changes nothing; for a helper a
   restarted core took up, where its folder led at that restart), and
-  wherever their CLI says it moved to. One gap: a link or junction on the
+  wherever their CLI says it moved to. Gaps: a link or junction on the
   way to a chat's folder pointed elsewhere at the moment the chat starts
   can have its CLI start in another worktree than the one Luna holds, until
-  the CLI says where it works. Kept too is where a Claude Code session
-  started in a terminal sits as Claude Code's registry has it when the list
-  is made and again just before each removal. Luna cannot see a
+  the CLI says where it works; a chat started through a link to the project
+  that moved into a folder reached through a second link of its own (a
+  `.claude/worktrees` junctioned elsewhere), the first link removed before
+  Luna read the move, can be missed by a delete naming that worktree by its
+  real path; and a folder that does not read (access denied) keeps a
+  worktree from the list, not from a chat's or helper's delete. Kept too is
+  where a Claude Code session started in a terminal sits as Claude Code's
+  registry has it when the list is made and again just before each removal.
+  Luna cannot see a
   Codex session it did not start (Codex keeps no list of running sessions),
   nor a Claude Code one started after that last look or on a config folder
   that is neither one of Luna's accounts nor your own: check that no such

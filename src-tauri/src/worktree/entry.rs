@@ -229,6 +229,16 @@ impl Hold {
                     .iter()
                     .any(|m| wt.folder.as_ref().is_none_or(|f| m.folder.is(f, look)) && wt.place.below(&m.root, m.depth, look))
     }
+
+    /// Whether a start on its way in with this hold keeps `wt` from a
+    /// removal for `look`: as a session would, and, whatever the look, where
+    /// a place of either does not read, as the sweep compares. Not yet
+    /// listed, it would be compared by its spelling alone and go in as the
+    /// worktree goes; held off, it costs the removal no more than the
+    /// worktree kept, said, for the sweep to offer later.
+    fn keeps_on_its_way(&self, wt: &Target, look: Look) -> bool {
+        self.keeps(wt, look) || self.is_in(wt, Look::Sweep)
+    }
 }
 
 /// A removal looking for whoever is in its worktree, outside the holds' lock.
@@ -245,26 +255,32 @@ struct Ways {
     /// Each start on its way in, by a number of its own, and its hold.
     entering: Vec<(u64, Arc<Hold>)>,
     looking: Vec<Looking>,
-    removing: Vec<(u64, Arc<Target>)>,
+    removing: Vec<(u64, Arc<Target>, Look)>,
     next: u64,
 }
 
-static WAYS: Mutex<Ways> = Mutex::new(Ways { entering: Vec::new(), looking: Vec::new(), removing: Vec::new(), next: 0 });
+impl Ways {
+    const NONE: Ways = Ways { entering: Vec::new(), looking: Vec::new(), removing: Vec::new(), next: 0 };
+}
 
-fn ways() -> std::sync::MutexGuard<'static, Ways> {
-    WAYS.lock().unwrap_or_else(|e| e.into_inner())
+/// The process's ways in and out; a test that holds every worktree (a place
+/// that does not read) keeps its own, so as not to hold off the others'.
+static WAYS: Mutex<Ways> = Mutex::new(Ways::NONE);
+
+fn lock(ways: &Mutex<Ways>) -> std::sync::MutexGuard<'_, Ways> {
+    ways.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A start on its way in, until it is dropped: once it is listed where a
 /// removal looks, or has failed.
-pub(crate) struct Entering(u64);
+pub(crate) struct Entering(u64, &'static Mutex<Ways>);
 
 impl Drop for Entering {
     fn drop(&mut self) {
-        let mut w = ways();
+        let mut w = lock(self.1);
         let Some(i) = w.entering.iter().position(|(n, _)| *n == self.0) else { return };
         let (_, hold) = w.entering.swap_remove(i);
-        for l in w.looking.iter_mut().filter(|l| hold.keeps(&l.wt, l.look)) {
+        for l in w.looking.iter_mut().filter(|l| hold.keeps_on_its_way(&l.wt, l.look)) {
             l.missed = true;
         }
     }
@@ -275,65 +291,95 @@ impl Drop for Entering {
 /// saying why, where one of its places is or may be in a worktree being
 /// removed.
 pub(crate) fn entering(hold: Arc<Hold>) -> Result<Entering, String> {
-    let mut w = ways();
+    entering_by(&WAYS, hold)
+}
+
+fn entering_by(ways: &'static Mutex<Ways>, hold: Arc<Hold>) -> Result<Entering, String> {
+    let mut w = lock(ways);
     // As the sweep compares, whatever the removal is: a place of the start's
     // whose way did not read may be in any worktree, and is not let into one
     // going. That costs a start no more than a retry once the removal is
     // through; a session listed with such a place keeps no delete's worktree
     // (`Look::Delete`), or it would keep them all for as long as it runs.
-    if let Some((_, wt)) = w.removing.iter().find(|(_, wt)| hold.is_in(wt, Look::Sweep)) {
-        return Err(format!("{} is being removed with the chat that was in it; start again once it is gone", wt.path));
+    if let Some((_, wt, look)) = w.removing.iter().find(|(_, wt, _)| hold.is_in(wt, Look::Sweep)) {
+        return Err(refusal(&hold, wt, *look));
     }
     w.next += 1;
     let n = w.next;
     w.entering.push((n, hold));
-    Ok(Entering(n))
+    Ok(Entering(n, ways))
+}
+
+/// Why a start holding `hold` is not let in while `wt` is removed for `look`:
+/// it goes into it, or, where a path of either does not read, it cannot be
+/// told not to.
+fn refusal(hold: &Hold, wt: &Target, look: Look) -> String {
+    let again = "start again once it is gone";
+    if hold.is_in(wt, Look::Delete) {
+        return match look {
+            Look::Delete => format!("{} is being removed with the session deleted from it; {again}", wt.path),
+            Look::Sweep => format!("{} is being removed as a worktree nobody is in; {again}", wt.path),
+        };
+    }
+    if matches!(wt.place.real, Real::Unknown) {
+        return format!(
+            "{} is being removed, and a folder on its way does not read, so no start can be told to be outside it; {again}",
+            wt.path
+        );
+    }
+    format!("{} is being removed, and a folder on the way to where this start goes does not read, so it cannot be told to be outside it; {again}", wt.path)
 }
 
 /// What the starts on their way in hold, for a look that reads where the
 /// sessions are listed after this: one not among these is listed by then.
 pub(crate) fn entering_now() -> Hold {
     let mut held = Hold::default();
-    for (_, hold) in &ways().entering {
+    for (_, hold) in &lock(&WAYS).entering {
         held.add(hold, true);
     }
     held
 }
 
 /// A worktree held for its removal, until it is dropped.
-pub(crate) struct Removing(u64);
+pub(crate) struct Removing(u64, &'static Mutex<Ways>);
 
 impl Drop for Removing {
     fn drop(&mut self) {
-        ways().removing.retain(|(n, _)| *n != self.0);
+        lock(self.1).removing.retain(|(n, _, _)| *n != self.0);
     }
 }
 
 /// Holds `wt` for its removal, unless `others_in_it` finds someone there or
 /// a start that may be in it is on its way in, or let go of its way in while
-/// that look went on: then None, and the worktree stays. The look reads the
-/// disk (where a session works now), and a share or a mapped drive slow to
-/// answer would hold every start behind the lock: it is taken outside it.
+/// that look went on (`Hold::keeps_on_its_way`: one with a place that does
+/// not read may be, whatever the look): then None, and the worktree stays.
+/// The look reads the disk (where a session works now), and a share or a
+/// mapped drive slow to answer would hold every start behind the lock: it
+/// is taken outside it.
 /// A start listed meanwhile may have been listed after the look went by and
 /// is no longer on its way in: its letting go marks the look
 /// (`Looking::missed`), and only a start that may be in `wt` does.
 pub(crate) fn removing(wt: Target, look: Look, others_in_it: impl FnOnce() -> bool) -> Option<Removing> {
+    removing_by(&WAYS, wt, look, others_in_it)
+}
+
+fn removing_by(ways: &'static Mutex<Ways>, wt: Target, look: Look, others_in_it: impl FnOnce() -> bool) -> Option<Removing> {
     let wt = Arc::new(wt);
     let n = {
-        let mut w = ways();
+        let mut w = lock(ways);
         w.next += 1;
         let n = w.next;
         w.looking.push(Looking { n, wt: Arc::clone(&wt), look, missed: false });
         n
     };
     let in_it = others_in_it();
-    let mut w = ways();
+    let mut w = lock(ways);
     let missed = w.looking.iter().position(|l| l.n == n).is_none_or(|i| w.looking.swap_remove(i).missed);
-    if in_it || missed || w.entering.iter().any(|(_, hold)| hold.keeps(&wt, look)) {
+    if in_it || missed || w.entering.iter().any(|(_, hold)| hold.keeps_on_its_way(&wt, look)) {
         return None;
     }
-    w.removing.push((n, wt));
-    Some(Removing(n))
+    w.removing.push((n, wt, look));
+    Some(Removing(n, ways))
 }
 
 #[cfg(test)]
@@ -351,6 +397,11 @@ mod tests {
 
     fn delete(wt: &str, others_in_it: impl FnOnce() -> bool) -> Option<Removing> {
         removing(Target::of(wt, None), Look::Delete, others_in_it)
+    }
+
+    /// Ways in and out of the test's own, for one that holds every worktree.
+    fn apart() -> &'static Mutex<Ways> {
+        Box::leak(Box::new(Mutex::new(Ways::NONE)))
     }
 
     /// A start into a worktree held for removal is refused, saying so, and
@@ -460,7 +511,68 @@ mod tests {
         assert!(!unread().keeps(&Target::of(&wt, None), Look::Delete), "by its spelling, not in it");
         let held = delete(&wt, || false).expect("nobody there");
         let refused = entering(unread()).err().expect("refused while it goes");
-        assert!(refused.contains("being removed"), "{refused}");
+        assert!(refused.contains("being removed") && refused.contains("where this start goes does not read"), "{refused}");
+        assert!(!refused.contains("deleted from it"), "it is not said to go in: {refused}");
+        drop(held);
+    }
+
+    /// A start one of whose places does not read, on its way in as a delete
+    /// begins or let go of its way in while the delete looks, keeps the
+    /// worktree: not listed yet, it would be compared by its spelling alone
+    /// and could go in as the worktree goes.
+    #[test]
+    fn a_start_whose_place_does_not_read_on_its_way_in_keeps_a_deleted_worktree() {
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let root = PathBuf::from(if cfg!(windows) { r"C:\" } else { "/" });
+        let wt = s(&root.join("entry-unread-way").join(".claude").join("worktrees").join("w"));
+        let session = s(&root.join("entry-denied-way").join("project"));
+        let denied = |p: &Path| -> std::io::Result<PathBuf> {
+            if p == root.as_path() {
+                Ok(p.to_path_buf())
+            } else {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            }
+        };
+        let unread = || Arc::new(Hold { places: vec![Place::by(&session, denied)], makers: Vec::new() });
+        let ways = apart();
+        let delete = |others_in_it: &dyn Fn() -> bool| removing_by(ways, Target::of(&wt, None), Look::Delete, others_in_it);
+        let on_the_way = entering_by(ways, unread()).expect("nothing is being removed");
+        assert!(delete(&|| false).is_none(), "kept for it on its way in");
+        drop(on_the_way);
+        assert!(delete(&|| false).is_some(), "once it is listed, by its spelling");
+        let held = delete(&|| {
+            drop(entering_by(ways, unread()).expect("let in while the delete only looks"));
+            false
+        });
+        assert!(held.is_none(), "kept for it, let go of its way in while the delete looked");
+    }
+
+    /// A removal whose own worktree does not read holds off every start
+    /// while it runs, as none can be told to be outside it, and says that,
+    /// not that the start goes into a worktree deleted with a session.
+    #[test]
+    fn a_start_held_off_by_a_removal_that_does_not_read_is_told_why() {
+        let root = PathBuf::from(if cfg!(windows) { r"C:\" } else { "/" });
+        let wt = root.join("entry-unread-target").join("w").to_string_lossy().into_owned();
+        let denied = |p: &Path| -> std::io::Result<PathBuf> {
+            if p == root.as_path() {
+                Ok(p.to_path_buf())
+            } else {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            }
+        };
+        let target = Target { path: wt.clone(), place: Place::by(&wt, denied), folder: None };
+        let ways = apart();
+        let held = removing_by(ways, target, Look::Delete, || false).expect("nobody there");
+        let elsewhere = if cfg!(windows) { r"C:\elsewhere\unread-target" } else { "/elsewhere/unread-target" };
+        let refused = entering_by(ways, Arc::new(Hold::start(&[elsewhere], None))).err().expect("refused while it goes");
+        assert!(refused.starts_with(&wt) && refused.contains("no start can be told to be outside it"), "{refused}");
+        assert!(!refused.contains("deleted from it"), "{refused}");
+        drop(held);
+        let inside = format!("{wt}/src");
+        let held = delete(&wt, || false).expect("nobody there");
+        let refused = start(&[&inside]).err().expect("refused: it goes in");
+        assert!(refused.contains("with the session deleted from it"), "{refused}");
         drop(held);
     }
 
