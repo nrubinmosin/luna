@@ -87,6 +87,8 @@ pub struct ActivityProbe {
     /// (`Session::makes_worktree`).
     pub makes_worktree: bool,
     pub spawned_at_ms: u128,
+    /// `spawned_at_ms` on the monotonic clock (`Session::spawned_at`).
+    pub spawned_at: std::time::Instant,
     pub resume: Option<String>,
     pub account_path: String,
     pub last_output_ms: u64,
@@ -130,6 +132,7 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
         enters: s.enters.clone(),
         makes_worktree: s.makes_worktree,
         spawned_at_ms: s.spawned_at_ms,
+        spawned_at: s.spawned_at,
         resume: s.resume.clone(),
         account_path: s.account_path.clone(),
         last_output_ms: s.last_output_ms.load(Ordering::Relaxed),
@@ -169,7 +172,7 @@ pub fn unplaced_worktrees() -> Vec<crate::worktree::Unplaced> {
             provider: p.provider,
             folder: p.cwd,
             account_path: p.account_path,
-            since_ms: p.spawned_at_ms as u64,
+            since_ms: crate::worktree::Unplaced::since(p.spawned_at_ms as u64, p.spawned_at.elapsed()),
         })
         .collect();
     out.extend(crate::background::unplaced_worktrees());

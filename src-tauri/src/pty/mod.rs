@@ -273,7 +273,10 @@ struct Session {
     /// (`Launch::makes_worktree`): until its working folder says where, what
     /// appears where its CLI makes them may be its own (`unplaced_worktrees`).
     makes_worktree: bool,
+    /// On the wall clock, taken just before the process was spawned.
     spawned_at_ms: u128,
+    /// The same moment on the monotonic clock (`worktree::Unplaced::since`).
+    spawned_at: std::time::Instant,
     /// The session id this was resumed with, if any: Codex is found on disk
     /// by it.
     resume: Option<String>,

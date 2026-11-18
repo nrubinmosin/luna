@@ -304,6 +304,11 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         cmd.env(k, v);
     }
 
+    // Ahead of the process: what it makes (a worktree, a rollout) is born
+    // after this (`worktree::Unplaced`), however long what follows its start
+    // waits on the registry's lock.
+    let spawned_at_ms = now_ms() as u128;
+    let spawned_at = std::time::Instant::now();
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
         e.to_string()
@@ -312,7 +317,6 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     crate::agents::set_applied(&id, applied, &account_path, &cwd);
 
     let pid = child.process_id();
-    let spawned_at_ms = now_ms() as u128;
     // Into a job before it has had time to spawn anything, so every child it
     // ever starts is listed with it.
     let job = pid.and_then(crate::procs::adopt).map(Arc::new);
@@ -621,6 +625,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             enters,
             makes_worktree,
             spawned_at_ms,
+            spawned_at,
             resume,
             account_path,
             job,

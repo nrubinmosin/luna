@@ -302,7 +302,8 @@ pub fn unplaced_worktrees() -> Vec<crate::worktree::Unplaced> {
         .values()
         .filter(|e| e.spec.worktree && e.cwd.is_none())
         .filter_map(|e| {
-            let since = e.run.as_ref()?.started_ms;
+            let run = e.run.as_ref()?;
+            let since = crate::worktree::Unplaced::since(run.started_ms, run.started_at.elapsed());
             Some((e.spec.provider, e.spec.folder.clone(), e.spec.account_path.clone(), e.session.clone(), since))
         })
         .collect();

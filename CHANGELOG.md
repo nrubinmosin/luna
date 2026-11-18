@@ -146,6 +146,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   reached through a link or junction to its project, where they name it by
   its real path, and the other way about; on Linux a path in another case is
   no longer taken for the same worktree.
+- The sweep of orphan worktrees keeps a Codex chat's new worktree that its
+  CLI made while Luna's own start waited, or after the wall clock was set
+  back, and asks again under its last look whether a session making one may
+  have made it.
 
 ## [0.18.5] - 2026-11-17
 

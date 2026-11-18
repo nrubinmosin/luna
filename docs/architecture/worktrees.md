@@ -82,10 +82,17 @@ lose, and to sweep the ones no chat claims.
   Claude Code's `--worktree` with no name, said in its registry once it is
   up) keeps every worktree that appeared since it started (by creation time,
   2 s of slack) where that CLI makes them for that folder: under the folder's
-  `.claude/worktrees/`, or under that account's `worktrees/`. Once the
-  session's folder says where it went, or it ends, the usual check applies.
-  Deletes take only the deleted chat's or helper's own worktree, which no
-  such session can be making: theirs is new.
+  `.claude/worktrees/`, or under that account's `worktrees/`, folders compared
+  as places (`Place`). Its start is stamped just before its process is
+  spawned, and taken as the earlier of that stamp and now less its age on the
+  monotonic clock (`Unplaced::since`), so a wall clock stepped either way since
+  does not make what it made look older than it. Once the session's folder
+  says where it went, or it ends, the usual check applies. The makers are read
+  before the folders in use, so one that learns its path between the two
+  reads is in one of them, and the sweep's last look under the removal's hold
+  asks both again (`kept_from_removal`). Deletes take only the deleted chat's
+  or helper's own worktree, which no such session can be making: theirs is
+  new.
 
 ## Fetch before a Claude Code worktree
 

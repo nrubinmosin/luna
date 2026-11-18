@@ -704,6 +704,7 @@ mod tests {
             enters: None,
             makes_worktree: false,
             spawned_at_ms: now_ms() as u128,
+            spawned_at: std::time::Instant::now(),
             resume: None,
             account_path: String::new(),
             job: None,
@@ -907,6 +908,26 @@ mod tests {
             quit.store(true, Ordering::SeqCst);
             manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The sweep's last look before it removes an orphan, under the removal's
+    /// hold, keeps one a session making a worktree may have made since the
+    /// orphans were listed, which no session is in yet.
+    #[test]
+    fn the_sweeps_last_look_keeps_what_a_session_making_a_worktree_may_have_made() {
+        let id = "dl-making";
+        let dir = scratch("making");
+        let folder = dir.to_string_lossy().into_owned();
+        let quit = fake_session(id, &folder, PROMPT);
+        let wt = crate::worktree::named_path(&folder, "made-by-its-cli");
+        std::fs::create_dir_all(&wt).unwrap();
+        assert!(!crate::worktree::kept_from_removal(&folder, &wt), "nobody making one: an orphan still");
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).unwrap().makes_worktree = true;
+        assert!(!manager().worktree_shared("", &wt), "nobody is in it");
+        assert!(crate::worktree::kept_from_removal(&folder, &wt), "kept for the session making one");
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

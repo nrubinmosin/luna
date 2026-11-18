@@ -22,13 +22,26 @@ pub(crate) struct Unplaced {
     /// The project folder it was started in.
     pub folder: String,
     pub account_path: String,
-    /// When it was started, on the wall clock (ms).
+    /// When it was started, on the wall clock (ms): `since`.
     pub since_ms: u64,
 }
 
+impl Unplaced {
+    /// When a session stamped `stamped_ms` on the wall clock just before its
+    /// process was spawned, and `age` ago by the monotonic clock, started, as
+    /// a worktree's creation time is compared with it: the earlier of the
+    /// stamp and now less its age. A wall clock stepped back since the start
+    /// moves the second back with it, one stepped forward leaves the first
+    /// where it was, so a worktree it made is not taken for older than it.
+    pub(crate) fn since(stamped_ms: u64, age: std::time::Duration) -> u64 {
+        stamped_ms.min(crate::throttle::now_ms().saturating_sub(age.as_millis() as u64))
+    }
+}
+
 /// How long before a session's start a worktree may have appeared and still
-/// be taken for its own: the session's stamp is taken just after its process
-/// is spawned, and file times are written by another clock's reading.
+/// be taken for its own: the session's stamp is taken just before its process
+/// is spawned, but file times are written by another clock's reading, and
+/// some file systems keep them only to the second or two.
 const BORN_SLACK_MS: u64 = 2_000;
 
 /// When `path` appeared, in ms on the wall clock: its creation time, or where
@@ -79,8 +92,10 @@ fn younger_than(path: &Path, secs: u64) -> bool {
 /// `inspect_worktrees`' job, asked for when someone means to delete.
 #[tauri::command]
 pub async fn orphan_worktrees(folder: String, in_use: Vec<String>, account_paths: Vec<String>) -> Result<Vec<String>, String> {
-    let live = crate::pty::live_cwds();
+    // In this order: a session that learns where its worktree is between the
+    // two reads is still unplaced in the first or has its path in the second.
     let unplaced = crate::pty::unplaced_worktrees();
+    let live = crate::pty::live_cwds();
     tauri::async_runtime::spawn_blocking(move || orphan_worktrees_now(folder, in_use, account_paths, live, &unplaced, GRACE_SECS))
         .await
         .map_err(|e| e.to_string())?
@@ -135,6 +150,15 @@ fn orphan_worktrees_now(
     }
     out.sort();
     Ok(out)
+}
+
+/// Whether the orphan `path` of `folder` is to stay after all, asked again
+/// under its removal's hold: a live session or helper making a worktree
+/// whose path is not known yet may have made it (`awaits`), or one is in it
+/// (`PtyManager::worktree_shared`). The makers first, as `orphan_worktrees`
+/// reads them.
+pub(crate) fn kept_from_removal(folder: &str, path: &str) -> bool {
+    crate::pty::unplaced_worktrees().iter().any(|u| awaits(u, folder, Path::new(path))) || crate::pty::manager().worktree_shared("", path)
 }
 
 fn subdirs(dir: &Path) -> Vec<PathBuf> {
@@ -196,8 +220,9 @@ pub async fn remove_orphan_worktrees(
     account_paths: Vec<String>,
     paths: Vec<String>,
 ) -> Result<SweepResult, String> {
-    let live = crate::pty::live_cwds();
+    // In this order, as `orphan_worktrees` reads them.
     let unplaced = crate::pty::unplaced_worktrees();
+    let live = crate::pty::live_cwds();
     tauri::async_runtime::spawn_blocking(move || {
         let orphans: Vec<String> =
             orphan_worktrees_now(folder.clone(), in_use, account_paths, live, &unplaced, GRACE_SECS)?.iter().map(|p| norm(p)).collect();
@@ -205,10 +230,9 @@ pub async fn remove_orphan_worktrees(
         for path in paths {
             // Held from the look to the end of its removal, as a chat's delete
             // holds its worktree (`removing`): a session or helper on its way
-            // in, or in it since the orphans were listed, keeps it, and one
-            // that comes meanwhile is refused.
-            let held =
-                orphans.contains(&norm(&path)).then(|| removing(&path, || crate::pty::manager().worktree_shared("", &path))).flatten();
+            // in, in it or making one that may be it since the orphans were
+            // listed keeps it, and one that comes meanwhile is refused.
+            let held = orphans.contains(&norm(&path)).then(|| removing(&path, || kept_from_removal(&folder, &path))).flatten();
             let Some(_removing) = held else {
                 result.failed.push(SweepFailure { path, error: "in use again — left alone".into() });
                 continue;
@@ -295,6 +319,19 @@ mod tests {
         let cased = if cfg!(any(windows, target_os = "macos")) { vec![place(&wt)] } else { both.clone() };
         assert_eq!(orphans(&[asked(Provider::Claude, before, &repo.to_uppercase(), &account)]), cased, "its folder in another case");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A session's start, as a worktree's creation time is compared with it,
+    /// is never after the start: a wall clock stepped back an hour since puts
+    /// its stamp in the future, and the monotonic clock brings it back; one
+    /// stepped forward leaves the stamp as it was.
+    #[test]
+    fn a_sessions_start_holds_across_a_wall_clock_step() {
+        let now = crate::throttle::now_ms();
+        let age = std::time::Duration::from_secs(10);
+        let back = Unplaced::since(now + 3_600_000, age);
+        assert!(back >= now - 10_000 && back < now - 9_000, "{back} for {}", now - 10_000);
+        assert_eq!(Unplaced::since(now - 3_600_000, age), now - 3_600_000);
     }
 
     #[test]
