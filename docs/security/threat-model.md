@@ -391,22 +391,32 @@ file and the completion record `luna-install.json` flushed to disk, held in
 use and renamed into `versions/` under a name no folder has, probed, then
 made current in one write of the tree's record, `<root>/state.json`
 (`cli/state.rs`), which holds what is current, the one to go back to, the
-versions turned away and the canary, every change of it one atomic write
-(temp file, flush, rename) under `state.lock`, by the window's pass and the
-core's canary and rollback alike. An install found already in `versions/` is
+versions turned away and the canary, every change of it one write (temp
+file, flush, rename over the old) under `state.lock`, by the window's pass
+and the core's canary and rollback alike. The rename replaces the file
+atomically where it is let happen; on Windows a program holding the file
+without delete sharing can refuse it (the change fails whole, and is made
+again), and Windows cannot flush the folder, so a power cut there may undo
+the latest change: no power-loss durability is claimed beyond "the old
+record or the new". An install found already in `versions/` is
 held to every recorded sha256 before it is taken up. A version runs only with
 its completion record intact; a folder without one is run only as the
 migration found it current in a tree from before records. Cleanup and the
 sweep check every component below the CLI root for a link before deleting
-(`link_free_below`), and the sweep takes no folder the record names nor one
-an in-use lock covers (`cli/in_use.rs`: a shared lock per running process,
-and per promotion until its flip, on `in-use/<dir>`, made private and never
+(`link_free_below`), and the sweep takes no folder an in-use lock covers
+(`cli/in_use.rs`: a shared lock per running process, and per promotion from
+before its rename to its flip, on `in-use/<dir>`, made private and never
 through a link, and never removed, so a start waiting through a sweep holds
-the same file every later sweep locks). The record is written private like
-the files it replaced; one that does not parse refuses every launch as
-damaged until the next pass starts it over, which loses only refusals. Luna
-0.19's files are read into it once and removed; no canary of then is carried
-over.
+the same file every later sweep locks) nor one the record names when read
+afresh, under its lock, once the sweep holds the folder (a flip may have
+named it since the sweep began). The record is written private like the
+files it replaced. One lost or not parsing is rebuilt from the versions on
+disk whose every file matches its recorded sha256, the newest at or above
+the floor current (`cli.rs` `recover_in`); nothing is written where nothing
+verifies, and nothing is swept while there is no record. Its marks are lost
+with it: a release turned away may be tried once more, under the same probe
+and canary. Luna 0.19's files are read into it once and removed; no canary
+of then is carried over.
 
 **What an origin compromise gets.** The bucket or its CDN alone: no new code
 runs. A replaced exe fails the signed checksum, a replaced manifest the
@@ -426,8 +436,8 @@ binary and checksum replaced together, installed and run (F10).
 | T | A release pointer names an older version | mitigated: one below the floor is refused, installed or not; one below the version current here is not taken (no step down); nothing below the floor runs (`cli.rs` `floor`, `launch_in`, `cli/choice.rs` `plan`). Residual: on a fresh install the pointer picks any release from the floor up, as there is no list of checked versions since 0.20 (ADR-0030) |
 | T, D | A same-user process writes `state.json`, or makes a new version's first sessions fail, to keep Luna off newer versions | accepted with R3: it can only turn versions away (while the pointer names them) or roll back to the version kept before, never below the floor, never to a folder whose files no longer match their recorded sha256 (`cli.rs` `roll_back_in`, `reverify`); a newer release is still taken |
 | T, E | A version rolled back to was altered on disk since it ran | mitigated: the rollback holds every file to its recorded sha256 first, and refuses a record without one per file (`cli.rs` `reverify`) |
-| D | A new version breaks every session started on it | mitigated: an offline probe before it becomes current (`cli/probe.rs`), a canary over its first sessions (`cli/canary.rs`) that rolls back on its own to the previous version, always kept, and turns the failed one away while the pointer names it (ADR-0030); a trip a core went away before rolling back from is rolled back by the next core before any session (`cli.rs` `finish_rollbacks`). Exits whose last lines say a sign-in, a usage limit, the network or the API, in the CLI's own words, do not count (`canary::cause_outside`). Residual: early failures of another cause that is not the version's roll back too, until the pointer names a newer release; the version gone back to then stays even if its own sessions fail |
-| T, D | The window's update pass and the core's rollback change the tree at once (a flip over a rollback, a sweep taking the version being probed or rolled back to, a crash between two writes) | mitigated: what changes together is one record (`cli/state.rs`), each change one atomic write under `state.lock`, so a crash leaves the old state or the new one; the rollback re-checks the record in its write and the flip refuses a version turned away since the pass chose it; a version is held in use from before its promotion's rename to its flip, and the sweep spares every folder the record names; a probe that could not run turns nothing away. Tested: a flip and a rollback cut before and after their write, and a pass and a rollback on two threads (`cli.rs` tests) |
+| D | A new version breaks every session started on it | mitigated: an offline probe before it becomes current (`cli/probe.rs`), a canary over its first sessions (`cli/canary.rs`) that rolls back on its own to the previous version, always kept, and turns the failed one away while the pointer names it (ADR-0030); a trip a core went away before rolling back from is rolled back by the next core before any session (`cli.rs` `finish_rollbacks`). Exits whose failure (a helper's error, a pane's last line) says a sign-in, a usage limit, the network or the API, in the CLI's own words, do not count (`canary::cause_outside`); a spawn that failed is not counted, a signal's death is a failure. Residual: early failures of another cause that is not the version's roll back too, until the pointer names a newer release; the version gone back to then stays even if its own sessions fail |
+| T, D | The window's update pass and the core's rollback change the tree at once (a flip over a rollback, a sweep taking the version being probed or rolled back to, a crash between two writes) | mitigated: what changes together is one record (`cli/state.rs`), each change one atomic write under `state.lock`, so a crash leaves the old state or the new one; the rollback re-checks the record in its write and the flip refuses a version turned away since the pass chose it; a version is held in use from before its promotion's rename to its flip, and the sweep judges each folder by the record read afresh under its lock once it holds that folder, so a flip that named the folder after the sweep began is seen; a probe that could not run turns nothing away. Tested: a flip and a rollback cut before and after their write, the sweep's re-read with a hook between its listing and its hold, a rollback target turned away between its hash and its write (`cli.rs` tests). Residual: on Windows a power cut may undo the latest change of the record (the folder cannot be flushed), and a program holding the file can refuse a change, which is then made again later |
 | D, E | The sweep deletes a version folder under a running session (Unix: a Codex session's helpers) | mitigated: a shared lock per running process, the sweep only under the exclusive one (`cli/in_use.rs`); a launch whose lock cannot be had is refused, never started unheld (`cli.rs` `launch_in`) |
 | E | The update pass, in a window started as administrator, runs a new CLI for its probe elevated | mitigated: `probe` refuses through `elevation::guard`, and an elevated window's pass fetches, probes and marks nothing (`cli.rs` `held_for_elevation`) |
 | D | A probed CLI hangs, writes without end, or leaves a process holding its output | mitigated: one deadline over the run and its output, 1 MiB kept per stream, its whole tree ended (`cli/probe.rs` `run_within`; on Windows a mandatory `procs::KillJob`, terminated whole, the CLI created suspended and taken down unrun if it will not resume in it) |

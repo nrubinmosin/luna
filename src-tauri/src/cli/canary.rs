@@ -61,16 +61,15 @@ const SIGN_IN: &str = "a sign-in missing or expired";
 const LIMIT: &str = "a usage limit";
 const SERVICE: &str = "the network or the provider's service";
 
-/// What a CLI says, anywhere in one of its last lines (`LAST_LINES`), when a
-/// turn ends for want of a sign-in, of usage left, or of the network or the
-/// API: none of it the version's doing, and each ends a session fast.
-/// Lowercase, a typographic apostrophe read as a plain one; each as the
-/// binary carries it, Claude Code 2.1.325 and Codex 0.169.0
-/// (docs/cli-compatibility.md). A helper's words are its stderr's end and,
-/// last, what its own stream said the turn failed on (background/run.rs); a
-/// pane's, its last screen. Only the last lines, where a CLI says what it
-/// stopped on: such words further up (a reconnect it got past, a prompt)
-/// do not hide a crash below them.
+/// What a CLI gives as the failure a turn ended on, for want of a sign-in,
+/// of usage left, or of the network or the API: none of it the version's
+/// doing, and each ends a session fast. Lowercase, a typographic apostrophe
+/// read as a plain one; each as the binary carries it, Claude Code 2.1.325
+/// and Codex 0.169.0 (docs/cli-compatibility.md). Read only in the failure
+/// (`LastWords::failure`): a helper's is what its own stream said the turn
+/// failed on (background/run.rs), a pane's the last line it printed, so
+/// such words further up (a reconnect it got past, a prompt) do not hide a
+/// crash below them.
 const OUTSIDE_ANYWHERE: &[(&str, &str)] = &[
     // Codex: "unexpected status 401 Unauthorized", its `turn.failed`.
     ("401 unauthorized", SIGN_IN),
@@ -110,28 +109,23 @@ const OUTSIDE_ANYWHERE: &[(&str, &str)] = &[
     ("http status server error", SERVICE),
 ];
 
-/// How many of the last lines that are not blank `OUTSIDE_ANYWHERE` is read
-/// in.
-const LAST_LINES: usize = 3;
-
-/// The cause outside the CLI that `said` names: a line that begins as one of
-/// `NOT_THE_VERSION`'s, or one of the last `LAST_LINES` that holds one of
-/// `OUTSIDE_ANYWHERE`'s. `NOT_THE_VERSION`'s words anywhere else (a prompt
-/// on the screen, a folder named so, a path in another error) name nothing,
-/// and an exit beside them still counts. Colors are taken out first. A
-/// pane's screen keeps a line its width wrapped as one; a line broken before
-/// its first words end is not known, and counts.
-pub(crate) fn cause_outside(said: &str) -> Option<&'static str> {
-    let lines: Vec<String> = said.lines().map(without_escapes).collect();
-    let start = lines.iter().find_map(|line| {
+/// The cause outside the CLI that a session's last words name: a line of
+/// what it said that begins as one of `NOT_THE_VERSION`'s, or the failure it
+/// gave holding one of `OUTSIDE_ANYWHERE`'s. `NOT_THE_VERSION`'s words
+/// anywhere else (a prompt on the screen, a folder named so, a path in
+/// another error) name nothing, and an exit beside them still counts; the
+/// other words count only in the failure itself, not in what it said before
+/// (a prompt, a reconnect it got past). Colors are taken out first. A pane's
+/// screen keeps a line its width wrapped as one; a line broken before its
+/// first words end is not known, and counts.
+pub(crate) fn cause_outside(words: &LastWords) -> Option<&'static str> {
+    let start = words.said.lines().map(without_escapes).find_map(|line| {
         let line = line.trim_start();
         NOT_THE_VERSION.iter().find(|(start, _)| line.starts_with(start)).map(|&(_, cause)| cause)
     });
     start.or_else(|| {
-        lines.iter().rev().filter(|l| !l.trim().is_empty()).take(LAST_LINES).find_map(|line| {
-            let lower = line.to_lowercase().replace('\u{2019}', "'");
-            OUTSIDE_ANYWHERE.iter().find(|(words, _)| lower.contains(words)).map(|&(_, cause)| cause)
-        })
+        let failure = without_escapes(words.failure.as_deref()?).to_lowercase().replace('\u{2019}', "'");
+        OUTSIDE_ANYWHERE.iter().find(|(words, _)| failure.contains(words)).map(|&(_, cause)| cause)
     })
 }
 
@@ -293,6 +287,9 @@ struct Watched {
     watch: Watch,
     /// Its CLI's start.
     at: Instant,
+    /// Its process is up (`session_running`): one whose spawn failed never
+    /// is, and is not counted either way.
+    running: bool,
     /// When its CLI's process was reaped (`session_exited`): what it left on
     /// its pipes may take a while yet to be read before `session_ended`.
     exited: Option<Instant>,
@@ -330,10 +327,11 @@ pub(super) fn session_started(provider: Provider, root: &Path, version: &str, se
     watching()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(session.to_string(), Watched { provider, root: root.to_path_buf(), watch, at, exited: None });
+        .insert(session.to_string(), Watched { provider, root: root.to_path_buf(), watch, at, running: false, exited: None });
     // Still running once `EARLY` is up: nothing it does from then on counts,
     // so it settles now rather than whenever it ends. One whose process has
-    // gone is `session_ended`'s to judge, by when it went.
+    // gone is `session_ended`'s to judge, by when it went; one that never
+    // came up (its spawn failed) gives its watch back.
     let id = session.to_string();
     let spawned = std::thread::Builder::new().name("luna-canary".into()).spawn(move || {
         std::thread::sleep(EARLY + REAP_SLACK);
@@ -341,11 +339,25 @@ pub(super) fn session_started(provider: Provider, root: &Path, version: &str, se
         if w.get(&id).is_some_and(|s| s.at == at && s.exited.is_none()) {
             let s = w.remove(&id).expect("just looked up");
             drop(w);
-            settled(s.provider, &s.root, &s.watch);
+            match s.running {
+                true => settled(s.provider, &s.root, &s.watch),
+                false => {
+                    if let Err(e) = unwatch_in(&s.root, &s.watch) {
+                        crate::log::warn("cli", &format!("canary: {e}"));
+                    }
+                }
+            }
         }
     });
     if let Err(e) = spawned {
         crate::log::warn("cli", &format!("canary: {e}; {session} settles only as it ends"));
+    }
+}
+
+/// `session`'s CLI process is up: its spawn went through.
+pub fn session_running(session: &str) {
+    if let Some(s) = watching().lock().unwrap_or_else(|e| e.into_inner()).get_mut(session) {
+        s.running = true;
     }
 }
 
@@ -357,10 +369,28 @@ pub fn session_exited(session: &str) {
     }
 }
 
-/// `session`'s CLI has exited, with an error or not. `last_words`: what it
-/// left on its screen (a pane's) or its stderr (a helper's), read only for a
-/// watched session's early error, for a cause outside the CLI.
-pub fn session_ended(session: &str, error: bool, last_words: impl FnOnce() -> String) {
+/// What a session's CLI said as it ended: all of it that is kept, where a
+/// cause that begins a line is looked for (`NOT_THE_VERSION`), and what it
+/// gave as the failure it stopped on, where the words of a cause outside it
+/// are (`OUTSIDE_ANYWHERE`).
+pub struct LastWords {
+    pub said: String,
+    pub failure: Option<String>,
+}
+
+impl LastWords {
+    /// A pane's last screen: its failure is its last line that is not blank,
+    /// what a CLI prints as it gives up.
+    pub fn of_screen(screen: String) -> LastWords {
+        let failure = screen.lines().map(without_escapes).rev().find(|l| !l.trim().is_empty());
+        LastWords { said: screen, failure }
+    }
+}
+
+/// `session`'s CLI has exited, with an error or not (a signal's end with no
+/// exit code is one). `last_words`: what it said, read only for a watched
+/// session's early error, for a cause outside the CLI.
+pub fn session_ended(session: &str, error: bool, last_words: impl FnOnce() -> LastWords) {
     let Some(s) = watching().lock().unwrap_or_else(|e| e.into_inner()).remove(session) else { return };
     let ran = s.ran();
     if !error || ran >= EARLY {
@@ -393,6 +423,17 @@ pub fn session_stopped(session: &str) {
     } else if let Err(e) = unwatch_in(&s.root, &s.watch) {
         crate::log::warn("cli", &format!("canary: {e}"));
     }
+}
+
+/// At the core's start: the watches a core gone before kept in the record
+/// for sessions it was tracking in memory, given back. What those sessions
+/// came to was never counted, so the watch is as if they had not started.
+pub(super) fn release_orphans(root: &Path) -> Result<(), String> {
+    locked(root, |c| {
+        if let Some(c) = c.as_mut() {
+            c.watched = c.watched.min(c.settled + c.failures.len() as u32);
+        }
+    })
 }
 
 fn failed(provider: Provider, root: &Path, w: &Watch, why: &str) {
@@ -428,10 +469,21 @@ pub(super) fn tripped(provider: Provider, root: &Path, canary: &Canary) {
     let version = &canary.version;
     let seen = seen_of(provider, canary);
     let rolled = super::roll_back(provider, root, version, &format!("rolled back: {seen}"));
-    if let Err(e) = &rolled {
-        note_outcome(root, version, e);
+    settle_rollback(provider, root, version, &seen, rolled);
+}
+
+/// What a rollback from `version` came to, kept and told: one refused is
+/// noted, so no core tries it again; one that failed (the record would not
+/// be read or written) is not, and the next core's start tries again.
+pub(super) fn settle_rollback(provider: Provider, root: &Path, version: &str, seen: &str, rolled: Result<String, super::NoRollback>) {
+    if let Err(super::NoRollback::Refused(why)) = &rolled {
+        note_outcome(root, version, why);
     }
-    tell(provider, version, &seen, &rolled);
+    let rolled = rolled.map_err(|e| match e {
+        super::NoRollback::Refused(why) => why,
+        super::NoRollback::Failed(why) => format!("{why}; it is tried again as Luna next starts"),
+    });
+    tell(provider, version, seen, &rolled);
 }
 
 /// What the canary saw, in words.
@@ -486,6 +538,11 @@ mod tests {
         dir
     }
 
+    /// The cause a pane's last screen names.
+    fn screen(said: &str) -> Option<&'static str> {
+        cause_outside(&LastWords::of_screen(said.to_string()))
+    }
+
     /// The watch a session started on `version` now would count for.
     fn watch(root: &Path, version: &str) -> Watch {
         Watch { version: version.into(), run: read_in(root).map(|c| c.run).unwrap_or_default() }
@@ -531,15 +588,15 @@ mod tests {
         session_started(Provider::Codex, &root, "2.0.0", "canary-b");
         session_started(Provider::Codex, &root, "2.0.0", "canary-c");
         session_started(Provider::Codex, &root, "2.0.0", "canary-d");
-        session_ended("canary-a", false, String::new);
-        session_ended("canary-b", true, String::new);
-        session_ended("canary-d", true, String::new);
+        session_ended("canary-a", false, || LastWords::of_screen(String::new()));
+        session_ended("canary-b", true, || LastWords::of_screen(String::new()));
+        session_ended("canary-d", true, || LastWords::of_screen(String::new()));
         let c = read_in(&root).unwrap();
         assert_eq!((c.watched, c.failures.len(), c.warned), (3, 1, false), "d was not watched, a ended well: {c:?}");
         assert!(c.failures[0].starts_with("canary-b: exited with an error"));
         // A late one: watched, failed after its first half minute.
         age("canary-c");
-        session_ended("canary-c", true, String::new);
+        session_ended("canary-c", true, || LastWords::of_screen(String::new()));
         let c = read_in(&root).unwrap();
         assert_eq!((c.failures.len(), c.settled), (1, 2), "a and c got past their start: {c:?}");
         let _ = fs::remove_dir_all(&root);
@@ -590,7 +647,7 @@ mod tests {
             s.exited = Some(exited);
             s.at = exited.checked_sub(Duration::from_secs(10)).expect("a clock 70 s old");
         }
-        session_ended("canary-late", true, String::new);
+        session_ended("canary-late", true, || LastWords::of_screen(String::new()));
         let c = read_in(&root).unwrap();
         assert_eq!((c.failures.len(), c.settled), (1, 0), "{c:?}");
         assert!(c.failures[0].contains("10s after it started"), "{c:?}");
@@ -609,7 +666,7 @@ mod tests {
         let codex = "Error: git command failed: fatal: not a git repository (or any of the parent directories): .git";
         for (id, provider, said) in [("canary-wt-a", Provider::Claude, claude), ("canary-wt-b", Provider::Codex, codex)] {
             session_started(provider, &root, "2.0.0", id);
-            session_ended(id, true, || said.to_string());
+            session_ended(id, true, || LastWords::of_screen(said.to_string()));
         }
         let c = read_in(&root).unwrap();
         assert_eq!((c.watched, c.failures.len(), c.warned), (0, 0, false), "not counted, and their watches given back: {c:?}");
@@ -618,7 +675,7 @@ mod tests {
         let mixed = "> fix: git says not a git repository in C:\\work\\not a git repository\nTypeError: undefined is not a function";
         for id in ["canary-wt-c", "canary-wt-d"] {
             session_started(Provider::Claude, &root, "2.0.0", id);
-            session_ended(id, true, || mixed.into());
+            session_ended(id, true, || LastWords::of_screen(mixed.into()));
         }
         let c = read_in(&root).unwrap();
         assert_eq!((c.watched, c.failures.len(), c.warned), (2, 2, true), "{c:?}");
@@ -633,11 +690,11 @@ mod tests {
         session_started(Provider::Claude, &root, "2.0.0", "canary-stop-b");
         // A login window closed at once: stopped, then its CLI exits killed.
         session_stopped("canary-stop-a");
-        session_ended("canary-stop-a", true, String::new);
+        session_ended("canary-stop-a", true, || LastWords::of_screen(String::new()));
         // One that ran its half minute and more keeps its watch.
         age("canary-stop-b");
         session_stopped("canary-stop-b");
-        session_ended("canary-stop-b", true, String::new);
+        session_ended("canary-stop-b", true, || LastWords::of_screen(String::new()));
         let c = read_in(&root).unwrap();
         assert_eq!((c.watched, c.failures.len()), (1, 0), "{c:?}");
         let _ = fs::remove_dir_all(&root);
@@ -649,11 +706,8 @@ mod tests {
         // Claude Code's line, red under `-p` with colors forced, among others.
         let claude = "\u{1b}[31mError: Can only use --worktree in a git repository, but \u{1b}[1m/w/x\u{1b}[22m is not a git \
                       repository. Configure a WorktreeCreate hook to use --worktree with other VCS systems.\u{1b}[39m";
-        assert_eq!(cause_outside(&format!("starting\n{claude}\n")), WORKTREE);
-        assert_eq!(
-            cause_outside("  Error: git command failed: fatal: not a git repository (or any of the parent directories): .git"),
-            WORKTREE
-        );
+        assert_eq!(screen(&format!("starting\n{claude}\n")), WORKTREE);
+        assert_eq!(screen("  Error: git command failed: fatal: not a git repository (or any of the parent directories): .git"), WORKTREE);
         // The words elsewhere than at the start of the CLI's own line name
         // nothing, and the version's own failure beside them counts.
         let mixed = [
@@ -663,7 +717,7 @@ mod tests {
             "Managed worktrees require a local Git repository.",
         ];
         for said in mixed.into_iter().chain(["", "segmentation fault", "error: unexpected argument '--effort' found"]) {
-            assert_eq!(cause_outside(said), None, "{said}");
+            assert_eq!(screen(said), None, "{said}");
         }
     }
 
@@ -690,15 +744,48 @@ mod tests {
             ("error: stream disconnected before completion: error sending request for url", SERVICE),
             ("ERROR: exceeded retry limit, last status: 503 Service Unavailable", SERVICE),
         ] {
-            assert_eq!(cause_outside(&format!("starting\n\u{1b}[31m{said}\u{1b}[39m\n")), Some(cause), "{said}");
+            assert_eq!(screen(&format!("starting\n\u{1b}[31m{said}\u{1b}[39m\n")), Some(cause), "{said}");
         }
         // Codex's own retries run out on a refused token (background/events.rs).
-        assert_eq!(cause_outside("Reconnecting... 2/5\nunexpected status 401 Unauthorized"), Some(SIGN_IN));
+        assert_eq!(screen("Reconnecting... 2/5\nunexpected status 401 Unauthorized"), Some(SIGN_IN));
         // An API refusal of what Luna sent is the version's to answer for.
-        assert_eq!(cause_outside("API Error: 400 due to tool use concurrency issues."), None);
-        // Such words above the CLI's last lines do not hide what it died of.
+        assert_eq!(screen("API Error: 400 due to tool use concurrency issues."), None);
+        // Such words above the line the CLI ended on do not hide what it
+        // died of: a retry it got past, a prompt that names them.
         let earlier = "API Error: Connection error.\nretrying\n> go on\n\nthread 'main' panicked at src/main.rs:1:1:\nindex out of range";
-        assert_eq!(cause_outside(earlier), None);
+        assert_eq!(screen(earlier), None);
+        assert_eq!(screen("> is the API overloaded today?\nthread 'main' panicked at src/main.rs:1:1"), None);
+        // A helper: only what its stream gave as the turn's failure counts,
+        // not what its stderr said on the way.
+        let helper =
+            |said: &str, failure: Option<&str>| cause_outside(&LastWords { said: said.into(), failure: failure.map(str::to_string) });
+        assert_eq!(helper("Reconnecting... waiting for network\noverloaded, retrying", None), None);
+        assert_eq!(helper("overloaded, retrying", Some("thread 'main' panicked")), None);
+        assert_eq!(helper("", Some("Not logged in · Please run /login")), Some(SIGN_IN));
+        // Its stderr still names a worktree outside git, as `codex exec` says it.
+        assert_eq!(
+            helper("Error: git command failed: fatal: not a git repository", None),
+            Some("a worktree asked for outside a git repository")
+        );
+    }
+
+    /// A core that went away with watches it tracked in memory: the next
+    /// start gives back those never judged.
+    #[test]
+    fn watches_a_dead_core_held_are_given_back() {
+        let root = scratch("orphans");
+        reset_in(&root, "2.0.0").unwrap();
+        for _ in 0..WATCH {
+            watch_in(&root, "2.0.0").unwrap().unwrap();
+        }
+        let w = watch(&root, "2.0.0");
+        fail_in(&root, &w, "a").unwrap();
+        settle_in(&root, &w).unwrap();
+        release_orphans(&root).unwrap();
+        let c = read_in(&root).unwrap();
+        assert_eq!((c.watched, c.settled, c.failures.len()), (2, 1, 1), "the third, never judged, is free again: {c:?}");
+        assert!(watch_in(&root, "2.0.0").unwrap().is_some());
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// A helper stopped by a usage limit, and a chat whose sign-in expired,
@@ -715,7 +802,7 @@ mod tests {
         ];
         for (id, said) in causes {
             session_started(Provider::Claude, &root, "2.0.0", id);
-            session_ended(id, true, || said.to_string());
+            session_ended(id, true, || LastWords::of_screen(said.to_string()));
         }
         let c = read_in(&root).unwrap();
         assert_eq!((c.watched, c.failures.len(), c.warned), (0, 0, false), "{c:?}");

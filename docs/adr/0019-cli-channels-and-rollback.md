@@ -14,8 +14,9 @@
 > back on its own to the previous version and turns the failed one away
 > while the release pointer names it, as a probe's verdict does; a probe that
 > could not run says nothing. What this ADR kept in several files at the
-> root (`current`, `previous`, `bad.json`, `canary.json`, the floor) is one
-> record, `state.json`, written whole at every change. How it works now:
+> root (`current`, `previous`, `bad.json`, `canary.json`) is one record,
+> `state.json`, written whole at every change; the `floor` files of then are
+> removed, not carried over, the floor being the release's. How it works now:
 > [providers](../architecture/providers.md#cli-binaries).
 
 ## Context

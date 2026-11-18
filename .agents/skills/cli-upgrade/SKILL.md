@@ -8,10 +8,12 @@ description: Bring Luna up to a new Claude Code or Codex CLI version — find wh
 Luna installs each CLI's newest release on its own at its next check (as
 Luna's window starts, then every six hours while it runs), once it passes an
 offline probe of its flags; it rolls back by itself when two of a new
-version's first three sessions fail soon after starting (ADR-0030,
-`src-tauri/src/cli.rs`, `cli/canary.rs`). There is no list of checked
-versions to put a release on: by the time you run this, users may already be
-on it. So the work is catch-up, and fast: Luna depends on much
+version's first three sessions fail soon after starting, unless what they
+ended on reads as a sign-in, a usage limit or the network (ADR-0030,
+`src-tauri/src/cli.rs`, `cli/canary.rs`). A version turned away stays so only
+while the release channel names it, and only as long as the tree's record
+(`state.json`) is there. There is no list of checked versions to put a
+release on: by the time you run this, users may already be on it. So the work is catch-up, and fast: Luna depends on much
 more than flags. It reads the CLI's stream, transcripts, rollouts and even its
 screen, and each of those is pinned by a test against what one version did;
 the probe sees only flags, and the canary only a CLI that cannot start a

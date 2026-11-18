@@ -319,6 +319,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
         e.to_string()
     })?;
+    // Up: the canary may count it (a spawn that failed never is).
+    crate::cli::session_running(&id);
     drop(pair.slave);
     crate::agents::set_applied(&id, applied, &account_path, &cwd);
 
@@ -556,10 +558,15 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             drop(on_account);
             drop(on_version);
             // For the canary over a new CLI version's first sessions, with the
-            // screen it left for what it said as it went.
-            crate::cli::session_ended(&id, code.is_some_and(|c| c != 0), || {
+            // screen it left for what it said as it went. An exit whose code
+            // cannot be read counts as one with an error.
+            crate::cli::session_ended(&id, code != Some(0), || {
                 let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
-                last_screen(&scrollback.lock().unwrap_or_else(|e| e.into_inner()).last(LAST_SCREEN), rows, cols)
+                crate::cli::LastWords::of_screen(last_screen(
+                    &scrollback.lock().unwrap_or_else(|e| e.into_inner()).last(LAST_SCREEN),
+                    rows,
+                    cols,
+                ))
             });
             crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
@@ -915,9 +922,11 @@ mod tests {
             let mut output = b"earlier output\r\n".repeat(LAST_SCREEN / 8);
             output.extend_from_slice(said);
             let screen = last_screen(&output, INITIAL_ROWS, INITIAL_COLS);
-            assert_eq!(crate::cli::cause_outside(&screen), Some("a worktree asked for outside a git repository"), "{screen}");
+            let words = crate::cli::LastWords::of_screen(screen.clone());
+            assert_eq!(crate::cli::cause_outside(&words), Some("a worktree asked for outside a git repository"), "{screen}");
         }
-        assert_eq!(crate::cli::cause_outside(&last_screen(b"error: unexpected argument '--x'\r\n", INITIAL_ROWS, INITIAL_COLS)), None);
+        let words = crate::cli::LastWords::of_screen(last_screen(b"error: unexpected argument '--x'\r\n", INITIAL_ROWS, INITIAL_COLS));
+        assert_eq!(crate::cli::cause_outside(&words), None);
     }
 
     #[test]

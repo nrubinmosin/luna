@@ -46,14 +46,20 @@ nothing depends on a global install.
   is the newest release; a newer one installs as usual. With no
   version before to go back to (or one Luna cannot vouch for: older than the
   oldest it runs, or its files no longer matching their checksums), the
-  notice says so and the version stays. If Luna is closed in the middle of
-  going back, it finishes as it next starts. A session you or Luna stopped
-  does not count, nor one that ended on something that was not the CLI's
-  fault: a worktree asked for outside a git repository, a sign-in missing or
-  expired, a usage limit, or the network or the provider's service failing,
-  each known by what the CLI says; the next session is watched in its place.
-  If the version gone back to fails its first sessions too, Luna stays on it:
-  the failures were then not the version's.
+  notice says so and the version stays. If Luna is closed after the failures
+  were counted but before it went back, it goes back as it next starts. A
+  session you or Luna stopped does not count, nor one that never started, nor
+  one that ended on something that was not the CLI's fault: a worktree asked
+  for outside a git repository, a sign-in missing or expired, a usage limit,
+  or the network or the provider's service failing, each known by the error
+  the CLI ended on (for a chat, the last line it printed); the next session
+  is watched in its place. If the version gone back to fails its first
+  sessions too, Luna stays on it: the failures were then not the version's.
+- What Luna keeps of this (which version is current, the one before, the
+  versions it turned away) is one file in each CLI's folder. If it is lost or
+  damaged, Luna takes up again the newest installed version whose files still
+  match their checksums; which versions it had turned away is lost with it,
+  so such a version may be tried once more.
 - Luna 0.19's **Known-good** and **Latest** channels, **Use**, **Mark bad**,
   **Mark good** and the rest are gone from Luna; until Luna's new window
   comes, the old window still shows some of them in Settings → CLIs, and they
