@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub struct FakeHost {
     answers: Mutex<HashMap<String, Value>>,
+    failures: Mutex<HashMap<String, String>>,
     calls: Mutex<Vec<(String, Value)>>,
     sends: Mutex<Vec<(String, Value)>>,
     outputs: Mutex<HashMap<String, Arc<dyn OutputSink>>>,
@@ -34,6 +35,15 @@ impl FakeHost {
     /// What `cmd` answers from now on; null when nothing was set.
     pub fn answer(&self, cmd: &str, value: Value) {
         self.answers.lock().unwrap().insert(cmd.to_owned(), value);
+    }
+
+    /// `cmd` fails with `why` from now on; None answers it again.
+    pub fn fail(&self, cmd: &str, why: Option<&str>) {
+        let mut failures = self.failures.lock().unwrap();
+        match why {
+            Some(why) => failures.insert(cmd.to_owned(), why.to_owned()),
+            None => failures.remove(cmd),
+        };
     }
 
     /// Every call so far, in order.
@@ -90,6 +100,9 @@ impl FakeHost {
 impl Host for FakeHost {
     fn call(&self, cmd: &str, args: Value) -> Answer {
         self.calls.lock().unwrap().push((cmd.to_owned(), args));
+        if let Some(why) = self.failures.lock().unwrap().get(cmd).cloned() {
+            return Box::pin(async move { Err(why) });
+        }
         if let Some(waiting) = self.deferred.lock().unwrap().get_mut(cmd) {
             let (tx, rx) = futures::channel::oneshot::channel();
             waiting.push(tx);
@@ -143,6 +156,9 @@ pub struct Scene {
     pub menu: Option<crate::board::MenuAt>,
     /// A chat's row clicked once the window is up (the peek is not kept).
     pub click: Option<&'static str>,
+    /// Then the driver's lines, one after another (panels/mod.rs `drive`):
+    /// the panel opened and what is done in it.
+    pub drive: Vec<&'static str>,
 }
 
 /// What a scene's terminal shows.
@@ -166,6 +182,7 @@ impl Scene {
     /// The host, and the inbox it feeds.
     pub fn host(&self) -> (Arc<FakeHost>, Mailbox, Inbox) {
         let host = FakeHost::new();
+        crate::panels::demo::answer_all(&host);
         host.answer(cmd::CORE_STATE, serde_json::to_value(&self.core).unwrap());
         host.answer(cmd::ENSURE_CLAUDE_SESSION, attached("", 1));
         host.answer(cmd::ENSURE_CODEX_SESSION, attached("", 1));
@@ -371,9 +388,9 @@ fn link(state: LinkState, core: Option<Core>, error: Option<&str>) -> CoreState 
 }
 
 /// Every scene, in both themes: the title bar over an empty board, the core
-/// banner in each state, a terminal in each of its looks, and the board with
-/// the fixture's chats: each layout, the sidebar collapsed, the peek, a
-/// pane's menu, and the notice of an import that failed.
+/// banner in each state, a terminal in each of its looks, the board with
+/// the fixture's chats (each layout, the sidebar collapsed, the peek, a
+/// pane's menu, and the notice of an import that failed), and the panels.
 pub fn scenes() -> Vec<Scene> {
     let up = link(LinkState::Up, Some(core()), None);
     let older = Core { version: "0.19.0".into(), build: "a1b2c3d".into(), sessions: 3, ..core() };
@@ -391,6 +408,7 @@ pub fn scenes() -> Vec<Scene> {
             kept: kept(&crate::state::WindowState::default()),
             menu: None,
             click: None,
+            drive: Vec::new(),
         };
         let term = |name, demo: TermDemo| Scene {
             terminal: Some(demo),
@@ -446,6 +464,9 @@ pub fn scenes() -> Vec<Scene> {
             part,
             aside,
         ]);
+        for (name, drive) in crate::panels::demo::scenes() {
+            out.push(Scene { drive, ..one(name, up.clone(), vec![]) });
+        }
     }
     out
 }

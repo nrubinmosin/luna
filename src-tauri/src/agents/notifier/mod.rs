@@ -1601,7 +1601,7 @@ mod tests {
     /// marked as one on a notice: its parent hears of that turn as ever.
     #[test]
     fn a_lead_kept_up_by_its_own_background_work_hears_of_its_helper_on_stdin() {
-        let (a, id) = ("ln-lead", "ln-helper");
+        let (a, id) = ("ln-stdin-lead", "ln-stdin-helper");
         register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({ "background": true }));
         register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, serde_json::json!({ "background": true }));
         crate::background::test_helper(a, "C:\\acc", None, true);

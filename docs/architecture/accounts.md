@@ -26,8 +26,18 @@
 
 `<accounts root>/anthropic/<name>` (Claude Code, `CLAUDE_CONFIG_DIR`) or
 `<accounts root>/openai/<name>` (Codex, `CODEX_HOME`); default root
-`Documents/luna-accounts`, kept in Rust settings. Create is mkdir, delete is a
-recursive remove, list is a readdir of the two subfolders. A fresh Codex account
+`Documents/luna-accounts`, kept in Rust settings. A deletion holds the
+folder to `boundary::account_in` first (neither the provider's folder nor
+the account's a link or junction, and inside the root once resolved), and
+the native window's is bound to the folder its question named, by path and
+identity on the drive (`account_identity`, `delete_account_checked`).
+Create is mkdir; delete opens the provider's folder and the account's as
+themselves (no link, junction or other reparse point; on Unix on the
+accounts root's device), holds the account's to the identity asked about
+where there is one, and removes it through that handle
+(`held::Dir::remove_tree`): a link inside goes as itself, a mount inside
+refuses the removal before anything goes. List is a readdir of the two
+subfolders. A fresh Codex account
 gets `check_for_update_on_startup = false`. A rename carries every chat, the
 agents' list, the settings parent and all the library keeps of the account
 along (docs/architecture/library.md, "Reaches"), refused while a chat or

@@ -21,6 +21,8 @@
 //!   (workspace.rs `quit`), without the tray's stop of the core.
 //! - `notice save retry`: a notice's button pressed (`retry`, `ok`, or
 //!   `quit` for Quit anyway).
+//! - the panels' own (panels/mod.rs `drive`): `panel library`, `select skill
+//!   review`, `save`, `setting sound off`, `cli-check claude`, ...
 
 use crate::root::LunaWindow;
 use gpui::{AnyWindowHandle, App, AsyncApp, Entity, Keystroke, Modifiers, OperatingSystem};
@@ -150,9 +152,14 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
                     _ => log::warn!("drive: {line}: not understood"),
                 }
             }
-            _ => {
+            "keys" | "text" => {
                 for k in keys {
                     window.dispatch_keystroke(k, cx);
+                }
+            }
+            _ => {
+                if !crate::panels::drive(verb, rest.trim(), window, cx) {
+                    log::warn!("drive: {line}: nothing does that");
                 }
             }
         })

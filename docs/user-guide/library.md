@@ -250,3 +250,57 @@ one of them, each checked as its kind is.
   or an account's `skills/` is not the override either: Luna never serves those
   for a handoff, though the CLI may list them to the model. The chat's panel
   warns of one in its folder or account.
+
+## In the native window
+
+Release 0.20's native window has the library as a window over the main one,
+laid out as a list and the entry picked rather than as one grid:
+
+- **Across the top:** the library's folder with Open, Change… and Default
+  (with unsaved text in the editor, either asks first; the new folder opens
+  with nothing picked), and Sync, which lays the library out now and makes
+  every copy Luna manages hold what the library says: a copy changed in an
+  account is overwritten with the library's and a deleted one put back, a
+  copy no longer wanted taken out, each backed up first; a file Luna did not
+  write is left alone. It says how many of each it did, and anything it could
+  not settle (Syncing…, Synced, or why it failed).
+- **On the left:** the instructions (and "(no instructions)", the accounts
+  that get none), the skills, Luna's system texts and the folders, each with
+  a field and New, or Add folder…. An entry that will not do is marked `!`, a
+  system text of yours `yours`, a folder that is not there `gone`.
+- **On the right, the entry picked:** Rename and Delete… (a skill can be
+  renamed too: its folder, its SKILL.md's `name` and everything the library
+  says of it follow, and its copies under the old name go; a rename that
+  fails partway is undone, and if even that fails the window says what is
+  left where); whom it is meant
+  for (the same ticks as before); whose sessions it is for (Chats, Leads,
+  Helpers); for instructions, which instructions each account gets, one at
+  most; for a skill, which accounts' sessions get it in each folder; for a
+  folder, the instructions its sessions on each Claude Code account get in
+  place of the account's; for a system text, Compare with Luna's (Luna's own
+  text shown beside yours, no diff) and Back to Luna's….
+- **Under it, the editor:** the entry's file, Markdown highlighted, with Save
+  (Ctrl+S, Cmd+S on macOS). A SKILL.md or a system text is checked a moment
+  after you stop typing and saved even when it does not do yet. Anything that
+  would replace or close the editor with unsaved text asks first: picking
+  another entry, a rename, Delete…, Back to Luna's…, Add folder…, another
+  library folder, closing the window. If the file was changed on disk since
+  you opened it (by another editor, say), Save writes nothing and keeps your
+  text: Reload takes the file as it is now, Overwrite saves yours over it.
+  If the library's folder is no longer the one the file was read from (a
+  link there now leads elsewhere, or the folder was made again), nothing is
+  saved, Overwrite included: Reload reads the file from the folder there
+  now. If the save went through but laying the library out after failed,
+  the line under the editor says it was saved and why laying it out did not
+  go.
+  Unsaved text is kept as you type, so if Luna quits or the window restarts
+  from the tray with it unsaved, the library offers it the next time it
+  opens: Restore or Throw away. Throw away forgets only that text, never
+  text you have typed since in another file.
+
+Not in it any more, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it:
+"Needs a look" and its diffs, choosing copy by copy what to put back, keep
+or leave out, taking an account's own file into the library, and the
+handoff's skill.
+The library is the source of truth: what Luna manages in an account is what
+the library says.

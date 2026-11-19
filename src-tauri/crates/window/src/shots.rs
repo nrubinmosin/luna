@@ -62,6 +62,10 @@ pub fn bench(out: PathBuf, secs: f64) {
     });
 }
 
+/// How long each of a scene's driver lines gets before the next: the fake
+/// host's answers come on the next turns of the window's thread.
+const STEP: Duration = Duration::from_millis(200);
+
 /// Shoots every scene whose name contains `only` (all when empty) into
 /// `out` as `<scene>-<theme>.png`; exits 1 if any shot failed or came out
 /// blank.
@@ -73,6 +77,7 @@ pub fn run(out: PathBuf, only: String) {
         gpui_component::init(cx);
         crate::term::bind_keys(cx);
         crate::keys::bind(cx);
+        crate::panels::bind_keys(cx);
         let scenes: Vec<Scene> = demo::scenes().into_iter().filter(|s| only.is_empty() || s.name.contains(only.as_str())).collect();
         cx.spawn(async move |cx| {
             let (mut failed, mut previous) = (0, None);
@@ -87,6 +92,7 @@ pub fn run(out: PathBuf, only: String) {
                             let _ = done.update(cx, |_, window, _| window.remove_window());
                         }
                         show(scene, &opened, cx).await;
+                        drive(scene, window, cx).await;
                         shoot(window, &file, cx).await
                     }
                     Err(e) => Err(e),
@@ -207,6 +213,18 @@ async fn show(scene: &Scene, opened: &Opened, cx: &mut AsyncApp) {
         }
         pane.update(cx, |_, cx| cx.notify());
     });
+}
+
+/// The scene's driver lines, a step apart (panels/mod.rs `drive`).
+async fn drive(scene: &Scene, window: AnyWindowHandle, cx: &mut AsyncApp) {
+    for line in &scene.drive {
+        cx.background_executor().timer(STEP).await;
+        let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
+        let done = window.update(cx, |_, window, cx| crate::panels::drive(verb, rest, window, cx));
+        if !matches!(done, Ok(true)) {
+            eprintln!("shots: {}: {line} did nothing", scene.name);
+        }
+    }
 }
 
 /// Its frame once it has had time to draw, into `file`.

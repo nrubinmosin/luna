@@ -310,6 +310,7 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
             Ok(n) => models.workspace.update(cx, |w, _| w.on_notice(n.title, n.body, n.chat_id)),
             Err(e) => log::warn!("{name}: {e}"),
         },
+        _ if crate::panels::event::ALL.contains(&name) => crate::panels::on_event(name, &payload, cx),
         _ => crate::desktop::on_event(name, &payload, cx),
     }
 }

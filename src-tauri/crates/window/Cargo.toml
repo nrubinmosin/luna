@@ -36,8 +36,12 @@ gpui = { package = "gpui-pre", version = "=0.3.12" }
 # CoreText text system; without it macOS falls back to gpui's NoopTextSystem,
 # which lays text out but draws no glyph. Only the macOS crate reads either.
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["runtime_shaders", "font-kit"] }
-# Its Root and theme now; the editor later.
-gpui-component = "=0.10.0"
+# Its Root, theme, inputs and editor; tree-sitter-markdown highlights the
+# library's files in the editor (C grammars cargo-xwin compiles with clang-cl).
+gpui-component = { version = "=0.10.0", features = ["tree-sitter-markdown"] }
+# The clock times the panels say (a limit's reset, a check's), on the local
+# zone; the version the app already links.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The host's channels and the calls' answers.
 futures = "0.3"
 # What goes wrong is logged as gpui logs its own; the host takes the lines.

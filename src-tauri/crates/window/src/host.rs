@@ -155,9 +155,10 @@ pub mod event {
     /// `revision`, an older one never replacing a newer (`Mailbox::event`).
     pub const LATEST: &[&str] = &[CORE_STATE];
 
-    /// The inbox takes `name`: one of these, or of the desktop's.
+    /// The inbox takes `name`: one of these, or of the desktop's or the
+    /// panels'.
     pub fn wants(name: &str) -> bool {
-        ALL.contains(&name) || crate::desktop::event::ALL.contains(&name)
+        ALL.contains(&name) || crate::desktop::event::ALL.contains(&name) || crate::panels::event::ALL.contains(&name)
     }
 }
 

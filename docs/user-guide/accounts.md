@@ -109,3 +109,22 @@ now, with Sync now, or at every launch with the box ticked. The others get an
 exact copy: a key taken out of the parent goes from them too, and whatever was
 set on a child alone is replaced. Logins and Codex's trusted folders stay each
 account's own.
+
+## In the native window
+
+Release 0.20's native window has Accounts as a window over the main one:
+each account with its CLI, its plan or why it has none (signed out, limits
+unavailable), its folder, and a bar for each of its usage windows with how
+full it is and the clock time it resets; Rename, Refresh (past the CLI's
+cache, renewing an expired token) and Delete…, which asks first, naming the
+folder it deletes and warning that a chat still set to the account has
+nowhere to start; if the folder there is no longer that one when you say
+yes, nothing is deleted; Add account
+with its CLI and name; Shared settings, each CLI's parent account with Sync
+now and the box for copying at every start; and buttons to the library and
+Settings. The limits are read as the window opens and on Refresh.
+
+Not in it, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it: the
+recommended settings and recommendations, the settings file editor (edit an
+account's files in an editor of your own) and what Luna applied. Signing
+an account in comes with the native window's terminal.

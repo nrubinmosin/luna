@@ -72,19 +72,16 @@ export const cliStatus = (provider: Provider) => call<CliStatusDto | null>('cli_
 /** Check the release channel now and install whatever it names. */
 export const cliUpdateNow = (provider: Provider) => call<void>('cli_update_now', { provider });
 export const cliVersions = (provider: Provider) => call<CliVersionsDto | null>('cli_versions', { provider }, null);
-/** Make an installed version current and hold it there until a channel is chosen again. */
-export const cliUseVersion = (provider: Provider, dir: string) => call<void>('cli_use_version', { provider, dir });
-export const cliSetChannel = (provider: Provider, channel: CliChannel) =>
-  call<void>('cli_set_channel', { provider, channel });
-export const cliMarkBad = (provider: Provider, version: string, why?: string) =>
-  call<void>('cli_mark_bad', { provider, version, why: why ?? null });
-/** The known-good channel may install this installed version from now on. */
-export const cliMarkGood = (provider: Provider, version: string) => call<void>('cli_mark_good', { provider, version });
-/** Neither bad nor good from now on: "Clear bad" and "Unmark good". */
-export const cliClearMark = (provider: Provider, version: string) =>
-  call<void>('cli_clear_mark', { provider, version });
-/** Keep a version the canary warned about; its badge goes. */
-export const cliCanaryDismiss = (provider: Provider) => call<void>('cli_canary_dismiss', { provider });
+/** The channels, "Use", the marks by hand and "Keep it" left the core with
+ *  ADR-0030 (it rolls back on its own); this window goes with 0.20, so its
+ *  buttons are only refused. */
+const removed = (): Promise<void> => Promise.reject(new Error('no longer part of Luna (ADR-0030)'));
+export const cliUseVersion: (provider: Provider, dir: string) => Promise<void> = removed;
+export const cliSetChannel: (provider: Provider, channel: CliChannel) => Promise<void> = removed;
+export const cliMarkBad: (provider: Provider, version: string, why?: string) => Promise<void> = removed;
+export const cliMarkGood: (provider: Provider, version: string) => Promise<void> = removed;
+export const cliClearMark: (provider: Provider, version: string) => Promise<void> = removed;
+export const cliCanaryDismiss: (provider: Provider) => Promise<void> = removed;
 
 export const pickFolder = async (): Promise<string | null> => {
   if (!tauriAvailable) return null;

@@ -297,7 +297,7 @@ pub(crate) fn known_reading(account_path: &str) -> Option<crate::activity::Usage
     Some(crate::activity::UsageReading { at: Some(at), windows })
 }
 
-fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String> {
+pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String> {
     let mut out = AccountLimits { signed_in: signed_in(account_path), ..Default::default() };
 
     // Identity and plan come from the config the CLI wrote at login: no

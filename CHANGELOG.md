@@ -23,6 +23,36 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   crate with Luna's three patches (`src-tauri/vendor/`). Where the native
   window cannot open (no usable GPU device), Luna opens the WebView window
   instead.
+- The native window's library, settings and accounts windows, in-app over
+  the main one ([native window](docs/architecture/native-window.md#panels)):
+  the library's entries, whom each is meant for and whose sessions it is
+  for, folders and Luna's system texts, with gpui-component's editor
+  (Markdown highlighted, a steady caret) for their files; Settings' sound,
+  accounts folder, new chats, helpers, trusted folders, the CLIs' version
+  and Check, and Luna's update confirmed with its version and notes;
+  the accounts with their limits, added, renamed, deleted, and the parent
+  whose settings the others copy. A skill can now be renamed
+  (`library_rename_skill`): without following a link, replacing a folder of
+  the new name or leaving its `name` half rewritten, and saying whether it
+  was done, undone, or left partly done. The editor's save is bound to the
+  library and the file as they were read: the library's folder by its
+  identity on the drive, read and written through a handle held to it, so a link
+  there retargeted or a folder made again gets nothing; a file changed on
+  disk since is not overwritten unasked (Reload, Overwrite), and text not
+  saved when the window goes (the tray's Quit or Restart window) is offered
+  at the next open, read back only as a private file of Luna's; throwing it
+  away leaves text typed since. A save whose layout after fails says it was
+  saved. Every
+  way the editor's text is replaced asks first. Sync makes every copy Luna
+  manages the library's again (changed ones overwritten, deleted ones put
+  back, unwanted ones taken out, each backed up; files Luna did not write
+  left alone) and says what it did. Deleting an account is bound to the
+  folder its question named, removed through a handle held to it without
+  following a link or crossing into a mount (on Unix, one on another
+  device), and warns of chats still set
+  to it. The test
+  build's `LUNA_TEST_DRIVE` file drives them in a smoke run without global
+  input; no line of it answers the question for helpers above their caller.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.
@@ -186,6 +216,53 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   components and what they bring); the license texts their packages leave
   out are kept in `third-party-licenses/`, and the vendored GPUI platform
   crate's own are read from `src-tauri/vendor/`.
+
+- Each CLI is kept at its newest release, and rolls back on its own: when
+  two of a new version's first three sessions fail soon after starting, Luna
+  goes back to the version before (once its files match their checksums),
+  says so in a desktop notice and the log, and skips the failed version while
+  it is the newest release. A session that ended on a sign-in, a usage limit,
+  or the network or the provider's service failing (by the error the CLI ended
+  on) does not count, nor one that never started. A rollback Luna was closed
+  before it made is made at its next start. A
+  version whose answers fail the offline check is skipped the same way; one
+  the check could not read to its end (a scanner holding the fresh download)
+  is asked again at the next check. Each Luna release names the oldest
+  version of each CLI it runs (Claude Code 2.1.325, Codex 0.167.0), compiled
+  in; nothing on the machine raises it any more, and Luna never steps down
+  from the version it runs ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+- What Luna keeps of each CLI's versions is one file, `state.json` at its
+  root, every change of it written whole under a lock, so the window and the
+  core changing it at once never leave it half made, and a crash leaves the
+  old record or the new (on Windows a power cut may undo the latest change).
+  A record lost or damaged is rebuilt from the installed versions whose files
+  still match their checksums; the versions it had turned away are lost with
+  it. 0.19's files (`current`, `previous`, `recorded`, `bad.json`,
+  `canary.json` and their locks) are read in at the first check and removed.
+
+### Removed
+
+- The CLI channels (Known-good and Latest) and the known-good list
+  (`cli-known-good.json`), and the commands behind **Use**, **Mark bad**,
+  **Mark good**, **Clear bad**, **Unmark good**, **Roll back** and **Keep
+  it** in Settings → CLIs: until the new window comes, the old one still
+  shows those controls, and they only fail. What 0.19 kept for them at each
+  CLI's root (`channel`, `pinned`, `good.json`, `marks.lock`, `floor`,
+  `signed-floor`) is removed at the first check; its marks bad still hold
+  while the release channel names their version, and its watch over the
+  version you had (one you chose to keep) is not carried over.
+
+### Security
+
+- The library's editor no longer reads or saves through a link: a skill's
+  SKILL.md and an instructions file are reached from the library's folder
+  with no link or junction on the way and inside the library once resolved,
+  opened without following a link or waiting on a FIFO, and saved over
+  nothing but a plain file; new skills and instructions likewise. A `skills/`
+  planted as a junction to an account's folder could lead a save there.
+- Deleting an account no longer follows a junction: the account's folder and
+  its provider's folder must be no link and lie inside the accounts root, or
+  nothing is deleted.
 
 ## [0.19.0] - 2026-11-18
 

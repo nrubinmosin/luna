@@ -112,6 +112,7 @@ const OWN_NAMES: &[&str] = &[
     "library",
     "library-backups",
     "library-blobs",
+    "library-draft.json",
     "library-folders",
     "library-state.json",
     "library-state.json.lock",

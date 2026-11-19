@@ -334,6 +334,44 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
   the account folder itself may be the person's link. A removal refused keeps
   its ledger note, `written` or `kept`, for a later pass, and is logged once a
   run.
+- The library's own files are walked down from its folder before they are
+  read, saved, made or renamed (`inside`): no link, junction or file in a
+  folder's place below the library's folder on the way to a skill's SKILL.md
+  or an instructions file, and what is there inside the library once
+  resolved; the file is opened as itself without waiting on a FIFO
+  (`read_plain`, to 1 MB for the editor) and written over nothing but a plain
+  file (`plain_or_none`). The library's folder itself may be the person's
+  link.
+- A save from the native window is bound to what it was read from
+  (`library_write_checked`): the library's folder by its path and by its
+  identity on its drive (`held::Dir::id`, taken before and after the read),
+  and the file's sha256 as read. Under the lock the save opens the
+  library's folder and holds it to that identity (a link there retargeted,
+  or a folder made again at the path, is another folder), opens or makes
+  the folders down to the file relative to that handle without following a
+  link (`src/held.rs`), checks the file's revision through the handle,
+  writes a new temp file beside it, checks the revision again and renames
+  the temp onto the name relative to the same handle: over the file where
+  one was read, and only where none is where none was. A file changed,
+  made or deleted since, or another library folder, writes nothing and
+  answers `conflict`. Overwrite lets a changed file go, never another
+  library. A program that writes the file without Luna's lock can still
+  change it between the last check and the rename, and lose that change.
+  Once saved, the library is laid out; a layout that fails is answered
+  apart (`layoutError`), the save standing. The page's `library_write` is
+  not bound.
+- A skill's rename (`library_rename_skill`, the native window's) refuses,
+  with nothing changed, a link, a junction or anything but plain files and
+  folders in the skill, a new name taken, and a SKILL.md that names the skill
+  but whose whole `name` (quoted, folded or literal) cannot be rewritten to
+  read as the new one. The folder moves without replacing
+  (`rename_no_replace`: `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`,
+  `renameat2(RENAME_NOREPLACE)`, `renamex_np(RENAME_EXCL)`), then SKILL.md is
+  rewritten, then the settings (reach, audience, folders, and `skipped`
+  places of its copies, `<...>/skills/<name>`); each step that fails undoes
+  those before it, and the answer says `committed`, `rolledBack` or
+  `rollbackFailed`, with what is left where. It is not all or none: an undo
+  can fail too, and says so. Its copies go by the pass after.
 - `system/` is read only for what Luna serves (`library/system.rs`): no pass
   lays anything of it out, and a skill named `session-handoff` under
   `skills/` is not the handoff's override.
@@ -387,8 +425,9 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
 | Failure | Behavior |
 | --- | --- |
 | A file held open mid-save | that unit is `failed` for the pass; copies stay |
-| A copy edited in place (by hand or a model) | `changed`, shown under "Needs a look", never overwritten |
-| A copy edited in place, then no longer wanted there | `kept`, shown under "Needs a look" until taken out or kept |
+| A copy edited in place (by hand or a model) | `changed`: the page shows it under "Needs a look"; the native window's Sync overwrites it with the library's (`library_put_back`, backed up first) and says so; no pass overwrites it on its own |
+| A copy edited in place, then no longer wanted there | `kept`: the page shows it under "Needs a look" until taken out or kept; the native window's Sync takes it out (`library_kept`, backed up first) |
+| A copy deleted where it lay | `gone`: the native window's Sync puts it back; a file made there meanwhile is not overwritten, and Sync says it did not settle |
 | Settings unreadable | no pass (`get_checked`) |
 | The lock file cannot be opened or locked (tried three times, 50 ms apart; a disk that cannot lock files) | every change, Sync all, a put-back, a settling and an adoption refused with `Nothing laid out: no lock on ...`, nothing written; a session or a helper's turn starts without its pass, said in the log; the overview and differences still read |
 | Sessions started outside Luna | see the account's copies only, not folder skills |

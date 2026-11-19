@@ -10,6 +10,7 @@ use crate::board::Board;
 use crate::font::FAMILY;
 use crate::keys::{self, CONTEXT};
 use crate::models::Models;
+use crate::panels::PanelLayer;
 use crate::sidebar::{STRIP, Sidebar};
 use crate::theme::TEXT_SIZE;
 use crate::title_bar::{self, TitleBar};
@@ -26,6 +27,8 @@ pub struct LunaWindow {
     pub(crate) banner: Entity<Banner>,
     pub(crate) sidebar: Entity<Sidebar>,
     pub(crate) board: Entity<Board>,
+    /// The library, settings and accounts windows, over all of it.
+    pub(crate) panels: Entity<PanelLayer>,
 }
 
 /// Dark, as GPUI names the system's appearances.
@@ -52,6 +55,7 @@ impl LunaWindow {
             banner: cx.new(|cx| Banner::new(models.clone(), cx)),
             sidebar: cx.new(|cx| Sidebar::new(models.clone(), cx)),
             board: cx.new(|cx| Board::new(models.clone(), window, cx)),
+            panels: cx.new(|cx| PanelLayer::new(models.clone(), cx)),
             models,
         }
     }
@@ -129,6 +133,7 @@ impl Render for LunaWindow {
             .on_action(cx.listener(|this, _: &keys::ClosePeek, window, cx| this.escape(false, window, cx)))
             .on_action(cx.listener(|this, _: &keys::ForceClosePeek, window, cx| this.escape(true, window, cx)))
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .font_family(FAMILY)
@@ -149,6 +154,7 @@ impl Render for LunaWindow {
                     .child(self.sidebar.clone().cached(sidebar))
                     .child(self.board.clone().cached(board)),
             )
+            .child(self.panels.clone())
     }
 }
 
