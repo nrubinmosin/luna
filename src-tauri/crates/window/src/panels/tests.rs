@@ -557,9 +557,10 @@ fn a_sync_says_where_it_is_in_words(cx: &mut TestAppContext) {
 }
 
 /// Sync is the core's pass alone (ADR-0030): one command, after which it
-/// says what it left alone as not Luna's and what it could not lay out.
+/// says what it wrote and took out, what it left alone as not Luna's, and
+/// what it could not do.
 #[gpui::test]
-fn a_sync_says_what_it_left_alone_and_what_it_could_not_lay_out(cx: &mut TestAppContext) {
+fn a_sync_says_what_it_wrote_took_out_left_and_could_not_do(cx: &mut TestAppContext) {
     let mut f = open(cx);
     let lib = f.library();
     let library = lib.read_with(f.cx, |v, _| v.library.clone());
@@ -570,15 +571,19 @@ fn a_sync_says_what_it_left_alone_and_what_it_could_not_lay_out(cx: &mut TestApp
         { "dest": "C:\\c\\CLAUDE.md", "status": "taken" },
         { "dest": "C:\\d\\skills\\review", "status": "current" },
     ]);
+    o["written"] = json!(["C:\\d\\skills\\review"]);
+    o["removed"] = json!(["C:\\e\\skills\\old", "C:\\e\\CLAUDE.md"]);
+    o["notRemoved"] = json!(["C:\\f\\skills\\old: a link on the way"]);
     f.host.answer(cmd::LIBRARY_SYNC, o);
     library.update(f.cx, |l, cx| l.sync_now(cx));
     f.cx.run_until_parked();
     assert_eq!(f.calls(cmd::LIBRARY_SYNC), vec![json!({})]);
     let crate::library::SyncState::Synced(r) = library.read_with(f.cx, |l, _| l.sync.clone()) else { panic!("not synced") };
-    assert_eq!(r.foreign, 1);
+    assert_eq!((r.written, r.removed, r.foreign), (1, 2, 1));
     assert!(!r.clean(), "a copy not laid out is no success");
-    assert!(r.said().contains("Not laid out: C:\\a\\skills\\review: not written over, its backup would not write."), "{}", r.said());
+    assert!(r.said().contains("Not done: C:\\a\\skills\\review: not written over, its backup would not write."), "{}", r.said());
     assert!(r.said().contains("C:\\b\\skills\\review: changed there while Sync was at it"), "{}", r.said());
+    assert!(r.said().contains("Not done: C:\\f\\skills\\old: a link on the way."), "{}", r.said());
 }
 
 /// An editor left alone schedules nothing: its caret is steady and nothing

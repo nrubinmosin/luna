@@ -820,16 +820,17 @@ own question, whose Turn on click is the only way `confirmed` is sent. The
 test build's driver has no line that answers it (below), and must not get
 one: a driver line is input no person gave.
 
-Sync lays the library out (`library_sync`) and then makes every copy Luna
-manages the library's again, as ADR-0030 has it: the copies changed where
-they lie are overwritten and the deleted ones put back (`library_put_back`,
-over what is there only at the changed ones), the copies no longer wanted
-but changed taken out (`library_kept`), each backed up first; a place
-holding a file Luna did not write is left alone. It says how many of each it
-did, and anything that would not settle, or that changed again meanwhile;
-"every copy Luna manages holds what the library says" only when nothing is
-left. The core's own passes (at a session's start, after a change) still
-only report a changed or deleted copy (library.md).
+Sync is one acting pass of the core's (`library_sync`), the same as runs
+before every session's start, as ADR-0030 has it: Luna's own copies are
+written over with the library's or put back, those no longer wanted taken
+out, a changed one backed up first, and a place holding a file Luna did not
+write is left alone (library.md). The overview it answers carries what the
+pass did (`written`, `removed`, `notRemoved`; empty on a look), and the
+window says from it how many copies it wrote and took out, how many places
+it left alone (`taken`), and, a line each with why, every copy it could not
+write (`failed`, or `behind`/`missing` still: saved there while the pass was
+at it) or take out. "Every copy Luna manages holds what the library says"
+only when there is no such line.
 
 **What the panels hand the window's other parts.** The preferences Settings
 writes (`window_prefs`) are the workspace's too (`Workspace::prefs`,

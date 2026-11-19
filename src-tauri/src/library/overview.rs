@@ -77,6 +77,11 @@ pub struct Overview {
     /// Folders set aside in `system/`, read by nothing (system.rs
     /// `set_aside`): for the person to move or delete.
     pub system_aside: Vec<String>,
+    /// What the pass behind this answer did (pass.rs `Pass`), for the native
+    /// window's Sync to say; empty on a look.
+    pub written: Vec<String>,
+    pub removed: Vec<String>,
+    pub not_removed: Vec<String>,
 }
 
 /// Whether a link `codex_manifests` keeps clear of, or a copy a pass would not
@@ -186,6 +191,9 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         accounts,
         folders,
         places: p.places,
+        written: p.written,
+        removed: p.removed,
+        not_removed: p.not_removed,
         found_instructions,
         overridden,
         system: SYSTEM_TEXTS.iter().filter_map(|t| resolve_text(&dirs, t.name)).map(|r| r.state()).collect(),

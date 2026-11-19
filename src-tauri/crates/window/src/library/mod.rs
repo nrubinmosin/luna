@@ -59,6 +59,12 @@ pub struct Overview {
     pub system_aside: Vec<String>,
     /// Every copy the library wants, and where it stands.
     pub places: Vec<Place>,
+    /// What the pass behind this answer did (library/pass.rs `Pass`):
+    /// the copies it wrote the library's into, those it took out, and those
+    /// it could not take out (`dest: why`). Empty on a look.
+    pub written: Vec<String>,
+    pub removed: Vec<String>,
+    pub not_removed: Vec<String>,
 }
 
 /// One copy the library wants (`LibraryPlaceDto`): where, and how it stands
@@ -458,12 +464,17 @@ pub enum SyncState {
     Failed(String),
 }
 
-/// What a Sync's pass left as it was, from the overview it answered.
+/// What a Sync's pass did and left, from the overview it answered.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SyncReport {
+    /// Copies the library's was written into: put there, or over Luna's
+    /// own copy that was behind or changed there (backed up first).
+    pub written: usize,
+    /// Luna's copies no longer wanted, taken out.
+    pub removed: usize,
     /// Places holding a file Luna did not write, left alone.
     pub foreign: usize,
-    /// What it could not lay out, a line each with why.
+    /// What it could not write or take out, a line each with why.
     pub failed: Vec<String>,
 }
 
@@ -475,7 +486,8 @@ impl SyncReport {
         for p in o.places("behind").chain(o.places("missing")) {
             failed.push(format!("{}: changed there while Sync was at it; left for the next", p.dest));
         }
-        SyncReport { foreign: o.places("taken").count(), failed }
+        failed.extend(o.not_removed.iter().cloned());
+        SyncReport { written: o.written.len(), removed: o.removed.len(), foreign: o.places("taken").count(), failed }
     }
 
     /// Everything Luna manages holds what the library says.
@@ -491,11 +503,22 @@ impl SyncReport {
         } else {
             "Synced, but not everything Luna manages holds what the library says.".to_owned()
         };
+        let mut done = Vec::new();
+        if self.written > 0 {
+            done.push(format!("{} written", count(self.written, "a copy", "copies")));
+        }
+        if self.removed > 0 {
+            done.push(format!("{} no longer wanted taken out", count(self.removed, "a copy", "copies")));
+        }
+        if !done.is_empty() {
+            let line = done.join(", ");
+            out.push_str(&format!(" {}{} (a changed one backed up first).", line[..1].to_uppercase(), &line[1..]));
+        }
         if self.foreign > 0 {
             out.push_str(&format!(" {} left alone.", count(self.foreign, "A file Luna did not write is", "files Luna did not write are")));
         }
         for line in &self.failed {
-            out.push_str(&format!(" Not laid out: {line}."));
+            out.push_str(&format!(" Not done: {line}."));
         }
         out
     }
@@ -576,7 +599,7 @@ impl Library {
     /// Lays the library out now (ADR-0030): Luna's own copies written over
     /// with the library's or put back, those no longer wanted taken out, a
     /// changed one backed up first; a file Luna did not write left alone.
-    /// Says what it left alone and what would not lay out.
+    /// Says what it wrote, took out and left alone, and what it could not do.
     pub fn sync_now(&mut self, cx: &mut Context<Self>) {
         self.sync = SyncState::Syncing;
         let pass = self.run_answer::<Option<Overview>>(cmd::LIBRARY_SYNC, json!({}), Option::clone, cx);
@@ -769,15 +792,20 @@ mod tests {
     }
 
     #[test]
-    fn a_sync_says_what_it_left_alone_and_what_failed() {
+    fn a_sync_says_what_it_wrote_took_out_left_and_could_not_do() {
         let clean = SyncReport::default();
-        assert!(clean.said().starts_with("Synced: every copy"));
-        let r = SyncReport { foreign: 1, ..SyncReport::default() };
-        assert_eq!(r.said(), "Synced: every copy Luna manages holds what the library says. A file Luna did not write is left alone.");
+        assert_eq!(clean.said(), "Synced: every copy Luna manages holds what the library says.");
+        let r = SyncReport { written: 2, removed: 1, foreign: 1, ..SyncReport::default() };
+        assert_eq!(
+            r.said(),
+            "Synced: every copy Luna manages holds what the library says. 2 copies written, a copy no longer wanted taken out (a changed one backed up first). A file Luna did not write is left alone."
+        );
+        let r = SyncReport { removed: 3, ..SyncReport::default() };
+        assert!(r.said().contains(" 3 copies no longer wanted taken out (a changed"), "{}", r.said());
         let r = SyncReport { failed: vec!["/a/skills/x: its backup would not write".into()], ..SyncReport::default() };
         assert!(!r.clean());
         assert!(r.said().starts_with("Synced, but not everything"), "{}", r.said());
-        assert!(r.said().contains("Not laid out: /a/skills/x: its backup would not write."));
+        assert!(r.said().contains("Not done: /a/skills/x: its backup would not write."));
     }
 
     #[test]

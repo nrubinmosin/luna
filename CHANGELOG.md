@@ -43,10 +43,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   at the next open, read back only as a private file of Luna's; throwing it
   away leaves text typed since. A save whose layout after fails says it was
   saved. Every
-  way the editor's text is replaced asks first. Sync makes every copy Luna
-  manages the library's again (changed ones overwritten, deleted ones put
-  back, unwanted ones taken out, each backed up; files Luna did not write
-  left alone) and says what it did. Deleting an account is bound to the
+  way the editor's text is replaced asks first. Sync is the core's pass
+  (Luna's own copies written over or put back, unwanted ones taken out, a
+  changed one backed up first; files Luna did not write left alone), and
+  says how many copies it wrote and took out, how many places it left
+  alone, and each it could not write or take out, with why; the pass's
+  answer now lists what it wrote, took out and could not take out. Deleting an account is bound to the
   folder its question named, removed through a handle held to it without
   following a link or crossing into a mount (on Unix, one on another
   device), and names the chats still set to it. Rename takes the chats on

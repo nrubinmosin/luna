@@ -359,7 +359,11 @@ change in the window and on Sync all, one at a time under a lock file beside the
 ledger shared by window and core. Whatever writes takes it or is refused
 (`lock`, `Nothing laid out: no lock on ...`), a settings change before it writes
 the settings; only the overview reads without it (`lock_to_read`, said once a
-run), the ledger being written whole. Where `lay_out` runs in a start:
+run), the ledger being written whole. The overview a pass answers says what it
+did (`Pass` in pass.rs): the copies it wrote, those it took out, and those it
+could not take out with why (`written`, `removed`, `notRemoved`; empty on a
+look), which the native window's Sync reports. Where `lay_out` runs in a
+start:
 
 - **A chat** (`pty/start.rs`): inside the launch closure, so under that chat's
   own spawn gate (one chat's starts wait on its pass; other chats and their

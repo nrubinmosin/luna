@@ -76,6 +76,12 @@ pub struct Place {
 #[derive(Default)]
 pub(super) struct Pass {
     pub(super) places: Vec<Place>,
+    /// What this pass did, for a Sync to say: the copies it wrote the
+    /// library's into, those it took out, and those it could not take out
+    /// (`dest: why`). Empty on a look.
+    pub(super) written: Vec<String>,
+    pub(super) removed: Vec<String>,
+    pub(super) not_removed: Vec<String>,
 }
 
 /// Looks at every copy the library wants and, with `act`, makes it so: puts
@@ -203,6 +209,7 @@ pub(super) fn pass(
             Ok(was @ (Status::Missing | Status::Behind)) if act => {
                 match lay_over(dirs, u, &key, source, &want, noted.as_ref(), there.as_ref(), changed, &part, ledger) {
                     Ok(true) => {
+                        out.written.push(key.clone());
                         if was == Status::Missing && noted.is_some() {
                             crate::log::info(
                                 "library",
@@ -259,6 +266,7 @@ pub(super) fn pass(
                     if link_is_news(&dest) {
                         crate::log::warn("library", &format!("could not take out {key}: {e}"));
                     }
+                    out.not_removed.push(format!("{key}: {e}"));
                     ledger.wrote(&key, h);
                     continue;
                 }
@@ -275,19 +283,24 @@ pub(super) fn pass(
                 continue;
             }
             match take_out_copy(dirs, &dest, file, &there, changed, &removable) {
-                Ok(Some(saved)) => crate::log::info(
-                    "library",
-                    &format!(
-                        "took out {key}, no longer wanted there and changed there since Luna wrote it; what was there is in {}",
-                        saved.display()
-                    ),
-                ),
-                Ok(None) => {}
+                Ok(saved) => {
+                    if let Some(saved) = saved {
+                        crate::log::info(
+                            "library",
+                            &format!(
+                                "took out {key}, no longer wanted there and changed there since Luna wrote it; what was there is in {}",
+                                saved.display()
+                            ),
+                        );
+                    }
+                    out.removed.push(key);
+                }
                 // Not taken out: still Luna's, for a later pass to try.
                 Err(e) => {
                     if link_is_news(&dest) {
                         crate::log::warn("library", &format!("could not take out {key}: {e}"));
                     }
+                    out.not_removed.push(format!("{key}: {e}"));
                     ledger.wrote(&key, h);
                 }
             }
@@ -584,6 +597,11 @@ mod tests {
 
         let p = f.run(&lib, &mut ledger, true);
         assert!(p.places.iter().all(|x| x.status == Status::Current), "{:?}", p.places);
+        let mut written = p.written.clone();
+        written.sort();
+        let mut wanted: Vec<String> = p.places.iter().map(|x| x.dest.clone()).collect();
+        wanted.sort();
+        assert_eq!(written, wanted, "a pass says what it wrote");
         assert_eq!(std::fs::read_to_string(f.account(0).join("CLAUDE.md")).unwrap(), "Be brief.\n");
         assert_eq!(std::fs::read_to_string(f.account(1).join("AGENTS.md")).unwrap(), "Be brief.\n");
         assert!(f.account(1).join("skills/review/SKILL.md").is_file());
@@ -591,7 +609,7 @@ mod tests {
         // Nothing new: nothing written.
         let stamp = std::fs::metadata(f.account(0).join("CLAUDE.md")).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        f.run(&lib, &mut ledger, true);
+        assert!(f.run(&lib, &mut ledger, true).written.is_empty());
         assert_eq!(std::fs::metadata(f.account(0).join("CLAUDE.md")).unwrap().modified().unwrap(), stamp);
 
         // The library moves on; Luna's own copies follow, a file taken out of
@@ -743,7 +761,9 @@ mod tests {
         let none = LibrarySettings::default();
         f.run(&none, &mut ledger, false);
         assert!(claude_skill.join(SKILL_FILE).is_file(), "looking takes nothing out");
-        f.run(&none, &mut ledger, true);
+        let p = f.run(&none, &mut ledger, true);
+        assert!(p.removed.iter().any(|r| Path::new(r) == claude_skill), "a pass says what it took out: {:?}", p.removed);
+        assert!(p.written.is_empty() && p.not_removed.is_empty());
         assert!(!claude_skill.exists() && !codex_skill.exists());
         assert!(!f.account(0).join("CLAUDE.md").exists() && !f.account(1).join("AGENTS.md").exists());
         assert!(f.account(2).join("skills").is_dir(), "only the skill's own folder goes");
