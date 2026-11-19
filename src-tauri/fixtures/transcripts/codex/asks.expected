@@ -47,9 +47,7 @@ Seen {
     },
     scan_from_now: Scanned {
         completed: 0,
-        working: Some(
-            false,
-        ),
+        working: None,
         ask: Some(
             (
                 "call_b",

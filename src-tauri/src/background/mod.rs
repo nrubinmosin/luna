@@ -22,7 +22,7 @@
 //! transcript, Codex's rollout — so `luna_message_list` reads it there.
 
 use crate::agents::Ask;
-use crate::procs::{left_names, leftovers, Leftover};
+use crate::procs::{left_names, Leftover};
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -148,12 +148,25 @@ struct Entry {
     /// next core starts on the same conversation (procs/).
     job: Option<std::sync::Arc<crate::procs::Job>>,
     /// Its turns left something running in that job, when last looked: at the
-    /// end of its turn and at every activity sample since. Reading a job takes
-    /// a process snapshot, too much for every `turn_state`, and not under the
-    /// registry lock.
+    /// end of its turn and at every read of the records since (`lives`).
+    /// Reading a job takes a process snapshot, too much for every
+    /// `turn_state`, and not under the registry lock.
     left_running: bool,
-    /// What that is, process by process, as last sampled between turns: what
-    /// `luna_session_get` names, and whether it does anything (`leftovers`).
+    /// Its job would not list when last looked at between turns: what its
+    /// turns left is not known, and its record counts that as active.
+    left_unlisted: bool,
+    /// Turns whose process could not be put in its job (`procs::adopt` or
+    /// `join` refused), by the CLI's pid and the turn's start: what they
+    /// started is in no job, and not known (active) until a walk below each
+    /// by parent links finds nothing left (`procs::left_below`).
+    outside: Vec<(u32, u64)>,
+    /// This core, leaving, ended what its turns left and found its job empty
+    /// after (`stop_all`): saved, so the next core knows nothing of it runs on
+    /// unseen. Cleared as a turn begins.
+    left_seen_out: bool,
+    /// What that is, process by process, as last read between turns: what
+    /// `luna_session_get` names. Its record counts each as a shell running for
+    /// as long as it is there.
     left: Vec<Leftover>,
     /// A stop between turns is ending what its turns left (`kill`): no turn
     /// starts meanwhile, as its CLI would land in the job being emptied; text
@@ -263,10 +276,9 @@ pub fn promoting(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.promoting)
 }
 
-/// How many helpers are in a turn, or between turns have what their turns left
-/// still at work (`left_holds`): what keeps the core, as a running session does,
-/// for the core's going would end that work. Left idle past LEFTOVER_HOLD_MS it
-/// keeps the core no more than it keeps the machine.
+/// How many helpers are active (`Life::active`): in a turn, or between turns
+/// with what their turns left still in their job. What keeps the core, as a
+/// running session does, for the core's going would end that work.
 pub fn running() -> usize {
     running_counts().0
 }
@@ -275,7 +287,7 @@ pub fn running() -> usize {
 /// their turns left (ipc.rs `Welcome::left_only`): read together, under one
 /// lock, so a helper that starts a turn meanwhile is never one of them.
 pub fn running_counts() -> (usize, usize) {
-    counts_of(lock().entries.values(), crate::throttle::now_ms())
+    counts_of(lock().entries.values())
 }
 
 /// For a core asked to leave only if nothing but what helpers' turns left
@@ -314,13 +326,8 @@ fn between_turns<'a>(mut entries: impl Iterator<Item = &'a Entry>) -> bool {
     entries.all(|e| e.run.is_none())
 }
 
-fn counts_of<'a>(entries: impl Iterator<Item = &'a Entry>, now: u64) -> (usize, usize) {
-    entries.filter(|e| keeps_core(e, now)).fold((0, 0), |(all, left), e| (all + 1, left + usize::from(e.run.is_none())))
-}
-
-/// Whether this one helper is one `running` counts.
-fn keeps_core(e: &Entry, now: u64) -> bool {
-    e.run.is_some() || leftovers_hold(e, now)
+fn counts_of<'a>(entries: impl Iterator<Item = &'a Entry>) -> (usize, usize) {
+    entries.filter(|e| life_of(e).active()).fold((0, 0), |(all, left), e| (all + 1, left + usize::from(e.run.is_none())))
 }
 
 /// Whether a helper runs on this account folder, between turns too: its next
@@ -341,14 +348,31 @@ pub fn stop_all() {
     // of their own, which the OS would end with the job if it were still tied.
     let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> =
         lock().entries.iter().filter_map(|(id, e)| Some((id.clone(), e.job.clone()?))).collect();
+    let mut seen_out = Vec::new();
     for (id, job) in jobs {
         end_leftovers(&id, Some(&job));
+        if crate::procs::left_in(&job).is_some_and(|left| left.is_empty()) {
+            seen_out.push(id.clone());
+        }
         crate::procs::let_go(&job);
     }
-    // As the ties now stand: none.
-    for e in lock().entries.values_mut() {
+    // As the ties now stand: none. What was seen out is saved, for the next
+    // core to know nothing of these runs on unseen; one never seen out reads
+    // there as not known (`restore`).
+    for (id, e) in lock().entries.iter_mut() {
         e.tied = false;
+        e.left_seen_out = left_seen_out(e, seen_out.contains(id));
     }
+    save();
+}
+
+/// Whether nothing a helper's turns left runs on unseen as the core leaves:
+/// its job listed empty after its leftovers were ended (`emptied`), or, with no
+/// job under this core (taken up, and no turn since), it was known so when it
+/// was taken up. Not with a turn on, nor with a turn that was in no job
+/// (`outside`), which nothing here ended.
+fn left_seen_out(e: &Entry, emptied: bool) -> bool {
+    e.run.is_none() && e.outside.is_empty() && (emptied || (e.job.is_none() && e.left_seen_out))
 }
 
 /// How long a core that leaves waits for the turns it stopped to be recorded
@@ -580,12 +604,11 @@ mod tests {
     }
 
     /// What a core says of its helpers to a window (ipc.rs `Welcome`): every
-    /// one in a turn or with what its turns left still at work counts, and of
+    /// one in a turn or with what its turns left still in its job counts, and of
     /// those, the ones between turns are what is left only. Claude Code's and
     /// Codex's alike.
     #[test]
     fn a_helper_counts_as_left_only_between_turns() {
-        let now = crate::throttle::now_ms();
         for provider in [Provider::Claude, Provider::Codex] {
             let mut turn = entry(provider);
             claim(&mut turn);
@@ -595,8 +618,8 @@ mod tests {
             both.left_running = true;
             claim(&mut both);
             let idle = entry(provider);
-            assert_eq!(counts_of([&turn, &left, &both, &idle].into_iter(), now), (3, 1), "{provider:?}");
-            assert_eq!(counts_of([&left].into_iter(), now), (1, 1), "{provider:?}");
+            assert_eq!(counts_of([&turn, &left, &both, &idle].into_iter()), (3, 1), "{provider:?}");
+            assert_eq!(counts_of([&left].into_iter()), (1, 1), "{provider:?}");
             // Asked to leave only so (`close_if_left_only`): not with a turn,
             // claimed or running, whatever else is left.
             assert!(between_turns([&left, &idle].into_iter()), "{provider:?}");

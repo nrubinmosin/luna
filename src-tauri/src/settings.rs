@@ -41,10 +41,6 @@ pub struct Settings {
     /// The user's skills and instructions, and where they are laid out
     /// (library/).
     pub library: LibrarySettings,
-    /// A chat whose last message ends on a line holding this text is waiting
-    /// for its user (asking.rs).
-    pub waiting_marker_on: bool,
-    pub waiting_marker: String,
 }
 
 /// Which accounts something goes into: `all`, a provider's every account
@@ -443,8 +439,6 @@ impl Default for Settings {
             settings_sync_on_start: false,
             codex_trusted_roots: Vec::new(),
             library: LibrarySettings::default(),
-            waiting_marker_on: true,
-            waiting_marker: "AWAITING OPERATOR".into(),
         }
     }
 }

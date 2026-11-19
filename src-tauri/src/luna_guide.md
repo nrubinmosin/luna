@@ -30,8 +30,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   when not the folder: a worktree), `transcript`, `sessionId` (the CLI's own), `turnStartedAt` (null between turns), `lastActivityAt` (a long command shows nothing
   until it ends: quiet is not stuck), `resolvedModel` (the model that answered), `context`
   (`tokens` in its window against the model's `window`, `pct`, after its last step) and
-  `leftRunning`: what its turns left running between turns (`exe`, `pid`, `startedAt`,
-  `active` = CPU or I/O in the last 10 min, `quietMin`), which keeps the PC awake until idle 2 h.
+  `leftRunning`: what its turns left running between turns, by name and pid (`"tail.exe (pid 22104)"`) or as a
+  count (`"2 shells"`), which keeps the PC awake for as long as it is there.
   Times are UTC ISO.
 - Another session's `task`, `askId` and `ask` come only with `scope: "all"`. Without it, you
   read, wait on, send to and answer only sessions you spawned and theirs; with it, you read and
@@ -218,9 +218,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   only if it opens on a status word or is a report (400+ characters); else it waits in the
   report for you.
 - `autoDelete` (on by default): Luna deletes the helper 30 minutes after its answer reached you,
-  not while a job or helper of its runs (processes idle 2 h do not count: they go with it, and
-  you hear so); a read, a report or a send starts that over (`deletesInMin` counts down). A
-  worktree you made for it stays. One whose turn you stopped is never deleted.
+  not while a job or helper of its runs, however long idle; a read, a report or a send starts
+  that over (`deletesInMin` counts down). A worktree you made for it stays. One whose turn you
+  stopped is never deleted.
 - A deleted session's transcript stays in its account's folder (`luna_run_list` names it). If a
   helper printed what it should not have, tell the user that path.
 
@@ -257,8 +257,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   not progress; one per 10 s. A turn ending on a question notifies anyway.
 - Before anything that stops Luna's core or the PC: `luna_session_list` for helpers at work; they
   lose their turns. To turn the PC off use `luna_power_set`, not a `shutdown` command: it fires
-  once Luna is quiet for `quietSec`, CLIs closed first; `cancel` disarms. `drain`: till then
-  agents' spawns and sends are refused and answers take only a pending ask. It returns `busy` and
-  `waitingForAPerson`, the sessions it waits on. After `restart` Luna
+  once no session has been active (a turn running or waiting, a shell, cron or subagent, a state
+  not yet known) for the whole `quietSec`, CLIs closed first; `cancel` disarms. `drain`: till then
+  agents' spawns and sends are refused and answers take only a pending ask; as it fires all three
+  are refused ("Luna is shutting down"): end your turn. It returns `busy`,
+  the sessions active now, and of those `waitingForAPerson`. After `restart` Luna
   starts at the next sign-in; that takes a person.
 - `luna_guide_get` with no topic gives the topics; each tool's name is one.

@@ -323,7 +323,6 @@ pub fn ask_of(id: &str) -> Option<Ask> {
             spawned_at_ms: p.spawned_at_ms,
             resume: p.resume.as_deref(),
             account_path: &p.account_path,
-            last_output_ms: p.last_output_ms,
         })
         .or_else(|| waiting.then(|| Ask::permission(None, pty.screen(id).as_deref().and_then(codex_command_on))))
         .or_else(|| (turn != Some(crate::activity::Turn::Busy)).then(|| pty.screen(id).as_deref().and_then(codex_list_on)).flatten()),

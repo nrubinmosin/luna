@@ -110,7 +110,6 @@ them. Each costs the session a turn as well as its tokens.
 | Finished, its answer in a file: the path, the report's lines, its first line | 100 |
 | NOT done yet: a job, subagent or helper of its still runs (said once) | 135 |
 | Nothing left running, and it said nothing since | 50 |
-| Only idle processes left, with what they were started as | 85 |
 | Mid-turn and quiet for 30 minutes (once a turn), with how to see its screen | 70 |
 | Answered, but its CLI waits on what it left in the background | 125 |
 | Its CLI stopped its background work (added to another line) | 60 |
@@ -177,4 +176,4 @@ every request. Checked by `context_page.rs`.
 | `guide-getting` | 4,652 | 1,163 |
 | `guide-answering` | 2,583 | 646 |
 | `guide-restart` | 1,073 | 268 |
-| `guide-working` | 1,939 | 485 |
+| `guide-working` | 2,129 | 532 |

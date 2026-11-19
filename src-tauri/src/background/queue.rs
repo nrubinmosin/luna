@@ -153,9 +153,13 @@ pub(super) fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
 
 /// Takes the helper's run for a turn about to start, under the same lock that
 /// found it free: text that arrives before the process is up queues behind
-/// it rather than starting a second process on the same conversation.
+/// it rather than starting a second process on the same conversation. A turn
+/// beginning is activity: a power-off's quiet window starts over (the
+/// activity lock is taken under the registry's, never the other way round).
 pub(super) fn claim(e: &mut Entry) {
     e.run = Some(Run::claimed(None, crate::throttle::now_ms()));
+    e.left_seen_out = false;
+    crate::activity::touch();
 }
 
 /// Where text sent to a helper went.

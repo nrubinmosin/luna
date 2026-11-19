@@ -58,9 +58,6 @@ pub(super) struct Owed {
     /// when that ends or a turn no notice started does, not of every turn; a
     /// question asked since is a new debt.
     pub(super) told_pending: bool,
-    /// The caller has been told all its job left has sat idle (IDLE_JOB_MS):
-    /// once per debt, which stays open for the job's end.
-    pub(super) told_idle: bool,
     /// The turn count during which the caller was told the turn has gone quiet
     /// (QUIET_TURN_MS): once per turn.
     pub(super) told_quiet: Option<u32>,
@@ -137,7 +134,6 @@ impl Owed {
             job_went: false,
             unsure: false,
             told_pending: false,
-            told_idle: false,
             told_quiet: None,
             told_background_wait: None,
             no_reply: false,

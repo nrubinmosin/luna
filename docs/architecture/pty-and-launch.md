@@ -196,7 +196,7 @@ without a deadline) is gone with the bypass it needed on Codex.
 - **The screen is drawn once and caught up.** The scrollback counts every byte
   ever written to it (`Scrollback::written`, the output's generation). Each
   session keeps one `vt100` terminal (`Drawn`) drawn to a generation at a size;
-  a look at the screen (the activity sampler's Codex dialog check every 5 s,
+  a look at the screen (`ask_of`'s Codex dialog, `send`'s refusal on a dialog,
   `has_draft`, `at_prompt`, `composer`, `luna_session_get`'s screen, a cursor
   query) feeds it only what was written since. It is drawn anew from the whole
   scrollback when the pty's size changed or what was written since has been
@@ -204,7 +204,7 @@ without a deadline) is gone with the bypass it needed on Codex.
   out the new bytes; a look copies nothing under the session map. Both CLIs go
   through it. Kept, the terminal has seen output from before where the
   scrollback starts now, as a pane that stayed attached has.
-- **What is read off disk is kept by stamp.** `sessions_meta` and the sampler
+- **What is read off disk is kept by stamp.** `sessions_meta` and the records' reads
   ask after every live chat every few seconds. What they read of a file (a
   Claude Code registry entry, the titles in a transcript's tail; a rollout's
   tail, its first line's cwd and the limit its last turn met; Codex's

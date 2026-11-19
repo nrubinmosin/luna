@@ -30,6 +30,9 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         opening_id: None,
         job: None,
         left_running: false,
+        left_unlisted: false,
+        outside: Vec::new(),
+        left_seen_out: false,
         left: Vec::new(),
         ending_left: false,
         promoting: false,
@@ -69,6 +72,20 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
         return Ok(());
     }
     let started = started.map(|_| ());
+    // A power-off being decided let none start: the batch waits, as for a
+    // move, and goes on once admission is open again (`resume_waiting`, which
+    // `power/` calls then) rather than end as an error whose senders would
+    // be told it failed.
+    if started.as_ref().is_err_and(|err| err.starts_with(crate::power::SHUTTING_DOWN)) && requeue_refused(id) {
+        reg().1.notify_all();
+        save();
+        changed();
+        // Opened meanwhile, and nothing is left to call it.
+        if !crate::power::closed() {
+            go_on(id);
+        }
+        return Ok(());
+    }
     if let Err(err) = &started {
         if let Some(e) = lock().entries.get_mut(id) {
             if e.run.as_ref().is_some_and(|r| r.pid.is_none()) {
@@ -80,10 +97,10 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                 if !e.queue.is_empty() {
                     // Behind a claim a stop ended before its process started
                     // (the person's Stop, which dropped what was queued then, or
-                    // Luna's own, an update's say: `stop_for_luna`), it came
-                    // after that stop and never got its chance: kept for its
-                    // senders.
-                    if stopped || e.cut_short {
+                    // Luna's own, an update's say: `stop_for_luna`), or one a
+                    // power-off let none start under, it came after that stop
+                    // and never got its chance: kept for its senders.
+                    if stopped || e.cut_short || err.starts_with(crate::power::SHUTTING_DOWN) {
                         let queued = std::mem::take(&mut e.queue);
                         e.undelivered.extend(queued);
                         note(e, "kept what was queued behind it for its senders");
@@ -99,6 +116,26 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
         changed();
     }
     started
+}
+
+/// A turn claimed for a batch and refused at the gate before its process
+/// started: the batch is queued again ahead of what came behind it, the claim
+/// given back, and the turn counted for nothing. False where there is no batch
+/// to keep (a helper's opening prompt rides on no batch), a stop took the claim,
+/// or Luna is stopping the turn (`cut_short`): the error path keeps those.
+fn requeue_refused(id: &str) -> bool {
+    let mut r = lock();
+    let Some(e) = r.entries.get_mut(id) else { return false };
+    let waiting = e.run.as_ref().is_some_and(|run| run.pid.is_none() && !run.stopped);
+    if !waiting || e.in_flight.is_empty() || e.cut_short {
+        return false;
+    }
+    let behind = std::mem::take(&mut e.queue);
+    e.queue = std::mem::take(&mut e.in_flight);
+    e.queue.extend(behind);
+    e.run = None;
+    note(e, "its turn waits: Luna is shutting down, and starts nothing meanwhile");
+    true
 }
 
 /// Claude Code's stdin for a turn: `first`, then whatever comes down `lines`,
@@ -460,6 +497,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // on the ways out where the turn does not start.
     let on_account = crate::account_use::running_on(&account);
     drop(reserved);
+    // A turn about to start is activity, and a power-off being decided lets
+    // none start: the stamp first, then the gate (power/ `closed`).
+    crate::activity::touch();
+    crate::power::open_or_refuse()?;
     // Ahead of the process: what it starts is born after this (`turn_over`).
     let started_ms = crate::throttle::now_ms();
     let mut child = cmd.spawn().map_err(|e| {
@@ -474,15 +515,28 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     if let Some(pid) = pid {
         crate::procs::await_environment(pid);
         if let Some(e) = lock().entries.get_mut(id) {
-            match &e.job {
+            // What a turn that is in no job starts is listed nowhere: not
+            // known, until a walk below it finds nothing (`outside`). Off
+            // Windows a refused `join` is a tie the keeper does not have, the
+            // turn listed by its pid all the same.
+            let inside = match &e.job {
                 Some(job) => {
                     let joined = crate::procs::join(job, pid);
                     e.tied = e.tied && joined;
+                    joined || !cfg!(windows)
                 }
                 None => {
                     e.job = crate::procs::adopt(pid).map(std::sync::Arc::new);
                     e.tied = e.job.as_deref().is_some_and(|job| crate::procs::tie(job, id));
+                    e.job.is_some()
                 }
+            };
+            if !inside {
+                crate::log::warn(
+                    "background",
+                    &format!("{}: its turn is in no job; what it starts is walked by parent", crate::agents::label(id)),
+                );
+                e.outside.push((pid, started_ms));
             }
             mark_by_thread(e);
         }
@@ -772,5 +826,39 @@ mod tests {
         e.session = Some("sid".into());
         note_opening(&mut e, "do B", "b-id");
         assert_eq!((e.opening.as_deref(), e.opening_id.as_deref()), (None, None));
+    }
+
+    /// A turn the gate refuses (a power-off being decided) is not an error to
+    /// its senders: its batch waits, ahead of what came behind it.
+    #[test]
+    fn a_turn_refused_at_the_gate_keeps_its_batch_queued() {
+        let mut e = entry(Provider::Claude);
+        e.run = Some(Run::claimed(None, 0));
+        e.in_flight = vec!["flying".into()];
+        e.queue = vec!["behind it".into()];
+        lock().entries.insert("gate-refused".into(), e);
+        assert!(requeue_refused("gate-refused"));
+        {
+            let r = lock();
+            let e = &r.entries["gate-refused"];
+            assert!(e.run.is_none() && e.in_flight.is_empty(), "the claim is given back");
+            assert_eq!(e.queue, ["flying", "behind it"]);
+            assert!(e.error.is_none() && e.undelivered.is_empty() && e.turns_ended == 0, "not an ended turn, nothing handed back");
+        }
+        // No batch (an opening prompt), a stop's claim, or Luna's own stop: the error path.
+        let mut opening = entry(Provider::Claude);
+        opening.run = Some(Run::claimed(None, 0));
+        lock().entries.insert("gate-opening".into(), opening);
+        assert!(!requeue_refused("gate-opening"));
+        let mut cut = entry(Provider::Claude);
+        cut.run = Some(Run::claimed(None, 0));
+        cut.in_flight = vec!["flying".into()];
+        cut.cut_short = true;
+        lock().entries.insert("gate-cut".into(), cut);
+        assert!(!requeue_refused("gate-cut"));
+        let mut r = lock();
+        for id in ["gate-refused", "gate-opening", "gate-cut"] {
+            r.entries.remove(id);
+        }
     }
 }

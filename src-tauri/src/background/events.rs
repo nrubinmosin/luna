@@ -555,7 +555,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     }
     // Before the turn reads as over: whoever is owed its answer must not hear
     // "finished" ahead of the job it left running.
-    let left = job.map(|job| crate::procs::left_in(&job)).unwrap_or_default();
+    let left = job.map_or(Some(Vec::new()), |job| crate::procs::left_in(&job));
     // So too the subagents `codex exec` interrupted as the turn ended (0.167.2),
     // or took with it gone mid-turn, their work unfinished, with whoever is
     // owed an answer now to hear of it: the registry's lock goes before this one.
@@ -592,11 +592,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
             record_loss(&mut e.observed, e.turns_ended, StopCause::Ceiling, Some(by), unfinished, callers);
         }
         e.held.clear();
-        e.left_running = !left.is_empty();
-        // What was already there before the turn keeps its own clock; what is
-        // new is as quiet as the turn's end.
-        let now = crate::throttle::now_ms();
-        e.left = leftovers(&e.left, left, now, now);
+        note_left(e, left);
         if code != Some(0) && e.error.is_none() {
             e.error = Some(match code {
                 Some(c) => format!("{} exited with code {c}", e.spec.provider.as_str()),
@@ -630,6 +626,9 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         let told_move = told_move.filter(|_| e.observed.acted);
         (next, thread, e.observed.generation, std::mem::take(&mut e.observed.rerouted), e.observed.acted, retried, e.turns_ended, told_move)
     };
+    // A turn shorter than the reads between them was work all the same: a
+    // power-off's quiet window starts over.
+    crate::activity::touch();
     // Its model answered a prompt that told it of a move to another chat: no
     // turn after is told again (agents/reparent.rs `move_told`). Before the
     // next turn starts below, which would tell it again otherwise.

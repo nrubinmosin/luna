@@ -500,10 +500,9 @@ pub(super) fn background_calls_in(text: &str) -> Vec<String> {
 }
 
 /// Whether a Codex screen shows an approval dialog — a command to run, an edit
-/// to make, a permission to grant. The rollout records none of them, and the
-/// screen does not go quiet under one (the quiet-screen guess below misses
-/// it), but each ends in the same footer.
-pub fn asks(screen: &str) -> bool {
+/// to make, a permission to grant. The rollout records none of them; each ends
+/// in the same footer. Looked for only while the rollout says a turn runs.
+pub fn approval_on(screen: &str) -> bool {
     const MARKS: [&str; 3] = [
         "Press enter to confirm or esc to cancel",
         "Would you like to run the following command?",
@@ -512,25 +511,47 @@ pub fn asks(screen: &str) -> bool {
     MARKS.iter().any(|m| screen.contains(m))
 }
 
-/// `working` | `waiting` | `resting` off the rollout's turn events and the
-/// screen.
-fn fold_status(working: Option<bool>, last_output_ms: u64) -> &'static str {
-    match working {
-        Some(true) => {
-            let still = crate::throttle::now_ms().saturating_sub(last_output_ms) > STILL_MS;
-            if still {
-                "waiting"
-            } else {
-                "working"
-            }
-        }
-        _ => "resting",
+/// `working` | `resting` off the rollout's own turn events: a turn begun
+/// (`task_started`) and not yet over is working, whatever its screen does. An
+/// approval dialog is not in the rollout, so such a turn reads working.
+fn fold_status(working: Option<bool>) -> &'static str {
+    if working == Some(true) {
+        "working"
+    } else {
+        "resting"
     }
 }
 
-/// Just the status of a live session, for the activity sampler.
-pub fn status(live: &Live) -> Option<String> {
-    Some(fold_status(tracked(live)?.working, live.last_output_ms).to_string())
+/// What a live session's rollout says of its turn, for its lifecycle record
+/// (`activity`); None until the rollout is found, which comes with the first
+/// turn.
+pub fn rollout_read(live: &Live) -> Option<crate::activity::RolloutRead> {
+    let path = rollout_for(live)?;
+    // A file that will not open now says nothing of the turn: the scan kept
+    // from the last read is no word on what came since.
+    let len = match std::fs::File::open(&path).and_then(|f| f.metadata()) {
+        Ok(m) => m.len(),
+        Err(_) => return Some(crate::activity::RolloutRead { unreadable: true, ..Default::default() }),
+    };
+    let (scan, through) = tracked_fresh(live, path.clone())?;
+    // Opened, then not read through (the reopen, a seek or a read failed):
+    // the same.
+    if !through {
+        return Some(crate::activity::RolloutRead { unreadable: true, ..Default::default() });
+    }
+    let working = scan.working == Some(true);
+    Some(crate::activity::RolloutRead {
+        working,
+        seen_turn: scan.working.is_some(),
+        first_started_ms: scan.first_started_ms.and_then(|t| u64::try_from(t).ok()),
+        len,
+        unreadable: false,
+        completed: scan.completed,
+        // Only a question that holds the turn: an async one lets the model work on.
+        asks: working && scan.ask.as_ref().is_some_and(|(_, a)| a.blocking),
+        limit: (!working && scan.failed.is_some()).then(|| rollout_limit(&path).map(|(kind, _)| kind)).flatten(),
+        failed: scan.failed,
+    })
 }
 
 /// Where the session works, per its rollout: the folder it was started in,
@@ -557,7 +578,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
     let t = read_tail(&path);
 
     let scan = tracked(live);
-    let status = Some(fold_status(scan.as_ref().and_then(|s| s.working), live.last_output_ms));
+    let status = Some(fold_status(scan.as_ref().and_then(|s| s.working)));
     let named = thread_title(live.account_path, &id);
 
     let mut m = SessionMeta {
@@ -568,8 +589,6 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
         session_id: Some(id),
         model: t.model,
         first_prompt: cached_first_prompt(&path).and_then(|s| sane_title(&s)),
-        last_said_at: scan.as_ref().and_then(|s| s.last_said_at.clone()),
-        last_said: scan.and_then(|s| s.last_said),
         ..Default::default()
     };
     if let (Some(tokens), Some(window)) = (t.context_tokens, t.context_window) {

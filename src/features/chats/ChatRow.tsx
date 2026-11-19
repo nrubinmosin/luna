@@ -8,7 +8,6 @@ import { useChats } from './chats.store';
 import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
 import { draftTag, useDrafts } from './drafts.store';
-import { CLEAR_WAITING_TITLE, clearWaiting, useMarked } from './marked.store';
 import { BackgroundChip } from '../agents/BackgroundChip';
 
 /** One chat's row. `listNo` is its place in the numbered run, 1 to 9, or null
@@ -16,7 +15,6 @@ import { BackgroundChip } from '../agents/BackgroundChip';
 export const ChatRow = memo(function ChatRow({ chat, listNo }: { chat: Chat; listNo: number | null }) {
   const active = useChats(s => s.active === chat.id);
   const tag = draftTag(useDrafts(s => s.by[chat.id]));
-  const marked = useMarked(s => !!s.by[chat.id]);
   const setActive = useChats(s => s.setActive);
   const dragging = usePanes(s => s.drag === chat.id);
   const layout = usePanes(currentLayout);
@@ -155,12 +153,6 @@ export const ChatRow = memo(function ChatRow({ chat, listNo }: { chat: Chat; lis
         </span>
       )}
       <span className="row-tools">
-        {/* Clearing the `waiting` tag sits here, as on the pane's title bar:
-            once the pointer is on the row, these cover the tag. Only for the
-            marker's waiting, not a CLI's prompt. */}
-        {chat.status === 'waiting' && marked && (
-          <ToolButton icon="check" size={22} title={CLEAR_WAITING_TITLE} onClick={() => clearWaiting(chat.id)} />
-        )}
         <ToolButton
           icon="pencil"
           size={22}

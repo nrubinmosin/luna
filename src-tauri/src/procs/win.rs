@@ -13,8 +13,8 @@ use windows::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess, IO_COUNTERS,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SET_QUOTA, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
 };
 use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
 
@@ -88,6 +88,9 @@ pub fn also_marked(_job: &Job, _var: &str, _value: &str) {}
 
 /// So is this.
 pub fn await_environment(_pid: u32) {}
+
+/// And this: a Job Object holds what a chat's CLI starts, whatever it does.
+pub fn marked(_job: &Job, _id: &str) {}
 
 /// The tie needs no process of its own here.
 pub fn keeper_from_args() -> bool {
@@ -326,8 +329,9 @@ pub fn parents() -> Vec<(u32, u32)> {
     edges
 }
 
-/// Every pid in the job right now, the CLI itself included.
-pub fn members(job: &Job) -> Vec<u32> {
+/// Every pid in the job right now, the CLI itself included; None when Windows
+/// will not say.
+fn members(job: &Job) -> Option<Vec<u32>> {
     let mut cap: usize = 256;
     loop {
         // Header (two u32) followed by `cap` usize pids.
@@ -347,25 +351,43 @@ pub fn members(job: &Job) -> Vec<u32> {
                 let first = (buf.as_ptr() as *const u32).add(2) as *const usize;
                 (0..listed.min(cap)).map(|i| *first.add(i) as u32).collect()
             };
-            return pids;
+            return Some(pids);
         }
         // ERROR_MORE_DATA: the header still says how many there are.
         if assigned > cap && cap < 1 << 16 {
             cap = assigned + 64;
             continue;
         }
-        return Vec::new();
+        return None;
     }
 }
 
+/// What the job holds now, each process read and named; None when the job
+/// will not list. One gone between the list and the read is left out.
+pub fn list(job: &Job) -> Option<Vec<(super::ProcRead, String)>> {
+    Some(named(members(job)?))
+}
+
+/// `list` for a CLI that could not be put in a job: the processes below it by
+/// parent links.
+pub fn list_below(root: u32) -> Option<Vec<(super::ProcRead, String)>> {
+    Some(named(descendants(root)?))
+}
+
+fn named(pids: Vec<u32>) -> Vec<(super::ProcRead, String)> {
+    let names = names(&pids);
+    pids.into_iter().filter_map(|pid| Some((read(pid)?, names.iter().find(|(p, _)| *p == pid)?.1.clone()))).collect()
+}
+
 /// The pids below `root` by parent links, `root` included. Only for a CLI
-/// that could not be put in a job.
-pub fn descendants(root: u32) -> Vec<u32> {
+/// that could not be put in a job. None when the processes cannot be listed:
+/// not known is not empty.
+fn descendants(root: u32) -> Option<Vec<u32>> {
     let mut edges: Vec<(u32, u32)> = Vec::new(); // (pid, parent)
                                                  // SAFETY: a snapshot handle owned and closed here; the entry struct is
                                                  // sized before the first call as the API requires.
     unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return vec![root] };
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return None };
         let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
         if Process32FirstW(snap, &mut e).is_ok() {
             loop {
@@ -388,7 +410,7 @@ pub fn descendants(root: u32) -> Vec<u32> {
         }
         i += 1;
     }
-    out
+    Some(out)
 }
 
 fn filetime_100ns(ft: FILETIME) -> u64 {
@@ -401,7 +423,7 @@ fn filetime_to_unix_ms(ft: FILETIME) -> u64 {
     filetime_100ns(ft).saturating_sub(EPOCH_DIFF) / 10_000
 }
 
-/// CPU time, IO volume, and start time of one process, if it can be opened.
+/// When one process was created, if it can be opened.
 pub fn read(pid: u32) -> Option<super::ProcRead> {
     // SAFETY: a process handle opened and closed here; out-params are
     // plain stack structs.
@@ -409,28 +431,10 @@ pub fn read(pid: u32) -> Option<super::ProcRead> {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let (mut c, mut x, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
         let times = GetProcessTimes(h, &mut c, &mut x, &mut k, &mut u);
-        let mut io = IO_COUNTERS::default();
-        let _ = GetProcessIoCounters(h, &mut io);
         let _ = CloseHandle(h);
         times.ok()?;
-        Some(super::ProcRead {
-            pid,
-            cpu_ms: (filetime_100ns(k) + filetime_100ns(u)) / 10_000,
-            io_bytes: io_bytes(&io),
-            started_ms: filetime_to_unix_ms(c),
-        })
+        Some(super::ProcRead { pid, started_ms: filetime_to_unix_ms(c) })
     }
-}
-
-/// What a process moved, read and written. Not "other" transfer, which is
-/// control traffic: a Git Bash `grep` waiting on a pipe from `tail -f`
-/// polls it some 70 times a second, 2.8 KB/s of "other" with nothing read
-/// or written, which read as work and held a PC up all night. Nothing
-/// real is lost with it: a download's network bytes show in none of the
-/// three, only as the writes of what it saves (a `curl` to NUL: 2 MB/s
-/// written, 32 bytes/s other).
-pub(super) fn io_bytes(io: &IO_COUNTERS) -> u64 {
-    io.ReadTransferCount + io.WriteTransferCount
 }
 
 /// Whether a process of this pid is running now.
@@ -452,8 +456,8 @@ pub fn alive(pid: u32) -> bool {
     }
 }
 
-/// Executable names by pid, for saying what is holding the machine up.
-pub fn names(pids: &[u32]) -> Vec<(u32, String)> {
+/// Executable names by pid, from one snapshot of every process.
+fn names(pids: &[u32]) -> Vec<(u32, String)> {
     let mut out = Vec::new();
     // SAFETY: as in `descendants`.
     unsafe {

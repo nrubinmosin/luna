@@ -1,5 +1,5 @@
 //! What a helper is made of: what it was spawned with (`Spec`), what is seen of it
-//! (`Observed`, `Context`, `Signs`, `LeftRunning`), a turn's run (`Run`), and the text
+//! (`Observed`, `Context`, `Signs`), a turn's run (`Run`), and the text
 //! queued for it (`Queued`, `Held`).
 
 use super::*;
@@ -93,24 +93,11 @@ pub struct Signs {
     pub resolved_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<Context>,
-    /// Between turns, what its turns left running (`Leftover`).
+    /// Between turns, what it runs beside them, by name ("tail.exe (pid
+    /// 22104)") or count ("2 shells"): each keeps it active for as long as it
+    /// is there.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub left_running: Vec<LeftRunning>,
-}
-
-/// One process a helper's turns left running, as `luna_session_get` shows it.
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct LeftRunning {
-    pub exe: String,
-    pub pid: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<String>,
-    /// It used CPU or I/O within LEFTOVER_ACTIVE_MS. One holds the machine until
-    /// idle for LEFTOVER_HOLD_MS on end.
-    pub active: bool,
-    /// Minutes since it last did (or since its turn ended, if it has not since).
-    pub quiet_min: u64,
+    pub left_running: Vec<String>,
 }
 
 /// An instant as the rest of `luna_session_get` writes one.
@@ -277,9 +264,8 @@ pub(super) struct Run {
     /// notices its helpers owe it, while its own background tasks run
     /// (events.rs `keeps_listening`); None once it is closed as ever.
     pub(super) listening_since: Option<u64>,
-    /// The processes in its job, as sampled while it waits so (rows.rs
-    /// `activity`): what tells a subagent's long command at work from a
-    /// watcher that does nothing, where its stream says nothing of either.
+    /// The processes in its job, as read while it waits so (rows.rs `lives`):
+    /// what its caller hears it waits on, where its stream says nothing.
     pub(super) watched: Vec<Leftover>,
     /// Which claim this is, of all this core has made: a batch reserved on it
     /// (`Reservation`) tells the claim it holds from one made after it.

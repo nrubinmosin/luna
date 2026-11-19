@@ -39,10 +39,29 @@ pub(super) fn day_dir(account_path: &str, day: Date) -> PathBuf {
 
 /// Rollout files written on the given days, newest first.
 pub(super) fn rollouts_on(account_path: &str, days: impl Iterator<Item = Date>) -> Vec<(DateTime, String, PathBuf)> {
+    rollouts_listed(account_path, days).0
+}
+
+/// `rollouts_on`, and whether every day's folder listed whole: one that is
+/// not there holds nothing, but one that would not list, or broke off, leaves
+/// what it holds not known.
+pub(super) fn rollouts_listed(account_path: &str, days: impl Iterator<Item = Date>) -> (Vec<(DateTime, String, PathBuf)>, bool) {
     let mut out = vec![];
+    let mut whole = true;
     for day in days {
-        let Ok(entries) = std::fs::read_dir(day_dir(account_path, day)) else { continue };
-        for e in entries.flatten() {
+        let entries = match std::fs::read_dir(day_dir(account_path, day)) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                whole = false;
+                continue;
+            }
+        };
+        for e in entries {
+            let Ok(e) = e else {
+                whole = false;
+                continue;
+            };
             let name = e.file_name().to_string_lossy().into_owned();
             if let Some((ts, id)) = parse_name(&name) {
                 out.push((ts, id, e.path()));
@@ -50,7 +69,7 @@ pub(super) fn rollouts_on(account_path: &str, days: impl Iterator<Item = Date>) 
         }
     }
     out.sort_by_key(|e| std::cmp::Reverse(e.0));
-    out
+    (out, whole)
 }
 
 pub(super) fn days_back(from: Date, n: usize) -> impl Iterator<Item = Date> {
@@ -203,7 +222,7 @@ fn in_folder(cwd: &str, folder: &str) -> bool {
 /// thread `/resume` went back to. One not written yet (Codex writes it at the
 /// thread's first turn) costs only the first look after that. Two of now that
 /// start alike are no answer.
-fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
+pub(super) fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
     // What the walk found, kept, as a thread's file never moves; and the
     // threads it found nothing for, not walked again.
     static FOUND: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
@@ -421,15 +440,8 @@ mod tests {
         write(t0 + 3_000, "bbbb");
         let (a, b, c) = (format!("claim-a-{t0}"), format!("claim-b-{t0}"), format!("claim-c-{t0}"));
         let live = |chat: &str, at_ms: u64| {
-            rollout_for(&Live {
-                chat_id: chat,
-                cwd: "E:\\p",
-                spawned_at_ms: at_ms as u128,
-                resume: None,
-                account_path: &acct,
-                last_output_ms: 0,
-            })
-            .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
+            rollout_for(&Live { chat_id: chat, cwd: "E:\\p", spawned_at_ms: at_ms as u128, resume: None, account_path: &acct })
+                .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
         };
         // b looks first: the file of the chat started just before it is not b's.
         assert_eq!(live(b.as_str(), t0 + 2_000).as_deref(), Some("bbbb"));
@@ -454,7 +466,7 @@ mod tests {
         let (own, kid, young) = (format!("ownwatch{t0}"), format!("kidwatch{t0}"), format!("youngwatch{t0}"));
         write_rollout(&root, t0 + 1_000, &own, Some(r#""cli""#));
         write_rollout(&root, t0 + 2_000, &kid, Some(&spawned_by_json(&own)));
-        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct };
         let on = |thread: &str| {
             rollout_on(&live, Some(thread.to_string())).and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
         };
@@ -494,7 +506,7 @@ mod tests {
         std::fs::create_dir_all(fa.parent().unwrap()).unwrap();
         let meta = r#"{"type":"session_meta","payload":{"cwd":"E:\\p","source":"cli"}}"#.to_string() + "\n";
         std::fs::write(&fa, meta.clone() + &turn(t0 + 2_000)).unwrap();
-        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct };
         let on = |thread: &str| rollout_on(&live, Some(thread.to_string()));
         let count = |path: Option<PathBuf>| tracked_at(&live, path.unwrap()).map(|s| s.completed);
         assert_eq!(on(&a), Some(fa.clone()));
@@ -518,15 +530,8 @@ mod tests {
     }
 
     fn takes(root: &Path, chat: &str, at_ms: u64, resume: Option<&str>) -> Option<String> {
-        rollout_for(&Live {
-            chat_id: chat,
-            cwd: "E:\\p",
-            spawned_at_ms: at_ms as u128,
-            resume,
-            account_path: &root.to_string_lossy(),
-            last_output_ms: 0,
-        })
-        .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
+        rollout_for(&Live { chat_id: chat, cwd: "E:\\p", spawned_at_ms: at_ms as u128, resume, account_path: &root.to_string_lossy() })
+            .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
     }
 
     #[test]

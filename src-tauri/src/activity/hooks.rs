@@ -7,12 +7,18 @@ use super::*;
 /// What a Claude Code hook told us.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HookEvent {
-    /// `UserPromptSubmit`, `PostToolUse`: the model is at work.
+    /// `PostToolUse`: the model is at work.
     Busy,
+    /// `UserPromptSubmit`: a prompt went in, and the model is at work.
+    Submitted,
     /// `Notification` with `permission_prompt` or `elicitation_dialog`.
     Waiting,
-    /// `Stop`: the turn is over.
+    /// `Stop`: the turn is over, nothing left running beside it.
     Idle,
+    /// `Stop` that lists background tasks (`background_tasks`: shells,
+    /// background agents) or session crons (`session_crons`) still there: the
+    /// turn is over, the session's work is not.
+    IdleWith { tasks: u32, crons: u32 },
     /// `StopFailure`: the turn is over because the API refused it — a usage
     /// limit, a lost login. No `Stop` follows.
     Failed(&'static str),
@@ -49,6 +55,18 @@ pub fn api_error_kind(s: &str) -> &'static str {
     KINDS.iter().copied().find(|k| *k == s).unwrap_or("unknown")
 }
 
+/// How many a list in a hook's input names: the items of an array, the keys
+/// of an object, a count as given; nothing for anything else.
+pub fn listed(v: &serde_json::Value) -> u32 {
+    match v {
+        serde_json::Value::Array(a) => a.len() as u32,
+        serde_json::Value::Object(o) => o.len() as u32,
+        serde_json::Value::Number(n) => n.as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
+        serde_json::Value::Bool(true) => 1,
+        _ => 0,
+    }
+}
+
 impl HookEvent {
     pub fn parse(body: &str) -> Option<HookEvent> {
         let v: serde_json::Value = serde_json::from_str(body).ok()?;
@@ -70,8 +88,12 @@ impl HookEvent {
             };
         }
         match v["hook_event_name"].as_str()? {
-            "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" => Some(HookEvent::Busy),
-            "Stop" => Some(HookEvent::Idle),
+            "UserPromptSubmit" => Some(HookEvent::Submitted),
+            "PostToolUse" | "PostToolUseFailure" => Some(HookEvent::Busy),
+            "Stop" => match (listed(&v["background_tasks"]), listed(&v["session_crons"])) {
+                (0, 0) => Some(HookEvent::Idle),
+                (tasks, crons) => Some(HookEvent::IdleWith { tasks, crons }),
+            },
             // A permission prompt is up, or a question the model put.
             "PermissionRequest" => Some(HookEvent::Waiting),
             "PreToolUse" if v["tool_name"] == "AskUserQuestion" => Some(HookEvent::Waiting),
@@ -89,21 +111,87 @@ impl HookEvent {
     }
 }
 
-/// A hook arrived for a session (hub.rs). Takes effect at the next sample;
-/// the timestamp is the truth for "when did the turn start".
+/// A hook arrived for a session (hub.rs): its record changes at once; the
+/// timestamp is the truth for "when did the turn start".
 pub fn on_hook(chat_id: &str, ev: HookEvent) {
     let now = now_ms();
+    // The first prompt, if no submit into its pane was seen to go in first:
+    // what its job holds now came up with its CLI. Only then: by a later hook
+    // (a `PostToolUse` with the prompt's own hook missed) a tool may have
+    // started a shell, which is no furniture.
+    if ev == HookEvent::Submitted {
+        submitting(chat_id);
+    }
+    let starts = matches!(ev, HookEvent::Busy | HookEvent::Submitted | HookEvent::Waiting);
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;
     let t = track(&mut st.tracks, &mut st.ended, chat_id);
-    // A subagent's word: the turn, its start and its end are not its to say.
+    if starts && !t.turned {
+        t.first_turn_ms.get_or_insert(now);
+        t.turned = true;
+    }
+    apply(t, ev, now);
+    refold(t, now);
+    // A hook is the CLI at work, whatever it says: a turn that began and ended
+    // between two reads starts a power-off's quiet window over all the same.
+    stamp(st);
+}
+
+/// A prompt is about to go into a terminal session's CLI: a person's Enter on
+/// a draft, Luna's text sent, or the CLI's own `UserPromptSubmit`, whichever
+/// comes first. Its first one for a CLI process takes the last look at the
+/// CLI's own furniture (its MCP servers) in its job, before any turn could
+/// start a shell there; none after adds to it (`Track::furnished_for`). Takes
+/// the session map and lists the job: not to be called with either held.
+pub fn submitting(chat_id: &str) {
+    let Some(p) = crate::pty::manager().probe(chat_id) else { return };
+    let done = |t: &Track| furnished(t, p.spawned_at_ms);
+    if state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id).is_some_and(done) {
+        return;
+    }
+    // Read before the lock, as a read of the job takes a moment and a hook's
+    // curl waits.
+    let before = crate::procs::in_job(p.job.as_deref(), p.pid);
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+    let st = &mut *st;
+    furnish(track(&mut st.tracks, &mut st.ended, chat_id), p.spawned_at_ms, before);
+}
+
+/// Whether the furniture of the CLI process spawned at `spawned_at_ms` is
+/// taken: its first prompt went in, or a turn of it began.
+pub(super) fn furnished(t: &Track, spawned_at_ms: u128) -> bool {
+    t.furnished_for == spawned_at_ms || (t.turned && t.spawned_at_ms == spawned_at_ms)
+}
+
+/// The furniture of the CLI process spawned at `spawned_at_ms`, as its first
+/// prompt goes in: what its job holds then, on top of what the looks before
+/// found. A job that will not list adds nothing, and nothing is added after.
+pub(super) fn furnish(t: &mut Track, spawned_at_ms: u128, job: Option<Vec<(crate::procs::ProcRead, String)>>) {
+    if furnished(t, spawned_at_ms) {
+        return;
+    }
+    // A process no read has folded yet: what was furniture was the last one's.
+    if t.spawned_at_ms != 0 && t.spawned_at_ms != spawned_at_ms {
+        t.furniture.clear();
+    }
+    t.furniture.extend(job.into_iter().flatten().map(|(r, _)| r));
+    t.furnished_for = spawned_at_ms;
+}
+
+/// What one hook changes of a track.
+pub(super) fn apply(t: &mut Track, ev: HookEvent, now: u64) {
+    // A subagent's word: the turn, its start and its end are not its to say,
+    // but it is the session's latest word, which an older registry idle does
+    // not overrule (`fold_claude`).
     match ev {
         HookEvent::AgentAtWork(agent) => {
             t.agents.insert(agent, false);
+            t.hook_at_ms = t.hook_at_ms.max(now);
             return;
         }
         HookEvent::AgentWaiting(agent) => {
             t.agents.insert(agent, true);
+            t.hook_at_ms = t.hook_at_ms.max(now);
             return;
         }
         HookEvent::AgentDone(agent) => {
@@ -119,44 +207,54 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
         _ => {}
     }
     t.failed = None;
+    t.api_error = None;
     match ev {
-        HookEvent::Busy => {
-            if t.first_turn_ms == 0 {
-                t.first_turn_ms = now;
-            }
-            t.turn_started_ms.get_or_insert(now);
-            t.hook = Some(Turn::Busy);
+        HookEvent::Busy | HookEvent::Submitted | HookEvent::Waiting => {
+            t.hook = Some(if ev == HookEvent::Waiting { Turn::Waiting } else { Turn::Busy });
+            t.ended_by_hook = false;
+            t.read_counted = false;
         }
-        HookEvent::Waiting => {
-            t.turn_started_ms.get_or_insert(now);
-            t.hook = Some(Turn::Waiting);
-        }
-        HookEvent::Idle => {
+        HookEvent::Idle | HookEvent::IdleWith { .. } => {
+            (t.stop_tasks, t.stop_crons) = match ev {
+                HookEvent::IdleWith { tasks, crons } => (tasks, crons),
+                _ => (0, 0),
+            };
             t.hook = Some(Turn::Idle);
-            t.turn_started_ms = None;
-            // `Stop`: a turn is over, whether or not any sample saw it run.
-            t.turns_ended += 1;
+            // `Stop`: a turn is over, whether or not any read saw it run;
+            // counted once, a read having counted it already when it is late.
+            count_stop(t);
             t.was_busy = false;
+            t.ended_by_hook = true;
         }
         HookEvent::Failed(error) => {
             t.hook = Some(Turn::Idle);
-            t.turn_started_ms = None;
-            t.turns_ended += 1;
+            count_stop(t);
             t.was_busy = false;
+            t.ended_by_hook = true;
             t.failed = Some(error);
         }
         HookEvent::Gone => {
             t.hook = Some(Turn::Idle);
-            t.turn_started_ms = None;
             t.agents.clear();
+            (t.stop_tasks, t.stop_crons) = (0, 0);
         }
         HookEvent::AgentAtWork(_) | HookEvent::AgentWaiting(_) | HookEvent::AgentDone(_) => return,
     }
     t.hook_at_ms = now;
 }
 
-/// The hook's last word on a session, if any: newer than the last sample's
-/// verdict, as a hook takes effect here at once.
+/// A `Stop` or `StopFailure` counts its turn, unless a read counted it as
+/// ended when that hook was missed (reconcile.rs `take`) and no turn has begun
+/// since: then it is that turn's, late.
+fn count_stop(t: &mut Track) {
+    if !std::mem::take(&mut t.read_counted) {
+        t.turns_ended += 1;
+    }
+}
+
+/// The hook's last word on a session, if any, for the tests of what a hook
+/// reaching the hub does.
+#[cfg(test)]
 pub fn hook_turn(chat_id: &str) -> Option<Turn> {
     state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id).and_then(|t| t.hook)
 }
@@ -168,9 +266,16 @@ mod tests {
     #[test]
     fn parses_hook_events() {
         let ev = |name: &str, extra: &str| HookEvent::parse(&format!(r#"{{"session_id":"s","hook_event_name":"{name}"{extra}}}"#));
-        assert_eq!(ev("UserPromptSubmit", ""), Some(HookEvent::Busy));
+        assert_eq!(ev("UserPromptSubmit", ""), Some(HookEvent::Submitted));
         assert_eq!(ev("PostToolUse", r#","tool_name":"Bash""#), Some(HookEvent::Busy));
         assert_eq!(ev("Stop", r#","stop_hook_active":false"#), Some(HookEvent::Idle));
+        // Claude Code 2.1.327's `Stop` lists what runs on beside the turn.
+        assert_eq!(ev("Stop", r#","background_tasks":[],"session_crons":[]"#), Some(HookEvent::Idle));
+        assert_eq!(
+            ev("Stop", r#","background_tasks":[{"task_id":"b1","task_type":"local_bash"},{"task_id":"a2"}],"session_crons":[{"id":"c1"}]"#),
+            Some(HookEvent::IdleWith { tasks: 2, crons: 1 })
+        );
+        assert_eq!(ev("Stop", r#","background_tasks":3"#), Some(HookEvent::IdleWith { tasks: 3, crons: 0 }), "a count as given");
         assert_eq!(ev("SessionEnd", ""), Some(HookEvent::Gone));
         assert_eq!(ev("Notification", r#","notification_type":"permission_prompt""#), Some(HookEvent::Waiting));
         assert_eq!(ev("Notification", r#","notification_type":"idle_prompt""#), None);
@@ -204,25 +309,31 @@ mod tests {
         hook(r#"{"hook_event_name":"PostToolUse","tool_name":"Agent"}"#);
         hook(r#"{"hook_event_name":"Stop"}"#);
         hook(r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"a1"}"#);
-        let mut st = state().lock().unwrap();
-        let t = st.tracks.get_mut(id).unwrap();
-        assert_eq!((t.hook, t.turns_ended, t.agents.len()), (Some(Turn::Idle), 1, 1), "its tool spoke for itself");
-        t.turn = combine(t, Some(Turn::Busy), now_ms());
-        assert_eq!(t.turn, Turn::Idle, "a busy registry is the agent's, not a turn");
-        assert_eq!(agents_at_work(t).as_deref(), Some("1 subagent"));
-        drop(st);
+        // The registry, read at `at`, says busy.
+        let read = |at: u64| {
+            let mut st = state().lock().unwrap();
+            let t = st.tracks.get_mut(id).unwrap();
+            t.disk = Some(Turn::Busy);
+            t.disk_busy_since_ms.get_or_insert(at);
+            refold(t, at);
+            t.life.clone()
+        };
+        {
+            let st = state().lock().unwrap();
+            let t = &st.tracks[id];
+            assert_eq!((t.hook, t.turns_ended, t.agents.len()), (Some(Turn::Idle), 1, 1), "its tool spoke for itself");
+        }
+        let l = read(now_ms());
+        assert_eq!(l.phase, Phase::Ended, "a busy registry is the agent's, not a turn");
+        assert_eq!(l.background.subagents, 1);
         let ts = turn_state(id).unwrap();
         assert!(ts.turn == Turn::Idle && ts.children_busy, "between turns, with a job at work");
-        assert!(children_hold(id), "which holds the machine");
-        assert_eq!(left_quiet(id), None, "and is not to be called idle");
+        assert!(in_background(id) && l.active(), "which holds the machine");
 
         // Its own prompt holds the session on it, turn or no turn.
         hook(r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","agent_id":"a1"}"#);
-        let mut st = state().lock().unwrap();
-        let t = st.tracks.get_mut(id).unwrap();
-        assert_eq!(combine(t, Some(Turn::Busy), now_ms()), Turn::Waiting);
-        assert_eq!(agents_at_work(t), None, "waiting for a person keeps no machine awake");
-        drop(st);
+        let l = read(now_ms());
+        assert_eq!((l.phase, l.background.subagents), (Phase::Asking, 0));
         hook(r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"a1"}"#);
 
         // One of the CLI's own agents, never seen at work, ends: nothing of
@@ -236,12 +347,9 @@ mod tests {
         // It ends; Claude Code takes its result up in a turn of its own,
         // which the registry says before any hook may: busy, judged afresh.
         hook(r#"{"hook_event_name":"SubagentStop","agent_id":"a1"}"#);
-        let mut st = state().lock().unwrap();
-        let t = st.tracks.get_mut(id).unwrap();
         let at = now_ms();
-        assert_eq!(combine(t, Some(Turn::Busy), at), Turn::Busy);
-        assert_eq!(combine(t, Some(Turn::Busy), at + STALE_DISK_MS + 1), Turn::Idle, "no hook since: left behind");
-        drop(st);
+        assert_eq!(read(at).phase, Phase::Running);
+        assert_eq!(read(at + STALE_DISK_MS + 1).phase, Phase::Ended, "no hook since: left behind");
         assert!(!turn_state(id).unwrap().children_busy);
         forget(id);
     }

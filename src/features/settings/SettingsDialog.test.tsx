@@ -122,17 +122,6 @@ describe('SettingsDialog', () => {
     expect(update).toHaveFocus();
   });
 
-  it('keeps a draft on one page while another is looked at', async () => {
-    const user = open('general');
-    const marker = await screen.findByRole('textbox', { name: 'Waiting marker text' });
-    await user.clear(marker);
-    await user.type(marker, 'STATUS: WAITING');
-
-    await user.click(tab('Chats'));
-    await user.click(tab('General'));
-    expect(screen.getByRole('textbox', { name: 'Waiting marker text' })).toHaveValue('STATUS: WAITING');
-  });
-
   it('sets where the new-chat boxes start, the wait guard off unless asked', async () => {
     const user = open('chats');
     const guard = screen.getByRole('checkbox', { name: 'Wait guard' });

@@ -331,15 +331,14 @@ one of your own chats an agent may answer only a question its model asked
   helper's own `run_in_background` job keeps its turn going: it stays `working`
   until the job ends, and there is one notice with everything it said. What a helper makes of its helpers' answers reaches
   its parent when it is 400 characters or more, once, only upward.
-- A job's end the helper says nothing about, or a job gone idle, rides with the
-  next notice, alone only once nothing else is owed, nothing is at work, or after
-  10 minutes.
+- A job's end the helper says nothing about rides with the next notice, alone
+  only once nothing else is owed, nothing is at work, or after 10 minutes.
 - What turns left running (a server, a watcher, a forgotten `tail -F`) is named in
-  the notice and in `luna_session_list` as `leftRunning` (pid, start, recent CPU or I/O).
-  For a background helper `luna_session_stop`, or Stop in the helper list, ends it once
-  the turn is over. All idle for 30 minutes: the owed agent gets one notice that
-  it may be stuck or waiting, and how to end it; the notice of its end still
-  comes. A turn silent for 30
+  the notice and in `luna_session_get` as `leftRunning` (by name and pid, or a
+  count of shells). It keeps the helper, and the PC, active for as long as it is
+  there, however idle. For a background helper `luna_session_stop`, or Stop in the
+  helper list, ends it once the turn is over; the notice of its end comes when it
+  ends. A turn silent for 30
   minutes gets one notice too (a command may hang); a command with its own
   timeout holds that until 5 minutes past it.
 - **Breaker:** past 12 turn-end notices about one session in 15 minutes, Luna
@@ -363,8 +362,8 @@ the new-chat dialog reads them) and its models.
 
 - A helper goes by itself (`autoDelete`, on by default) once its answer reached
   the agent and it has sat idle 30 minutes with nobody reading or writing to it;
-  `luna_session_list` shows `deletesInMin`. It waits for jobs it left and helpers of its
-  own; processes idle 2 hours on end do not count and go with it.
+  `luna_session_list` shows `deletesInMin`. It waits for jobs it left, however idle,
+  and helpers of its own.
 - A helper stopped with `luna_session_stop` is never auto-deleted; one you opened as a
   chat is yours and stays.
 - `luna_session_delete` removes the helper and nothing of a worktree: a

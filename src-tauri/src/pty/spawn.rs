@@ -4,10 +4,7 @@
 
 use super::control::end_leftovers;
 use super::screen::{as_key_events, drawn_screen, render_screen, Drawn, Modes, Scrollback};
-use super::{
-    manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, InputTx, ReaderEnd, Session, NEVER_NUDGED,
-    READER_WAIT,
-};
+use super::{manager, now_ms, write_input, Input, InputTx, ReaderEnd, Session, READER_WAIT};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
@@ -289,10 +286,21 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     for (k, v) in &envs {
         cmd.env(k, v);
     }
+    // The chat's mark, as a helper's turn has its own: off Windows its job is
+    // what carries it too, so a shell that leaves the CLI's tree, group and
+    // session is still the chat's (keeper/ `marked`).
+    #[cfg(unix)]
+    cmd.env(crate::keeper::MARK, crate::keeper::mark_of(&id));
 
     // Ahead of the process: what it makes (a rollout) is born after this,
     // however long what follows its start waits on the registry's lock.
     let spawned_at_ms = now_ms() as u128;
+    // Where the thread it resumes ends before it writes a line: what comes
+    // after is this process's, whatever the wall clock says (codex/session
+    // `Since`).
+    if provider == Provider::Codex {
+        crate::codex::session::note_spawn(&id, spawned_at_ms, &account_path, resume.as_deref());
+    }
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
         e.to_string()
@@ -305,6 +313,9 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // Into a job before it has had time to spawn anything, so every child it
     // ever starts is listed with it.
     let job = pid.and_then(crate::procs::adopt).map(Arc::new);
+    if let Some(job) = &job {
+        crate::procs::marked(job, &id);
+    }
     let mut killer = child.clone_killer();
     // Without both ends there is no session to run, and a CLI already started
     // would run on with nothing tracking it: end it before giving up.
@@ -333,15 +344,10 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let input_tx = Arc::new(input_tx);
     let replies = Arc::downgrade(&input_tx);
     let size = Arc::new(Mutex::new((INITIAL_ROWS, INITIAL_COLS)));
-    // When the writer last passed on a nudge (a resize, or focus reports
-    // alone), on `mono_ms`'s clock, for the reader to tell the repaint that
-    // follows from the session's own output (`work_output_ms`).
-    let last_nudge_ms = Arc::new(AtomicU64::new(NEVER_NUDGED));
     {
         let id = id.clone();
         let master = pair.master;
         let size_slot = Arc::clone(&size);
-        let last_nudge_ms = Arc::clone(&last_nudge_ms);
         std::thread::spawn(move || {
             // A broken pipe stays broken: say so once, then keep the master
             // alive for the session's own teardown rather than closing the pty
@@ -351,28 +357,18 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                 let len = msg.len();
                 match msg {
                     Input::Bytes(chunk) if writable => {
-                        // Focus moving into or out of a pane shown already
-                        // makes the CLI redraw as a resize does, and is no
-                        // work of the session's: a nudge. A key, a click or a
-                        // paste, alone or beside one, is not.
-                        let focus = only_focus_reports(&chunk);
                         // Key events only where ConPTY reads them (see `as_key_events`).
                         let chunk = if cfg!(windows) && provider == Provider::Codex { as_key_events(&chunk) } else { chunk };
-                        if let Err(e) = write_input(&mut writer, &chunk, focus, &last_nudge_ms) {
+                        if let Err(e) = write_input(&mut writer, &chunk) {
                             crate::log::warn("pty", &format!("write to {id} failed: {e}"));
                             writable = false;
                         }
                     }
                     Input::Bytes(_) => {}
                     Input::Resize(size) => {
-                        // Stamped on both sides of the resize: ConPTY may
-                        // redraw while the call is still stalled on a busy
-                        // child, and the CLI's own repaint follows its end.
-                        last_nudge_ms.store(mono_ms(), Ordering::Relaxed);
                         if let Err(e) = master.resize(size) {
                             crate::log::warn("pty", &format!("resize of {id} failed: {e}"));
                         }
-                        last_nudge_ms.store(mono_ms(), Ordering::Relaxed);
                         if let Ok(mut s) = size_slot.lock() {
                             *s = (size.rows, size.cols);
                         }
@@ -391,7 +387,6 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let alive = Arc::new(AtomicBool::new(true));
     let reader_end = Arc::new(ReaderEnd::default());
     let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
-    let work_output_ms = Arc::new(AtomicU64::new(now_ms()));
 
     {
         let id = id.clone();
@@ -400,8 +395,6 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         let modes = Arc::clone(&modes);
         let alive = Arc::clone(&alive);
         let last_output_ms = Arc::clone(&last_output_ms);
-        let last_nudge_ms = Arc::clone(&last_nudge_ms);
-        let work_output_ms = Arc::clone(&work_output_ms);
         let child = Arc::clone(&child);
         let size = Arc::clone(&size);
         let reader_end = Arc::clone(&reader_end);
@@ -480,11 +473,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        let now = now_ms();
-                        last_output_ms.store(now, Ordering::Relaxed);
-                        if let Some(at) = reader_stamp_now(now, last_nudge_ms.load(Ordering::Relaxed)) {
-                            work_output_ms.store(at, Ordering::Relaxed);
-                        }
+                        last_output_ms.store(now_ms(), Ordering::Relaxed);
                         modes.lock().unwrap_or_else(|e| e.into_inner()).feed(&chunk[..n]);
                         let pieces = split_dsr(&mut carry, &chunk[..n]);
                         let last = pieces.len() - 1;
@@ -609,7 +598,6 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             modes,
             alive,
             last_output_ms,
-            work_output_ms,
             pid,
             cwd,
             spawned_at_ms,

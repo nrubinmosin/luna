@@ -115,9 +115,6 @@ pub(super) enum Settled {
     Asked(u64),
     /// A core's going stopped its turn and it went on by itself; told once.
     Resumed,
-    /// All its job left has sat idle for IDLE_JOB_MS, past that since this
-    /// moment; told once, and owed on. It rides (`riders_go`).
-    Idle(u64),
     /// Its job's end, seen at this moment, with no word from it and nothing
     /// else to tell: settles as `Answered`, and rides (`riders_go`).
     NoNews(u64),
@@ -172,33 +169,6 @@ fn anything_to_say(pty: &crate::pty::PtyManager, items: &[(String, Known, Owed, 
 /// saying so.
 fn job_over(o: &Owed, ts: Option<crate::activity::TurnState>) -> bool {
     o.told_pending && ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy)
-}
-
-/// What a session's turns left running and has done nothing (no CPU, no I/O:
-/// `left_quiet`) for this long, its caller hears of once (`Settled::Idle`): that
-/// may be a job that is stuck, or one waiting on something, which its caller can
-/// end. Not its end, which doing nothing is no proof of: the debt stays open. A
-/// real job's quiet stretch is minutes (a link, a test on a timeout).
-pub(super) const IDLE_JOB_MS: u64 = 30 * 60 * 1000;
-
-/// Whether anything a session's turns left still holds the machine
-/// (`procs::Leftover::holds`): with nothing that does, it is no job at work for
-/// `reap` either.
-pub(super) fn left_holds(id: &str) -> bool {
-    if crate::background::has(id) {
-        return crate::background::left_holds(id);
-    }
-    crate::activity::children_hold(id)
-}
-
-/// Between turns, how long all a session's turns left running has done nothing,
-/// and their names: a helper's job's (background/), a chat's under its CLI
-/// (activity/). None with nothing left.
-pub(super) fn left_quiet(id: &str) -> Option<(u64, String)> {
-    if crate::background::has(id) {
-        return crate::background::left_quiet(id);
-    }
-    crate::activity::left_quiet(id)
 }
 
 /// For a `wait`: whether a job's end (`over`) has stood BACKGROUND_GRACE_MS, by
@@ -286,11 +256,11 @@ pub(super) fn owed_stands(known: &HashMap<String, Known>, caller: &str, id: &str
 /// caller may be waiting on that very job while another helper runs for days.
 const RIDE_MAX_MS: u64 = 10 * 60 * 1000;
 
-/// Since when a line that is no reason to wake its caller (`Settled::NoNews`,
-/// `Settled::Idle`) has stood, if it is one.
+/// Since when a line that is no reason to wake its caller (`Settled::NoNews`)
+/// has stood, if it is one.
 fn rides_since(how: &Settled) -> Option<u64> {
     match how {
-        Settled::NoNews(since) | Settled::Idle(since) => Some(*since),
+        Settled::NoNews(since) => Some(*since),
         _ => None,
     }
 }
@@ -785,7 +755,6 @@ fn kind_of(how: &Settled) -> &'static str {
         Settled::Waiting => "waiting",
         Settled::Asked(_) => "asked",
         Settled::Resumed => "resumed",
-        Settled::Idle(_) => "idle",
         Settled::NoNews(_) => "no-news",
         Settled::Quiet(_) => "quiet",
         Settled::WaitsOnBackground(_) => "waits-on-background",
@@ -1015,11 +984,6 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
                 o.resumed = false;
             }
         }
-        Settled::Idle(_) => {
-            if let Some(o) = r.owed.get_mut(&key) {
-                o.told_idle = true;
-            }
-        }
         Settled::Quiet(ended) => {
             if let Some(o) = r.owed.get_mut(&key) {
                 o.told_quiet = Some(ended);
@@ -1187,34 +1151,23 @@ mod tests {
         assert!(!held_for_wait(pty, "w-parent", "w-child", &o()), "and no longer");
     }
 
-    /// The night of 0.8.1: a `tail -F` its own tool left running after its turn
-    /// kept a helper "not done" for 14 hours, its caller told nothing. Idle is
-    /// no proof of an end: told once, and the debt waits for the end itself.
+    /// What a turn left is named, and the debt waits for its end however long
+    /// it does nothing: idle is no proof of an end.
     #[test]
-    fn what_a_turn_left_is_named_and_an_idle_one_is_told_of_once() {
+    fn what_a_turn_left_is_named_and_its_end_is_the_news() {
         let (known, o, path) = job_over_helper("lj-s", "lj-c", "");
         let pty = crate::pty::manager();
         let line = |o: Owed| notice_line(pty, "lj-c", "Your helper", "lj-s", &known, o);
         // Its first turn's end, with the tail just left: not done, and what runs is named.
-        crate::background::left_for_test("lj-s", &[("tail.exe", 22104, 0)]);
+        crate::background::left_for_test("lj-s", &[("tail.exe", 22104)]);
         let mut first = Owed { rev: o.rev, ..Owed::from(2, o.cursor) };
         first.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
         let Some((Some(text), Settled::Pending(3, _))) = line(first) else { panic!("not done yet") };
         assert!(text.contains("NOT done yet: a job it started still runs in the background (tail.exe (pid 22104))"), "{text}");
-        // Quiet for a while, but not for long: still a job, nothing to say.
-        crate::background::left_for_test("lj-s", &[("tail.exe", 22104, IDLE_JOB_MS - 60_000)]);
-        assert!(matches!(line(o), None | Some((None, _))));
-        // Half an hour of nothing: said once, how to end it with it, and still owed.
-        crate::background::left_for_test("lj-s", &[("tail.exe", 22104, IDLE_JOB_MS + 60_000)]);
-        let Some((Some(text), how @ Settled::Idle(_))) = line(o) else { panic!("its idle job is told of") };
-        assert!(rides_since(&how).is_some_and(|since| now_ms() - since < 2 * 60_000), "and rides, from when it passed the mark");
-        assert!(text.contains("only idle processes left, which have done nothing for 31 min: tail.exe (pid 22104)"), "{text}");
-        assert!(text.contains("luna_session_stop ends them") && text.contains("You will still hear when they end"), "{text}");
-        settle_told(&mut reg().lock().unwrap(), ("lj-c".to_string(), "lj-s".to_string()), how, &o);
-        let told = reg().lock().unwrap().owed.get(&("lj-c".to_string(), "lj-s".to_string())).copied().expect("the debt stays open");
-        assert!(told.told_idle && told.told_pending);
-        assert!(matches!(line(told), None | Some((None, _))), "said once");
-        assert!(!job_over(&told, crate::activity::turn_state("lj-s")), "and no end for a wait either");
+        // Told: still a job, nothing more to say, and no end for a wait either.
+        let told = Owed { told_pending: true, ..o };
+        assert!(matches!(line(told), None | Some((None, _))));
+        assert!(!job_over(&told, crate::activity::turn_state("lj-s")));
         // Its end: that is the news the debt waited for.
         crate::background::left_for_test("lj-s", &[]);
         let mut ended = told;
@@ -1283,9 +1236,7 @@ mod tests {
         let key = ("rd-c".to_string(), "rd-s".to_string());
         let o = Owed::pending(3, 0);
         reg().lock().unwrap().owed.insert(key.clone(), o);
-        assert!(counts_for_breaker(&Settled::NoNews(1)) && !counts_for_breaker(&Settled::Idle(1)));
-        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Idle(1), &o);
-        assert!(reg().lock().unwrap().owed.get(&key).is_some_and(|o| o.told_idle), "owed on");
+        assert!(counts_for_breaker(&Settled::NoNews(1)));
         settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::NoNews(1), &o);
         assert!(!reg().lock().unwrap().owed.contains_key(&key), "settled");
     }

@@ -43,6 +43,9 @@ pub(super) struct Saved {
     /// See `Entry::tied`.
     #[serde(default)]
     pub(super) tied: bool,
+    /// See `Entry::left_seen_out`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) left_seen_out: bool,
     /// See `Entry::unsure`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) unsure: bool,
@@ -177,6 +180,7 @@ pub(super) fn snapshot() -> Vec<Saved> {
             budgets_landed: e.budgets_landed.clone(),
             undelivered: e.undelivered.clone(),
             tied: e.tied,
+            left_seen_out: e.left_seen_out,
             unsure: e.unsure,
             opening: e.opening.clone().filter(|_| e.session.is_none()),
             opening_id: e.opening_id.clone().filter(|_| e.session.is_none()),
@@ -228,9 +232,10 @@ pub fn restore() {
         // The agent layer's record of whose it is (`Known::parent`) is the one.
         s.spec.parent = ties.parent.clone();
         let token = crate::agents::tie_back(&s.id, s.spec.provider, &s.spec.folder, &s.spec.account_path, ties);
-        let (id, running) = (s.id.clone(), s.running);
+        let (id, running, seen_out) = (s.id.clone(), s.running, s.tied || s.left_seen_out);
         let mut e = taken_up(s);
         e.spec.token = token;
+        seen_when_taken_up(&mut e, seen_out);
         lock().entries.insert(id.clone(), e);
         back.push(format!("{}{}", crate::agents::label(&id), if running { " (stopped mid-turn)" } else { "" }));
     }
@@ -454,6 +459,16 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
 /// with the old core and counts as ended, and so does the text queued
 /// behind it, which never reached the CLI (as `stop` counts them) and is kept
 /// for its sender.
+/// What its turns left under the last core is in no job this one has: gone
+/// with that core's tie, or seen out as it left (`seen_out`), or not known.
+/// Not known is active, until its next turn's job says what it holds. Known
+/// gone, it stays so through every core after until a turn begins (queue.rs
+/// `claim`): a core that leaves has no job of it to look in (`left_seen_out`).
+pub(super) fn seen_when_taken_up(e: &mut Entry, seen_out: bool) {
+    e.left_unlisted = !seen_out && e.turns_ended > 0;
+    e.left_seen_out = seen_out;
+}
+
 pub(super) fn taken_up(mut s: Saved) -> Entry {
     retire_handoff(&mut s);
     let stopped = s.running || s.cut_short;
@@ -486,6 +501,9 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         opening_id: None,
         job: None,
         left_running: false,
+        left_unlisted: false,
+        outside: Vec::new(),
+        left_seen_out: false,
         left: Vec::new(),
         ending_left: false,
         promoting: s.promoting_since.is_some(),
@@ -725,6 +743,7 @@ mod tests {
             undelivered: Vec::new(),
             budgets_landed: Vec::new(),
             tied: false,
+            left_seen_out: false,
             unsure: false,
             opening: None,
             opening_id: None,
@@ -989,6 +1008,32 @@ mod tests {
         assert_eq!(e.turns_ended, 6, "the stopped turn, what was queued behind it, the turn that could not start");
     }
 
+    /// A helper seen out by one core, then taken up by cores that each leave
+    /// before it has another turn: each knows nothing of it runs on, and none
+    /// reads it as not known.
+    #[test]
+    fn a_helper_seen_out_stays_so_through_cores_with_no_turn() {
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 3;
+        // The first core leaves, its job listed empty.
+        assert!(left_seen_out(&e, true));
+        let mut seen = true;
+        for core in 2..=4 {
+            let mut next = entry_like(&e);
+            next.turns_ended = e.turns_ended;
+            seen_when_taken_up(&mut next, seen);
+            assert!(!next.left_unlisted && !life_of(&next).active(), "core {core}: known gone");
+            // This core leaves with no job of it: no turn ran.
+            assert!(next.job.is_none());
+            seen = left_seen_out(&next, false);
+            e = next;
+        }
+        assert!(seen);
+        // A turn in no job is nothing this core ended.
+        e.outside.push((1, 2));
+        assert!(!left_seen_out(&e, true));
+    }
+
     #[test]
     fn a_core_after_this_runs_a_helper_as_it_was_spawned() {
         // Through the file: what `save` writes and `restore` reads.
@@ -1010,6 +1055,7 @@ mod tests {
                 undelivered: Vec::new(),
                 budgets_landed: Vec::new(),
                 tied: true,
+                left_seen_out: false,
                 unsure: false,
                 opening: Some("the prompt".into()),
                 opening_id: None,

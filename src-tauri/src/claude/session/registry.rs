@@ -3,8 +3,8 @@
 
 use super::*;
 
-/// A registry entry, read again only once the file has changed: the activity
-/// sampler and every look at the chat ask for it every few seconds.
+/// A registry entry, read again only once the file has changed: the records'
+/// reads and every look at the chat ask for it every few seconds.
 fn parse_session_file(path: &Path) -> Option<serde_json::Value> {
     static SEEN: std::sync::LazyLock<crate::stamped::ByStamp<Option<serde_json::Value>>> =
         std::sync::LazyLock::new(|| crate::stamped::ByStamp::new(CACHE_CAP));
@@ -42,19 +42,25 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
         m.title_renamed = renamed.is_some();
         m.title = renamed.or(titles.ai);
         m.first_prompt = cached_first_prompt(account_path, &scwd, &sid);
-        m.last_said = end.last_said;
-        m.last_said_at = end.last_said_at;
     }
     Some(m)
 }
 
 /// Just the registry's status word for a live session — one small file, no
-/// transcript — for the activity sampler, which asks every few seconds; with
-/// when the CLI last set it (`statusUpdatedAt`, ms), where it says.
-pub fn status(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<(String, Option<u64>)> {
+/// transcript — for its lifecycle record, read every few seconds; with when
+/// the CLI last set it (`statusUpdatedAt`, ms), where it says, and how many
+/// background shells it names (`shell`, Claude Code 2.1.327 on: a list, an
+/// object or a count; absent with none).
+pub fn status(
+    pid: Option<u32>,
+    resume: Option<&str>,
+    cwd: &str,
+    spawned_at_ms: u128,
+    account_path: &str,
+) -> Option<(String, Option<u64>, u32)> {
     let dir = Path::new(account_path).join("sessions");
     let v = registry_entry(&dir, pid, resume, cwd, spawned_at_ms)?;
-    Some((v["status"].as_str()?.to_owned(), v["statusUpdatedAt"].as_u64()))
+    Some((v["status"].as_str()?.to_owned(), v["statusUpdatedAt"].as_u64(), crate::activity::listed(&v["shell"])))
 }
 
 /// The cwd the CLI reports for a live pty session — under `--worktree` that
@@ -81,29 +87,29 @@ fn registry_entry(dir: &Path, pid: Option<u32>, resume: Option<&str>, cwd: &str,
     }
     let entries: Vec<serde_json::Value> =
         std::fs::read_dir(dir).ok()?.flatten().filter_map(|entry| parse_session_file(&entry.path())).collect();
-    if let Some(v) = resume.and_then(|sid| entries.iter().find(|v| v["sessionId"] == sid)) {
+    // A run of that conversation that is over leaves its entry behind: it
+    // must be a terminal session's, and its process still there, as the
+    // entries below must.
+    let live = |v: &serde_json::Value| v["entrypoint"] == "cli" && v["pid"].as_u64().is_some_and(|pid| crate::procs::alive(pid as u32));
+    if let Some(v) = resume.and_then(|sid| entries.iter().find(|v| v["sessionId"] == sid && live(v))) {
         return Some(v.clone());
     }
 
     // The folder itself or one under it (a `--worktree` session reports its
     // worktree), not a sibling that shares the prefix: `luna` is not `luna-site`.
+    // Only an entry whose process still runs, and only if it is the one such:
+    // with two chats in a folder, another's entry would lend this one its
+    // status, and an idle one read for a chat at work could end its turn in
+    // its record. With none or several, nothing is known.
     let want = norm_path(cwd);
     let under = format!("{want}{}", crate::paths::KEY_SEP);
-    let mut best: Option<(u64, serde_json::Value)> = None;
-    for v in entries {
-        if v["entrypoint"] != "cli" {
-            continue;
-        }
+    let mut found = entries.into_iter().filter(|v| {
         let scwd = norm_path(v["cwd"].as_str().unwrap_or(""));
         let started = v["startedAt"].as_u64().unwrap_or(0);
-        if (scwd == want || scwd.starts_with(&under)) && (started as u128) + 5000 >= spawned_at_ms {
-            let updated = v["updatedAt"].as_u64().unwrap_or(started);
-            if best.as_ref().map(|(u, _)| updated > *u).unwrap_or(true) {
-                best = Some((updated, v));
-            }
-        }
-    }
-    best.map(|(_, v)| v)
+        live(v) && (scwd == want || scwd.starts_with(&under)) && (started as u128) + 5000 >= spawned_at_ms
+    });
+    let one = found.next()?;
+    found.next().is_none().then_some(one)
 }
 
 /// The API error the last turn of a live session ended on — a usage limit, a
@@ -151,17 +157,40 @@ mod tests {
             entry(pid, &format!("other-{pid}"), entrypoint, 9000);
         }
         assert_eq!(found(999, None), None, "none of them is this chat, whose entry is yet to come");
-        entry(333, "a-chat", Some("cli"), 3000);
+        // The shim's case: the one live terminal session in the folder.
+        let me = std::process::id();
+        entry(me, "a-chat", Some("cli"), 3000);
         assert_eq!(found(999, None).as_deref(), Some("a-chat"), "the shim's case still finds a terminal session's");
         assert_eq!(found(101, None).as_deref(), Some("other-101"), "its own pid is an exact answer");
+        // An entry a killed session left behind is nobody's. (Pids no process
+        // has: a low one may be a thread of this test binary, which `kill -0`
+        // takes.)
+        entry(3_999_999_555, "dead-chat", Some("cli"), 8000);
+        assert_eq!(found(999, None).as_deref(), Some("a-chat"));
 
         // A helper opened as a chat, behind a shim: what it resumes is exact,
-        // over a newer chat in the folder.
-        entry(444, "promoted", Some("cli"), 3500);
-        entry(555, "newer-chat", Some("cli"), 8000);
-        assert_eq!(found(999, None).as_deref(), Some("newer-chat"));
-        assert_eq!(found(999, Some("promoted")).as_deref(), Some("promoted"));
-        assert_eq!(found(999, Some("gone")).as_deref(), Some("newer-chat"), "a resume that took another id goes by the rest");
+        // while its process is there and is a terminal session's. A run that
+        // is over leaves its entry, and a session of the SDK's has the same id.
+        entry(3_999_999_444, "promoted", Some("cli"), 3500);
+        assert_eq!(found(999, Some("promoted")).as_deref(), Some("a-chat"), "its run is over: the entry is nobody's");
+        assert_eq!(found(999, Some("gone")).as_deref(), Some("a-chat"), "a resume that took another id goes by the rest");
+        let mut other = if cfg!(windows) {
+            std::process::Command::new("ping").args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().unwrap()
+        } else {
+            std::process::Command::new("sleep").arg("30").spawn().unwrap()
+        };
+        entry(other.id(), "promoted", Some("sdk-cli"), 3500);
+        assert_eq!(found(999, Some("promoted")).as_deref(), Some("a-chat"), "a background helper's is not a chat's");
+        entry(other.id(), "promoted", Some("cli"), 3500);
+        assert_eq!(found(999, Some("promoted")).as_deref(), Some("promoted"), "live, and a terminal session's: exact");
+
+        // Two live terminal sessions in the folder: neither is surely this
+        // chat's, and one's status must not stand for the other's.
+        entry(other.id(), "another-chat", Some("cli"), 9500);
+        assert_eq!(found(999, None), None, "two candidates: not known");
+        assert_eq!(found(me, None).as_deref(), Some("a-chat"), "by its own pid it is still found");
+        let _ = other.kill();
+        let _ = other.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
