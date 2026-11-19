@@ -132,6 +132,11 @@ pub struct PowerState {
     pub armed: Option<Armed>,
     pub countdown_ends_at_ms: Option<u64>,
     pub summary: Summary,
+    /// Counts the states sent (`publish`), from 1 in each core run: the
+    /// native window takes an answer or an event only if it is not older
+    /// than the one it shows, so a late answer cannot put back a countdown
+    /// that a newer state has cancelled.
+    pub revision: u64,
 }
 
 #[derive(Default)]
@@ -150,6 +155,8 @@ struct State {
     hold_logged_ms: u64,
     /// The last state sent to the UI, to send only changes.
     last_sent: Option<PowerState>,
+    /// The revision of `last_sent` (`PowerState::revision`).
+    revision: u64,
     firing: bool,
     /// What is firing: agents are refused until that is over, drain or not, as
     /// what they start now the action would only take down with it.
@@ -173,6 +180,7 @@ fn snapshot(st: &State, summary: &Summary) -> PowerState {
         armed: st.armed.clone(),
         countdown_ends_at_ms: st.countdown_ends_at_ms,
         summary: summary.clone(),
+        revision: st.revision,
     }
 }
 
@@ -182,8 +190,10 @@ pub fn current() -> PowerState {
 }
 
 fn publish(st: &mut State, summary: &Summary) {
-    let now = snapshot(st, summary);
+    let mut now = snapshot(st, summary);
     if st.last_sent.as_ref() != Some(&now) {
+        st.revision += 1;
+        now.revision = st.revision;
         crate::emit::to_ui("power://state", now.clone());
         st.last_sent = Some(now);
     }
@@ -213,5 +223,20 @@ mod publish_tests {
         publish(&mut st, &board(false, 10_100));
         assert_eq!(sent(&st), Some(10_100), "a change the window sees is sent");
         assert!(board(true, 1) == board(true, 2) && board(true, 1) != board(false, 1));
+    }
+
+    /// Each state sent carries a newer revision than the last, and an answer
+    /// made after it carries its revision: the window drops what is older.
+    #[test]
+    fn each_state_sent_is_newer_than_the_last_and_answers_carry_it() {
+        let mut st = State::default();
+        publish(&mut st, &board(true, 100));
+        let first = st.last_sent.as_ref().map(|p| p.revision);
+        publish(&mut st, &board(true, 5_100));
+        assert_eq!(st.last_sent.as_ref().map(|p| p.revision), first, "nothing new, no new revision");
+        publish(&mut st, &board(false, 100));
+        let second = st.last_sent.as_ref().map(|p| p.revision);
+        assert!(second > first && first > Some(0), "{first:?} then {second:?}");
+        assert_eq!(Some(snapshot(&st, &board(false, 100)).revision), second);
     }
 }

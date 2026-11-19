@@ -165,7 +165,10 @@ another program's and is left alone.
   differs from the last one sent (`power::publish`), as the window sees it: a
   session's `hook`, `disk` and `output_age_ms` are for the log alone and left
   out of the comparison (`SessionActivity`'s `PartialEq`), or the screen's age
-  would send it again at every sample.
+  would send it again at every sample. Each state sent carries a `revision`,
+  one more than the last, from 1 in each core run, and the commands' answers
+  carry the revision of the state they leave: the native window drops a state
+  older than the one it shows (native-window.md, "The status bar").
 - **Keep awake:** `PowerSetRequest(SystemRequired)` with a reason visible in
   `powercfg /requests` while busy > 0, released 60 s after quiet. `waiting` does
   not hold the machine but blocks shutdown; stalled does neither. While the rule
