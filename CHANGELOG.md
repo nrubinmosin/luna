@@ -13,9 +13,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - After an update, the new window no longer finds the old core still
   counting a session and waits for you to restart it: stopping the sessions
   for the update now also ends what helpers' turns left running (a shell, a
-  watcher, a build), Claude Code's and Codex's alike, so the old core is
-  replaced at once. While a core is being replaced, the panes wait for the
-  new one instead of failing.
+  watcher, a build), Claude Code's and Codex's alike, and holds every helper
+  until the update is installed or called off, what is sent to one meanwhile
+  waiting for it, so the old core is replaced at once. This holds for updates
+  from 0.20 on: the outgoing version stops the sessions, so an update from
+  0.19 may still ask for a restart once when a helper left processes
+  running. While a core is being replaced, the panes wait for the new one
+  instead of failing.
 
 ## [0.19.0] - 2026-11-18
 

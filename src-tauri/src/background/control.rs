@@ -99,33 +99,78 @@ fn end_left_marked(id: &str, job: &crate::procs::Job) -> Vec<String> {
     ended
 }
 
-/// Before an update is installed (`pty::stop_all_sessions`): every turn in
-/// progress is stopped as `stop_turns` stops it, and once those turns are over
-/// (their end is what notes what each left), what every helper's turns left
-/// running is ended too (`end_left_after_turns`). Left running, it counts as a
-/// session (`running`), and the updated window, finding the old core with one,
-/// waits for the person to restart it instead of replacing it. Turns may start
-/// again after: the update may be called off. Returns how many turns it stopped.
+/// Before an update is installed (`pty::stop_all_sessions`): every helper is
+/// held (`Entry::for_update`) and none is spawned, so no turn starts until the
+/// update is called off (`lift_update_hold`); every turn in progress is stopped
+/// as `stop_turns` stops it; and once those turns are over (their end is what
+/// notes what each left), what every helper's turns left running is ended too.
+/// A turn or what one left counts as a session (`running`), and the updated
+/// window, finding the old core with one, would wait for the person to restart
+/// it instead of replacing it. Returns how many turns it stopped.
 pub fn stop_for_update() -> usize {
-    let stopped = stop_turns(false);
-    end_left_after_turns(&|_| true, STOP_WAIT);
+    lock().updating = true;
+    stop_for_update_of(&|_| true, STOP_WAIT, LATE_WAIT)
+}
+
+/// `stop_for_update` for the helpers `of` picks, their turns given `wait` to
+/// end and those not over by then `late` more (`end_left_after_turns`).
+fn stop_for_update_of(of: &dyn Fn(&str) -> bool, wait: std::time::Duration, late: std::time::Duration) -> usize {
+    // First, so a turn the stop ends, or text sent meanwhile, starts none after.
+    for (_, e) in lock().entries.iter_mut().filter(|(id, _)| of(id)) {
+        e.for_update = true;
+    }
+    let stopped = stop_turns_of(false, of);
+    end_left_after_turns(of, wait, late);
     stopped
 }
 
-/// Of the helpers `of` picks: once no turn of theirs has a process, or `wait`
-/// is up, what their turns left running is ended, between turns, as a stop
+/// How long a turn still not over at the update's `STOP_WAIT` gets to end once
+/// its job has been ended: what kept its reader waiting (a leftover writing to
+/// the pipe it inherited, run.rs `DRAIN_AT_MOST`) has gone with it, and its end
+/// notes what it saw left only then.
+const LATE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Of the helpers `of` picks: once none is in a turn, claimed or with a
+/// process, or `wait` is up, what their turns left running is ended, as a stop
 /// between turns ends it (`kill`), all of them at once, as each waits a moment
-/// for what it ended to leave. A helper in a turn still, or one a stop is
-/// clearing already, is not touched. Returns what went, by name.
-fn end_left_after_turns(of: &dyn Fn(&str) -> bool, wait: std::time::Duration) -> Vec<String> {
+/// for what it ended to leave. One still in a turn at `wait` is one the update
+/// stopped, its process killed: what its job holds is what its turns left, or
+/// what holds that turn's end (a leftover on the pipe its reader drains), and
+/// goes too; those get `late` more to end (`LATE_WAIT`), and what their ends
+/// note as left goes as well. None starts a turn meanwhile, all being held. Returns
+/// what went, by name.
+fn end_left_after_turns(of: &dyn Fn(&str) -> bool, wait: std::time::Duration, late_wait: std::time::Duration) -> Vec<String> {
+    let (mut ended, late) = sweep_after_turns(of, wait);
+    if late.is_empty() {
+        return ended;
+    }
+    let names = |ids: &[String]| ids.iter().map(|id| crate::agents::label(id)).collect::<Vec<_>>().join(", ");
+    crate::log::warn(
+        "background",
+        &format!("turns stopped for an update not over within {wait:?}; what their jobs hold is ended all the same: {}", names(&late)),
+    );
+    let (more, still) = sweep_after_turns(&|id| late.iter().any(|l| l == id), late_wait);
+    ended.extend(more);
+    if !still.is_empty() {
+        crate::log::warn(
+            "background",
+            &format!("turns stopped for an update still not over {late_wait:?} after their jobs were ended: {}", names(&still)),
+        );
+    }
+    ended
+}
+
+/// One round of `end_left_after_turns`: what went, by name, and which helpers
+/// were still in a turn at `wait`.
+fn sweep_after_turns(of: &dyn Fn(&str) -> bool, wait: std::time::Duration) -> (Vec<String>, Vec<String>) {
     let deadline = std::time::Instant::now() + wait;
     let (m, cv) = reg();
     let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
-    let mut late = false;
-    while r.entries.iter().any(|(id, e)| of(id) && e.run.as_ref().is_some_and(|run| run.pid.is_some())) {
+    let mut late = Vec::new();
+    while r.entries.iter().any(|(id, e)| of(id) && e.run.is_some()) {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         if left.is_zero() {
-            late = true;
+            late = r.entries.iter().filter(|(id, e)| of(id) && e.run.is_some()).map(|(id, _)| id.clone()).collect();
             break;
         }
         r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
@@ -135,20 +180,58 @@ fn end_left_after_turns(of: &dyn Fn(&str) -> bool, wait: std::time::Duration) ->
         .iter_mut()
         .filter(|(id, _)| of(id))
         .filter_map(|(id, e)| {
-            let job = e.job.clone().filter(|_| e.run.is_none() && e.left_running && !e.ending_left)?;
+            let job = e.job.clone().filter(|_| (e.run.is_some() || e.left_running) && !e.ending_left)?;
             // Taken as `kill` takes it: a send meanwhile waits for the end.
             e.ending_left = true;
             Some((id.clone(), job))
         })
         .collect();
     drop(r);
-    if late {
-        crate::log::warn("background", &format!("a helper's turn stopped for an update was not over within {wait:?}"));
-    }
-    std::thread::scope(|s| {
+    let ended = std::thread::scope(|s| {
         let ends: Vec<_> = jobs.iter().map(|(id, job)| s.spawn(move || end_left_marked(id, job))).collect();
         ends.into_iter().flat_map(|end| end.join().unwrap_or_default()).collect()
-    })
+    });
+    (ended, late)
+}
+
+/// The update the helpers were held for is called off, or its stop has lapsed
+/// (agents/persist.rs `Stops::thaw`): each goes on with what was sent to it
+/// meanwhile, and helpers may be spawned again. Not while a later update's
+/// stop holds them once more.
+pub fn lift_update_hold() {
+    let held = {
+        let mut r = lock();
+        if crate::agents::update_held() {
+            return;
+        }
+        r.updating = false;
+        let_go_for_update(&mut r, &|_| true)
+    };
+    go_on_after_update(held);
+}
+
+/// Lets go of the helpers `of` picks that are held for an update, and says which.
+fn let_go_for_update(r: &mut Registry, of: &dyn Fn(&str) -> bool) -> Vec<String> {
+    r.entries
+        .iter_mut()
+        .filter(|(id, e)| e.for_update && of(id))
+        .map(|(id, e)| {
+            e.for_update = false;
+            id.clone()
+        })
+        .collect()
+}
+
+/// The turn on what was queued for each of `ids` while it was held. Not a
+/// resume of a turn the update cut short: that one's text is its senders'
+/// (undelivered), as after any stop of Luna's.
+fn go_on_after_update(ids: Vec<String>) {
+    for id in ids {
+        if let Some(text) = next_queued(&id) {
+            run_waited(&id, &text);
+        }
+    }
+    changed();
 }
 
 /// The turn on `text`, a batch of what waited that was reserved for it. One
@@ -530,16 +613,10 @@ pub fn queued_from(id: &str, from: &str) -> usize {
 /// given up may be what will not start, switch.rs `revert_switch`), or the
 /// resume a restart left it.
 pub(super) fn go_on(id: &str) {
-    let next = {
-        let mut r = lock();
-        let Some(e) = r.entries.get_mut(id) else { return };
-        (e.run.is_none() && !e.ending_left && !e.held_back() && !e.queue.is_empty()).then(|| {
-            claim(e);
-            reserve(e)
-        })
-    };
-    let next = next.and_then(|res| settle_batch(id, res)).map(|b| b.text);
-    match next {
+    if !has(id) {
+        return;
+    }
+    match next_queued(id) {
         Some(text) => run_waited(id, &text),
         // A `resumeOnRestart` helper a restart left to go on, which the hold kept
         // back: it goes on now, if nothing else has taken it up.
@@ -547,6 +624,20 @@ pub(super) fn go_on(id: &str) {
         None => {}
     }
     changed();
+}
+
+/// The batch queued for helper `id`, claimed for its next turn, if it is
+/// between turns and nothing holds it (`Entry::held_back`).
+fn next_queued(id: &str) -> Option<String> {
+    let res = {
+        let mut r = lock();
+        let e = r.entries.get_mut(id)?;
+        (e.run.is_none() && !e.ending_left && !e.held_back() && !e.queue.is_empty()).then(|| {
+            claim(e);
+            reserve(e)
+        })
+    };
+    res.and_then(|res| settle_batch(id, res)).map(|b| b.text)
 }
 
 /// Stops it and forgets it. Returns the worktree it made, if any.
@@ -806,14 +897,46 @@ mod tests {
         lock().entries.remove("left-work");
     }
 
+    /// One test at a time that stops helpers for an update, under the update's
+    /// stop as `pty::stop_all_sessions` holds it: a lift said by another test
+    /// meanwhile then lets nothing go (`lift_update_hold`). Called off as it is
+    /// dropped.
+    struct UpdateUnderWay {
+        stopping: Option<crate::agents::UpdateStopping>,
+        _alone: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl UpdateUnderWay {
+        fn begin() -> UpdateUnderWay {
+            let _alone = crate::agents::stops_for_test();
+            UpdateUnderWay { stopping: Some(crate::agents::freeze_for_update()), _alone }
+        }
+    }
+
+    impl UpdateUnderWay {
+        /// Called off as the window says it of an install that failed, this
+        /// test going on alone.
+        fn call_off(&mut self) {
+            drop(self.stopping.take());
+            crate::agents::call_off_update();
+        }
+    }
+
+    impl Drop for UpdateUnderWay {
+        fn drop(&mut self) {
+            self.call_off();
+        }
+    }
+
     /// What helpers' turns left running counts as a session (`running`), which
     /// had the window updated to a new build wait for a restart of the old core
     /// rather than replace it. The update's stop ends it: of a helper between
-    /// turns, and of one whose turn the stop has just cut short, which notes
-    /// what it left only as it ends. Claude Code's and Codex's alike.
+    /// turns, and of one whose turn the stop cuts short, which notes what it
+    /// left only as it ends. Claude Code's and Codex's alike.
     #[cfg(windows)]
     #[test]
     fn an_update_ends_what_helpers_turns_left_so_none_counts_as_a_session() {
+        let _update = UpdateUnderWay::begin();
         let now = crate::throttle::now_ms;
         for provider in [Provider::Claude, Provider::Codex] {
             let idle = format!("upd-idle-{}", provider.as_str());
@@ -825,7 +948,7 @@ mod tests {
             e.left_running = true;
             e.observed.turn_ended_ms = now();
             lock().entries.insert(idle.clone(), e);
-            // Its CLI killed, its turn not over yet: what it left is still to be read.
+            // In a turn whose CLI the stop kills: what it left is read as it ends.
             let mut e = entry(provider);
             e.job = Some(job_of(&kids.0[1]));
             e.run = Some(Run::claimed(Some(u32::MAX - 1), now()));
@@ -841,29 +964,139 @@ mod tests {
                 })
             };
             let picked = [idle.clone(), cut.clone()];
-            let ended = end_left_after_turns(&|id| picked.iter().any(|p| p == id), STOP_WAIT);
+            assert_eq!(stop_for_update_of(&|id| picked.iter().any(|p| p == id), STOP_WAIT, LATE_WAIT), 1, "{provider:?}: one turn stopped");
             ending.join().unwrap();
-            assert_eq!(ended.iter().filter(|n| n.eq_ignore_ascii_case("ping.exe")).count(), 2, "{provider:?}: {ended:?}");
+            assert!(ended_within(&mut kids.0[0], 3000) && ended_within(&mut kids.0[1], 3000), "{provider:?}: both ended");
             assert!(!counts(&idle) && !counts(&cut), "{provider:?}: neither counts as a session any more");
-            assert!(ended_within(&mut kids.0[0], 3000) && ended_within(&mut kids.0[1], 3000));
             lock().entries.remove(&idle);
             lock().entries.remove(&cut);
         }
     }
 
-    /// A turn that will not end holds the update's stop no longer than its
-    /// bound, and is left as it is.
+    /// A turn claimed and stopped before its process started, or one that will
+    /// not end, holds the update's stop no longer than its bound: what its turns
+    /// left before goes all the same, and so does what other helpers' turns left.
+    #[cfg(windows)]
     #[test]
-    fn an_update_waits_for_a_turn_that_does_not_end_only_so_long() {
+    fn a_turn_not_over_in_time_holds_up_no_helpers_leftovers() {
+        let _update = UpdateUnderWay::begin();
+        let mut kids = Kids(vec![idler(60), idler(60)]);
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 1;
+        e.job = Some(job_of(&kids.0[0]));
+        e.left_running = true;
+        claim(&mut e);
+        lock().entries.insert("upd-claimed".into(), e);
         let mut e = entry(Provider::Codex);
-        e.run = Some(Run::claimed(Some(u32::MAX - 2), 0));
-        lock().entries.insert("upd-stuck".into(), e);
-        let wait = std::time::Duration::from_millis(300);
+        e.turns_ended = 1;
+        e.job = Some(job_of(&kids.0[1]));
+        e.left_running = true;
+        lock().entries.insert("upd-other".into(), e);
+        let picked = ["upd-claimed", "upd-other"];
+        let (wait, late) = (std::time::Duration::from_millis(500), std::time::Duration::from_millis(300));
         let started = std::time::Instant::now();
-        assert!(end_left_after_turns(&|id| id == "upd-stuck", wait).is_empty());
-        assert!(started.elapsed() >= wait);
-        assert!(lock().entries.get("upd-stuck").unwrap().run.is_some(), "still in its turn");
-        lock().entries.remove("upd-stuck");
+        assert_eq!(stop_for_update_of(&|id| picked.contains(&id), wait, late), 1, "the claimed turn is stopped");
+        assert!(started.elapsed() >= wait + late, "it was waited for, and again once its job was ended");
+        let e = lock().entries.get("upd-claimed").map(|e| (e.run.as_ref().map(|run| run.stopped), e.left_running));
+        assert_eq!(e, Some((Some(true), false)), "stopped, and nothing left of its earlier turns");
+        assert!(ended_within(&mut kids.0[0], 3000) && ended_within(&mut kids.0[1], 3000), "both helpers' leftovers ended");
+        for id in picked {
+            lock().entries.remove(id);
+        }
+    }
+
+    /// A turn the update stopped whose reader a leftover on its pipe keeps
+    /// waiting (run.rs `DRAIN_AT_MOST`) is not over at the stop's bound: its job
+    /// is ended then, and what its end notes as left after that, read a moment
+    /// before, goes too, rather than count as a session. Here its end finds
+    /// another process left, in a job of its own.
+    #[cfg(windows)]
+    #[test]
+    fn what_a_late_turn_notes_as_left_as_it_ends_goes_too() {
+        let _update = UpdateUnderWay::begin();
+        let now = crate::throttle::now_ms;
+        let mut kids = Kids(vec![idler(60), idler(60)]);
+        let (on_pipe, noted) = (job_of(&kids.0[0]), job_of(&kids.0[1]));
+        let mut e = entry(Provider::Claude);
+        e.job = Some(on_pipe.clone());
+        e.run = Some(Run::claimed(Some(u32::MAX - 3), now()));
+        lock().entries.insert("upd-drain".into(), e);
+        // Its reader, which drains once what held the pipe has gone.
+        let ending = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !crate::procs::left_in(&on_pipe).is_empty() || lock().entries.get("upd-drain").is_some_and(|e| e.ending_left) {
+                assert!(std::time::Instant::now() < deadline, "its job was never ended");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            lock().entries.get_mut("upd-drain").unwrap().job = Some(noted);
+            turn_over("upd-drain", Some(1));
+        });
+        let (wait, late) = (std::time::Duration::from_millis(300), std::time::Duration::from_secs(5));
+        assert_eq!(stop_for_update_of(&|id| id == "upd-drain", wait, late), 1);
+        ending.join().unwrap();
+        assert!(ended_within(&mut kids.0[0], 3000), "what held its pipe ended");
+        assert!(ended_within(&mut kids.0[1], 3000), "what its end noted ended");
+        let e = lock().entries.remove("upd-drain").unwrap();
+        assert!(e.run.is_none() && !keeps_core(&e, now()), "no session left");
+    }
+
+    /// What is sent to a helper while the update's stop ends what its turns
+    /// left queues behind that end, which then starts no turn on it: it waits
+    /// for the update to be called off.
+    #[cfg(windows)]
+    #[test]
+    fn a_send_while_an_update_ends_what_was_left_starts_no_turn() {
+        let _update = UpdateUnderWay::begin();
+        let mut kids = Kids(vec![idler(60)]);
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 1;
+        e.job = Some(job_of(&kids.0[0]));
+        e.left_running = true;
+        lock().entries.insert("upd-ending".into(), e);
+        let send_now = || assert_eq!(send("upd-ending", "after the update", None), Ok(Placed::Queued));
+        WHILE_ENDING.lock().unwrap().push(("upd-ending".into(), Box::new(send_now)));
+        let brief = std::time::Duration::from_millis(100);
+        assert_eq!(stop_for_update_of(&|id| id == "upd-ending", brief, brief), 0);
+        assert!(ended_within(&mut kids.0[0], 3000));
+        let e = lock().entries.remove("upd-ending").unwrap();
+        assert!(e.run.is_none(), "no turn started");
+        assert_eq!(e.queue.iter().map(|q| q.text.as_str()).collect::<Vec<_>>(), ["after the update"]);
+    }
+
+    /// Text sent to a helper while an update is installed queues: a turn
+    /// started would count as a session. Once the update is called off it
+    /// starts the next turn, here one that cannot start (its folder gone),
+    /// which keeps it for its sender.
+    #[test]
+    fn a_send_during_an_update_waits_for_it_to_be_called_off() {
+        let mut update = UpdateUnderWay::begin();
+        let mut e = entry(Provider::Codex);
+        e.turns_ended = 1;
+        e.spec.folder = "C:\\luna-no-such-folder".into();
+        lock().entries.insert("upd-send".into(), e);
+        let brief = std::time::Duration::from_millis(100);
+        stop_for_update_of(&|id| id == "upd-send", brief, brief);
+        assert_eq!(send("upd-send", "after the update", None), Ok(Placed::Queued));
+        assert_eq!(interrupt("upd-send", "now", None).map(|i| i.queued), Ok(true));
+        go_on("upd-send");
+        assert!(lock().entries.get("upd-send").unwrap().run.is_none(), "no turn started");
+        update.call_off();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let gone_on = || lock().entries.get("upd-send").is_some_and(|e| !e.for_update && e.queue.is_empty());
+        while !gone_on() {
+            assert!(std::time::Instant::now() < deadline, "the queue was not taken up once the update was called off");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // Its turn either runs or, unable to start, keeps the text for its sender.
+        for _ in 0..500 {
+            if lock().entries.get("upd-send").unwrap().run.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let e = lock().entries.remove("upd-send").unwrap();
+        assert!(e.log.iter().any(|l| l.starts_with("could not start the turn")), "{:?}", e.log);
+        assert_eq!(e.undelivered.iter().map(|q| q.text.as_str()).collect::<Vec<_>>(), ["after the update", "now"]);
     }
 
     /// A send while a stop between turns ends what is left queues: a turn's CLI

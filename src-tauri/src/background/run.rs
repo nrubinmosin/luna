@@ -46,12 +46,20 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         promoting_since: 0,
         deleting: false,
         moving: false,
+        for_update: false,
         handing: false,
         observed: Observed::default(),
         switch: None,
     };
     claim(&mut e);
-    lock().entries.insert(id.to_string(), e);
+    {
+        let mut r = lock();
+        // Its first turn would count as a session and keep the old core.
+        if r.updating {
+            return Err("Luna is installing an update; spawn it again once that is through".into());
+        }
+        r.entries.insert(id.to_string(), e);
+    }
     if let Err(e) = run_turn(id, prompt) {
         lock().entries.remove(id);
         changed();

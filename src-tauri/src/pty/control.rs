@@ -295,9 +295,10 @@ impl PtyManager {
 /// Asks every session to quit the way a delete does, before an update: the
 /// installer ends the process, and a CLI given its exit hooks leaves a whole
 /// transcript where one killed mid-write would not. A background helper's
-/// turn is stopped too, and what helpers' turns left running is ended
-/// (`background::stop_for_update`): either would count as a session and keep
-/// the old core from being replaced, and the parent chats have just been
+/// turn is stopped too, what helpers' turns left running is ended, and no
+/// helper's turn starts until the update is called off
+/// (`background::stop_for_update`): any of them would count as a session and
+/// keep the old core from being replaced, and the parent chats have just been
 /// stopped. Returns how many it stopped. The chats' ties stay frozen until the update is called off
 /// (`update_called_off`), the installer ends the process, or the freeze's
 /// bound after the stop is up (`agents::freeze_for_update`).

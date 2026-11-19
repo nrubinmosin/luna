@@ -186,6 +186,12 @@ struct Entry {
     /// starts meanwhile, so the next one starts under its new parent, and it is
     /// neither opened as a chat nor deleted. Text sent meanwhile queues.
     moving: bool,
+    /// An update is being installed (`stop_for_update`), until it is called
+    /// off (`lift_update_hold`): no turn starts meanwhile, as one would count
+    /// as a session and keep the old core from being replaced. Text sent
+    /// queues, and starts the next turn once the hold lifts; if the update
+    /// goes ahead, the core's leaving keeps it as undelivered (`stop_turns`).
+    for_update: bool,
     /// The window's word that its row is made is being acted on (rows.rs
     /// `background_promoted`): a second word, a retry whose first answer was
     /// lost, hands nothing over again.
@@ -201,7 +207,7 @@ struct Entry {
 impl Entry {
     /// Something has it held between turns: no turn starts until it lets go.
     fn held_back(&self) -> bool {
-        self.promoting || self.deleting || self.moving || self.switch_waits()
+        self.promoting || self.deleting || self.moving || self.for_update || self.switch_waits()
     }
 
     /// Between turns with its handoff not yet through: the switch is the next
@@ -220,6 +226,10 @@ struct Registry {
     asked: HashMap<u64, String>,
     /// The core is leaving (`stop_all`): no turn starts from here on.
     closed: bool,
+    /// An update is being installed (`stop_for_update`), until it is called
+    /// off (`lift_update_hold`): every helper is held (`Entry::for_update`),
+    /// and none is spawned.
+    updating: bool,
     /// Which of the agents registry's parent changes each helper's
     /// `Spec::parent` was last set from (`set_parent`).
     parent_changes: HashMap<String, u64>,
@@ -234,6 +244,7 @@ fn reg() -> &'static (Mutex<Registry>, Condvar) {
                 next_serial: 1,
                 asked: HashMap::new(),
                 closed: false,
+                updating: false,
                 parent_changes: HashMap::new(),
             }),
             Condvar::new(),
@@ -457,13 +468,18 @@ fn stopped_lines() -> HashMap<(String, String), Option<bool>> {
 /// after. A turn claimed but not yet started is stopped too: it does not
 /// start. Returns how many it stopped.
 pub fn stop_turns(close: bool) -> usize {
+    stop_turns_of(close, &|_| true)
+}
+
+/// `stop_turns` for the helpers `of` picks.
+fn stop_turns_of(close: bool, of: &dyn Fn(&str) -> bool) -> usize {
     let (pids, claimed, ids): (Vec<(u32, crate::procs::Pin)>, usize, Vec<String>) = {
         let mut r = lock();
         r.closed |= close;
         let mut pids = Vec::new();
         let mut claimed = 0;
         let mut ids = Vec::new();
-        for (id, e) in r.entries.iter_mut() {
+        for (id, e) in r.entries.iter_mut().filter(|(id, _)| of(id)) {
             match stop_for_luna(e) {
                 Some(pid) => {
                     pids.push((pid, crate::procs::pin(pid)));

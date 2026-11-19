@@ -35,10 +35,23 @@ use std::time::Duration;
 const START_WAIT: Duration = Duration::from_secs(10);
 /// How long a core asked to stop gets: its sessions' grace and then some.
 const STOP_WAIT: Duration = Duration::from_secs(30);
+/// How long a connect to a core's endpoint gets.
+const CONNECT_WAIT: Duration = Duration::from_secs(2);
+/// How long a core gets to answer a hello.
+const HELLO_WAIT: Duration = Duration::from_secs(5);
+/// What a core that would not stop in `STOP_WAIT` is allowed for its kill
+/// (`pty::kill_tree`, its whole tree), which nothing else bounds.
+const KILL_SLACK: Duration = Duration::from_secs(5);
 /// How long a request waits for a core while one is found or started, and
 /// while the one running is replaced (a restart, or another build's after an
-/// update): the old one's stop and the new one's start, with their hellos.
-const LINK_WAIT: Duration = Duration::from_secs(STOP_WAIT.as_secs() + 2 * START_WAIT.as_secs());
+/// update), at worst: a hello to the old one, its stop and kill, the new one's
+/// start and a hello to it, 7 + 30 + 5 + 10 + 7 = 59 s. The old core's stop
+/// asks its sessions to quit within `pty::GRACE` (10 s) inside `STOP_WAIT`; an
+/// update's `stop_all_sessions` runs in the old window before the install,
+/// outside this wait.
+const LINK_WAIT: Duration = Duration::from_secs(
+    2 * (CONNECT_WAIT.as_secs() + HELLO_WAIT.as_secs()) + STOP_WAIT.as_secs() + KILL_SLACK.as_secs() + START_WAIT.as_secs(),
+);
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -474,7 +487,7 @@ fn discover() -> Option<Found> {
 /// anyone else (one who took it while it was free) learns nothing, and the
 /// window opens it for identification only, so it can act as nobody.
 fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
-    let mut stream = Stream::connect(&found.endpoint, Duration::from_secs(2))?;
+    let mut stream = Stream::connect(&found.endpoint, CONNECT_WAIT)?;
     let server = stream.server_pid()?;
     if server != found.pid {
         return Err(io::Error::new(
@@ -482,7 +495,7 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
             format!("the core's endpoint is served by pid {server}, not by the core's pid {}", found.pid),
         ));
     }
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(HELLO_WAIT))?;
     let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into() })?;
     ipc::send(&mut stream, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args })?;
     let res: Res = ipc::recv(&mut stream, ipc::RES)?;

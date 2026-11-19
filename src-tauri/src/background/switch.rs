@@ -131,6 +131,9 @@ pub fn begin_fresh(id: &str, n: u32, opening: String, previous: Option<String>) 
         if e.run.is_some() || e.ending_left || e.promoting || e.deleting || e.handing {
             return Err("it is busy (a turn, a stop, or being opened as a chat or deleted)".into());
         }
+        if e.for_update {
+            return Err("Luna is installing an update".into());
+        }
         let Some(s) = e.switch.as_mut().filter(|s| s.n == n && s.phase != LeadPhase::Done) else {
             return Err(format!("handoff {n} is no longer under way"));
         };
