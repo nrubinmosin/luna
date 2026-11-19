@@ -64,10 +64,12 @@ tools.
   Gmail, Slack and the like; Codex's apps and the servers in its account's
   `config.toml`), and a Claude Code helper with auto-memory off, so that what
   an agent briefs it to do stays inside Luna. A spawn with `connectors: true`
-  keeps them. A Codex helper still has servers from the project's `.codex/`
-  folder and from plugins: the spawn's result lists them. A Codex helper whose account has a server Codex cannot
-  turn off for one run (a name with a dot, such as `team.slack`) is not
-  started without `connectors: true`.
+  keeps them. A Codex helper also goes without the servers of the project's
+  `.codex/` folders and of Codex's machine-wide config, and without plugins
+  but the library's (their skills too, as a plugin goes whole). One whose
+  config Luna cannot read, or whose managed config sets servers, plugins or
+  apps (which no single run can turn off), is not started without
+  `connectors: true`.
 - A tool called with an argument it does not take, or of the wrong type, is
   refused with what it does take, rather than run on a default.
 
@@ -114,8 +116,8 @@ tools.
     click Move, and a chat that asked for it is picked to start with. Only a
     chat's own helper (or one whose chat is gone) moves: a helper's helper has
     the link grayed out and goes along with the helper above it. It moves
-    only to a chat with Luna's tools that runs at least at its privilege and
-    has places for it and its helpers, and where none of them would sit
+    only to a chat with Luna's tools that has places for it and its helpers,
+    and where none of them would sit
     deeper than a helper that chat spawned could (a helper with Luna's tools
     only as the chat's own helper); the dialog grays out the others and
     says why under each. A refused move says why and changes nothing. It may be in the middle of a turn: the
@@ -132,7 +134,7 @@ tools.
   - **Move to <chat>?** shows under its line, as a link, when one of your
     chats tried to send to it or answer it, or a helper under it, and was
     refused for not being above it, and only if it may move there now (the
-    chat has Luna's tools, the privilege and the places). The link opens the
+    chat has Luna's tools and the places). The link opens the
     Move dialog with that chat picked; it moves when you click Move, as
     above, with the helpers under it. The dialog stays open until the move
     is through, and a refusal shows in it.
@@ -178,21 +180,17 @@ tools.
 - The spawn reports what settings cannot: other live sessions in the same
   directory (`sameFolder`), whose files and git it shares. `luna_session_list` names the
   model a turn ran on, where the organization swapped the one asked for.
-- A helper runs at no more privilege than its caller (permission mode; Codex
-  sandbox, approval and network) unless Settings → Agents & trust allows helpers
-  above their caller, and never in or above Luna's data folder. Turning that
-  setting on asks again in a system dialog; turning it off does not.
-- A spawn that names no mode takes the spawning chat's: the same mode on the
-  same CLI, or on the other CLI the highest mode its own covers (a Claude Code
-  chat in Accept edits gets a read-only Codex helper; a Codex chat that asks
-  you gets its sandbox with approval `never`, as nobody is there to ask).
-  Settings → Agents & trust → Helpers → "Helpers' mode when not given" can make
-  it the account's default instead; either way it is held to the caller's.
-  The spawn's `settings.modeFrom` says which (`caller`, `callerNearest`,
-  `account`). A Claude Code helper may also run in `auto`, as a chat may
-  (Auto), or in `dontAsk`. On the account's default, a settings file's
-  `defaultMode` is taken as it is, `dontAsk` included; one Luna does not know
-  counts as `default` (asks), never as Bypass.
+- A helper runs in the mode its spawn names, whatever mode the chat spawning
+  it runs in, and never in or above Luna's data folder. What a mode or a
+  sandbox lets through is the CLI's own: Luna does not rank or compare them.
+- A spawn that names no mode passes none: the helper's CLI runs in what its
+  own settings say for that account and folder, with `modeFrom: "cli"` in its
+  `settings`. A Claude Code helper's shows the `defaultMode` Luna read
+  (`dontAsk` included); a Codex helper's says `sandbox: "codex"`, Codex's own
+  from its config, which Luna does not resolve. A Codex config Luna cannot
+  read (one that does not parse, or names a mode Luna does not know) makes
+  it `read-only`, passed. A Claude Code helper may also run in `auto`, as a
+  chat may (Auto), or in `dontAsk`.
 - A Codex helper never asks a person: its approval is `never` or `auto-review`,
   and one that asks (`on-request` and the like) is refused, as nobody is there.
 - `constraints` is text the helper and every session
@@ -249,7 +247,9 @@ questions and approvals. `luna_session_answer` answers: an option's number or la
 words, or `allow` true or false.
 
 A Claude Code helper puts its questions and permission prompts to Luna instead
-of a screen, so its agent answers them. Each has an `id` in `ask`, which
+of a screen, so its agent answers them, any of them, whatever mode either runs
+in. Text that a CLI reads as a command (opening with `/` or `!`) an agent sends
+only into its own helpers. Each has an `id` in `ask`, which
 `luna_session_answer` takes as `askId`, so an answer cannot land on the next prompt; an
 id it never had is refused as unknown, and without one an answer is taken only
 when a single prompt is held. The command up for permission is shown whole, up
@@ -399,10 +399,15 @@ the new-chat dialog reads them) and its models.
 
 ## Codex sandbox notes
 
+What a sandbox holds is Codex's own, not Luna's; these are what was seen of
+it (Codex 0.169.0, [CLI compatibility](../cli-compatibility.md)).
+
 - Codex under `read-only`, `read-only-net` or `workspace-write` (so also
-  `auto-review`) runs commands in its Windows sandbox (unelevated: no
-  administrator, no extra accounts), without the Store's app aliases on its
-  PATH.
+  `auto-review`) runs commands in its Windows sandbox, without the Store's app
+  aliases on its PATH. Where the account names no `windows.sandbox`, Luna
+  passes the unelevated one (no administrator, no extra accounts), as Codex
+  runs no command in those sandboxes without one; one the account names is
+  left as it is.
 - `read-only-net` and `danger-full-access` have the network. `read-only` and
   `workspace-write` do not by default, but on Windows Codex only points proxy
   variables at a dead port, so ssh and raw sockets still connect: that keeps

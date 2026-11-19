@@ -403,19 +403,19 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
 /// A Codex session's role layers (library/role.rs) as its `-c
 /// developer_instructions`, after the value its config stack sets
 /// (codex/config.rs `developer_instructions_in`), which the `-c` replaces;
-/// `project_trusted`: whether the run reads the project's config layers.
+/// `helper`: a helper's run, its folder trusted for it (`codex_trust`).
 /// Nothing where it has no layers, as for a chat with nothing set: Codex's
 /// own value stands. Err where the value would not fit on a command line.
 pub(crate) fn codex_role_args(
     account_path: &str,
     folder: &str,
-    project_trusted: bool,
+    helper: bool,
     texts: &crate::library::RoleTexts,
     skills: &crate::library::SessionSkills,
     constraints: &[String],
 ) -> Result<(Vec<String>, Vec<crate::applied::Applied>), String> {
     let Some(layers) = crate::library::role_layers(texts, skills, constraints) else { return Ok((Vec::new(), Vec::new())) };
-    let stack = crate::codex::config::developer_instructions_in(account_path, folder, project_trusted);
+    let stack = crate::codex::config::developer_instructions_in(account_path, folder, helper);
     let value = crate::library::codex_developer_instructions(stack.value.as_deref(), &layers)?;
     let how = match stack.value {
         Some(_) => "-c developer_instructions, after the config's own",
@@ -714,11 +714,11 @@ pub async fn ensure_codex_session(
         // window runs is the person's, never a helper (background/command.rs
         // trusts those for their run alone).
         let trust = codex_trust(&account_path, &folder, false);
-        // Whether Codex reads the project's own config layers, for the
-        // developer_instructions they may set (`codex_role_args`).
-        let project_trusted =
-            trust.is_some() || crate::codex::trust::codex_folder_trusted(account_path.clone(), folder.clone()).unwrap_or(false);
         let chosen_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+        crate::codex::defaults::refuses_untrusted(&account_path, &folder)?;
+        // As Luna runs them: what it does not know closed, `on-failure` as
+        // `on-request`, Codex's own (`OWN`) with no flag (codex/defaults.rs).
+        let (approval, sandbox) = crate::codex::defaults::launch_mode(&approval, &sandbox);
         let sandbox: &str = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX } else { &sandbox };
         // What the sandbox takes from this machine, ahead of the
         // registration: the profile's new name and what it denies, PATH and
@@ -768,7 +768,7 @@ pub async fn ensure_codex_session(
         // fit them on the command line starts without them, and says so.
         let role = crate::library::role_texts(crate::library::Role::Chat);
         let mut args = args;
-        match codex_role_args(&account_path, &folder, project_trusted, &role, &skills, &[]) {
+        match codex_role_args(&account_path, &folder, false, &role, &skills, &[]) {
             Ok((role_args, role_applied)) => {
                 args.extend(role_args);
                 applied.extend(role_applied);
@@ -1480,12 +1480,13 @@ mod tests {
     }
 
     /// `--ask-for-approval` and the sandbox: whatever reviewer the account
-    /// or the project names stands.
+    /// or the project names stands. Codex's own from its config (`codex`)
+    /// gets no flag.
     fn codex_asks(approval: &str, sandbox: &str) -> Vec<String> {
-        let mut args = strings(&["--ask-for-approval", approval]);
+        let mut args = if approval == "codex" { Vec::new() } else { strings(&["--ask-for-approval", approval]) };
         if sandbox == "read-only" {
             args.extend(golden::codex_read_only(&["--sandbox", sandbox]));
-        } else {
+        } else if sandbox != "codex" {
             args.extend(strings(&["--sandbox", sandbox]));
         }
         if sandbox != "danger-full-access" {
@@ -1648,17 +1649,39 @@ mod tests {
         };
         let mut read_only_net = strings(&["--ask-for-approval", "on-request"]);
         read_only_net.extend(golden::codex_read_only_net());
-        // (approval, sandbox, the flags for them, PATH cut for the sandbox, the sandbox it runs in)
-        let cases: [(&str, &str, Vec<String>, bool, &str); 5] = [
-            ("never", "danger-full-access", strings(&["--dangerously-bypass-approvals-and-sandbox"]), false, "danger-full-access"),
-            ("on-request", "danger-full-access", codex_asks("on-request", "danger-full-access"), false, "danger-full-access"),
-            ("untrusted", "read-only", codex_asks("untrusted", "read-only"), true, "read-only"),
-            ("on-request", "read-only-net", with_windows(read_only_net), true, "read-only-net"),
+        // (approval, sandbox, the flags for them, PATH cut for the sandbox, the approval and sandbox it runs in)
+        let cases: [(&str, &str, Vec<String>, bool, (&str, &str)); 9] = [
+            (
+                "never",
+                "danger-full-access",
+                strings(&["--dangerously-bypass-approvals-and-sandbox"]),
+                false,
+                ("never", "danger-full-access"),
+            ),
+            (
+                "on-request",
+                "danger-full-access",
+                codex_asks("on-request", "danger-full-access"),
+                false,
+                ("on-request", "danger-full-access"),
+            ),
+            ("on-request", "read-only-net", with_windows(read_only_net), true, ("on-request", "read-only-net")),
             // The reviewer model takes the sandbox it runs in, whatever was asked.
-            ("auto-review", "read-only", with_windows(strings(&["--approve-for-me"])), true, "workspace-write"),
+            ("auto-review", "read-only", with_windows(strings(&["--approve-for-me"])), true, ("auto-review", "workspace-write")),
+            // `--ask-for-approval` refuses all but on-request and never
+            // (0.169.0): Codex's alias as what it stands for, and what Luna
+            // does not know, `untrusted` (which 0.169.0 no longer runs) and
+            // a granular the files do not say included, closed.
+            ("on-failure", "workspace-write", codex_asks("on-request", "workspace-write"), true, ("on-request", "workspace-write")),
+            ("untrusted", "read-only", codex_asks("on-request", "read-only"), true, ("on-request", "read-only")),
+            // Codex's own from its config, and what 0.20's first builds said
+            // for a granular table: no flag.
+            ("granular", "workspace-write", codex_asks("codex", "workspace-write"), true, ("codex", "workspace-write")),
+            ("codex", "codex", codex_asks("codex", "codex"), true, ("codex", "codex")),
+            ("Never", "everything", codex_asks("never", "read-only"), true, ("never", "read-only")),
         ];
-        for (approval, sandbox, asks, sandboxed, runs_in) in cases {
-            let id = format!("golden-codex-{approval}-{sandbox}");
+        for (approval, sandbox, asks, sandboxed, (runs, runs_in)) in cases {
+            let id = format!("golden-codex-{}-{sandbox}", approval.to_lowercase());
             let r = Redact::for_chat(&id);
             let s = CodexAsk { approval, sandbox, ..CodexAsk::chat() }.start(&id, &r);
             let mut flags = strings(&["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"medium\""]);
@@ -1671,10 +1694,34 @@ mod tests {
                 envs.splice(2..2, golden::codex_git_ssl());
             }
             assert_eq!(s.envs, envs, "{approval} {sandbox}");
-            assert_eq!(s.describe, format!("model gpt-5.5 effort medium approval {approval} sandbox {runs_in}"));
+            assert_eq!(s.describe, format!("model gpt-5.5 effort medium approval {runs} sandbox {runs_in}"));
         }
     }
 
+    /// A chat on Codex's own approval and sandbox (`codex`) gets no flag for
+    /// either, whatever its account's config says, a granular table among it:
+    /// Codex reads its config itself.
+    #[test]
+    fn golden_codex_chat_on_codexs_own_gets_no_mode_flag() {
+        const ID: &str = "golden-codex-own";
+        let account = std::env::temp_dir().join(format!("luna-golden-granular-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(
+            account.join("config.toml"),
+            "[approval_policy.granular]\nsandbox_approval = true\nrules = false\nmcp_elicitations = true\n",
+        )
+        .unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
+        let s = CodexAsk { account: acc, approval: "codex", sandbox: "codex", ..CodexAsk::chat() }.start(ID, &r);
+        let mut flags = strings(&["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"medium\""]);
+        flags.extend(codex_asks("codex", "codex"));
+        assert_eq!(s.args, codex_args(&[], flags, Vec::new()));
+        assert!(!s.args.iter().any(|a| a == "--ask-for-approval" || a == "--sandbox" || a.starts_with("approval_policy")), "{:?}", s.args);
+        assert_eq!((s.value("approval"), s.value("sandbox")), (None, None));
+        assert_eq!(s.describe, "model gpt-5.5 effort medium approval codex sandbox codex");
+        let _ = std::fs::remove_dir_all(&account);
+    }
     #[test]
     fn golden_codex_chat_in_a_library_folder_gets_its_plugin_and_keeps_its_skills_off() {
         const ID: &str = "golden-codex-library";

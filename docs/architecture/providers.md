@@ -38,7 +38,7 @@ and a why. Per provider:
 | Self-update off (Runtime) | `DISABLE_AUTOUPDATER=1` | `-c check_for_update_on_startup=false` per start, never written |
 | Renderer and TUI (Runtime) | `tui: "fullscreen"` in the `--settings` file and `CLAUDE_CODE_NO_FLICKER=1`, chats and logins | `-c tui.notifications=false`, `-c tui.copy_on_select="never"`, chats only |
 | Reviewer | n/a | `approvals_reviewer="user"` for helpers only |
-| Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one |
+| Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one, whose value goes as it is: so Codex runs commands at all, not a guarantee |
 | Trust | the CLI's prompt, or the dialog's write | the CLI's screen, the dialog's write, or a helper's `-c` for its run |
 | `--skip-git-repo-check` (Runtime) | n/a | a helper outside a Git repository only |
 | Core read deny (Boundary) | `permissions.deny` in `--settings` | a profile deny, off Windows (ADR-0014) |
@@ -289,18 +289,33 @@ files themselves and the dialog opens on what they say:
 - **Claude Code**, in its order: the account's `settings.json` → the project's
   `.claude/settings.json` → `.claude/settings.local.json` → the machine-wide
   managed file.
-- **Codex**: the account's `config.toml`, then the project's
-  `.codex/config.toml` (only for a trusted folder). No model there: the first
-  model of the catalog (sorted by `priority`; source `codex`); no effort: that
-  model's `default_reasoning_level`. Codex always gets `--model`.
-
+- **Codex**: its system layer (`codex/config.rs` `system_layer`), the
+  account's `config.toml`, then the project's `.codex/config.toml` layers
+  from its root down to the folder, found as Codex finds them. The model and
+  effort come from those Codex trusts (the first decision saved for the
+  layer's folder, the project root or the repository, a run's own `-c` trust
+  counted, `codex/trust.rs` `Decisions`). No model there: the first model of
+  the catalog (sorted by `priority`; source `codex`); no effort: that model's
+  `default_reasoning_level`. Codex always gets `--model`. The approval and
+  the sandbox Luna does not resolve: they open on `codex`, Codex's own from
+  its config, for which a chat gets no `--ask-for-approval` or `--sandbox`
+  and Luna claims no value (no deny of its `core/` either). Only where a
+  layer Codex might read, trusted or not, will not read or parse, or names
+  an approval, a sandbox or a permission profile Luna does not know, do they
+  open closed, `on-request` and `read-only` (source `closed`), passed
+  explicitly. A config whose `untrusted` approval Codex surely reads refuses
+  the chat by name (`refuses_untrusted`); where a project layer might go over
+  it, the chat starts and Codex decides. `launch_mode` puts what the window
+  asks through the same reading, an approval closed closing the sandbox with
+  it; a `granular` or `profile` recorded by 0.20's first builds starts as
+  `codex`.
 Picking another Codex model moves the effort to that model's default unless the
 effort came from a file or was picked by hand (`draft.follow`). Picking another
 Claude model moves it to that model's default only where the model does not
 take the level shown, and then whoever chose it (`draft.force`); a model that
 takes no effort shows no effort buttons and runs without `--effort`. What Codex actually ran
 is read from the rollout's `turn_context` (`modelSeen`). The core normalizes and
-supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
+supplies the values nothing names (Codex's own, or Luna's stock where it picks) so the dialog, `luna_session_spawn` and
 `luna_session_list` say the same thing.
 
 ## Models
@@ -469,7 +484,8 @@ live registry.
 ## The Codex sandbox on Windows
 
 - Without `windows.sandbox` Codex rejects or sends for approval every command
-  under `read-only`, `read-only-net` and `workspace-write`. Those modes get
+  under `read-only`, `read-only-net` and `workspace-write`. Those modes, and
+  Codex's own (`codex`), get
   `-c windows.sandbox="unelevated"` unless the account's `config.toml` names
   a `windows.sandbox` of its own (`config.rs` `windows_sandbox_set`), which
   then stands; a project's does not count (a restricted token per command: no

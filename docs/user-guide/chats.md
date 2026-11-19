@@ -92,15 +92,31 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
   description as a tooltip), opening on the model's default and following the
   model when another is picked, unless a settings file names a level or one was
   picked by hand.
-- Approval policy (`on-request/never/auto-review`) and sandbox mode
-  (`read-only/read-only-net/workspace-write/danger-full-access`). `never` +
+- Approval policy (`Codex's own/on-request/never/auto-review`) and sandbox
+  mode (`Codex's own/read-only/read-only-net/workspace-write/danger-full-access`).
+  **Codex's own**, where both open, passes nothing: Codex runs as its own
+  `config.toml` says (a granular approval table, a permission profile, its
+  own defaults), and Luna does not say what that is. `never` +
   `danger-full-access` is passed as `--dangerously-bypass-approvals-and-sandbox`.
   `auto-review` is Codex's `--approve-for-me`: what Codex would ask you goes to
   a reviewer model, which approves or declines so the turn goes on, always in
-  `workspace-write`.
-- Isolation runs `codex --worktree` (Codex 0.169.0): Codex checks the current
-  commit out into `<account>/worktrees/<4 hex>/<repo>` on a detached HEAD. A
-  resumed chat goes back into that checkout.
+  `workspace-write`. A `config.toml` Luna cannot read (one that does not
+  parse, or names an approval, sandbox or profile Luna does not know) opens on
+  `on-request` with `read-only`, passed, marked "Luna's safe choice";
+  `on-failure` is `on-request`. A config saying `approval_policy =
+  "untrusted"`, which Codex 0.169 refuses to start on, is named in an error
+  and the chat is not started, unless a project's own config may say
+  otherwise, when Codex decides.
+- What a sandbox holds is Codex's own, not Luna's. Seen on Windows with Codex
+  0.169.0: `read-only` writes nothing, `workspace-write` only the folder and
+  temp (not `.git`); both read what you can, and their "no network" stops
+  only tools that follow proxy variables (see
+  [CLI compatibility](../cli-compatibility.md)). Where your account names no
+  `windows.sandbox`, Luna passes `unelevated` so Codex can run commands at
+  all; one you name is left as it is.
+- Isolation runs `codex --worktree` (Codex 0.169.0): Codex checks the current commit out into
+  `<account>/worktrees/<4 hex>/<repo>` on a detached HEAD. A resumed chat goes
+  back into that checkout.
 - Codex's "Hooks need review" prompt is Codex's own: Luna never passes
   `--dangerously-bypass-hook-trust`, so a project's hooks ask for trust as they
   would started by hand, and a background helper, which cannot ask, goes without
@@ -109,8 +125,8 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
 **Defaults come from the CLI's own files** for that account in that folder.
 Claude Code: the account's `settings.json`, the project's
 `.claude/settings.json` and `.claude/settings.local.json`, then the machine-wide
-managed file. Codex: the account's `config.toml`, then the project's
-`.codex/config.toml` (read only for a trusted folder). The line under each
+managed file. Codex: its machine-wide `config.toml`, the account's, then the
+project's `.codex/config.toml` (read only for a trusted folder). The line under each
 control names the file it came from; changing one says so and offers the way
 back. An override belongs to that chat and is never remembered as a default.
 

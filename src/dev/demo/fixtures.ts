@@ -538,7 +538,7 @@ export const CODEX_MODELS: CodexModelDto[] = [
 export const CODEX_DEFAULTS: CodexDefaultsDto = {
   model: { value: 'gpt-6.1-sol', source: 'codex' },
   effort: { value: 'low', source: 'codex' },
-  approval: { value: 'never', source: 'stock' },
+  approval: { value: 'on-request', source: 'codex' },
   sandbox: { value: 'workspace-write', source: 'project' }
 };
 

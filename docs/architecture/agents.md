@@ -3,8 +3,9 @@
 Sessions that run sessions. A chat started with **Luna tools** gets Luna as an
 MCP server and can spawn helpers, talk to them, answer what they ask and delete
 them. User-facing behavior is in the [user guide](../user-guide/agents.md);
-decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
-[ADR-0007](../adr/0007-least-privilege-for-agent-tools.md).
+decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md), and in
+the 2026-11-20 amendment of [ADR-0030](../adr/0030-scope-of-0-20.md): Luna
+ranks none of the CLIs' modes.
 
 ## Responsibility
 
@@ -29,7 +30,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/ask.rs` | what a session waits on (`ask_of`), screen recognition of dialogs |
 | `agents/read.rs`, `agents/said.rs` | transcripts and rollouts read with a byte cursor; what a session said and how a result puts it (`reply_of`, `report_of`) |
 | `agents/lost.rs` | what never reached a helper |
-| `agents/privilege.rs` | the least-privilege layer (`settle_mode`, `reaches_luna`, `command_reach`) |
+| `agents/admission.rs` | Luna's own admission of text and folders (`reaches_luna`, `command_reach`, `plain_text`) |
 | `agents/delivery.rs` | `luna_session_send`, typing into a chat's terminal (`TypingInto`, `type_text`, the draft put aside) |
 | `agents/held.rs` | text held for a person's draft (`hold`, `deliver_held`; past 16 MB held for one chat a send is refused, saying why) and text a core went in the middle of typing (`reconcile_held`) |
 | `agents/handover.rs` | a helper the person opens as a chat, handed over for good (`take_over`) |
@@ -88,7 +89,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   over as the person's chat, a session drops it with the other helper
   settings (`HELPER_SETTINGS`), so no helper it starts inherits it; a Codex
   thread still carries it (see "Handed over"). Text, not enforcement:
-  privilege is still the mode's (ADR-0007).
+  what a session may do is still its mode's, its CLI's.
 - The instruction says the CLIs' own subagents cannot use another provider or
   account (without it a Codex orchestrator used its own `spawn_agent`).
 - A helper gets Luna's server and none of its account's, unless spawned with
@@ -99,18 +100,21 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   `autoMemoryEnabled: false`, the latter even with `connectors`, and
   `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its environment and that file's `env`,
   as an inherited `0` would turn auto-memory on ahead of the setting. Codex:
-  `-c features.apps=false` and `-c mcp_servers.<name>.enabled=false` for each
-  server of the account's `config.toml` (`connectors_off`), one it
-  calls `luna` too unless Luna gives the run its own; then Codex merges the
-  two key by key, and an account's `luna` setting more than Luna's replaces
-  stops the start. A config that will not read stops it as well, and so does
-  a server whose name a `-c` key cannot spell (a dot, a character outside
-  letters, digits, `_` and `-`): it could not be turned off. The
-  project's `.codex/` and plugins' servers stay, as overriding a server no
-  layer defines fails the run; `servers_left_on` (codex/config.rs) lists them,
-  plugins as Codex 0.167.0 resolves them across the account's and the project's
-  layers (`plugins_on`),
-  in the spawn's `mcpLeftOn` (the `helper.mcp-left-on` item). A chat the window starts is never a helper
+  `-c features.apps=false`, then one `-c mcp_servers={…}` turning off every
+  server of the layers its run reads (Codex's system layer, the account's
+  `config.toml`, the project's `.codex/config.toml` from its root down, found
+  as Codex 0.169.0 finds them: `codex/config.rs` `helper_mcp`), one it calls
+  `luna` too unless Luna gives the run its own; then Codex merges the two key
+  by key, and a `luna` setting more than Luna's replaces stops the start. Then
+  one `-c plugins={…}` turning off each plugin on in those layers but the
+  library's (`plugins_on`), skills and all, and `_default` for the ones no
+  layer names (`codex/launch.rs` `connectors_off`). A table's keys are quoted,
+  so a name with a dot is turned off like any other; a table given whole
+  replaces what earlier `-c`s set under it, so these come before Luna's own
+  server and the library's plugins. A layer that will not read stops the
+  start, as only a server some layer defines may be named, and so does a
+  managed layer setting servers, plugins or apps, which no `-c` can turn off.
+  A chat the window starts is never a helper
   (`ensure_*_session` registers it with no parent), so it keeps its account's
   servers, as one started by hand would.
 
@@ -121,12 +125,12 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `luna_session_list`, `luna_session_get` | the caller's own; from a person's chat, with `scope: "all"` every session of this launch, and with `ids` any session's row, as metadata: another's `ask`, `askId` and `task` only with `scope: "all"`. A helper names only itself and its subtree (`ids_in_reach`) |
 | `luna_run_list` | the caller's spawns and its helpers' (by owner now, else the recorded lineage); everyone's with `scope: "all"`, from a person's chat |
 | `luna_message_list`, `luna_report_get` | its descendants; from a person's chat with `scope: "all"` any session but its own |
-| `luna_session_send` | its descendants; from a person's chat with `scope: "all"` the person's other chats too, the text opened `[From session <id> via Luna]` (`as_sent`), never another's helper (`write_reach`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
+| `luna_session_send` | its descendants; from a person's chat with `scope: "all"` the person's other chats too, the text opened `[From session <id> via Luna]` (`as_sent`), never another's helper (`write_reach`); `interrupt` descendants only; command text (`/`, `!`) only into its own helpers, whatever mode it runs in (`command_reach`) |
 | `luna_session_wait` | its descendants; from a person's chat with `scope: "all"` any session but its own |
 | `luna_session_stop`, `luna_session_delete` | descendants only, never one the person is opening as a chat (`promoting`) |
 | `luna_session_answer` to a model's question | its descendants; from a person's chat with `scope: "all"` the person's other chats too, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`), never another's helper (`write_reach`) |
-| `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, at the caller's privilege |
-| `luna_session_spawn` | a background helper at no more privilege than the caller, never in or above the data dir; a Codex one never with an approval that asks a person |
+| `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, whatever mode either runs in |
+| `luna_session_spawn` | a background helper in the mode it names, or with none passed, never in or above the data dir; a Codex one never with an approval that asks a person |
 | `luna_notification_send`, `luna_power_set` | a person's chat only (`persons_chat_only`): a helper's word reaches the person through the chat above it |
 
 Every descendant is a background helper: a chat the window runs has no parent,
@@ -234,8 +238,7 @@ of their chats from the window (`background_move`, `reparent::move_helper`;
 does. Only its parent changes, so its line follows; its id,
 settings and constraints stay. It moves only a direct child of a person's chat
 or a helper with no chat above it, only to a person's chat with Luna's tools,
-not in its own line, whose privilege covers every moved session's
-(`privilege::holds_over`, `helpersAboveCaller` aside), whose line has their
+not in its own line, whose line has their
 places and their spawns under way (`under_cap`, with a helper `pass_up` had
 put on `autoDelete` counted, as the move switches that off), and under which
 none of them would be deeper than a spawn could make it (`spawnable_at`:
@@ -351,7 +354,7 @@ that hold, so ownership and idleness are what it removes; `remove` refuses a cha
 
 Every helper runs in the core (`spawn/background.rs`, [background
 helpers](background-helpers.md)); the window takes no part. `spawn` settles the
-account, folder and privilege (`settle_mode`, `command_reach`), records the
+account, folder and role (`settle_role`; `reaches_luna`), records the
 spawn on disk (`SpawnUnderWay`), registers the helper with its parent
 (`spawn_is` notes its task), starts its first turn and answers with `id`,
 `settings`, `turnsEnded`, `sameFolder` (other live sessions in its folder) and
@@ -374,27 +377,21 @@ cleared once that notice is in (`places_told`); a refusal after that starts a
 new line.
 
 **Mode when not given.** A spawn that names no mode (Claude: no
-`permissionMode`; Codex: neither `sandbox` nor `approval`) takes, with
-Settings → Helpers → "Helpers' mode when not given" at "The spawning chat's"
-(`HelperMode::Inherit`, the default), the caller's own mode on the same CLI,
-and across CLIs the highest helper mode its privilege covers on the one scale
-(`privilege.rs` `inherited`, `CLAUDE_LADDER`, `CODEX_LADDER`): a Codex chat
-that asks a person gives `never` with its sandbox; a Claude Code `acceptEdits`
-chat a Codex `read-only`. "The account's default" (`HelperMode::Account`)
-takes the account's and project's default, as before: `claude/defaults.rs`
-reads a settings file's `defaultMode` as any mode the CLI takes, `dontAsk`
-included, and one it does not know as `default`, so a file never starts a
-helper wider than it says (the stock `bypassPermissions` only where no file
-names one). Either way the mode is
-held to the caller's (`cap`) and pinned; `settings.modeFrom` says `caller`,
-`callerNearest` or `account`. The dev caller has no mode and always takes the
-account's. Claude Code helpers start in `auto` and `dontAsk` too
-(`CLAUDE_MODES`: `claude -p --permission-mode` takes both, 2.1.322). A
-person's Claude Code chat may start in `auto` as well (the dialog's Auto);
-`Privilege::of` ranks it as it ranks a helper's, one scale for both:
-`Reviewed` with the network, above `acceptEdits` and Codex's
-`workspace-write`, below `bypassPermissions`, so such a chat's helpers run in
-`auto` or below and it takes in a moved helper only that far.
+`permissionMode`; Codex: no `sandbox`) is started with none
+(`background_spec`, `Spec::own_mode`): no `--permission-mode` for Claude Code,
+which runs in what its settings say (shown as Luna read them,
+`claude/defaults.rs`). A Codex helper gets no sandbox override and its
+`settings` say `sandbox: "codex"`: Codex's own, from its config, a value Luna
+does not resolve or claim (`codex/defaults.rs` `OWN`), and it gets no deny of
+Luna's `core/` either. The exception is a config Luna cannot read: any layer
+Codex might read, trusted or not, that will not parse or names an approval,
+sandbox or profile Luna does not know makes it `read-only`, passed
+explicitly. Both carry `modeFrom: "cli"`. A mode named is spelled exactly as
+the CLI takes it, and is not compared with the caller's: Luna ranks no modes
+(ADR-0030, amendment of 2026-11-20). Claude Code helpers start in `auto` and
+`dontAsk` too (`CLAUDE_MODES`: `claude -p --permission-mode` takes both,
+2.1.322); a Codex helper's approval is `never` (`-c approval_policy="never"`)
+or `auto-review`, as nobody is there to ask.
 
 `account` may be a list of one provider's accounts: the first signed in with
 every window under 95%, else the one with most room; `accountChoice` says why.
@@ -797,7 +794,7 @@ path, last message, cut to 400 characters by `history`).
 | Two models answering each other | breaker after 12 notices in 15 min |
 | Core dies mid-turn | debts, ties and queues restored from disk; callers told "cut short" ([background helpers](background-helpers.md#outliving-the-core)) |
 | Window gone while opening a helper as a chat | the next window settles it by whether its row exists (`settleOpenings`) |
-| A move refused (no tools, its own line, a lead, privilege, places, deeper than a spawn reaches, held back, not a chat's own helper) | nothing changed (but a turn whose launch saw the move's claim first, which starts again under the same parent once the claim goes); the refusal names why, and `background_move_targets` says it per chat beforehand |
+| A move refused (no tools, its own line, a lead, places, deeper than a spawn reaches, held back, not a chat's own helper) | nothing changed (but a turn whose launch saw the move's claim first, which starts again under the same parent once the claim goes); the refusal names why, and `background_move_targets` says it per chat beforehand |
 | A move waits on a send, an answer or a stop in flight into a helper, or on a notice about it going in | it goes on once that is in, the debt it left closed; a notice still going in after 120 s refuses the move (`hand_off`) |
 | Core dies between a move and the helper's next turn | its ties keep the move and that no turn has been told; the next core's first turn of it is |
 | A chat's CLI draws a dialog differently | not recognized: it waits for the person |

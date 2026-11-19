@@ -49,7 +49,7 @@
 | [0004](adr/0004-docker-only-toolchain.md) | Everything builds in Docker on pinned toolchains | Accepted |
 | [0005](adr/0005-two-providers-as-independent-layers.md) | Claude Code and Codex are two independent layers | Accepted |
 | [0006](adr/0006-isolated-test-flavor.md) | A test flavor isolated from the Luna in use | Accepted |
-| [0007](adr/0007-least-privilege-for-agent-tools.md) | A least-privilege contract for agent tools | Accepted |
+| [0007](adr/0007-least-privilege-for-agent-tools.md) | A least-privilege contract for agent tools | Superseded by 0030's amendment |
 | [0008](adr/0008-strict-csp-with-inline-styles.md) | A strict CSP, with inline styles allowed | Accepted |
 | [0009](adr/0009-modules-now-crates-later.md) | Modules now, crates later | Accepted |
 | [0010](adr/0010-registry-encapsulation.md) | Encapsulate the agents Registry behind transition methods | Proposed |

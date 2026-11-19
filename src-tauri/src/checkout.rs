@@ -98,7 +98,7 @@ static TEST_CODEX_ACCOUNTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::ne
 /// The repository a linked worktree belongs to, off its `.git` file
 /// (`gitdir: <repo>/.git/worktrees/<id>`). None when the worktree is gone or
 /// is not a linked one.
-fn repo_of_linked(worktree: &str) -> Option<String> {
+pub(crate) fn repo_of_linked(worktree: &str) -> Option<String> {
     let text = std::fs::read_to_string(Path::new(worktree).join(".git")).ok()?;
     let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
     let gitdir = if gitdir.is_absolute() { gitdir } else { Path::new(worktree).join(gitdir) };

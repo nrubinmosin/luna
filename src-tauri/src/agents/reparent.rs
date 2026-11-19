@@ -28,7 +28,6 @@
 
 use crate::agents::notifier::hand_off;
 use crate::agents::owed::owe_in;
-use crate::agents::privilege::{helpers_above_caller, holds_over};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{
     depth_of, descendants, is_descendant, label, named, ownership_changing, persons_chat_in, reg, top_of, Registry, DEV_CALLER,
@@ -263,9 +262,9 @@ fn check_source(r: &Registry, id: &str) -> Result<(Option<String>, Vec<String>),
 }
 
 /// Why `to` is no chat to move `id`'s line to: the refusals in the order the
-/// window shows them. `most`: the places a line may have; `above`: the person
-/// lets helpers run above their caller.
-fn check_target(r: &Registry, id: &str, from: Option<&str>, sessions: &[String], to: &str, most: usize, above: bool) -> Result<(), String> {
+/// window shows them. `most`: the places a line may have. The modes the CLIs
+/// run in are not compared: what runs in a helper is what its spawn asked for.
+fn check_target(r: &Registry, id: &str, from: Option<&str>, sessions: &[String], to: &str, most: usize) -> Result<(), String> {
     if sessions.iter().any(|s| s == to) {
         return Err(format!("{} is {id} or a helper under it: a helper does not move into its own line", named(r, to)));
     }
@@ -305,18 +304,7 @@ fn check_target(r: &Registry, id: &str, from: Option<&str>, sessions: &[String],
             named(r, to)
         ));
     }
-    if !above {
-        for s in sessions {
-            let Some(h) = r.known.get(s) else { continue };
-            if let Err((runs, has)) = holds_over((k.provider, &k.settings), (h.provider, &h.settings)) {
-                return Err(format!(
-                    "{s} runs at {runs}, above chat {} ({has}): a helper may not run with more privilege than the chat \
-                     above it. Only the person can let helpers go above their caller, in Luna's settings",
-                    named(r, to)
-                ));
-            }
-        }
-    }
+
     let (counted, coming) = under_cap(r, to, None);
     // A helper whose answer is out and that only waits out autoDelete holds no
     // place, unless the move switches that autoDelete off.
@@ -344,13 +332,13 @@ const LINE_TRIES: usize = 3;
 /// The person moves helper `id`, with every helper under it, to chat `to`. Err,
 /// with nothing changed, naming why: `id` held back, not a chat's own helper or
 /// one with none; `to` inside its line, no chat of the person's, without Luna's
-/// tools, below one of them in privilege, or without the places they take.
+/// tools, or without the places they take.
 pub fn move_helper(id: &str, to: &str) -> Result<HelperMoved, String> {
     // Read before the registry is held: the settings are a file of their own.
-    let (most, above) = (max_descendants(), helpers_above_caller());
+    let most = max_descendants();
     for _ in 0..LINE_TRIES {
         let line = check_source(&reg().lock().unwrap_or_else(|e| e.into_inner()), id)?;
-        let Some(moved) = move_line(id, to, &line, most, above)? else { continue };
+        let Some(moved) = move_line(id, to, &line, most)? else { continue };
         crate::background::save();
         crate::background::changed();
         crate::log::warn(
@@ -373,7 +361,7 @@ pub fn move_helper(id: &str, to: &str) -> Result<HelperMoved, String> {
 /// as it was looked at before the holds. Ok(None), with nothing changed: the
 /// line is another by the time the registry is held, and the holds are not on
 /// all of it (a helper spawned under it meanwhile, which a delete may hold).
-fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usize, above: bool) -> Result<Option<HelperMoved>, String> {
+fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usize) -> Result<Option<HelperMoved>, String> {
     let (from_then, first) = line;
     let mut holds = Vec::new();
     for s in first {
@@ -407,7 +395,7 @@ fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usi
         if sessions != *first {
             return Ok(None);
         }
-        check_target(&r, id, from.as_deref(), &sessions, to, most, above)?;
+        check_target(&r, id, from.as_deref(), &sessions, to, most)?;
         let auto_off = change(&mut r, id, from.as_deref(), &sessions, to, if from == *from_then { queued } else { 0 });
         // The answer it is at work on is the new chat's, owed in this hold: the
         // chat's going (`forget`) is decided under it too, and takes the debt
@@ -521,7 +509,7 @@ pub struct MoveTargets {
 }
 
 pub fn move_targets(id: &str) -> MoveTargets {
-    let (most, above) = (max_descendants(), helpers_above_caller());
+    let most = max_descendants();
     let first = check_source(&reg().lock().unwrap_or_else(|e| e.into_inner()), id).map(|(_, sessions)| sessions);
     let held = first.as_ref().ok().and_then(|s| crate::background::move_held_back(s));
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -539,7 +527,7 @@ pub fn move_targets(id: &str) -> MoveTargets {
     let targets = chats
         .into_iter()
         .map(|to| {
-            let why = check_target(&r, id, from.as_deref(), &sessions, &to, most, above).err();
+            let why = check_target(&r, id, from.as_deref(), &sessions, &to, most).err();
             MoveTarget { ok: why.is_none(), why, id: to }
         })
         .collect();

@@ -59,7 +59,7 @@ with **Luna tools** ticked (off by default), a lead (a helper spawned with
 | Instructions: what Luna is, how a spawn and its notice go, where the guide is | chats with Luna tools, leads; Claude Code and Codex | every request: Claude Code puts a server's instructions in its system prompt; whether Codex shows them to its model was not checked | 153 | the **Luna tools** box; a spawn's `tools`. The text: not editable yet (below) |
 | 16 tool descriptions and their schemas | the same | every request (a CLI may defer tools behind its own tool search; Luna does not ask it to) | 2,220 | the same. The text is the tools' contract with the model |
 | `luna_permission` | a background Claude Code helper | hidden from its model (`--disallowedTools`); its CLI calls it for permission prompts | 0 | nothing to turn off |
-| `luna_guide_get` answers | whoever asks | per call, as a tool result; nothing asks a session to read any | the index ~190; a topic's section 300 to 1,200 ([Measured sizes](#measured-sizes)) | read only when the model asks |
+| `luna_guide_get` answers | whoever asks | per call, as a tool result; nothing asks a session to read any | the index ~190; a topic's section 300 to 1,250 ([Measured sizes](#measured-sizes)) | read only when the model asks |
 | Tool results | the caller | per call | as large as what was asked: a message read is cut at 60,000 characters (~15,000 tokens); a wait or report gives the report and a count of the rest | the call's own arguments (`last`, `reply`, `since`) |
 
 ## What a session is told of its role

@@ -83,24 +83,25 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - Implementers and reviewers that must outlive your turn are Luna helpers (`luna_session_spawn`),
   never your CLI's native background subagents, which end with your turn's process: nothing of
   theirs is left to send a notice.
-- A helper's mode (exact spelling) may not exceed yours: plan / read-only < default, dontAsk /
-  read-only asking < acceptEdits < workspace-write < auto, auto-review < bypassPermissions /
-  danger-full-access; network apart. Allow rules and config are not weighed. Higher: refused
-  unless the user allows it. No helper works in or above Luna's own folder.
-- No mode given (no `permissionMode`; for Codex neither `sandbox` nor `approval`): yours on the
-  same CLI, else the highest of its modes on or below your rung (a Codex `approval` that asks
-  a person becomes `never`), or the account's default if the user set so. `settings.modeFrom`
-  says which: `caller`, `callerNearest`, `account`.
+- A helper runs in the mode you name, spelled exactly. None named (no `permissionMode`; for
+  Codex no `sandbox`), Luna passes none: the CLI's own settings for that account and folder
+  decide (`settings.modeFrom: "cli"`). A Codex one shows `sandbox: "codex"`, Codex's own from
+  its config, not known to Luna; a config Luna cannot read makes it `read-only`, passed. What a
+  mode or sandbox lets through is the CLI's own, not Luna's. No helper works in or above Luna's
+  own folder.
 - Codex's `approval`: `never` (the default), or `auto-review`, a reviewer model answering what
   Codex would ask (workspace-write only). A helper has nobody to ask, so policies that ask a
-  person are refused; the sandbox is what holds it. Running the project's hooks past Codex's trust
+  person are refused; Codex's sandbox is what holds it. Running the project's hooks past Codex's trust
   prompt is the user's setting per folder: without it a Codex helper skips untrusted hooks. It
   trusts the folder it is sent to for its run, so the project's own `.codex/` config loads.
-- Codex's network: none in `read-only` or, unless its config says so, `workspace-write`, but
-  on Windows only by dead proxy variables: ssh and raw sockets still connect.
-  `danger-full-access`: the machine's. `read-only-net` reads only, with network; on Windows
-  schannel TLS fails (built-in `curl`, `Invoke-WebRequest`), as does git's own ssh; `gh`, Python,
-  plain http work, and git https (Luna sets `http.sslBackend=openssl`).
+- Codex's sandbox on Windows, as observed on 0.169.0 (Codex's, not Luna's): `read-only` writes
+  nothing, `workspace-write` only the folder and temp, never `.git`, the account's folder or the
+  registry, child processes included; reads reach whatever the user can. Its network: none in
+  `read-only` or, unless its config says so, `workspace-write`, but on Windows only by dead proxy
+  variables: raw sockets, ssh, plain http and TLS outside schannel (git with OpenSSL) still
+  connect: no wall against sending data out. `danger-full-access`: the machine's. `read-only-net` reads only, with
+  network; on Windows schannel TLS fails (built-in `curl`, `Invoke-WebRequest`), as does git's
+  own ssh; `gh`, Python, plain http work, and git https (Luna sets `http.sslBackend=openssl`).
 - Codex's `workspace-write` keeps `.git` read-only, its own rule: such a helper cannot commit,
   in a worktree or not. One that must commit needs `danger-full-access`.
 - `readOnly`: Claude Code's **Bash can still write**; Codex's sandbox (`read-only`, or
@@ -119,9 +120,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   the same directory (from a helper, only those under it).
 - A helper has Luna's MCP server alone: none of its account's servers or connectors (claude.ai's
   Gmail, Slack and the like; Codex's apps and `config.toml` servers), and a Claude Code one no
-  auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper still has
-  servers from the project's `.codex/` and from plugins, which the result lists in `mcpLeftOn`; one
-  whose account has a server Codex cannot turn off for a run (a name with a dot) is not started.
+  auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper's run
+  turns off its account's, the system's and the project's `.codex/` servers, and every plugin but
+  the library's, skills and all; one whose config Luna cannot read, or whose managed config sets
+  servers, plugins or apps (no run can turn those off), is not started.
 - `requestKey` (spawn, send, delete): a retry with the same key and arguments within an hour gets
   the first call's result, not a second helper or message; one that failed is made anew. A key
   stands for one call: other arguments under it are refused. Keys are kept in the core's memory:
@@ -200,10 +202,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   `luna_session_answer` an option's number counts from 1. Pass `askId`, so your answer cannot
   land on the next one; a stale or unknown id is refused, and so is no id with several held. It
   returns `state`, `ask` and, for a user's chat, the `screen` after it.
-- `allow`: your helpers only, true only for what you run unasked (never plan/default). The
-  user's other chats (`scope: "all"`): a question their model asked, nothing else. No control
-  chars. Text or a prompt starting with `/` or `!` (a CLI command, a shell as you) goes only at
-  full access into your own helpers.
+- `allow`: your helpers only, any of their prompts, whatever either of you runs in. The user's
+  other chats (`scope: "all"`): a question their model asked, nothing else. No control chars.
+  Text or a prompt starting with `/` or `!` (a CLI command, a shell as you) goes only into your
+  own helpers.
 - A Claude Code helper's questions and permission prompts come to you this way, one at a time.
   A Codex helper's are in its reply.
 - `luna_session_send` to a working session is `queued`: a Claude Code helper takes it at its next

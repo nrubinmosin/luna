@@ -3,11 +3,11 @@
 //! of the person's (helpers run in the background); text that cannot go in yet
 //! is held (held.rs).
 
+use crate::agents::admission::{command_reach_now, plain_text};
 use crate::agents::ask::{live, state_of};
 use crate::agents::handover::handovers_of;
 use crate::agents::held::{hold, words};
 use crate::agents::owed::{owe_from, owe_from_at, seen, Asked};
-use crate::agents::privilege::{command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{authorize_send, is_mine, is_persons_chat, label, ownership_steady, reg};
 use crate::provider::Provider;
@@ -570,7 +570,7 @@ fn stash_and_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::privilege::command_reach_now;
+    use crate::agents::admission::command_reach_now;
     use crate::agents::registry::{register, DEV_CALLER};
     use crate::agents::teardown::forget;
 
@@ -666,8 +666,9 @@ mod tests {
         assert!(send("ff-me", "ff-mine", "the build is green", false, None, true).unwrap().queued);
         assert_eq!(crate::background::queued_for_test("ff-theirs"), ["[From session dev via Luna] the build is green"]);
         assert_eq!(crate::background::queued_for_test("ff-mine"), ["the build is green"], "its own helper knows its parent");
-        // A command is refused as written, whatever line would open it.
-        assert!(send("ff-me", "ff-mine", "/permissions", false, None, true).is_err());
+        // A command goes into one's own helper as written, and into another's not.
+        assert!(send("ff-me", "ff-mine", "/permissions", false, None, true).unwrap().queued);
+        assert!(send("ff-me", "ff-theirs", "/permissions", false, None, true).is_err());
         for id in ["ff-theirs", "ff-mine"] {
             crate::background::remove(id);
         }
