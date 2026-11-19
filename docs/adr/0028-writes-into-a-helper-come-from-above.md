@@ -3,7 +3,8 @@
 - **Status:** Accepted; narrows the accepted risk R1 of the
   [threat model](../security/threat-model.md#8-accepted-risks), after
   [ADR-0025](0025-a-helper-reaches-only-its-own-subtree.md) narrowed it to the
-  person's chats
+  person's chats; [ADR-0030](0030-scope-of-0-20.md) removed the handoff, and
+  with it the refusal of a lead between its handoff and its fresh start
 - **Date:** 2026-11-17
 
 ## Context

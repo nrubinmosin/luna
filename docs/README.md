@@ -69,9 +69,9 @@
 | [0023](adr/0023-moving-a-chat-to-another-account.md) | Move a chat to another account of its CLI by a document the person confirms | Superseded by 0030 |
 | [0024](adr/0024-handoff-on-request.md) | List the handoff to every chat with Luna's tools, and answer it only when asked | Superseded by 0030 |
 | [0025](adr/0025-a-helper-reaches-only-its-own-subtree.md) | A helper reaches only its own subtree | Accepted |
-| [0026](adr/0026-session-roles-at-memory-level.md) | Give sessions a role, chat, lead or helper, each instructed at memory level | Accepted |
+| [0026](adr/0026-session-roles-at-memory-level.md) | Give sessions a role, chat, lead or helper, each instructed at memory level | Accepted, amended by 0030 |
 | [0027](adr/0027-auto-handoff-for-leads.md) | Hand a lead off to a fresh conversation of its own at its turn's end | Superseded by 0030 |
-| [0028](adr/0028-writes-into-a-helper-come-from-above.md) | Only the sessions above a helper write into it; the person moves it | Accepted |
+| [0028](adr/0028-writes-into-a-helper-come-from-above.md) | Only the sessions above a helper write into it; the person moves it | Accepted, amended by 0030 |
 | [0029](adr/0029-dependencies-move-by-hand.md) | Move every pin in the project's own commits; Dependabot only alerts | Accepted |
 | [0030](adr/0030-scope-of-0-20.md) | Release 0.20 is a smaller Luna in a native GPUI window | Accepted |
 

@@ -1016,7 +1016,8 @@ mod tests {
             std::fs::create_dir_all(system.join(dir)).unwrap();
             std::fs::write(system.join(dir).join("SKILL.md"), "mine").unwrap();
         }
-        let named: Vec<String> = set_aside(&f.dirs).iter().map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
+        let named: Vec<String> =
+            set_aside(&f.dirs).iter().map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(named, [".session-handoff.adopting-ab12", "session-handoff"]);
         assert!(retired("session-handoff") && retired(".session-handoff.replaced-1") && !retired("session-handoffs"));
         assert_eq!(std::fs::read_to_string(system.join(".session-handoff.adopting-ab12").join("SKILL.md")).unwrap(), "mine");

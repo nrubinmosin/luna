@@ -77,10 +77,6 @@ pub struct ScopedLimit {
     pub label: String,
     pub used: f64,
     pub resets_at: Option<String>,
-    /// The model it counts alone, where its scope names one (`model_scope`):
-    /// what a usage limit's hold on a chat goes by, not shown.
-    #[serde(skip)]
-    pub model: Option<String>,
 }
 
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
@@ -92,15 +88,6 @@ pub struct OtherLimit {
     pub label: String,
     pub used: f64,
     pub resets_at: Option<String>,
-    /// As `ScopedLimit::model`.
-    #[serde(skip)]
-    pub model: Option<String>,
-}
-
-/// The model a row counts alone, by its scope's model name; None for a row
-/// scoped to no model or to a surface, which every model counts against.
-fn model_scope(lim: &Value) -> Option<String> {
-    lim["scope"]["model"]["display_name"].as_str().filter(|n| !n.trim().is_empty()).map(str::to_owned)
 }
 
 fn read_json(path: &Path) -> Option<Value> {
@@ -194,7 +181,7 @@ fn apply_limits(out: &mut AccountLimits, limits: &Value) {
                     .or_else(|| scope["surface"]["display_name"].as_str())
                     .unwrap_or("model")
                     .to_string();
-                out.scoped.push(ScopedLimit { label, used: pct, resets_at: reset, model: model_scope(lim) });
+                out.scoped.push(ScopedLimit { label, used: pct, resets_at: reset });
             }
             kind => {
                 let label = own_label(lim, kind);
@@ -204,7 +191,7 @@ fn apply_limits(out: &mut AccountLimits, limits: &Value) {
                         &format!("the usage endpoint sent a row of kind {kind:?}, unknown to Luna; shown as {label:?}"),
                     );
                 }
-                out.other.push(OtherLimit { kind: kind.to_string(), label, used: pct, resets_at: reset, model: model_scope(lim) });
+                out.other.push(OtherLimit { kind: kind.to_string(), label, used: pct, resets_at: reset });
             }
         }
     }
@@ -384,8 +371,12 @@ mod scoped_tests {
         assert_eq!(out.scoped[1].label, "Opus");
         assert_eq!(out.scoped[1].resets_at.as_deref(), Some("2026-10-20T09:00:00Z"));
         assert!(out.other.is_empty());
-        assert_eq!((out.scoped[0].model.as_deref(), out.scoped[1].model.as_deref()), (Some("Fable"), Some("Opus")));
-        assert!(serde_json::to_value(&out.scoped[0]).unwrap().get("model").is_none(), "not shown: the label says it");
+        // A row scoped to a surface, not a model, goes by the surface's name.
+        let surface = serde_json::json!([
+            { "kind": "weekly_scoped", "percent": 10, "resets_at": null, "scope": { "surface": { "display_name": "Claude Code" } } },
+        ]);
+        apply_limits(&mut out, &surface);
+        assert_eq!((out.scoped.len(), out.scoped[0].label.as_str()), (1, "Claude Code"));
     }
 
     /// The answer as the endpoint gave it on 2026-11-09: weekly rows, no

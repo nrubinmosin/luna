@@ -92,7 +92,8 @@ fn retire_handoff(s: &mut Saved) {
     if s.session.is_none() {
         s.session = switch.and_then(|w| w.before);
     }
-    let retired = |q: &Queued| opening.as_deref() == Some(q.id.as_str()) || (q.from.is_none() && crate::agents::of_retired_handoff(&q.text));
+    let retired =
+        |q: &Queued| opening.as_deref() == Some(q.id.as_str()) || (q.from.is_none() && crate::agents::of_retired_handoff(&q.text));
     for store in [&mut s.queue, &mut s.in_flight, &mut s.fed, &mut s.undelivered] {
         store.retain(|q| !retired(q));
     }

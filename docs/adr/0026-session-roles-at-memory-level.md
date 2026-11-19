@@ -2,7 +2,8 @@
 
 - **Status:** Accepted; amends
   [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md) (system texts
-  besides the handoff's skill)
+  besides the handoff's skill); [ADR-0030](0030-scope-of-0-20.md) removed
+  the `session-handoff` system skill and the handoff named here
 - **Date:** 2026-11-13
 
 ## Context

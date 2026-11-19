@@ -56,9 +56,21 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   with Luna's handoff folder added, and a lead no longer with its drafts
   folder. Settings, chats and helpers saved by 0.19 still load: their
   handoff fields are passed over and left out on the next write, and a
-  chat's auto-handoff threshold no longer shows in `luna_session_list`. A
-  `handoffs` folder 0.19 left in Luna's data folder is not read any more;
-  delete it if you like.
+  chat's auto-handoff threshold no longer shows in `luna_session_list`.
+  What 0.19's handoff left queued is not typed into anything: its asks and
+  failure lines for a chat, a lead's ask and its fresh conversation's
+  opening (a lead caught between its two conversations goes on in the one
+  it was leaving). A conversation a handoff opened still keeps its chat's
+  name. The `handoffs` folder 0.19 left in Luna's data folder is not read
+  any more, delete it if you like; its `drafts` folders, which Codex's
+  sandbox had given an access entry of its own, are removed at the first
+  start. What the handoff skill left in the library's `system/` folder
+  (its override, and one set aside by an interrupted **Make it the
+  override…**, which may hold your own skill) is named in the log at start
+  and among the library's folders set aside, and left for you to move or
+  delete. Until the new window comes, the old one still shows Auto-handoff,
+  **Hand off now**, **Move to another account…** and the move hint after a
+  usage limit, and they only fail.
 
 ## [0.19.0] - 2026-11-18
 
