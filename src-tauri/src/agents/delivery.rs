@@ -488,13 +488,22 @@ pub(super) fn type_text(
     if !pty.has_draft(id) {
         return type_in(pty, id, text, turn_before, baseline, hold).map(Some);
     }
-    // Codex has no way to put a draft aside: one that leaves the
-    // composer by its keys (a line cut, a whole buffer selected) does not
-    // come back with pastes and images in it.
-    if pty.provider(id) != Some(Provider::Claude) {
+    if !puts_draft_aside(pty.provider(id)) {
         return Ok(None);
     }
     stash_and_type(pty, id, text, turn_before, baseline, hold)
+}
+
+/// Whether the CLI puts a draft aside and brings it back: Claude Code does
+/// (Ctrl+S). Codex 0.169's keymap has no such action (`keymap.rs`: Tab queues
+/// the draft itself for after the running turn; Ctrl+S is the next match of
+/// the history search), and a draft that leaves the composer by other keys (a
+/// line cut, a whole buffer selected) does not come back with its pastes and
+/// images. So a Codex chat's draft is never typed over: the text is held, the
+/// person told after `DRAFT_ALERT_MS`, and it goes in once the composer is
+/// empty (held.rs `deliver_held`, notifier/mod.rs).
+fn puts_draft_aside(provider: Option<Provider>) -> bool {
+    provider == Some(Provider::Claude)
 }
 
 /// Claude Code puts a draft aside on Ctrl+S and brings it back, pastes and
@@ -573,6 +582,13 @@ mod tests {
     use crate::agents::admission::command_reach_now;
     use crate::agents::registry::{register, DEV_CALLER};
     use crate::agents::teardown::forget;
+
+    #[test]
+    fn a_notice_goes_around_a_claude_draft_and_waits_for_a_codex_one() {
+        assert!(puts_draft_aside(Some(Provider::Claude)));
+        assert!(!puts_draft_aside(Some(Provider::Codex)), "no stash in Codex: its draft is never typed over");
+        assert!(!puts_draft_aside(None), "a session that is gone is not typed into");
+    }
 
     #[test]
     fn one_at_a_time_is_typed_into_a_session() {
