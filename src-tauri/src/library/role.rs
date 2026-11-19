@@ -22,7 +22,10 @@
 //! (codex/config.rs `developer_instructions_in`), which the `-c` would
 //! otherwise replace; Codex sends that at a thread's start and after a
 //! compaction, never on a resume, so an edit reaches a running Codex session
-//! only then (docs/cli-compatibility.md).
+//! only then (docs/cli-compatibility.md). A command line holds 32,767 units
+//! on Windows, so layers too long for it go whole in a file of Luna's
+//! (`Spill`) that the value points at; Codex's own cap on instructions
+//! (`project_doc_max_bytes`) is for the project's AGENTS.md files only.
 //!
 //! The note after a task from another agent (`RoleTexts::note`) is a system
 //! text too; every note Luna has served stays known to the readers that take
@@ -174,34 +177,123 @@ pub fn layers_applied(texts: &RoleTexts, skills: &SessionSkills, constraints: &[
     out
 }
 
+/// What a Codex session's `developer_instructions` come to: the value for its
+/// command line and, where its layers did not fit there, the file that holds
+/// them.
+#[derive(Debug, PartialEq)]
+pub struct CodexInstructions {
+    /// The value of `developer_instructions`.
+    pub value: String,
+    /// Set where the layers are too long for a command line: Luna's own file
+    /// (`SPILL_DIR`) with them whole, which `value` tells the session to read.
+    pub spill: Option<Spill>,
+}
+
+/// A file of role layers, named by its text's hash, so sessions with the same
+/// layers share it and an edit makes a new one.
+#[derive(Debug, PartialEq)]
+pub struct Spill {
+    pub path: PathBuf,
+    pub text: String,
+}
+
+/// Where role layers too long for a Codex command line are kept, in Luna's
+/// data folder. Beside `core/`, not in it: off Windows a session's sandbox
+/// denies that folder's reading, and the session has to read this one.
+const SPILL_DIR: &str = "role-layers";
+
+/// How long a spilled file stays after its last use: a session reads it at its
+/// start and after a compaction, which can come days into a thread.
+const SPILL_KEEP: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
+
 /// The `developer_instructions` a Codex session is given: what its config
-/// stack sets (`stack`), then its layers, a blank line between. Refused where
-/// its argument (`codex_developer_args`), TOML escapes and Windows quoting in,
-/// would take more of the command line than CODEX_ROLE_MAX, with the reason.
-pub fn codex_developer_instructions(stack: Option<&str>, layers: &str) -> Result<String, String> {
-    let value = match stack.map(str::trim).filter(|s| !s.is_empty()) {
+/// stack sets (`stack`), then its layers, a blank line between. Where that
+/// argument (`codex_developer_args`), TOML escapes and Windows quoting in,
+/// would take more of the command line than CODEX_ROLE_MAX, a short value in
+/// its place: the stack's own, a pointer to a file in `data` holding the
+/// layers whole (`Spill`), and the constraints again where they fit, the one
+/// part a session must not miss. Nothing is cut. Err, with why, only where
+/// even that does not fit: the config's own value is too long.
+pub fn codex_developer_instructions(stack: Option<&str>, layers: &str, constraints: &[String], data: &Path) -> Result<CodexInstructions, String> {
+    let join = |parts: &[&str]| parts.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n") + "\n";
+    let stack = stack.map(str::trim).filter(|s| !s.is_empty());
+    let whole = match stack {
         Some(stack) => format!("{stack}\n\n{layers}"),
         None => layers.to_string(),
     };
-    let [_, arg] = codex_developer_args(&value);
-    let units = command_line_units(&arg);
-    if units > CODEX_ROLE_MAX {
-        return Err(format!(
+    let units_of = |value: &str| command_line_units(&codex_developer_args(value)[1]);
+    let units = units_of(&whole);
+    if units <= CODEX_ROLE_MAX {
+        return Ok(CodexInstructions { value: whole, spill: None });
+    }
+    let path = data.join(SPILL_DIR).join(format!("{}.md", &sha_of(layers)[..16]));
+    let pointer = format!(
+        "# Your role and instructions\n\nWhat you are asked to be and to keep to is too long to be given here. It is in the \
+         file {}: read it in full before anything else, and again whenever your context is compacted, and follow it as you \
+         do these instructions.",
+        path.display()
+    );
+    let rules = compose_layers(None, "", &[], constraints);
+    let with_rules = join(&[stack.unwrap_or(""), &pointer, rules.as_deref().unwrap_or("")]);
+    let without = join(&[stack.unwrap_or(""), &pointer]);
+    let value = [with_rules, without].into_iter().find(|v| units_of(v) <= CODEX_ROLE_MAX).ok_or_else(|| {
+        format!(
             "its developer_instructions — the config's own, then its role, the library's instructions for it and its constraints — \
              take {units} characters of its command line, escaped and quoted, over the {CODEX_ROLE_MAX} Luna lets them take of \
-             the 32,767 Windows allows"
-        ));
-    }
-    Ok(value)
+             the 32,767 Windows allows, and the config's own value leaves no room for a pointer to a file that holds them"
+        )
+    })?;
+    crate::log::warn(
+        "library",
+        &format!(
+            "role layers take {units} characters of a Codex command line, over {CODEX_ROLE_MAX}: kept whole in {}, with a pointer in developer_instructions",
+            path.display()
+        ),
+    );
+    Ok(CodexInstructions { value, spill: Some(Spill { path, text: layers.to_string() }) })
 }
 
-/// Each library entry given per session that would push some Codex
-/// session's `developer_instructions` past CODEX_ROLE_MAX, with why: for a
-/// role and a Codex account, Luna's text for the role, every entry for that
-/// role the account's reach takes, and what the account's own config sets.
+/// Writes a spilled file where it is not already, and drops those unused for
+/// `SPILL_KEEP`. Err, with why, where it will not write: a session told to read
+/// it would find nothing.
+pub fn write_spill(spill: &Spill) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("Luna could not write its role layers to {}: {e}", spill.path.display());
+    let dir = spill.path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).map_err(fail)?;
+    match std::fs::read_to_string(&spill.path) {
+        // Already there: only its age is renewed.
+        Ok(have) if have == spill.text => {
+            let _ = std::fs::File::options().write(true).open(&spill.path).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        }
+        // Not made owner-only like the files that hold a secret: the session
+        // reads it through its shell tool, in a sandbox whose token the
+        // private ACL (this user, SYSTEM, Administrators) would not admit.
+        // It holds what the library says and no secret. Whole or not at all.
+        _ => {
+            let temp = spill.path.with_extension(format!("{}.tmp", crate::secret::random_hex(8)));
+            std::fs::write(&temp, spill.text.as_bytes()).and_then(|()| std::fs::rename(&temp, &spill.path)).map_err(|e| {
+                let _ = std::fs::remove_file(&temp);
+                fail(e)
+            })?;
+        }
+    }
+    let now = std::time::SystemTime::now();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age > SPILL_KEEP);
+        if old && entry.path().extension().is_some_and(|e| e == "md") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
+/// Each library entry given per session that some Codex session could not be
+/// given at all, with why: where what the account's own config sets for
+/// `developer_instructions` leaves no room on a command line even for the
+/// pointer to the file that holds the layers (`codex_developer_instructions`).
 /// A start there is refused (a lead's or helper's) or goes without its layers
-/// (a chat's); the Library window shows it on each such entry. Without a
-/// folder's own instructions or a spawn's constraints, which only add to it.
+/// (a chat's); the Library window shows it on each such entry. Layers that
+/// merely are long go in that file and are not listed.
 pub(super) fn codex_overflows(dirs: &Dirs, lib: &LibrarySettings, accounts: &[AccountInfo]) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for a in accounts.iter().filter(|a| a.provider == Provider::Codex) {
@@ -219,7 +311,7 @@ pub(super) fn codex_overflows(dirs: &Dirs, lib: &LibrarySettings, accounts: &[Ac
             }
             let default = resolve_text(dirs, role_text_names(role).0).map(|r| r.body().to_string()).unwrap_or_default();
             let Some(layers) = compose_layers(None, &default, &entries, &[]) else { continue };
-            if codex_developer_instructions(stack.as_deref(), &layers).is_ok() {
+            if codex_developer_instructions(stack.as_deref(), &layers, &[], &dirs.data).is_ok() {
                 continue;
             }
             let whose = match role {
@@ -230,9 +322,9 @@ pub(super) fn codex_overflows(dirs: &Dirs, lib: &LibrarySettings, accounts: &[Ac
             for (name, _) in entries {
                 out.entry(name).or_insert_with(|| {
                     format!(
-                        "Too long for Codex: with the other instructions for {whose} on {}, its role's text and its config's own \
-                         developer_instructions, they do not fit on a command line. A lead or helper there is not started; a chat \
-                         starts without them",
+                        "Too long for Codex: {}'s own developer_instructions take so much of a command line that neither these \
+                         instructions for {whose} nor a pointer to a file that holds them fits beside it. A lead or helper there \
+                         is not started; a chat starts without them",
                         a.name
                     )
                 });
@@ -426,25 +518,75 @@ mod tests {
     }
 
     #[test]
-    fn codex_gets_the_stack_s_value_first_and_nothing_over_the_cap() {
-        assert_eq!(codex_developer_instructions(Some("Theirs.\n"), "# Your role\n\nMine.\n").unwrap(), "Theirs.\n\n# Your role\n\nMine.\n");
-        assert_eq!(codex_developer_instructions(Some("  "), "Mine.").unwrap(), "Mine.");
-        assert_eq!(codex_developer_instructions(None, "Mine.").unwrap(), "Mine.");
-        let big = "a".repeat(CODEX_ROLE_MAX);
-        assert!(codex_developer_instructions(Some("x"), &big).unwrap_err().contains("over the 24576"));
+    fn codex_gets_the_stack_s_value_first_and_a_file_for_what_a_command_line_cannot_hold() {
+        let data = Path::new("data");
+        let given = |stack: Option<&str>, layers: &str, constraints: &[String]| codex_developer_instructions(stack, layers, constraints, data);
+        let inline = |value: &str| CodexInstructions { value: value.into(), spill: None };
+        assert_eq!(given(Some("Theirs.\n"), "# Your role\n\nMine.\n", &[]).unwrap(), inline("Theirs.\n\n# Your role\n\nMine.\n"));
+        assert_eq!(given(Some("  "), "Mine.", &[]).unwrap(), inline("Mine."));
+        assert_eq!(given(None, "Mine.", &[]).unwrap(), inline("Mine."));
+        // Too long: the layers whole in a file named by their hash, the stack's
+        // value and the constraints (they fit) in the value, nothing cut.
+        let rules = vec!["No network.".to_string()];
+        let big = format!("# Your role\n\n{}\n\n{}", "a".repeat(CODEX_ROLE_MAX), compose_layers(None, "", &[], &rules).unwrap());
+        let CodexInstructions { value, spill } = given(Some("Theirs."), &big, &rules).unwrap();
+        let spill = spill.expect("a file");
+        assert_eq!(spill.text, big, "whole");
+        assert_eq!(spill.path, data.join(SPILL_DIR).join(format!("{}.md", &sha_of(&big)[..16])));
+        assert!(value.starts_with("Theirs.\n\n# Your role and instructions\n\n"), "{value}");
+        assert!(value.contains(&spill.path.display().to_string()) && value.contains("read it in full"), "{value}");
+        assert!(value.ends_with("No network.\n") && value.contains("# Constraints"), "the constraints stay in the value: {value}");
+        assert!(command_line_units(&codex_developer_args(&value)[1]) <= CODEX_ROLE_MAX);
+        // Constraints too long to stay beside the pointer are in the file only.
+        let long = vec!["y".repeat(CODEX_ROLE_MAX)];
+        let layers = compose_layers(None, "Role.", &[], &long).unwrap();
+        let CodexInstructions { value, spill } = given(None, &layers, &long).unwrap();
+        assert!(spill.is_some() && !value.contains("# Constraints") && value.len() < 1024, "{}", value.len());
         // Measured as it goes on the command line: escapes and quoting count.
         for (what, escaped) in [("carriage returns", "\r"), ("quotes", "\""), ("backslashes before quotes", "\\\"")] {
             let text = escaped.repeat(CODEX_ROLE_MAX * 2 / 3 / escaped.len());
             assert!(text.len() < CODEX_ROLE_MAX, "{what}: under the cap as bytes");
-            let why = codex_developer_instructions(None, &text).unwrap_err();
-            assert!(why.contains("escaped and quoted"), "{what}: {why}");
+            assert!(given(None, &text, &[]).unwrap().spill.is_some(), "{what}: over it as the line takes it");
         }
+        // Only a config value that leaves no room for the pointer is refused.
+        let why = given(Some(&"s".repeat(CODEX_ROLE_MAX - 100)), &"a".repeat(CODEX_ROLE_MAX), &[]).unwrap_err();
+        assert!(why.contains("escaped and quoted") && why.contains("no room for a pointer"), "{why}");
         // A TOML string Codex reads back as it was, quotes and lines and all.
         let value = "Say \"hi\".\nC:\\path\n'single' \"\"\" ";
         let [c, arg] = codex_developer_args(value);
         assert_eq!(c, "-c");
         let doc: toml_edit::DocumentMut = arg.parse().unwrap();
         assert_eq!(doc["developer_instructions"].as_str(), Some(value));
+    }
+
+    #[test]
+    fn a_spilled_file_is_written_whole_kept_while_in_use_and_dropped_when_unused() {
+        let f = Fixture::new("role-spill");
+        let layers = format!("# Your role\n\n{}\n", "é".repeat(CODEX_ROLE_MAX));
+        let spill = codex_developer_instructions(None, &layers, &[], &f.dirs.data).unwrap().spill.unwrap();
+        write_spill(&spill).unwrap();
+        assert_eq!(std::fs::read_to_string(&spill.path).unwrap(), layers);
+        // Again: the same file, its age renewed, not rewritten.
+        let old = std::time::SystemTime::now() - SPILL_KEEP - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&spill.path).unwrap().set_modified(old).unwrap();
+        let stale = spill.path.with_file_name("0000000000000000.md");
+        std::fs::write(&stale, "gone").unwrap();
+        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(old).unwrap();
+        write_spill(&spill).unwrap();
+        assert_eq!(std::fs::read_to_string(&spill.path).unwrap(), layers, "in use, so it stays");
+        assert!(!stale.exists(), "not used for a month, so it goes");
+        // Edited text, another name; the dir holds no temp file after a write.
+        let again = codex_developer_instructions(None, &format!("{layers}More.\n"), &[], &f.dirs.data).unwrap().spill.unwrap();
+        assert_ne!(again.path, spill.path);
+        write_spill(&again).unwrap();
+        let names: Vec<_> = std::fs::read_dir(spill.path.parent().unwrap()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        // A file where its folder goes: Err, with why.
+        let why = write_spill(&Spill { path: f.dirs.data.join("role-layers").join("x").join("y.md"), text: "t".into() });
+        assert!(why.is_ok(), "a missing folder is made");
+        std::fs::write(f.dirs.data.join("blocked"), b"in the way").unwrap();
+        let why = write_spill(&Spill { path: f.dirs.data.join("blocked").join("y.md"), text: "t".into() }).unwrap_err();
+        assert!(why.contains("could not write its role layers"), "{why}");
     }
 
     #[test]
@@ -470,9 +612,14 @@ mod tests {
             lib.instructions.insert(name.into(), all());
             lib.audience.instructions.insert(name.into(), helpers);
         }
+        // Long layers go in a file: nothing to say of them.
+        assert!(codex_overflows(&f.dirs, &lib, &f.accounts).is_empty());
+        // The account's own value so long that not even the pointer fits beside it.
+        let own = format!("developer_instructions = \"{}\"\n", "s".repeat(CODEX_ROLE_MAX - 100));
+        std::fs::write(f.account(1).join("config.toml"), own).unwrap();
         let over = codex_overflows(&f.dirs, &lib, &f.accounts);
         assert_eq!(over.keys().collect::<Vec<_>>(), ["big", "small"], "both go into a Codex helper's one value");
-        assert!(over["big"].contains("helpers on home") && over["big"].contains("not started"), "{}", over["big"]);
+        assert!(over["big"].contains("home's own") && over["big"].contains("not started"), "{}", over["big"]);
         // For leads alone, small fits; Claude Code reads them from a file.
         lib.audience.instructions.insert("small".into(), Audience::of(&[Role::Lead]));
         assert_eq!(codex_overflows(&f.dirs, &lib, &f.accounts).keys().collect::<Vec<_>>(), ["big"]);

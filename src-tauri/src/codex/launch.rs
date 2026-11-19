@@ -50,6 +50,18 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) skill_args: &'a [String],
 }
 
+/// A thread id that may follow `resume` on a command line: the exact thread,
+/// never a flag, a name, `--last` or anything the CLI would pick by itself. Codex
+/// ids are UUIDs; any run of letters, digits and dashes that does not open with a
+/// dash will do here. Resuming is bound to the account too: Luna's `CODEX_HOME`
+/// is the session's own, and `resume <id>` there fails with "no rollout found
+/// for thread id" for a thread that account does not hold, starting no other
+/// (0.169.0, seen on a throwaway account), so it is not looked for in another.
+pub(crate) fn thread_to_resume(id: &str) -> Result<&str, String> {
+    let fit = !id.is_empty() && !id.starts_with('-') && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    fit.then_some(id).ok_or_else(|| format!("{id:?} is not a Codex thread id: Luna resumes a thread by its id only"))
+}
+
 /// The arguments and environment of a Codex chat's start, and what Luna
 /// applied in them (applied.rs); `codex login` takes none of them.
 pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, String)>, Vec<Applied>) {

@@ -405,7 +405,10 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
 /// (codex/config.rs `developer_instructions_in`), which the `-c` replaces;
 /// `helper`: a helper's run, its folder trusted for it (`codex_trust`).
 /// Nothing where it has no layers, as for a chat with nothing set: Codex's
-/// own value stands. Err where the value would not fit on a command line.
+/// own value stands. Layers too long for a command line are written whole to a
+/// file of Luna's, which the value points at (library/role.rs `Spill`). Err
+/// where not even that can be given: the config's own value leaves no room for
+/// the pointer, or the file will not write.
 pub(crate) fn codex_role_args(
     account_path: &str,
     folder: &str,
@@ -416,16 +419,20 @@ pub(crate) fn codex_role_args(
 ) -> Result<(Vec<String>, Vec<crate::applied::Applied>), String> {
     let Some(layers) = crate::library::role_layers(texts, skills, constraints) else { return Ok((Vec::new(), Vec::new())) };
     let stack = crate::codex::config::developer_instructions_in(account_path, folder, helper);
-    let value = crate::library::codex_developer_instructions(stack.value.as_deref(), &layers)?;
-    let how = match stack.value {
-        Some(_) => "-c developer_instructions, after the config's own",
-        None => "-c developer_instructions",
+    let given = crate::library::codex_developer_instructions(stack.value.as_deref(), &layers, constraints, &crate::paths::data_dir())?;
+    let mut how = match stack.value {
+        Some(_) => "-c developer_instructions, after the config's own".to_string(),
+        None => "-c developer_instructions".to_string(),
     };
-    let mut applied = crate::library::layers_applied(texts, skills, constraints, how);
+    if let Some(spill) = &given.spill {
+        crate::library::write_spill(spill)?;
+        how = format!("{how}, pointing at {}, which holds them whole: too long for a command line", spill.path.display());
+    }
+    let mut applied = crate::library::layers_applied(texts, skills, constraints, &how);
     if !stack.unsure.is_empty() {
         applied.push(crate::applied::Item::RoleLayersUnsure.with(stack.unsure.join("; ")));
     }
-    Ok((crate::library::codex_developer_args(&value).to_vec(), applied))
+    Ok((crate::library::codex_developer_args(&given.value).to_vec(), applied))
 }
 
 /// A task from another agent, with the note for its role after it (library/
@@ -704,6 +711,9 @@ pub async fn ensure_codex_session(
         }
         // A folder Codex could not start in, refused before anything of the
         // start is made (folder.rs): `--worktree` goes only to a new session.
+        if let Some(id) = resume.as_deref() {
+            crate::codex::launch::thread_to_resume(id)?;
+        }
         let new_worktree = worktree.unwrap_or(false) && resume.is_none();
         if let Some(why) = folder_refusal(&folder, new_worktree) {
             return Err(why);

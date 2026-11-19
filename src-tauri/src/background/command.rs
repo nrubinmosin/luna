@@ -44,8 +44,8 @@ pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
 /// The arguments and working directory of the next turn, `texts` its role's
 /// system texts, read before this module's lock (`spawn_turn`). Err when a
 /// Claude Code turn's mandatory settings — its core-folder deny (threat model
-/// F3) — cannot be written, or a Codex turn's role layers do not fit on its
-/// command line: the turn refuses rather than run without them.
+/// F3) — cannot be written, or a Codex turn's role layers can be neither put on its
+/// command line nor kept in a file for it: the turn refuses rather than run without them.
 pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleTexts) -> Result<Command, String> {
     let s = &e.spec;
     let role = role_of(s);
@@ -214,7 +214,8 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             applied.push(Item::HelperHeadless.with("exec --json, the prompt on stdin (-)"));
             match &e.session {
                 Some(thread) => {
-                    args.extend(["resume".into(), thread.clone()]);
+                    let thread = crate::codex::launch::thread_to_resume(thread).map_err(|why| format!("the helper's turn is not started: {why}"))?;
+                    args.extend(["resume".into(), thread.to_string()]);
                     applied.push(Item::Resume.with(format!("resume {thread}")));
                     if let Some(wt) = made.filter(|w| std::path::Path::new(w).is_dir()) {
                         dir = wt;
@@ -482,6 +483,12 @@ mod tests {
         on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "t-1" }));
         let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(args[..3], ["exec", "resume", "t-1"]);
+        // Only by the thread's id: nothing a CLI would read as a flag or pick by itself.
+        for bad in ["--last", "", "a b", "t-1 --last"] {
+            e.session = Some(bad.into());
+            let why = command_for(&e, "x").unwrap_err();
+            assert!(why.contains("not started") && why.contains("by its id only"), "{bad:?}: {why}");
+        }
 
         let mut e = entry(Provider::Claude);
         on_claude_event(&mut e, &json!({ "type": "system", "subtype": "init", "session_id": "s-1", "cwd": "C:\\p" }));
@@ -720,14 +727,20 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_turn_whose_role_layers_do_not_fit_is_refused() {
+    fn a_codex_turn_whose_role_layers_do_not_fit_a_command_line_reads_them_from_a_file() {
         let mut e = entry(Provider::Codex);
-        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
-        let why = command_for(&e, "too-long").unwrap_err();
-        assert!(why.contains("not started") && why.contains("of its command line"), "{why}");
-        // Claude Code reads them from a file: no command line to fit.
+        let text = format!("Keep to src/.{}End.", "x".repeat(crate::library::CODEX_ROLE_MAX));
+        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: text.clone() }];
+        let (args, _, _, applied) = command_for(&e, "too-long").unwrap();
+        let value = crate::golden::developer_instructions(&args).unwrap();
+        assert!(value.len() < 1024, "a pointer, not the layers: {} bytes", value.len());
+        let file = value.split("It is in the file ").nth(1).and_then(|r| r.split_once(": read it")).expect("names its file").0;
+        let kept = std::fs::read_to_string(file).unwrap();
+        assert!(kept.starts_with("# Your role") && kept.contains(&text), "the layers whole, the constraints at the end of them");
+        assert!(applied.iter().any(|a| a.key == "role.layers" && a.value.contains(file)), "said where they are");
+        // Claude Code reads them from a file too.
         let mut e = entry(Provider::Claude);
-        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
+        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text }];
         assert!(command_for(&e, "too-long").is_ok());
     }
 
