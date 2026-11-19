@@ -1432,8 +1432,8 @@ mod tests {
 
     /// A skill of the reserved name among the library's is laid out nowhere:
     /// not into an account, not for a folder's sessions, and its name hidden
-    /// from no session's start; a copy of it laid out before goes, unless
-    /// changed there since.
+    /// from no session's start; a copy of it laid out before goes, changed
+    /// there since or not.
     #[test]
     fn a_skill_of_the_reserved_name_is_laid_out_nowhere_and_its_old_copies_go() {
         let f = Fixture::new("system-reserved");
@@ -1460,7 +1460,7 @@ mod tests {
             let dest = f.account(i).join("skills").join(HANDOFF);
             let files = Files::from([(SKILL_FILE.to_string(), b"old".to_vec())]);
             write_at(&dest, false, &files).unwrap();
-            ledger.wrote(&dest.to_string_lossy(), hashes(&files), Audience::EVERY);
+            ledger.wrote(&dest.to_string_lossy(), hashes(&files));
         }
         std::fs::write(f.account(2).join("skills").join(HANDOFF).join(SKILL_FILE), "changed there").unwrap();
 
@@ -1469,7 +1469,7 @@ mod tests {
         assert!(f.account(0).join("skills").join("review").is_dir(), "the rest is laid out");
         assert!(!f.account(0).join("skills").join(HANDOFF).exists(), "Luna's old copy taken out");
         assert!(!f.account(1).join("skills").join(HANDOFF).exists());
-        assert_eq!(p.kept, [f.account(2).join("skills").join(HANDOFF).to_string_lossy().into_owned()], "a changed one stays");
+        assert!(!f.account(2).join("skills").join(HANDOFF).exists(), "a changed one too");
         // Failures name the account by its place and the kind of session,
         // not what the arguments hold: a test's output is a log too.
         for (i, a) in f.accounts.iter().enumerate() {

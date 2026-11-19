@@ -109,6 +109,7 @@ const OWN_NAMES: &[&str] = &[
     "hooks",
     "library",
     "library-backups",
+    // 0.19's, taken out at the library's first pass (library/files.rs).
     "library-blobs",
     "library-folders",
     "library-state.json",
