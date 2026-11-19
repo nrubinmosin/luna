@@ -39,5 +39,7 @@ pub(crate) use window::*;
 pub(crate) use wrapper::*;
 
 pub use platform::WindowsPlatform;
+// luna patch: the switch for unattended windows (window.rs).
+pub use window::set_unattended_windows;
 
 pub(crate) use windows::Win32::Foundation::HWND;

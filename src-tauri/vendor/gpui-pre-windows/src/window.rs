@@ -515,10 +515,11 @@ impl WindowsWindow {
         if !disable_direct_composition {
             dwexstyle |= WS_EX_NOREDIRECTIONBITMAP;
         }
-        // luna patch: a window opened without focus never takes it and
-        // stays off the taskbar and out of Alt+Tab, so it can run unattended
-        // beside a desktop someone is using.
-        if !params.focus {
+        // luna patch: an unattended window (set_unattended_windows) never
+        // takes focus and stays off the taskbar and out of Alt+Tab, so it can
+        // run beside a desktop someone is using.
+        let unattended = !params.focus && unattended_windows();
+        if unattended {
             dwexstyle = (dwexstyle & !WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
         }
 
@@ -583,15 +584,31 @@ impl WindowsWindow {
         this.state.border_offset.update(hwnd)?;
         let placement =
             retrieve_window_placement(hwnd, display, params.bounds, &this.state.border_offset)?;
-        // luna patch: an unfocused window keeps the bounds it was given,
-        // off every display if so asked; upstream moves bounds that are on no
-        // display to the default ones on the primary.
+        // luna patch: an unattended window keeps the bounds it was given,
+        // off every display if so asked (upstream moves bounds that are on no
+        // display to the default ones on the primary), and is shown where
+        // they are with SetWindowPos, which neither activates it nor moves it
+        // in the z-order. A placement's rectangle is in workspace
+        // coordinates, these are the screen's.
         let mut placement = placement;
-        if !params.focus {
+        if unattended {
             let bounds = params.bounds.to_device_pixels(display.scale_factor());
             placement.rcNormalPosition = calculate_window_rect(bounds, &this.state.border_offset);
         }
-        if params.show {
+        if params.show && unattended {
+            let r = placement.rcNormalPosition;
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
+                )?
+            };
+        } else if params.show {
             if !params.focus {
                 placement.showCmd = SW_SHOWNOACTIVATE.0 as u32;
             }
@@ -831,7 +848,7 @@ impl PlatformWindow for WindowsWindow {
         let hwnd = self.0.hwnd;
         // luna patch: a window made never to activate is never activated,
         // and above all sends no synthesized input (the SendInput below).
-        if unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_NOACTIVATE.0 != 0 {
+        if is_unattended(hwnd) {
             return;
         }
         let this = self.0.clone();
@@ -1057,15 +1074,22 @@ impl PlatformWindow for WindowsWindow {
     // only once it has asked for a frame (FRAME_DEMAND_PROP, see
     // begin_vsync_thread), instead of on every vsync whether anything changed
     // or not: gpui wakes the platform when a window becomes dirty and asks for
-    // a follow-up frame while it stays so. A present is counted, so that a
-    // draw_window that presented nothing can ask again (events.rs).
+    // a follow-up frame while it stays so. A present that succeeded is
+    // counted, so that a draw_window that presented nothing can ask again
+    // (events.rs). One that failed (the device removed or reset since the
+    // vsync thread last looked) wakes that thread to look again: it recovers
+    // the devices, and asleep it would not before some unrelated request.
     fn draw(&self, scene: &Scene) {
-        PRESENTS.with(|n| n.set(n.get() + 1));
-        self.state
+        let drawn = self
+            .state
             .renderer
             .borrow_mut()
-            .draw(scene, self.state.background_appearance.get())
-            .log_err();
+            .draw(scene, self.state.background_appearance.get());
+        if drawn.log_err().is_some() {
+            PRESENTS.with(|n| n.set(n.get() + 1));
+        } else {
+            frame_demand_event().set();
+        }
     }
 
     fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
@@ -1773,6 +1797,28 @@ mod tests {
             1
         );
     }
+}
+
+// luna patch: unattended windows (set_unattended_windows).
+static UNATTENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// From now on, a window opened with `focus: false` is unattended: off the
+/// taskbar and Alt+Tab, never activated (not by a click either, events.rs
+/// WM_MOUSEACTIVATE), and shown where its bounds say, off every display if
+/// they are. For a process that runs its windows beside a desktop someone is
+/// using; without it `focus: false` means what it does upstream.
+pub fn set_unattended_windows(on: bool) {
+    UNATTENDED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn unattended_windows() -> bool {
+    UNATTENDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A window made unattended, by its style.
+pub(crate) fn is_unattended(hwnd: HWND) -> bool {
+    let style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+    style & WS_EX_NOACTIVATE.0 != 0
 }
 
 // luna patch: the window property the vsync thread takes to know a

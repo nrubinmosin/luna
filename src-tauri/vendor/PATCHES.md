@@ -4,7 +4,7 @@
 vendored here and patched in through `[patch.crates-io]` in
 `src-tauri/Cargo.toml`. Its first commit in this repository is the crate exactly
 as its `.crate` file on crates.io holds it; every change since is Luna's and is
-marked `luna patch` (`git grep "luna patch" -- src-tauri/vendor`): 5 files, 12
+marked `luna patch` (`git grep "luna patch" -- src-tauri/vendor`): 6 files, 17
 markers, three patches. The files are kept byte for byte (`-text` in
 `.gitattributes`), so `git diff <first commit> -- src-tauri/vendor` is the
 patches and nothing else.
@@ -34,27 +34,33 @@ does not help: it only forwards to the macOS and iOS crates.
 
 ## 2. Unattended windows
 
-`src/window.rs`, 3 markers. Upstream already shows a window opened with
-`focus: false` with `SW_SHOWNOACTIVATE`, and gpui itself never calls
-`activate()` on open. Patched, for a window opened with `focus: false`: it is
-`WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` instead of `WS_EX_APPWINDOW` (off the
-taskbar and Alt+Tab, never activated by a click); it keeps the bounds it was
-given even off every display (upstream moves them to the primary's defaults);
-and `activate()` does nothing for a `WS_EX_NOACTIVATE` window (upstream's sends
-a synthesized Alt keypress with `SendInput` to win the foreground;
-gpui-component's notifications call it).
+`src/window.rs` 4 markers, `src/events.rs` 1, `src/gpui_windows.rs` 1.
+Upstream already shows a window opened with `focus: false` with
+`SW_SHOWNOACTIVATE`, and gpui itself never calls `activate()` on open. The
+patch adds a process-wide switch, `gpui_windows::set_unattended_windows`, off
+until a caller turns it on. With it on, a window opened with `focus: false` is
+unattended: it is `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` instead of
+`WS_EX_APPWINDOW` (off the taskbar and Alt+Tab); it keeps the bounds it was
+given even off every display (upstream moves them to the primary's
+defaults), and is shown there with `SetWindowPos(SWP_NOACTIVATE |
+SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_SHOWWINDOW)` instead of
+`SetWindowPlacement` (whose rectangle is in workspace coordinates, not the
+screen's); `WM_MOUSEACTIVATE` is answered `MA_NOACTIVATE` (upstream answers
+`MA_ACTIVATE` always), so a click does not activate it; and `activate()` does
+nothing for it (upstream's sends a synthesized Alt keypress with `SendInput`
+to win the foreground; gpui-component's notifications call it). With the
+switch off, `focus: false` means what it does upstream.
 
-Luna opens its window so only in the test build's background mode
-(`LUNA_TEST_WINDOW=background`): the window goes past the right edge of every
-display (`crates/window/src/offscreen.rs`), never activated, never on the
-taskbar. Left as they are, since that mode cannot reach them: `events.rs`
-answers `WM_MOUSEACTIVATE` with `MA_ACTIVATE` always, and
-`PlatformWindow::resize` calls `SetWindowPos` without `SWP_NOACTIVATE`. A
-no-activate window placed on a display would need both.
+Luna turns the switch on only in the test build's background mode
+(`LUNA_TEST_WINDOW=background`, `crates/window/src/lib.rs` `run`) and in the
+shots harness: the window goes past the right edge of every display
+(`crates/window/src/offscreen.rs`), never activated, never on the taskbar.
+Left as it is, since nothing in that mode resizes the window:
+`PlatformWindow::resize` calls `SetWindowPos` without `SWP_NOACTIVATE`.
 
 ## 3. Frames on demand
 
-`src/window.rs` 2 markers, `src/platform.rs` 3, `src/events.rs` 2,
+`src/window.rs` 2 markers, `src/platform.rs` 3, `src/events.rs` 4,
 `src/direct_manipulation.rs` 1. Upstream's vsync thread `RedrawWindow`s every
 visible window on every vsync, so an idle window's main thread wakes that
 often to find nothing to draw: 1.2-2% of a core per process idle. gpui core
@@ -77,6 +83,15 @@ gpui-pre-windows leaves both at their no-op defaults. The patch:
   was in progress asks for its frame again. A draw that presented nothing asks
   again, up to 8 times in a row, which covers gpui core's own early return for
   a request that comes during one of its draws.
+- Only a present that succeeded counts as one (`window.rs` `draw`). One that
+  failed (the device removed or reset after the vsync thread last looked)
+  wakes the vsync thread, which checks the device and recovers it, and the
+  draw asks for its frame again; asleep, the thread would not have looked
+  before some unrelated request. A failed resize of the renderer, which sets
+  the flag that has the devices recreated, wakes it too (`events.rs`).
+- A window restored from minimized asks for a forced frame (`events.rs`
+  `handle_size_msg`): a request made while it was minimized found no callback
+  to draw with and was spent, and gpui, no longer dirty, asks for none.
 - DirectManipulation (touchpad gestures) is pumped only in a drawn frame, so a
   touchpad contact asks for a frame, and so does every pump for 250 ms after it
   and while the gesture or its inertia runs (`direct_manipulation.rs`).

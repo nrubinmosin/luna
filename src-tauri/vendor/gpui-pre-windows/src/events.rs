@@ -92,11 +92,16 @@ impl WindowsWindowInner {
             // whichever window was active before the click. If that handler consumes the
             // press, `DefWindowProc` never sees it, so the window is never activated at all.
             // So, let's eagerly activate the window.
+            // luna patch: an unattended window (window.rs,
+            // set_unattended_windows) is not activated by a click either.
+            WM_MOUSEACTIVATE if crate::window::is_unattended(handle) => {
+                Some(MA_NOACTIVATE as isize)
+            }
             WM_MOUSEACTIVATE => Some(MA_ACTIVATE as isize),
             WM_ACTIVATE => self.handle_activate_msg(wparam),
             WM_CREATE => self.handle_create_msg(handle),
             WM_MOVE => self.handle_move_msg(handle, lparam),
-            WM_SIZE => self.handle_size_msg(wparam, lparam),
+            WM_SIZE => self.handle_size_msg(handle, wparam, lparam),
             WM_GETMINMAXINFO => self.handle_get_min_max_info_msg(lparam),
             WM_ENTERSIZEMOVE | WM_ENTERMENULOOP => self.handle_size_move_loop(handle),
             WM_EXITSIZEMOVE | WM_EXITMENULOOP => self.handle_size_move_loop_exit(handle),
@@ -218,7 +223,12 @@ impl WindowsWindowInner {
         Some(0)
     }
 
-    fn handle_size_msg(self: &Rc<Self>, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
+    fn handle_size_msg(
+        self: &Rc<Self>,
+        handle: HWND,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> Option<isize> {
         // Minimizing and restoring both arrive as `WM_SIZE`; the deferred report
         // reads `IsIconic` at delivery, so one call covers both directions.
         self.report_visibility();
@@ -243,6 +253,13 @@ impl WindowsWindowInner {
                 .callbacks
                 .request_frame
                 .set(Some(restore_from_minimized));
+            // luna patch: frames on demand (window.rs, frame_waker). A
+            // request taken while the window was minimized found no callback
+            // to draw with and was spent, and gpui, no longer dirty, asks for
+            // none: a forced frame of its own, so the restored window is drawn
+            // (`handle`, passed in for this).
+            self.state.force_render_pending.set(true);
+            crate::window::request_frame_on_vsync(handle);
         } else {
             should_resize_renderer = true;
         }
@@ -267,6 +284,10 @@ impl WindowsWindowInner {
             self.state
                 .invalidate_devices
                 .store(true, std::sync::atomic::Ordering::Release);
+            // luna patch: frames on demand (window.rs, frame_waker). The
+            // vsync thread sleeps until signaled and reads the flag only
+            // then: wake it to recover the devices now.
+            crate::window::frame_demand_event().set();
         }
         if let Some(mut callback) = self.state.callbacks.resize.take() {
             callback(new_logical_size, scale_factor);
