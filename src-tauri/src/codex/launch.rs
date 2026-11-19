@@ -51,15 +51,29 @@ pub(crate) struct ChatStart<'a> {
 }
 
 /// A thread id that may follow `resume` on a command line: the exact thread,
-/// never a flag, a name, `--last` or anything the CLI would pick by itself. Codex
-/// ids are UUIDs; any run of letters, digits and dashes that does not open with a
-/// dash will do here. Resuming is bound to the account too: Luna's `CODEX_HOME`
+/// never a flag, a name, `--last` or anything the CLI would pick by itself
+/// (0.169.0 tries a UUID first, then a thread's name, so `release-review` would
+/// resume whichever thread is called that). Codex ids are UUIDs: any form of
+/// one is taken and given back as the plain lowercase one. Resuming is bound
+/// to the account too: Luna's `CODEX_HOME`
 /// is the session's own, and `resume <id>` there fails with "no rollout found
 /// for thread id" for a thread that account does not hold, starting no other
 /// (0.169.0, seen on a throwaway account), so it is not looked for in another.
-pub(crate) fn thread_to_resume(id: &str) -> Result<&str, String> {
-    let fit = !id.is_empty() && !id.starts_with('-') && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-    fit.then_some(id).ok_or_else(|| format!("{id:?} is not a Codex thread id: Luna resumes a thread by its id only"))
+pub(crate) fn thread_to_resume(id: &str) -> Result<String, String> {
+    let bare = id.trim();
+    // The forms `Uuid::parse_str` takes, which Codex resolves a resume argument
+    // with before it tries it as a thread's name: plain, simple (no dashes),
+    // braced and URN.
+    let bare = bare.get(..9).filter(|p| p.eq_ignore_ascii_case("urn:uuid:")).map_or(bare, |_| &bare[9..]);
+    let bare = bare.strip_prefix('{').and_then(|b| b.strip_suffix('}')).unwrap_or(bare);
+    let hex: String = bare.chars().filter(|c| *c != '-').collect();
+    let dashes_ok =
+        bare.len() == 32 && !bare.contains('-') || bare.len() == 36 && [8, 13, 18, 23].iter().all(|&i| bare.as_bytes()[i] == b'-');
+    if hex.len() != 32 || !dashes_ok || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("{id:?} is not a Codex thread id (a UUID): Luna resumes a thread by its id only, never by a name or `--last`"));
+    }
+    let hex = hex.to_ascii_lowercase();
+    Ok(format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]))
 }
 
 /// The arguments and environment of a Codex chat's start, and what Luna

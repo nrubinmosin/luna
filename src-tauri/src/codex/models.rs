@@ -163,15 +163,45 @@ pub fn models_for(account_path: &str) -> Vec<CodexModel> {
         return found;
     }
     found = from_cli(account_path, false);
-    if found.is_empty() {
-        found = from_cli(account_path, true);
-    }
     if !found.is_empty() {
         if let Ok(mut a) = asked().lock() {
             a.insert(account_path.to_string(), (Instant::now(), found.clone()));
         }
+        return found;
+    }
+    // The catalog built into the binary is what Codex offers anyone, not what
+    // this account may run: shown for the dialog's buttons, never kept as the
+    // account's list (`models_known`), which would refuse or admit a helper's
+    // model by it. Its efforts are kept apart (`known_efforts`).
+    found = from_cli(account_path, true);
+    if !found.is_empty() {
+        let mut efforts: Vec<String> = found.iter().flat_map(|m| m.efforts.iter().cloned()).collect();
+        efforts.sort();
+        efforts.dedup();
+        if let Ok(mut b) = bundled_efforts().lock() {
+            *b = Some(efforts);
+        }
     }
     found
+}
+
+/// The efforts of the catalog built into the binary, once it was read
+/// (`models_for`).
+fn bundled_efforts() -> &'static Mutex<Option<Vec<String>>> {
+    static B: OnceLock<Mutex<Option<Vec<String>>>> = OnceLock::new();
+    B.get_or_init(|| Mutex::new(None))
+}
+
+/// The reasoning levels Codex is known to take, where no account's own list
+/// says: those of its built-in catalog, if it was read this run. None where it
+/// was not, and an effort is then passed through for Codex to judge.
+pub fn known_efforts() -> Option<Vec<String>> {
+    bundled_efforts().lock().ok().and_then(|b| b.clone())
+}
+
+#[cfg(test)]
+pub fn set_known_efforts_for_test(efforts: Option<&[&str]>) {
+    *bundled_efforts().lock().unwrap_or_else(|e| e.into_inner()) = efforts.map(|e| e.iter().map(|s| s.to_string()).collect());
 }
 
 /// Async and off to a blocking thread: the CLI fallbacks take seconds, and a
