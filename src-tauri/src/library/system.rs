@@ -209,7 +209,7 @@ pub struct SystemSkillState {
     pub problem: Option<String>,
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -264,7 +264,7 @@ pub(super) fn reserved_why(name: &str) -> String {
 
 /// The most of an override the editor opens: one larger than Luna serves
 /// (SYSTEM_MAX_BYTES) still opens, to be cut down to size.
-const EDIT_MAX_BYTES: u64 = 1024 * 1024;
+pub(super) const EDIT_MAX_BYTES: u64 = 1024 * 1024;
 
 fn too_large(kind: TextKind) -> String {
     match kind {
@@ -281,7 +281,7 @@ fn too_large(kind: TextKind) -> String {
 /// where the person put the library, a link of their choosing if they chose
 /// one, and the person's folder, so only looked at: not made private as
 /// Luna's own are (`boundary::private_chain`). The last parts need not be there.
-fn inside(root: &Path, rel: &[&str]) -> Result<PathBuf, String> {
+pub(super) fn inside(root: &Path, rel: &[&str]) -> Result<PathBuf, String> {
     let mut there = None;
     let mut gone = false;
     let path = crate::boundary::walk_down(root, rel, |p, depth| {
@@ -321,7 +321,7 @@ fn override_dir(dirs: &Dirs, name: &str) -> Result<Option<PathBuf>, String> {
 /// Refuses a folder that holds anything but plain files and folders, before
 /// it is moved or copied: a link, which none of that goes through, or a FIFO
 /// or a device, which a copy would wait on with the library's lock held.
-fn plain_tree(dir: &Path) -> Result<(), String> {
+pub(super) fn plain_tree(dir: &Path) -> Result<(), String> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
         let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
         let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -793,29 +793,13 @@ fn read_override(dirs: &Dirs, t: &SystemText) -> Result<Option<String>, String> 
     Ok(Some(text))
 }
 
-/// The override's `file` in `dir`, opened as itself
-/// (`boundary::open_no_follow`: no link at it, and no FIFO there to wait on),
-/// held to a plain file of one name of this user's making
-/// (`secret::own_file`; not `read_private`, as a library of the person's
-/// choosing keeps its own folder's access) and read no further than `cap`
-/// bytes; None where there is none.
+/// The override's `file` in `dir` (`open_plain`), held to a plain file of
+/// one name of this user's making (`secret::own_file`; not `read_private`,
+/// as a library of the person's choosing keeps its own folder's access) and
+/// read no further than `cap` bytes; None where there is none.
 fn read_own_file(dir: &Path, file: &str, cap: u64) -> Result<Option<Vec<u8>>, String> {
-    use std::io::Read;
     let path = dir.join(file);
-    let not_a_file = || format!("{} is a link or not a file; the override is the file itself", path.display());
-    match std::fs::symlink_metadata(&path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("{}: {e}", path.display())),
-        Ok(m) if crate::boundary::is_link(&m) || !m.is_file() => return Err(not_a_file()),
-        Ok(_) => {}
-    }
-    let file = crate::boundary::open_no_follow(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    // The handle's own word: what was opened, not what was at the name a
-    // moment before.
-    let opened = file.metadata().map_err(|e| format!("{}: {e}", path.display()))?;
-    if crate::boundary::is_link(&opened) || !opened.is_file() {
-        return Err(not_a_file());
-    }
+    let Some(file) = open_plain(&path)? else { return Ok(None) };
     // The person's own file, in a folder of theirs that need not be private
     // (a library of their choosing keeps its folder's access): of their
     // making, of one name, not another user's or another file's second name.
@@ -824,9 +808,59 @@ fn read_own_file(dir: &Path, file: &str, cap: u64) -> Result<Option<Vec<u8>>, St
         Ok(Err(why)) => return Err(format!("{} is not a file of yours ({why}); the override is your own", path.display())),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     }
+    read_capped(&path, file, cap).map(Some)
+}
+
+/// A file of the library's at `path`, opened as itself
+/// (`boundary::open_no_follow`: no link at it, and no FIFO there to wait on)
+/// and held to a plain file by the handle's own word; None where there is
+/// none. The folders above it are the caller's to check (`inside`).
+fn open_plain(path: &Path) -> Result<Option<std::fs::File>, String> {
+    let not_a_file = || format!("{} is a link or not a file — Luna leaves it alone", path.display());
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+        Ok(m) if crate::boundary::is_link(&m) || !m.is_file() => return Err(not_a_file()),
+        Ok(_) => {}
+    }
+    let file = crate::boundary::open_no_follow(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // The handle's own word: what was opened, not what was at the name a
+    // moment before.
+    let opened = file.metadata().map_err(|e| format!("{}: {e}", path.display()))?;
+    if crate::boundary::is_link(&opened) || !opened.is_file() {
+        return Err(not_a_file());
+    }
+    Ok(Some(file))
+}
+
+fn read_capped(path: &Path, file: std::fs::File, cap: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
     let mut bytes = Vec::new();
     file.take(cap).read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Some(bytes))
+    Ok(bytes)
+}
+
+/// A file of the library's at `path` (`open_plain`), read no further than
+/// `cap` bytes; None where there is none.
+pub(super) fn read_plain(path: &Path, cap: u64) -> Result<Option<Vec<u8>>, String> {
+    match open_plain(path)? {
+        Some(file) => read_capped(path, file, cap).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Refuses anything at `path` but a plain file, before a write replaces it:
+/// a link (which the editor did not open), a folder, a FIFO. Nothing there
+/// passes.
+pub(super) fn plain_or_none(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+        Ok(m) if crate::boundary::is_link(&m) || !m.is_file() => {
+            Err(format!("{} is a link or not a file — Luna leaves it alone", path.display()))
+        }
+        Ok(_) => Ok(()),
+    }
 }
 
 #[cfg(test)]

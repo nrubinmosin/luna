@@ -544,34 +544,53 @@ pub enum Entry {
     System(String),
 }
 
+/// The library's file of `entry`, walked down from the library's root
+/// (system.rs `inside`): no link, junction or file in a folder's place on the
+/// way, and inside the library once resolved, so a `skills/` or a skill's
+/// folder planted as a link to an account's leads no read or write there.
 fn library_path(dirs: &Dirs, entry: &Entry) -> Result<PathBuf, String> {
     match entry {
         Entry::Skill(s) => {
             check_name(s)?;
-            Ok(dirs.skills().join(s).join(SKILL_FILE))
+            in_library_dir(dirs, &dirs.skills().join(s).join(SKILL_FILE))
         }
         Entry::Instructions(i) => {
             check_name(i)?;
-            Ok(dirs.instructions_file(i))
+            in_library_dir(dirs, &dirs.instructions_file(i))
         }
         // Read and written by system.rs alone, which keeps to its own folder.
         Entry::System(name) => Err(format!("{name} is a system skill")),
     }
 }
 
+/// `path`, a path under the library's root, as `inside` walks it down.
+fn in_library_dir(dirs: &Dirs, path: &Path) -> Result<PathBuf, String> {
+    let rel = path.strip_prefix(&dirs.root).map_err(|_| format!("{} lies outside the library", path.display()))?;
+    let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    inside(&dirs.root, &parts.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
 /// Instructions, a skill's SKILL.md or a system skill's override, for the
 /// editor: where there is no override yet, Luna's own text to start one from.
+/// Opened as itself (system.rs `read_plain`): a link at it is refused, not
+/// followed, and a FIFO there holds nothing up.
 #[tauri::command(async)]
 pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
     if let Entry::System(name) = &entry {
         luna_text(name)?;
         return read_system(&Dirs::current(), name);
     }
-    let path = library_path(&Dirs::current(), &entry)?;
-    let (text, exists) = match std::fs::read_to_string(&path) {
-        Ok(t) => (t, true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
-        Err(e) => return Err(format!("{}: {e}", path.display())),
+    read_entry(&Dirs::current(), &entry)
+}
+
+fn read_entry(dirs: &Dirs, entry: &Entry) -> Result<LibraryFile, String> {
+    let path = library_path(dirs, entry)?;
+    let (text, exists) = match read_plain(&path, EDIT_MAX_BYTES + 1)? {
+        Some(bytes) if bytes.len() as u64 > EDIT_MAX_BYTES => {
+            return Err(format!("{} is over {} KB, too large to open here", path.display(), EDIT_MAX_BYTES / 1024));
+        }
+        Some(bytes) => (String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", path.display()))?, true),
+        None => (String::new(), false),
     };
     Ok(LibraryFile { path: path.to_string_lossy().into_owned(), text, exists })
 }
@@ -589,10 +608,16 @@ pub fn library_write(entry: Entry, text: String) -> Result<Overview, String> {
         return overview_locked(false);
     }
     let _guard = lock()?;
-    let dirs = Dirs::current();
-    let path = library_path(&dirs, &entry)?;
-    dirs.write(&path, text.as_bytes())?;
+    write_entry(&Dirs::current(), &entry, &text)?;
     overview_locked(true)
+}
+
+/// An instructions file or a skill's SKILL.md written where `library_path`
+/// leads, over nothing but a plain file.
+fn write_entry(dirs: &Dirs, entry: &Entry, text: &str) -> Result<(), String> {
+    let path = library_path(dirs, entry)?;
+    plain_or_none(&path)?;
+    dirs.write(&path, text.as_bytes())
 }
 
 /// Why this SKILL.md would not be laid out, or None when it would.
@@ -667,8 +692,8 @@ pub fn library_new_skill(name: String) -> Result<Overview, String> {
     }
     let _guard = lock()?;
     let dirs = Dirs::current();
-    let dir = dirs.skills().join(&name);
-    if dir.exists() {
+    let dir = in_library_dir(&dirs, &dirs.skills().join(&name))?;
+    if std::fs::symlink_metadata(&dir).is_ok() {
         return Err(format!("The library already has a skill named {name}"));
     }
     let text = format!(
@@ -769,7 +794,7 @@ pub fn library_new_instructions(name: String) -> Result<Overview, String> {
     check_name(&name)?;
     let _guard = lock()?;
     let dirs = Dirs::current();
-    let path = dirs.instructions_file(&name);
+    let path = in_library_dir(&dirs, &dirs.instructions_file(&name))?;
     if std::fs::symlink_metadata(&path).is_ok() {
         return Err(format!("The library already has instructions named {name}"));
     }
@@ -887,6 +912,73 @@ pub fn library_open(skill: Option<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A junction on Windows (no privilege needed), a symlink elsewhere.
+    fn link_dir(link: &Path, target: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|o| o.status.success()));
+    }
+
+    /// `skills/` or a skill's folder planted as a link to an account's: the
+    /// editor's read and save are refused, and nothing is written there.
+    #[test]
+    fn the_editor_reads_and_writes_nothing_through_a_link() {
+        let f = Fixture::new("editor-links");
+        f.skill("review", "v1");
+        let elsewhere = f.account(0).join("skills");
+        std::fs::create_dir_all(elsewhere.join("taken")).unwrap();
+        std::fs::write(elsewhere.join("taken").join(SKILL_FILE), "theirs").unwrap();
+        // A skill's folder that is a link.
+        link_dir(&f.dirs.skills().join("taken"), &elsewhere.join("taken"));
+        let entry = Entry::Skill("taken".into());
+        assert!(read_entry(&f.dirs, &entry).err().unwrap().contains("link"));
+        assert!(write_entry(&f.dirs, &entry, "mine").unwrap_err().contains("link"));
+        assert_eq!(std::fs::read_to_string(elsewhere.join("taken").join(SKILL_FILE)).unwrap(), "theirs");
+        // A plain one beside it still reads and saves.
+        let review = Entry::Skill("review".into());
+        assert!(read_entry(&f.dirs, &review).unwrap().text.contains("v1"));
+        write_entry(&f.dirs, &review, "v2").unwrap();
+        // SKILL.md itself a link to a file: neither read nor replaced.
+        #[cfg(unix)]
+        {
+            let md = f.dirs.skills().join("review").join(SKILL_FILE);
+            std::fs::remove_file(&md).unwrap();
+            std::os::unix::fs::symlink(elsewhere.join("taken").join(SKILL_FILE), &md).unwrap();
+            assert!(read_entry(&f.dirs, &review).err().unwrap().contains("link"));
+            assert!(write_entry(&f.dirs, &review, "mine").unwrap_err().contains("link"));
+            assert_eq!(std::fs::read_to_string(elsewhere.join("taken").join(SKILL_FILE)).unwrap(), "theirs");
+        }
+        let _ = std::fs::remove_dir(f.dirs.skills().join("taken")).or_else(|_| std::fs::remove_file(f.dirs.skills().join("taken")));
+    }
+
+    /// A FIFO at an instructions file's name holds neither the read nor a
+    /// save up, with the library's lock held around them.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_the_editor_s_place_holds_nothing_up() {
+        let f = Fixture::new("editor-fifo");
+        f.instructions("main", "Be brief.\n");
+        let path = f.dirs.instructions_file("main");
+        std::fs::remove_file(&path).unwrap();
+        let c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let entry = Entry::Instructions("main".into());
+            let _ = tx.send((read_entry(&dirs, &entry).err(), write_entry(&dirs, &entry, "x").err()));
+        });
+        let (read, write) = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("answered without waiting on a FIFO");
+        assert!(read.is_some_and(|e| e.contains("not a file")));
+        assert!(write.is_some_and(|e| e.contains("not a file")));
+    }
 
     /// Chats' instructions an earlier Luna laid into accounts, read as this
     /// one migrates them, then renamed: they stay laid out, worded, in a
