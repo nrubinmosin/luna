@@ -114,7 +114,8 @@ fn fetch(agent: &Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64,
     Ok(Package { files, verified })
 }
 
-const SIGNERS: crate::cli::authenticode::Signers = crate::cli::authenticode::Signers { signer: "Anthropic, PBC", unsigned: &[] };
+const SIGNERS: crate::cli::authenticode::Signers =
+    crate::cli::authenticode::Signers { signer: "Anthropic, PBC", dll_also: &[], unsigned: &[] };
 
 #[cfg(test)]
 mod tests {

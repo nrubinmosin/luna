@@ -5,27 +5,53 @@
 //! package does not: a release whose package and `SHA256SUMS` were both
 //! replaced still carries no valid signature of the publisher's.
 //!
-//! Every `.exe` of a package must be signed, validly, by the named signer (the
-//! subject's common name of the certificate that signed it), but those the
-//! source lists as published unsigned (Codex's `rg.exe`, ripgrep's). A file
-//! with a signature that does not match its bytes, a signer of another name or
-//! none at all refuses the whole package. Not checked: DLLs, and revocation
+//! Every program file of a package (`is_pe`: by its extension, `.exe`, `.dll`
+//! and the like, or by the `MZ` a Windows program opens with, whatever it is
+//! called) must be signed, validly, by the named signer (the subject's common
+//! name of the certificate that signed it), but those the source lists as
+//! published unsigned (Codex's `rg.exe`, ripgrep's). A DLL may also be a
+//! runtime the vendor bundles as Microsoft signed it (`dll_also`). A file with
+//! a signature that does not match its bytes, a signer of another name or none
+//! at all refuses the whole package. Not checked: revocation
 //! (`WTD_REVOKE_NONE`, no network call at a download's end: Windows holds the
 //! chain to its roots and the timestamp, not to a revocation list fetched
 //! from the net). On other systems Authenticode has no meaning and nothing is
 //! checked; the checksum and, for Claude Code, the signed manifest stand.
+//!
+//! What stays open (threat model): a file the vendor ships unsigned cannot be
+//! held to anything but the checksum, which comes from the release beside the
+//! package. Whoever controls both can swap that one file (`unsigned`, one
+//! name for Codex).
 
 use super::PackageFile;
 use std::path::Path;
 
-/// Who must have signed a package's executables, and which of them are
+/// Who must have signed a package's program files, and which of them are
 /// published unsigned.
 pub struct Signers {
     /// The signing certificate's subject name (its common name).
     pub signer: &'static str,
-    /// Executables, by their path in the package (`/`-separated, any case),
-    /// that the publisher ships unsigned.
+    /// Other signers a `.dll` may carry: the runtime libraries the vendor
+    /// bundles as Microsoft signed them.
+    pub dll_also: &'static [&'static str],
+    /// Files, by their path in the package (`/`-separated, any case), that the
+    /// publisher ships unsigned. Exactly these and no others.
     pub unsigned: &'static [&'static str],
+}
+
+/// The extensions of files Windows loads as programs.
+const PE_EXTENSIONS: [&str; 9] = [".exe", ".dll", ".sys", ".ocx", ".scr", ".cpl", ".com", ".node", ".pyd"];
+
+/// Whether `rel` (at `path`) is a Windows program file: named like one, or
+/// opening with `MZ` under any other name.
+fn is_pe(rel: &str, path: &Path) -> bool {
+    use std::io::Read;
+    let lower = rel.to_ascii_lowercase();
+    if PE_EXTENSIONS.iter().any(|e| lower.ends_with(e)) {
+        return true;
+    }
+    let mut magic = [0u8; 2];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"MZ"
 }
 
 /// Holds the executables of `files` (relative to `dir`) to `rule`: Ok with a
@@ -54,21 +80,25 @@ fn require_with(
     verify: impl Fn(&Path) -> Result<String, String>,
 ) -> Result<String, String> {
     let mut checked = 0;
-    for file in files.iter().filter(|f| f.rel.to_ascii_lowercase().ends_with(".exe")) {
-        if rule.unsigned.iter().any(|u| u.eq_ignore_ascii_case(&file.rel)) {
+    let mut by_vendor = 0;
+    for file in files {
+        let path = dir.join(&file.rel);
+        if !is_pe(&file.rel, &path) || rule.unsigned.iter().any(|u| u.eq_ignore_ascii_case(&file.rel)) {
             continue;
         }
-        let signer = verify(&dir.join(&file.rel)).map_err(|why| format!("{} is {why}: refused", file.rel))?;
-        if signer != rule.signer {
+        let signer = verify(&path).map_err(|why| format!("{} is {why}: refused", file.rel))?;
+        let dll = file.rel.to_ascii_lowercase().ends_with(".dll");
+        if signer != rule.signer && !(dll && rule.dll_also.contains(&signer.as_str())) {
             return Err(format!("{} is signed by \"{signer}\", not \"{}\": refused", file.rel, rule.signer));
         }
         checked += 1;
+        by_vendor += usize::from(signer == rule.signer);
     }
-    if checked == 0 {
-        // A package with no executable of the publisher's is not the package.
-        return Err(format!("no executable of the package is signed by \"{}\": refused", rule.signer));
+    if by_vendor == 0 {
+        // A package with no program of the publisher's is not the package.
+        return Err(format!("no program of the package is signed by \"{}\": refused", rule.signer));
     }
-    Ok(format!("{checked} executables Authenticode-signed by {}", rule.signer))
+    Ok(format!("{checked} program files Authenticode-signed ({by_vendor} by {})", rule.signer))
 }
 
 /// The signer of the file at `path`, if Windows finds its embedded signature
@@ -157,12 +187,17 @@ mod tests {
         rels.iter().map(|r| PackageFile { rel: (*r).into(), size: 1, sha256: None }).collect()
     }
 
-    const RULE: Signers = Signers { signer: "OpenAI OpCo, LLC", unsigned: &["codex-path/rg.exe"] };
+    const RULE: Signers = Signers { signer: "OpenAI OpCo, LLC", dll_also: &["Microsoft Windows"], unsigned: &["codex-path/rg.exe"] };
 
     #[test]
-    fn every_executable_but_those_published_unsigned_must_be_the_publisher_s() {
-        let package =
-            files(&["bin/codex.exe", "codex-path/rg.exe", "codex-resources/codex-command-runner.exe", "codex-package.json", "x/y.dll"]);
+    fn every_program_file_but_the_one_published_unsigned_must_be_the_publisher_s() {
+        let package = files(&[
+            "bin/codex.exe",
+            "codex-path/rg.exe",
+            "codex-resources/codex-command-runner.exe",
+            "codex-package.json",
+            "codex-resources/voice/bin/opus.dll",
+        ]);
         let seen = std::cell::RefCell::new(Vec::new());
         let line = require_with(Path::new("d"), &package, &RULE, |p| {
             seen.borrow_mut().push(p.to_path_buf());
@@ -171,9 +206,22 @@ mod tests {
         .unwrap();
         assert_eq!(
             seen.into_inner(),
-            [Path::new("d").join("bin/codex.exe"), Path::new("d").join("codex-resources/codex-command-runner.exe")]
+            [
+                Path::new("d").join("bin/codex.exe"),
+                Path::new("d").join("codex-resources/codex-command-runner.exe"),
+                Path::new("d").join("codex-resources/voice/bin/opus.dll")
+            ]
         );
-        assert!(line.starts_with("2 executables") && line.contains("OpenAI OpCo, LLC"), "{line}");
+        assert!(line.starts_with("3 program files") && line.contains("OpenAI OpCo, LLC"), "{line}");
+        // A DLL the vendor bundles as Microsoft signed it; an exe cannot be.
+        let with_runtime = files(&["bin/codex.exe", "voice/vcruntime140.dll"]);
+        let microsoft = |p: &Path| Ok(if p.ends_with("vcruntime140.dll") { "Microsoft Windows" } else { "OpenAI OpCo, LLC" }.to_string());
+        assert!(require_with(Path::new("d"), &with_runtime, &RULE, microsoft).is_ok());
+        let why = require_with(Path::new("d"), &files(&["bin/codex.exe", "x.exe"]), &RULE, |p| {
+            Ok(if p.ends_with("x.exe") { "Microsoft Windows" } else { "OpenAI OpCo, LLC" }.to_string())
+        })
+        .unwrap_err();
+        assert!(why.contains("x.exe is signed by \"Microsoft Windows\""), "{why}");
         // Any case of the exemption's path, and of an executable's extension.
         let loud = files(&["BIN/CODEX.EXE", "Codex-Path/RG.EXE"]);
         assert!(require_with(Path::new("d"), &loud, &RULE, |_| Ok("OpenAI OpCo, LLC".into())).is_ok());
@@ -203,7 +251,41 @@ mod tests {
         assert!(why.contains("no longer match"), "{why}");
         // Nothing to check is no package.
         let why = require_with(Path::new("d"), &files(&["codex-path/rg.exe", "x.json"]), &RULE, |_| Ok(String::new())).unwrap_err();
-        assert!(why.contains("no executable of the package is signed"), "{why}");
+        assert!(why.contains("no program of the package is signed"), "{why}");
+    }
+
+    #[test]
+    fn an_unsigned_dll_or_a_program_under_another_name_refuses_the_package() {
+        let ok = |p: &Path| -> Result<String, String> {
+            if p.ends_with("opus.dll") || p.ends_with("sneaky.bin") {
+                Err("not signed".into())
+            } else {
+                Ok("OpenAI OpCo, LLC".into())
+            }
+        };
+        let why = require_with(Path::new("d"), &files(&["bin/codex.exe", "voice/bin/opus.dll"]), &RULE, ok).unwrap_err();
+        assert_eq!(why, "voice/bin/opus.dll is not signed: refused");
+        // Only the one path is excused, not another file of the same name or kind.
+        let why = require_with(Path::new("d"), &files(&["bin/codex.exe", "other/rg.exe"]), &RULE, |p| {
+            if p.ends_with("other/rg.exe") {
+                Err("not signed".into())
+            } else {
+                Ok("OpenAI OpCo, LLC".into())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(why, "other/rg.exe is not signed: refused");
+        // A program called something else is found by its `MZ`.
+        let dir = std::env::temp_dir().join(format!("luna-authenticode-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("sneaky.bin"), b"MZ\x90\x00").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
+        std::fs::write(dir.join("codex.exe"), b"").unwrap();
+        let package = files(&["codex.exe", "sneaky.bin", "notes.txt"]);
+        let why = require_with(&dir, &package, &RULE, ok).unwrap_err();
+        assert_eq!(why, "sneaky.bin is not signed: refused");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(not(windows))]
@@ -250,9 +332,9 @@ mod tests {
         // The same checks as a package's.
         let package = files(&["pwsh.exe"]);
         std::fs::copy(&signed, dir.join("pwsh.exe")).unwrap();
-        let rule = Signers { signer: Box::leak(signer.into_boxed_str()), unsigned: &[] };
+        let rule = Signers { signer: Box::leak(signer.into_boxed_str()), dll_also: &[], unsigned: &[] };
         assert!(require(&dir, &package, &rule).unwrap().is_some());
-        let other = Signers { signer: "Nobody", unsigned: &[] };
+        let other = Signers { signer: "Nobody", dll_also: &[], unsigned: &[] };
         assert!(require(&dir, &package, &other).unwrap_err().contains("not \"Nobody\""));
         let _ = std::fs::remove_dir_all(&dir);
     }

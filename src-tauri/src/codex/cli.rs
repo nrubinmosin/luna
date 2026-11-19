@@ -106,12 +106,16 @@ fn fetch(agent: &Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64,
     Ok(Package { files, verified })
 }
 
-/// Who signs the package's executables (0.169.0: `codex.exe`, its code-mode
-/// and exec-server hosts, the sandbox's command runner and setup, the voice
-/// host, all "OpenAI OpCo, LLC", status Valid), and what ships unsigned:
-/// ripgrep's `rg.exe`. Checked on Windows only (`cli::authenticode`).
-const SIGNERS: crate::cli::authenticode::Signers =
-    crate::cli::authenticode::Signers { signer: "OpenAI OpCo, LLC", unsigned: &["codex-path/rg.exe"] };
+/// Who signs the package's program files (0.169.0: every `.exe` but `rg.exe`
+/// and every `.dll` under `codex-resources/voice/bin/` but `vcruntime140.dll`
+/// are "OpenAI OpCo, LLC", status Valid; that one is Microsoft's), and what
+/// ships unsigned: ripgrep's `rg.exe`, the one name excused. Checked on
+/// Windows only (`cli::authenticode`).
+const SIGNERS: crate::cli::authenticode::Signers = crate::cli::authenticode::Signers {
+    signer: "OpenAI OpCo, LLC",
+    dll_also: &["Microsoft Windows", "Microsoft Corporation"],
+    unsigned: &["codex-path/rg.exe"],
+};
 
 /// What one package may unpack to: a tarball that matches its checksum is
 /// still not let fill the disk or the folder without end. rust-v0.167.0's
