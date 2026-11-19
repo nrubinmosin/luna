@@ -167,7 +167,7 @@ async fn show(scene: &Scene, opened: &Opened, cx: &mut AsyncApp) {
     cx.background_executor().timer(Duration::from_millis(300)).await;
     let (host, models, window) = (&opened.host, &opened.models, opened.window);
     if let Some(act) = scene.act {
-        models.status.update(cx, |v, cx| act(v, cx));
+        models.status.update(cx, act);
         cx.background_executor().timer(Duration::from_millis(200)).await;
     }
     if let Some(at) = scene.menu {
