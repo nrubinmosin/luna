@@ -604,7 +604,10 @@ carries it. A new surface adds its scenes to `demo.rs`.
 The terminal's scenes (`term-*`) feed a pane the demo session's output
 through the fake host: colors and attributes, box drawing and blocks, a
 selection, an IME composition, an exited session, and one waiting for the
-core.
+core. The board's scenes keep the synthetic 0.19 fixture's chats
+(`fixtures/storage-0.19.json`, imported as on a first start): each layout
+(`chats-1` to `chats-4`), the sidebar collapsed, the peek, a pane's menu
+open, and the notice of an import that failed.
 
 `luna-window-shots --bench SECS OUT.json` is the terminal's burst bench
 (`term/bench/`): a pane in an off-screen window fed the GPUI spike's synthetic
