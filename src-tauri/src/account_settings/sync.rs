@@ -315,7 +315,7 @@ mod tests {
                 let before = state(child_text);
                 sync_one(Provider::Codex, &p, &c).unwrap();
                 let text = std::fs::read_to_string(child.join("config.toml")).unwrap();
-                assert!(!text.contains("sha256:parent"), "the parent's trust travelled:\n{text}");
+                assert!(!text.contains("sha256:parent"), "the parent's trust went over:\n{text}");
                 assert_eq!(own.is_some(), text.contains("sha256:child"), "{text}");
                 assert_eq!(state(&text), before, "the child's own, as it was:\n{text}");
                 if parent_text.contains("notify") {
