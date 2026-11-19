@@ -532,6 +532,11 @@ pub struct LibraryFile {
     pub path: String,
     pub text: String,
     pub exists: bool,
+    /// The library's folder it was read from, and the sha256 of the bytes
+    /// read (None: no file there): what a save bound to them
+    /// (`library_write_checked`) holds the file to.
+    pub root: String,
+    pub revision: Option<String>,
 }
 
 /// The file the editor has open: `{"skill": name}`, `{"instructions": name}`
@@ -592,7 +597,87 @@ fn read_entry(dirs: &Dirs, entry: &Entry) -> Result<LibraryFile, String> {
         Some(bytes) => (String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", path.display()))?, true),
         None => (String::new(), false),
     };
-    Ok(LibraryFile { path: path.to_string_lossy().into_owned(), text, exists })
+    let revision = exists.then(|| sha256_hex(text.as_bytes()));
+    Ok(LibraryFile { path: path.to_string_lossy().into_owned(), text, exists, root: dirs.root.to_string_lossy().into_owned(), revision })
+}
+
+/// What a save bound to its source came to: saved, with the revision now on
+/// disk, or refused for `conflict` with nothing written.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Written {
+    pub conflict: Option<String>,
+    pub revision: Option<String>,
+    pub overview: Option<Overview>,
+}
+
+/// The file of `entry` as it is on disk now: its sha256, None where there is
+/// none (for a system text, no override).
+fn revision_of(dirs: &Dirs, entry: &Entry) -> Result<Option<String>, String> {
+    if let Entry::System(name) = entry {
+        return system_revision(dirs, name);
+    }
+    let path = library_path(dirs, entry)?;
+    Ok(read_plain(&path, EDIT_MAX_BYTES + 1)?.map(|bytes| sha256_hex(&bytes)))
+}
+
+/// Saves the editor's text only into the library it was read from (`root`)
+/// and over the file as it was read (`revision`, None: none there), checked
+/// under the library's lock: a file changed on disk since, or a library
+/// folder changed meanwhile, is a `conflict`, nothing written, for the window
+/// to keep its text and offer to reload or overwrite. `force` (Overwrite)
+/// lets a changed file go, never another library. The native window's alone
+/// (native/panels.rs); an addition beside `library_write`, which the page
+/// keeps using.
+pub fn library_write_checked(entry: Entry, text: String, root: String, revision: Option<String>, force: bool) -> Result<Written, String> {
+    if let Entry::System(name) = &entry {
+        luna_text(name)?;
+    }
+    let _guard = lock()?;
+    let dirs = Dirs::current();
+    if let Err((conflict, revision)) = still_as_read(&dirs, &entry, &root, revision.as_deref(), force)? {
+        return Ok(Written { conflict: Some(conflict), revision, overview: None });
+    }
+    let lay_out = match &entry {
+        Entry::System(name) => {
+            let path = write_system(&dirs, name, &text)?;
+            crate::log::info("library", &format!("system skill {name}: the override at {} saved", path.display()));
+            false
+        }
+        _ => {
+            write_entry(&dirs, &entry, &text)?;
+            true
+        }
+    };
+    Ok(Written { conflict: None, revision: Some(sha256_hex(text.as_bytes())), overview: Some(overview_locked(lay_out)?) })
+}
+
+/// Whether the file of `entry` may be written over: the library still the
+/// one at `root`, and (unless `force`) the file still at `revision`. Inner
+/// Err: why not, with the revision on disk now.
+fn still_as_read(
+    dirs: &Dirs,
+    entry: &Entry,
+    root: &str,
+    revision: Option<&str>,
+    force: bool,
+) -> Result<Result<(), (String, Option<String>)>, String> {
+    let now = dirs.root.to_string_lossy();
+    if now != root {
+        return Ok(Err((format!("The library's folder is {now} now; this text was read from {root}. Nothing was saved."), None)));
+    }
+    if force {
+        return Ok(Ok(()));
+    }
+    let on_disk = revision_of(dirs, entry)?;
+    if on_disk.as_deref() == revision {
+        return Ok(Ok(()));
+    }
+    let why = match on_disk {
+        None => "The file was deleted on disk since it was opened. Nothing was saved.",
+        Some(_) => "The file was changed on disk since it was opened. Nothing was saved.",
+    };
+    Ok(Err((why.into(), on_disk)))
 }
 
 /// Saves what the editor has, then lays it out. A skill whose SKILL.md does
@@ -956,6 +1041,40 @@ mod tests {
             assert_eq!(std::fs::read_to_string(elsewhere.join("taken").join(SKILL_FILE)).unwrap(), "theirs");
         }
         let _ = std::fs::remove_dir(f.dirs.skills().join("taken")).or_else(|_| std::fs::remove_file(f.dirs.skills().join("taken")));
+    }
+
+    /// A save is bound to the file as it was read and to the library it was
+    /// read from: changed or deleted on disk since, or another library, it
+    /// is refused; Overwrite lets a changed file go, never another library.
+    #[test]
+    fn a_save_holds_to_the_file_and_the_library_it_was_read_from() {
+        let f = Fixture::new("editor-revision");
+        f.skill("review", "v1");
+        let entry = Entry::Skill("review".into());
+        let read = read_entry(&f.dirs, &entry).unwrap();
+        let root = read.root.clone();
+        assert_eq!(root, f.dirs.root.to_string_lossy());
+        let ok = |r: Result<Result<(), (String, Option<String>)>, String>| r.unwrap().is_ok();
+        assert!(ok(still_as_read(&f.dirs, &entry, &root, read.revision.as_deref(), false)));
+        // Changed by another program meanwhile.
+        f.skill("review", "edited elsewhere");
+        let refused = still_as_read(&f.dirs, &entry, &root, read.revision.as_deref(), false).unwrap().unwrap_err();
+        assert!(refused.0.contains("changed on disk"), "{}", refused.0);
+        assert_eq!(refused.1, read_entry(&f.dirs, &entry).unwrap().revision);
+        assert!(ok(still_as_read(&f.dirs, &entry, &root, read.revision.as_deref(), true)), "Overwrite");
+        // Another library, Overwrite or not.
+        assert!(!ok(still_as_read(&f.dirs, &entry, "/elsewhere", read.revision.as_deref(), true)));
+        // A new file is saved only while none is there.
+        let new = Entry::Instructions("fresh".into());
+        let none = read_entry(&f.dirs, &new).unwrap();
+        assert_eq!(none.revision, None);
+        assert!(ok(still_as_read(&f.dirs, &new, &root, None, false)));
+        f.instructions("fresh", "made meanwhile");
+        assert!(!ok(still_as_read(&f.dirs, &new, &root, None, false)));
+        // Deleted on disk.
+        std::fs::remove_file(f.dirs.instructions_file("fresh")).unwrap();
+        let rev = Some(sha256_hex(b"made meanwhile"));
+        assert!(still_as_read(&f.dirs, &new, &root, rev.as_deref(), false).unwrap().unwrap_err().0.contains("deleted"));
     }
 
     /// A FIFO at an instructions file's name holds neither the read nor a

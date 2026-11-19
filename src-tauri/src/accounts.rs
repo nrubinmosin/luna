@@ -174,6 +174,24 @@ mod tests {
             .is_ok_and(|o| o.status.success()));
     }
 
+    /// A folder's identity is its own: the same folder keeps it, one made
+    /// again under the name has another.
+    #[test]
+    fn a_folder_made_again_is_not_the_one_named() {
+        let base = std::env::temp_dir().join(format!("luna-accounts-id-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let dir = base.join("work");
+        fs::create_dir_all(&dir).unwrap();
+        let first = dir_id(&dir).unwrap();
+        assert_eq!(dir_id(&dir).unwrap(), first);
+        // Kept by another folder while the name is made again, so the drive
+        // cannot hand the same id out twice.
+        fs::rename(&dir, base.join("aside")).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        assert_ne!(dir_id(&dir).unwrap(), first);
+        let _ = fs::remove_dir_all(&base);
+    }
+
     /// The provider's folder or the account's a link to a folder elsewhere:
     /// the deletion is refused and nothing there goes.
     #[test]
@@ -241,18 +259,106 @@ mod tests {
 /// pass of the core's may hold.
 #[tauri::command(async)]
 pub fn delete_account(provider: Provider, name: String) -> Result<(), String> {
+    delete_in(provider, &name, None)
+}
+
+/// An account's folder as the native window's Delete... question names it:
+/// its path, held to `boundary::account_in`, and the folder's identity on
+/// its drive (`dir_id`), to which the answer is bound
+/// (`delete_account_checked`). An addition beside `delete_account` for the
+/// native window (native/panels.rs).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountIdentity {
+    pub path: String,
+    pub id: String,
+}
+
+pub fn account_identity(provider: Provider, name: String) -> Result<AccountIdentity, String> {
     validate_name(&name)?;
     let root = accounts_root()?;
     let dir = root.join(provider.accounts_dir()).join(&name);
+    crate::boundary::account_in(&dir.to_string_lossy(), &root)?;
+    Ok(AccountIdentity { path: dir.to_string_lossy().into_owned(), id: dir_id(&dir)? })
+}
+
+/// Deletes the account only if its folder is still the one the question
+/// named: the same path under the accounts root in use, and the same folder
+/// on its drive (`id`), checked again under the library's lock just before
+/// the folder goes. A folder gone meanwhile is only cleaned up after, as
+/// `delete_account` does.
+pub fn delete_account_checked(provider: Provider, name: String, path: String, id: String) -> Result<(), String> {
+    delete_in(provider, &name, Some((&path, &id)))
+}
+
+fn delete_in(provider: Provider, name: &str, named: Option<(&str, &str)>) -> Result<(), String> {
+    validate_name(name)?;
+    let root = accounts_root()?;
+    let dir = root.join(provider.accounts_dir()).join(name);
+    if let Some((path, _)) = named {
+        if Path::new(path) != dir {
+            return Err(format!("The accounts folder is not where it was asked about ({path}); nothing was deleted."));
+        }
+    }
     // A folder gone already still has what Luna keeps of it cleaned up: a
     // deletion that failed after the folder went is finished by another.
     crate::library::delete_account_held(
         provider,
         &dir,
-        &name,
-        || remove_account_dir(&dir, &root),
+        name,
+        || {
+            if let Some((_, id)) = named {
+                if fs::symlink_metadata(&dir).is_ok() && dir_id(&dir)? != id {
+                    return Err(format!("{} is not the folder you were asked about: it was replaced. Nothing was deleted.", dir.display()));
+                }
+            }
+            remove_account_dir(&dir, &root)
+        },
         |library| crate::settings::update(|s| library(&mut s.library)),
     )
+}
+
+/// The folder at `dir` itself (not what a link there leads to) by its
+/// identity on its drive: the volume's serial number and the 128-bit file
+/// id on Windows, the device and inode elsewhere.
+fn dir_id(dir: &Path) -> Result<String, String> {
+    let failed = |e: std::io::Error| format!("{}: {e}", dir.display());
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO};
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        // A folder opens only with backup semantics; a link there is opened
+        // as itself.
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(dir)
+            .map_err(failed)?;
+        let mut id = FILE_ID_INFO::default();
+        // SAFETY: the handle is the File's, open through the call; the buffer
+        // is of the size the call is told.
+        unsafe {
+            GetFileInformationByHandleEx(HANDLE(file.as_raw_handle()), FileIdInfo, (&raw mut id).cast(), size_of::<FILE_ID_INFO>() as u32)
+        }
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+        let hex: String = id.FileId.Identifier.iter().map(|b| format!("{b:02x}")).collect();
+        Ok(format!("{:016x}:{hex}", id.VolumeSerialNumber))
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let m = fs::symlink_metadata(dir).map_err(failed)?;
+        Ok(format!("{:x}:{:x}", m.dev(), m.ino()))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = failed;
+        Err(format!("{}: no folder identity on this system", dir.display()))
+    }
 }
 
 /// An account's folder removed, checked first as an account folder of Luna's

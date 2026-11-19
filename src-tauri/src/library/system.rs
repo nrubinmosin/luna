@@ -594,7 +594,8 @@ pub(super) fn read_system(dirs: &Dirs, name: &str) -> Result<LibraryFile, String
     let luna = t.luna;
     let path = dirs.system(name).join(t.kind.file());
     let shown = path.to_string_lossy().into_owned();
-    let start = || LibraryFile { path: shown.clone(), text: luna.to_string(), exists: false };
+    let root = dirs.root.to_string_lossy().into_owned();
+    let start = || LibraryFile { path: shown.clone(), text: luna.to_string(), exists: false, root: root.clone(), revision: None };
     let Some(dir) = override_dir(dirs, name)? else { return Ok(start()) };
     match read_own_file(&dir, t.kind.file(), EDIT_MAX_BYTES + 1)? {
         // A folder without SKILL.md: what saving puts there starts from Luna's.
@@ -603,10 +604,19 @@ pub(super) fn read_system(dirs: &Dirs, name: &str) -> Result<LibraryFile, String
             Err(format!("{} is over {} KB, too large to open here", path.display(), EDIT_MAX_BYTES / 1024))
         }
         Some(bytes) => {
+            let revision = Some(sha256_hex(&bytes));
             let text = String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", path.display()))?;
-            Ok(LibraryFile { path: shown, text, exists: true })
+            Ok(LibraryFile { path: shown, text, exists: true, root, revision })
         }
     }
+}
+
+/// The sha256 of the override of `name` as it is on disk; None where there
+/// is none (`library_write_checked`).
+pub(super) fn system_revision(dirs: &Dirs, name: &str) -> Result<Option<String>, String> {
+    let t = text_of(name)?;
+    let Some(dir) = override_dir(dirs, name)? else { return Ok(None) };
+    Ok(read_own_file(&dir, t.kind.file(), EDIT_MAX_BYTES + 1)?.map(|bytes| sha256_hex(&bytes)))
 }
 
 /// Saves the editor's text as the override of `name`. One that will not do
