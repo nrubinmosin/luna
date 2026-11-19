@@ -122,6 +122,18 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
     Ok(Some((state, found)))
 }
 
+/// The size of the chat list `luna.chats`'s text `text` holds, as the
+/// import would take it (`from_storage`): its chats and folders. None where
+/// it is no list that imports. The host asks, to choose between origins
+/// that each kept one (luna_lib's native/import.rs).
+pub fn chat_list_size(text: &str) -> Option<(usize, usize)> {
+    let old = HashMap::from([("luna.chats".to_owned(), text.to_owned())]);
+    match from_storage(&old) {
+        Ok(Some((_, found))) => Some((found.chats, found.folders)),
+        _ => None,
+    }
+}
+
 /// A zustand store's `state`, from its key's text.
 fn stored(old: &HashMap<String, String>, key: &str) -> Option<Value> {
     let v: Value = serde_json::from_str(old.get(key)?).ok()?;

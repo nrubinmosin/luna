@@ -163,7 +163,11 @@ displays in. `fit` holds them to the displays there are now: the window lands
 on the display it overlaps most, or centered on the primary when it overlaps
 none, no smaller than the minimum and no larger than that display, and
 wholly on it. Nothing is saved or restored in the background. What 0.19's
-plugin saved under the identifier is not read.
+plugin saved under the identifier is not read. The file is the place's
+alone: one there that does not read as a place is renamed
+`window-state.unreadable-<secs>-<hex>.json` and logged before the place is
+written, and where it cannot be renamed the place is not written
+(`window_state::save_to`).
 
 ## Updater
 

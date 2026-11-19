@@ -152,7 +152,8 @@ impl Render for LunaWindow {
     }
 }
 
-/// One notice's line: its words, and Retry and OK where it offers them.
+/// One notice's line: its words, and Retry, OK and Quit anyway where it
+/// offers them.
 fn notice(p: &crate::theme::Palette, models: &Models, n: StateNotice) -> gpui::Stateful<gpui::Div> {
     let key = n.key;
     let action = |what: &'static str, label: &'static str| {
@@ -161,7 +162,11 @@ fn notice(p: &crate::theme::Palette, models: &Models, n: StateNotice) -> gpui::S
             .id(SharedString::from(format!("{key}-notice-{what}")))
             .debug_selector(move || format!("{key}-notice-{what}"))
             .on_click(move |_, _, cx| {
-                ws.update(cx, |w, cx| if what == "retry" { w.retry(key, cx) } else { w.dismiss(key, cx) });
+                ws.update(cx, |w, cx| match what {
+                    "retry" => w.retry(key, cx),
+                    "quit" => w.quit_anyway(cx),
+                    _ => w.dismiss(key, cx),
+                });
             })
             .child(button(p, label))
     };
@@ -181,4 +186,5 @@ fn notice(p: &crate::theme::Palette, models: &Models, n: StateNotice) -> gpui::S
         .child(div().flex_1().min_w_0().font_weight(FontWeight::BOLD).child(n.text))
         .children(n.retry.then(|| action("retry", "Retry")))
         .children(n.ok.then(|| action("ok", "OK")))
+        .children(n.quit_anyway.then(|| action("quit", "Quit anyway")))
 }

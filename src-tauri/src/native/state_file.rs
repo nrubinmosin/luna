@@ -2,13 +2,9 @@
 //! only copy of the person's chats, boards and sidebar since 0.19's Local
 //! Storage was imported. Everything that can lose it is answered here:
 //!
-//! - It has a file of its own. The window's place (desktop/window_state.rs)
-//!   is `<data>/window-state.json`, where builds before this one kept the
-//!   chat list too, so a resize could write geometry over the chats. A
-//!   file of either is told by its shape (`shape`), never taken for the
-//!   other: a chat list found in the place's file is moved here, synced,
-//!   before the place's file goes (`rescue`), and the place's writer leaves
-//!   alone a file that still holds one.
+//! - It has a file of its own, which nothing else writes: the window's
+//!   place is `<data>/window-state.json` (desktop/window_state.rs), and
+//!   neither is ever read as the other.
 //! - A file that is there and cannot be read (shared, denied) is no list:
 //!   the window is told (`readError`), imports nothing and writes nothing
 //!   over it, and asks again for Retry or on the next start.
@@ -20,7 +16,8 @@
 //!   before the window, which reads what it can, writes over it.
 //! - It is written synced (`secret::write_private_synced`): a power cut
 //!   leaves the old file or the new one whole, never the name on a zeroed
-//!   file.
+//!   file; the folder made for it the first time is synced into the data
+//!   dir before the file is written there (`make_dir`).
 //!
 //! The import of 0.19's list (import.rs) is asked for only where there is no
 //! list here, or one whose import failed and was left empty.
@@ -35,42 +32,18 @@ use std::path::{Path, PathBuf};
 /// list, the copies kept of it, the import's scratch copies.
 pub(crate) const DIR: &str = "window";
 const FILE: &str = "chats.json";
-/// The window's place (desktop/window_state.rs `path`), in the data dir.
-const PLACE: &str = "window-state.json";
 /// The largest chat list read: far past any real one, short of a file that
 /// is not one being read whole.
 const MAX: u64 = 64 << 20;
 
 /// The chat list's file in the data dir `data`.
-pub(crate) fn file(data: &Path) -> PathBuf {
+fn file(data: &Path) -> PathBuf {
     data.join(DIR).join(FILE)
 }
 
-/// What a JSON file of the window's holds, by its shape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Shape {
-    /// The chat list: an object with folders or boards.
-    Chats,
-    /// The window's place: an object with bounds.
-    Place,
-    Other,
-}
-
-pub(crate) fn shape(v: &Value) -> Shape {
-    let Some(o) = v.as_object() else { return Shape::Other };
-    if o.contains_key("folders") || o.contains_key("boards") {
-        Shape::Chats
-    } else if o.contains_key("bounds") {
-        Shape::Place
-    } else {
-        Shape::Other
-    }
-}
-
-/// Whether `bytes` are a chat list (desktop/window_state.rs asks, before it
-/// writes the place over a file).
-pub(crate) fn holds_chats(bytes: &[u8]) -> bool {
-    serde_json::from_slice::<Value>(bytes).is_ok_and(|v| shape(&v) == Shape::Chats)
+/// Whether `v` is a chat list: an object with folders or boards.
+fn is_chat_list(v: &Value) -> bool {
+    v.as_object().is_some_and(|o| o.contains_key("folders") || o.contains_key("boards"))
 }
 
 /// A file's bytes; None where there is none.
@@ -89,12 +62,18 @@ fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
-/// The window's folder, made private where it is not there yet.
+/// The window's folder, made private where it is not there yet, and then
+/// synced into its parent: a file synced into a folder whose own entry is
+/// not could still be lost with the folder after a power cut (Unix; see
+/// `secret::sync_dir`).
 fn make_dir(dir: &Path) -> io::Result<()> {
     if dir.is_dir() {
-        Ok(())
-    } else {
-        crate::secret::private_dir(dir)
+        return Ok(());
+    }
+    crate::secret::private_dir(dir)?;
+    match dir.parent() {
+        Some(parent) => crate::secret::sync_dir(parent),
+        None => Ok(()),
     }
 }
 
@@ -112,19 +91,11 @@ pub(super) fn load(data: &Path, import: impl FnOnce() -> Result<Option<HashMap<S
     let file = dir.join(FILE);
     let bytes = match read(&file) {
         Ok(Some(bytes)) => bytes,
-        Ok(None) => match read(&data.join(PLACE)) {
-            Ok(Some(bytes)) if holds_chats(&bytes) => match rescue(data, &bytes) {
-                Ok(()) => bytes,
-                Err(e) => return json!({ "readError": format!("the chat list in {PLACE} could not be moved to {}: {e}", file.display()) }),
-            },
-            Ok(_) => return with_import(json!({ "saved": null }), import),
-            // It may hold the list of an earlier build: not to be passed by.
-            Err(e) => return json!({ "readError": format!("{} could not be read: {e}", data.join(PLACE).display()) }),
-        },
+        Ok(None) => return with_import(json!({ "saved": null }), import),
         Err(e) => return json!({ "readError": format!("{}: {e}", file.display()) }),
     };
     let value = match serde_json::from_slice::<Value>(&bytes) {
-        Ok(v) if shape(&v) == Shape::Chats => v,
+        Ok(v) if is_chat_list(&v) => v,
         read => {
             let why = read.map_or_else(|e| e.to_string(), |_| "it holds no chat list".into());
             let aside = fresh_name(&dir, "unreadable");
@@ -172,20 +143,6 @@ fn with_import(mut answer: Value, import: impl FnOnce() -> Result<Option<HashMap
         }
     }
     answer
-}
-
-/// The chat list a build before this one kept in the place's file, moved to
-/// its own: written there synced, then the place's file goes, whose writer
-/// would otherwise not write over it.
-fn rescue(data: &Path, bytes: &[u8]) -> io::Result<()> {
-    let dir = data.join(DIR);
-    make_dir(&dir)?;
-    crate::secret::write_private_synced(&dir.join(FILE), bytes)?;
-    crate::log::warn("window", &format!("moved the chat list from {PLACE} to {DIR}/{FILE}"));
-    if let Err(e) = std::fs::remove_file(data.join(PLACE)) {
-        crate::log::warn("window", &format!("{PLACE} stays, the chat list in it now a copy: {e}"));
-    }
-    Ok(())
 }
 
 /// A copy of `bytes` kept in `dir`, where it stays; one kept before with
@@ -252,35 +209,16 @@ mod tests {
     fn the_chat_list_and_the_place_keep_files_of_their_own() {
         let data = scratch("own");
         write(&data, &list(3)).unwrap();
-        crate::desktop::window_state::save_to(&data.join(PLACE), &serde_json::from_str(&place()).unwrap()).unwrap();
+        let place_file = data.join("window-state.json");
+        crate::desktop::window_state::save_to(&place_file, &serde_json::from_str(&place()).unwrap()).unwrap();
         assert_eq!(chats_of(&load(&data, no_import)), 3);
-        assert!(crate::desktop::window_state::load_from(&data.join(PLACE)).is_some());
+        assert!(crate::desktop::window_state::load_from(&place_file).is_some());
         // A fresh machine with a place kept and no list: imported.
         let data = scratch("place-only");
-        std::fs::write(data.join(PLACE), place()).unwrap();
+        std::fs::write(data.join("window-state.json"), place()).unwrap();
         let answer = load(&data, old);
         assert!(answer["saved"].is_null());
         assert!(answer["old"].is_object(), "{answer}");
-        let _ = std::fs::remove_dir_all(&data);
-    }
-
-    /// A chat list an earlier build kept in the place's file is moved to its
-    /// own before the place's writer may write there; until then, that
-    /// writer leaves it alone.
-    #[test]
-    fn a_chat_list_in_the_places_file_is_moved_not_lost() {
-        let data = scratch("rescue");
-        std::fs::write(data.join(PLACE), list(2)).unwrap();
-        // The place first: refused, the list stays.
-        let place: crate::desktop::window_state::WindowState = serde_json::from_str(&place()).unwrap();
-        assert!(crate::desktop::window_state::save_to(&data.join(PLACE), &place).is_err());
-        assert!(holds_chats(&std::fs::read(data.join(PLACE)).unwrap()));
-        // Then the list is read, and moved.
-        assert_eq!(chats_of(&load(&data, no_import)), 2);
-        assert!(file(&data).is_file());
-        assert!(!data.join(PLACE).exists());
-        crate::desktop::window_state::save_to(&data.join(PLACE), &place).unwrap();
-        assert_eq!(chats_of(&load(&data, no_import)), 2, "the place written after reads as no list");
         let _ = std::fs::remove_dir_all(&data);
     }
 

@@ -423,6 +423,12 @@ pub struct Lost {
     pub boards: bool,
     /// Settings that did not read and took their default.
     pub settings: usize,
+    /// A chat's status or name's source this build does not know, read as
+    /// none: what the file said is gone once the list is written.
+    pub unknown: usize,
+    /// Chats listed more than once: the first is kept, the others are left
+    /// out, and whatever differed in them with it.
+    pub twice: usize,
 }
 
 impl Lost {
@@ -450,6 +456,12 @@ impl Lost {
         if self.settings > 0 {
             parts.push(format!("{} took the default", n(self.settings, "setting", "settings")));
         }
+        if self.unknown > 0 {
+            parts.push(format!("{} this Luna does not know read as none", n(self.unknown, "value", "values")));
+        }
+        if self.twice > 0 {
+            parts.push(format!("{} listed more than once kept once", n(self.twice, "chat", "chats")));
+        }
         parts.join("; ")
     }
 }
@@ -470,15 +482,21 @@ fn setting<T: serde::de::DeserializeOwned>(obj: &serde_json::Map<String, serde_j
 const KNOWN_STATUS: &[&str] = &["working", "waiting", "background", "resting"];
 const KNOWN_NAME_SOURCE: &[&str] = &["user", "rename", "cli", "prompt"];
 
-/// One kept chat, or None where it does not read even so.
-fn read_chat(c: &serde_json::Value) -> Option<Chat> {
+/// One kept chat, or None where it does not read even so; a value it holds
+/// that this build does not know is counted in `lost` as it is let go of.
+fn read_chat(c: &serde_json::Value, lost: &mut Lost) -> Option<Chat> {
     let mut c = c.as_object()?.clone();
+    let mut unknown = 0;
     for (key, known) in [("status", KNOWN_STATUS), ("nameSource", KNOWN_NAME_SOURCE)] {
-        if c.get(key).is_some_and(|v| !v.as_str().is_some_and(|s| known.contains(&s))) {
+        // Null is none, as it was written; anything else unknown is counted.
+        if let Some(v) = c.get(key).filter(|v| !v.as_str().is_some_and(|s| known.contains(&s))) {
+            unknown += usize::from(!v.is_null());
             c.remove(key);
         }
     }
-    serde_json::from_value(serde_json::Value::Object(c)).ok()
+    let chat = serde_json::from_value(serde_json::Value::Object(c)).ok()?;
+    lost.unknown += unknown;
+    Some(chat)
 }
 
 /// One kept folder, its chats read one by one (those left out counted in
@@ -494,7 +512,7 @@ fn read_folder(f: &serde_json::Value, lost: &mut Lost) -> Option<Folder> {
     match chats {
         Some(serde_json::Value::Array(chats)) => {
             for c in &chats {
-                match read_chat(c) {
+                match read_chat(c, lost) {
                     Some(c) => folder.chats.push(c),
                     None => lost.chats += 1,
                 }
@@ -595,6 +613,9 @@ impl WindowState {
         state.delete = setting(obj, "delete", &mut lost).unwrap_or_default();
         state.notify = setting(obj, "notify", &mut lost).unwrap_or_default();
         state.imported = setting(obj, "imported", &mut lost);
+        // `tidy` keeps a chat listed twice once: the others are counted.
+        let mut ids = std::collections::HashSet::new();
+        lost.twice = state.chats().filter(|c| !ids.insert(c.id.as_str())).count();
         state.tidy();
         Some((state, lost))
     }
@@ -1398,10 +1419,11 @@ mod tests {
         assert_eq!((a.status, a.name_source), (Status::Resting, None), "unknown values read as none");
         assert_eq!(got.boards.len(), BOARDS);
         assert_eq!(got.sidebar, Sidebar::default());
-        assert_eq!(lost, Lost { version: Some(7), chats: 2, folders: 1, boards: true, settings: 1 });
+        assert_eq!(lost, Lost { version: Some(7), chats: 2, folders: 1, boards: true, settings: 1, unknown: 2, twice: 0 });
         assert!(lost.any());
         let words = lost.words();
         assert!(words.contains("version 7") && words.contains("2 chats") && words.contains("1 folder "), "{words}");
+        assert!(words.contains("2 values this Luna does not know"), "{words}");
         // Boards past five are let go of; a board with no layout is blank.
         let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
         let first = json["boards"][0].clone();
@@ -1411,6 +1433,32 @@ mod tests {
         assert!(lost.boards);
         assert_eq!(got.boards[1], Board::blank(1));
         assert_eq!(got.chats().count(), 3);
+    }
+
+    /// What reading holds to what the window shows and costs the file
+    /// something counts as lost, for the host to keep the file as it was: a
+    /// status or a name's source this build does not know, a chat listed
+    /// twice. One of the current version that reads whole loses nothing.
+    #[test]
+    fn values_let_go_of_and_chats_listed_twice_count_as_lost() {
+        let s = with(&["a", "b"]);
+        let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        json["folders"][0]["chats"][1]["status"] = "thinking".into();
+        let (_, lost) = WindowState::read(&json).unwrap();
+        assert_eq!(lost, Lost { unknown: 1, ..Lost::default() });
+        assert!(lost.any(), "the host keeps a copy");
+        let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        let mut again = json["folders"][0]["chats"][0].clone();
+        again["name"] = "the same id, another name".into();
+        json["folders"][0]["chats"].as_array_mut().unwrap().push(again);
+        let (got, lost) = WindowState::read(&json).unwrap();
+        assert_eq!(got.chats().count(), 2);
+        assert_eq!(lost, Lost { twice: 1, ..Lost::default() });
+        assert!(lost.words().contains("1 chat listed more than once"), "{}", lost.words());
+        // A value of null is none, as it was written.
+        let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        json["folders"][0]["chats"][0]["nameSource"] = serde_json::Value::Null;
+        assert!(!WindowState::read(&json).unwrap().1.any());
     }
 
     /// An import that failed and left the list empty is tried again; one the

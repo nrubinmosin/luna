@@ -9,14 +9,16 @@
 //! (`clean_up`). Opening a LevelDB recovers it and writes, and the store may
 //! still be in use by a 0.19 window, which can write while it is copied: a
 //! copy is taken only if the store's files are the same, by name, size and
-//! time, before and after it, and one that does not open or read is taken
-//! again, `ATTEMPTS` times in all.
+//! time, before and after it, and one that does not open or read, or whose
+//! listing or copy fails (a file the old window holds a moment, one it
+//! removes as it compacts), is taken again, `ATTEMPTS` times in all.
 //!
 //! Chromium's layout (components/services/storage/dom_storage): a key
 //! `_<origin>\0<key>` holds a value of that origin's, where `<key>` and the
 //! value each start with a byte saying their encoding, 0 for UTF-16LE and 1
 //! for Latin-1. `VERSION` and `META:<origin>` keys are its bookkeeping. Only
-//! the app's own origins are read (`APP_ORIGINS`), never a dev server's.
+//! the app's own origins are read (`APP_ORIGINS`), never a dev server's, and
+//! of those the one whose `luna.chats` is a list that imports (`pick`).
 
 use rusty_leveldb::{LdbIterator, Options, DB};
 use std::collections::HashMap;
@@ -53,7 +55,8 @@ pub(super) fn read_webview_storage(data: &Path) -> Result<Option<HashMap<String,
 }
 
 /// The import's copies a run before left behind (one that ended while it
-/// read), and the one builds before kept in the data dir itself.
+/// read), and the one builds before kept in the data dir itself. Only at
+/// the first read of a run (native.rs `window_state`), never beside one.
 pub(super) fn clean_up(data: &Path) {
     let mut gone: Vec<PathBuf> = vec![data.join("import-0.19")];
     if let Ok(entries) = fs::read_dir(data.join(super::state_file::DIR)) {
@@ -81,22 +84,37 @@ pub(super) fn read_copy(store: &Path, root: &Path) -> Result<HashMap<String, Str
 }
 
 /// A copy of `store` the store did not change under, read: taken again
-/// where it changed, or where it does not open or read.
+/// where it changed, where listing or copying it failed, or where it does
+/// not open or read. Why the last attempt failed, after `ATTEMPTS`.
 fn read_steady(store: &Path, scratch: &Path) -> Result<HashMap<String, String>, String> {
+    retried(|| {
+        copy_steady(store, scratch)?;
+        read(scratch)
+    })
+}
+
+/// `attempt` until it succeeds, `ATTEMPTS` times at most: why the last
+/// failed, where none did.
+fn retried<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Result<T, String> {
     let mut why = String::new();
     for _ in 0..ATTEMPTS {
-        let before = listing(store)?;
-        copy(store, scratch)?;
-        if listing(store)? != before {
-            why = "the old window's store changed while it was copied".into();
-            continue;
-        }
-        match read(scratch) {
-            Ok(keys) => return Ok(keys),
+        match attempt() {
+            Ok(got) => return Ok(got),
             Err(e) => why = e,
         }
     }
     Err(why)
+}
+
+/// One copy of `store` into `scratch`, the same files listed before and
+/// after it.
+fn copy_steady(store: &Path, scratch: &Path) -> Result<(), String> {
+    let before = listing(store)?;
+    copy(store, scratch)?;
+    if listing(store)? != before {
+        return Err("the old window's store changed while it was copied".into());
+    }
+    Ok(())
 }
 
 /// The store's files, but its lock, by name, with their size and time.
@@ -136,8 +154,7 @@ fn copy(store: &Path, to: &Path) -> Result<(), String> {
 }
 
 /// The `luna.*` keys of the copy at `dir`, of the app's own origin
-/// (`APP_ORIGINS`, in that order where more than one has keys). None of its
-/// keys at all is an empty map: nothing to import.
+/// (`pick`). None of its keys at all is an empty map: nothing to import.
 fn read(dir: &Path) -> Result<HashMap<String, String>, String> {
     let options = Options { create_if_missing: false, ..Options::default() };
     let mut db = DB::open(dir, options).map_err(|e| format!("the old window's store does not open: {e}"))?;
@@ -156,7 +173,40 @@ fn read(dir: &Path) -> Result<HashMap<String, String>, String> {
             by_origin.entry(origin).or_default().insert(name, text);
         }
     }
-    Ok(APP_ORIGINS.iter().find_map(|o| by_origin.remove(*o)).unwrap_or_default())
+    Ok(pick(by_origin))
+}
+
+/// The keys of the app's origin the import is to take: the one whose
+/// `luna.chats` is a list that imports (luna_window's `chat_list_size`),
+/// not merely the first with a `luna.*` key; of two or more, the one with
+/// the most chats, then folders, the first of `APP_ORIGINS` on a tie, and
+/// the others logged, by their counts alone. With none that imports, the
+/// first with a `luna.chats` at all (the import then says why it does not
+/// read), else the first with any keys.
+fn pick(mut by_origin: HashMap<String, HashMap<String, String>>) -> HashMap<String, String> {
+    let lists: Vec<(&str, (usize, usize))> = APP_ORIGINS
+        .iter()
+        .filter_map(|o| Some((*o, luna_window::chat_list_size(by_origin.get(*o)?.get("luna.chats")?)?)))
+        .collect();
+    let best = lists.iter().fold(None::<(&str, (usize, usize))>, |best, &(o, size)| match best {
+        Some((_, at)) if at >= size => best,
+        _ => Some((o, size)),
+    });
+    if lists.len() > 1 {
+        let all: Vec<String> = lists.iter().map(|(_, (chats, folders))| format!("{chats} chats in {folders} folders")).collect();
+        let (chats, folders) = best.map_or((0, 0), |(_, size)| size);
+        crate::log::warn(
+            "window",
+            &format!("0.19's store holds {} chat lists ({}); importing the one of {chats} chats in {folders} folders", lists.len(), all.join(", ")),
+        );
+    }
+    let origin = best.map(|(o, _)| o).or_else(|| {
+        let with = |key: Option<&str>| {
+            APP_ORIGINS.iter().copied().find(|o| by_origin.get(*o).is_some_and(|keys| key.is_none_or(|k| keys.contains_key(k))))
+        };
+        with(Some("luna.chats")).or_else(|| with(None))
+    });
+    origin.and_then(|o| by_origin.remove(o)).unwrap_or_default()
 }
 
 /// A Local Storage key: its origin and its own key.
@@ -283,6 +333,63 @@ mod tests {
         db.close().unwrap();
         let got = read_copy(&src, &tmp.join("import")).unwrap();
         assert_eq!(got, HashMap::from([("luna.theme".to_string(), "dark".to_string())]));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// A chat list of `chats` chats in one folder, as 0.19's page kept it.
+    fn chat_list(chats: usize) -> String {
+        let chats: Vec<serde_json::Value> = (0..chats)
+            .map(|i| serde_json::json!({ "id": format!("c{i}"), "name": "x", "provider": "claude", "account": "work" }))
+            .collect();
+        serde_json::json!({ "state": { "folders": [{ "id": "f1", "path": "/repo", "chats": chats }] }, "version": 2 }).to_string()
+    }
+
+    /// The origin taken is the one whose chat list imports, not the first
+    /// with any key; of two such, the longer list; with none, the one whose
+    /// list is there (the import says why it does not read).
+    #[test]
+    fn the_origin_taken_is_the_one_with_a_chat_list_that_imports() {
+        let keys = |pairs: &[(&str, String)]| pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<HashMap<_, _>>();
+        let origins = |http: HashMap<String, String>, tauri: HashMap<String, String>| {
+            HashMap::from([("http://tauri.localhost".to_string(), http), ("tauri://localhost".to_string(), tauri)])
+        };
+        // The first origin kept only a theme: the second's list is taken.
+        let got = pick(origins(keys(&[("luna.theme", "dark".into())]), keys(&[("luna.chats", chat_list(2))])));
+        assert_eq!(got.get("luna.chats"), Some(&chat_list(2)));
+        // The first's list does not read: the second's, which does.
+        let got = pick(origins(keys(&[("luna.chats", "{oops".into())]), keys(&[("luna.chats", chat_list(1))])));
+        assert_eq!(got.get("luna.chats"), Some(&chat_list(1)));
+        // Both read: the longer.
+        let got = pick(origins(keys(&[("luna.chats", chat_list(1))]), keys(&[("luna.chats", chat_list(3))])));
+        assert_eq!(got.get("luna.chats"), Some(&chat_list(3)));
+        let got = pick(origins(keys(&[("luna.chats", chat_list(2))]), keys(&[("luna.chats", chat_list(2))])));
+        assert_eq!(got.get("luna.chats"), Some(&chat_list(2)), "a tie goes to the first");
+        // None reads: the one whose list is there, for the import to say why.
+        let got = pick(origins(keys(&[("luna.theme", "dark".into())]), keys(&[("luna.chats", "{oops".into())])));
+        assert_eq!(got.get("luna.chats").map(String::as_str), Some("{oops"));
+        assert!(pick(HashMap::new()).is_empty());
+    }
+
+    /// A copy that fails for a moment (its listing, a file held) is taken
+    /// again within the attempts; one that fails every time says why the
+    /// last did.
+    #[test]
+    fn a_copy_that_fails_for_a_moment_is_taken_again() {
+        let mut failed = 0;
+        let got = retried(|| {
+            failed += 1;
+            if failed < ATTEMPTS { Err(format!("cannot list the old window's store: try {failed}")) } else { Ok(failed) }
+        });
+        assert_eq!(got, Ok(ATTEMPTS));
+        let mut tries = 0;
+        let got: Result<(), String> = retried(|| {
+            tries += 1;
+            Err(format!("try {tries}"))
+        });
+        assert_eq!((got, tries), (Err(format!("try {ATTEMPTS}")), ATTEMPTS));
+        let tmp = scratch("listing");
+        let err = read_copy(&tmp.join("no-store"), &tmp.join("import")).unwrap_err();
+        assert!(err.contains("cannot list"), "{err}");
         let _ = fs::remove_dir_all(&tmp);
     }
 

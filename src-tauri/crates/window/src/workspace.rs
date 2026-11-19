@@ -12,12 +12,20 @@
 //!   the app quits written then (`flush`). The host says of each write
 //!   whether it was made (`on_saved`). A list the host could not read is
 //!   never written over, a failed import never written in place of one, and
-//!   each is said in a notice above the board (`notices`), with Retry.
+//!   each is said in a notice above the board (`notices`), with Retry. One
+//!   read is asked at a time, and its answer is let go of where the list
+//!   was changed meanwhile (`read_state`).
+//! - The app quits only once the host says the latest state is written
+//!   (`quit`, `cmd::FLUSH_WINDOW_STATE`); where it is not, the window stays,
+//!   shown, with a notice offering Retry or Quit anyway. The Windows
+//!   session's end does not ask: the host tries once more and logs.
 //! - Every chat with an account is looked at every `EVERY` through
 //!   `sessions_meta`, as the page's `useSessionWatch` did: status, title,
 //!   context, draft and session id, a session that is not running resting.
 //!   An answer is taken only for the core and the sessions it was asked of
-//!   (`Fence`); a call that fails or hangs changes nothing. A chat turning
+//!   (`Fence`); a call that fails or hangs changes nothing. The accounts
+//!   are asked for again, ever later, until a list comes, and when the core
+//!   comes up without one. A chat turning
 //!   to waiting is a desktop notification, once per wait, as is what the
 //!   core asks to be one (`event::NOTIFY`); a click on one opens the chat.
 //! - What another slice adds (the new-chat, quick-chat and delete dialogs)
@@ -47,19 +55,26 @@ pub const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 pub const GAP: Duration = Duration::from_millis(500);
 /// How long a state the host could not take waits before it is sent again.
 pub const SEND_RETRY: Duration = Duration::from_secs(1);
+/// How long the accounts wait to be asked for again after a failure, at
+/// first and at most.
+pub const ACCOUNTS_RETRY_FIRST: Duration = Duration::from_secs(1);
+pub const ACCOUNTS_RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// A one-line notice above the board about the chat list's file or the
 /// import (root.rs draws them).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateNotice {
-    /// Its name: `read`, `import`, `kept`, `aside` or `save`, which its
-    /// element and buttons are named by (`<key>-notice`, `-retry`, `-ok`).
+    /// Its name: `quit`, `read`, `import`, `kept`, `aside` or `save`, which
+    /// its element and buttons are named by (`<key>-notice`, `-retry`,
+    /// `-ok`, `-quit`).
     pub key: &'static str,
     pub text: String,
     /// It offers Retry (`Workspace::retry`).
     pub retry: bool,
     /// It offers OK (`Workspace::dismiss`).
     pub ok: bool,
+    /// It offers Quit anyway (`Workspace::quit_anyway`).
+    pub quit_anyway: bool,
 }
 
 /// What the host's answer said of the chat list's file, this run only.
@@ -74,6 +89,8 @@ struct FileNotices {
     aside: Option<String>,
     /// The host's last write of it failed, and it tries again.
     save_error: Option<String>,
+    /// The app was to quit and the host could not write the latest state.
+    quit_error: Option<String>,
 }
 
 /// An account Luna knows (`AccountInfo` in src/ipc/accounts.ts).
@@ -222,6 +239,21 @@ pub struct Workspace {
     notices: FileNotices,
     /// The core was up when last looked at.
     core_was_up: bool,
+    /// The reads of the state (`read_state`): the number of the latest
+    /// asked, and whether it is under way.
+    read_id: u64,
+    reading: bool,
+    /// The changes made to the state since it was loaded (`changed`).
+    edits: u64,
+    /// The app is to quit once the host says the state is written.
+    quitting: bool,
+    /// The accounts are being asked for, and are to be asked again once
+    /// they come; after a failure, the wait before the next ask and the
+    /// task waiting it out.
+    accounts_loading: bool,
+    accounts_again: bool,
+    accounts_wait: Duration,
+    _accounts_retry: Option<Task<()>>,
     _poll: Option<Task<()>>,
 }
 
@@ -261,6 +293,9 @@ impl Workspace {
                 this.core_was_up = up;
                 cx.notify();
             }
+            if up && this.accounts.is_none() {
+                this.reload_accounts(cx);
+            }
             if up && this.rounds == 0 {
                 this.poll(cx);
             }
@@ -285,6 +320,14 @@ impl Workspace {
             announced: HashSet::new(),
             notices: FileNotices::default(),
             core_was_up: false,
+            read_id: 0,
+            reading: false,
+            edits: 0,
+            quitting: false,
+            accounts_loading: false,
+            accounts_again: false,
+            accounts_wait: ACCOUNTS_RETRY_FIRST,
+            _accounts_retry: None,
             _poll: None,
         }
     }
@@ -304,31 +347,75 @@ impl Workspace {
         }));
     }
 
-    /// Asks the host for the accounts again.
+    /// Asks the host for the accounts again: one ask at a time (one asked
+    /// meanwhile is asked once that one is answered), and one that fails is
+    /// asked again `ACCOUNTS_RETRY_FIRST` later, twice as long each time up
+    /// to `ACCOUNTS_RETRY_MAX`, until a list comes.
     pub fn reload_accounts(&mut self, cx: &mut Context<Self>) {
+        if self.accounts_loading {
+            self.accounts_again = true;
+            return;
+        }
+        self.accounts_loading = true;
+        self._accounts_retry = None;
         let answer = self.host.call(cmd::LIST_ACCOUNTS, json!({}));
         cx.spawn(async move |this, cx| {
             let accounts = answer.await.and_then(|v| serde_json::from_value::<Vec<Account>>(v).map_err(|e| e.to_string()));
-            let _ = this.update(cx, |this, cx| match accounts {
-                Ok(accounts) => {
-                    this.accounts = Some(accounts);
-                    cx.notify();
-                    // The chats with an account are looked at now, not at
-                    // the next tick.
-                    this.poll(cx);
+            let _ = this.update(cx, |this, cx| {
+                this.accounts_loading = false;
+                match accounts {
+                    Ok(accounts) => {
+                        this.accounts = Some(accounts);
+                        this.accounts_wait = ACCOUNTS_RETRY_FIRST;
+                        cx.notify();
+                        if std::mem::take(&mut this.accounts_again) {
+                            return this.reload_accounts(cx);
+                        }
+                        // The chats with an account are looked at now, not
+                        // at the next tick.
+                        this.poll(cx);
+                    }
+                    Err(e) => {
+                        this.accounts_again = false;
+                        let wait = this.accounts_wait;
+                        this.accounts_wait = (wait * 2).min(ACCOUNTS_RETRY_MAX);
+                        log::warn!("list_accounts: {e}; asked again in {} ms", wait.as_millis());
+                        this._accounts_retry = Some(cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(wait).await;
+                            let _ = this.update(cx, |this, cx| this.reload_accounts(cx));
+                        }));
+                    }
                 }
-                Err(e) => log::warn!("list_accounts: {e}"),
             });
         })
         .detach();
     }
 
-    /// Asks the host for the state: at start, and for a notice's Retry.
+    /// Asks the host for the state: at start, and for a notice's Retry. One
+    /// read at a time, its answer taken only where it is the latest asked
+    /// and the list was not changed since it was asked: a Retry answered
+    /// late must not put a list back over what was done meanwhile.
     fn read_state(&mut self, cx: &mut Context<Self>) {
+        if self.reading {
+            return;
+        }
+        self.reading = true;
+        self.read_id += 1;
+        let (id, at_edit) = (self.read_id, self.edits);
         let state = self.host.call(cmd::WINDOW_STATE, json!({}));
         cx.spawn(async move |this, cx| {
             let answer = state.await;
-            let _ = this.update(cx, |this, cx| this.loaded(answer, cx));
+            let _ = this.update(cx, |this, cx| {
+                if id != this.read_id {
+                    return;
+                }
+                this.reading = false;
+                if this.loaded && this.edits != at_edit {
+                    log::warn!("a read of the chat list was answered after the list was changed, and let go");
+                    return;
+                }
+                this.loaded(answer, cx);
+            });
         })
         .detach();
     }
@@ -431,8 +518,14 @@ impl Workspace {
 
     /// Every notice up now, the most pressing first.
     pub fn notices(&self) -> Vec<StateNotice> {
-        let n = |key, text: String, retry, ok| StateNotice { key, text, retry, ok };
+        let n = |key, text: String, retry, ok| StateNotice { key, text, retry, ok, quit_anyway: false };
         let mut out = Vec::new();
+        if let Some(why) = &self.notices.quit_error {
+            let text = format!(
+                "The chat list could not be saved before quitting ({why}). Retry, or Quit anyway and lose what changed since it was last saved."
+            );
+            out.push(StateNotice { quit_anyway: true, ..n("quit", text, true, false) });
+        }
         if let Some(why) = &self.notices.read_error {
             out.push(n(
                 "read",
@@ -480,6 +573,7 @@ impl Workspace {
     /// A notice's Retry: the file read again, or the import tried again.
     pub fn retry(&mut self, key: &str, cx: &mut Context<Self>) {
         match key {
+            "quit" => self.quit(cx),
             "read" => self.read_state(cx),
             "import" if self.state.import_retryable() => self.read_state(cx),
             _ => {}
@@ -514,6 +608,7 @@ impl Workspace {
         if !self.loaded {
             return;
         }
+        self.edits += 1;
         let critical = self.saver.last_key.as_ref() != Some(&self.state.critical_key());
         let now = cx.background_executor().now();
         let quiet = self.saver.last_at.is_none_or(|at| now.duration_since(at) >= GAP);
@@ -588,6 +683,51 @@ impl Workspace {
         if self.saver.waiting.is_some() {
             self.write(cx);
         }
+    }
+
+    /// The app is to quit (the tray's Quit, an update, a Restart, the window
+    /// closed with no tray): what waits is sent, and the app quits once the
+    /// host says the latest state is written. Where it is not, the window
+    /// stays, shown, and says so, with Retry and Quit anyway. With nothing
+    /// read there is nothing to lose: a list the host could not read was
+    /// never written.
+    pub fn quit(&mut self, cx: &mut Context<Self>) {
+        if self.quitting {
+            return;
+        }
+        if !self.loaded {
+            return cx.quit();
+        }
+        self.quitting = true;
+        self.notices.quit_error = None;
+        self.flush_now(cx);
+        if self.saver.waiting.is_some() {
+            return self.quit_failed("the host did not take the last change".into(), cx);
+        }
+        let answer = self.host.call(cmd::FLUSH_WINDOW_STATE, json!({}));
+        cx.spawn(async move |this, cx| {
+            let answer = answer.await;
+            let _ = this.update(cx, |this, cx| match answer {
+                Ok(_) => cx.quit(),
+                Err(why) => this.quit_failed(why, cx),
+            });
+        })
+        .detach();
+    }
+
+    fn quit_failed(&mut self, why: String, cx: &mut Context<Self>) {
+        log::warn!("the app did not quit: the chat list could not be saved ({why})");
+        self.quitting = false;
+        self.notices.quit_error = Some(why);
+        crate::desktop::on_request(crate::desktop::Request::Show, cx);
+        cx.notify();
+    }
+
+    /// The quit notice's Quit anyway: the person lets go of what was not
+    /// saved.
+    pub fn quit_anyway(&mut self, cx: &mut Context<Self>) {
+        log::warn!("quitting with the chat list's last change not saved, as the person chose");
+        cx.quit();
     }
 
     // -------------------------------------------------------- the person's
@@ -987,6 +1127,15 @@ impl Workspace {
 pub fn flush(cx: &mut App) {
     if let Some(ws) = cx.try_global::<Current>().and_then(|c| c.0.upgrade()) {
         ws.update(cx, |w, cx| w.flush_now(cx));
+    }
+}
+
+/// The app is to quit: once the workspace's state is written
+/// (`Workspace::quit`), at once where there is no workspace.
+pub fn quit(cx: &mut App) {
+    match cx.try_global::<Current>().and_then(|c| c.0.upgrade()) {
+        Some(ws) => ws.update(cx, |w, cx| w.quit(cx)),
+        None => cx.quit(),
     }
 }
 

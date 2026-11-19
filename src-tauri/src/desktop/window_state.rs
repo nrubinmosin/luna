@@ -2,8 +2,8 @@
 //! next as Tauri's window-state plugin kept them, but in the data dir
 //! (`window-state.json`) rather than under the identifier in the profile.
 //! The file is the place's alone: the native window's chat list has its own
-//! (native/state_file.rs), and a file here that holds one is never written
-//! over before that list has moved (`save_to`).
+//! (native/state_file.rs). One here that is not a place is not written
+//! over: it is put aside under a name of its own first (`save_to`).
 //! What 0.19 saved there is not read: the first native start opens as a
 //! fresh install does.
 //!
@@ -107,14 +107,17 @@ pub fn load_from(path: &Path) -> Option<WindowState> {
     sane.then_some(state)
 }
 
-/// Writes `state` to `path`, unless what is there is a chat list no other
-/// file has yet: builds before the native window's chats had a file of
-/// their own kept them here, and the window moves them on its next read
-/// (native/state_file.rs). Until then the place waits.
+/// Writes `state` to `path`. What is there and does not read as a place
+/// (another program's file, a hand edit gone wrong) is not written over: it
+/// is renamed aside as `window-state.unreadable-<stamp>.json`, once, and
+/// logged; where it cannot be, the place is not written.
 pub fn save_to(path: &Path, state: &WindowState) -> Result<(), String> {
-    let data = path.parent().unwrap_or(Path::new("."));
-    if !crate::native::chats_file(data).exists() && std::fs::read(path).is_ok_and(|b| crate::native::holds_chats(&b)) {
-        return Err(format!("{} holds the chat list of an earlier build, not yet moved: the place is not written over it", path.display()));
+    if std::fs::read(path).is_ok_and(|bytes| serde_json::from_slice::<WindowState>(&bytes).is_err()) {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let aside = path.with_file_name(format!("window-state.unreadable-{secs}-{}.json", crate::secret::random_hex(3)));
+        std::fs::rename(path, &aside)
+            .map_err(|e| format!("{} is not a window's place and could not be put aside: {e}", path.display()))?;
+        crate::log::warn("window", &format!("{} was not a window's place; put aside as {}", path.display(), aside.display()));
     }
     let text = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
     crate::secret::write_private(path, &text).map_err(|e| format!("{}: {e}", path.display()))
@@ -276,6 +279,32 @@ mod tests {
         std::fs::write(&file, "not json").unwrap();
         assert_eq!(load_from(&file), None);
         assert_eq!(load_from(&dir.join("missing.json")), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file there that is no place is put aside as it was, once, before
+    /// the place is written; a place is written over as it is.
+    #[test]
+    fn a_file_that_is_no_place_is_put_aside_not_written_over() {
+        let dir = std::env::temp_dir().join(format!("luna-window-state-aside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("window-state.json");
+        let other = r#"{"folders":[{"id":"f1","chats":[]}]}"#;
+        std::fs::write(&file, other).unwrap();
+        let s = state(b(10.0, 20.0, 1280.0, 800.0));
+        save_to(&file, &s).unwrap();
+        assert_eq!(load_from(&file), Some(s.clone()));
+        let asides: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("window-state.unreadable-"))
+            .collect();
+        assert_eq!(asides.len(), 1);
+        assert_eq!(std::fs::read_to_string(&asides[0]).unwrap(), other);
+        save_to(&file, &s).unwrap();
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "a place is written over, nothing more put aside");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

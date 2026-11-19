@@ -39,8 +39,15 @@ not know) is used for what can be read, and the file as it was is kept
 beside it as `chats.kept-<time>.json`; a file that is not a list at all is
 put aside as `chats.unreadable-<time>.json`. A line names the file either
 way. If a save fails, a line says so and Luna keeps trying until it works.
-The window's size and place have a file of their own (`window-state.json`),
-so a resize never touches the list.
+Luna does not quit while the list is not saved: Quit (from the tray, an
+update, or closing the window where there is no tray) waits for the save,
+and where it fails the window comes up with a line saying so, **Retry** and
+**Quit anyway** (which quits without what was not saved). Signing out or
+shutting Windows down does not wait: Luna tries once more and notes it in
+its log. The window's size and place have a file of their own
+(`window-state.json`), so a resize never touches the list; a file there
+that is not a window's place is put aside as
+`window-state.unreadable-<time>.json`, not written over.
 
 **Title bar.** Five fixed boards, I to V (the 0.19 window's groups, no more
 added or removed), the layouts 1 to 4 (panes), **Clear board** (empties the

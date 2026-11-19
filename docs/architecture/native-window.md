@@ -160,8 +160,8 @@ and shows the app. In the background `Show` only shows the window where it is,
 off screen and not activated.
 
 `on_window_should_close` hides the window while there is a tray, its place
-kept first; without one (it could not be made, or Linux) the window closes
-and the app quits. Its place goes to the host half a second after the last
+kept first; without one (it could not be made, or Linux) the app quits,
+once the chat list is written (Persistence, below). Its place goes to the host half a second after the last
 move or resize (`Keeper`), at once as it hides and as the app quits
 (`flush_all`, before the host's own quit waits for its writer); the
 host writes it to `<data>/window-state.json` through one writer, as the
@@ -284,24 +284,37 @@ writes no file: it sends its whole state as text with a number
 (`save_window_state` `{ text, seq }`, sent, so the host has the states in
 order), and the host's one writer (native.rs `Writer`) writes the latest to
 `<data>/window/chats.json` and lets an older one go. The file is the chat
-list's alone: the window's place is `<data>/window-state.json` (desktop
-services, above), where builds before this one kept the list too, so a
-resize or a hide to the tray wrote geometry over it and the next start,
-finding a file, imported nothing. A JSON file of either is told by its shape
-(`folders` or `boards`: the list; `bounds`: the place) and never taken for
-the other: a list found in the place's file is written to `chats.json`
-(synced), and only then is the place's file removed; until it has moved,
-the place's writer refuses to write over it (`window_state::save_to`). The
+list's alone, and nothing else writes it: the window's place is
+`<data>/window-state.json` (desktop services, above), and neither file is
+ever read as the other. No released Luna kept the list anywhere else. The
 write is synced (`secret::write_private_synced`: the new file flushed
-before the rename, the folder after it where the OS can), so a power cut
-leaves the old list or the new one whole. Each attempt is told back to the
-window (`window://state-saved` `{ seq, error }`); one that fails is logged
-and tried again (500 ms, doubling to 10 s) until it is written or a newer
-state replaces it, counts as done only once written, and the window shows
-a line while the newest failure is not yet followed by a success. A send
-the host would not take is sent again after `SEND_RETRY` (1 s). Quitting
-waits 2 s for the last write and logs it as an error if it was not made:
-the window is going then, and the log is where that can still be said.
+before the rename, the folder after it where the OS can), and the `window`
+folder, the first time it is made, is synced into the data dir before the
+file goes in it (Unix; Windows has no such call), so a power cut leaves the
+old list or the new one whole. Each attempt is told back to the window
+(`window://state-saved` `{ seq, error }`); one that fails is logged and
+tried again (500 ms, doubling to 10 s) until it is written, counts as done
+only once written, and the window shows a line while the newest failure is
+not yet followed by a success. The wait is the writer's, not the state's:
+a newer state sent meanwhile waits it out too and is the one tried next, so
+a burst of changes on a failing disk is no burst of writes, and only a
+write that succeeds starts the wait over. A send the host would not take is
+sent again after `SEND_RETRY` (1 s).
+
+**Quitting** waits for the list. Every way out but the Windows session's
+end (the tray's Quit, Restart, an update's install, the window closed where
+there is no tray) asks the workspace (`workspace::quit`): it sends what
+waits for the gap, then calls `flush_window_state`, which wakes the writer
+out of its wait, tries the latest state at once and answers once it is
+written (5 s at most), or why not. Only then does the app quit. Where it
+was not written (or the host would not even take the last change), the
+window comes up (from the tray if need be) with a line saying so, **Retry**
+(asks again) and **Quit anyway**, which quits and lets go of what was not
+saved, logged as the person's choice. A quit under way is not asked twice.
+The session's end (sign-out, shutdown) runs the app's quit directly, as
+Windows will not wait: the host tries once more there (2 s) and logs an
+error if it was not written. The tray's Quit stops the core before it asks,
+so a window kept open by a failed save has no core until it is restarted.
 `Saver` writes as the page's throttled storage did: a change after a quiet
 spell at once, then at most one write per 500 ms (`GAP`), the same text
 never twice; a change of the chats themselves (one added or deleted, its
@@ -315,8 +328,12 @@ oldError }`):
 
 - A file that is there and cannot be read (shared, denied, a folder in its
   place) is `readError`: the window imports nothing, writes nothing, and
-  shows a line with **Retry**, which asks again; so does the next start. The
-  same where the place's file cannot be read, as it may hold a list.
+  shows a line with **Retry**, which asks again; so does the next start.
+- One read at a time: the window asks one (`read_state`) and asks no other
+  until it is answered, and takes the answer only where the list was not
+  changed since it was asked; one that comes after a change is let go of,
+  logged, and Retry is there to ask again. The host serializes reads too
+  (`window_state`), so an import's copy never runs beside another.
 - A file that is no JSON, or no list by its shape, is renamed
   `chats.unreadable-<secs>-<hex>.json` beside it (`aside`), never deleted;
   the list starts empty, written at once, and a line names the file.
@@ -324,8 +341,11 @@ oldError }`):
   that does not read (a CLI this build does not know, no path) is left out
   and counted, a status or a name's source it does not know reads as none,
   the boards are padded or cut to five, a setting that does not read takes
-  its default; a file of another version is read the same way. Where
-  anything was left out (`Lost`), the host first copies the file as it was
+  its default; a file of another version is read the same way. A status or
+  a name's source let go of counts as lost (`Lost::unknown`), as does a chat
+  listed twice, kept once (`Lost::twice`): what the file said goes once the
+  list is written. Where anything was left out (`Lost`), the host first
+  copies the file as it was
   to `chats.kept-<secs>-<hex>.json` (synced; one with the same bytes kept
   before is reused), or, failing that, answers `readError`; the window uses
   what it read and names the copy in a line until OK.
@@ -337,14 +357,22 @@ files of `<webview>/EBWebView/Default/Local Storage/leveldb` (paths.rs
 `webview_dir`, Windows only; all but `LOCK`; plain copies) into a private
 folder of its own, `<data>/window/import-<pid>-<hex>`, made with
 `secret::private_dir`, and removes it after; one a run before left behind
-(and the `<data>/import-0.19` of earlier builds) goes before the next read
+(and the `<data>/import-0.19` of earlier builds) goes at the run's first
+read, before anything is copied, and never while an import reads
 (`import::clean_up`). The store itself is never opened: opening a LevelDB
 recovers and writes, and a 0.19 window may still have it open and writing.
 A copy is taken only if the store's files (name, size, time) were the same
-before and after it, and one that changed, or does not open or read, is
-taken again, three times in all. Only the app's own origins are read
-(`http://tauri.localhost`, `https://tauri.localhost`, `tauri://localhost`),
-never a dev server's. Chromium's layout is a key `_<origin>\0<key>` whose
+before and after it, and one that changed, whose listing or copy failed (a
+file the old window holds a moment), or that does not open or read, is
+taken again, three times in all; the last failure is the one said. Only the
+app's own origins are read (`http://tauri.localhost`,
+`https://tauri.localhost`, `tauri://localhost`), never a dev server's, and
+of those the one whose `luna.chats` is a list that imports
+(`luna_window::chat_list_size`), not merely the first with a `luna.*` key;
+where two or more hold one, the one with the most chats (then folders; the
+first of that order on a tie), the others logged by their counts alone.
+With none that imports, the first with a `luna.chats` at all, so the import
+says why it does not read. Chromium's layout is a key `_<origin>\0<key>` whose
 key and value each start with an encoding byte (0 UTF-16LE, decoded lossily
 so a cut surrogate costs one character, not the key; 1 Latin-1).
 `import.rs` makes the state of `luna.chats` (zustand's `{ state, version }`,
@@ -376,7 +404,10 @@ click on one sends `ui://open-chat`, which `open_chat` takes (on the chat's
 board). An answer is fenced (`Fence`): it is dropped whole if the core's
 epoch changed since it was asked (the core replaced), and for a chat whose
 session exited since; a call that fails, or does not answer in 20 s
-(`POLL_TIMEOUT`), changes nothing and the next tick asks again. `pty://exit`
+(`POLL_TIMEOUT`), changes nothing and the next tick asks again. A failed
+`list_accounts` is asked again
+after 1 s, doubling to 30 s, until a list comes (one ask at a time), and
+again when the core comes up with none: the looks need the accounts. `pty://exit`
 is taken by the pane whose spawn it is (`generation`), which rests the chat
 and marks it ended; one of an older spawn is dropped; with no pane, the chat
 rests. While the core is not up, every row and pane title shows `no core`
@@ -424,10 +455,14 @@ on it `ctrl-!` (which the binding `ctrl-shift-1` never matched) and
 `ctrl-1` respectively, and the keypad's 1 is `ctrl-1`. So on Windows the
 window intercepts keystrokes before the bindings (`watch_digit_row`,
 `cx.intercept_keystrokes`, for focus inside the main window only): a Ctrl
-keystroke named by one character that is no letter, while VK_1-VK_4 or
-VK_NUMPAD1-4 is down (`GetKeyState`, in step with the window's messages), is
-that digit, with Shift a layout; one that means nothing goes on to the
-bindings and the terminal. No gpui patch. The bindings stay for macOS, Linux
+keystroke is that digit, with Shift a layout, where VK_1-VK_4 or
+VK_NUMPAD1-4 is down (`GetKeyState`, in step with the window's messages)
+and the keystroke is named as the layout names that key, with Shift or
+without (`key_names`: `MapVirtualKeyExW` and `ToUnicodeEx` on the window
+thread's layout, the keyboard's state left alone; a keypad digit is its
+digit). gpui's keystroke carries no key code, and a digit merely held is
+not the key pressed: Ctrl+/ typed while 1 is down is the terminal's. One
+that means nothing goes on to the bindings and the terminal. No gpui patch. The bindings stay for macOS, Linux
 and the tests. Seen in the code of gpui-pre-windows 0.3.12 and Win32's
 documentation, not yet on a machine with an AZERTY layout.
 

@@ -17,6 +17,10 @@
 //! - `dump`: the board's state into Luna's log, for the script to read, with
 //!   what has the keyboard (the peek's frame, a terminal, the window).
 //! - `close`: the window closes, as its close button would.
+//! - `quit`: the app is asked to quit, as the host's `Request::Quit` asks
+//!   (workspace.rs `quit`), without the tray's stop of the core.
+//! - `notice save retry`: a notice's button pressed (`retry`, `ok`, or
+//!   `quit` for Quit anyway).
 
 use crate::root::LunaWindow;
 use gpui::{AnyWindowHandle, App, AsyncApp, Entity, Keystroke, Modifiers, OperatingSystem};
@@ -136,6 +140,16 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
                 });
             }
             "close" => window.remove_window(),
+            "quit" => crate::workspace::quit(cx),
+            "notice" => {
+                let ws = view.read(cx).models().workspace.clone();
+                match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
+                    [key, "retry"] => ws.update(cx, |w, cx| w.retry(key, cx)),
+                    [key, "ok"] => ws.update(cx, |w, cx| w.dismiss(key, cx)),
+                    [_, "quit"] => ws.update(cx, |w, cx| w.quit_anyway(cx)),
+                    _ => log::warn!("drive: {line}: not understood"),
+                }
+            }
             _ => {
                 for k in keys {
                     window.dispatch_keystroke(k, cx);

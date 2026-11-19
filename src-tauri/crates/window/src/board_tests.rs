@@ -222,6 +222,102 @@ fn retry_imports_what_failed_before(cx: &mut TestAppContext) {
     assert_eq!(w.host.calls_of(cmd::WINDOW_STATE).len(), 2);
 }
 
+/// Retry asks one read at a time, and an answer that comes after the list
+/// was changed is let go of: it would put the list back over the change.
+#[gpui::test]
+fn a_retry_is_asked_once_and_a_late_answer_does_not_undo_a_change(cx: &mut TestAppContext) {
+    let mut w = open(cx, json!({ "saved": null, "oldError": "the store changed while it was copied" }));
+    let pinned = w.state().sidebar.pinned;
+    w.host.defer(cmd::WINDOW_STATE);
+    w.ws(|w, cx| w.retry("import", cx));
+    w.ws(|w, cx| w.retry("import", cx));
+    assert_eq!(w.host.calls_of(cmd::WINDOW_STATE).len(), 2, "one read under way at a time");
+    w.ws(|w, cx| w.toggle_sidebar(cx));
+    let old = serde_json::to_value(crate::import::fixture()).unwrap();
+    assert!(w.host.resolve(cmd::WINDOW_STATE, Ok(json!({ "saved": null, "old": old.clone() }))));
+    w.cx.run_until_parked();
+    assert_eq!(w.state().chats().count(), 0, "the late answer let go of");
+    assert_eq!(w.state().sidebar.pinned, !pinned, "the change stays");
+    // Asked again, with nothing changed meanwhile: taken.
+    w.ws(|w, cx| w.retry("import", cx));
+    assert_eq!(w.host.calls_of(cmd::WINDOW_STATE).len(), 3);
+    assert!(w.host.resolve(cmd::WINDOW_STATE, Ok(json!({ "saved": null, "old": old }))));
+    w.cx.run_until_parked();
+    assert_eq!(w.state().chats().count(), 7);
+}
+
+/// The app quits once the host says the list is written: until then it
+/// waits, and a quit asked again asks nothing more. Where the host could
+/// not write it, the window comes up and says so, with Retry and Quit
+/// anyway; one the host would not even take is said at once.
+#[gpui::test]
+fn a_quit_waits_for_the_list_and_one_not_saved_keeps_the_window(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 2);
+    w.cx.executor().advance_clock(workspace::GAP);
+    w.ws(|w, cx| w.set_layout(3, cx));
+    w.ws(|w, cx| w.set_layout(4, cx));
+    w.host.defer(cmd::FLUSH_WINDOW_STATE);
+    w.cx.update(|_, cx| cx.default_global::<crate::desktop::Shown>().hidden = true);
+    w.cx.update(|_, cx| crate::workspace::quit(cx));
+    w.cx.run_until_parked();
+    assert_eq!(w.saves().last().unwrap().layout(), 4, "what waited for the gap sent first");
+    w.cx.update(|_, cx| crate::workspace::quit(cx));
+    w.cx.run_until_parked();
+    assert_eq!(w.host.calls_of(cmd::FLUSH_WINDOW_STATE).len(), 1, "one quit under way");
+    assert!(w.host.resolve(cmd::FLUSH_WINDOW_STATE, Err("cannot keep the chat list: disk full".into())));
+    w.cx.run_until_parked();
+    let notice = w.notices().into_iter().find(|n| n.key == "quit").unwrap();
+    assert!(notice.text.contains("disk full") && notice.retry && notice.quit_anyway && !notice.ok, "{notice:?}");
+    w.cx.update(|_, cx| assert!(!cx.global::<crate::desktop::Shown>().hidden, "the window came up"));
+    // Retry asks again; a failure again keeps the notice.
+    w.ws(|w, cx| w.retry("quit", cx));
+    assert_eq!(w.host.calls_of(cmd::FLUSH_WINDOW_STATE).len(), 2);
+    assert!(w.host.resolve(cmd::FLUSH_WINDOW_STATE, Err("cannot keep the chat list: disk full".into())));
+    w.cx.run_until_parked();
+    assert!(w.notice_of("quit").is_some());
+    // A change the host would not take, as it came nor as the quit sent
+    // it: said at once, nothing asked.
+    w.host.refuse(cmd::SAVE_WINDOW_STATE, 2);
+    w.cx.executor().advance_clock(workspace::GAP);
+    w.ws(|w, cx| w.set_layout(1, cx));
+    w.ws(|w, cx| w.retry("quit", cx));
+    assert_eq!(w.host.calls_of(cmd::FLUSH_WINDOW_STATE).len(), 2);
+    assert!(w.notice_of("quit").unwrap().contains("did not take"));
+}
+
+/// The accounts are asked for again after a failure, ever later, until a
+/// list comes: the sessions are looked at again once it does.
+#[gpui::test]
+fn accounts_that_failed_to_load_are_asked_for_again(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 2);
+    w.host.defer(cmd::LIST_ACCOUNTS);
+    let asked = |w: &W| w.host.calls_of(cmd::LIST_ACCOUNTS).len();
+    let before = asked(&w);
+    w.ws(|w, cx| w.reload_accounts(cx));
+    w.ws(|w, cx| w.reload_accounts(cx));
+    assert_eq!(asked(&w), before + 1, "one ask at a time");
+    assert!(w.host.resolve(cmd::LIST_ACCOUNTS, Err("the accounts' folder is not reachable".into())));
+    w.cx.run_until_parked();
+    w.cx.executor().advance_clock(workspace::ACCOUNTS_RETRY_FIRST);
+    w.cx.run_until_parked();
+    assert_eq!(asked(&w), before + 2, "asked again");
+    assert!(w.host.resolve(cmd::LIST_ACCOUNTS, Err("still not".into())));
+    w.cx.run_until_parked();
+    w.cx.executor().advance_clock(workspace::ACCOUNTS_RETRY_FIRST);
+    w.cx.run_until_parked();
+    assert_eq!(asked(&w), before + 2, "the wait doubled");
+    w.cx.executor().advance_clock(workspace::ACCOUNTS_RETRY_FIRST);
+    w.cx.run_until_parked();
+    assert_eq!(asked(&w), before + 3);
+    let rounds = w.models.workspace.read_with(w.cx, |w, _| w.rounds);
+    assert!(w.host.resolve(cmd::LIST_ACCOUNTS, Ok(demo::accounts())));
+    w.cx.run_until_parked();
+    assert!(w.models.workspace.read_with(w.cx, |w, _| w.rounds) > rounds, "the sessions looked at once it came");
+    w.cx.executor().advance_clock(workspace::ACCOUNTS_RETRY_MAX);
+    w.cx.run_until_parked();
+    assert_eq!(asked(&w), before + 3, "nothing more asked once it came");
+}
+
 /// A file that is there and could not be read is no list: nothing is
 /// imported, nothing written over it, whatever is done meanwhile; Retry
 /// reads it.
@@ -537,7 +633,9 @@ fn ctrl_digits_go_by_the_key_pressed(cx: &mut TestAppContext) {
     let down = std::rc::Rc::new(std::cell::RefCell::new(Vec::<u16>::new()));
     let reader = down.clone();
     let models = w.models.clone();
-    w.cx.update(|_, cx| crate::keys::watch_digit_row(models, move |vk| reader.borrow().contains(&vk), cx));
+    // What French AZERTY calls the digit row's first key.
+    let names = |vk: u16| if vk == 0x31 { vec!["&".to_owned(), "1".to_owned()] } else { Vec::new() };
+    w.cx.update(|_, cx| crate::keys::watch_digit_row(models, move |vk| reader.borrow().contains(&vk), names, cx));
     // VK_1 down, named `&`: the keyboard into pane 1.
     w.ws(|w, cx| w.set_active_pane(1, cx));
     *down.borrow_mut() = vec![0x31];
@@ -547,6 +645,12 @@ fn ctrl_digits_go_by_the_key_pressed(cx: &mut TestAppContext) {
     *down.borrow_mut() = vec![0x10, 0x31];
     w.keys("ctrl-1");
     assert_eq!(w.state().layout(), 1);
+    // 1 held, and Ctrl+/ typed: the terminal's, not pane 1's or layout 1's.
+    w.ws(|w, cx| w.set_layout(2, cx));
+    w.ws(|w, cx| w.set_active_pane(1, cx));
+    *down.borrow_mut() = vec![0x31];
+    w.keys("ctrl-/");
+    assert_eq!((w.state().layout(), w.state().active_pane), (2, 1));
 }
 
 #[gpui::test]

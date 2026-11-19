@@ -41,6 +41,7 @@ mod tests;
 
 pub use desktop::{Desktop, Request};
 pub use dto::ThemePref;
+pub use import::chat_list_size;
 pub use host::{Answer, Host, Inbox, Mailbox, OutputSink, cmd, event, mailbox};
 #[cfg(feature = "shots")]
 pub use shots::{bench, run as shots};
@@ -130,7 +131,7 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
         // Ctrl+digit by the physical key, which gpui on Windows does not
         // name the same on every layout (keys.rs).
         #[cfg(windows)]
-        keys::watch_digit_row(models.clone(), keys::key_is_down, cx);
+        keys::watch_digit_row(models.clone(), keys::key_is_down, keys::key_names, cx);
         let (bounds, display) = if background {
             (WindowBounds::Windowed(offscreen::bounds(SIZE, cx)), None)
         } else {

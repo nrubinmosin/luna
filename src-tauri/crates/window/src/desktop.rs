@@ -274,15 +274,18 @@ pub(crate) fn on_request(request: Request, cx: &mut App) {
                 let _ = handle.update(cx, |_, window, cx| hide(window, cx));
             }
         }
-        Request::Quit => cx.quit(),
+        // Once the chat list is written (workspace.rs `quit`).
+        Request::Quit => crate::workspace::quit(cx),
     }
 }
 
 /// The window's close: hidden while there is a tray, its place kept first;
-/// closed (which quits) without one.
+/// without one the app quits, once the chat list is written (workspace.rs
+/// `quit`), and the window stays open until it does.
 pub(crate) fn on_close(host: &Arc<dyn Host>, keeper: Option<&Entity<Keeper>>, window: &mut Window, cx: &mut App) -> bool {
     if !host.has_tray() {
-        return true;
+        crate::workspace::quit(cx);
+        return false;
     }
     if let Some(keeper) = keeper {
         keeper.update(cx, |k, cx| k.keep_now(window, cx));
@@ -659,8 +662,9 @@ mod tests {
         assert!(!closes, "hidden, not closed");
         assert_eq!(host.desktop.kept.lock().unwrap().len(), 1, "kept as it hid");
         cx.update(|_, cx| assert!(cx.global::<Shown>().hidden));
+        // Without a tray the app quits, the window open until it does.
         host.desktop.tray.store(false, Ordering::SeqCst);
-        assert!(cx.update(|window, cx| on_close(&dyn_host, Some(&keeper), window, cx)));
+        assert!(!cx.update(|window, cx| on_close(&dyn_host, Some(&keeper), window, cx)));
     }
 
     #[gpui::test]

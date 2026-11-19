@@ -30,14 +30,6 @@ mod desktop;
 mod import;
 mod state_file;
 
-pub(crate) use state_file::holds_chats;
-
-/// The chat list's file in the data dir `data` (desktop/window_state.rs
-/// asks, before it writes the place).
-pub(crate) fn chats_file(data: &std::path::Path) -> PathBuf {
-    state_file::file(data)
-}
-
 use crate::corecmd::{self, Lane};
 use luna_window::{Answer, Host, Mailbox, OutputSink, ThemePref};
 use serde::{Deserialize, Serialize};
@@ -55,6 +47,7 @@ const OWN: &[(&str, Command)] = &[
     ("core_state", |_| serde_json::to_value(crate::corelink::core_state()).map_err(|e| e.to_string())),
     ("core_restart", core_restart),
     ("window_state", window_state),
+    ("flush_window_state", flush_window_state),
     ("list_accounts", |_| serde_json::to_value(crate::accounts::list_accounts()?).map_err(|e| e.to_string())),
     ("saved_title", saved_title),
     ("update_check", desktop::update_check),
@@ -224,9 +217,12 @@ const THEME_DRAIN: Duration = Duration::from_secs(2);
 /// not written yet, and one thread writes them in turn, so an earlier value is
 /// never written after a later one. A write that fails is logged and tried
 /// again, `RETRY_FIRST` later and twice as long each time up to `RETRY_MAX`,
-/// until it is written or a newer value replaces it: a value counts as done
-/// only once written. `drain` waits for the last; `told`, where given, hears
-/// of every attempt.
+/// until it is written: the wait is the writer's, not the value's, so a
+/// newer value put meanwhile waits it out too (a burst of changes on a disk
+/// that fails is no burst of writes) and only a write that succeeds starts
+/// it over. A value counts as done only once written. `flush` has the
+/// latest tried now, the wait cut short, and says whether it was written;
+/// `told`, where given, hears of every attempt.
 struct Writer<T> {
     what: &'static str,
     slot: Mutex<Slot<T>>,
@@ -243,6 +239,13 @@ struct Slot<T> {
     done: u64,
     /// Why the last attempt failed, until one succeeds.
     failed: Option<String>,
+    /// The attempts made, and the number of the value the last failed one
+    /// was of: `flush` waits for an attempt at the latest.
+    attempts: u64,
+    failed_of: u64,
+    /// `flush` asks for an attempt now: the wait after a failure is cut
+    /// short.
+    hurry: bool,
     /// The writing thread runs; the first `put` starts it.
     running: bool,
 }
@@ -258,7 +261,7 @@ impl<T: Send + 'static> Writer<T> {
     }
 
     fn new_told(what: &'static str, write: fn(&T) -> Result<(), String>, told: Option<fn(&T, &Result<(), String>)>) -> Arc<Writer<T>> {
-        let slot = Slot { next: None, put: 0, done: 0, failed: None, running: false };
+        let slot = Slot { next: None, put: 0, done: 0, failed: None, attempts: 0, failed_of: 0, hurry: false, running: false };
         Arc::new(Writer { what, slot: Mutex::new(slot), changed: Condvar::new(), write, told })
     }
 
@@ -292,35 +295,47 @@ impl<T: Send + 'static> Writer<T> {
     }
 
     fn run(&self) {
+        let mut wait = RETRY_FIRST;
+        // The value whose write failed, while no newer one has come.
+        let mut again: Option<(u64, T)> = None;
         let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            slot = self.changed.wait_while(slot, |s| s.next.is_none()).unwrap_or_else(|e| e.into_inner());
-            let (n, value) = slot.next.take().expect("waited for it");
-            drop(slot);
-            let mut wait = RETRY_FIRST;
-            loop {
-                let wrote = self.attempt(&value);
-                slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-                let failed = wrote.is_err();
-                self.finish(&mut slot, n, wrote);
-                if !failed {
-                    break;
-                }
-                // Tried again, unless a newer value comes meanwhile.
-                let (waited, _) = self.changed.wait_timeout_while(slot, wait, |s| s.next.is_none()).unwrap_or_else(|e| e.into_inner());
-                slot = waited;
-                if slot.next.is_some() {
-                    break;
-                }
-                drop(slot);
-                wait = (wait * 2).min(RETRY_MAX);
+            if again.is_none() {
+                slot = self.changed.wait_while(slot, |s| s.next.is_none()).unwrap_or_else(|e| e.into_inner());
             }
+            // A newer value replaces the one that failed.
+            let (n, value) = match slot.next.take() {
+                Some(newer) => {
+                    again = None;
+                    newer
+                }
+                None => match again.take() {
+                    Some(failed) => failed,
+                    None => continue,
+                },
+            };
+            slot.hurry = false;
+            drop(slot);
+            let wrote = self.attempt(&value);
+            slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+            let failed = wrote.is_err();
+            self.finish(&mut slot, n, wrote);
+            if !failed {
+                wait = RETRY_FIRST;
+                continue;
+            }
+            again = Some((n, value));
+            // The writer's wait, whatever comes meanwhile; `flush` cuts it short.
+            let (waited, _) = self.changed.wait_timeout_while(slot, wait, |s| !s.hurry).unwrap_or_else(|e| e.into_inner());
+            slot = waited;
+            wait = (wait * 2).min(RETRY_MAX);
         }
     }
 
     /// Value `n` was written, or failed: a failure is logged once until the
     /// reason changes, and leaves `done` as it was.
     fn finish(&self, slot: &mut Slot<T>, n: u64, wrote: Result<(), String>) {
+        slot.attempts += 1;
         match wrote {
             Ok(()) => {
                 slot.done = slot.done.max(n);
@@ -331,16 +346,31 @@ impl<T: Send + 'static> Writer<T> {
                     crate::log::warn("window", &format!("{}: {e}", self.what));
                 }
                 slot.failed = Some(e);
+                slot.failed_of = n;
             }
         }
         self.changed.notify_all();
     }
 
-    /// Waits until the latest value put is written, `within` at most; why
-    /// not, if it was not by then.
-    fn drain(&self, within: Duration) -> Result<(), String> {
-        let slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        let (slot, _) = self.changed.wait_timeout_while(slot, within, |s| s.done < s.put).unwrap_or_else(|e| e.into_inner());
+    /// Has the latest value put tried now, a writer waiting after a failure
+    /// woken, and waits `within` at most until it is written or an attempt
+    /// at it made since fails: why not, if it was not written.
+    fn flush(&self, within: Duration) -> Result<(), String> {
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.done >= slot.put {
+            return Ok(());
+        }
+        if !slot.running {
+            // No thread to try it again: `put` tried it once already.
+            return Err(slot.failed.clone().unwrap_or_else(|| "not written".into()));
+        }
+        let seen = slot.attempts;
+        slot.hurry = true;
+        self.changed.notify_all();
+        let (slot, _) = self
+            .changed
+            .wait_timeout_while(slot, within, |s| s.done < s.put && !(s.attempts > seen && s.failed_of == s.put))
+            .unwrap_or_else(|e| e.into_inner());
         if slot.done >= slot.put {
             Ok(())
         } else {
@@ -376,12 +406,29 @@ fn saved_title(args: Value) -> Result<Value, String> {
 /// `{ saved, kept, aside, readError, old, oldError }` (luna_window's
 /// `cmd::WINDOW_STATE`): the chat list kept, or, where there is none (or
 /// one whose import failed and was left empty), what 0.19's window kept
-/// (native/state_file.rs). The import's copies a run before left behind go
-/// first.
+/// (native/state_file.rs). One read at a time: a Retry's read never runs
+/// beside another, nor an import's copy beside the one that clears what
+/// copies a run before left behind, which is done once, at the first read
+/// (`import::clean_up`).
 fn window_state(_: Value) -> Result<Value, String> {
+    static READ: Mutex<bool> = Mutex::new(false);
+    let mut cleaned = READ.lock().unwrap_or_else(|e| e.into_inner());
     let data = crate::paths::data_dir();
-    import::clean_up(&data);
+    if !*cleaned {
+        import::clean_up(&data);
+        *cleaned = true;
+    }
     Ok(state_file::load(&data, || import::read_webview_storage(&data)))
+}
+
+/// How long `flush_window_state` waits for the chat list to be written.
+const QUIT_FLUSH: Duration = Duration::from_secs(5);
+
+/// `{}` (luna_window's `cmd::FLUSH_WINDOW_STATE`), as the window quits: the
+/// latest state it sent written now, a writer waiting after a failure woken;
+/// why not, where it was not.
+fn flush_window_state(_: Value) -> Result<Value, String> {
+    state_writer().flush(QUIT_FLUSH).map(|()| Value::Null)
 }
 
 /// One state the window sent, by its number (`seq`).
@@ -405,6 +452,12 @@ fn save_window_state(args: Value) -> Result<Value, String> {
 }
 
 fn write_state(save: &Save) -> Result<(), String> {
+    // A smoke run's failing disk: the test build's writes fail while this
+    // file is in the window's folder.
+    #[cfg(luna_test)]
+    if crate::paths::data_dir().join(state_file::DIR).join("test-fail-saves").exists() {
+        return Err("cannot keep the chat list: failing on purpose (test build)".into());
+    }
     state_file::write(&crate::paths::data_dir(), &save.text).map_err(|e| format!("cannot keep the chat list: {e}"))
 }
 
@@ -476,12 +529,15 @@ pub(crate) fn run() -> Result<(), String> {
         on_quit: Box::new(|| {
             crate::lifecycle::exiting("the window's app quit; the core and its sessions stay");
             desktop::stop();
-            if let Err(why) = theme_writer().drain(THEME_DRAIN) {
+            if let Err(why) = theme_writer().flush(THEME_DRAIN) {
                 crate::log::warn("window", &format!("the theme chosen last was not written: {why}"));
             }
-            // The window is going as the app quits: the log is where this
-            // can still be said.
-            if let Err(why) = state_writer().drain(THEME_DRAIN) {
+            // A quit from the window or the tray waited for the chat list
+            // (`flush_window_state`), or the person chose to quit without
+            // it; the session's end (a sign-out, a shutdown) waits for no
+            // one. Either way it is tried once more, and the log is where a
+            // failure can still be said.
+            if let Err(why) = state_writer().flush(THEME_DRAIN) {
                 crate::log::error("window", &format!("the chat list's last change was not saved: {why}"));
             }
             // A Claude Code model ask may still be saving a renewed token;
@@ -569,7 +625,7 @@ mod tests {
         let registered: Vec<&str> =
             lib[start..start + lib[start..].find(']').unwrap()].split(',').filter_map(|e| e.trim().rsplit("::").next()).collect();
         // The page has the updater's from the plugin, not as commands of Luna's.
-        let native_only = ["set_window_theme", "update_check", "update_download", "update_install", "window_state", "save_window_state"];
+        let native_only = ["set_window_theme", "update_check", "update_download", "update_install", "window_state", "save_window_state", "flush_window_state"];
         for (cmd, _) in OWN.iter().chain(OWN_SENT) {
             let tauri = registered.contains(cmd);
             assert!(tauri != native_only.contains(cmd), "{cmd}: registered {tauri}");
@@ -638,10 +694,10 @@ mod tests {
     }
 
     /// Theme choices made faster than they are written: the last one is the
-    /// one kept, an earlier one is never written after it, and `drain` waits
+    /// one kept, an earlier one is never written after it, and `flush` waits
     /// for it.
     #[test]
-    fn the_theme_writer_keeps_the_latest_choice_and_drains_it() {
+    fn the_theme_writer_keeps_the_latest_choice_and_flushes_it() {
         static WRITTEN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
         fn slow(v: &u32) -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(30));
@@ -656,7 +712,7 @@ mod tests {
         for v in 1..=20 {
             writer.put(v);
         }
-        assert!(writer.drain(Duration::from_secs(10)).is_ok());
+        assert!(writer.flush(Duration::from_secs(10)).is_ok());
         let written = WRITTEN.lock().unwrap().clone();
         assert_eq!(written.last(), Some(&20));
         assert!(written.windows(2).all(|w| w[0] < w[1]), "in order: {written:?}");
@@ -664,14 +720,15 @@ mod tests {
         // A failure is logged and does not stop the next.
         writer.put(3);
         writer.put(21);
-        assert!(writer.drain(Duration::from_secs(10)).is_ok());
+        assert!(writer.flush(Duration::from_secs(10)).is_ok());
         assert_eq!(WRITTEN.lock().unwrap().last(), Some(&21));
-        // Nothing waiting: drained at once.
-        assert!(writer.drain(Duration::ZERO).is_ok());
+        // Nothing waiting: flushed at once.
+        assert!(writer.flush(Duration::ZERO).is_ok());
     }
 
     /// A write that fails is not done: it is tried again until it is
-    /// written, each attempt told, and `drain` says why while it is not.
+    /// written, each attempt told, and `flush` tries it at once and says why
+    /// while it is not.
     #[test]
     fn a_failed_write_is_tried_again_and_not_counted_as_done() {
         static FAILS_LEFT: Mutex<u32> = Mutex::new(2);
@@ -689,9 +746,43 @@ mod tests {
         }
         let writer = Writer::new_told("test", flaky, Some(told));
         writer.put(7);
-        assert_eq!(writer.drain(Duration::from_millis(100)), Err("sharing violation".into()), "not done while it fails");
-        assert!(writer.drain(Duration::from_secs(10)).is_ok(), "written on a later try");
+        assert_eq!(writer.flush(Duration::from_secs(10)), Err("sharing violation".into()), "not done while it fails");
+        // Each flush an attempt now, well inside the writer's own wait.
+        let started = std::time::Instant::now();
+        let mut flushes = 1;
+        while writer.flush(Duration::from_secs(10)).is_err() {
+            flushes += 1;
+            assert!(flushes < 5, "written on a later try");
+        }
+        assert!(started.elapsed() < RETRY_FIRST + RETRY_FIRST * 2, "the waits were cut short");
         assert_eq!(*TOLD.lock().unwrap(), [(7, false), (7, false), (7, true)]);
+    }
+
+    /// The wait after a failure is the writer's: a value put meanwhile is
+    /// not tried before it is over, so a burst of changes on a failing disk
+    /// is no burst of writes; `flush` cuts it short.
+    #[test]
+    fn a_new_value_waits_out_the_writers_wait() {
+        static TRIED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+        fn failing(v: &u32) -> Result<(), String> {
+            TRIED.lock().unwrap().push(*v);
+            Err("denied".into())
+        }
+        let writer = Writer::new("test", failing);
+        writer.put(1);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while TRIED.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for v in 2..=10 {
+            writer.put(v);
+        }
+        std::thread::sleep(RETRY_FIRST / 2);
+        assert_eq!(*TRIED.lock().unwrap(), [1], "nothing tried inside the wait");
+        let started = std::time::Instant::now();
+        assert_eq!(writer.flush(Duration::from_secs(5)), Err("denied".into()));
+        assert!(started.elapsed() < RETRY_FIRST, "flush tried it at once");
+        assert_eq!(*TRIED.lock().unwrap(), [1, 10], "the latest, once");
     }
 
     /// The core's state as the core link holds it, read back as the window

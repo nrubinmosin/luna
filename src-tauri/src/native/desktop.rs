@@ -82,7 +82,7 @@ pub(super) fn start(mailbox: Mailbox) {
 pub(super) fn stop() {
     TRAY_UP.store(false, Ordering::SeqCst);
     TRAY.with(|slot| drop(slot.borrow_mut().take()));
-    if let Err(why) = placement_writer().drain(super::THEME_DRAIN) {
+    if let Err(why) = placement_writer().flush(super::THEME_DRAIN) {
         crate::log::warn("window", &format!("the window's place was not written: {why}"));
     }
 }

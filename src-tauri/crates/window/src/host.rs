@@ -91,6 +91,10 @@ pub mod cmd {
     /// they were made; it writes the latest, lets an older one go, and says
     /// of each it tried whether it was written (`event::STATE_SAVED`).
     pub const SAVE_WINDOW_STATE: &str = "save_window_state";
+    /// `{}`, as the window quits: the host writes the latest state it was
+    /// sent now, a write waiting to be tried again included, and answers
+    /// null once it is written, or why it was not.
+    pub const FLUSH_WINDOW_STATE: &str = "flush_window_state";
     /// The accounts Luna knows: `[{ provider, name, path }]`.
     pub const LIST_ACCOUNTS: &str = "list_accounts";
     /// Every chat's session as the core sees it: `{ chats: [{ id,
@@ -109,6 +113,7 @@ pub mod cmd {
         ENSURE_CODEX_SESSION,
         SESSION_MODES,
         WINDOW_STATE,
+        FLUSH_WINDOW_STATE,
         LIST_ACCOUNTS,
         SESSIONS_META,
         SAVED_TITLE,

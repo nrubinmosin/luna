@@ -69,19 +69,27 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   rest when their own session exits, notify once per wait, and resume the
   session they have now when the core is replaced (only the chats shown
   start again). Nothing is dragged. The window keeps its chat list in
-  `window/chats.json` in the data folder, a file of its own (the window's
-  place stays in `window-state.json`, and a list an earlier test build kept
-  there is moved), written synced as the page's storage was (at once after
-  a quiet spell, then at most every 500 ms; a chat added or deleted, its
-  session, account or board at once; on quit), each write confirmed and a
-  failed one retried and said. A list that cannot be read is never written
-  over (Retry reads it again); one that reads only in part is used for what
-  reads and kept aside as it was; one that is no list is put aside; a line
-  says which. On its first start the window imports 0.19's chat list from a
-  private copy of the WebView's Local Storage (rusty-leveldb, the app's own
-  origin, a copy taken again if the store changed under it), saying so in a
-  line with Retry when it cannot and trying again on later starts while the
-  list stays empty. The test build's `--dev-open` terminals are gone: the
+  `window/chats.json` in the data folder, a file nothing else writes (the
+  window's place is in `window-state.json`, where a file that is no place
+  is put aside, not written over), written synced as the page's storage was
+  (at once after a quiet spell, then at most every 500 ms; a chat added or
+  deleted, its session, account or board at once; on quit), each write
+  confirmed and a failed one retried, with a wait that a burst of changes
+  does not reset, and said. Quit waits for the list to be written and,
+  where it is not, keeps the window up with Retry and Quit anyway (a
+  sign-out or shutdown tries once more and logs). A list that cannot be
+  read is never written over (Retry reads it again, one read at a time, and
+  an answer that comes after a change is let go of); one that reads only in
+  part, a value this build does not know or a chat listed twice included,
+  is used for what reads and kept aside as it was; one that is no list is
+  put aside; a line says which. On its first start the window imports
+  0.19's chat list from a private copy of the WebView's Local Storage
+  (rusty-leveldb, the app's own origin whose list imports, the longest of
+  two, a copy taken again if the store changed under it or could not be
+  listed or copied), saying so in a line with Retry when it cannot and
+  trying again on later starts while the list stays empty. Ctrl+1-4 go by
+  the key pressed, never by a digit merely held, and the accounts are
+  asked for again until they come. The test build's `--dev-open` terminals are gone: the
   board opens chats.
 - `resize_session` takes the terminal's size in pixels too (`pixelWidth`,
   `pixelHeight`), which the native window sends and the core passes to the
