@@ -88,7 +88,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   two, a copy taken again if the store changed under it or could not be
   listed or copied), saying so in a line with Retry when it cannot and
   trying again on later starts while the list stays empty. Ctrl+1-4 go by
-  the key pressed, never by a digit merely held, and the accounts are
+  the key pressed, never by a digit merely held, the looks at the
+  sessions give their request up with the window, and the accounts are
   asked for again until they come. The test build's `--dev-open` terminals are gone: the
   board opens chats.
 - `resize_session` takes the terminal's size in pixels too (`pixelWidth`,

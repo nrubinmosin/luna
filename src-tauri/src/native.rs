@@ -74,6 +74,12 @@ fn core_restart(args: Value) -> Result<Value, String> {
 /// Answers one of the window's commands. Blocks for as long as it takes.
 pub(crate) fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
     match corecmd::lane(cmd) {
+        // The window's look at the sessions gives up after `POLL_TIMEOUT`
+        // and asks again: its request is given up then too, so a core that
+        // stopped answering piles up no threads behind it.
+        Some(Lane::Call) if cmd == luna_window::cmd::SESSIONS_META => {
+            crate::corelink::request_within(cmd.to_owned(), args, Some(luna_window::workspace::POLL_TIMEOUT))
+        }
         Some(Lane::Call) => crate::corelink::request(cmd.to_owned(), args),
         Some(Lane::Send) => Err(format!("{cmd} is sent, not called")),
         None => match OWN.iter().find(|(c, _)| *c == cmd) {

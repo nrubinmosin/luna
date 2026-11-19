@@ -529,9 +529,19 @@ fn stop<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32) {
 
 /// Asks the core a command and waits for the answer.
 pub(crate) fn request(cmd: String, args: Value) -> Result<Value, String> {
+    request_within(cmd, args, None)
+}
+
+/// `request`, waiting `within` at most where given, a core still starting
+/// included: past it the request is given up, its entry gone from the
+/// connection's pending ones, so a caller that stopped waiting (the native
+/// window's look at the sessions, every few seconds) leaves no thread
+/// blocked behind it on a connection that has stopped answering.
+pub(crate) fn request_within(cmd: String, args: Value, within: Option<Duration>) -> Result<Value, String> {
+    let started = std::time::Instant::now();
     // The panes ask for their sessions as soon as the page is up, which can be
     // before the core is: while it is being found or started, they wait.
-    let deadline = std::time::Instant::now() + START_WAIT * 2;
+    let deadline = started + within.map_or(START_WAIT * 2, |w| w.min(START_WAIT * 2));
     let conn = loop {
         if let Some(conn) = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             break conn;
@@ -542,6 +552,12 @@ pub(crate) fn request(cmd: String, args: Value) -> Result<Value, String> {
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    ask(&conn, cmd, args, within.map(|w| w.saturating_sub(started.elapsed())))
+}
+
+/// One request on `conn`, its answer waited for `within` at most where
+/// given: past it, its pending entry goes.
+fn ask(conn: &Conn, cmd: String, args: Value, within: Option<Duration>) -> Result<Value, String> {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let frame = ipc::encode(ipc::REQ, &Req { id, cmd, args }).map_err(|e| e.to_string())?;
     let (tx, rx) = channel();
@@ -549,13 +565,25 @@ pub(crate) fn request(cmd: String, args: Value) -> Result<Value, String> {
         Some(pending) => pending.insert(id, tx),
         None => return Err("the core stopped".into()),
     };
-    if let Err(e) = conn.send(frame) {
+    let forget = || {
         if let Some(pending) = conn.pending.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             pending.remove(&id);
         }
+    };
+    if let Err(e) = conn.send(frame) {
+        forget();
         return Err(e);
     }
-    rx.recv().unwrap_or_else(|_| Err("the core stopped".into()))
+    let Some(within) = within else { return rx.recv().unwrap_or_else(|_| Err("the core stopped".into())) };
+    match rx.recv_timeout(within) {
+        Ok(answer) => answer,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            forget();
+            // An answer that came as the entry went is still the answer.
+            rx.try_recv().unwrap_or_else(|_| Err(format!("no answer from the core within {} ms", within.as_millis())))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("the core stopped".into()),
+    }
 }
 
 /// Starts a core of this build, detached: it is meant to outlive the window.
@@ -804,6 +832,20 @@ mod tests {
         assert_eq!(&got.lock().unwrap()[..], b"aaaabbbbeeee");
         // One frame larger than the bound goes when nothing waits.
         conn.send(vec![b'f'; 64]).unwrap();
+    }
+
+    /// A request bounded in time is given up once the time is over, on a
+    /// connection that takes it and never answers, and its pending entry
+    /// goes with it: nothing waits behind it.
+    #[test]
+    fn a_bounded_request_gives_up_and_leaves_nothing_pending() {
+        let open = Arc::new((Mutex::new(true), std::sync::Condvar::new()));
+        let conn = Conn::over(Pipe { open, got: Arc::default(), fail: false });
+        let started = std::time::Instant::now();
+        let err = ask(&conn, "sessions_meta".into(), Value::Null, Some(Duration::from_millis(100))).unwrap_err();
+        assert!(err.contains("no answer from the core within 100 ms"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(conn.pending.lock().unwrap().as_ref().unwrap().is_empty(), "its entry is gone");
     }
 
     /// A write that fails ends the connection: who waits on an answer hears

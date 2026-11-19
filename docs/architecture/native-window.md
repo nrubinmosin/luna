@@ -404,8 +404,10 @@ click on one sends `ui://open-chat`, which `open_chat` takes (on the chat's
 board). An answer is fenced (`Fence`): it is dropped whole if the core's
 epoch changed since it was asked (the core replaced), and for a chat whose
 session exited since; a call that fails, or does not answer in 20 s
-(`POLL_TIMEOUT`), changes nothing and the next tick asks again. A failed
-`list_accounts` is asked again
+(`POLL_TIMEOUT`), changes nothing and the next tick asks again. The host
+gives the request up at the same time (`corelink::request_within`, its
+pending entry removed), so a connection that stopped answering piles up no
+threads behind the window's looks. A failed `list_accounts` is asked again
 after 1 s, doubling to 30 s, until a list comes (one ask at a time), and
 again when the core comes up with none: the looks need the accounts. `pty://exit`
 is taken by the pane whose spawn it is (`generation`), which rests the chat
