@@ -258,7 +258,13 @@ dialogs are: one at a time, on a layer over the whole window (root.rs
 while one is up (`occlude`), framed like a window of the period with a title
 bar and a close box. Esc (the `LunaPanel` key context's `Close`) closes it,
 unless a question, a drop-down list or a rename is open, which goes first,
-or the library's editor holds text not saved, which asks once. Nothing opens
+or the library's editor holds text not saved, which asks once. Every way
+the editor's text is replaced or closed goes through that one question
+(`LibraryPanel::guard`, `Next`): picking another entry, a rename, Delete...,
+Back to Luna's..., Make it the override..., Add folder..., the library's
+folder changed or set back to Luna's own (which then leaves nothing picked
+and nothing in the editor), restoring a draft, and Esc. The editor takes no
+input until its file is read. Nothing opens
 them yet but the demo scenes and the test build's driver (below); the title
 bar and the status bar will (`panels::open`).
 
@@ -268,25 +274,75 @@ dispatch test as `cmd::ALL` is):
 
 | Module | Shows | Commands |
 | --- | --- | --- |
-| `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`, the page's ReachPicker), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*` |
+| `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`, the page's ReachPicker), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*`, `set_library_draft` (sent) |
 | `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, what the automatic rollback turned away; no version is chosen here, ADR-0030), Updates (Luna's, confirmed with its version and notes; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, the updater's |
-| `accounts/` | each account with its CLI, plan and limits; add, rename, delete; the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `delete_account`, `account_limits`, `codex_limits`, the settings sync's |
+| `accounts/` | each account with its CLI, plan and limits; add, rename, delete; the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's |
 
 The host answers them in native/panels.rs over the Tauri commands' own
 functions, each path argument read through boundary.rs's `AbsPath`,
 `AccountPath` or `OrEmpty` (stricter than the Tauri command where that takes
-a plain string). Four are the native window's alone: `app_version`, Luna's
-version (the window crate has its own); `window_prefs` and
-`set_window_prefs`, its own preferences (the notification sound and how the
-new-chat dialog's boxes start), which the page keeps in its local storage and
-the native window in `window.json` beside its theme, through a writer of its
-own (`update_settings` keeps the two writers' read, change and write one at a
-time); and `library_rename_skill`, which renames a skill's folder, the
-`name:` of its SKILL.md and what the settings say of it, all or none.
+a plain string). These are the native window's alone (`NATIVE_ONLY`):
+
+- `app_version`, Luna's version (the window crate has its own).
+- `window_prefs` and `set_window_prefs`, its own preferences (the
+  notification sound and how the new-chat dialog's boxes start), which the
+  page keeps in its local storage and the native window in `window.json`
+  beside its theme, through a writer of its own (`update_settings` keeps the
+  writers' read, change and write one at a time).
+- `library_write_checked`, the editor's save. `library_read` answers the
+  library's folder and the sha256 of what it read (`root`, `revision`), and
+  the save writes only into that folder and over that revision, checked
+  under the library's lock: a file changed or deleted on disk since, or a
+  library folder changed meanwhile, writes nothing and answers `conflict`.
+  The editor keeps the text and offers Reload (the file as it is now) and
+  Overwrite (the same save, `force`, which lets a changed file go but never
+  another library). The page's `library_write` is unbound, as before.
+- `library_draft` and `set_library_draft` (sent): the editor's text not
+  saved, with what it was read from, kept as it changes in
+  `<data>/library-draft.json` (private, one writer, drained as the app
+  quits) and forgotten once saved, reloaded or thrown away. A window that
+  goes with it unsaved (the tray's Quit or Restart window, which ask nothing
+  of the window, or a crash) leaves it there, and the library offers it at
+  its next open (Restore, Throw away); restored, its save is held to the
+  revision the draft was read from. The last keys before a crash may be
+  missing from it.
+- `library_rename_skill`: a skill's folder, the `name` of its SKILL.md and
+  what the settings say of it (reach, audience, folders, and its left-out
+  places). Refused with nothing changed where the skill's folder or anything
+  in it is a link, a junction or not a plain file or folder, where the new
+  name is taken, and where SKILL.md names the skill but its `name` (quoted,
+  folded or literal) cannot be rewritten to read as the new one. The folder
+  moves without replacing (a folder of the new name made meanwhile fails the
+  move), then SKILL.md, then the settings; a step that fails undoes those
+  before it. It answers `committed`, `rolledBack` (as it was) or
+  `rollbackFailed` (with what is left where), and the window says which.
+- `account_identity` and `delete_account_checked`: Delete... names the
+  account's folder by its path and its identity on the drive (volume serial
+  and file id, or device and inode), and the yes deletes only while the
+  folder is still that one, checked again under the library's lock right
+  before it goes; the folder and its provider's folder are held to
+  `boundary::account_in` (no link, inside the accounts root). The question
+  says a chat still set to the account has nowhere to start: the window has
+  no chats until the board comes, so it says so for any; with the board it
+  names them, as the page does.
+
 `set_helpers_above_caller` takes `confirmed`: the page's Tauri command asks
 the person in a message box of the system's, which a script in the page
 could open but not answer; the native window has no page, and asks in its
-own question, whose yes is the only way `confirmed` is sent.
+own question, whose Turn on click is the only way `confirmed` is sent. The
+test build's driver has no line that answers it (below), and must not get
+one: a driver line is input no person gave.
+
+Sync lays the library out (`library_sync`) and then makes every copy Luna
+manages the library's again, as ADR-0030 has it: the copies changed where
+they lie are overwritten and the deleted ones put back (`library_put_back`,
+over what is there only at the changed ones), the copies no longer wanted
+but changed taken out (`library_kept`), each backed up first; a place
+holding a file Luna did not write is left alone. It says how many of each it
+did, and anything that would not settle, or that changed again meanwhile;
+"every copy Luna manages holds what the library says" only when nothing is
+left. The core's own passes (at a session's start, after a change) still
+only report a changed or deleted copy (library.md).
 
 A CLI's pass comes as `cli://status` (`panels::event`), which the inbox takes
 and hands to the settings window while it is up. Long work is said in words
@@ -299,10 +355,13 @@ The test build's driver (`drive.rs`, compiled in under `luna_test` alone):
 `LUNA_TEST_DRIVE=<file>` names a file of lines the window reads every
 200 ms and acts on through gpui's own dispatch, keys typed into it
 (`keys ctrl-s`, `text ...`) and the panels' own lines (`panel library`,
-`select skill review`, `new instructions <name>`, `save`, `page clis`,
-`setting sound off`, `cli-check claude`, `add-account claude <name>`;
-`panels::drive`), so a smoke run drives the background
-window with no global input.
+`select skill review`, `new instructions <name>`, `rename skill <from>
+<to>`, `save`, `reload`, `overwrite`, `restore`, `source <folder>|default`,
+`sync`, `page clis`, `setting sound off`, `cli-check claude`, `add-account
+claude <name>`, `delete <n>`, `yes` for the library's and the accounts'
+questions; `panels::drive`), so a smoke run drives the background window
+with no global input. No line answers a question of Settings': helpers above
+their caller take a person's click, and so does Luna's update.
 
 ## Theme and font
 
@@ -353,7 +412,10 @@ while nothing happens, the theme button goes round and the host is sent each
 choice, system follows the appearance, the banner's wording per state, and
 Restart asks the host for the state shown. `panels/tests.rs` holds each
 panel's controls to the commands and arguments the page sends (the editor's
-load, dirty state, check, save and failed save; new, rename and delete; reach,
+load, dirty state, check, save bound to its source and failed save, a
+conflict's Reload and Overwrite, the draft kept and offered, every
+transition that replaces the editor asking first, a skill rename's three
+outcomes, Sync's report; new, rename and delete; reach,
 audience and each account's instructions; folders; system texts' compare,
 reset and adopt; every settings row; a CLI's Check and its pass;
 an update installed only once confirmed; the accounts' add, rename, delete,

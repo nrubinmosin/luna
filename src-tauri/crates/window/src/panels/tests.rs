@@ -166,19 +166,152 @@ fn the_editor_loads_tracks_its_changes_checks_and_saves(cx: &mut TestAppContext)
     f.cx.dispatch_action(super::Save);
     f.cx.run_until_parked();
     let text = doc.read_with(f.cx, |d, cx| d.text(cx));
-    assert_eq!(f.calls(cmd::LIBRARY_WRITE), vec![json!({ "entry": { "skill": "review" }, "text": text })]);
+    // Bound to the library and the revision it was read from.
+    assert_eq!(
+        f.calls(cmd::LIBRARY_WRITE_CHECKED),
+        vec![json!({ "entry": { "skill": "review" }, "text": text, "root": demo::LIBRARY_ROOT, "revision": "r1", "force": false })]
+    );
     assert!(doc.read_with(f.cx, |d, cx| d.saved && !d.dirty(cx)));
+    assert_eq!(
+        doc.read_with(f.cx, |d, _| d.file.as_ref().unwrap().revision.clone()).as_deref(),
+        Some("r2"),
+        "the next save goes on from it"
+    );
     // Nothing to save: nothing is sent.
     f.cx.dispatch_action(super::Save);
     f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::LIBRARY_WRITE).len(), 1);
+    assert_eq!(f.calls(cmd::LIBRARY_WRITE_CHECKED).len(), 1);
+    assert!(f.calls(cmd::LIBRARY_WRITE).is_empty(), "never the unbound save");
 
     // A failed save keeps the text unsaved and says why.
     f.type_in_editor(&lib, "y");
-    f.host.fail(cmd::LIBRARY_WRITE, Some("disk full"));
+    f.host.fail(cmd::LIBRARY_WRITE_CHECKED, Some("disk full"));
     f.cx.dispatch_action(super::Save);
     f.cx.run_until_parked();
     assert!(doc.read_with(f.cx, |d, cx| d.dirty(cx) && d.error.as_deref() == Some("disk full")));
+}
+
+/// The file changed on disk since it was read: nothing is saved, the text
+/// stays, and Overwrite or Reload answers it.
+#[gpui::test]
+fn a_save_over_a_file_changed_on_disk_keeps_the_text_and_offers_both_ways(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let lib = f.library();
+    f.select(&lib, Sel::Skill("review".into()));
+    let doc = lib.read_with(f.cx, |v, _| v.editor.clone().unwrap());
+    f.type_in_editor(&lib, "Mine. ");
+    f.host.answer(
+        cmd::LIBRARY_WRITE_CHECKED,
+        json!({ "conflict": "The file was changed on disk since it was opened. Nothing was saved.", "revision": "r9", "overview": null }),
+    );
+    f.cx.dispatch_action(super::Save);
+    f.cx.run_until_parked();
+    let (dirty, conflict, saved) = doc.read_with(f.cx, |d, cx| (d.dirty(cx), d.conflict.clone(), d.saved));
+    assert!(dirty && !saved);
+    assert!(conflict.is_some_and(|c| c.contains("changed on disk")));
+    assert!(doc.read_with(f.cx, |d, cx| d.status(cx).1.contains("Reload takes the file's")));
+    // Overwrite: the same save, forced.
+    f.host.answer(cmd::LIBRARY_WRITE_CHECKED, json!({ "conflict": null, "revision": "r10", "overview": null }));
+    doc.update(f.cx, |d, cx| d.overwrite(cx));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(cmd::LIBRARY_WRITE_CHECKED).last().unwrap()["force"], json!(true));
+    assert!(doc.read_with(f.cx, |d, cx| d.saved && !d.dirty(cx) && d.conflict.is_none()));
+    // Reload: the file read again, in place of the text.
+    f.type_in_editor(&lib, "More. ");
+    let reads = f.calls(cmd::LIBRARY_READ).len();
+    doc.update_in(f.cx, |d, window, cx| d.reload(window, cx));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(cmd::LIBRARY_READ).len(), reads + 1);
+    assert_eq!(doc.read_with(f.cx, |d, cx| (d.text(cx), d.dirty(cx))), (demo::SKILL_TEXT.to_owned(), false));
+}
+
+/// Text not saved is kept with the host as it changes and forgotten once
+/// saved; kept from before, it is offered at the next open, and restored it
+/// is bound to what it was read from.
+#[gpui::test]
+fn unsaved_text_is_kept_on_disk_and_offered_at_the_next_open(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let lib = f.library();
+    f.select(&lib, Sel::Instructions("main".into()));
+    f.type_in_editor(&lib, "edit ");
+    let kept = f.host.sends_of(cmd::SET_LIBRARY_DRAFT);
+    let last = kept.last().unwrap();
+    assert_eq!(last["draft"]["entry"], json!({ "instructions": "main" }));
+    assert_eq!(last["draft"]["revision"], json!("r1"));
+    f.cx.dispatch_action(super::Save);
+    f.cx.run_until_parked();
+    assert_eq!(f.host.sends_of(cmd::SET_LIBRARY_DRAFT).last(), Some(&json!({ "draft": null })), "forgotten once saved");
+    f.escape();
+
+    // The window went with text not saved: offered when the library opens.
+    let draft = json!({ "entry": { "skill": "review" }, "root": demo::LIBRARY_ROOT, "revision": "r0", "text": "kept text" });
+    f.host.answer(cmd::LIBRARY_DRAFT, draft);
+    let lib = f.library();
+    assert!(lib.read_with(f.cx, |v, _| v.offer.is_some()));
+    let offer = lib.read_with(f.cx, |v, _| v.offer.clone().unwrap());
+    lib.update_in(f.cx, |v, window, cx| v.guard(crate::library::Next::Restore(offer), window, cx));
+    f.cx.run_until_parked();
+    let doc = lib.read_with(f.cx, |v, _| v.editor.clone().unwrap());
+    assert_eq!(lib.read_with(f.cx, |v, _| v.selected.clone()), Some(Sel::Skill("review".into())));
+    assert_eq!(doc.read_with(f.cx, |d, cx| (d.text(cx), d.dirty(cx))), ("kept text".to_owned(), true));
+    // Nothing has the focus in the restored editor: its Save button, not Ctrl+S.
+    doc.update(f.cx, |d, cx| d.save(cx));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(cmd::LIBRARY_WRITE_CHECKED).last().unwrap()["revision"], json!("r0"), "held to what the draft was read from");
+    // Thrown away: forgotten.
+    f.escape();
+    let lib = f.library();
+    lib.update(f.cx, |v, cx| v.drop_offer(cx));
+    assert!(lib.read_with(f.cx, |v, _| v.offer.is_none()));
+    assert_eq!(f.host.sends_of(cmd::SET_LIBRARY_DRAFT).last(), Some(&json!({ "draft": null })));
+}
+
+/// Every way the editor's text is replaced or closed asks first while it is
+/// not saved: a rename, Delete..., Back to Luna's..., Add folder..., the
+/// library's folder changed or back to Luna's own. A changed folder leaves
+/// nothing picked.
+#[gpui::test]
+fn every_transition_that_replaces_the_editor_asks_first(cx: &mut TestAppContext) {
+    use crate::library::Next;
+    let mut f = open(cx);
+    let lib = f.library();
+    let dirty = |f: &mut Fixture, lib: &Entity<LibraryPanel>| {
+        f.select(lib, Sel::Skill("review".into()));
+        f.type_in_editor(lib, "edit ");
+    };
+    dirty(&mut f, &lib);
+    for next in [
+        Next::Rename(Entry::Skill("review".into()), "audit".into()),
+        Next::Delete(Entry::Skill("review".into())),
+        Next::Reset("role-lead".into()),
+        Next::AddFolder("D:\\work".into()),
+        Next::Source("D:\\other-library".into()),
+        Next::Source(String::new()),
+    ] {
+        lib.update_in(f.cx, |v, window, cx| v.guard(next.clone(), window, cx));
+        f.cx.run_until_parked();
+        assert!(lib.read_with(f.cx, |v, _| v.asking_discard()), "{next:?} asks");
+        f.escape();
+    }
+    assert!(f.calls(cmd::LIBRARY_RENAME_SKILL).is_empty() && f.calls(cmd::LIBRARY_SET_SOURCE).is_empty());
+    assert!(f.calls(cmd::LIBRARY_SET_FOLDER).is_empty());
+    // The rename's field and button go the same way.
+    lib.update_in(f.cx, |v, window, cx| v.rename_to(Entry::Skill("review".into()), "audit", window, cx));
+    f.cx.run_until_parked();
+    assert!(lib.read_with(f.cx, |v, _| v.asking_discard()));
+    f.escape();
+    // Yes: the text goes, and the library's folder changes, nothing picked.
+    lib.update_in(f.cx, |v, window, cx| v.guard(Next::Source("D:\\other-library".into()), window, cx));
+    lib.update_in(f.cx, |v, window, cx| v.answer_yes(window, cx));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(cmd::LIBRARY_SET_SOURCE), vec![json!({ "path": "D:\\other-library" })]);
+    assert!(lib.read_with(f.cx, |v, _| v.selected.is_none() && v.editor.is_none()));
+    // Clean, it goes at once.
+    f.select(&lib, Sel::Skill("review".into()));
+    lib.update_in(f.cx, |v, window, cx| v.guard(Next::Source(String::new()), window, cx));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(cmd::LIBRARY_SET_SOURCE).last(), Some(&json!({ "path": "" })));
+    assert!(lib.read_with(f.cx, |v, _| v.editor.is_none()));
 }
 
 #[gpui::test]
@@ -221,7 +354,7 @@ fn rename_and_delete_go_to_the_host_by_kind(cx: &mut TestAppContext) {
 
     // Delete asks first; yes takes it out and the editor with it.
     f.select(&lib, Sel::Skill("draft".into()));
-    lib.update(f.cx, |v, cx| v.ask_delete(cx));
+    lib.update_in(f.cx, |v, window, cx| v.ask_delete(window, cx));
     f.cx.run_until_parked();
     assert!(f.calls(cmd::LIBRARY_DELETE_SKILL).is_empty());
     lib.update_in(f.cx, |v, window, cx| v.answer_yes(window, cx));
@@ -231,6 +364,35 @@ fn rename_and_delete_go_to_the_host_by_kind(cx: &mut TestAppContext) {
     library.update(f.cx, |l, cx| l.delete(&Entry::Instructions("terse".into()), cx).detach());
     f.cx.run_until_parked();
     assert_eq!(f.calls(cmd::LIBRARY_DELETE_INSTRUCTIONS), vec![json!({ "name": "terse" })]);
+}
+
+/// A skill's rename says how it went: done, put back as it was, or left
+/// partly done.
+#[gpui::test]
+fn a_skill_rename_says_whether_it_was_done_undone_or_left_partly(cx: &mut TestAppContext) {
+    use crate::library::Outcome;
+    let mut f = open(cx);
+    let lib = f.library();
+    let library = lib.read_with(f.cx, |v, _| v.library.clone());
+    let rename = |f: &mut Fixture, answer: Value| {
+        f.host.answer(cmd::LIBRARY_RENAME_SKILL, answer);
+        let got = std::rc::Rc::new(std::cell::Cell::new(None));
+        let put = got.clone();
+        library.update(f.cx, |l, cx| {
+            let task = l.rename_skill("review", "audit", cx);
+            cx.spawn(async move |_, _| put.set(task.await)).detach();
+        });
+        f.cx.run_until_parked();
+        (got.get(), library.read_with(f.cx, |l, _| l.error.clone()))
+    };
+    let (outcome, error) = rename(&mut f, json!({ "outcome": "committed", "why": null, "overview": demo::overview() }));
+    assert_eq!((outcome, error), (Some(Outcome::Committed), None));
+    let (outcome, error) = rename(&mut f, json!({ "outcome": "rolledBack", "why": "no settings", "overview": null }));
+    assert_eq!(outcome, Some(Outcome::RolledBack));
+    assert!(error.is_some_and(|e| e.contains("not renamed") && e.contains("as it was")));
+    let (outcome, error) = rename(&mut f, json!({ "outcome": "rollbackFailed", "why": "the folder is left at audit", "overview": null }));
+    assert_eq!(outcome, Some(Outcome::RollbackFailed));
+    assert!(error.is_some_and(|e| e.contains("only partly") && e.contains("left at audit")));
 }
 
 #[gpui::test]
@@ -265,7 +427,7 @@ fn a_folder_is_added_through_the_picker_and_says_its_own(cx: &mut TestAppContext
     assert_eq!(f.host.desktop.picks.lock().unwrap().len(), 1);
     assert_eq!(f.calls(cmd::LIBRARY_SET_FOLDER), vec![json!({ "path": "D:\\work\\repo", "listed": true })]);
     assert_eq!(lib.read_with(f.cx, |v, _| v.selected.clone()), Some(Sel::Folder("D:\\work\\repo".into())));
-    // Cancelled: nothing.
+    // Canceled: nothing.
     *f.host.desktop.picked.lock().unwrap() = None;
     lib.update_in(f.cx, |v, window, cx| v.add_folder(window, cx));
     f.cx.run_until_parked();
@@ -330,11 +492,45 @@ fn a_sync_says_where_it_is_in_words(cx: &mut TestAppContext) {
     library.update(f.cx, |l, cx| l.sync_now(cx));
     assert_eq!(library.read_with(f.cx, |l, _| l.sync.clone()), crate::library::SyncState::Syncing);
     f.cx.run_until_parked();
-    assert_eq!(library.read_with(f.cx, |l, _| l.sync.clone()), crate::library::SyncState::Synced);
+    assert_eq!(library.read_with(f.cx, |l, _| l.sync.clone()), crate::library::SyncState::Synced(Default::default()));
+    assert!(f.calls(cmd::LIBRARY_PUT_BACK).is_empty(), "nothing to put back");
     f.host.fail(cmd::LIBRARY_SYNC, Some("no lock"));
     library.update(f.cx, |l, cx| l.sync_now(cx));
     f.cx.run_until_parked();
     assert_eq!(library.read_with(f.cx, |l, _| l.sync.clone()), crate::library::SyncState::Failed("no lock".into()));
+}
+
+/// Sync makes every copy Luna manages the library's again: the changed ones
+/// overwritten, the deleted ones put back, those no longer wanted taken out;
+/// a file not Luna's left alone; and it says which, and what would not.
+#[gpui::test]
+fn a_sync_overwrites_restores_and_takes_out_what_luna_manages(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let lib = f.library();
+    let library = lib.read_with(f.cx, |v, _| v.library.clone());
+    let mut o = demo::overview();
+    o["places"] = json!([
+        { "dest": "C:\\a\\skills\\review", "status": "changed" },
+        { "dest": "C:\\b\\skills\\review", "status": "gone" },
+        { "dest": "C:\\c\\CLAUDE.md", "status": "taken" },
+        { "dest": "C:\\d\\skills\\review", "status": "current" },
+    ]);
+    o["kept"] = json!([{ "dest": "C:\\a\\skills\\old" }]);
+    f.host.answer(cmd::LIBRARY_SYNC, o);
+    let mut back = demo::overview();
+    back["unsettled"] = json!(["C:\\b\\skills\\review: something is there again; it waits under Needs a look"]);
+    f.host.answer(cmd::LIBRARY_PUT_BACK, back);
+    library.update(f.cx, |l, cx| l.sync_now(cx));
+    f.cx.run_until_parked();
+    assert_eq!(
+        f.calls(cmd::LIBRARY_PUT_BACK),
+        vec![json!({ "dests": ["C:\\a\\skills\\review", "C:\\b\\skills\\review"], "replace": ["C:\\a\\skills\\review"] })]
+    );
+    assert_eq!(f.calls(cmd::LIBRARY_KEPT), vec![json!({ "dests": ["C:\\a\\skills\\old"], "takeOut": true })]);
+    let crate::library::SyncState::Synced(r) = library.read_with(f.cx, |l, _| l.sync.clone()) else { panic!("not synced") };
+    assert_eq!((r.overwritten, r.restored, r.taken_out, r.foreign), (1, 0, 1, 1));
+    assert!(!r.clean(), "a copy not put back is no success");
+    assert!(r.said().contains("Not settled: C:\\b\\skills\\review"), "{}", r.said());
 }
 
 /// An editor left alone schedules nothing: its caret is steady and nothing
@@ -526,13 +722,24 @@ fn accounts_list_with_their_limits_and_add_rename_delete_and_sync(cx: &mut TestA
     a.update(f.cx, |v, cx| v.rename(&work, "office", cx));
     f.cx.run_until_parked();
     assert_eq!(f.calls(cmd::RENAME_ACCOUNT), vec![json!({ "provider": "claude", "name": "work", "to": "office" })]);
+    // The question names the folder as it is now, and the yes is bound to it.
     a.update(f.cx, |v, cx| v.ask_delete(1, cx));
-    assert_eq!(a.read_with(f.cx, |v, _| v.asking_delete().map(|x| x.name.clone())).as_deref(), Some("home"));
-    assert!(f.calls(cmd::DELETE_ACCOUNT).is_empty());
-    let home = a.read_with(f.cx, |v, _| v.asking_delete().cloned().unwrap());
-    a.update(f.cx, |v, cx| v.delete(&home, cx));
     f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::DELETE_ACCOUNT), vec![json!({ "provider": "claude", "name": "home" })]);
+    assert_eq!(f.calls(cmd::ACCOUNT_IDENTITY), vec![json!({ "provider": "claude", "name": "home" })]);
+    assert_eq!(a.read_with(f.cx, |v, _| v.asking_delete().map(|x| x.name.clone())).as_deref(), Some("home"));
+    assert!(f.calls(cmd::DELETE_ACCOUNT_CHECKED).is_empty());
+    a.update(f.cx, |v, cx| v.answer_yes(cx));
+    f.cx.run_until_parked();
+    assert_eq!(
+        f.calls(cmd::DELETE_ACCOUNT_CHECKED),
+        vec![json!({ "provider": "claude", "name": "home", "path": "C:\\Users\\me\\luna-accounts\\anthropic\\work", "id": "f00d:01" })]
+    );
+    assert!(f.calls(cmd::DELETE_ACCOUNT).is_empty(), "never the unbound one");
+    // A folder that cannot be named: no question, the reason said.
+    f.host.fail(cmd::ACCOUNT_IDENTITY, Some("not an account folder of Luna's (a link)"));
+    a.update(f.cx, |v, cx| v.ask_delete(0, cx));
+    f.cx.run_until_parked();
+    assert!(a.read_with(f.cx, |v, _| v.asking_delete().is_none() && v.error.as_deref().is_some_and(|e| e.contains("link"))));
 
     // A failure is said at the top.
     f.host.fail(cmd::RENAME_ACCOUNT, Some("the account is in use"));

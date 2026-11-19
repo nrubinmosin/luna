@@ -1,6 +1,6 @@
 //! The accounts window's view, and what each of its controls asks of the host.
 
-use super::{Account, Limits, SyncReport, SyncState};
+use super::{Account, Identity, Limits, SyncReport, SyncState};
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, DropItem, Dropdown, OnClick, Tone};
 use crate::panels::{Panel, PanelLayer, Provider, ask, cmd};
@@ -40,8 +40,9 @@ pub struct AccountsPanel {
     /// The account being renamed, and its name field.
     renaming: Option<(Account, Entity<InputState>)>,
     menu: Option<String>,
-    /// The account whose deletion waits on a yes.
-    deleting: Option<Account>,
+    /// The account whose deletion waits on a yes, with the folder the
+    /// question names (`account_identity`), to which the yes is bound.
+    deleting: Option<(Account, Identity)>,
     pub error: Option<String>,
     _subs: Vec<Subscription>,
 }
@@ -248,8 +249,28 @@ impl AccountsPanel {
         self.run(cmd::RENAME_ACCOUNT, json!({ "provider": a.provider, "name": a.name, "to": to }), cx, |v, _, cx| v.load(cx));
     }
 
-    pub fn delete(&mut self, a: &Account, cx: &mut Context<Self>) {
-        self.run(cmd::DELETE_ACCOUNT, json!({ "provider": a.provider, "name": a.name }), cx, |v, _, cx| v.load(cx));
+    /// Delete...: the account's folder named first (`account_identity`),
+    /// its path and its identity on the drive; the question asks of that one.
+    pub fn ask_delete_of(&mut self, a: Account, cx: &mut Context<Self>) {
+        let named = ask::<Identity>(&self.models.host, cmd::ACCOUNT_IDENTITY, json!({ "provider": a.provider, "name": a.name }));
+        cx.spawn(async move |this, cx| {
+            let got = named.await;
+            let _ = this.update(cx, |v, cx| {
+                match got {
+                    Ok(id) => v.deleting = Some((a, id)),
+                    Err(e) => v.error = Some(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The yes: deleted only while the folder is still the one the question
+    /// named (`delete_account_checked`).
+    pub fn delete(&mut self, a: &Account, id: &Identity, cx: &mut Context<Self>) {
+        let args = json!({ "provider": a.provider, "name": a.name, "path": id.path, "id": id.id });
+        self.run(cmd::DELETE_ACCOUNT_CHECKED, args, cx, |v, _, cx| v.load(cx));
     }
 
     pub fn set_parent(&mut self, p: Provider, parent: Option<String>, cx: &mut Context<Self>) {
@@ -351,7 +372,7 @@ impl Render for AccountsPanel {
         let scroll = div().id("accounts-scroll").flex_1().min_h_0().overflow_y_scroll().child(body);
         let frame = ui::frame(&p, "accounts", "Accounts", px(720.), close, scroll).h(px(600.)).relative();
         match self.deleting.clone() {
-            Some(a) => frame.child(self.question(a, cx).render(&p, "accounts-ask")),
+            Some((a, id)) => frame.child(self.question(a, id, cx).render(&p, "accounts-ask")),
             None => frame,
         }
     }
@@ -455,10 +476,7 @@ impl AccountsPanel {
                 p,
                 "Delete...",
                 true,
-                self.act(cx, move |v, _, cx| {
-                    v.deleting = Some(delete.clone());
-                    cx.notify();
-                }),
+                self.act(cx, move |v, _, cx| v.ask_delete_of(delete.clone(), cx)),
             ));
         let mut card = div().flex().flex_col().gap(px(3.)).p(px(6.)).border_1().border_color(p.frame).bg(p.surface).child(head);
         if let LimitsState::Got(l) = &limits {
@@ -586,18 +604,22 @@ impl AccountsPanel {
         ))
     }
 
-    fn question(&self, a: Account, cx: &Context<Self>) -> Confirm {
+    fn question(&self, a: Account, id: Identity, cx: &Context<Self>) -> Confirm {
         Confirm {
             title: "Delete account".into(),
+            // The chats are the board's, which this window does not have
+            // yet: the warning stands for any chat set to the account, as
+            // the page's does for those it finds.
             body: format!(
-                "Deletes the folder {} and the login stored in it. Nothing signs you out anywhere else, and nothing here can bring it back.",
-                a.path
+                "Deletes the folder {} and the login stored in it. Nothing signs you out anywhere else, and nothing here can bring it back. \
+                 A chat still set to this account has nowhere to start until you point it at another one.",
+                id.path
             )
             .into(),
             yes: "Delete".into(),
             on_yes: self.act(cx, move |v, _, cx| {
                 v.deleting = None;
-                v.delete(&a, cx);
+                v.delete(&a, &id, cx);
             }),
             on_no: self.act(cx, |v, _, cx| {
                 v.deleting = None;
@@ -621,14 +643,23 @@ impl AccountsPanel {
     /// For the tests: the account whose deletion asks.
     #[cfg(test)]
     pub fn asking_delete(&self) -> Option<&Account> {
-        self.deleting.as_ref()
+        self.deleting.as_ref().map(|(a, _)| a)
     }
 
     /// Delete... on the `i`th account: its deletion asks first.
     #[cfg(any(test, luna_test, feature = "shots"))]
     pub fn ask_delete(&mut self, i: usize, cx: &mut Context<Self>) {
-        self.deleting = self.accounts.as_ref().and_then(|a| a.get(i)).cloned();
-        cx.notify();
+        if let Some(a) = self.accounts.as_ref().and_then(|a| a.get(i)).cloned() {
+            self.ask_delete_of(a, cx);
+        }
+    }
+
+    /// The question up answered yes, as its button does (the driver's).
+    #[cfg(any(test, luna_test, feature = "shots"))]
+    pub fn answer_yes(&mut self, cx: &mut Context<Self>) {
+        if let Some((a, id)) = self.deleting.take() {
+            self.delete(&a, &id, cx);
+        }
     }
 }
 

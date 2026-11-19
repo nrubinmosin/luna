@@ -350,6 +350,9 @@ pub(crate) fn run() -> Result<(), String> {
             if !panels::prefs_writer().drain(panels::PREFS_DRAIN) {
                 crate::log::warn("window", "the preferences changed last were not written in time");
             }
+            if !panels::draft_writer().drain(panels::PREFS_DRAIN) {
+                crate::log::warn("window", "the library editor's draft was not written in time");
+            }
             // A Claude Code model ask may still be saving a renewed token;
             // its cleanup runs only while Luna does. Not as the Windows
             // session ends as a whole, which ends the ask with everything

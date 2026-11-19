@@ -3,13 +3,20 @@
 //! where there is none yet). gpui-component's editor with Markdown
 //! highlighting and a steady caret: left alone it schedules nothing.
 //!
-//! Saving lays it out at once (the core's pass after `library_write`). A
-//! SKILL.md or a system text is checked a moment after the last key, the way
-//! the core checks it before laying it out or serving it, and is saved even
-//! when it does not do yet: a draft, laid out nowhere (or Luna's own served)
-//! until it does.
+//! Saving lays it out at once (the core's pass after the write). A SKILL.md
+//! or a system text is checked a moment after the last key, the way the core
+//! checks it before laying it out or serving it, and is saved even when it
+//! does not do yet: a draft, laid out nowhere (or Luna's own served) until it
+//! does.
+//!
+//! A save is bound to what the text was read from (`library_write_checked`):
+//! the library's folder and the file's revision. Changed on disk since, or
+//! the library moved, nothing is written; the text stays, and the editor
+//! offers to reload the file or overwrite it. Text not saved is kept with
+//! the host as it changes (`set_library_draft`), so a window that goes with
+//! it (the tray's Quit or Restart window) offers it at the next open.
 
-use super::{Entry, Library, LibraryFile};
+use super::{Draft, Entry, Library, LibraryFile, Written};
 use crate::host::Host;
 use crate::panels::{ask, cmd};
 use gpui::{App, AppContext, Context, Entity, Subscription, Task, Window};
@@ -26,35 +33,82 @@ pub struct EditorDoc {
     library: Entity<Library>,
     pub entry: Entry,
     pub state: Entity<EditorState>,
-    /// The file as read or last saved: what the text is dirty against.
+    /// The file as read or last saved: what the text is dirty against, and
+    /// what a save is bound to. None until the read is answered, while the
+    /// editor takes no input.
     pub file: Option<LibraryFile>,
     /// Why the text would not do, as the core checks it.
     pub problem: Option<String>,
     /// Why reading or saving failed.
     pub error: Option<String>,
+    /// Why the last save wrote nothing: the file changed on disk, or the
+    /// library moved. Reload or Overwrite answers it.
+    pub conflict: Option<String>,
     /// Saved, and not changed since.
     pub saved: bool,
     pub saving: bool,
+    /// This editor's text is the draft the host keeps.
+    drafted: bool,
     check: Option<Task<()>>,
     _changes: Subscription,
 }
 
 impl EditorDoc {
-    pub fn new(host: Arc<dyn Host>, library: Entity<Library>, entry: Entry, window: &mut Window, cx: &mut Context<Self>) -> EditorDoc {
+    /// Opens `entry`; with `draft`, its text in place of the file's once the
+    /// file is read, bound to what the draft was read from.
+    pub fn new(
+        host: Arc<dyn Host>,
+        library: Entity<Library>,
+        entry: Entry,
+        draft: Option<Draft>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> EditorDoc {
         let state = cx.new(|cx| EditorState::new(window, cx).language("markdown").soft_wrap(true).line_number(true));
         let changes = cx.subscribe_in(&state, window, |this, _, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::Change) {
                 this.changed(cx);
             }
         });
-        let read = ask::<LibraryFile>(&host, cmd::LIBRARY_READ, json!({ "entry": entry }));
+        let doc = EditorDoc {
+            host,
+            library,
+            entry,
+            state,
+            file: None,
+            problem: None,
+            error: None,
+            conflict: None,
+            saved: false,
+            saving: false,
+            drafted: false,
+            check: None,
+            _changes: changes,
+        };
+        doc.read(draft, window, cx);
+        doc
+    }
+
+    /// Reads the file and shows it (or `draft`'s text over it).
+    fn read(&self, draft: Option<Draft>, window: &mut Window, cx: &mut Context<Self>) {
+        let read = ask::<LibraryFile>(&self.host, cmd::LIBRARY_READ, json!({ "entry": self.entry }));
         cx.spawn_in(window, async move |this, cx| {
             let got = read.await;
             let _ = this.update_in(cx, |doc, window, cx| {
                 match got {
-                    Ok(file) => {
-                        doc.state.update(cx, |s, cx| s.set_value(file.text.clone(), window, cx));
+                    Ok(mut file) => {
+                        let text = match draft {
+                            Some(d) => {
+                                // Bound to what the draft was read from: a
+                                // file changed since conflicts on save.
+                                file.root = d.root;
+                                file.revision = d.revision;
+                                d.text
+                            }
+                            None => file.text.clone(),
+                        };
                         doc.file = Some(file);
+                        doc.state.update(cx, |s, cx| s.set_value(text, window, cx));
                         doc.check_now(cx);
                     }
                     Err(e) => doc.error = Some(e),
@@ -63,19 +117,6 @@ impl EditorDoc {
             });
         })
         .detach();
-        EditorDoc {
-            host,
-            library,
-            entry,
-            state,
-            file: None,
-            problem: None,
-            error: None,
-            saved: false,
-            saving: false,
-            check: None,
-            _changes: changes,
-        }
     }
 
     pub fn text(&self, cx: &App) -> String {
@@ -90,6 +131,7 @@ impl EditorDoc {
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.saved = false;
         self.error = None;
+        self.keep_draft(cx);
         let timer = cx.background_executor().timer(CHECK_AFTER);
         // The last key's check alone: the one before is dropped with its task.
         self.check = Some(cx.spawn(async move |this, cx| {
@@ -97,6 +139,23 @@ impl EditorDoc {
             let _ = this.update(cx, |doc, cx| doc.check_now(cx));
         }));
         cx.notify();
+    }
+
+    /// The text kept with the host while it differs from the file, forgotten
+    /// once it does not; a draft this editor did not keep (another file's,
+    /// still on offer) is left be.
+    fn keep_draft(&mut self, cx: &App) {
+        let draft = match (&self.file, self.dirty(cx)) {
+            (Some(f), true) => {
+                Some(Draft { entry: self.entry.clone(), root: f.root.clone(), revision: f.revision.clone(), text: self.text(cx) })
+            }
+            _ => None,
+        };
+        if draft.is_none() && !self.drafted {
+            return;
+        }
+        self.drafted = draft.is_some();
+        forget_or_keep(&self.host, draft);
     }
 
     /// The text checked as the core checks it; instructions are not.
@@ -118,29 +177,46 @@ impl EditorDoc {
         }));
     }
 
-    /// Saves the text and lays it out; nothing while it is as saved.
+    /// Saves the text and lays it out, held to what it was read from;
+    /// nothing while it is as saved.
     pub fn save(&mut self, cx: &mut Context<Self>) {
+        self.write(false, cx);
+    }
+
+    /// Overwrite: saves over a file changed on disk since it was read. Never
+    /// into another library than the one it was read from.
+    pub fn overwrite(&mut self, cx: &mut Context<Self>) {
+        self.write(true, cx);
+    }
+
+    fn write(&mut self, force: bool, cx: &mut Context<Self>) {
+        let Some(file) = &self.file else { return };
         if !self.dirty(cx) || self.saving {
             return;
         }
         let text = self.text(cx);
         self.saving = true;
         self.error = None;
-        let entry = self.entry.clone();
-        let task = self.library.update(cx, |l, cx| l.run(cmd::LIBRARY_WRITE, json!({ "entry": entry, "text": text }), cx));
+        self.conflict = None;
+        let args = json!({ "entry": self.entry, "text": text, "root": file.root, "revision": file.revision, "force": force });
+        let task = self.library.update(cx, |l, cx| l.run_answer::<Written>(cmd::LIBRARY_WRITE_CHECKED, args, |w| w.overview.clone(), cx));
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let ok = task.await;
+            let got = task.await;
             let _ = this.update(cx, |doc, cx| {
                 doc.saving = false;
-                if ok {
-                    if let Some(f) = &mut doc.file {
-                        f.text = text;
-                        f.exists = true;
+                match got {
+                    Ok(Written { conflict: Some(why), .. }) => doc.conflict = Some(why),
+                    Ok(w) => {
+                        if let Some(f) = &mut doc.file {
+                            f.text = text;
+                            f.exists = true;
+                            f.revision = w.revision;
+                        }
+                        doc.saved = true;
+                        doc.keep_draft(cx);
                     }
-                    doc.saved = true;
-                } else {
-                    doc.error = doc.library.read(cx).error.clone();
+                    Err(e) => doc.error = Some(e),
                 }
                 cx.notify();
             });
@@ -148,10 +224,37 @@ impl EditorDoc {
         .detach();
     }
 
+    /// The text thrown away (the discard question answered yes): the draft
+    /// the host keeps of it goes too.
+    pub fn forget_draft(&mut self) {
+        if std::mem::take(&mut self.drafted) {
+            forget_or_keep(&self.host, None);
+        }
+    }
+
+    /// Reload: the file as it is on disk now, in place of the text.
+    pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.conflict = None;
+        self.error = None;
+        self.saved = false;
+        self.file = None;
+        if std::mem::take(&mut self.drafted) {
+            forget_or_keep(&self.host, None);
+        }
+        self.read(None, window, cx);
+        cx.notify();
+    }
+
     /// What the line under the editor says of where the text stands.
     pub fn status(&self, cx: &App) -> (StatusKind, String) {
         if let Some(e) = &self.error {
             return (StatusKind::Trouble, e.clone());
+        }
+        if let Some(c) = &self.conflict {
+            return (
+                StatusKind::Attention,
+                format!("{c} Your text is still here: Reload takes the file's, Overwrite saves yours over it."),
+            );
         }
         if self.file.is_none() {
             return (StatusKind::Plain, "Reading...".into());
@@ -186,6 +289,13 @@ impl EditorDoc {
             format!("{}: not there yet, saving makes it", file.path)
         };
         (StatusKind::Plain, where_)
+    }
+}
+
+/// Keeps `draft` with the host, or forgets the one kept (None).
+pub(super) fn forget_or_keep(host: &Arc<dyn Host>, draft: Option<Draft>) {
+    if let Err(e) = host.send(cmd::SET_LIBRARY_DRAFT, json!({ "draft": draft })) {
+        log::warn!("set_library_draft: {e}");
     }
 }
 

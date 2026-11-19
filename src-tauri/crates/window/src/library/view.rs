@@ -4,9 +4,9 @@
 //! picked: which accounts it is meant for, whose sessions it is for, what
 //! each account or folder gets, and its file in the editor.
 
-use super::editor::StatusKind;
+use super::editor::{StatusKind, forget_or_keep};
 use super::{
-    AccountRef, Audience, EditorDoc, Entry, Library, Overview, Role, SyncState, SystemCompare, by_cli, describe, how, shown_system,
+    AccountRef, Audience, Draft, EditorDoc, Entry, Library, Overview, Role, SyncState, SystemCompare, by_cli, describe, how, shown_system,
 };
 use crate::desktop::{Pick, PickKind};
 use crate::models::Models;
@@ -51,9 +51,28 @@ enum Ask {
     Delete(Entry),
     Reset(String),
     Adopt(String),
-    /// Unsaved text in the editor, before it goes: to pick this (None: to
-    /// close the window).
-    Discard(Option<Sel>),
+    /// Unsaved text in the editor, before what replaces or closes it.
+    Discard(Next),
+}
+
+/// What replaces or closes the editor: each goes through the discard
+/// question while the editor has text not saved (`LibraryPanel::guard`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Next {
+    Select(Sel),
+    /// The window closes.
+    Close,
+    Rename(Entry, String),
+    /// Delete..., Back to Luna's..., Make it the override...: their own
+    /// question after.
+    Delete(Entry),
+    Reset(String),
+    Adopt(String),
+    /// Another library folder ("": Luna's own).
+    Source(String),
+    AddFolder(String),
+    /// The draft kept from before, in the editor again.
+    Restore(Draft),
 }
 
 pub struct LibraryPanel {
@@ -74,6 +93,9 @@ pub struct LibraryPanel {
     ask: Option<Ask>,
     /// Luna's own text of a system text beside yours, while it is shown.
     compare: Option<(String, Result<SystemCompare, String>)>,
+    /// Text not saved when the window last went (`library_draft`), offered
+    /// until it is restored or thrown away.
+    pub offer: Option<Draft>,
     _subs: Vec<Subscription>,
 }
 
@@ -97,6 +119,16 @@ impl LibraryPanel {
                 }
             }),
         ];
+        let kept = ask::<Option<Draft>>(&models.host, cmd::LIBRARY_DRAFT, json!({}));
+        cx.spawn(async move |this, cx| {
+            if let Ok(Some(draft)) = kept.await {
+                let _ = this.update(cx, |v, cx| {
+                    v.offer = Some(draft);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         LibraryPanel {
             models,
             layer,
@@ -110,6 +142,7 @@ impl LibraryPanel {
             draft: None,
             ask: None,
             compare: None,
+            offer: None,
             _subs: subs,
         }
     }
@@ -134,10 +167,76 @@ impl LibraryPanel {
             return false;
         }
         if self.dirty(cx) {
-            self.ask = Some(Ask::Discard(None));
+            self.ask = Some(Ask::Discard(Next::Close));
             return false;
         }
         true
+    }
+
+    /// `next`, which replaces or closes the editor: asked first while the
+    /// editor has text not saved.
+    pub(crate) fn guard(&mut self, next: Next, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dirty(cx) {
+            self.ask = Some(Ask::Discard(next));
+            cx.notify();
+            return;
+        }
+        self.go(next, window, cx);
+    }
+
+    fn go(&mut self, next: Next, window: &mut Window, cx: &mut Context<Self>) {
+        match next {
+            Next::Select(sel) => self.show(sel, None, window, cx),
+            Next::Close => self.close(cx),
+            Next::Rename(entry, to) => self.rename(entry, to, window, cx),
+            Next::Delete(entry) => self.ask = Some(Ask::Delete(entry)),
+            Next::Reset(name) => self.ask = Some(Ask::Reset(name)),
+            Next::Adopt(name) => self.ask = Some(Ask::Adopt(name)),
+            Next::Source(path) => {
+                let task = self.library.update(cx, |l, cx| l.set_source(&path, cx));
+                // The editor's file was the old library's: nothing of it is
+                // left open on the new one.
+                cx.spawn(async move |this, cx| {
+                    if task.await {
+                        let _ = this.update(cx, |v, cx| v.reset(cx));
+                    }
+                })
+                .detach();
+            }
+            Next::AddFolder(path) => {
+                let task = self.library.update(cx, |l, cx| l.set_folder(&path, true, cx));
+                cx.spawn(async move |this, cx| {
+                    if task.await {
+                        let _ = this.update(cx, |v, cx| {
+                            v.reset(cx);
+                            v.selected = Some(Sel::Folder(path));
+                        });
+                    }
+                })
+                .detach();
+            }
+            Next::Restore(draft) => {
+                self.offer = None;
+                let sel = match &draft.entry {
+                    Entry::Skill(n) => Sel::Skill(n.clone()),
+                    Entry::Instructions(n) => Sel::Instructions(n.clone()),
+                    Entry::System(n) => Sel::System(n.clone()),
+                };
+                self.selected = None;
+                self.show(sel, Some(draft), window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Nothing picked, nothing in the editor.
+    fn reset(&mut self, cx: &mut Context<Self>) {
+        self.selected = None;
+        self.editor = None;
+        self.renaming = None;
+        self.menu = None;
+        self.compare = None;
+        cx.notify();
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
@@ -151,21 +250,17 @@ impl LibraryPanel {
         if self.selected.as_ref() == Some(&sel) {
             return;
         }
-        if self.dirty(cx) {
-            self.ask = Some(Ask::Discard(Some(sel)));
-            cx.notify();
-            return;
-        }
-        self.show(sel, window, cx);
+        self.guard(Next::Select(sel), window, cx);
     }
 
-    fn show(&mut self, sel: Sel, window: &mut Window, cx: &mut Context<Self>) {
+    /// `sel` in the editor; with `draft`, its text over the file's.
+    fn show(&mut self, sel: Sel, draft: Option<Draft>, window: &mut Window, cx: &mut Context<Self>) {
         self.renaming = None;
         self.menu = None;
         self.compare = None;
         self.editor = sel.entry().map(|entry| {
             let (host, library) = (self.models.host.clone(), self.library.clone());
-            cx.new(|cx| EditorDoc::new(host, library, entry, window, cx))
+            cx.new(|cx| EditorDoc::new(host, library, entry, draft, window, cx))
         });
         if let Some(e) = &self.editor {
             cx.observe(e, |_, _, cx| cx.notify()).detach();
@@ -216,6 +311,11 @@ impl LibraryPanel {
         if to.is_empty() || to == entry.name() {
             return;
         }
+        // The editor opens again on the renamed file: text not saved asks.
+        self.guard(Next::Rename(entry, to), window, cx);
+    }
+
+    fn rename(&mut self, entry: Entry, to: String, window: &mut Window, cx: &mut Context<Self>) {
         let task = self.library.update(cx, |l, cx| l.rename(&entry, &to, cx));
         cx.spawn_in(window, async move |this, cx| {
             if task.await {
@@ -224,11 +324,9 @@ impl LibraryPanel {
                         Entry::Skill(_) => Sel::Skill(to),
                         _ => Sel::Instructions(to),
                     };
-                    // The file was renamed with it: nothing unsaved to lose
-                    // but what was typed, which the old name's editor held.
                     v.editor = None;
                     v.selected = None;
-                    v.show(sel, window, cx);
+                    v.show(sel, None, window, cx);
                 });
             }
         })
@@ -261,7 +359,7 @@ impl LibraryPanel {
                         let _ = this.update_in(cx, |v, window, cx| {
                             v.editor = None;
                             v.selected = None;
-                            v.show(Sel::System(name), window, cx);
+                            v.show(Sel::System(name), None, window, cx);
                         });
                     }
                 })
@@ -274,18 +372,17 @@ impl LibraryPanel {
                         let _ = this.update_in(cx, |v, window, cx| {
                             v.editor = None;
                             v.selected = None;
-                            v.show(Sel::System(skill), window, cx);
+                            v.show(Sel::System(skill), None, window, cx);
                         });
                     }
                 })
                 .detach();
             }
             Ask::Discard(next) => {
-                self.editor = None;
-                match next {
-                    Some(sel) => self.show(sel, window, cx),
-                    None => self.close(cx),
+                if let Some(e) = self.editor.take() {
+                    e.update(cx, |e, _| e.forget_draft());
                 }
+                self.go(next, window, cx);
             }
         }
         cx.notify();
@@ -297,19 +394,27 @@ impl LibraryPanel {
         }
     }
 
-    /// The system's folder picker, modal to the window; `then` with what was
-    /// picked.
-    fn pick_folder(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>, then: fn(&mut Self, String, &mut Context<Self>)) {
+    /// The system's folder picker, modal to the window; `then` of what was
+    /// picked, guarded (`guard`).
+    fn pick_folder(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>, then: fn(String) -> Next) {
         let pick = Pick { kind: PickKind::Folder, title: Some(title.to_owned()), start: None, filters: Vec::new() };
         let picked = self.models.host.pick(pick, Some(window));
         cx.spawn_in(window, async move |this, cx| match picked.await {
             Ok(Some(path)) => {
-                let _ = this.update(cx, |v, cx| then(v, path.to_string_lossy().into_owned(), cx));
+                let _ = this.update_in(cx, |v, window, cx| v.guard(then(path.to_string_lossy().into_owned()), window, cx));
             }
             Ok(None) => {}
             Err(e) => log::warn!("folder picker: {e}"),
         })
         .detach();
+    }
+
+    /// The draft on offer thrown away.
+    pub(crate) fn drop_offer(&mut self, cx: &mut Context<Self>) {
+        if self.offer.take().is_some() {
+            forget_or_keep(&self.models.host, None);
+        }
+        cx.notify();
     }
 
     pub(crate) fn toggle_menu(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -523,9 +628,30 @@ impl LibraryPanel {
         let state = match sync {
             SyncState::Idle => None,
             SyncState::Syncing => Some(ui::alert(p, Tone::Working, "Syncing: laying the library out into every account...")),
-            SyncState::Synced => Some(ui::alert(p, Tone::Done, "Synced: every account holds what the library says.")),
+            SyncState::Synced(r) if r.clean() => Some(ui::alert(p, Tone::Done, r.said())),
+            SyncState::Synced(r) => Some(ui::alert(p, Tone::Attention, r.said())),
             SyncState::Failed(e) => Some(ui::alert(p, Tone::Trouble, format!("Sync failed: {e}"))),
         };
+        let offer = self.offer.as_ref().map(|d| {
+            let restore = d.clone();
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(div().flex_1().min_w_0().child(ui::alert(
+                    p,
+                    Tone::Attention,
+                    format!("{} has text not saved from when the window last went.", d.entry.name()),
+                )))
+                .child(ui::button(
+                    "lib-draft-restore",
+                    p,
+                    "Restore",
+                    !busy,
+                    self.act(cx, move |v, window, cx| v.guard(Next::Restore(restore.clone()), window, cx)),
+                ))
+                .child(ui::button("lib-draft-drop", p, "Throw away", true, self.act(cx, |v, _, cx| v.drop_offer(cx))))
+        });
         div()
             .flex()
             .flex_col()
@@ -549,18 +675,14 @@ impl LibraryPanel {
                         p,
                         "Change...",
                         !busy,
-                        self.act(cx, |v, window, cx| {
-                            v.pick_folder("The library's folder", window, cx, |v, path, cx| {
-                                v.library.update(cx, |l, cx| l.set_source(&path, cx)).detach();
-                            })
-                        }),
+                        self.act(cx, |v, window, cx| v.pick_folder("The library's folder", window, cx, Next::Source)),
                     ))
                     .child(ui::button(
                         "lib-default",
                         p,
                         "Default",
                         !busy && !o.is_default,
-                        self.act(cx, |v, _, cx| v.library.update(cx, |l, cx| l.set_source("", cx)).detach()),
+                        self.act(cx, |v, window, cx| v.guard(Next::Source(String::new()), window, cx)),
                     ))
                     .child(ui::button(
                         "lib-sync",
@@ -577,6 +699,7 @@ impl LibraryPanel {
                 ))
             })
             .children(state)
+            .children(offer)
     }
 
     fn line(&self, id: String, label: String, sel: Sel, flag: Option<&str>, p: &Palette, cx: &Context<Self>) -> AnyElement {
@@ -688,7 +811,7 @@ impl LibraryPanel {
         };
         let doc = editor.read(cx);
         let (kind, said) = doc.status(cx);
-        let (dirty, saving) = (doc.dirty(cx), doc.saving);
+        let (dirty, saving, loaded, conflict) = (doc.dirty(cx), doc.saving, doc.file.is_some(), doc.conflict.is_some());
         let state = doc.state.clone();
         let status = match kind {
             StatusKind::Plain => ui::note(p, said),
@@ -704,18 +827,58 @@ impl LibraryPanel {
             .flex_col()
             .gap(px(6.))
             .child(div().id("lib-detail").flex_none().max_h(px(250.)).overflow_y_scroll().child(info))
-            .child(div().flex_1().min_h(px(140.)).border_1().border_color(p.frame).child(Editor::new(&state).h_full().bg(p.well)))
-            .child(div().flex().items_center().gap(px(6.)).child(div().flex_1().min_w_0().child(status)).child(ui::primary(
-                "lib-save",
-                p,
-                if saving { "Saving..." } else { "Save" },
-                dirty && !saving && !busy,
-                self.act(cx, |v, _, cx| {
-                    if let Some(e) = &v.editor {
-                        e.update(cx, |e, cx| e.save(cx));
-                    }
-                }),
-            )))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(140.))
+                    .border_1()
+                    .border_color(p.frame)
+                    // No typing before the file is in: what was typed would
+                    // be lost under it.
+                    .child(Editor::new(&state).h_full().bg(p.well).disabled(!loaded)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(div().flex_1().min_w_0().child(status))
+                    .when(conflict, |d| {
+                        d.child(ui::button(
+                            "lib-reload",
+                            p,
+                            "Reload",
+                            !saving,
+                            self.act(cx, |v, window, cx| {
+                                if let Some(e) = &v.editor {
+                                    e.update(cx, |e, cx| e.reload(window, cx));
+                                }
+                            }),
+                        ))
+                        .child(ui::button(
+                            "lib-overwrite",
+                            p,
+                            "Overwrite",
+                            !saving && !busy,
+                            self.act(cx, |v, _, cx| {
+                                if let Some(e) = &v.editor {
+                                    e.update(cx, |e, cx| e.overwrite(cx));
+                                }
+                            }),
+                        ))
+                    })
+                    .child(ui::primary(
+                        "lib-save",
+                        p,
+                        if saving { "Saving..." } else { "Save" },
+                        dirty && !saving && !busy,
+                        self.act(cx, |v, _, cx| {
+                            if let Some(e) = &v.editor {
+                                e.update(cx, |e, cx| e.save(cx));
+                            }
+                        }),
+                    )),
+            )
     }
 
     /// An entry's name, with Rename beside it or the field renaming it.
@@ -754,28 +917,13 @@ impl LibraryPanel {
                 p,
                 "Delete...",
                 !busy,
-                self.act(cx, move |v, _, cx| {
-                    v.ask = Some(Ask::Delete(delete.clone()));
-                    cx.notify();
-                }),
+                self.act(cx, move |v, window, cx| v.guard(Next::Delete(delete.clone()), window, cx)),
             ))
     }
 
     /// Add folder...: one picked in the system's picker, listed and picked.
     pub(crate) fn add_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pick_folder("Give skills to the sessions Luna starts in a folder", window, cx, |v, path, cx| {
-            let task = v.library.update(cx, |l, cx| l.set_folder(&path, true, cx));
-            cx.spawn(async move |this, cx| {
-                if task.await {
-                    let _ = this.update(cx, |v, cx| {
-                        v.selected = Some(Sel::Folder(path));
-                        v.editor = None;
-                        cx.notify();
-                    });
-                }
-            })
-            .detach();
-        });
+        self.pick_folder("Give skills to the sessions Luna starts in a folder", window, cx, Next::AddFolder);
     }
 
     fn instructions_info(&self, o: &Overview, i: &super::Instructions, busy: bool, p: &Palette, cx: &Context<Self>) -> Div {
@@ -934,10 +1082,7 @@ impl LibraryPanel {
                     p,
                     "Make it the override...",
                     !busy,
-                    self.act(cx, move |v, _, cx| {
-                        v.ask = Some(Ask::Adopt(name.clone()));
-                        cx.notify();
-                    }),
+                    self.act(cx, move |v, window, cx| v.guard(Next::Adopt(name.clone()), window, cx)),
                 ),
             ));
         }
@@ -1017,10 +1162,7 @@ impl LibraryPanel {
                         p,
                         "Back to Luna's...",
                         yours && !busy,
-                        self.act(cx, move |v, _, cx| {
-                            v.ask = Some(Ask::Reset(reset.clone()));
-                            cx.notify();
-                        }),
+                        self.act(cx, move |v, window, cx| v.guard(Next::Reset(reset.clone()), window, cx)),
                     )),
             )
             .child(ui::note(p, s.what()))
@@ -1182,6 +1324,38 @@ impl LibraryPanel {
     }
 }
 
+/// What the driver's lines and the tests do as a click would.
+#[cfg(any(test, luna_test, feature = "shots"))]
+impl LibraryPanel {
+    /// The question up answered yes, as its button does.
+    pub fn answer_yes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.yes(window, cx);
+    }
+
+    /// Rename typed and committed, as its field and button do.
+    pub fn rename_to(&mut self, entry: Entry, to: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_rename(entry, window, cx);
+        if let Some((_, field)) = &self.renaming {
+            field.update(cx, |f, cx| f.set_value(to.to_owned(), window, cx));
+        }
+        self.commit_rename(window, cx);
+    }
+
+    /// The editor's Reload or Overwrite, as its buttons do.
+    pub fn settle_conflict(&mut self, overwrite: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(e) = self.editor.clone() {
+            e.update(cx, |e, cx| if overwrite { e.overwrite(cx) } else { e.reload(window, cx) });
+        }
+    }
+
+    /// The draft on offer restored, as its button does.
+    pub fn restore_offer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(d) = self.offer.clone() {
+            self.guard(Next::Restore(d), window, cx);
+        }
+    }
+}
+
 #[cfg(test)]
 impl LibraryPanel {
     pub fn new_skill_field(&self) -> Entity<InputState> {
@@ -1197,14 +1371,16 @@ impl LibraryPanel {
         self.ask.is_some()
     }
 
-    pub fn answer_yes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.yes(window, cx);
+    /// Delete... on the entry picked, as its button does.
+    pub fn ask_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(entry) = self.selected.as_ref().and_then(Sel::entry) {
+            self.guard(Next::Delete(entry), window, cx);
+        }
     }
 
-    /// Delete... on the entry picked.
-    pub fn ask_delete(&mut self, cx: &mut Context<Self>) {
-        self.ask = self.selected.as_ref().and_then(Sel::entry).map(Ask::Delete);
-        cx.notify();
+    /// The question up is the discard question.
+    pub fn asking_discard(&self) -> bool {
+        matches!(self.ask, Some(Ask::Discard(_)))
     }
 
     pub fn ask_reset(&mut self, name: String, cx: &mut Context<Self>) {

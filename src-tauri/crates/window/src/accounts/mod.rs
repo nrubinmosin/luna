@@ -26,6 +26,14 @@ pub struct Account {
     pub path: String,
 }
 
+/// An account's folder as the Delete... question names it
+/// (`account_identity`): its path, and its identity on the drive.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct Identity {
+    pub path: String,
+    pub id: String,
+}
+
 /// One usage window: what it is, how full (0 to 1), when it resets.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UsageWindow {

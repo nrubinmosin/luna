@@ -34,8 +34,10 @@ use std::sync::Arc;
 /// in luna_lib holds its dispatch to these too). Their arguments and answers
 /// are the page's (`src/ipc/library.ts`, `accounts.ts`, `cli.ts`, `trust.ts`,
 /// `agents.ts`, `accountSettings.ts`), but for `window_prefs`,
-/// `set_window_prefs`, `app_version`, `library_rename_skill` and `set_helpers_above_caller`'s
-/// `confirmed`, which are the native window's own.
+/// `set_window_prefs`, `app_version`, `library_rename_skill`,
+/// `library_write_checked`, the draft's, `account_identity`,
+/// `delete_account_checked` and `set_helpers_above_caller`'s `confirmed`,
+/// which are the native window's own.
 pub mod cmd {
     pub const LIBRARY_OVERVIEW: &str = "library_overview";
     pub const LIBRARY_SYNC: &str = "library_sync";
@@ -48,6 +50,19 @@ pub mod cmd {
     pub const LIBRARY_SET_FOLDER_INSTRUCTIONS: &str = "library_set_folder_instructions";
     pub const LIBRARY_READ: &str = "library_read";
     pub const LIBRARY_WRITE: &str = "library_write";
+    /// `{ entry, text, root, revision, force }`: `Written`, a save bound to
+    /// the library and the file as they were read (library/editor.rs).
+    pub const LIBRARY_WRITE_CHECKED: &str = "library_write_checked";
+    /// `{ dests, replace }`: the library's copy put back at each of `dests`,
+    /// over what is there only at those in `replace` (Sync).
+    pub const LIBRARY_PUT_BACK: &str = "library_put_back";
+    /// `{ dests, takeOut }`: copies no longer wanted but changed, taken out
+    /// (backed up) or kept as the person's own (Sync takes them out).
+    pub const LIBRARY_KEPT: &str = "library_kept";
+    /// `{}`: the editor's text not saved when the window last went, if any.
+    pub const LIBRARY_DRAFT: &str = "library_draft";
+    /// `{ draft }`: keeps it, or with `null` forgets it. Sent, in order.
+    pub const SET_LIBRARY_DRAFT: &str = "set_library_draft";
     pub const LIBRARY_CHECK_SKILL: &str = "library_check_skill";
     pub const LIBRARY_CHECK_SYSTEM: &str = "library_check_system";
     pub const LIBRARY_SYSTEM_COMPARE: &str = "library_system_compare";
@@ -86,6 +101,12 @@ pub mod cmd {
     pub const CREATE_ACCOUNT: &str = "create_account";
     pub const RENAME_ACCOUNT: &str = "rename_account";
     pub const DELETE_ACCOUNT: &str = "delete_account";
+    /// `{ provider, name }`: `{ path, id }`, the folder the Delete... question
+    /// names.
+    pub const ACCOUNT_IDENTITY: &str = "account_identity";
+    /// `{ provider, name, path, id }`: deleted only while it is still that
+    /// folder.
+    pub const DELETE_ACCOUNT_CHECKED: &str = "delete_account_checked";
     pub const ACCOUNT_LIMITS: &str = "account_limits";
     pub const CODEX_LIMITS: &str = "codex_limits";
     pub const SETTINGS_SYNC_STATE: &str = "settings_sync_state";
@@ -105,6 +126,10 @@ pub mod cmd {
         LIBRARY_SET_FOLDER_INSTRUCTIONS,
         LIBRARY_READ,
         LIBRARY_WRITE,
+        LIBRARY_WRITE_CHECKED,
+        LIBRARY_PUT_BACK,
+        LIBRARY_KEPT,
+        LIBRARY_DRAFT,
         LIBRARY_CHECK_SKILL,
         LIBRARY_CHECK_SYSTEM,
         LIBRARY_SYSTEM_COMPARE,
@@ -136,6 +161,8 @@ pub mod cmd {
         CREATE_ACCOUNT,
         RENAME_ACCOUNT,
         DELETE_ACCOUNT,
+        ACCOUNT_IDENTITY,
+        DELETE_ACCOUNT_CHECKED,
         ACCOUNT_LIMITS,
         CODEX_LIMITS,
         SETTINGS_SYNC_STATE,
@@ -143,7 +170,7 @@ pub mod cmd {
         SET_SETTINGS_SYNC_ON_START,
         SYNC_SETTINGS_NOW,
     ];
-    pub const SENT: &[&str] = &[SET_WINDOW_PREFS];
+    pub const SENT: &[&str] = &[SET_WINDOW_PREFS, SET_LIBRARY_DRAFT];
 }
 
 /// The panels' events the inbox takes, beside `event::ALL`.
@@ -432,12 +459,16 @@ impl Render for PanelLayer {
 /// The driver's lines for the panels (drive.rs, and the shots' scenes):
 /// `panel library|settings|accounts|none`, `select instructions|skill|
 /// system|folder <name>` (the editor focused on it), `new instructions|skill
-/// <name>`, `save`, `menu <id>`,
-/// `compare <system text>`, `page <key>`, `setting sound on|off`,
-/// `cli-check claude|codex`, `update-check`, `update-confirm`, `add-account
-/// claude|codex <name>`, `delete <n>` (the nth account), each doing what its
-/// click does. True when the line
-/// was one of these and its panel is up.
+/// <name>`, `rename skill|instructions <from> <to>`, `save`, `reload`,
+/// `overwrite`, `restore` (the draft on offer), `source <folder>|default`
+/// (the library's folder), `sync`, `menu <id>`, `compare <system text>`,
+/// `page <key>`, `setting sound on|off`, `cli-check claude|codex`,
+/// `update-check`, `update-confirm`, `add-account claude|codex <name>`,
+/// `delete <n>` (the nth account), `yes` (the library's or the accounts'
+/// question up), each doing what its click does. True when the line was one
+/// of these and its panel is up. No line answers Settings' questions: turning
+/// helpers above their caller on takes a person's click in the window
+/// (threat model §3), and Luna's update a person's yes.
 #[cfg(any(test, luna_test, feature = "shots"))]
 pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -> bool {
     use crate::library::Sel;
@@ -487,6 +518,43 @@ pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -
             if let Some(e) = v.read(cx).editor.clone() {
                 e.update(cx, |e, cx| e.save(cx));
             }
+            true
+        }
+        ("rename", Some(Open::Library(v))) => {
+            let mut words = rest.split_whitespace();
+            let (Some(kind), Some(from), Some(to)) = (words.next(), words.next(), words.next()) else { return false };
+            let entry = match kind {
+                "skill" => crate::library::Entry::Skill(from.to_owned()),
+                "instructions" => crate::library::Entry::Instructions(from.to_owned()),
+                _ => return false,
+            };
+            v.clone().update(cx, |v, cx| v.rename_to(entry, to, window, cx));
+            true
+        }
+        ("reload" | "overwrite", Some(Open::Library(v))) => {
+            v.clone().update(cx, |v, cx| v.settle_conflict(verb == "overwrite", window, cx));
+            true
+        }
+        ("restore", Some(Open::Library(v))) => {
+            v.clone().update(cx, |v, cx| v.restore_offer(window, cx));
+            true
+        }
+        ("source", Some(Open::Library(v))) => {
+            let path = if rest == "default" { String::new() } else { rest.to_owned() };
+            v.clone().update(cx, |v, cx| v.guard(crate::library::Next::Source(path), window, cx));
+            true
+        }
+        ("sync", Some(Open::Library(v))) => {
+            let library = v.read(cx).library.clone();
+            library.update(cx, |l, cx| l.sync_now(cx));
+            true
+        }
+        ("yes", Some(Open::Library(v))) => {
+            v.clone().update(cx, |v, cx| v.answer_yes(window, cx));
+            true
+        }
+        ("yes", Some(Open::Accounts(v))) => {
+            v.clone().update(cx, |v, cx| v.answer_yes(cx));
             true
         }
         ("page", Some(Open::Settings(v))) => match crate::settings::Page::ALL.into_iter().find(|p| p.key() == rest) {

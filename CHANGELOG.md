@@ -32,8 +32,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   and Check, and Luna's update confirmed with its version and notes;
   the accounts with their limits, added, renamed, deleted, and the parent
   whose settings the others copy. A skill can now be renamed
-  (`library_rename_skill`). The test build's `LUNA_TEST_DRIVE` file drives
-  them in a smoke run without global input.
+  (`library_rename_skill`): without following a link, replacing a folder of
+  the new name or leaving its `name` half rewritten, and saying whether it
+  was done, undone, or left partly done. The editor's save is bound to the
+  library and the file as they were read: a file changed on disk since is not
+  overwritten unasked (Reload, Overwrite), and text not saved when the window
+  goes (the tray's Quit or Restart window) is offered at the next open. Every
+  way the editor's text is replaced asks first. Sync makes every copy Luna
+  manages the library's again (changed ones overwritten, deleted ones put
+  back, unwanted ones taken out, each backed up; files Luna did not write
+  left alone) and says what it did. Deleting an account is bound to the
+  folder its question named, and warns of chats still set to it. The test
+  build's `LUNA_TEST_DRIVE` file drives them in a smoke run without global
+  input; no line of it answers the question for helpers above their caller.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.
@@ -140,6 +151,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `signed-floor`) is removed at the first check; its marks bad still hold
   while the release channel names their version, and its watch over the
   version you had (one you chose to keep) is not carried over.
+
+### Security
+
+- The library's editor no longer reads or saves through a link: a skill's
+  SKILL.md and an instructions file are reached from the library's folder
+  with no link or junction on the way and inside the library once resolved,
+  opened without following a link or waiting on a FIFO, and saved over
+  nothing but a plain file; new skills and instructions likewise. A `skills/`
+  planted as a junction to an account's folder could lead a save there.
+- Deleting an account no longer follows a junction: the account's folder and
+  its provider's folder must be no link and lie inside the accounts root, or
+  nothing is deleted.
 
 ## [0.19.0] - 2026-11-18
 

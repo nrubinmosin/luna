@@ -77,6 +77,13 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ),
     ("library_read", own!(res lib::library_read, entry: lib::Entry)),
     ("library_write", own!(res lib::library_write, entry: lib::Entry, text: String)),
+    (
+        "library_write_checked",
+        own!(res lib::library_write_checked, entry: lib::Entry, text: String, root: String, revision: Option<String>, force: bool),
+    ),
+    ("library_put_back", own!(res lib::library_put_back, dests: Vec<String>, replace: Vec<String>)),
+    ("library_kept", own!(res lib::library_kept, dests: Vec<String>, take_out: bool)),
+    ("library_draft", |_| answer(read_draft())),
     ("library_check_skill", own!(ok lib::library_check_skill, skill: String, text: String)),
     ("library_check_system", own!(ok lib::library_check_system, name: String, text: String)),
     ("library_system_compare", own!(res lib::library_system_compare, name: String)),
@@ -123,6 +130,11 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("list_accounts", own!(res crate::accounts::list_accounts)),
     ("create_account", own!(res crate::accounts::create_account, provider: Provider, name: String)),
     ("delete_account", own!(res crate::accounts::delete_account, provider: Provider, name: String)),
+    ("account_identity", own!(res crate::accounts::account_identity, provider: Provider, name: String)),
+    (
+        "delete_account_checked",
+        own!(res crate::accounts::delete_account_checked, provider: Provider, name: String, path: AbsPath, id: String),
+    ),
     ("account_limits", |a| limits(a, crate::claude::limits::fetch_limits)),
     ("codex_limits", |a| limits(a, crate::codex::limits::fetch_limits)),
     ("settings_sync_state", own!(ok crate::account_settings::settings_sync_state)),
@@ -131,13 +143,25 @@ pub(super) const OWN: &[(&str, Command)] = &[
 ];
 
 /// Every command of the panels' the window may send, by name.
-pub(super) const OWN_SENT: &[(&str, Command)] = &[("set_window_prefs", set_window_prefs)];
+pub(super) const OWN_SENT: &[(&str, Command)] = &[("set_window_prefs", set_window_prefs), ("set_library_draft", set_library_draft)];
 
 /// The native window's own, which the page has no Tauri command for: its
 /// preferences (the page keeps them in its local storage), Luna's version
-/// (the page has it from the updater plugin), and a skill's rename.
+/// (the page has it from the updater plugin), a skill's rename, a save bound
+/// to what it was read from, the editor's draft, and a deletion bound to the
+/// account folder its question named.
 #[cfg(test)]
-pub(super) const NATIVE_ONLY: &[&str] = &["window_prefs", "set_window_prefs", "app_version", "library_rename_skill"];
+pub(super) const NATIVE_ONLY: &[&str] = &[
+    "window_prefs",
+    "set_window_prefs",
+    "app_version",
+    "library_rename_skill",
+    "library_write_checked",
+    "library_draft",
+    "set_library_draft",
+    "account_identity",
+    "delete_account_checked",
+];
 
 /// `{ accountPath, force }`: the account's limits, past the CLI's cache and a
 /// 429 cool-off when `force` (the refresh button).
@@ -230,6 +254,61 @@ pub(super) fn prefs_writer() -> &'static Arc<Writer<WindowPrefs>> {
 
 /// How long quitting waits for the last preferences to be written.
 pub(super) const PREFS_DRAIN: Duration = Duration::from_secs(2);
+
+/// The library editor's text not saved, as the window last had it: kept in
+/// `<data>/library-draft.json` (private) while it differs from the file, so
+/// a window that goes with it unsaved (the tray's Quit or Restart window, a
+/// crash) offers it at the next open of the library. What the editor read it
+/// from goes with it: a restored draft is saved under the same checks.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Draft {
+    /// As the window names it: `{"skill": name}` and the like.
+    pub entry: Value,
+    pub root: String,
+    pub revision: Option<String>,
+    pub text: String,
+}
+
+fn draft_file() -> std::path::PathBuf {
+    crate::paths::data_dir().join("library-draft.json")
+}
+
+fn read_draft() -> Option<Draft> {
+    std::fs::read(draft_file()).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+/// `{ draft }`, sent on the window's thread: the latest written by the one
+/// writer, so a draft forgotten after a save is not brought back by an
+/// earlier keystroke's.
+fn set_library_draft(a: Value) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    struct A {
+        draft: Option<Draft>,
+    }
+    let A { draft } = args(a)?;
+    draft_writer().put(draft);
+    Ok(Value::Null)
+}
+
+fn write_draft(draft: &Option<Draft>) -> Result<(), String> {
+    let path = draft_file();
+    match draft {
+        Some(d) => {
+            let json = serde_json::to_vec(d).map_err(|e| e.to_string())?;
+            crate::secret::write_private(&path, &json).map_err(|e| format!("cannot keep the editor's draft: {e}"))
+        }
+        None => match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("cannot forget the editor's draft: {e}")),
+            _ => Ok(()),
+        },
+    }
+}
+
+pub(super) fn draft_writer() -> &'static Arc<Writer<Option<Draft>>> {
+    static WRITER: OnceLock<Arc<Writer<Option<Draft>>>> = OnceLock::new();
+    WRITER.get_or_init(|| Writer::new("draft", write_draft))
+}
 
 #[cfg(test)]
 mod tests {

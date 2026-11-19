@@ -10,9 +10,12 @@ pub const SKILL_TEXT: &str = "---\nname: review\ndescription: Reviews a change f
     Read the diff whole first. Then, for each file:\n\n1. Say what it changes, in a line.\n2. Look for **correctness** bugs: \
     off-by-one, a missed error path, a race.\n3. Name the line and the failure it causes.\n\n```sh\ngit diff --stat\n```\n";
 
+/// The demo library's folder.
+pub const LIBRARY_ROOT: &str = "C:\\Users\\me\\AppData\\Luna\\library";
+
 pub fn overview() -> Value {
     json!({
-        "root": "C:\\Users\\me\\AppData\\Luna\\library",
+        "root": LIBRARY_ROOT,
         "isDefault": true,
         "found": true,
         "instructions": [
@@ -73,18 +76,23 @@ pub fn answer_all(host: &FakeHost) {
         cmd::LIBRARY_SYSTEM_RESET,
         cmd::LIBRARY_SYSTEM_ADOPT,
         cmd::LIBRARY_NEW_SKILL,
-        cmd::LIBRARY_RENAME_SKILL,
         cmd::LIBRARY_DELETE_SKILL,
+        cmd::LIBRARY_PUT_BACK,
+        cmd::LIBRARY_KEPT,
         cmd::LIBRARY_NEW_INSTRUCTIONS,
         cmd::LIBRARY_RENAME_INSTRUCTIONS,
         cmd::LIBRARY_DELETE_INSTRUCTIONS,
     ] {
         host.answer(c, overview());
     }
+    host.answer(cmd::LIBRARY_RENAME_SKILL, json!({ "outcome": "committed", "why": null, "overview": overview() }));
     host.answer(
         cmd::LIBRARY_READ,
-        json!({ "path": "C:\\Users\\me\\AppData\\Luna\\library\\skills\\review\\SKILL.md", "text": SKILL_TEXT, "exists": true }),
+        json!({ "path": "C:\\Users\\me\\AppData\\Luna\\library\\skills\\review\\SKILL.md", "text": SKILL_TEXT, "exists": true,
+                "root": LIBRARY_ROOT, "revision": "r1" }),
     );
+    host.answer(cmd::LIBRARY_WRITE_CHECKED, json!({ "conflict": null, "revision": "r2", "overview": overview() }));
+    host.answer(cmd::LIBRARY_DRAFT, Value::Null);
     host.answer(cmd::LIBRARY_CHECK_SKILL, Value::Null);
     host.answer(cmd::LIBRARY_CHECK_SYSTEM, Value::Null);
     host.answer(cmd::LIBRARY_SYSTEM_COMPARE, json!({ "luna": "You are a lead.\n", "yours": "You are a lead. Report in English.\n" }));
@@ -143,6 +151,8 @@ pub fn answer_all(host: &FakeHost) {
         json!({ "provider": "claude", "name": "office", "path": "C:\\Users\\me\\luna-accounts\\anthropic\\office" }),
     );
     host.answer(cmd::DELETE_ACCOUNT, Value::Null);
+    host.answer(cmd::ACCOUNT_IDENTITY, json!({ "path": "C:\\Users\\me\\luna-accounts\\anthropic\\work", "id": "f00d:01" }));
+    host.answer(cmd::DELETE_ACCOUNT_CHECKED, Value::Null);
     let sync = json!({ "claude": "work", "codex": null, "onStart": false });
     for c in [cmd::SETTINGS_SYNC_STATE, cmd::SET_SETTINGS_PARENT, cmd::SET_SETTINGS_SYNC_ON_START] {
         host.answer(c, sync.clone());
@@ -159,6 +169,7 @@ pub fn scenes() -> Vec<(&'static str, Vec<&'static str>)> {
         ("library-reach", vec!["panel library", "select skill review", "menu lib-reach"]),
         ("library-folder", vec!["panel library", "select folder E:\\Projects\\luna"]),
         ("library-system", vec!["panel library", "select system role-lead", "compare role-lead"]),
+        ("library-sync", vec!["panel library", "sync"]),
         ("settings", vec!["panel settings"]),
         ("settings-chats", vec!["panel settings", "page chats"]),
         ("settings-agents", vec!["panel settings", "page agents"]),

@@ -2,9 +2,11 @@
 //! accounts, whose sessions each is for, the folders that give their
 //! sessions other ones, and Luna's own system texts, with an editor for any
 //! of their files. What the page's library dialog does, less what ADR-0030
-//! cut: nothing here looks at a copy where it lies (no "Needs a look", no
-//! diffs, nothing put back, kept or left out). The library is the source of
-//! truth; the core lays it out after every change.
+//! cut: no "Needs a look", no diffs, nothing kept or left out by hand. The
+//! library is the source of truth; the core lays it out after every change,
+//! and Sync makes every copy Luna manages the library's again: a changed copy
+//! overwritten and a deleted one restored (each backed up first), one no
+//! longer wanted taken out, a file not Luna's left alone, and says which.
 //!
 //! `Library` holds the core's overview (library/overview.rs `Overview`), as
 //! every command answers it; `LibraryPanel` (view.rs) shows it, and
@@ -14,11 +16,12 @@ mod editor;
 mod view;
 
 pub use editor::EditorDoc;
-pub use view::{LibraryPanel, Sel};
+pub use view::{LibraryPanel, Next, Sel};
 
 use crate::host::Host;
 use crate::panels::{Provider, ask, cmd};
 use gpui::{Context, Task};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -52,6 +55,35 @@ pub struct Overview {
     pub system: Vec<SystemText>,
     /// Folders set aside in `system/`, read by nothing.
     pub system_aside: Vec<String>,
+    /// Every copy the library wants, and where it stands.
+    pub places: Vec<Place>,
+    /// Copies no longer wanted, changed where they lie, left there.
+    pub kept: Vec<Kept>,
+    /// What a put-back or a kept copy's settling could not settle.
+    pub unsettled: Vec<String>,
+}
+
+/// One copy the library wants (`LibraryPlaceDto`): where, and how it stands
+/// (`current`, `behind`, `missing`, `changed`, `gone`, `taken`, `skipped`,
+/// `failed`).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Place {
+    pub dest: String,
+    pub status: String,
+    pub problem: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Kept {
+    pub dest: String,
+}
+
+impl Overview {
+    fn dests(&self, status: &str) -> Vec<String> {
+        self.places.iter().filter(|p| p.status == status).map(|p| p.dest.clone()).collect()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -279,7 +311,7 @@ impl Serialize for Audience {
 
 /// A file of the library's the editor opens: a skill's SKILL.md, an
 /// instructions file, or a system text's override.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Entry {
     Skill(String),
@@ -303,6 +335,50 @@ pub struct LibraryFile {
     pub text: String,
     /// False: not there yet, and `text` what to start from.
     pub exists: bool,
+    /// The library's folder it was read from, and the sha256 of what was
+    /// read (None: no file there): a save is bound to both.
+    pub root: String,
+    pub revision: Option<String>,
+}
+
+/// What a save bound to its source came to (`library_write_checked`).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Written {
+    /// Why nothing was saved: the file changed on disk, or the library moved.
+    pub conflict: Option<String>,
+    /// The file's revision on disk now.
+    pub revision: Option<String>,
+    pub overview: Option<Overview>,
+}
+
+/// The editor's text not saved when the window last went
+/// (`library_draft`), with what it was read from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Draft {
+    pub entry: Entry,
+    pub root: String,
+    pub revision: Option<String>,
+    pub text: String,
+}
+
+/// How a skill's rename went (`library_rename_skill`'s `Renamed`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Outcome {
+    #[default]
+    Committed,
+    RolledBack,
+    RollbackFailed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Renamed {
+    pub outcome: Outcome,
+    pub why: Option<String>,
+    pub overview: Option<Overview>,
 }
 
 /// Luna's own text of a system text beside your override of it.
@@ -376,8 +452,67 @@ pub enum SyncState {
     #[default]
     Idle,
     Syncing,
-    Synced,
+    Synced(SyncReport),
     Failed(String),
+}
+
+/// What a Sync did beyond laying the library out, counted as the core
+/// answered.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SyncReport {
+    /// Copies changed where they lie, overwritten with the library's.
+    pub overwritten: usize,
+    /// Copies deleted where they lay, put back.
+    pub restored: usize,
+    /// Copies no longer wanted but changed, taken out.
+    pub taken_out: usize,
+    /// Places holding a file Luna did not write, left alone.
+    pub foreign: usize,
+    /// Copies the library cannot lay out: its own file will not do.
+    pub broken: usize,
+    /// What would not settle, a line each.
+    pub failed: Vec<String>,
+}
+
+impl SyncReport {
+    /// Everything Luna manages holds what the library says.
+    pub fn clean(&self) -> bool {
+        self.failed.is_empty() && self.broken == 0
+    }
+
+    /// In words.
+    pub fn said(&self) -> String {
+        let mut parts = Vec::new();
+        let count = |n: usize, one: &str, many: &str| if n == 1 { one.to_owned() } else { format!("{n} {many}") };
+        if self.overwritten > 0 {
+            parts.push(format!("{} overwritten with the library's", count(self.overwritten, "a changed copy", "changed copies")));
+        }
+        if self.restored > 0 {
+            parts.push(format!("{} put back", count(self.restored, "a deleted copy", "deleted copies")));
+        }
+        if self.taken_out > 0 {
+            parts.push(format!("{} taken out", count(self.taken_out, "a copy no longer wanted", "copies no longer wanted")));
+        }
+        let done = if parts.is_empty() { String::new() } else { format!(" {} (backed up first).", parts.join(", ")) };
+        let mut out = if self.clean() {
+            format!("Synced: every copy Luna manages holds what the library says.{done}")
+        } else {
+            format!("Synced, but not everything Luna manages holds what the library says.{done}")
+        };
+        if self.foreign > 0 {
+            out.push_str(&format!(" {} left alone.", count(self.foreign, "A file Luna did not write is", "files Luna did not write are")));
+        }
+        if self.broken > 0 {
+            out.push_str(&format!(
+                " {} laid out nowhere: the library's file will not do (marked !).",
+                count(self.broken, "One copy is", "copies are")
+            ));
+        }
+        for line in &self.failed {
+            out.push_str(&format!(" Not settled: {line}."));
+        }
+        out
+    }
 }
 
 /// The library as the core last answered it, and the commands that change
@@ -410,48 +545,143 @@ impl Library {
     /// Runs a command that answers with the overview and keeps it; the task
     /// says whether it went through.
     pub fn run(&mut self, command: &str, args: Value, cx: &mut Context<Self>) -> Task<bool> {
+        let task = self.run_answer::<Option<Overview>>(command, args, Option::clone, cx);
+        cx.spawn(async move |_, _| task.await.is_ok())
+    }
+
+    /// Runs a command whose answer `overview_of` takes the overview from
+    /// (where it has one), keeps that, and hands the whole answer back.
+    pub fn run_answer<T: DeserializeOwned + 'static>(
+        &mut self,
+        command: &str,
+        args: Value,
+        overview_of: fn(&T) -> Option<Overview>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<T, String>> {
         self.asked += 1;
         let mine = self.asked;
         self.pending += 1;
         cx.notify();
-        let answer = ask::<Option<Overview>>(&self.host, command, args);
+        let answer = ask::<T>(&self.host, command, args);
         cx.spawn(async move |this, cx| {
             let got = answer.await;
             this.update(cx, |l, cx| {
                 l.pending -= 1;
-                let ok = got.is_ok();
-                match got {
+                match &got {
                     // An answer older than the one shown is dropped: a look
                     // asked before a click must not undo what it changed.
-                    Ok(o) if mine > l.shown => {
+                    Ok(t) if mine > l.shown => {
                         l.shown = mine;
-                        if o.is_some() {
-                            l.overview = o;
+                        if let Some(o) = overview_of(t) {
+                            l.overview = Some(o);
                         }
                         l.error = None;
                     }
                     Ok(_) => {}
-                    Err(e) => l.error = Some(e),
+                    Err(e) => l.error = Some(e.clone()),
                 }
                 cx.notify();
-                ok
+                got
             })
-            .unwrap_or(false)
+            .unwrap_or_else(|_| Err("the library window went".into()))
         })
     }
 
-    /// Lays the library out now, everything that needs no asking.
+    /// Lays the library out now, then makes every copy Luna manages the
+    /// library's again (ADR-0030): the changed ones overwritten and the
+    /// deleted ones put back (`library_put_back`), those no longer wanted but
+    /// changed taken out (`library_kept`), each backed up first; a file Luna
+    /// did not write is left alone. Says what it did, and what would not.
     pub fn sync_now(&mut self, cx: &mut Context<Self>) {
         self.sync = SyncState::Syncing;
-        let task = self.run(cmd::LIBRARY_SYNC, json!({}), cx);
+        let pass = self.run_answer::<Option<Overview>>(cmd::LIBRARY_SYNC, json!({}), Option::clone, cx);
         cx.spawn(async move |this, cx| {
-            let ok = task.await;
+            let failed = |this: &gpui::WeakEntity<Library>, cx: &mut gpui::AsyncApp, e: String| {
+                let _ = this.update(cx, |l, cx| {
+                    l.sync = SyncState::Failed(e);
+                    cx.notify();
+                });
+            };
+            let o = match pass.await {
+                Ok(Some(o)) => o,
+                Ok(None) => return failed(&this, cx, "the core answered no overview".into()),
+                Err(e) => return failed(&this, cx, e),
+            };
+            let (changed, gone) = (o.dests("changed"), o.dests("gone"));
+            let kept: Vec<String> = o.kept.iter().map(|k| k.dest.clone()).collect();
+            let mut report = SyncReport { foreign: o.dests("taken").len(), ..SyncReport::default() };
+            let mut last = o;
+            if !changed.is_empty() || !gone.is_empty() {
+                let dests: Vec<String> = changed.iter().chain(&gone).cloned().collect();
+                let args = json!({ "dests": dests, "replace": changed });
+                let Ok(task) = this.update(cx, |l, cx| l.run_answer::<Overview>(cmd::LIBRARY_PUT_BACK, args, |o| Some(o.clone()), cx))
+                else {
+                    return;
+                };
+                match task.await {
+                    Ok(o) => {
+                        let unsettled =
+                            |list: &[String]| list.iter().filter(|d| o.unsettled.iter().any(|u| u.starts_with(d.as_str()))).count();
+                        report.overwritten = changed.len() - unsettled(&changed);
+                        report.restored = gone.len() - unsettled(&gone);
+                        report.failed.extend(o.unsettled.iter().cloned());
+                        last = o;
+                    }
+                    Err(e) => return failed(&this, cx, e),
+                }
+            }
+            if !kept.is_empty() {
+                let args = json!({ "dests": kept, "takeOut": true });
+                let Ok(task) = this.update(cx, |l, cx| l.run_answer::<Overview>(cmd::LIBRARY_KEPT, args, |o| Some(o.clone()), cx)) else {
+                    return;
+                };
+                match task.await {
+                    Ok(o) => {
+                        report.taken_out = kept.len() - o.unsettled.len().min(kept.len());
+                        report.failed.extend(o.unsettled.iter().cloned());
+                        last = o;
+                    }
+                    Err(e) => return failed(&this, cx, e),
+                }
+            }
+            // What still stands after it all: changed or deleted again
+            // meanwhile, or never fit to lay out.
+            report.broken = last.dests("failed").len();
+            for dest in last.dests("changed").into_iter().chain(last.dests("gone")) {
+                if !report.failed.iter().any(|f| f.starts_with(dest.as_str())) {
+                    report.failed.push(format!("{dest}: changed again meanwhile"));
+                }
+            }
             let _ = this.update(cx, |l, cx| {
-                l.sync = if ok { SyncState::Synced } else { SyncState::Failed(l.error.clone().unwrap_or_default()) };
+                l.sync = SyncState::Synced(report);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// A skill renamed; the task has how it went, or why it was refused with
+    /// nothing changed (also kept as `error`). Rolled back or not, a rename
+    /// that failed partway is said in `error` too.
+    pub fn rename_skill(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Task<Option<Outcome>> {
+        let task = self.run_answer::<Renamed>(cmd::LIBRARY_RENAME_SKILL, json!({ "from": from, "to": to }), |r| r.overview.clone(), cx);
+        let (from, to) = (from.to_owned(), to.to_owned());
+        cx.spawn(async move |this, cx| {
+            let r = task.await.ok()?;
+            let why = r.why.clone().unwrap_or_default();
+            let said = match r.outcome {
+                Outcome::Committed => None,
+                Outcome::RolledBack => Some(format!("{from} was not renamed: {why}. Everything is as it was.")),
+                Outcome::RollbackFailed => Some(format!("{from} was renamed {to} only partly, and could not be put back: {why}")),
+            };
+            if said.is_some() {
+                let _ = this.update(cx, |l, cx| {
+                    l.error = said;
+                    cx.notify();
+                });
+            }
+            Some(r.outcome)
+        })
     }
 
     /// Another folder for the library; empty, back to Luna's own.
@@ -471,7 +701,10 @@ impl Library {
         let to = to.trim();
         match entry {
             _ if to.is_empty() || to == entry.name() => Task::ready(false),
-            Entry::Skill(n) => self.run(cmd::LIBRARY_RENAME_SKILL, json!({ "from": n, "to": to }), cx),
+            Entry::Skill(n) => {
+                let task = self.rename_skill(&n.clone(), to, cx);
+                cx.spawn(async move |_, _| task.await == Some(Outcome::Committed))
+            }
             Entry::Instructions(n) => self.run(cmd::LIBRARY_RENAME_INSTRUCTIONS, json!({ "from": n, "to": to }), cx),
             Entry::System(_) => Task::ready(false),
         }
@@ -604,6 +837,21 @@ mod tests {
         assert_eq!(chats.flipped(Role::Chat), None);
         assert_eq!(chats.flipped(Role::Lead), Some(Audience { chat: true, lead: true, helper: false }));
         assert_eq!(serde_json::to_value(Entry::Instructions("main".into())).unwrap(), json!({ "instructions": "main" }));
+    }
+
+    #[test]
+    fn a_sync_says_what_it_overwrote_put_back_and_left() {
+        let clean = SyncReport::default();
+        assert!(clean.said().starts_with("Synced: every copy"));
+        let r = SyncReport { overwritten: 2, restored: 1, foreign: 1, ..SyncReport::default() };
+        assert_eq!(
+            r.said(),
+            "Synced: every copy Luna manages holds what the library says. 2 changed copies overwritten with the library's, a deleted copy put back (backed up first). A file Luna did not write is left alone."
+        );
+        let r = SyncReport { failed: vec!["/a/skills/x: it is left out".into()], ..SyncReport::default() };
+        assert!(!r.clean());
+        assert!(r.said().starts_with("Synced, but not everything"), "{}", r.said());
+        assert!(r.said().contains("Not settled: /a/skills/x: it is left out."));
     }
 
     #[test]
