@@ -296,6 +296,18 @@ one of your own chats an agent may answer only a question its model asked
   starts by itself when a subagent ends), for up to 3 hours after that answer
   (later ones wait for its CLI to end). A Codex lead's `exec` ends with its
   turn, its subagents interrupted, so nothing holds its notices.
+- A CLI's own background subagents live inside the helper's turn and end
+  with it. When a Claude Code helper's turn ends with some of them still at
+  work (its CLI killed, gone on an error, or out of time to wait for them),
+  the agent's notice, and its wait or report, says so by name: "2 background
+  subagents ("Implement slice A", "Implement slice B") ended with its turn
+  without finishing; their work is not done", never that they finished, and
+  that a send has the helper check what they left and carry on. When a
+  Codex helper's `exec` interrupts its subagents, or goes with them, the
+  notice says that too. When the turn was stopped (Stop, an interrupt, an
+  update), it says only that they were cut. Only subagents the helper
+  started itself are named; theirs end with them.
+  Work that must outlive a turn belongs in Luna helpers.
 - The notice says what happened, how many messages the helper wrote, the first
   line of its report, and a file with all of them: the report (the longest
   message, or the last when all are short — but a short turn the CLI started by

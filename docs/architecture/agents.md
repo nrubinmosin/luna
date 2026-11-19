@@ -659,6 +659,26 @@ turn, stopped on a prompt (once per stop) or exited.
   waiting." with no gate started, and its parent read that as work under way
   (issue #77). Not with a cut-off line, which already says a send has it
   carry on, nor to a caller that is not its parent.
+- **Cut-off work.** A helper's background work its CLI stopped, or took with
+  it as its turn's process went, is said in every line that settles a
+  caller's debt and in the `backgroundStopped` of a wait, read or report,
+  once per caller owed an answer then (lines.rs `background_stopped_line`,
+  [background helpers](background-helpers.md)), and keeps a lead's wake from
+  standing in for the notice. Claude Code subagents the process never said
+  were done go by name: "2 background subagents ("Implement slice A",
+  "Implement slice B") ended with its turn without finishing; their work is
+  not done" (`subagents_lost`, the first five named), never "finished": a
+  lead's parent read "its delegates finished" while the implementers its
+  lead's CLI took with it had committed nothing. Codex's are worded the same
+  ("1 subagent ended with its turn …"), named where their rollout names
+  them. After Luna's own stop of the turn the line says only that they
+  were cut and their work is not done, with no advice on how to work.
+  Each turn's loss is its own, with its own cause: a caller hears each it
+  has yet to hear of, once, a woken lead's "seems stuck" line included,
+  and a reply acknowledges those it said, never one recorded since.
+  Claude Code's own stop with none named, and a Codex stop an older
+  core saved uncounted, keep their own lines (`BACKGROUND_STOPPED`,
+  `SUBAGENTS_INTERRUPTED`).
 - **Requests.** Each (caller, session) numbers the caller's requests (owed.rs
   `Requests`: a spawn 1, each send one more, with its `requestKey`), and a
   debt covers those made since the last one settled. With more than one,

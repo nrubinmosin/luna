@@ -682,7 +682,7 @@ mod tests {
     /// the parent hears of it. A caller who wrote only after the cut does not.
     #[test]
     fn a_message_queued_behind_a_cut_off_turn_still_hears_of_the_cut() {
-        use crate::agents::owed::{background_stopped_note, hand_over, owe_from};
+        use crate::agents::owed::{background_stopped_note, hand_over_said, owe_from};
         let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
         // Its parent, a lead, and the chat above that lead, which writes later.
         let (me, later, id) = ("qc-me", "qc-later", "qc-kid");
@@ -703,12 +703,12 @@ mod tests {
         crate::background::test_turn_ended(id);
         crate::background::set_running_for_test(id);
         assert!(send(later, id, "how is it going?", false, None, true).unwrap().queued);
-        assert!(background_stopped_note(me, id).is_some(), "the parent is told");
-        assert_eq!(background_stopped_note(later, id), None, "it wrote after the cut");
+        assert!(background_stopped_note(me, id).0.is_some(), "the parent is told");
+        assert_eq!(background_stopped_note(later, id).0, None, "it wrote after the cut");
         // The answer to the parent's text, at the next turn's end, carries it.
         crate::background::test_turn_ended(id);
-        drop(hand_over(me, id, 2, None));
-        assert_eq!(background_stopped_note(me, id), None);
+        drop(hand_over_said(me, id, 2, None, background_stopped_note(me, id).1));
+        assert_eq!(background_stopped_note(me, id).0, None);
         assert!(!crate::background::background_stopped(id), "everyone it concerned has had it");
         crate::background::remove(id);
         for id in [id, me, later] {

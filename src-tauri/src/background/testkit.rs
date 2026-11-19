@@ -79,6 +79,20 @@ pub fn turn_ended_for_test(id: &str) {
     turn_over(id, Some(1));
 }
 
+/// Luna has stopped its turn's process (`Run::luna_stopped`), its exit to come.
+#[cfg(test)]
+pub(crate) fn luna_stopped_for_test(id: &str) {
+    if let Some(run) = lock().entries.get_mut(id).and_then(|e| e.run.as_mut()) {
+        run.luna_stopped = true;
+    }
+}
+
+/// Its turn's process exited with `code` (None: killed), as its reader finds it.
+#[cfg(test)]
+pub(crate) fn exited_for_test(id: &str, code: Option<i32>) {
+    turn_over(id, code);
+}
+
 /// It stops on a permission, as a turn's `luna_permission` holds it.
 #[cfg(test)]
 pub fn hold_for_test(id: &str) {
@@ -208,10 +222,18 @@ pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
 pub(crate) fn background_stopped_for_test(id: &str, owed: &[&str]) {
     let mut r = lock();
     let e = r.entries.get_mut(id).expect("a test helper");
-    e.observed.background_stopped = true;
-    e.observed.stopped_turn = e.turns_ended;
-    e.observed.stop_owed = owed.iter().map(|c| c.to_string()).collect();
-    e.observed.stop_told.clear();
+    let owed = owed.iter().map(|c| c.to_string()).collect();
+    record_loss(&mut e.observed, e.turns_ended, StopCause::Ceiling, None, Vec::new(), owed);
+}
+
+/// A test helper whose turn `turn` took the subagents `names` with it, with
+/// `owed` owed an answer then.
+#[cfg(test)]
+pub(crate) fn loss_for_test(id: &str, turn: u32, owed: &[&str], names: &[&str]) {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    let (owed, names) = (owed.iter().map(|c| c.to_string()).collect(), names.iter().map(|n| n.to_string()).collect());
+    record_loss(&mut e.observed, turn, StopCause::Ceiling, Some(LostBy::Exited), names, owed);
 }
 
 /// A line on a test helper's turn's stderr, as its reader takes it.

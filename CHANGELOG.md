@@ -196,6 +196,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Text sent to a helper whose turn was stopped before it began (by Stop, or
   by Luna for an update) is kept for its sender as undelivered rather than
   dropped.
+- When a Claude Code helper's turn ends with background subagents it started
+  still at work (its CLI killed, gone on an error, out of time to wait for
+  them, or the turn stopped), the agent above it is told so by name, in the
+  notice and in its
+  wait or report: "2 background subagents ("…", "…") ended with its turn
+  without finishing; their work is not done". Before, it heard that the
+  helper had nothing left running and had said nothing, which read as done.
+  A Codex helper's subagents cut off with its turn are told in the same
+  words, also when its `codex exec` was killed or crashed mid-turn, which
+  Luna missed before.
 
 ## [0.19.0] - 2026-11-18
 
