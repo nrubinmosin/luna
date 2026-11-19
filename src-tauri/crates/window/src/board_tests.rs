@@ -40,6 +40,7 @@ fn open_with(cx: &mut TestAppContext, kept: Value, core: Value, looks: Value) ->
     host.answer(cmd::WINDOW_STATE, kept);
     host.answer(cmd::LIST_ACCOUNTS, demo::accounts());
     host.answer(cmd::SESSIONS_META, looks);
+    host.answer(cmd::SAVED_TITLE, json!({ "title": "Saved title", "renamed": false }));
     host.answer(cmd::ENSURE_CLAUDE_SESSION, demo::attached("", 1));
     host.answer(cmd::ENSURE_CODEX_SESSION, demo::attached("", 1));
     let (mailbox, inbox) = mailbox();
@@ -149,7 +150,9 @@ fn a_machine_0_19_never_ran_on_starts_empty_and_quiet(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_kept_state_is_read_and_nothing_is_imported_or_written(cx: &mut TestAppContext) {
-    let mut w = chats(cx, 3);
+    // No core: no session's news changes anything either.
+    let starting = serde_json::to_value(CoreState::default()).unwrap();
+    let mut w = open_with(cx, demo::kept(&demo::chats_state(3, true)), starting, json!([]));
     assert_eq!(w.state().layout(), 3);
     assert_eq!(w.seats(), [s("c-parser"), s("c-codex"), s("c-notes")]);
     assert!(w.saves().is_empty(), "nothing changed");
@@ -186,17 +189,16 @@ fn writes_come_at_once_after_a_quiet_spell_then_one_per_gap(cx: &mut TestAppCont
 
 #[gpui::test]
 fn the_sessions_meta_every_four_seconds_keeps_rows_and_notifies_once(cx: &mut TestAppContext) {
-    let mut w = chats(cx, 2);
-    w.host.answer(cmd::SAVED_TITLE, json!({ "title": "Saved title", "renamed": false }));
-    w.host.answer(
-        cmd::SESSIONS_META,
-        json!([
-            { "id": "c-parser", "meta": { "status": "waiting", "context": 0.5, "draft": true, "held": 0, "title": "Parser fix" } },
-            { "id": "c-notes", "meta": { "status": "busy", "context": 0.2, "firstPrompt": "write the notes", "sessionId": "sess-notes" } },
-        ]),
-    );
+    let looks = json!([
+        { "id": "c-parser", "meta": { "status": "waiting", "context": 0.5, "draft": true, "held": 0, "title": "Parser fix" } },
+        { "id": "c-notes", "meta": { "status": "busy", "context": 0.2, "firstPrompt": "write the notes", "sessionId": "sess-notes" } },
+    ]);
+    // The first round as the accounts come, then one every four seconds.
+    let mut w = open_with(cx, demo::kept(&demo::chats_state(2, true)), up(), looks);
+    assert_eq!(w.models.workspace.read_with(w.cx, |w, _| w.rounds), 1);
     w.cx.executor().advance_clock(workspace::EVERY);
     w.cx.run_until_parked();
+    assert_eq!(w.models.workspace.read_with(w.cx, |w, _| w.rounds), 2);
     let state = w.state();
     assert_eq!(state.find("c-parser").unwrap().status, Status::Waiting);
     assert_eq!(state.find("c-notes").unwrap().status, Status::Working);
@@ -424,11 +426,12 @@ fn renaming_in_a_pane_keeps_the_name_on_enter_and_lets_it_go_on_esc(cx: &mut Tes
     w.keys("enter");
     let c = w.state().find("c-parser").unwrap().clone();
     assert_eq!((c.name.as_str(), c.name_source), ("Parser, renamed", Some(crate::state::NameSource::User)));
+    let before = w.state().find("c-codex").unwrap().name.clone();
     w.cx.update(|window, cx| board.update(cx, |b, cx| b.start_rename("c-codex", window, cx)));
     w.cx.run_until_parked();
     w.keys("escape");
     assert!(board.read_with(w.cx, |b, _| b.renaming.is_none()));
-    assert_eq!(w.state().find("c-codex").unwrap().name, "Lexer tests");
+    assert_eq!(w.state().find("c-codex").unwrap().name, before);
 }
 
 /// An idle window with chats on its board: the sessions are looked at every
