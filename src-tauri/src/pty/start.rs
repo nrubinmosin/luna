@@ -410,6 +410,7 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
 /// where not even that can be given: the config's own value leaves no room for
 /// the pointer, or the file will not write.
 pub(crate) fn codex_role_args(
+    session: &str,
     account_path: &str,
     folder: &str,
     helper: bool,
@@ -425,7 +426,7 @@ pub(crate) fn codex_role_args(
         None => "-c developer_instructions".to_string(),
     };
     if let Some(spill) = &given.spill {
-        crate::library::write_spill(spill)?;
+        crate::library::write_spill(spill, session)?;
         crate::log::warn(
             "library",
             &format!(
@@ -721,9 +722,7 @@ pub async fn ensure_codex_session(
         }
         // A folder Codex could not start in, refused before anything of the
         // start is made (folder.rs): `--worktree` goes only to a new session.
-        if let Some(id) = resume.as_deref() {
-            crate::codex::launch::thread_to_resume(id)?;
-        }
+        let resume = resume.as_deref().map(crate::codex::launch::thread_to_resume).transpose()?;
         let new_worktree = worktree.unwrap_or(false) && resume.is_none();
         if let Some(why) = folder_refusal(&folder, new_worktree) {
             return Err(why);
@@ -789,7 +788,7 @@ pub async fn ensure_codex_session(
         // chat that can have neither starts without them, and says so.
         let role = crate::library::role_texts(crate::library::Role::Chat);
         let mut args = args;
-        match codex_role_args(&account_path, &folder, false, &role, &skills, &[]) {
+        match codex_role_args(&id, &account_path, &folder, false, &role, &skills, &[]) {
             Ok((role_args, role_applied)) => {
                 args.extend(role_args);
                 applied.extend(role_applied);

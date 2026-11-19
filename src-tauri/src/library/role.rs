@@ -251,35 +251,68 @@ pub fn codex_developer_instructions(
     Ok(CodexInstructions { value, spill: Some(Spill { path, text: layers.to_string() }) })
 }
 
-/// Writes a spilled file where it is not already, and drops those unused for
-/// `SPILL_KEEP`. Err, with why, where it will not write: a session told to read
-/// it would find nothing.
-pub fn write_spill(spill: &Spill) -> Result<(), String> {
-    let fail = |e: std::io::Error| format!("Luna could not write its role layers to {}: {e}", spill.path.display());
+/// The spilled file each session was last launched with: a session that runs
+/// reads it again after a compaction, whatever a later launch of another
+/// session spilled, so the sweep leaves what a live one names.
+fn spill_holds() -> &'static Mutex<std::collections::HashMap<String, PathBuf>> {
+    static HOLDS: std::sync::OnceLock<Mutex<std::collections::HashMap<String, PathBuf>>> = std::sync::OnceLock::new();
+    HOLDS.get_or_init(Default::default)
+}
+
+/// The most a spilled file is read back at, to see whether it is there already.
+const SPILL_READ_MAX: u64 = 16 << 20;
+
+/// Writes the spilled file `spill` of `session`'s launch where it is not
+/// already, renews its age either way (every launch and resume of a session
+/// using it comes through here), and drops the files no live session names and
+/// nobody has used for `SPILL_KEEP`. The folder and its files are owner-only
+/// like the rest of Luna's data (paths.rs `OWN_NAMES`): another user of a
+/// shared data folder could otherwise change what a session reads as its
+/// instructions after it launched. A link where the folder or the file goes is
+/// refused, never followed. Err, with why, where it will not write: a session
+/// told to read it would find nothing.
+pub fn write_spill(spill: &Spill, session: &str) -> Result<(), String> {
+    write_spill_in(spill, session, &|id| crate::pty::manager().alive(id) || crate::background::has(id))
+}
+
+/// `write_spill`, `live` saying whether a session still runs.
+fn write_spill_in(spill: &Spill, session: &str, live: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    let refuse = |why: String| {
+        let said = format!("Luna could not write its role layers to {}: {why}", spill.path.display());
+        crate::log::warn("library", &said);
+        said
+    };
     let dir = spill.path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir).map_err(fail)?;
-    match std::fs::read_to_string(&spill.path) {
+    crate::secret::private_dir(dir).map_err(|e| refuse(e.to_string()))?;
+    match crate::secret::read_private(&spill.path, SPILL_READ_MAX) {
         // Already there: only its age is renewed.
-        Ok(have) if have == spill.text => {
+        Ok(Some(have)) if have == spill.text.as_bytes() => {
             let _ = std::fs::File::options().write(true).open(&spill.path).and_then(|f| f.set_modified(std::time::SystemTime::now()));
         }
-        // Not made owner-only like the files that hold a secret: the session
-        // reads it through its shell tool, in a sandbox whose token the
-        // private ACL (this user, SYSTEM, Administrators) would not admit.
-        // It holds what the library says and no secret. Whole or not at all.
-        _ => {
-            let temp = spill.path.with_extension(format!("{}.tmp", crate::secret::random_hex(8)));
-            std::fs::write(&temp, spill.text.as_bytes()).and_then(|()| std::fs::rename(&temp, &spill.path)).map_err(|e| {
-                let _ = std::fs::remove_file(&temp);
-                fail(e)
-            })?;
+        // Not there, or something else: whole or not at all, through a temp
+        // file renamed over it (a link at the name is replaced, not written
+        // through).
+        Ok(_) => crate::secret::write_private(&spill.path, spill.text.as_bytes()).map_err(|e| refuse(e.to_string()))?,
+        // A plain file that is not private (the folder is, so nobody else put
+        // it there): replaced by the new one, never written into.
+        Err(_) if std::fs::symlink_metadata(&spill.path).is_ok_and(|m| m.file_type().is_file()) => {
+            crate::secret::write_private(&spill.path, spill.text.as_bytes()).map_err(|e| refuse(e.to_string()))?
         }
+        // A link, a folder or anything else where the file goes: not Luna's to
+        // read as its own, and not to be written through.
+        Err(e) => return Err(refuse(e.to_string())),
     }
+    let named: std::collections::HashSet<PathBuf> = {
+        let mut holds = spill_holds().lock().unwrap_or_else(|e| e.into_inner());
+        holds.insert(session.to_string(), spill.path.clone());
+        holds.retain(|id, _| id == session || live(id));
+        holds.values().cloned().collect()
+    };
     let now = std::time::SystemTime::now();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let old =
             entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age > SPILL_KEEP);
-        if old && entry.path().extension().is_some_and(|e| e == "md") {
+        if old && entry.path().extension().is_some_and(|e| e == "md") && !named.contains(&entry.path()) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -564,29 +597,66 @@ mod tests {
         let f = Fixture::new("role-spill");
         let layers = format!("# Your role\n\n{}\n", "é".repeat(CODEX_ROLE_MAX));
         let spill = codex_developer_instructions(None, &layers, &[], &f.dirs.data).unwrap().spill.unwrap();
-        write_spill(&spill).unwrap();
+        let nobody = |_: &str| false;
+        write_spill_in(&spill, "chat-a", &nobody).unwrap();
         assert_eq!(std::fs::read_to_string(&spill.path).unwrap(), layers);
+        // Private like Luna's other files: read back through the check that
+        // refuses one another user could have written.
+        assert_eq!(crate::secret::read_private(&spill.path, SPILL_READ_MAX).unwrap().as_deref(), Some(layers.as_bytes()));
         // Again: the same file, its age renewed, not rewritten.
         let old = std::time::SystemTime::now() - SPILL_KEEP - std::time::Duration::from_secs(60);
-        std::fs::File::options().write(true).open(&spill.path).unwrap().set_modified(old).unwrap();
+        let age = |p: &Path| std::fs::File::options().write(true).open(p).unwrap().set_modified(old).unwrap();
+        age(&spill.path);
         let stale = spill.path.with_file_name("0000000000000000.md");
         std::fs::write(&stale, "gone").unwrap();
-        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(old).unwrap();
-        write_spill(&spill).unwrap();
-        assert_eq!(std::fs::read_to_string(&spill.path).unwrap(), layers, "in use, so it stays");
-        assert!(!stale.exists(), "not used for a month, so it goes");
-        // Edited text, another name; the dir holds no temp file after a write.
+        age(&stale);
+        write_spill_in(&spill, "chat-a", &nobody).unwrap();
+        assert_eq!(std::fs::read_to_string(&spill.path).unwrap(), layers, "launched again, so it stays");
+        assert!(!stale.exists(), "not used for a month and named by no session, so it goes");
+        // A live session's file stays past its age however many others launch
+        // after it (it reads the file again after a compaction); a gone one's goes.
+        age(&spill.path);
         let again = codex_developer_instructions(None, &format!("{layers}More.\n"), &[], &f.dirs.data).unwrap().spill.unwrap();
         assert_ne!(again.path, spill.path);
-        write_spill(&again).unwrap();
+        write_spill_in(&again, "chat-b", &|id| id == "chat-a").unwrap();
+        assert!(spill.path.exists(), "chat-a still runs and names it");
+        write_spill_in(&again, "chat-b", &nobody).unwrap();
+        assert!(!spill.path.exists(), "chat-a is gone, and the file is a month old");
         let names: Vec<_> = std::fs::read_dir(spill.path.parent().unwrap()).unwrap().flatten().map(|e| e.file_name()).collect();
-        assert_eq!(names.len(), 2, "{names:?}");
-        // A file where its folder goes: Err, with why.
-        let why = write_spill(&Spill { path: f.dirs.data.join("role-layers").join("x").join("y.md"), text: "t".into() });
-        assert!(why.is_ok(), "a missing folder is made");
+        assert_eq!(names.len(), 1, "no temp file left: {names:?}");
+        // Where the folder is a file, or the file's place is taken by something
+        // else, nothing is written and the reason is said.
         std::fs::write(f.dirs.data.join("blocked"), b"in the way").unwrap();
-        let why = write_spill(&Spill { path: f.dirs.data.join("blocked").join("y.md"), text: "t".into() }).unwrap_err();
+        let why = write_spill_in(&Spill { path: f.dirs.data.join("blocked").join("y.md"), text: "t".into() }, "c", &nobody).unwrap_err();
         assert!(why.contains("could not write its role layers"), "{why}");
+        let taken = Spill { path: again.path.with_file_name("1111111111111111.md"), text: "t".into() };
+        std::fs::create_dir(&taken.path).unwrap();
+        assert!(write_spill_in(&taken, "c", &nobody).is_err(), "a folder at the file's name");
+    }
+
+    /// A link where the folder or the file goes is refused, never written through.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_where_a_spilled_file_or_its_folder_goes_is_refused() {
+        let f = Fixture::new("role-spill-links");
+        let nobody = |_: &str| false;
+        let elsewhere = f.base.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(&f.dirs.data).unwrap();
+        // The folder is a link.
+        std::os::unix::fs::symlink(&elsewhere, f.dirs.data.join(SPILL_DIR)).unwrap();
+        let spill = codex_developer_instructions(None, &"a".repeat(CODEX_ROLE_MAX * 2), &[], &f.dirs.data).unwrap().spill.unwrap();
+        let why = write_spill_in(&spill, "c", &nobody).unwrap_err();
+        assert!(why.contains("could not write its role layers"), "{why}");
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing written through it");
+        std::fs::remove_file(f.dirs.data.join(SPILL_DIR)).unwrap();
+        // The file is a link to a file of someone else's.
+        std::fs::create_dir_all(spill.path.parent().unwrap()).unwrap();
+        let target = elsewhere.join("theirs.md");
+        std::fs::write(&target, "theirs").unwrap();
+        std::os::unix::fs::symlink(&target, &spill.path).unwrap();
+        assert!(write_spill_in(&spill, "c", &nobody).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "theirs");
     }
 
     #[test]
