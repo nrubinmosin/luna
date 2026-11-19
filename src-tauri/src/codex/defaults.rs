@@ -616,7 +616,7 @@ mod tests {
     /// it trusts, workspace-write; left to Codex, so no flag passes for them.
     #[test]
     fn nothing_named_is_left_to_codex() {
-        let root = root("own");
+        let root = root("left-to-codex");
         let (account, folder) = (root.join("account"), root.join("project"));
         std::fs::create_dir_all(&folder).unwrap();
         write(&account.join("config.toml"), "model = \"m\"\n");
