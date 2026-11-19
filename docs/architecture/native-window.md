@@ -229,7 +229,7 @@ on from it. Views observe the models they show:
 | View | Shows | Observes |
 | --- | --- | --- |
 | `root.rs` `LunaWindow` | the frame, the font, the import's notice; the window's keys | `Shell`, `Workspace`, the window's appearance |
-| `title_bar.rs` | Luna's name, boards I-V, layouts 1-4, Clear board, Auto-tile, Library, Accounts and Settings (panels below), the theme button, minimize, maximize, close | `Shell`; `Workspace`'s board, layout and auto-tile only |
+| `title_bar.rs` | Luna's name, boards I-V, layouts 1-4, Clear board, Auto-tile, the Menu (Library, Accounts, Settings: panels below), the theme button, minimize, maximize, close | `Shell`; `Workspace`'s board, layout and auto-tile only |
 | `banner.rs` | the core banner | `CoreLink`, `Shell` |
 | `sidebar.rs` | the board's chats by folder, or the collapsed strip | `Workspace`, `Shell` |
 | `board.rs` | the panes in their layout, their title bars and menus, the peek | `Workspace`, `Shell` |
@@ -726,12 +726,15 @@ the editor's text is replaced or closed goes through that one question
 Back to Luna's..., Make it the override..., Add folder..., the library's
 folder changed or set back to Luna's own (which then leaves nothing picked
 and nothing in the editor), restoring a draft, and Esc. The editor takes no
-input until its file is read. The title bar's Library, Accounts and
-Settings buttons open them (`panels::open`, which the demo scenes and the
-test build's driver (below) call too); the status bar takes Settings over
-when it comes. The layer starts below the title bar, so the window's own
-buttons and the three panel buttons stay in reach, and another button
-switches panels.
+input until its file is read. The title bar's Menu lists them (Library,
+Accounts, Settings) and opens one with `panels::open`, which the demo
+scenes and the test build's driver (below) call too; the status bar takes
+Settings over when it comes. They are in a menu, not three buttons, for
+the bar's width: with the Menu it needs about 930 px (measured in the
+shots at 1000), a little over the smallest window's 900, which the status
+bar taking the theme button and Settings is to bring back under. The layer
+starts below the title bar, so the window's own buttons and the Menu stay
+in reach, and the Menu switches panels.
 
 Each is a module of its own and asks the host for what the page's dialog
 asks, by the same command and arguments (`panels::cmd`, held by native.rs's

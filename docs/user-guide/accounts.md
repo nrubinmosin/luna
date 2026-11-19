@@ -132,7 +132,7 @@ itself when the CLI exits, and the account's row is read again; if the CLI
 exits with an error, the window stays so that what it said can be read, until
 you close it (its X, or Esc when the terminal has not been clicked: in the
 terminal Esc is the CLI's). Closing it ends the session. The window
-opens from the title bar's Accounts button.
+opens from the title bar's Menu, Accounts.
 
 Not in it, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it: the
 recommended settings and recommendations, the settings file editor (edit an

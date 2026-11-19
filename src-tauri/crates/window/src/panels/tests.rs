@@ -879,20 +879,22 @@ mod title_bar {
     }
 
     #[gpui::test]
-    fn its_buttons_open_the_library_the_accounts_and_settings(cx: &mut TestAppContext) {
+    fn its_menu_opens_the_library_the_accounts_and_settings(cx: &mut TestAppContext) {
         let mut f = open(cx);
         assert_eq!(shown(&mut f), None);
-        click(&mut f, "title-library");
-        assert_eq!(shown(&mut f), Some(Panel::Library));
-        // The layer starts below the bar: another panel is one click away,
-        // and the window's own buttons stay reachable.
-        click(&mut f, "title-accounts");
-        assert_eq!(shown(&mut f), Some(Panel::Accounts));
-        click(&mut f, "title-settings");
-        assert_eq!(shown(&mut f), Some(Panel::Settings));
-        let bar = f.cx.debug_bounds("title-settings").unwrap();
-        let scrim = f.cx.debug_bounds("panels");
-        assert!(scrim.is_none_or(|s| s.top() >= bar.bottom()), "the scrim covers the bar");
+        assert!(f.cx.debug_bounds("title-library").is_none(), "the list is closed");
+        for (key, panel) in [("library", Panel::Library), ("accounts", Panel::Accounts), ("settings", Panel::Settings)] {
+            // The layer starts below the bar: the Menu is one click away
+            // with a panel up, and the window's own buttons stay reachable.
+            click(&mut f, "title-menu");
+            let item: &'static str = Box::leak(format!("title-{key}").into_boxed_str());
+            click(&mut f, item);
+            assert_eq!(shown(&mut f), Some(panel));
+            assert!(f.cx.debug_bounds("title-library").is_none(), "the list closes once one is picked");
+        }
+        let bar = f.cx.debug_bounds("title-menu").unwrap();
+        let scrim = f.cx.debug_bounds("panels").expect("the layer is drawn");
+        assert!(scrim.top() >= bar.bottom(), "the scrim covers the bar");
         f.escape();
         assert_eq!(shown(&mut f), None);
     }
