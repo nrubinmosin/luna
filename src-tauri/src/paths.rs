@@ -261,20 +261,46 @@ enum Pass {
 /// 0.19's handoff drafts folders, `handoffs/<chat>/drafts` (ADR-0030 removed
 /// the handoff), gone before the privacy check: Codex's sandbox gave each an
 /// access entry of its own, which that check would find at the first start.
-/// Nothing writes or reads them since 0.20. Nothing is gone into through a
-/// link or junction (one is left for the check to name); Luna's copies of the
+/// Nothing writes or reads them since 0.20. Only where no link or junction is
+/// at the data dir, above it or on the way down to the folder (each looked at
+/// as itself, `boundary::is_link`): otherwise it is left, said in the log, for
+/// the privacy check to name. `remove_dir_all` goes into no link inside it.
+/// A same-user process swapping a folder on the way for a junction between
+/// the look and the removal is the threat model's R6. Luna's copies of the
 /// handoffs beside them stay.
 #[cfg(windows)]
 fn remove_handoff_drafts(dir: &Path) {
-    let real_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink());
+    let meta = |p: &Path| std::fs::symlink_metadata(p).ok();
+    let linked = |p: &Path| meta(p).is_some_and(|m| crate::boundary::is_link(&m));
+    let left = |p: &Path, link: &Path| {
+        crate::log::warn(
+            "app",
+            &format!("left 0.19's handoff drafts at {} as they are: {} is a link or junction", p.display(), link.display()),
+        )
+    };
     let handoffs = dir.join("handoffs");
-    if !real_dir(&handoffs) {
+    if meta(&handoffs).is_none() {
+        return;
+    }
+    if let Some(link) = handoffs.ancestors().find(|a| linked(a)) {
+        return left(&handoffs, link);
+    }
+    if !meta(&handoffs).is_some_and(|m| m.is_dir()) {
         return;
     }
     let Ok(chats) = std::fs::read_dir(&handoffs) else { return };
     for chat in chats.flatten() {
-        let drafts = chat.path().join("drafts");
-        if !real_dir(&chat.path()) || !real_dir(&drafts) {
+        let (chat, drafts) = (chat.path(), chat.path().join("drafts"));
+        if linked(&chat) {
+            left(&drafts, &chat);
+            continue;
+        }
+        let Some(m) = meta(&drafts) else { continue };
+        if crate::boundary::is_link(&m) {
+            left(&drafts, &drafts);
+            continue;
+        }
+        if !m.is_dir() {
             continue;
         }
         match std::fs::remove_dir_all(&drafts) {
@@ -617,35 +643,65 @@ mod tests {
     }
 
     /// 0.19's handoff drafts folders go at start, Luna's copies of the
-    /// handoffs beside them stay, and nothing is gone into through a junction.
+    /// handoffs beside them stay, and nothing goes where a junction is on the
+    /// way: at the data dir, at `handoffs`, at a chat's folder or at `drafts`.
     #[cfg(windows)]
     #[test]
     fn handoff_drafts_0_19_left_go_and_nothing_through_a_junction() {
-        let root = data_dir().join(format!("drafts-test-{}", std::process::id()));
-        let outside = data_dir().join(format!("drafts-out-{}", std::process::id()));
-        for d in [&root, &outside] {
-            let _ = std::fs::remove_dir_all(d);
-        }
-        let c1 = root.join("handoffs").join("c1");
-        std::fs::create_dir_all(c1.join("drafts")).unwrap();
-        std::fs::write(c1.join("drafts").join("handoff.md"), "draft").unwrap();
-        std::fs::write(c1.join("1.md"), "copy").unwrap();
-        let c2 = root.join("handoffs").join("c2");
-        std::fs::create_dir_all(&c2).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("keep.md"), "elsewhere").unwrap();
-        let link = c2.join("drafts");
-        let made = std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(&link).arg(&outside).output().unwrap();
-        assert!(made.status.success());
+        let base = data_dir().join(format!("drafts-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let junction = |link: &Path, to: &Path| {
+            let made = std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(link).arg(to).output().unwrap();
+            assert!(made.status.success(), "{link:?}");
+        };
+        // A tree 0.19 would leave: drafts with a file, and Luna's copy beside them.
+        let tree = |root: &Path, chat: &str| {
+            std::fs::create_dir_all(root.join("handoffs").join(chat).join("drafts")).unwrap();
+            std::fs::write(root.join("handoffs").join(chat).join("drafts").join("handoff.md"), "draft").unwrap();
+            std::fs::write(root.join("handoffs").join(chat).join("1.md"), "copy").unwrap();
+        };
+        let drafts_of = |root: &Path, chat: &str| root.join("handoffs").join(chat).join("drafts").join("handoff.md");
+
+        // Plain: its drafts go, the copy stays; a junction at another chat's
+        // `drafts` or at a chat's folder is not gone into.
+        let root = base.join("root");
+        tree(&root, "c1");
+        let out_drafts = base.join("out-drafts");
+        std::fs::create_dir_all(&out_drafts).unwrap();
+        std::fs::write(out_drafts.join("keep.md"), "elsewhere").unwrap();
+        std::fs::create_dir_all(root.join("handoffs").join("c2")).unwrap();
+        junction(&root.join("handoffs").join("c2").join("drafts"), &out_drafts);
+        let out_chat = base.join("out-chat");
+        std::fs::create_dir_all(out_chat.join("drafts")).unwrap();
+        std::fs::write(out_chat.join("drafts").join("keep.md"), "elsewhere").unwrap();
+        junction(&root.join("handoffs").join("c3"), &out_chat);
         remove_handoff_drafts(&root);
-        assert!(!c1.join("drafts").exists(), "its drafts gone");
-        assert_eq!(std::fs::read_to_string(c1.join("1.md")).unwrap(), "copy", "Luna's copy stays");
-        assert!(std::fs::symlink_metadata(&link).is_ok(), "the junction left for the check to name");
-        assert_eq!(std::fs::read_to_string(outside.join("keep.md")).unwrap(), "elsewhere", "nothing gone into through it");
-        std::fs::remove_dir(&link).unwrap();
-        for d in [&root, &outside] {
-            let _ = std::fs::remove_dir_all(d);
+        assert!(!drafts_of(&root, "c1").exists(), "its drafts gone");
+        assert_eq!(std::fs::read_to_string(root.join("handoffs").join("c1").join("1.md")).unwrap(), "copy", "Luna's copy stays");
+        assert!(out_drafts.join("keep.md").exists(), "not through a junction at drafts");
+        assert!(out_chat.join("drafts").join("keep.md").exists(), "not through a junction at a chat's folder");
+
+        // A junction at `handoffs`.
+        let root2 = base.join("root2");
+        std::fs::create_dir_all(&root2).unwrap();
+        let out_handoffs = base.join("out-handoffs");
+        tree(&out_handoffs, "c1");
+        junction(&root2.join("handoffs"), &out_handoffs.join("handoffs"));
+        remove_handoff_drafts(&root2);
+        assert!(drafts_of(&out_handoffs, "c1").exists(), "not through a junction at handoffs");
+
+        // A junction at the data dir itself.
+        let real = base.join("real");
+        tree(&real, "c1");
+        let via = base.join("via");
+        junction(&via, &real);
+        remove_handoff_drafts(&via);
+        assert!(drafts_of(&real, "c1").exists(), "not through a junction at the data dir");
+
+        for link in [root.join("handoffs").join("c2").join("drafts"), root.join("handoffs").join("c3"), root2.join("handoffs"), via] {
+            std::fs::remove_dir(&link).unwrap();
         }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// A marker planted while the folder was open, made the user's (as the

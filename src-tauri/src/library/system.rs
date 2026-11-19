@@ -331,8 +331,11 @@ pub(super) enum Moved {
 /// holding the person's own library skill. Nothing reads them any more.
 const RETIRED_SKILL: &str = "session-handoff";
 
-/// Whether a name in `system/` is one 0.19's handoff left (`RETIRED_SKILL`).
+/// Whether a name in `system/` is one 0.19's handoff left (`RETIRED_SKILL`),
+/// in any case: Windows and macOS find a folder whatever case its name is
+/// written in, so 0.19 served an override named `Session-Handoff` there.
 fn retired(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
     name == RETIRED_SKILL || name.starts_with(&format!(".{RETIRED_SKILL}."))
 }
 
@@ -365,7 +368,7 @@ pub(crate) fn note_retired_system() {
         if !retired(&name) {
             continue;
         }
-        let what = if name == RETIRED_SKILL {
+        let what = if name.eq_ignore_ascii_case(RETIRED_SKILL) {
             "the override of 0.19's handoff skill, which nothing reads since 0.20"
         } else {
             "set aside by 0.19's handoff skill (an interrupted Make it the override… left your own skill here),              which nothing reads since 0.20"
@@ -1012,14 +1015,14 @@ mod tests {
     fn what_0_19_s_handoff_left_in_system_is_named_and_kept() {
         let f = Fixture::new("system-retired");
         let system = f.dirs.root.join("system");
-        for dir in ["session-handoff", ".session-handoff.adopting-ab12", "notes"] {
+        for dir in ["Session-Handoff", ".session-handoff.adopting-ab12", "notes"] {
             std::fs::create_dir_all(system.join(dir)).unwrap();
             std::fs::write(system.join(dir).join("SKILL.md"), "mine").unwrap();
         }
         let named: Vec<String> =
             set_aside(&f.dirs).iter().map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
-        assert_eq!(named, [".session-handoff.adopting-ab12", "session-handoff"]);
-        assert!(retired("session-handoff") && retired(".session-handoff.replaced-1") && !retired("session-handoffs"));
+        assert_eq!(named, [".session-handoff.adopting-ab12", "Session-Handoff"], "whatever its case");
+        assert!(retired("session-handoff") && retired(".Session-Handoff.replaced-1") && !retired("session-handoffs"));
         assert_eq!(std::fs::read_to_string(system.join(".session-handoff.adopting-ab12").join("SKILL.md")).unwrap(), "mine");
     }
 

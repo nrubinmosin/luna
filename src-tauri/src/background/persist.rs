@@ -67,6 +67,10 @@ pub(super) struct Saved {
     /// never written.
     #[serde(default, rename = "switch", skip_serializing)]
     pub(super) retired_switch: Option<RetiredSwitch>,
+    /// Written by a core with no handoff (0.20 on): nothing in it is 0.19's
+    /// handoff's to sort out (`retire_handoff`).
+    #[serde(default)]
+    pub(super) no_handoff: bool,
 }
 
 /// What `retire_handoff` needs of 0.19's `LeadSwitch`: the conversation the
@@ -80,26 +84,41 @@ pub(super) struct RetiredSwitch {
     pub(super) opening_id: Option<String>,
 }
 
-/// A helper as 0.19 saved it mid-handoff goes on where it was, with nothing of
-/// the handoff left (ADR-0030). Once 0.19 had let go of its conversation for
-/// the fresh one (`switch.before` holding it, no `session` named yet), that
-/// conversation is its own again; the fresh one's opening and every line of
-/// Luna's about the handoff queued for it (an ask, a failure) are dropped, as
-/// they point at a tool and a document there no longer are.
+/// A helper as 0.19 saved it goes on where it was, with nothing of the
+/// handoff left (ADR-0030). Once 0.19 had let go of its conversation for the
+/// fresh one (`switch.before` holding it, no `session` named yet), that
+/// conversation is its own again, and the fresh one's opening, the one the
+/// switch names (`openingId`), is dropped. Luna's own lines about the handoff
+/// queued for it (an ask, a failure, as 0.19 wrote them) are dropped, and the
+/// line a notice to it said of leads below it that handed off is taken out of
+/// that notice: they point at a tool and a document there no longer are. A
+/// file this core wrote (`no_handoff`) is left as it is.
 fn retire_handoff(s: &mut Saved) {
     let switch = s.retired_switch.take();
     let opening = switch.as_ref().and_then(|w| w.opening_id.clone());
     if s.session.is_none() {
         s.session = switch.and_then(|w| w.before);
     }
-    let retired =
-        |q: &Queued| opening.as_deref() == Some(q.id.as_str()) || (q.from.is_none() && crate::agents::of_retired_handoff(&q.text));
+    let legacy = !s.no_handoff;
     for store in [&mut s.queue, &mut s.in_flight, &mut s.fed, &mut s.undelivered] {
-        store.retain(|q| !retired(q));
-    }
-    if s.opening.as_deref().is_some_and(crate::agents::of_retired_handoff) {
-        s.opening = None;
-        s.opening_id = None;
+        store.retain_mut(|q| {
+            if opening.as_deref() == Some(q.id.as_str()) {
+                return false;
+            }
+            if !legacy || q.from.is_some() {
+                return true;
+            }
+            if crate::agents::of_retired_handoff(&q.text) {
+                return false;
+            }
+            match crate::agents::without_handed_off(&q.text) {
+                Some(kept) => {
+                    q.text = kept;
+                    true
+                }
+                None => false,
+            }
+        });
     }
 }
 
@@ -166,6 +185,7 @@ pub(super) fn snapshot() -> Vec<Saved> {
             observed: e.observed.clone(),
             ties: Default::default(),
             retired_switch: None,
+            no_handoff: true,
         })
         .collect();
     // The agent layer's lock after this one is let go: it is the one taken
@@ -670,6 +690,7 @@ mod tests {
             ties: Default::default(),
             observed: Default::default(),
             retired_switch: None,
+            no_handoff: true,
         };
 
         let e = taken_up(saved(true, true));
@@ -815,6 +836,32 @@ mod tests {
         assert!(e.opening.is_none());
     }
 
+    /// A helper whose opening reads like 0.19's lines ("Handoff 2FA …"), its
+    /// conversation not named yet as the core went, keeps it, from a file of
+    /// either core: only the opening a 0.19 switch names is dropped. A
+    /// notice 0.19 queued for a lead loses only the line of leads that handed
+    /// off.
+    #[test]
+    fn an_opening_is_dropped_only_where_a_0_19_switch_names_it() {
+        for no_handoff in [false, true] {
+            let mut s = unnamed("Handoff 2FA ownership to support", Some("op"));
+            s.no_handoff = no_handoff;
+            s.cut_short = true;
+            let e = taken_up(s);
+            let texts: Vec<&str> = e.undelivered.iter().map(|q| q.text.as_str()).collect();
+            assert_eq!(texts, ["Handoff 2FA ownership to support"], "no_handoff {no_handoff}");
+        }
+        let notice = format!(
+            "{} Your helper h1 answered. Lead l3 handed off (2): it goes on in a fresh conversation; its helpers stay with it.",
+            crate::agents::NOTICE_TAG
+        );
+        let mut s = with_lines(false);
+        s.queue = vec![Queued::new(None, notice, Vec::new())];
+        let e = taken_up(s);
+        let texts: Vec<String> = e.undelivered.iter().map(|q| q.text.clone()).collect();
+        assert_eq!(texts, [format!("{} Your helper h1 answered.", crate::agents::NOTICE_TAG)]);
+    }
+
     #[test]
     fn what_a_stopped_turn_had_queued_is_kept_and_counted() {
         let mut e = entry(Provider::Codex);
@@ -928,6 +975,7 @@ mod tests {
                 observed: Default::default(),
                 ties: Default::default(),
                 retired_switch: None,
+                no_handoff: true,
             })
         };
         let mut claude = entry(Provider::Claude);

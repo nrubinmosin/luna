@@ -193,6 +193,10 @@ pub(super) struct SavedChats {
     /// took over is told of once, whatever comes between.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) news: Vec<(String, String)>,
+    /// Written by a core with no handoff (0.20 on): nothing in it is 0.19's
+    /// handoff's to sort out (`of_retired_handoff`).
+    #[serde(default)]
+    pub(super) no_handoff: bool,
 }
 
 fn chat_ties_file() -> std::path::PathBuf {
@@ -446,7 +450,7 @@ pub(super) fn chats_now() -> SavedChats {
     }
     chats.sort_by(|a, b| a.id.cmp(&b.id));
     spawns.sort_by_key(|s| s.request);
-    SavedChats { chats, sends, spawns, news }
+    SavedChats { chats, sends, spawns, news, no_handoff: true }
 }
 
 /// Writes `chats_now` out if it changed since the last write (background/persist.rs
@@ -589,7 +593,7 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         // 0.19's handoff and move lines, an ask, a lapse or a failure with
         // the continuation it carried, are dropped: they point at a tool, a
         // document and a conversation there no longer are (ADR-0030).
-        if of_retired_handoff(&line.1) {
+        if !saved.no_handoff && of_retired_handoff(&line.1) {
             retired += 1;
         } else if !r.news.contains(&line) {
             r.news.push(line);
@@ -610,27 +614,80 @@ pub(super) fn take_up_chats(saved: SavedChats) {
     }
 }
 
-/// How 0.19's handoff and move lines open, Luna's notice tag aside: a chat's
-/// threshold ask, the person's ask, its lapse or withdrawal, a failure line
-/// and what took its place (`Handoff <n> …`, `A handoff of this chat …`), the
-/// prompts it typed. A lead's ask and failure went into its queue the same way.
-const RETIRED_HANDOFF_LEADS: [&str; 7] = [
-    "[Luna handoff",
-    "[Luna move",
-    "This chat's context is at ",
-    "The person asks for a handoff",
-    "The person's request for a handoff",
-    "The person asked for a handoff",
-    "A handoff of this chat ",
-];
-
 /// Whether `line`, queued by a 0.19 core, is one of its handoff's or a move's
-/// (ADR-0030 removed both): not to be typed into anything.
+/// lines as it wrote them (ADR-0030 removed both), Luna's notice tag aside:
+/// a chat's threshold ask, the person's ask, its lapse or withdrawal, a
+/// failure line and what took its place, a lead's ask and failure, the
+/// prompts it typed. Not to be typed into anything. Only a file 0.19 wrote
+/// is looked at so (`SavedChats::no_handoff`, background `Saved::no_handoff`).
 pub(crate) fn of_retired_handoff(line: &str) -> bool {
     let line = line.trim_start();
     let line = line.strip_prefix(crate::agents::NOTICE_TAG).unwrap_or(line).trim_start();
-    RETIRED_HANDOFF_LEADS.iter().any(|lead| line.starts_with(lead))
-        || line.strip_prefix("Handoff ").is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+    if retired_opening(line) {
+        return true;
+    }
+    if let Some(rest) = line.strip_prefix("Handoff ").and_then(numbered) {
+        const AFTER: [&str; 5] = [
+            " cleared the conversation, but Luna",
+            " did not go through: ",
+            " of this chat did not go through: ",
+            " of this chat cleared the conversation that wrote it",
+            " started no new conversation: ",
+        ];
+        return AFTER.iter().any(|a| rest.starts_with(a));
+    }
+    const WHOLE: [&str; 4] = [
+        "The person asks for a handoff of this chat now: ",
+        "The person's request for a handoff of this chat lapsed: ",
+        "The person asked for a handoff of this chat, but Luna could not deliver the request",
+        "A handoff of this chat cleared the conversation that wrote it",
+    ];
+    WHOLE.iter().any(|w| line.starts_with(w)) || (line.starts_with("This chat's context is at ") && line.contains("luna_session_handoff"))
+}
+
+/// A run of digits at the start of `s`, and what follows it.
+fn numbered(s: &str) -> Option<&str> {
+    let rest = s.trim_start_matches(|c: char| c.is_ascii_digit());
+    (rest.len() < s.len()).then_some(rest)
+}
+
+/// Whether `text` opens on the tag 0.19's handoff or a move typed its
+/// prompts under, as it wrote it: `[Luna handoff <n>, not typed by the
+/// user]`, `[Luna move <id>, not typed by the user]` or `[Luna move <id>
+/// request, not typed by the user]`.
+pub(crate) fn retired_opening(text: &str) -> bool {
+    let text = text.trim_start();
+    if let Some(rest) = text.strip_prefix("[Luna handoff ").and_then(numbered) {
+        return rest.starts_with(", not typed by the user]");
+    }
+    let Some(rest) = text.strip_prefix("[Luna move ") else { return false };
+    let (id, tail) = rest.split_at(rest.find([' ', ',']).unwrap_or(rest.len()));
+    !id.is_empty()
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && (tail.starts_with(", not typed by the user]") || tail.starts_with(" request, not typed by the user]"))
+}
+
+/// `text`, a notice 0.19 put together for a session above a lead, without
+/// the line it added there of the leads under it that handed off (`Lead <id>
+/// handed off (<n>): …`, `Leads handed off: …`), what else it says kept.
+/// None where nothing else is left of it.
+pub(crate) fn without_handed_off(text: &str) -> Option<String> {
+    const ONE: (&str, &str) = ("Lead ", ": it goes on in a fresh conversation; its helpers stay with it.");
+    const MANY: (&str, &str) = ("Leads handed off: ", ": each goes on in a fresh conversation; their helpers stay with them.");
+    let mut text = text.to_string();
+    for (start, end) in [ONE, MANY] {
+        while let Some(e) = text.find(end) {
+            let Some(s) = text[..e].rfind(start) else { break };
+            if start == ONE.0 && !(text[s..e].contains(" handed off (") && text[s..e].ends_with(')')) {
+                break;
+            }
+            let from = if text[..s].ends_with(' ') { s - 1 } else { s };
+            text.replace_range(from..e + end.len(), "");
+        }
+    }
+    let said = text.trim_start();
+    let said = said.strip_prefix(crate::agents::NOTICE_TAG).unwrap_or(said).trim();
+    (!said.is_empty()).then_some(text)
 }
 
 /// What only a helper's settings hold (`registry::CORE_SETTINGS`, `background`):
@@ -1156,9 +1213,37 @@ mod tests {
         let queued: Vec<(String, String)> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == chat).cloned().collect();
         assert_eq!(queued, [kept], "only the line that is not the handoff's");
         reg().lock().unwrap().news.retain(|(c, _)| c != chat);
-        for line in ["Handoffs are gone.", "Handoff the keys to the reviewer", "Your helper said: This chat's context is at 72%"] {
+        for line in [
+            "Handoffs are gone.",
+            "Handoff the keys to the reviewer",
+            "Handoff 2FA ownership to support",
+            "Your helper said: This chat's context is at 72%",
+            "[Luna movement notes] for the release",
+            "[Luna handoff notes] the plan",
+        ] {
             assert!(!of_retired_handoff(line), "{line}");
         }
+        // A file this core wrote is no 0.19 file: what it queued goes in as it is.
+        let line = (chat.to_string(), retired[0].to_string());
+        take_up_chats(SavedChats { news: vec![line.clone()], no_handoff: true, ..Default::default() });
+        assert!(reg().lock().unwrap().news.contains(&line), "kept");
+        reg().lock().unwrap().news.retain(|(c, _)| c != chat);
+    }
+
+    /// The line 0.19 added to a notice for a session above a lead of the
+    /// leads below it that handed off goes, alone or after what else the
+    /// notice said, which stays.
+    #[test]
+    fn the_handed_off_line_0_19_added_to_a_notice_goes_and_the_rest_stays() {
+        let one = "Lead l2 handed off (1): it goes on in a fresh conversation; its helpers stay with it.";
+        let many = "Leads handed off: l2 (1), l3 (2): each goes on in a fresh conversation; their helpers stay with them.";
+        let update = format!("{} Your helper h1 answered: lane 2 is green.", crate::agents::NOTICE_TAG);
+        assert_eq!(without_handed_off(&format!("{update} {one}")).as_deref(), Some(update.as_str()));
+        assert_eq!(without_handed_off(&format!("{update} {many}")).as_deref(), Some(update.as_str()));
+        assert_eq!(without_handed_off(&format!("{} {one}", crate::agents::NOTICE_TAG)), None, "nothing else in it");
+        assert_eq!(without_handed_off(&update).as_deref(), Some(update.as_str()), "a notice without it as it was");
+        let plain = "Lead the review: it goes on in a fresh conversation; its helpers stay with it.";
+        assert_eq!(without_handed_off(plain).as_deref(), Some(plain), "not 0.19's line");
     }
 
     #[test]
