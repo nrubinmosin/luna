@@ -36,6 +36,7 @@
     "allow-set-helper-context-pct",
     "allow-cli-status",
     "allow-cli-update-now",
+    "allow-cli-roll-back",
     "allow-cli-versions",
     "allow-claude-defaults",
     "allow-claude-models",
