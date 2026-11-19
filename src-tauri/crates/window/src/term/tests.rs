@@ -329,6 +329,48 @@ fn keys_typed_while_a_paste_reads_the_clipboard_go_after_it(cx: &mut TestAppCont
     assert_eq!(p.take(), "y");
 }
 
+/// A key waiting behind a paste is encoded as it goes, by the modes the
+/// program has by then.
+#[gpui::test]
+fn a_key_behind_a_paste_is_encoded_by_the_modes_it_goes_with(cx: &mut TestAppContext) {
+    let mut p = open(cx);
+    *p.host.desktop.reads.lock().unwrap() = Some(Vec::new());
+    p.cx.simulate_keystrokes("ctrl-v up");
+    p.output(b"\x1b[?1h");
+    let read = p.host.desktop.reads.lock().unwrap().take().unwrap().pop().unwrap();
+    read.send(Clip::Text("one".into())).unwrap();
+    p.cx.run_until_parked();
+    assert_eq!(p.take(), "one\x1bOA");
+}
+
+/// A clipboard that does not answer holds nothing up for good: past the
+/// wait the paste is dropped, said in the pane, and what waited behind it
+/// goes; the answer, if it comes after, is dropped. What waits is bounded,
+/// and what goes past the bound is dropped and said once.
+#[gpui::test]
+fn a_clipboard_that_does_not_answer_drops_the_paste_and_lets_keys_go(cx: &mut TestAppContext) {
+    let mut p = open(cx);
+    *p.host.desktop.reads.lock().unwrap() = Some(Vec::new());
+    p.cx.simulate_keystrokes("ctrl-v");
+    for _ in 0..super::QUEUE_MAX + 5 {
+        p.cx.simulate_input("x");
+    }
+    assert_eq!(p.take(), "");
+    p.settle();
+    assert!(p.shows("[input dropped: too much typed while a paste waits]"));
+    p.cx.executor().advance_clock(super::CLIPBOARD_WAIT);
+    p.cx.run_until_parked();
+    assert_eq!(p.take(), "x".repeat(super::QUEUE_MAX - 1), "the paste and what fit behind it");
+    p.settle();
+    assert!(p.shows("[paste dropped: the clipboard did not answer in 5 s]"));
+    let late = p.host.desktop.reads.lock().unwrap().take().unwrap().pop().unwrap();
+    assert!(late.send(Clip::Text("late".into())).is_err(), "nobody waits for it");
+    p.cx.run_until_parked();
+    assert_eq!(p.take(), "");
+    p.cx.simulate_input("y");
+    assert_eq!(p.take(), "y");
+}
+
 #[gpui::test]
 fn sgr_mouse_reports_overlapping_buttons_each_released(cx: &mut TestAppContext) {
     let mut p = open(cx);
@@ -516,6 +558,121 @@ fn a_reattach_replays_the_backlog_and_drops_what_came_meanwhile(cx: &mut TestApp
     p.clipboard(Clip::Text("hi".into()));
     p.cx.simulate_keystrokes("ctrl-v");
     assert_eq!(p.take(), "\x1b[200~hi\x1b[201~");
+}
+
+/// A reattach to a core that numbers its output: the backlog is shown and
+/// wiped, the modes it came with put back, and the output from its end on
+/// goes after it exactly: held before the answer or come after it, what the
+/// backlog has is dropped, a chunk across its end is cut there, and a query
+/// past it is answered once, the backlog's never. The backlog's last escape,
+/// left unfinished, is finished by what comes after. Input goes once the
+/// modes are parsed, and no SESSION_MODES is asked.
+#[gpui::test]
+fn an_exact_reattach_takes_the_output_from_the_backlogs_end_once(cx: &mut TestAppContext) {
+    let mut p = open_with(cx, Provider::Claude, LinkState::Starting, demo::attached_at("OLD SCREEN\x1b[c\r\n\x1b[?20", 7, 100, "\x1b[?1h"));
+    p.view.update(p.cx, |v, cx| v.start(cx));
+    // In the backlog; across its end, with the rest of its last escape; a
+    // query past it.
+    assert!(p.host.output_at("s1", b"OLD", Some(90)));
+    assert!(p.host.output_at("s1", b"2004hA", Some(98)));
+    assert!(p.host.output_at("s1", b"\x1b[c", Some(104)));
+    p.cx.run_until_parked();
+    p.settle();
+    assert_eq!(p.phase(), Phase::Live(7));
+    assert!(p.host.output_at("s1", b"B", Some(107)));
+    p.settle();
+    assert_eq!(p.screen()[0], "AB", "{:?}", p.screen());
+    assert!(p.mode().contains(TermMode::BRACKETED_PASTE | TermMode::APP_CURSOR), "the modes, and the escape finished");
+    assert_eq!(p.take_all(), vec![json!({ "id": "s1", "data": "\x1b[?6c", "reply": true })], "the live query, once");
+    assert!(p.host.calls_of(cmd::SESSION_MODES).is_empty());
+    assert_eq!(p.view.read_with(p.cx, |v, cx| v.waiting(cx)), None);
+    p.cx.simulate_input("k");
+    assert_eq!(p.take(), "k");
+
+    // Again, with nothing held: the first chunk after the answer crosses the
+    // backlog's end, and is cut there.
+    p.host.answer(cmd::ENSURE_CLAUDE_SESSION, demo::attached_at("", 8, 200, ""));
+    p.view.update(p.cx, |v, cx| v.start(cx));
+    p.cx.run_until_parked();
+    p.settle();
+    assert!(p.host.output_at("s1", b"OLDNEW", Some(197)));
+    p.settle();
+    assert_eq!(p.screen()[0], "NEW", "{:?}", p.screen());
+}
+
+/// Output that starts past where the backlog ended means some was missed:
+/// held before the answer, or come after it, the pane starts over and shows
+/// none of it.
+#[gpui::test]
+fn output_missed_after_the_backlog_starts_the_session_over(cx: &mut TestAppContext) {
+    let mut p = open_with(cx, Provider::Claude, LinkState::Up, demo::attached_at("OLD\r\n", 3, 50, ""));
+    let starts = |p: &mut Pane| p.host.calls_of(cmd::ENSURE_CLAUDE_SESSION).len();
+    assert_eq!((starts(&mut p), p.phase()), (1, Phase::Live(3)));
+    p.view.update(p.cx, |v, cx| v.start(cx));
+    assert!(p.host.output_at("s1", b"LOST", Some(60)));
+    p.cx.run_until_parked();
+    p.settle();
+    assert_eq!((starts(&mut p), p.phase()), (3, Phase::Live(3)), "started over once, then attached");
+    assert!(!p.shows("LOST"));
+    assert!(p.host.output_at("s1", b"GAP", Some(70)));
+    p.settle();
+    assert_eq!(starts(&mut p), 4);
+    assert!(p.host.output_at("s1", b"NEXT", Some(50)));
+    p.settle();
+    assert!(!p.shows("GAP") && p.shows("NEXT"), "{:?}", p.screen());
+}
+
+/// A reattach waits for the modes, saying so, and takes no key meanwhile,
+/// not even to encode; one that does not get them in time, or gets an error,
+/// starts over rather than take input without them; and one whose answer
+/// comes after the pane has gone back to waiting for the core unlocks
+/// nothing.
+#[gpui::test]
+fn a_reattach_is_bounded_and_a_late_answer_unlocks_nothing(cx: &mut TestAppContext) {
+    let mut p = open_with(cx, Provider::Claude, LinkState::Starting, demo::attached("OLD\r\n", 4));
+    p.host.defer(cmd::SESSION_MODES);
+    let starts = |p: &mut Pane| p.host.calls_of(cmd::ENSURE_CLAUDE_SESSION).len();
+    let said = |p: &mut Pane| p.view.read_with(p.cx, |v, cx| v.waiting(cx));
+    p.core(LinkState::Up);
+    assert_eq!((starts(&mut p), p.phase()), (1, Phase::Live(4)));
+    assert_eq!(said(&mut p), Some("Reattaching to the session..."));
+    p.cx.simulate_keystrokes("up a");
+    p.cx.simulate_input("b");
+    assert_eq!(p.take(), "", "no input before the modes");
+    // Past the bound: started over. The first attach's answer, come late,
+    // unlocks nothing.
+    p.cx.executor().advance_clock(super::REATTACH_WAIT);
+    p.cx.run_until_parked();
+    assert_eq!(starts(&mut p), 2);
+    assert!(p.host.resolve(cmd::SESSION_MODES, Ok(json!("\x1b[?2004h"))));
+    p.cx.run_until_parked();
+    p.settle();
+    assert_eq!(said(&mut p), Some("Reattaching to the session..."));
+    p.cx.simulate_input("x");
+    assert_eq!(p.take(), "");
+    // An error: started over too, never live with no modes.
+    assert!(p.host.resolve(cmd::SESSION_MODES, Err("broken".into())));
+    p.cx.run_until_parked();
+    assert_eq!(starts(&mut p), 3);
+    // The core goes away; the answer comes after.
+    p.core(LinkState::Starting);
+    assert_eq!(p.phase(), Phase::Waiting);
+    assert!(p.host.resolve(cmd::SESSION_MODES, Ok(json!("\x1b[?2004h"))));
+    p.cx.run_until_parked();
+    p.settle();
+    assert_eq!(p.phase(), Phase::Waiting);
+    p.cx.simulate_input("c");
+    assert_eq!(p.take(), "");
+    assert!(!p.mode().contains(TermMode::BRACKETED_PASTE), "nothing of the late answer was parsed");
+    // Up again: this one goes through.
+    p.core(LinkState::Up);
+    assert_eq!(starts(&mut p), 4);
+    assert!(p.host.resolve(cmd::SESSION_MODES, Ok(json!("\x1b[?2004h"))));
+    p.cx.run_until_parked();
+    p.settle();
+    assert_eq!(said(&mut p), None);
+    p.cx.simulate_input("d");
+    assert_eq!(p.take(), "d");
 }
 
 /// The core replaced under the pane, its `starting` folded into the `up`

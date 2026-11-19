@@ -40,10 +40,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   are back; its exit and refused keys are said in the terminal, and it waits
   for a core being found or replaced and starts its chat over in the next
   one, or after the core's start-over (a shutdown of the PC called off).
-  Pasted text loses its control characters (but tabs and line breaks) with
+  A reattach to a core that numbers its output takes what came after the
+  backlog exactly, nothing twice and nothing missed, and says it is
+  reattaching; one that misses output, fails or takes past 15 s starts
+  over rather than take keys without the CLI's modes. Pasted text loses its
+  control characters (but tabs and line breaks), DEL among them, with
   bracketed paste off as well as on, and keys typed while a paste reads the
-  clipboard go after it. Output it cannot keep up with is dropped and said,
-  never held without bound, and a synchronized update left open is drawn at
+  clipboard go after it, encoded by the modes they go with; a clipboard
+  that does not answer in 5 s loses its paste, said in the terminal, and
+  what waits behind pastes is bounded. Output it cannot keep up with is
+  dropped and said, never held without bound, and a synchronized update left open is drawn at
   its deadline. The test build opens terminals with `--dev-open`; the board
   opens them later. That, the test build's driver and stand-in clipboard are
   compiled into the test build alone (the `luna_test` cfg).

@@ -252,9 +252,11 @@ between.
 
 **The seam.** The pane hands the host an `OutputSink` (`Host::route_output`)
 when it starts its session; luna_lib feeds it each `pty://output` chunk on the
-thread that reads the core's line (native.rs `Outputs`), and the sink queues
-it for the parser. A sink whose pane is gone says so, and the host lets go of
-it.
+thread that reads the core's line (native.rs `Outputs`), with the chunk's
+`offset` where the core sends one (its text's place in all the session has
+sent, [pty and launch](pty-and-launch.md#scrollback-and-terminal-state)),
+and the sink queues it for the parser. A sink whose pane is gone says so,
+and the host lets go of it.
 
 **The session.** `SessionSpec` names the session, its CLI and how it starts:
 `ensure_claude_session` or `ensure_codex_session` with the page's own
@@ -268,21 +270,39 @@ arguments; starting one that runs reattaches to it. The pane goes through
   and the start is asked. An answer to a start asked before the last is
   dropped; a failure while the core went away goes back to waiting; any other
   failure is said in the pane, as the page says it.
-- `Live(generation)`: a fresh session (no backlog) gets the held output and
-  its first size. A reattach does what the page's `replayTail` does: the
-  backlog is parsed, then wiped (RIS), and the modes the core kept for the
-  session put back (`session_modes`); the held output is dropped, since some
-  of it was sent before the backlog was taken and is in it already, and the
-  modes may be newer than the rest; the CLI is asked to paint again by its
-  PTY made a row shorter and, 60 ms later, the size the pane is at, and that
-  repaint and everything after is live. Keys and pastes go nowhere until the
-  modes are parsed (bracketed paste above all). Queries in a backlog are not
-  answered again (the parser's quiet jobs); live ones are, by the pane:
-  device attributes and modes (alacritty's replies), the colors from the
-  pane's palette (OSC 4/10/11), the text area size, each sent with
-  `reply: true` so the core does not count it as a person typing
-  (pty/control.rs `write_session`). The cursor position query never reaches
-  the pane: the core answers it.
+- `Live(generation)`: a fresh session (no backlog, ending at offset 0) gets
+  the held output and its first size. A reattach does what the page's
+  `replayTail` does: the backlog is parsed, then wiped (RIS), and the
+  session's modes put back; the CLI is asked to paint again by its PTY made a
+  row shorter and, 60 ms later, the size the pane is at. From a core that
+  numbers its output (`replay_at`), the answer carries the offset the
+  backlog ends at (`backlogEnd`) and the modes as of there (`modes`), and
+  the output from that offset on goes after the modes exactly
+  (`Parser::attach_at`): a chunk held before the answer or come after it is
+  dropped where the backlog has it, cut where it crosses the backlog's end,
+  and parsed live after that, so nothing shows twice, nothing is missed and
+  a query in it is answered once. An escape sequence the backlog ends inside
+  of (`unfinished_escape`) goes after the modes too, so its rest finds it
+  whole. A chunk that starts past where the backlog ended means output was
+  missed (the pane's bound, a chunk of an older start): the sink holds
+  everything from there (`UiMsg::Gap`) and the pane starts over. From an
+  older core (`replay`) the modes are asked for apart (`session_modes`) and
+  the held output is dropped, since some of it is in the backlog already and
+  the modes may be newer than the rest; the repaint draws the screen whole.
+  While it reattaches the pane says so (`Reattaching to the session...`) and
+  takes no input, not even to encode a key, until the modes are parsed
+  (bracketed paste above all); replies to the program's queries go
+  meanwhile. Each completion (the modes, the parse, the bound) acts only for
+  the start, the core's epoch and the phase it was made in, so a late one
+  unlocks nothing; one that does not come within `REATTACH_WAIT` (15 s), the
+  modes' error, or a gap starts the session over rather than take input
+  with modes the pane does not know. Queries in a backlog are not answered
+  again (the parser's quiet jobs); live ones are, by the pane: device
+  attributes and modes (alacritty's replies), the colors from the pane's
+  palette (OSC 4/10/11), the text area size, each sent with `reply: true` so
+  the core does not count it as a person typing (pty/control.rs
+  `write_session`, which takes it so only for one terminal answer whole).
+  The cursor position query never reaches the pane: the core answers it.
 - `Ended`: `pty://exit` with its own spawn's number (one heard before the
   start answered is kept for it), said in the pane as `[session exited]`.
   `pty://input-refused` is said in the pane as the page says it. The models
@@ -305,8 +325,16 @@ cell's exact scaled size rounded, times the cells), sent again whenever either
 changes, a scale change included. The core passes the pixels on to the PTY
 (TIOCSWINSZ on Unix; ConPTY takes the cells). A size the host refused to hand
 over (the core's line full for a moment) is not taken for sent, and goes
-again 250 ms later. What is typed while a paste reads the clipboard waits
-behind the paste, and pastes keep their order.
+again 250 ms later. Input (keys, pastes, the IME, the mouse, focus) has a
+gate of its own besides (`Io::set_typing`): shut while a reattach waits for
+the modes, when replies already go. What is typed while a paste reads the
+clipboard waits behind the paste, keys as keys, encoded by the modes the
+program has as they go; pastes keep their order. At most 256 entries wait
+(`QUEUE_MAX`): past that, input is dropped and said once
+(`[input dropped: too much typed while a paste waits]`). A clipboard that
+does not answer within 5 s (`CLIPBOARD_WAIT`) loses its paste, said in the
+pane (`[paste dropped: the clipboard did not answer in 5 s]`), and what
+waited behind it goes; its answer, if it comes later, is dropped.
 
 - Keys (`keys.rs`): xterm's encoding, from its control-sequence reference: the
   modifier parameter on cursor, editing and function keys, SS3 under DECCKM,
@@ -351,8 +379,9 @@ before text before an image, and leaves out a file list it cannot type):
   needs quoting), space-separated, as a paste. A path that cannot be typed
   whole (not Unicode, a control character, a `"` on Windows, where POSIX's
   single quotes hold one) is left out, and so is the list it is in.
-- Text: line ends as CR, every other control character but tab dropped, C0
-  and C1 alike (ESC, ETX and U+009B, CSI's C1 form, among them), with
+- Text: line ends as CR, every other control character but tab dropped, C0,
+  DEL and C1 alike (ESC, ETX, DEL, which would act as Backspace, and U+009B,
+  CSI's C1 form, among them), with
   bracketed paste (2004) off as well as on, so a paste can neither end itself
   early nor act as keys; with 2004 on, framed by CSI 200~ and 201~
   (alacritty 0.17.0 filters ESC and ETX the same way). No dialog asks first:
@@ -472,10 +501,14 @@ The terminal's tests (`term/tests.rs`) drive a pane through gpui's own
 dispatch and the input handler its element registers, over the fake host, its
 output through the real sink and parser thread: keys with modifiers and
 DECCKM, Ctrl+C both ways, AltGr text, paste with 2004 off and on and in
-order with the keys typed while it reads, files pasted and dropped, a bitmap
-per CLI, SGR mouse with overlapping buttons, selection and copy, the wheel
-and the scrollback, the IME, the size in cells and pixels and a size
-refused, a fresh start, a reattach and what came during it, a core replaced
+order with the keys typed while it reads (encoded by the modes they go
+with), a clipboard that does not answer and the queue's bound, files pasted
+and dropped, a bitmap per CLI, SGR mouse with overlapping buttons, selection
+and copy, the wheel and the scrollback, the IME, the size in cells and
+pixels and a size refused, a fresh start, a reattach and what came during
+it, an exact reattach by offsets (overlap cut, the tail and its query taken
+once, an escape cut by the backlog finished), output missed after the
+backlog, a reattach past its bound, failed, or answered late, a core replaced
 between two states and the core's start-over, the exit and refused input,
 the wait for the core, focus reports, color queries and the reply lane,
 output past the bound, a synchronized update left open or too long, and an
