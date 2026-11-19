@@ -161,6 +161,11 @@ struct Entry {
     /// Its job would not list when last looked at between turns: what its
     /// turns left is not known, and its record counts that as active.
     left_unlisted: bool,
+    /// Turns whose process could not be put in its job (`procs::adopt` or
+    /// `join` refused), by the CLI's pid and the turn's start: what they
+    /// started is in no job, and not known (active) until a walk below each
+    /// by parent links finds nothing left (`procs::left_below`).
+    outside: Vec<(u32, u64)>,
     /// This core, leaving, ended what its turns left and found its job empty
     /// after (`stop_all`): saved, so the next core knows nothing of it runs on
     /// unseen. Cleared as a turn begins.
@@ -433,9 +438,18 @@ pub fn stop_all() {
     // there as not known (`restore`).
     for (id, e) in lock().entries.iter_mut() {
         e.tied = false;
-        e.left_seen_out = e.run.is_none() && seen_out.contains(id);
+        e.left_seen_out = left_seen_out(e, seen_out.contains(id));
     }
     save();
+}
+
+/// Whether nothing a helper's turns left runs on unseen as the core leaves:
+/// its job listed empty after its leftovers were ended (`emptied`), or, with no
+/// job under this core (taken up, and no turn since), it was known so when it
+/// was taken up. Not with a turn on, nor with a turn that was in no job
+/// (`outside`), which nothing here ended.
+fn left_seen_out(e: &Entry, emptied: bool) -> bool {
+    e.run.is_none() && e.outside.is_empty() && (emptied || (e.job.is_none() && e.left_seen_out))
 }
 
 /// The core stays after all — a shutdown of the PC it had wound down for was

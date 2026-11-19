@@ -253,7 +253,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   lose their turns. To turn the PC off use `luna_power_set`, not a `shutdown` command: it fires
   once no session has been active (a turn running or waiting, a shell, cron or subagent, a state
   not yet known) for the whole `quietSec`, CLIs closed first; `cancel` disarms. `drain`: till then
-  agents' spawns and sends are refused and answers take only a pending ask. It returns `busy`,
+  agents' spawns and sends are refused and answers take only a pending ask; as it fires all three
+  are refused ("Luna is shutting down"): end your turn. It returns `busy`,
   the sessions active now, and of those `waitingForAPerson`. After `restart` Luna
   starts at the next sign-in; that takes a person.
 - `luna_guide_get` with no topic gives the topics; each tool's name is one.

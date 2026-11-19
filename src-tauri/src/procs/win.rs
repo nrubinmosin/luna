@@ -89,6 +89,9 @@ pub fn also_marked(_job: &Job, _var: &str, _value: &str) {}
 /// So is this.
 pub fn await_environment(_pid: u32) {}
 
+/// And this: a Job Object holds what a chat's CLI starts, whatever it does.
+pub fn marked(_job: &Job, _id: &str) {}
+
 /// The tie needs no process of its own here.
 pub fn keeper_from_args() -> bool {
     false
@@ -368,7 +371,7 @@ pub fn list(job: &Job) -> Option<Vec<(super::ProcRead, String)>> {
 /// `list` for a CLI that could not be put in a job: the processes below it by
 /// parent links.
 pub fn list_below(root: u32) -> Option<Vec<(super::ProcRead, String)>> {
-    Some(named(descendants(root)))
+    Some(named(descendants(root)?))
 }
 
 fn named(pids: Vec<u32>) -> Vec<(super::ProcRead, String)> {
@@ -377,13 +380,14 @@ fn named(pids: Vec<u32>) -> Vec<(super::ProcRead, String)> {
 }
 
 /// The pids below `root` by parent links, `root` included. Only for a CLI
-/// that could not be put in a job.
-fn descendants(root: u32) -> Vec<u32> {
+/// that could not be put in a job. None when the processes cannot be listed:
+/// not known is not empty.
+fn descendants(root: u32) -> Option<Vec<u32>> {
     let mut edges: Vec<(u32, u32)> = Vec::new(); // (pid, parent)
                                                  // SAFETY: a snapshot handle owned and closed here; the entry struct is
                                                  // sized before the first call as the API requires.
     unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return vec![root] };
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return None };
         let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
         if Process32FirstW(snap, &mut e).is_ok() {
             loop {
@@ -406,7 +410,7 @@ fn descendants(root: u32) -> Vec<u32> {
         }
         i += 1;
     }
-    out
+    Some(out)
 }
 
 fn filetime_100ns(ft: FILETIME) -> u64 {

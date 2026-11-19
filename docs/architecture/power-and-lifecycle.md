@@ -59,7 +59,8 @@ output, no screen. What a CLI does not say is not seen.
   respawn; `StopFailure` → ended, failed or usage limit. A subagent's hooks
   carry its `agent_id` and are never the turn's: from `SubagentStart` (or its
   first tool) to `SubagentStop` it counts in `subagents`; one on a prompt of
-  its own makes the record `asking`. Every 5 s the registry
+  its own makes the record `asking`; each is the session's latest word, as a
+  turn's hook is (`hook_at_ms`). Every 5 s the registry
   `sessions/<pid>.json` is read (`claude::session::status`): its status word
   (`turn_of`), when it was set (`statusUpdatedAt`), and the background shells it
   names (`shell`, 2.1.327 on; a list, an object or a count). It settles a hook
@@ -68,11 +69,15 @@ output, no screen. What a CLI does not say is not seen.
   `waiting` beats a hook's "busy". No mark is eternal, and each ages only
   from the later of the two words: a hook's "busy" against a registry idle for
   15 s since the hook is a `Stop` missed, and that turn counts as ended; a
-  hook's "waiting" at once when the registry's idle is newer, else 60 s since;
-  the registry's "busy" against a hook's "idle" stands when the registry set
-  it after the hook (`statusUpdatedAt`: a turn whose start hook was missed),
-  else is a registry left behind after 60 s. An idle registry for 15 s since
-  the last hook means no subagent is left. The registry entry is the one named
+  hook's "waiting" at once when the registry's idle is newer; but an idle
+  overrules a hook only when the registry set it after that hook
+  (`statusUpdatedAt`): an idle from before, or of no known time, never ends
+  the turn a hook began, however long it is read. The registry's "busy"
+  against a hook's "idle" stands when the registry set it after the hook (a
+  turn whose start hook was missed), else is a registry left behind after
+  60 s. An idle registry set after the last hook, a subagent's included, and
+  read for 15 s means no subagent is left. A `Stop` that arrives after a read
+  counted its turn as ended (`read_counted`) counts nothing. The registry entry is the one named
   by the CLI's pid, else the one resumed, else the one live `cli` entry for
   its folder and start; with several live candidates none is taken and,
   without hooks, the record is `unknown` (one chat must not read another's
@@ -83,17 +88,29 @@ output, no screen. What a CLI does not say is not seen.
   a turn to none; a registry left busy after a `Stop` begins and ends none.
   Its shells are what its job holds that its turns started (below), and what
   its last `Stop` and its registry name (2.1.327): a `Stop` count goes once a
-  look finds nothing in the job and nothing in the registry.
+  look finds nothing in the job and a registry read that names none; a
+  registry that does not read leaves it (a background agent is in no job).
 - **Codex, a chat.** Its rollout, read every 5 s by its own boundaries
   (`codex::session::rollout_read`): `task_started` with no end yet → running,
   or asking while a `request_user_input` holds the turn; `task_complete`,
   `turn_aborted` → ended, failed when the rollout says why, usage limit when
   `rollout_limit` names one; its count of completed turns is the turn count.
+  Which lines are this process's is told by position, never by the clock:
+  for the thread it resumed, the file's length at the spawn
+  (`codex::session::note_spawn`); a line past it is new whatever its date.
+  Elsewhere a line's date against the spawn decides, and a `task_started`
+  dated before it is in doubt (`Scan::doubt`), `unknown`: an earlier
+  process's turn, or this one's under a wall clock set back.
   Missing evidence is `unknown`, never ended: no rollout found (it appears
   with the first turn, so a chat just started has none, and holds the PC
   awake until its first turn ends or Codex's status hooks say it is idle), one
-  that will not open, or one with no turn event read yet. Its subagents come off their own
-  rollouts (`children_at_work`). An approval dialog is in no rollout: while the
+  that will not open or breaks off mid-read (`pty::lines_from`; the scan read
+  before is no word on what came since), or one with no turn event read yet.
+  Its subagents come off their own rollouts (`children_at_work`): one begun
+  dated before the spawn counts when it was not there at the first look; one
+  found is kept for the process's life, past the two weeks of folders looked
+  at; a folder that will not list or a subagent's rollout that will not read
+  is one subagent not seen (`NOT_SEEN`), at work. An approval dialog is in no rollout: while the
   rollout says a turn runs, its screen is looked at for one
   (`codex::session::approval_on`), and a turn held on one is asking, the one
   look at a screen for status; Codex's status hooks, trusted through
@@ -101,16 +118,19 @@ output, no screen. What a CLI does not say is not seen.
 - **Both CLIs' chats: the job.** Every read lists what the session's job
   holds besides its CLI (`procs::in_job`: the CLIs' own helpers
   `codex-code-mode-host` and `conhost`, and programs with a window of their
-  own, left out). Until the first turn of a CLI process (its first turn hook,
-  its rollout's first turn, a registry busy) all of it is the CLI's own
-  furniture, its MCP servers (`Track::furniture`, snapshot at every read and
-  at the first turn hook, never after); where start times are epoch ms
+  own, left out). Until the first prompt of a CLI process goes in, all of it
+  is the CLI's own furniture, its MCP servers (`Track::furniture`, snapshot at
+  every read until then, and last at the first of: a person's Enter on a
+  draft, Luna's text sent, Claude Code's `UserPromptSubmit`
+  (`activity::submitting`); never at a later hook, a `PostToolUse` whose
+  prompt's hook was missed, nor at a read once a turn is seen); where start times are epoch ms
   (Windows) what was born before the first turn's own start (the hook's time,
   the rollout's `task_started`) is furniture too. The rest are shells, by name,
   for as long as they are there, whatever the CLI version says. A job that will
   not list is `background.unlisted`: not known, active. Off Windows the job is
   the keeper's (`keeper::listed`): the CLI and what hangs from it by parent,
-  group or session, and what carries a helper's mark.
+  group or session, and what carries the session's mark (`LUNA_JOB`, set on a
+  chat's CLI at its spawn as on a helper's turns: `keeper::marked`).
 - **A helper, either CLI.** Its turn's process and stream-json events
   (`background::life_of`): a turn's process → running, a question or
   permission held on `luna_permission` → asking, its process gone → ended,
@@ -118,11 +138,16 @@ output, no screen. What a CLI does not say is not seen.
   left in its job (`procs::left_in`) is a shell, active for as long as it is
   there; there is no hold to run out. Re-read at every read of the records
   (`lives`) and at a turn's end; a job that will not list is
-  `background.unlisted`. Taken up after a core restart, what its turns left
-  under the last core is in no job this core has: seen out with that core's
-  tie, or by `stop_all` as it left (saved as `left_seen_out`), it is known
-  gone; else it is not known, and active, until its next turn's job says what
-  it holds.
+  `background.unlisted`, and so is a turn whose process could not be put in
+  the job (`procs::adopt` or, on Windows, `join` refused: `Entry::outside`),
+  from its end until a walk below its CLI by parent links, of processes born
+  since the turn began, finds nothing left (`procs::left_below`; off Windows
+  there is no such walk, and it stays not known). Taken up after a core
+  restart, what its turns left under the last core is in no job this core
+  has: seen out with that core's tie, or by `stop_all` as it left (saved as
+  `left_seen_out`), it is known gone, and stays so through every core after
+  until its next turn (`seen_when_taken_up`, `left_seen_out`); else it is not
+  known, and active, until its next turn's job says what it holds.
 
 ### Views
 
@@ -187,7 +212,9 @@ another program's and is left alone.
   registry word or its time, a rollout growing, a job's members, a turn
   count, a session gone), a helper's turn claimed or ended or its job
   changing (`touch`), an agent's call that may start work coming in or going
-  (`power::enter`). Activity that comes and goes between two reads moves it
+  (`power::enter`), a helper's turn about to start, Luna's text into a pane
+  (`PtyManager::write`), a person's key into one (`write_session`, before it
+  lands). Activity that comes and goes between two reads moves it
   all the same. The reader starts it over on a sleep or a clock step: the
   monotonic gap past six reads, or the wall clock off the monotonic one by
   30 s between two reads (`clock_moved`).
@@ -195,9 +222,20 @@ another program's and is left alone.
   (`quiet_s`, and from the arming at the earliest) → a 60 s countdown with a
   notification → due. Any activity after the countdown began, or a session or
   an agent's call (`admitted`) active at a read, cancels it, not the rule, and
-  the window starts over from that activity. Due, it fires only on a fresh
-  read taken that moment (`power::confirm`) with no session active and the
-  stamp, read again then, no later than the countdown's start. Every span is
+  the window starts over from that activity. Due, it is decided behind a
+  barrier (`power::barrier`): admission closes first, under the power lock
+  (`State::closing`, and `power::closed` for whoever asks under other locks):
+  agents' sends, spawns and answers are refused with "Luna is shutting down",
+  a helper's turn does not start (`spawn_turn`; what was queued behind it is
+  kept for its senders), Luna's writes into panes are refused. Each of those
+  moves the stamp before it asks, so it either lands before the decision or
+  finds the gate shut. Then a fresh read (`power::confirm`), then the stamp,
+  read after it under the lock: it fires only with no session or call active
+  and the stamp no later than the countdown's start; else admission opens again
+  and the window starts over. Fired, admission stays closed until the firing
+  is over (a refusal, a shutdown taken back, a wake). A person is never
+  refused: their key moves the stamp, and the CLI's hooks do. The CLIs are
+  closed and the OS asked only after the barrier. Every span is
   on the monotonic clock: a wall clock set forward shortens nothing. Unknown
   is active: better not to shut down than to shut down wrongly.
   Shutdown and restart ask the OS first (`power_off`, `machine.rs`): on Windows
@@ -427,10 +465,15 @@ were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`)
 
 | Failure | Behavior |
 | --- | --- |
-| A missed `Stop` hook | hook "busy" goes stale in 15 s against an idle registry |
+| A missed `Stop` hook | hook "busy" goes stale 15 s into an idle the registry set after the hook; its `Stop` arriving late counts nothing |
+| A registry idle older than the hook, or of no known time | never ends the hook's turn nor drops a subagent whose hook came later: active until a later word |
 | A forgotten `tail -F` or idle server | its session stays active, and holds the PC and a power-off, for as long as it runs: `luna_session_stop` between turns, or a delete, ends it |
 | A hook missed and no registry to settle it, a rollout not found after a key was typed | `unknown`: active until the CLI says otherwise |
-| A Codex turn on an approval dialog | reads running (no rollout line, no status hook yet): active, never asking |
+| A Codex turn on an approval dialog | reads `asking` where the dialog's heading is one Luna knows (`approval_on`), else `running`: active either way |
+| The wall clock set back after a Codex chat started | a turn begun past where the resumed rollout ended at the spawn reads running; elsewhere one dated before the spawn reads `unknown`; a subagent begun since, dated before it, counts as not at the first look |
+| A rollout or a subagent's folder that will not open, list or read through | `unknown`, or a subagent not seen (at work); never the last scan's ended |
+| A helper turn that could not be put in its job | `background.unlisted` past its end, until a walk below its CLI finds nothing (off Windows a job is never refused) |
+| A hook arrives, a key is pressed or Luna is asked to start work as a countdown runs out | the stamp moves or admission is shut first; the barrier cancels, or refuses the work |
 | Core dies | chats' CLIs end with their terminals; helpers' jobs end with the core (Job Object or keeper) |
 | Keeper gone with its core | the next core ends tied jobs from `tied-jobs/` (`end_last_ties`) |
 | WebView2 dies | `watchdog.rs` rebuilds the window; sessions untouched |

@@ -8,6 +8,9 @@ pub(super) static ENTERED_ENDED: Condvar = Condvar::new();
 
 /// Why an agent is to start nothing now, if it is not to.
 fn refusal(st: &State) -> Option<String> {
+    if st.closing {
+        return Some(format!("{SHUTTING_DOWN}: the PC is about to be powered off or put to sleep, so nothing new starts. End your turn."));
+    }
     if let Some(action) = st.fired {
         return Some(format!("Luna's {} is under way, so nothing new starts. End your turn.", action.as_str()));
     }
@@ -25,11 +28,19 @@ pub struct Entered<'a> {
     state: &'a Mutex<State>,
     ended: &'a Condvar,
     refusal: Option<String>,
+    /// Admission was closed (`State::closing`): even what a drain lets
+    /// through, a structured answer, is refused.
+    closed: bool,
 }
 
 impl Entered<'_> {
     pub fn draining(&self) -> bool {
         self.refusal.is_some()
+    }
+
+    /// Why nothing at all is let in now, a power-off being decided or under way.
+    pub fn shut(&self) -> Option<String> {
+        self.refusal.clone().filter(|_| self.closed)
     }
 }
 
@@ -49,7 +60,7 @@ fn enter_on<'a>(state: &'a Mutex<State>, ended: &'a Condvar) -> Entered<'a> {
     crate::activity::touch();
     let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
     st.admitted += 1;
-    Entered { state, ended, refusal: refusal(&st) }
+    Entered { state, ended, refusal: refusal(&st), closed: st.closing }
 }
 
 /// Held across a `luna_session_answer`, which a drain narrows (`agents::answer`). Not to be
@@ -58,13 +69,21 @@ pub fn enter() -> Entered<'static> {
     enter_on(state(), &ENTERED_ENDED)
 }
 
-/// Held across a `luna_session_spawn` or `luna_session_send`, which a drain refuses.
-pub fn admit() -> Result<Entered<'static>, String> {
-    let entered = enter();
-    match &entered.refusal {
-        Some(why) => Err(why.clone()),
-        None => Ok(entered),
+/// A `luna_session_spawn` or `luna_session_send`, which a drain refuses: `work`
+/// runs admitted from start to end, so a power-off counts it as at work until
+/// whatever it started is on a read.
+pub fn admitted<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    admitted_on(state(), &ENTERED_ENDED, work)
+}
+
+fn admitted_on<T>(state: &Mutex<State>, ended: &Condvar, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let entered = enter_on(state, ended);
+    if let Some(why) = &entered.refusal {
+        return Err(why.clone());
     }
+    let done = work();
+    drop(entered);
+    done
 }
 
 /// Waits, for as long as `wait`, for the calls let in before a drain to end, new
@@ -89,8 +108,15 @@ pub(super) fn unsupported(action: Action, windows: bool) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    /// An agent's call that may start work, as the hub admits it, on a state of
+    /// the test's own.
+    pub(in crate::power) fn enter_for_test(state: &Mutex<State>) -> Result<(), String> {
+        static ENDED: Condvar = Condvar::new();
+        admitted_on(state, &ENDED, || Ok(()))
+    }
 
     #[test]
     fn a_firing_refuses_new_work_with_no_drain_too() {
@@ -132,6 +158,20 @@ mod tests {
             let kept = matches!(action, Action::Sleep | Action::Hibernate);
             assert_eq!(st.armed.is_some(), kept);
         }
+    }
+
+    /// A send is at work until it is through, not only while it is checked:
+    /// the rule sees it counted for the whole of it.
+    #[test]
+    fn an_admitted_call_counts_for_the_whole_of_its_work() {
+        let state = Mutex::new(State::default());
+        let ended = Condvar::new();
+        let during = admitted_on(&state, &ended, || Ok(state.lock().unwrap().admitted)).unwrap();
+        assert_eq!(during, 1, "counted while it works");
+        assert_eq!(state.lock().unwrap().admitted, 0, "and not after");
+        close(&mut state.lock().unwrap(), &AtomicBool::new(false), true);
+        let shut = admitted_on(&state, &ended, || -> Result<(), String> { panic!("no work runs while admission is closed") });
+        assert!(shut.unwrap_err().contains(SHUTTING_DOWN));
     }
 
     #[test]

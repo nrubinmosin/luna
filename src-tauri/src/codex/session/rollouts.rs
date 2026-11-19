@@ -39,10 +39,29 @@ pub(super) fn day_dir(account_path: &str, day: Date) -> PathBuf {
 
 /// Rollout files written on the given days, newest first.
 pub(super) fn rollouts_on(account_path: &str, days: impl Iterator<Item = Date>) -> Vec<(DateTime, String, PathBuf)> {
+    rollouts_listed(account_path, days).0
+}
+
+/// `rollouts_on`, and whether every day's folder listed whole: one that is
+/// not there holds nothing, but one that would not list, or broke off, leaves
+/// what it holds not known.
+pub(super) fn rollouts_listed(account_path: &str, days: impl Iterator<Item = Date>) -> (Vec<(DateTime, String, PathBuf)>, bool) {
     let mut out = vec![];
+    let mut whole = true;
     for day in days {
-        let Ok(entries) = std::fs::read_dir(day_dir(account_path, day)) else { continue };
-        for e in entries.flatten() {
+        let entries = match std::fs::read_dir(day_dir(account_path, day)) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                whole = false;
+                continue;
+            }
+        };
+        for e in entries {
+            let Ok(e) = e else {
+                whole = false;
+                continue;
+            };
             let name = e.file_name().to_string_lossy().into_owned();
             if let Some((ts, id)) = parse_name(&name) {
                 out.push((ts, id, e.path()));
@@ -50,7 +69,7 @@ pub(super) fn rollouts_on(account_path: &str, days: impl Iterator<Item = Date>) 
         }
     }
     out.sort_by_key(|e| std::cmp::Reverse(e.0));
-    out
+    (out, whole)
 }
 
 pub(super) fn days_back(from: Date, n: usize) -> impl Iterator<Item = Date> {
@@ -203,7 +222,7 @@ fn in_folder(cwd: &str, folder: &str) -> bool {
 /// thread `/resume` went back to. One not written yet (Codex writes it at the
 /// thread's first turn) costs only the first look after that. Two of now that
 /// start alike are no answer.
-fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
+pub(super) fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
     // What the walk found, kept, as a thread's file never moves; and the
     // threads it found nothing for, not walked again.
     static FOUND: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();

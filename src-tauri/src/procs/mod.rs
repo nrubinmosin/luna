@@ -48,7 +48,7 @@ pub use leftovers::*;
 /// A core's death, for a test of what a tie does to a job across the crate.
 #[cfg(all(test, windows))]
 pub use imp::close_as_in_a_death;
-pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, pin, tie, Job, Pin};
+pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, marked, pin, tie, Job, Pin};
 #[cfg(windows)]
 pub use imp::{resume, KillJob};
 
@@ -93,6 +93,21 @@ pub fn listed(job: Option<&Job>, root: Option<u32>) -> Option<Vec<(ProcRead, Str
     let reads: Vec<ProcRead> = all.iter().map(|(r, _)| *r).collect();
     let shown = shown(&reads, &imp::windowed(), &imp::parents());
     Some(all.into_iter().filter(|(r, _)| !shown.contains(&r.pid)).collect())
+}
+
+/// What runs below a helper's turn whose process could not be put in its job
+/// (`adopt` or `join` refused): every process below its CLI (`cli`) by parent
+/// links born no earlier than the turn (`since_ms`, so a pid taken since by
+/// another is no parent), the CLI itself, its own helpers and programs with a
+/// window of their own aside, as `left_in` has a job. None where processes
+/// cannot be walked so (off Windows, a snapshot refused): not known is not
+/// empty.
+pub fn left_below(cli: u32, since_ms: u64) -> Option<Vec<(ProcRead, String)>> {
+    let all: Vec<(ProcRead, String)> =
+        imp::list_below(cli)?.into_iter().filter(|(r, _)| r.pid != cli && (!STARTS_IN_EPOCH_MS || r.started_ms >= since_ms)).collect();
+    let reads: Vec<ProcRead> = all.iter().map(|(r, _)| *r).collect();
+    let shown = shown(&reads, &imp::windowed(), &imp::parents());
+    Some(all.into_iter().filter(|(r, name)| !shown.contains(&r.pid) && !is_furniture(name)).collect())
 }
 
 /// `listed` without names, nothing for a job that cannot be listed: for the

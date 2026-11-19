@@ -25,9 +25,7 @@ Seen {
     },
     scan_from_now: Scanned {
         completed: 0,
-        working: Some(
-            false,
-        ),
+        working: None,
         ask: None,
         failed: None,
         last_said: None,

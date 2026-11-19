@@ -251,6 +251,14 @@ pub fn join(job: &Job, pid: u32) -> bool {
     }
 }
 
+/// A chat's job, never tied: its CLI carries the chat's mark (`MARK`, set at its
+/// spawn), and so does all it starts, so a shell that has left the CLI's tree
+/// and its group and session (a daemon, a `setsid`) is listed with it all the
+/// same, as long as it keeps its environment.
+pub fn marked(job: &Job, id: &str) {
+    job.state().marked_as = Some(id.to_string());
+}
+
 /// Something else in the environment that says a process is of this job, once it
 /// is known: `CODEX_THREAD_ID`, which Codex sets on its tools after its
 /// `shell_environment_policy`, whose `include_only` no setting of ours gets past.
@@ -580,6 +588,27 @@ mod tests {
         assert!(join(&job, quick.id()));
         drop(job);
         for mut c in [hidden, shown, other] {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// A chat's job is never tied, yet a shell its turn started that left the
+    /// CLI's tree, group and session is listed with it by the chat's mark.
+    #[test]
+    fn a_chats_job_lists_what_carries_its_mark_out_of_its_tree() {
+        let mut cli = Command::new("sleep").arg("60").env(MARK, mark_of("chat-marked")).process_group(0).spawn().unwrap();
+        await_environment(cli.id());
+        let job = adopt(cli.id()).unwrap();
+        // Started by no one in the job, in a group of its own: a daemon's way.
+        let mut away = Command::new("sleep").arg("60").env(MARK, mark_of("chat-marked")).process_group(0).spawn().unwrap();
+        await_environment(away.id());
+        let has = |job: &Job| listed(job).unwrap().iter().any(|(pid, _, _)| *pid == away.id());
+        assert!(!has(&job), "nothing ties it to the CLI but the mark");
+        marked(&job, "chat-marked");
+        assert!(has(&job), "the chat's mark lists it");
+        drop(job);
+        for c in [&mut cli, &mut away] {
             let _ = c.kill();
             let _ = c.wait();
         }

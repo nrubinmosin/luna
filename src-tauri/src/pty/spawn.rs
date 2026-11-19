@@ -308,10 +308,21 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     for (k, v) in &envs {
         cmd.env(k, v);
     }
+    // The chat's mark, as a helper's turn has its own: off Windows its job is
+    // what carries it too, so a shell that leaves the CLI's tree, group and
+    // session is still the chat's (keeper/ `marked`).
+    #[cfg(unix)]
+    cmd.env(crate::keeper::MARK, crate::keeper::mark_of(&id));
 
     // Ahead of the process: what it makes (a rollout) is born after this,
     // however long what follows its start waits on the registry's lock.
     let spawned_at_ms = now_ms() as u128;
+    // Where the thread it resumes ends before it writes a line: what comes
+    // after is this process's, whatever the wall clock says (codex/session
+    // `Since`).
+    if provider == Provider::Codex {
+        crate::codex::session::note_spawn(&id, spawned_at_ms, &account_path, resume.as_deref());
+    }
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
         e.to_string()
@@ -325,6 +336,9 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // Into a job before it has had time to spawn anything, so every child it
     // ever starts is listed with it.
     let job = pid.and_then(crate::procs::adopt).map(Arc::new);
+    if let Some(job) = &job {
+        crate::procs::marked(job, &id);
+    }
     let mut killer = child.clone_killer();
     // Without both ends there is no session to run, and a CLI already started
     // would run on with nothing tracking it: end it before giving up.

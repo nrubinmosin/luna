@@ -88,10 +88,15 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
         t.agents.clear();
         (t.stop_tasks, t.stop_crons) = (0, 0);
         t.turned = false;
-        t.furniture.clear();
+        // Unless its first prompt has gone in already (`submitting`), its
+        // furniture taken as it did.
+        if t.furnished_for != p.spawned_at_ms {
+            t.furniture.clear();
+        }
         t.first_turn_ms = None;
     }
     let disk = r.registry.map(|(turn, _, _)| turn);
+    let registry_none_named = r.registry.is_some_and(|(_, _, shells)| shells == 0);
     t.disk_at = r.registry.and_then(|(_, at, _)| at);
     // A registry that changed after the hook spoke is the later word: a
     // prompt answered "No" ends the turn with no Stop, and the waiting the
@@ -128,8 +133,10 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
     let rollout_turned = r.rollout.as_ref().is_some_and(|r| r.working || r.completed > 0 || r.first_started_ms.is_some());
     let turned_now = t.turned || rollout_turned || matches!(disk, Some(Turn::Busy | Turn::Waiting));
     // Until the first turn, all its job holds is the CLI's own. Not at the
-    // read that finds the first turn begun: what is in the job now may be its.
-    if !turned_now {
+    // read that finds the first turn begun: what is in the job now may be its;
+    // nor once its first prompt has gone in (`submitting`), which took the
+    // last look.
+    if !turned_now && t.furnished_for != p.spawned_at_ms {
         t.furniture.extend(r.job.iter().flatten().map(|(r, _)| *r));
     }
     t.turned = turned_now;
@@ -142,8 +149,9 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
     t.unlisted = r.job.is_none();
     t.job = r.job;
     // What `Stop` said ran beside the turn goes once a look finds none of it:
-    // nothing in the job its turns started, nothing the registry names.
-    if !t.codex && t.stop_tasks > 0 && t.registry_shells == 0 && shells_of(t).is_some_and(|s| s.is_empty()) {
+    // nothing in the job its turns started, and a registry read that names
+    // none. A registry that does not read says nothing, and leaves it.
+    if !t.codex && t.stop_tasks > 0 && registry_none_named && shells_of(t).is_some_and(|s| s.is_empty()) {
         t.stop_tasks = 0;
     }
     // Codex: the rollout's count is the truth.
@@ -158,14 +166,18 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
     if !t.codex {
         if busy && t.hook != Some(Turn::Idle) {
             t.ended_by_hook = false;
+            t.read_counted = false;
         }
         if busy && t.hook == Some(Turn::Idle) && disk == Some(Turn::Busy) && t.disk_at.is_some_and(|at| at > t.hook_at_ms) {
             t.ended_by_hook = false;
+            t.read_counted = false;
         }
         if t.was_busy && !busy && t.life.phase == Phase::Ended && !t.ended_by_hook {
             t.turns_ended += 1;
             t.life.turns_ended = t.turns_ended;
             t.ended_by_hook = true;
+            // Its `Stop`, should it come after all, counts nothing (hooks.rs `count_stop`).
+            t.read_counted = true;
         }
     }
     t.was_busy = busy;
@@ -400,22 +412,30 @@ mod tests {
     }
 
     /// A busy hook just said is not aged out by registry idle time that ran up
-    /// before it; a `Stop` missed still is, by the time since the hook, and the
-    /// turn it ended counts, so a `wait` returns.
+    /// before it; a `Stop` missed still is, by the time since the hook, once
+    /// the registry set its idle after the hook, and the turn it ended counts,
+    /// so a `wait` returns. That `Stop`, come late, does not count it again.
     #[test]
-    fn a_claude_hook_ages_only_from_its_own_time_and_a_missed_stop_counts() {
+    fn a_claude_hook_ages_only_from_its_own_time_and_a_missed_stop_counts_once() {
         let p = probe("rc-age", Provider::Claude);
-        let idle = || Read { registry: Some((Turn::Idle, Some(500), 0)), job: Some(Vec::new()), ..Default::default() };
+        let idle = |at| Read { registry: Some((Turn::Idle, Some(at), 0)), job: Some(Vec::new()), ..Default::default() };
         let mut t = Track::default();
-        fold(&mut t, &p, idle(), 1_000);
+        fold(&mut t, &p, idle(500), 1_000);
         // Idle a minute; then a prompt's hook.
-        t.hook = Some(Turn::Busy);
-        t.hook_at_ms = 61_000;
-        t.ended_by_hook = false;
-        let l = fold(&mut t, &p, idle(), 62_000);
+        apply(&mut t, HookEvent::Submitted, 61_000);
+        let l = fold(&mut t, &p, idle(500), 62_000);
         assert_eq!(l.phase, Phase::Running, "an idle that ran up before the hook says nothing of it");
-        let l = fold(&mut t, &p, idle(), 61_000 + STALE_HOOK_MS + 1);
-        assert_eq!((l.phase, l.turns_ended), (Phase::Ended, 1), "idle since the hook for long: a Stop missed, and a turn ended");
+        let l = fold(&mut t, &p, idle(500), 61_000 + STALE_HOOK_MS + 1);
+        assert_eq!(l.phase, Phase::Running, "nor does it ever, set before the hook");
+        let l = fold(&mut t, &p, idle(61_500), 61_000 + 2 * STALE_HOOK_MS);
+        assert_eq!((l.phase, l.turns_ended), (Phase::Ended, 1), "idle set since the hook, for long: a Stop missed, and a turn ended");
+        // The Stop, late: the same turn, counted once.
+        apply(&mut t, HookEvent::Idle, 61_000 + 2 * STALE_HOOK_MS + 10);
+        assert_eq!(t.turns_ended, 1);
+        // The next turn's counts as ever.
+        apply(&mut t, HookEvent::Submitted, 200_000);
+        apply(&mut t, HookEvent::Idle, 201_000);
+        assert_eq!(t.turns_ended, 2);
     }
 
     /// A `Stop` heard, then a turn whose start hook was missed: the registry's
@@ -488,6 +508,34 @@ mod tests {
         let mut t = Track { hook: Some(Turn::Idle), turned: true, stop_tasks: 1, ended_by_hook: true, ..Default::default() };
         fold(&mut t, &p, Read { registry: Some((Turn::Idle, None, 0)), job: None, ..Default::default() }, 1_000);
         assert_eq!(t.stop_tasks, 1);
+        // Nor does a registry that will not read, the job empty: a background
+        // agent of the turn's is in no job.
+        assert!(fold(&mut t, &p, Read { registry: None, job: Some(Vec::new()), ..Default::default() }, 2_000).active());
+        assert_eq!(t.stop_tasks, 1);
+    }
+
+    /// The furniture is taken as the first prompt goes in (`submitting`): what
+    /// a turn starts after that is no furniture, though the read that comes
+    /// before the rollout shows the turn sees it in the job first.
+    #[test]
+    fn what_comes_after_the_first_prompt_is_no_furniture() {
+        let p = probe("rc-furnish", Provider::Codex);
+        let mut t = Track::default();
+        let mcp = proc(10, 100, "node.exe");
+        let shell = proc(20, 3_000, "bash.exe");
+        fold(&mut t, &p, Read { job: Some(vec![mcp.clone()]), ..Default::default() }, 1_000);
+        furnish(&mut t, p.spawned_at_ms, Some(vec![mcp.clone()]));
+        // The turn's shell is up; the rollout says nothing of the turn yet.
+        fold(&mut t, &p, Read { job: Some(vec![mcp.clone(), shell.clone()]), ..Default::default() }, 4_000);
+        assert!(!t.furniture.contains(&shell.0), "taken after the first prompt");
+        let ended = Read {
+            rollout: Some(RolloutRead { seen_turn: true, completed: 1, len: 10, ..Default::default() }),
+            job: Some(vec![mcp, shell]),
+            ..Default::default()
+        };
+        let l = fold(&mut t, &p, ended, 6_000);
+        assert_eq!((l.phase, l.background.names.as_slice()), (Phase::Ended, ["bash.exe (pid 20)".to_string()].as_slice()));
+        assert!(l.active(), "the shell the turn left holds the PC");
     }
 
     /// Codex: its rollout's own turn boundaries, its count, and its job against

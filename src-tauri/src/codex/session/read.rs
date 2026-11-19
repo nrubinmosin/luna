@@ -533,7 +533,12 @@ pub fn rollout_read(live: &Live) -> Option<crate::activity::RolloutRead> {
         Ok(m) => m.len(),
         Err(_) => return Some(crate::activity::RolloutRead { unreadable: true, ..Default::default() }),
     };
-    let scan = tracked_at(live, path.clone())?;
+    let (scan, through) = tracked_fresh(live, path.clone())?;
+    // Opened, then not read through (the reopen, a seek or a read failed):
+    // the same.
+    if !through {
+        return Some(crate::activity::RolloutRead { unreadable: true, ..Default::default() });
+    }
     let working = scan.working == Some(true);
     Some(crate::activity::RolloutRead {
         working,

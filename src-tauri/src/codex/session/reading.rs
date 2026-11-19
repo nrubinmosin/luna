@@ -52,7 +52,7 @@ pub fn read_rollout(bytes: &[u8], since_ms: i64) -> RolloutRead {
     let first = std::str::from_utf8(&bytes[..first_end]).ok().and_then(|line| serde_json::from_str::<Value>(line).ok());
     // As a tail read has it.
     let text = String::from_utf8_lossy(bytes);
-    let Scan { completed, working, ask, failed, last_said, last_said_at, first_started_ms: _ } = scan;
+    let Scan { completed, working, ask, failed, last_said, last_said_at, first_started_ms: _, doubt: _ } = scan;
     RolloutRead {
         consumed,
         messages,

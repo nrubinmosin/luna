@@ -7,8 +7,10 @@ use super::*;
 /// What a Claude Code hook told us.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HookEvent {
-    /// `UserPromptSubmit`, `PostToolUse`: the model is at work.
+    /// `PostToolUse`: the model is at work.
     Busy,
+    /// `UserPromptSubmit`: a prompt went in, and the model is at work.
+    Submitted,
     /// `Notification` with `permission_prompt` or `elicitation_dialog`.
     Waiting,
     /// `Stop`: the turn is over, nothing left running beside it.
@@ -86,7 +88,8 @@ impl HookEvent {
             };
         }
         match v["hook_event_name"].as_str()? {
-            "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" => Some(HookEvent::Busy),
+            "UserPromptSubmit" => Some(HookEvent::Submitted),
+            "PostToolUse" | "PostToolUseFailure" => Some(HookEvent::Busy),
             "Stop" => match (listed(&v["background_tasks"]), listed(&v["session_crons"])) {
                 (0, 0) => Some(HookEvent::Idle),
                 (tasks, crons) => Some(HookEvent::IdleWith { tasks, crons }),
@@ -112,17 +115,18 @@ impl HookEvent {
 /// timestamp is the truth for "when did the turn start".
 pub fn on_hook(chat_id: &str, ev: HookEvent) {
     let now = now_ms();
-    // The first turn begins: what the session's job holds this moment came up
-    // with its CLI (its MCP servers), and is no shell of a turn's. Read before
-    // the lock, as a read of the job takes a moment and the hook's curl waits.
-    let starts = matches!(ev, HookEvent::Busy | HookEvent::Waiting);
-    let first = starts && !state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id).is_some_and(|t| t.turned);
-    let before = first.then(|| job_now(chat_id)).flatten();
+    // The first prompt, if no submit into its pane was seen to go in first:
+    // what its job holds now came up with its CLI. Only then: by a later hook
+    // (a `PostToolUse` with the prompt's own hook missed) a tool may have
+    // started a shell, which is no furniture.
+    if ev == HookEvent::Submitted {
+        submitting(chat_id);
+    }
+    let starts = matches!(ev, HookEvent::Busy | HookEvent::Submitted | HookEvent::Waiting);
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;
     let t = track(&mut st.tracks, &mut st.ended, chat_id);
     if starts && !t.turned {
-        t.furniture.extend(before.unwrap_or_default().into_iter().map(|(r, _)| r));
         t.first_turn_ms.get_or_insert(now);
         t.turned = true;
     }
@@ -133,22 +137,61 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
     stamp(st);
 }
 
-/// What a live terminal session's job holds now, its CLI aside.
-fn job_now(chat_id: &str) -> Option<Vec<(crate::procs::ProcRead, String)>> {
-    let p = crate::pty::manager().probe(chat_id)?;
-    crate::procs::in_job(p.job.as_deref(), p.pid)
+/// A prompt is about to go into a terminal session's CLI: a person's Enter on
+/// a draft, Luna's text sent, or the CLI's own `UserPromptSubmit`, whichever
+/// comes first. Its first one for a CLI process takes the last look at the
+/// CLI's own furniture (its MCP servers) in its job, before any turn could
+/// start a shell there; none after adds to it (`Track::furnished_for`). Takes
+/// the session map and lists the job: not to be called with either held.
+pub fn submitting(chat_id: &str) {
+    let Some(p) = crate::pty::manager().probe(chat_id) else { return };
+    let done = |t: &Track| furnished(t, p.spawned_at_ms);
+    if state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id).is_some_and(done) {
+        return;
+    }
+    // Read before the lock, as a read of the job takes a moment and a hook's
+    // curl waits.
+    let before = crate::procs::in_job(p.job.as_deref(), p.pid);
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+    let st = &mut *st;
+    furnish(track(&mut st.tracks, &mut st.ended, chat_id), p.spawned_at_ms, before);
+}
+
+/// Whether the furniture of the CLI process spawned at `spawned_at_ms` is
+/// taken: its first prompt went in, or a turn of it began.
+pub(super) fn furnished(t: &Track, spawned_at_ms: u128) -> bool {
+    t.furnished_for == spawned_at_ms || (t.turned && t.spawned_at_ms == spawned_at_ms)
+}
+
+/// The furniture of the CLI process spawned at `spawned_at_ms`, as its first
+/// prompt goes in: what its job holds then, on top of what the looks before
+/// found. A job that will not list adds nothing, and nothing is added after.
+pub(super) fn furnish(t: &mut Track, spawned_at_ms: u128, job: Option<Vec<(crate::procs::ProcRead, String)>>) {
+    if furnished(t, spawned_at_ms) {
+        return;
+    }
+    // A process no read has folded yet: what was furniture was the last one's.
+    if t.spawned_at_ms != 0 && t.spawned_at_ms != spawned_at_ms {
+        t.furniture.clear();
+    }
+    t.furniture.extend(job.into_iter().flatten().map(|(r, _)| r));
+    t.furnished_for = spawned_at_ms;
 }
 
 /// What one hook changes of a track.
-fn apply(t: &mut Track, ev: HookEvent, now: u64) {
-    // A subagent's word: the turn, its start and its end are not its to say.
+pub(super) fn apply(t: &mut Track, ev: HookEvent, now: u64) {
+    // A subagent's word: the turn, its start and its end are not its to say,
+    // but it is the session's latest word, which an older registry idle does
+    // not overrule (`fold_claude`).
     match ev {
         HookEvent::AgentAtWork(agent) => {
             t.agents.insert(agent, false);
+            t.hook_at_ms = t.hook_at_ms.max(now);
             return;
         }
         HookEvent::AgentWaiting(agent) => {
             t.agents.insert(agent, true);
+            t.hook_at_ms = t.hook_at_ms.max(now);
             return;
         }
         HookEvent::AgentDone(agent) => {
@@ -166,9 +209,10 @@ fn apply(t: &mut Track, ev: HookEvent, now: u64) {
     t.failed = None;
     t.api_error = None;
     match ev {
-        HookEvent::Busy | HookEvent::Waiting => {
-            t.hook = Some(if ev == HookEvent::Busy { Turn::Busy } else { Turn::Waiting });
+        HookEvent::Busy | HookEvent::Submitted | HookEvent::Waiting => {
+            t.hook = Some(if ev == HookEvent::Waiting { Turn::Waiting } else { Turn::Busy });
             t.ended_by_hook = false;
+            t.read_counted = false;
         }
         HookEvent::Idle | HookEvent::IdleWith { .. } => {
             (t.stop_tasks, t.stop_crons) = match ev {
@@ -176,14 +220,15 @@ fn apply(t: &mut Track, ev: HookEvent, now: u64) {
                 _ => (0, 0),
             };
             t.hook = Some(Turn::Idle);
-            // `Stop`: a turn is over, whether or not any read saw it run.
-            t.turns_ended += 1;
+            // `Stop`: a turn is over, whether or not any read saw it run;
+            // counted once, a read having counted it already when it is late.
+            count_stop(t);
             t.was_busy = false;
             t.ended_by_hook = true;
         }
         HookEvent::Failed(error) => {
             t.hook = Some(Turn::Idle);
-            t.turns_ended += 1;
+            count_stop(t);
             t.was_busy = false;
             t.ended_by_hook = true;
             t.failed = Some(error);
@@ -196,6 +241,15 @@ fn apply(t: &mut Track, ev: HookEvent, now: u64) {
         HookEvent::AgentAtWork(_) | HookEvent::AgentWaiting(_) | HookEvent::AgentDone(_) => return,
     }
     t.hook_at_ms = now;
+}
+
+/// A `Stop` or `StopFailure` counts its turn, unless a read counted it as
+/// ended when that hook was missed (reconcile.rs `take`) and no turn has begun
+/// since: then it is that turn's, late.
+fn count_stop(t: &mut Track) {
+    if !std::mem::take(&mut t.read_counted) {
+        t.turns_ended += 1;
+    }
 }
 
 /// The hook's last word on a session, if any, for the tests of what a hook
@@ -212,7 +266,7 @@ mod tests {
     #[test]
     fn parses_hook_events() {
         let ev = |name: &str, extra: &str| HookEvent::parse(&format!(r#"{{"session_id":"s","hook_event_name":"{name}"{extra}}}"#));
-        assert_eq!(ev("UserPromptSubmit", ""), Some(HookEvent::Busy));
+        assert_eq!(ev("UserPromptSubmit", ""), Some(HookEvent::Submitted));
         assert_eq!(ev("PostToolUse", r#","tool_name":"Bash""#), Some(HookEvent::Busy));
         assert_eq!(ev("Stop", r#","stop_hook_active":false"#), Some(HookEvent::Idle));
         // Claude Code 2.1.327's `Stop` lists what runs on beside the turn.

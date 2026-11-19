@@ -190,25 +190,39 @@ pub fn tail(path: &std::path::Path, max: u64) -> Option<String> {
 /// newline is still being written: it is left, cursor and all, for the read
 /// after.
 pub fn complete_lines(path: &std::path::Path, from: u64, mut each: impl FnMut(&str)) -> u64 {
-    use std::io::{BufRead, BufReader, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(path) else { return from };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let from = from.min(len);
-    if f.seek(SeekFrom::Start(from)).is_err() {
-        return from;
+    let mut read = from;
+    match lines_from(path, from, |end, line| {
+        read = end;
+        each(line);
+    }) {
+        Ok(end) => end,
+        Err(_) => read,
     }
+}
+
+/// `complete_lines`, each line with the offset just past it, and an error for
+/// a file that would not open, seek or read through: what was read before it
+/// was handed over, but a reader that keeps a word of its own must not take
+/// the file to have said nothing new.
+pub fn lines_from(path: &std::path::Path, from: u64, mut each: impl FnMut(u64, &str)) -> std::io::Result<u64> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    let from = from.min(len);
+    f.seek(SeekFrom::Start(from))?;
     let mut reader = BufReader::new(f);
     let mut line = Vec::new();
     let mut read = from;
     loop {
         line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(n) if line.ends_with(b"\n") => read += n as u64,
-            _ => break,
+        let n = reader.read_until(b'\n', &mut line)?;
+        if !line.ends_with(b"\n") {
+            break;
         }
-        each(String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']));
+        read += n as u64;
+        each(read, String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']));
     }
-    read
+    Ok(read)
 }
 
 /// `complete_lines` over bytes in memory, from the top: each complete line

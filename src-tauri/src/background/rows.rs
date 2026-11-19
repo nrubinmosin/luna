@@ -547,7 +547,7 @@ pub(super) fn life_of(e: &Entry) -> crate::activity::Life {
             // looked at by name, is there all the same.
             shells: if left { e.left.len().max(1) as u32 } else { 0 },
             names: if left { e.left.iter().map(Leftover::label).collect() } else { Vec::new() },
-            unlisted: e.run.is_none() && e.left_unlisted,
+            unlisted: e.run.is_none() && (e.left_unlisted || !e.outside.is_empty()),
             ..Default::default()
         },
         turns_ended: e.turns_ended,
@@ -604,6 +604,21 @@ pub fn lives() -> Vec<(String, crate::activity::Life)> {
             moved |= note_left(e, read);
         }
     }
+    // A turn that was in no job: walked below by parent links until nothing
+    // of it is left.
+    let outside: Vec<(String, Vec<(u32, u64)>)> = lock()
+        .entries
+        .iter()
+        .filter(|(_, e)| e.run.is_none() && !e.outside.is_empty())
+        .map(|(id, e)| (id.clone(), e.outside.clone()))
+        .collect();
+    for (id, turns) in outside {
+        let reads: Vec<((u32, u64), Option<Vec<(crate::procs::ProcRead, String)>>)> =
+            turns.into_iter().map(|(pid, since)| ((pid, since), crate::procs::left_below(pid, since))).collect();
+        if let Some(e) = lock().entries.get_mut(&id) {
+            moved |= see_outside(e, reads);
+        }
+    }
     if moved {
         // What a job holds changing is activity, a process that came and went
         // between two reads included only if a read saw it.
@@ -611,6 +626,19 @@ pub fn lives() -> Vec<(String, crate::activity::Life)> {
         changed();
     }
     lock().entries.iter().map(|(id, e)| (id.clone(), life_of(e))).collect()
+}
+
+/// What a walk found below each turn that was in no job (`Entry::outside`):
+/// one with nothing left below it is done with; one that could not be walked,
+/// or with something there, stays not known. Whether any went.
+pub(super) fn see_outside(e: &mut Entry, reads: Vec<((u32, u64), Option<Vec<(crate::procs::ProcRead, String)>>)>) -> bool {
+    let before = e.outside.len();
+    for (turn, read) in reads {
+        if read.is_some_and(|left| left.is_empty()) {
+            e.outside.retain(|t| *t != turn);
+        }
+    }
+    e.outside.len() != before
 }
 
 #[cfg(test)]
@@ -636,6 +664,28 @@ mod tests {
         lock().entries.remove("context-0");
         lock().entries.remove("context-1");
         let _ = std::fs::remove_dir_all(&account);
+    }
+
+    /// A turn that could not be put in the helper's job left what it started in
+    /// no job: after it, the helper is not known (active), not ended on an
+    /// empty job, until a walk below the turn finds nothing left.
+    #[test]
+    fn a_turn_in_no_job_is_not_known_until_a_walk_finds_nothing() {
+        test_helper("outside-1", "C:\\acc", Some("s"), false);
+        let mut r = lock();
+        let e = r.entries.get_mut("outside-1").unwrap();
+        e.turns_ended = 1;
+        e.outside.push((4242, 1_000));
+        assert!(e.job.is_none(), "nothing to list: no job at all");
+        let l = life_of(e);
+        assert!(l.background.unlisted && l.active(), "{l:?}");
+        assert!(!see_outside(e, vec![((4242, 1_000), None)]), "a walk that could not be made says nothing");
+        let shell = (crate::procs::ProcRead { pid: 4300, started_ms: 2_000 }, "node.exe".to_string());
+        assert!(!see_outside(e, vec![((4242, 1_000), Some(vec![shell]))]));
+        assert!(life_of(e).active(), "something of it still runs");
+        assert!(see_outside(e, vec![((4242, 1_000), Some(Vec::new()))]));
+        assert!(!life_of(e).active(), "nothing of it left");
+        r.entries.remove("outside-1");
     }
 
     #[test]

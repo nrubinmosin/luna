@@ -41,6 +41,56 @@ pub(super) struct Scan {
     /// When the first turn of this process began, by its `task_started`
     /// line's time (epoch ms): what in its job came before is the CLI's own.
     pub(super) first_started_ms: Option<i64>,
+    /// The last turn begun is dated before this process and nothing places
+    /// it after the spawn (`Since::offset`): whether it is this process's, on
+    /// now, or an earlier one's, gone with it, is not known (`working` None).
+    /// A wall clock set back writes a new turn's line so.
+    pub(super) doubt: bool,
+}
+
+/// What tells a rollout's lines of this process from those of one before it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Since {
+    /// The process's spawn, epoch ms: a line dated at or after it is new.
+    pub(super) ms: i64,
+    /// Where the file ended as the process was spawned, where Luna saw it
+    /// then (the thread it resumed): a line before that is old and one past it
+    /// new, whatever its date says.
+    pub(super) offset: Option<u64>,
+}
+
+impl Since {
+    /// By the lines' dates alone.
+    pub(super) fn dated(ms: i64) -> Since {
+        Since { ms, offset: None }
+    }
+}
+
+/// Each chat's rollout as it stood when its process was spawned, where it
+/// resumed a thread (`note_spawn`): the file and its length then.
+fn at_spawn() -> &'static Mutex<HashMap<String, (u128, PathBuf, u64)>> {
+    static S: OnceLock<Mutex<HashMap<String, (u128, PathBuf, u64)>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// A Codex process spawned at `spawned_at_ms` on the thread `resume`: its
+/// rollout's length now, before the process writes to it, is where its own
+/// lines begin. Every line before is an earlier process's, an open turn there
+/// one that went with it, whatever the wall clock said or says.
+pub fn note_spawn(chat_id: &str, spawned_at_ms: u128, account_path: &str, resume: Option<&str>) {
+    let found = resume.and_then(|thread| thread_file(account_path, thread));
+    let mut m = at_spawn().lock().unwrap_or_else(|e| e.into_inner());
+    match found.and_then(|p| Some((std::fs::metadata(&p).ok()?.len(), p))) {
+        Some((len, path)) => m.insert(chat_id.to_string(), (spawned_at_ms, path, len)),
+        None => m.remove(chat_id),
+    };
+}
+
+/// What tells the lines of `path` of the live process from an earlier one's.
+fn since_for(live: &Live, path: &Path) -> Since {
+    let m = at_spawn().lock().unwrap_or_else(|e| e.into_inner());
+    let offset = m.get(live.chat_id).filter(|(at, p, _)| *at == live.spawned_at_ms && p == path).map(|(_, _, len)| *len);
+    Since { ms: live.spawned_at_ms as i64, offset }
 }
 
 /// Each chat's turn tracker, behind a lock of its own: a look reads and
@@ -66,23 +116,30 @@ pub(super) fn tracked(live: &Live) -> Option<Scan> {
 
 /// `tracked`, the chat on the rollout at `path` now.
 pub(super) fn tracked_at(live: &Live, path: PathBuf) -> Option<Scan> {
+    tracked_fresh(live, path).map(|(scan, _)| scan)
+}
+
+/// `tracked_at`, and whether the file read through to its end this time: one
+/// that would not open, seek or read leaves the scan of the reads before,
+/// which is no word on what came since (`rollout_read`).
+pub(super) fn tracked_fresh(live: &Live, path: PathBuf) -> Option<(Scan, bool)> {
     let tracker = Arc::clone(turn_counts().lock().unwrap_or_else(|e| e.into_inner()).entry(live.chat_id.to_string()).or_default());
     let mut tracker = tracker.lock().unwrap_or_else(|e| e.into_inner());
     let entry = tracker.get_or_insert_with(|| TurnCount { path: path.clone(), offset: 0, scan: Scan::default(), before: HashMap::new() });
-    let since = live.spawned_at_ms as i64;
+    let since = since_for(live, &path);
     if entry.path != path {
         // What the one it leaves wrote since the last look counts first: a turn
         // that ended just before the `/new`. Read no further after that: what
         // comes there later is another process's on that thread.
         if !past_end(&entry.path, entry.offset) {
-            entry.offset = scan_rollout(&entry.path, entry.offset, since, &mut entry.scan);
+            entry.offset = scan_from(&entry.path, entry.offset, since_for(live, &entry.path), &mut entry.scan).0;
         }
         let (offset, scan) = entry.before.remove(&path).unwrap_or_default();
         let was = std::mem::replace(&mut entry.path, path.clone());
         let left = (std::mem::replace(&mut entry.offset, offset), std::mem::replace(&mut entry.scan, scan));
         entry.before.insert(was, left);
     }
-    if past_end(&path, entry.offset) {
+    let through = if past_end(&path, entry.offset) {
         // Cut short or written anew under the same name: what was read of it
         // no longer lines up, so it is read again from the top. The count
         // goes on from the higher of the two. Started over lower, it would
@@ -95,15 +152,18 @@ pub(super) fn tracked_at(live: &Live, path: PathBuf) -> Option<Scan> {
         // starting over lower does. The CLIs only append, so a rollout cut
         // short is rare, and one that later gets its old turns back rarer.
         let mut scan = Scan::default();
-        let offset = scan_rollout(&path, 0, since, &mut scan);
+        let (offset, through) = scan_from(&path, 0, since, &mut scan);
         scan.completed = scan.completed.max(entry.scan.completed);
         (entry.offset, entry.scan) = (offset, scan);
+        through
     } else {
-        entry.offset = scan_rollout(&path, entry.offset, since, &mut entry.scan);
-    }
+        let through;
+        (entry.offset, through) = scan_from(&path, entry.offset, since, &mut entry.scan);
+        through
+    };
     let mut scan = entry.scan.clone();
     scan.completed += entry.before.values().map(|(_, s)| s.completed).sum::<u32>();
-    Some(scan)
+    Some((scan, through))
 }
 
 /// Whether `offset` lies past the end of the file: a cursor into one since
@@ -135,9 +195,19 @@ pub(super) struct Children {
     /// Each rollout looked at, with the thread its first line says spawned it:
     /// None for one that is no subagent's. A first line never changes.
     parent_of: HashMap<PathBuf, Option<String>>,
-    /// A subagent's rollout as read so far, and where the read stopped.
+    /// A subagent's rollout as read so far, and where the read stopped. Kept
+    /// for as long as the session's process lives, whatever a listing says
+    /// later: its subagents run in it.
     read: HashMap<PathBuf, (u64, Scan)>,
+    /// Every rollout on the days looked at, as the first look found them: one
+    /// not among them was begun after it, whatever its name's date says.
+    first_look: Option<std::collections::HashSet<PathBuf>>,
 }
+
+/// What stands for subagents a look could not see (`children_at_work`): a
+/// folder that would not list, a known subagent's rollout that would not read.
+/// One subagent at work, to the record: not known, and so active.
+pub const NOT_SEEN: &str = "(not seen: its rollouts would not list or read)";
 
 /// Each chat's, behind a lock of its own as the turn trackers are
 /// (`turn_counts`): a look reads the first line of each new rollout and what
@@ -162,10 +232,13 @@ pub(super) fn spawned_by(meta: &Value) -> Option<String> {
 ///
 /// Only threads begun since the process was spawned, so not one the session
 /// spawned in an earlier run and wakes now, nor the subagents of a thread it
-/// has left (`/new`, `/resume`), whatever becomes of those.
+/// has left (`/new`, `/resume`), whatever becomes of those: by the name's date,
+/// or, for one dated earlier (a wall clock set back), by its not being there at
+/// the first look. One found is kept for the process's life, past the two
+/// weeks of folders looked at and past a listing that fails. What cannot be
+/// seen (a folder that would not list, a subagent's rollout that would not
+/// read) is `NOT_SEEN`, at work.
 pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
-    let own = rollout_for(live)?;
-    let (_, thread) = parse_name(&own.file_name()?.to_string_lossy())?;
     let spawned = local_at(live.spawned_at_ms as i64)?;
     // A subagent's thread is begun after the session's process, give or take
     // the clocks, in the folder of the day it was begun: every day since the
@@ -174,16 +247,26 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
     let not_before = spawned - 5.seconds();
     let today = local_today();
     let days = today.since(not_before.date()).map_or(0, |s| s.get_days()).clamp(0, 13) as usize + 1;
-    let files: Vec<(String, PathBuf)> = rollouts_on(live.account_path, days_back(today, days))
-        .into_iter()
-        .filter(|(ts, _, _)| *ts >= not_before)
-        .map(|(_, id, p)| (id, p))
-        .collect();
-    let listed: std::collections::HashSet<&PathBuf> = files.iter().map(|(_, p)| p).collect();
+    let (all, whole) = rollouts_listed(live.account_path, days_back(today, days));
     let seen = Arc::clone(children().lock().unwrap_or_else(|e| e.into_inner()).entry(live.chat_id.to_string()).or_default());
     let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
-    seen.parent_of.retain(|p, _| listed.contains(p));
-    seen.read.retain(|p, _| listed.contains(p));
+    // Taken before the session's own rollout is there, at the first read.
+    let first_look = seen.first_look.get_or_insert_with(|| all.iter().map(|(_, _, p)| p.clone()).collect()).clone();
+    let own = rollout_for(live)?;
+    let (_, thread) = parse_name(&own.file_name()?.to_string_lossy())?;
+    let mut files: Vec<(String, PathBuf)> =
+        all.into_iter().filter(|(ts, _, p)| *ts >= not_before || !first_look.contains(p)).map(|(_, id, p)| (id, p)).collect();
+    let listed: std::collections::HashSet<PathBuf> = files.iter().map(|(_, p)| p.clone()).collect();
+    // Its subagents found before stay, listed now or not.
+    let known: Vec<(String, PathBuf)> = seen
+        .read
+        .keys()
+        .filter(|p| !listed.contains(*p))
+        .filter_map(|p| Some((parse_name(&p.file_name()?.to_string_lossy())?.1, p.clone())))
+        .collect();
+    files.extend(known);
+    let kept: std::collections::HashSet<&PathBuf> = files.iter().map(|(_, p)| p).collect();
+    seen.parent_of.retain(|p, _| kept.contains(p));
     for (_, path) in &files {
         if !seen.parent_of.contains_key(path) {
             // Not kept while its first line does not read yet: a file just
@@ -194,17 +277,24 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
         }
     }
     let kids = descendants(&files, thread, |path| seen.parent_of.get(path).cloned().flatten());
-    let since = live.spawned_at_ms as i64;
+    let since = Since::dated(live.spawned_at_ms as i64);
     let mut at_work = Vec::new();
+    let mut unseen = !whole;
     for (id, path) in kids {
         let (offset, scan) = seen.read.entry(path.clone()).or_default();
         if past_end(&path, *offset) {
             (*offset, *scan) = (0, Scan::default());
         }
-        *offset = scan_rollout(&path, *offset, since, scan);
-        if scan.working == Some(true) {
+        let through;
+        (*offset, through) = scan_from(&path, *offset, since, scan);
+        unseen |= !through;
+        // A turn dated before the spawn may be this process's all the same.
+        if scan.working == Some(true) || scan.doubt {
             at_work.push(id);
         }
+    }
+    if unseen {
+        at_work.push(NOT_SEEN.to_string());
     }
     Some(at_work)
 }
@@ -281,14 +371,38 @@ fn last_turn_end(path: &Path, since_ms: i64) -> Option<(bool, i64)> {
 /// Reads the complete lines from byte `from` on into `scan` and returns the
 /// offset just past the last of them. Turn ends count only when written at or
 /// after `since_ms`; a line whose timestamp does not read is taken as new.
+#[cfg(test)]
 pub(super) fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
-    crate::pty::complete_lines(path, from, |line| scan.line(line, since_ms))
+    scan_from(path, from, Since::dated(since_ms), scan).0
+}
+
+/// `scan_rollout`, lines told old from new by `since`, and whether the file
+/// read through to its end: one that would not open, seek or read did not,
+/// and says nothing of what came since (what it read before it broke off is in
+/// the scan, and the offset past it).
+pub(super) fn scan_from(path: &Path, from: u64, since: Since, scan: &mut Scan) -> (u64, bool) {
+    let mut read = from;
+    match crate::pty::lines_from(path, from, |end, line| {
+        read = end;
+        scan.line_at(line, since, end);
+    }) {
+        Ok(end) => (end, true),
+        Err(_) => (read, false),
+    }
 }
 
 impl Scan {
-    /// One complete line of the rollout read into the scan, as `scan_rollout`
-    /// reads each.
+    /// One complete line of the rollout read into the scan, by its date alone.
     pub(super) fn line(&mut self, line: &str, since_ms: i64) {
+        self.line_at(line, Since::dated(since_ms), 0);
+    }
+
+    /// One complete line of the rollout, ending at byte `ends_at`, read into the
+    /// scan, as `scan_from` reads each. Where the file ended at the spawn is
+    /// known, that says whether the line is this process's; else its date
+    /// does, and a turn begun dated before the spawn is in doubt: an earlier
+    /// process's, or this one's under a wall clock set back.
+    pub(super) fn line_at(&mut self, line: &str, since: Since, ends_at: u64) {
         let event = line.contains("\"event_msg\"");
         if !event && !line.contains("request_user_input") && !line.contains("\"function_call_output\"") {
             return;
@@ -296,12 +410,20 @@ impl Scan {
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         let payload = &v["payload"];
         let at_ms = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond());
-        let new = at_ms.is_none_or(|t| t >= since_ms);
+        let (new, sure) = match since.offset {
+            Some(at_spawn) => (ends_at > at_spawn, true),
+            None => {
+                let new = at_ms.is_none_or(|t| t >= since.ms);
+                (new, new)
+            }
+        };
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
                 // A turn an earlier process was on went with it, and Codex (0.166)
                 // writes no end for it as it resumes: it sits at its composer.
-                self.working = Some(new);
+                // Not known to be one, it is not known to be over either.
+                self.working = sure.then_some(new);
+                self.doubt = !sure;
                 if new && self.first_started_ms.is_none() {
                     self.first_started_ms = at_ms;
                 }
@@ -311,6 +433,7 @@ impl Scan {
             }
             (Some("event_msg"), Some(end @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted"))) => {
                 self.working = Some(false);
+                self.doubt = false;
                 self.last_said = payload["last_agent_message"].as_str().map(str::to_owned);
                 self.last_said_at = v["timestamp"].as_str().map(str::to_owned);
                 self.failed = payload["error"]["message"].as_str().map(str::to_owned).or_else(|| {
@@ -460,7 +583,9 @@ mod tests {
     }
 
     /// Killed mid-turn with its core and resumed: Codex 0.166 sits at its composer
-    /// and writes no end for that turn, which must not read as one on now.
+    /// and writes no end for that turn, which must not read as one on now. Where
+    /// the file ended at the spawn is known, that turn is over for sure; by its
+    /// date alone it is in doubt, and not known.
     #[test]
     fn a_turn_an_earlier_process_was_on_is_not_running() {
         let dir = std::env::temp_dir().join(format!("luna-rollout-resumed-{}", std::process::id()));
@@ -468,17 +593,82 @@ mod tests {
         let path = dir.join("r.jsonl");
         let line =
             |at: &str, kind: &str| format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n");
-        std::fs::write(&path, line("2026-11-01T08:00:00.000Z", "task_started")).unwrap();
-        let since = "2026-11-01T09:00:00.000Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        let old = line("2026-11-01T08:00:00.000Z", "task_started");
+        std::fs::write(&path, &old).unwrap();
+        let ms = "2026-11-01T09:00:00.000Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        let placed = Since { ms, offset: Some(old.len() as u64) };
         let mut scan = Scan::default();
-        let at = scan_rollout(&path, 0, since, &mut scan);
-        assert_eq!(scan.working, Some(false));
+        let (at, through) = scan_from(&path, 0, placed, &mut scan);
+        assert!(through);
+        assert_eq!((scan.working, scan.doubt), (Some(false), false));
+        let mut dated = Scan::default();
+        scan_from(&path, 0, Since::dated(ms), &mut dated);
+        assert_eq!((dated.working, dated.doubt), (None, true), "by its date alone: not known");
         // The first turn this process runs reads as one.
         let more = line("2026-11-01T09:00:05.000Z", "task_started");
-        std::fs::write(&path, format!("{}{more}", line("2026-11-01T08:00:00.000Z", "task_started"))).unwrap();
-        scan_rollout(&path, at, since, &mut scan);
+        std::fs::write(&path, format!("{old}{more}")).unwrap();
+        scan_from(&path, at, placed, &mut scan);
         assert_eq!(scan.working, Some(true));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The wall clock set back an hour after the spawn: a turn begun now is
+    /// dated before the spawn. Past where the file ended then, it is this
+    /// process's and on; with nothing to place it, not known; never over.
+    #[test]
+    fn a_clock_set_back_never_ends_a_turn() {
+        let dir = std::env::temp_dir().join(format!("luna-rollout-setback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.jsonl");
+        let line =
+            |at: &str, kind: &str| format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n");
+        let before = line("2026-11-01T08:00:00.000Z", "task_complete");
+        let spawned = "2026-11-01T09:00:00.000Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        std::fs::write(&path, format!("{before}{}", line("2026-11-01T08:30:00.000Z", "task_started"))).unwrap();
+        let mut placed = Scan::default();
+        scan_from(&path, 0, Since { ms: spawned, offset: Some(before.len() as u64) }, &mut placed);
+        assert_eq!(placed.working, Some(true), "past the spawn's end of file: this process's turn");
+        let mut dated = Scan::default();
+        scan_from(&path, 0, Since::dated(spawned), &mut dated);
+        assert_eq!((dated.working, dated.doubt), (None, true), "dated alone: not known, so active");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A subagent begun under a wall clock set back is named and dated before
+    /// the spawn: not there at the first look, it is the session's all the
+    /// same. One found stays found when its rollout drops out of the listing,
+    /// and one that will not read is not known, which is at work.
+    #[test]
+    fn subagents_are_kept_through_a_clock_set_back_and_a_listing_that_misses_them() {
+        let (root, t0) = rollout_bench("kept-kids");
+        let acct = root.to_string_lossy().into_owned();
+        let chat = format!("chat-kept-kids-{t0}");
+        let (own, kid) = (format!("own{t0}"), format!("kid{t0}"));
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: (t0 + 60_000) as u128, resume: None, account_path: &acct };
+        write_rollout(&root, t0 + 61_000, &own, Some(r#""cli""#));
+        assert_eq!(children_at_work(&live), Some(vec![]), "the first look");
+        // Set back: the subagent's name and its turn are dated before the spawn.
+        write_rollout(&root, t0 + 1_000, &kid, Some(&spawned_by_json(&own)));
+        let kid_file = rollout_path(&root, &kid, t0 + 1_000);
+        append(kid_file.clone(), turn_event("task_started", t0 + 2_000));
+        assert_eq!(children_at_work(&live), Some(vec![kid.clone()]));
+        // Its rollout gone from where the listing looks: still the session's,
+        // and what it does now is not known.
+        let away = root.join("away.jsonl");
+        std::fs::rename(&kid_file, &away).unwrap();
+        assert_eq!(children_at_work(&live), Some(vec![kid.clone(), NOT_SEEN.to_string()]));
+        release(&chat);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rollout that will not read through says so, and its last scan stands
+    /// for nothing: the record reads not known, never the ended it said.
+    #[test]
+    fn a_rollout_that_will_not_read_is_not_ended() {
+        let dir = std::env::temp_dir().join(format!("luna-rollout-gone-{}", std::process::id()));
+        let mut scan = Scan { working: Some(false), completed: 1, ..Default::default() };
+        let (at, through) = scan_from(&dir.join("not-there.jsonl"), 40, Since::dated(0), &mut scan);
+        assert_eq!((at, through), (40, false));
     }
 
     /// The 0.157 rollout: `task_started` / `task_complete` for the turn, and

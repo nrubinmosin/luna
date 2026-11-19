@@ -132,6 +132,35 @@ pub(super) fn confirm(st: &mut State, fresh: &Summary, last: Instant, now: Insta
     Effect::Fire(armed.action)
 }
 
+/// A countdown that has run out, decided behind a barrier: admission is closed
+/// first (`closing`: agents' calls refused, helper turns and Luna's writes into
+/// panes too), then a fresh read is taken (`fresh`, with the power lock let go,
+/// as a read takes the activity, session and helper locks) and the stamp read
+/// (`stamp`) under the lock again, after it. Whatever started before the gate
+/// closed is on that read or moved the stamp; whatever comes after is refused,
+/// or (a hook, a person's key) moves the stamp too. Fired, admission stays
+/// closed until the firing is over; else it opens again and the window starts
+/// over. Nothing is closed and the OS is not asked until this has decided.
+pub(super) fn barrier<'a>(
+    mut st: MutexGuard<'a, State>,
+    lock: &'a Mutex<State>,
+    gate: &AtomicBool,
+    fresh: impl FnOnce() -> Summary,
+    stamp: impl FnOnce() -> Instant,
+    clock: impl Fn() -> Instant,
+) -> (MutexGuard<'a, State>, Summary, Effect) {
+    close(&mut st, gate, true);
+    drop(st);
+    let board = fresh();
+    let mut st = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let last = stamp();
+    let decided = confirm(&mut st, &board, last, clock());
+    if !matches!(decided, Effect::Fire(_)) {
+        close(&mut st, gate, false);
+    }
+    (st, board, decided)
+}
+
 /// The reader's call, once per read of the records (`summary`), with `fresh`
 /// to take another read the moment a countdown runs out.
 pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
@@ -140,15 +169,10 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let action = st.armed.as_ref().map(|a| a.action);
     let mut effects = advance(&mut st, settings.keep_awake, summary, Instant::now());
-    // Decided on a read taken now, not the one that began this tick: the lock
-    // is let go for it, as a read takes the activity and session locks.
     let mut board = summary.clone();
     if effects.contains(&Effect::Due) {
-        drop(st);
-        board = fresh();
-        let last = crate::activity::last_activity();
-        st = state().lock().unwrap_or_else(|e| e.into_inner());
-        let decided = confirm(&mut st, &board, last, Instant::now());
+        let decided;
+        (st, board, decided) = barrier(st, state(), &CLOSED, fresh, crate::activity::last_activity, Instant::now);
         effects.retain(|e| *e != Effect::Due);
         effects.push(decided);
     }
@@ -184,6 +208,8 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
                     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
                     st.firing = false;
                     st.fired = None;
+                    // Over: refused, taken back, or a wake. Luna may start work again.
+                    close(&mut st, &CLOSED, false);
                 });
             }
         }
@@ -373,6 +399,57 @@ mod tests {
         advance(&mut st, false, &board(0, Some(0)), at(60_000));
         advance(&mut st, false, &board(0, Some(0)), at(END));
         assert_eq!(confirm(&mut st, &board(0, Some(0)), at(END - 10), at(END)), Effect::Canceled, "a hook since the countdown began");
+    }
+
+    /// A countdown run out on a quiet sample, decided behind the barrier.
+    fn due() -> (Mutex<State>, AtomicBool) {
+        let mut st = armed(Action::Shutdown, 60);
+        advance(&mut st, false, &board(0, Some(0)), at(60_000));
+        assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(END)), vec![Effect::Due]);
+        (Mutex::new(st), AtomicBool::new(false))
+    }
+
+    /// A hook that starts a turn after the sample the countdown ran out on
+    /// moves the stamp, which is read after the fresh read and under the lock:
+    /// nothing fires, and admission, closed for the decision, opens again.
+    #[test]
+    fn a_hook_after_the_sample_cancels_the_firing() {
+        let (lock, gate) = due();
+        let hook = Mutex::new(at(0));
+        let fresh = || {
+            // Admission is closed before the read: an agent's call is refused.
+            assert!(gate.load(std::sync::atomic::Ordering::SeqCst));
+            let call = admission::tests::enter_for_test(&lock);
+            assert!(call.unwrap_err().contains(SHUTTING_DOWN));
+            // The hook comes now, after the sample and before the decision.
+            *hook.lock().unwrap() = at(END + 5);
+            board(0, Some(0))
+        };
+        let (st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || *hook.lock().unwrap(), || at(END));
+        assert_eq!(decided, Effect::Canceled);
+        assert!(st.armed.is_some() && st.countdown.is_none() && !st.firing && !st.closing);
+        assert!(!gate.load(std::sync::atomic::Ordering::SeqCst), "open again");
+    }
+
+    /// The Enter a person presses after the fresh read found the rollout
+    /// ended moves the stamp (pty/ `write_session`), read after that: the
+    /// turn it starts is not shut down under.
+    #[test]
+    fn an_enter_after_the_rollout_read_cancels_the_firing() {
+        let (lock, gate) = due();
+        let stamp = Mutex::new(at(0));
+        let fresh = || {
+            let rollout_ended = board(0, Some(0));
+            *stamp.lock().unwrap() = at(END + 1);
+            rollout_ended
+        };
+        let (_st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || *stamp.lock().unwrap(), || at(END));
+        assert_eq!(decided, Effect::Canceled);
+        // With nothing since, the same barrier fires and keeps admission closed.
+        let (lock, gate) = due();
+        let (st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, || board(0, Some(0)), || at(0), || at(END));
+        assert_eq!(decided, Effect::Fire(Action::Shutdown));
+        assert!(st.closing && gate.load(std::sync::atomic::Ordering::SeqCst), "closed until the firing is over");
     }
 
     /// An agent's call that comes and goes between two reads leaves nothing

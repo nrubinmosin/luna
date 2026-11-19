@@ -45,6 +45,7 @@ use crate::activity::Summary;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 mod admission;
@@ -168,6 +169,10 @@ struct State {
     /// The last state sent to the UI, to send only changes.
     last_sent: Option<PowerState>,
     firing: bool,
+    /// Admission is closed (`closed`): from a countdown's end, before the
+    /// fresh read that decides it, until it is canceled or what it fired is
+    /// over.
+    closing: bool,
     /// What is firing: agents are refused until that is over, drain or not, as
     /// what they start now the action would only take down with it.
     fired: Option<Action>,
@@ -181,6 +186,37 @@ struct State {
 fn state() -> &'static Mutex<State> {
     static S: OnceLock<Mutex<State>> = OnceLock::new();
     S.get_or_init(Default::default)
+}
+
+/// `State::closing` where it is read with other locks held: set and cleared
+/// under the power lock with it, read with none.
+static CLOSED: AtomicBool = AtomicBool::new(false);
+
+/// What everything `closed` refuses says.
+pub const SHUTTING_DOWN: &str = "Luna is shutting down";
+
+/// Whether Luna is to start nothing of its own now: a power-off's countdown
+/// has run out and is being decided, or what it fired is under way. Helper
+/// turns and Luna's own writes into panes ask, each after its stamp
+/// (activity/ `touch`): either the stamp lands before the decision reads it
+/// and cancels it, or the gate was closed by then and the work is refused.
+/// Takes no lock, so it may be asked under any.
+pub fn closed() -> bool {
+    CLOSED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// `closed` as the error the work it refuses is given.
+pub fn open_or_refuse() -> Result<(), String> {
+    if closed() {
+        return Err(format!("{SHUTTING_DOWN}: the PC is about to be powered off or put to sleep, so nothing new starts."));
+    }
+    Ok(())
+}
+
+/// Closes admission or opens it again, the flag and its lock-free copy together.
+fn close(st: &mut State, gate: &AtomicBool, closing: bool) {
+    st.closing = closing;
+    gate.store(closing, std::sync::atomic::Ordering::SeqCst);
 }
 
 fn snapshot(st: &State, summary: &Summary) -> PowerState {

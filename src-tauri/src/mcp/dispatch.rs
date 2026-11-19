@@ -331,26 +331,27 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
         "luna_session_get" => agents::scope_all(caller, scope).and_then(|all| agents::session_get(caller, &id, all)).map(|s| json!(s)),
         "luna_session_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
-            .and_then(|p| {
-                let _admitted = crate::power::admit()?;
-                agents::spawn(caller, p)
-            })
+            .and_then(|p| crate::power::admitted(|| agents::spawn(caller, p)))
             .map(|s| json!(s)),
-        "luna_session_send" => crate::power::admit()
-            .and_then(|_admitted| agents::in_scope(caller, &id, scope, "send to"))
-            .and_then(|()| {
-                agents::send(
-                    caller,
-                    &id,
-                    a["text"].as_str().unwrap_or(""),
-                    a["interrupt"].as_bool().unwrap_or(false),
-                    a["requestKey"].as_str().filter(|k| !k.is_empty()),
-                    a["expectReply"].as_bool().unwrap_or(true),
-                )
-            })
-            .map(|s| json!(s)),
+        // Admitted for the whole send, the turn it starts included: a
+        // power-off counts it as at work until it is through.
+        "luna_session_send" => crate::power::admitted(|| {
+            agents::in_scope(caller, &id, scope, "send to")?;
+            agents::send(
+                caller,
+                &id,
+                a["text"].as_str().unwrap_or(""),
+                a["interrupt"].as_bool().unwrap_or(false),
+                a["requestKey"].as_str().filter(|k| !k.is_empty()),
+                a["expectReply"].as_bool().unwrap_or(true),
+            )
+        })
+        .map(|s| json!(s)),
         "luna_session_answer" => agents::in_scope(caller, &id, scope, "answer").and_then(|()| {
             let entered = crate::power::enter();
+            if let Some(why) = entered.shut() {
+                return Err(why);
+            }
             agents::answer(
                 caller,
                 &id,

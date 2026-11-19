@@ -107,9 +107,13 @@ struct Track {
     /// not known, which counts as something running.
     unlisted: bool,
     /// What was in its job before its first turn (`turned`): the CLI's own
-    /// furniture, its MCP servers. Snapshot at every look until then, never
-    /// after, per CLI process.
+    /// furniture, its MCP servers. Snapshot at every look until then, and
+    /// last as its first prompt goes in (`submitting`), never after, per CLI
+    /// process.
     furniture: std::collections::HashSet<crate::procs::ProcRead>,
+    /// The CLI process (by its spawn time) whose first prompt has gone in,
+    /// its furniture taken then: no look adds to it after.
+    furnished_for: u128,
     /// A turn of this CLI process has begun, by any signal: a hook, the
     /// rollout, the turn count.
     turned: bool,
@@ -150,6 +154,9 @@ struct Track {
     /// counted there: its record going from a turn to none counts it again
     /// only once a new turn has begun.
     ended_by_hook: bool,
+    /// The turn on last was counted by a read, its `Stop` missed: that `Stop`
+    /// arriving late counts nothing. Cleared as a turn begins.
+    read_counted: bool,
     /// The record as last folded.
     life: Life,
 }
@@ -390,11 +397,16 @@ fn count_on(t: &mut Track, spawned_at_ms: u128, disk: Option<u32>) {
 /// before it was said.
 fn fold_claude(t: &mut Track, now: u64) -> Option<Turn> {
     let disk = t.disk;
-    // How long the registry has said idle since the hook last spoke.
-    let idle_for = t.disk_idle_since_ms.map(|s| now.saturating_sub(s.max(t.hook_at_ms))).unwrap_or(0);
+    // How long the registry has said idle since the hook last spoke. Its idle
+    // counts against a hook only when the registry set it after that hook
+    // (`statusUpdatedAt`): an idle from before, or of no known time, is an
+    // older word, however long Luna has been reading it.
+    let idle_after_hook = t.disk_at.is_some_and(|at| at > t.hook_at_ms);
+    let idle_for = t.disk_idle_since_ms.filter(|_| idle_after_hook).map(|s| now.saturating_sub(s.max(t.hook_at_ms))).unwrap_or(0);
     // Claude Code calls itself busy while a subagent of it works, so an idle
     // registry that has stood a while says none is left: a SubagentStop that
-    // never came must not keep the session at work for good.
+    // never came must not keep the session at work for good. Not one older
+    // than the subagent's last hook, which moves `hook_at_ms` too.
     if idle_for > STALE_HOOK_MS && !t.agents_on_disk {
         t.agents.clear();
     }
@@ -660,11 +672,13 @@ mod tests {
     }
 
     /// A missed `Stop`: the hook said busy, the registry has said idle long
-    /// since; the registry wins, and a shell the registry names keeps it active.
+    /// since, set after the hook; the registry wins, and a shell the registry
+    /// names keeps it active.
     #[test]
     fn a_missed_stop_is_settled_by_the_registry() {
         let mut t = Track { hook: Some(Turn::Busy), hook_at_ms: 1_000, ..Default::default() };
         t.disk = Some(Turn::Idle);
+        t.disk_at = Some(1_100);
         t.disk_idle_since_ms = Some(1_000);
         refold(&mut t, 2_000);
         assert_eq!(t.life.phase, Phase::Running, "a Stop may still be on its way");
@@ -673,6 +687,27 @@ mod tests {
         t.registry_shells = 1;
         refold(&mut t, 1_000 + STALE_HOOK_MS + 2);
         assert!(t.life.active() && t.life.phase == Phase::Ended, "its background shell runs on");
+    }
+
+    /// An idle the registry set before the hook that says busy, or at no known
+    /// time, is an older word: read for however long, it never ends the turn
+    /// the hook began, nor drops a subagent whose hook came after it.
+    #[test]
+    fn an_idle_older_than_the_hook_never_ends_its_turn() {
+        for disk_at in [Some(900), Some(1_000), None] {
+            let mut t = Track { hook: Some(Turn::Busy), hook_at_ms: 1_000, disk: Some(Turn::Idle), disk_at, ..Default::default() };
+            t.disk_idle_since_ms = Some(500);
+            refold(&mut t, 1_000 + 10 * STALE_HOOK_MS);
+            assert_eq!(t.life.phase, Phase::Running, "{disk_at:?}");
+        }
+        // The turn's Stop came, then a subagent's hook: the registry's idle,
+        // set between the two, does not take the subagent away.
+        let mut t = Track { hook: Some(Turn::Idle), hook_at_ms: 1_000, disk: Some(Turn::Idle), disk_at: Some(1_500), ..Default::default() };
+        t.disk_idle_since_ms = Some(1_500);
+        apply(&mut t, HookEvent::AgentAtWork("a1".into()), 2_000);
+        refold(&mut t, 2_000 + 10 * STALE_HOOK_MS);
+        assert_eq!(t.life.background.subagents, 1, "its hook is later than the idle");
+        assert!(t.life.active());
     }
 
     /// Codex: the rollout's boundaries and the shells in its job.

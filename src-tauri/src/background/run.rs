@@ -41,6 +41,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         job: None,
         left_running: false,
         left_unlisted: false,
+        outside: Vec::new(),
         left_seen_out: false,
         left: Vec::new(),
         ending_left: false,
@@ -92,10 +93,10 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                 if !e.queue.is_empty() {
                     // Behind a claim a stop ended before its process started
                     // (the person's Stop, which dropped what was queued then, or
-                    // Luna's own, an update's say: `stop_for_luna`), it came
-                    // after that stop and never got its chance: kept for its
-                    // senders.
-                    if stopped || e.cut_short {
+                    // Luna's own, an update's say: `stop_for_luna`), or one a
+                    // power-off let none start under, it came after that stop
+                    // and never got its chance: kept for its senders.
+                    if stopped || e.cut_short || err.starts_with(crate::power::SHUTTING_DOWN) {
                         let queued = std::mem::take(&mut e.queue);
                         e.undelivered.extend(queued);
                         note(e, "kept what was queued behind it for its senders");
@@ -474,6 +475,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // on the ways out where the turn does not start.
     let on_account = crate::account_use::running_on(&account);
     drop(reserved);
+    // A turn about to start is activity, and a power-off being decided lets
+    // none start: the stamp first, then the gate (power/ `closed`).
+    crate::activity::touch();
+    crate::power::open_or_refuse()?;
     // Ahead of the process: what it starts is born after this (`turn_over`).
     let started_ms = crate::throttle::now_ms();
     let mut child = cmd.spawn().map_err(|e| {
@@ -491,15 +496,28 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     if let Some(pid) = pid {
         crate::procs::await_environment(pid);
         if let Some(e) = lock().entries.get_mut(id) {
-            match &e.job {
+            // What a turn that is in no job starts is listed nowhere: not
+            // known, until a walk below it finds nothing (`outside`). Off
+            // Windows a refused `join` is a tie the keeper does not have, the
+            // turn listed by its pid all the same.
+            let inside = match &e.job {
                 Some(job) => {
                     let joined = crate::procs::join(job, pid);
                     e.tied = e.tied && joined;
+                    joined || !cfg!(windows)
                 }
                 None => {
                     e.job = crate::procs::adopt(pid).map(std::sync::Arc::new);
                     e.tied = e.job.as_deref().is_some_and(|job| crate::procs::tie(job, id));
+                    e.job.is_some()
                 }
+            };
+            if !inside {
+                crate::log::warn(
+                    "background",
+                    &format!("{}: its turn is in no job; what it starts is walked by parent", crate::agents::label(id)),
+                );
+                e.outside.push((pid, started_ms));
             }
             mark_by_thread(e);
         }

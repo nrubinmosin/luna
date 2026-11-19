@@ -239,11 +239,7 @@ pub fn restore() {
         let (id, running, seen_out) = (s.id.clone(), s.running, s.tied || s.left_seen_out);
         let mut e = taken_up(s);
         e.spec.token = token;
-        // What its turns left under the last core is in no job this one has:
-        // gone with that core's tie, or seen out as it left (`seen_out`), or
-        // not known. Not known is active, until its next turn's job says what
-        // it holds.
-        e.left_unlisted = !seen_out && e.turns_ended > 0;
+        seen_when_taken_up(&mut e, seen_out);
         lock().entries.insert(id.clone(), e);
         back.push(format!("{}{}", crate::agents::label(&id), if running { " (stopped mid-turn)" } else { "" }));
     }
@@ -467,6 +463,16 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
 /// with the old core and counts as ended, and so does the text queued
 /// behind it, which never reached the CLI (as `stop` counts them) and is kept
 /// for its sender.
+/// What its turns left under the last core is in no job this one has: gone
+/// with that core's tie, or seen out as it left (`seen_out`), or not known.
+/// Not known is active, until its next turn's job says what it holds. Known
+/// gone, it stays so through every core after until a turn begins (queue.rs
+/// `claim`): a core that leaves has no job of it to look in (`left_seen_out`).
+pub(super) fn seen_when_taken_up(e: &mut Entry, seen_out: bool) {
+    e.left_unlisted = !seen_out && e.turns_ended > 0;
+    e.left_seen_out = seen_out;
+}
+
 pub(super) fn taken_up(mut s: Saved) -> Entry {
     retire_handoff(&mut s);
     let stopped = s.running || s.cut_short;
@@ -501,6 +507,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         job: None,
         left_running: false,
         left_unlisted: false,
+        outside: Vec::new(),
         left_seen_out: false,
         left: Vec::new(),
         ending_left: false,
@@ -956,6 +963,32 @@ mod tests {
         assert!(e.run.is_none() && e.cut_short && e.error.is_some());
         assert_eq!(e.undelivered, ["queued"], "still the caller's to resend");
         assert_eq!(e.turns_ended, 6, "the stopped turn, what was queued behind it, the turn that could not start");
+    }
+
+    /// A helper seen out by one core, then taken up by cores that each leave
+    /// before it has another turn: each knows nothing of it runs on, and none
+    /// reads it as not known.
+    #[test]
+    fn a_helper_seen_out_stays_so_through_cores_with_no_turn() {
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 3;
+        // The first core leaves, its job listed empty.
+        assert!(left_seen_out(&e, true));
+        let mut seen = true;
+        for core in 2..=4 {
+            let mut next = entry_like(&e);
+            next.turns_ended = e.turns_ended;
+            seen_when_taken_up(&mut next, seen);
+            assert!(!next.left_unlisted && !life_of(&next).active(), "core {core}: known gone");
+            // This core leaves with no job of it: no turn ran.
+            assert!(next.job.is_none());
+            seen = left_seen_out(&next, false);
+            e = next;
+        }
+        assert!(seen);
+        // A turn in no job is nothing this core ended.
+        e.outside.push((1, 2));
+        assert!(!left_seen_out(&e, true));
     }
 
     #[test]

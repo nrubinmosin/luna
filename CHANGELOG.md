@@ -76,19 +76,34 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   and its `sessions/<pid>.json` (status, `shell`); Codex's from its rollout's
   own turn boundaries and an approval dialog on its screen while a turn runs;
   a helper's from its turn's process and stream. For every session, what its
-  turns started that is still in its job, against what was there before its
-  first turn, whatever the CLI's version says of it (off Windows by the
-  keeper's walk of the process table). Missing evidence is not known, never
+  turns started that is still in its job, against what was there as its first
+  prompt went in, whatever the CLI's version says of it (off Windows by the
+  keeper's walk of the process table, a chat's CLI and all it starts carrying
+  the chat's mark, so a shell that left its tree is still the chat's). The
+  registry's idle overrules a hook only when it was set after that hook, a
+  subagent's included. A Codex rollout's lines are told from an earlier
+  process's by where the file ended as the process started, never by the
+  clock; a turn dated before the start with nothing to place it is not known.
+  Missing evidence is not known, never
   idle: a session just started, a Codex chat before its first turn (it holds
-  the PC awake until then), a rollout lost or unreadable, a registry entry not
-  surely the chat's own, a job that will not list, a helper taken up after a
-  core restart whose old job was not seen to end. Keep-awake,
+  the PC awake until then), a rollout lost or unreadable or one that breaks
+  off mid-read, a subagent folder that will not list, a registry entry not
+  surely the chat's own, a job that will not list, a helper turn that could
+  not be put in its job (until nothing below it is left), a helper taken up
+  after a core restart whose old job was not seen to end (one seen to end
+  stays so through later restarts until its next turn). A `Stop` that comes
+  after a look already counted its turn counts nothing. Keep-awake,
   the "when done" rule, `luna_session_wait` and the notices, the rows' status,
   the Delete dialog, autoDelete and the core's idle exit all read it
   ([ADR-0031](docs/adr/0031-one-lifecycle-record-per-session.md)).
 - "When done" fires only once no session has been active for the whole quiet
   window, counted from the arming at the earliest, and then the minute's
-  countdown, and only if a last look at that moment finds none active. Every
+  countdown, and only if a last look at that moment finds none active. Before
+  that look Luna lets nothing start: agents' sends, spawns and answers are
+  refused with "Luna is shutting down", no helper turn starts, and Luna types
+  nothing into a pane; with anything active or any activity since the
+  countdown began, it opens again and the window starts over. A key a person
+  presses in a pane is activity as it comes. Every
   signal (a hook, a rollout growing, a job's processes changing, a turn count
   moving, an agent's call coming or going, a helper's turn starting or ending)
   moves one activity stamp, so a turn of seconds between two looks starts the

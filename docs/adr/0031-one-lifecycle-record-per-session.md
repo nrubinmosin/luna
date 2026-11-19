@@ -64,11 +64,18 @@ cost is taken: a Codex chat opened and never used holds the PC awake.
 Every signal moves one stamp on the monotonic clock (`activity::last_activity`,
 an `Instant`, never wall time): any hook; a read whose inputs changed (a
 registry word, a rollout growing, a job's members, a turn count) or that found
-a session active; a helper's turn claimed or ended or its job changing; an
-agent's call that may start work coming or going. The quiet window and the
-countdown both count from it, so activity between two reads cancels; the
-countdown fires only on a fresh read taken at that moment (`power::confirm`)
-with no session active and the stamp no later than the countdown's start. A
+a session active; a helper's turn claimed, about to start or ended, or its
+job changing; an agent's call that may start work coming or going; Luna's
+text into a pane; a person's key into one. The quiet window and the
+countdown both count from it, so activity between two reads cancels. The
+countdown's end is decided behind a barrier (`power::barrier`): admission
+closes first (agents' calls refused, helper turns and Luna's writes into panes
+too, each of which moves the stamp before it asks), then a fresh read
+(`power::confirm`), then the stamp; it fires only with no session active and
+the stamp no later than the countdown's start, else admission opens again.
+Evidence is never ordered by the wall clock against Luna's own: a Codex line
+is placed by where the file ended at the spawn where Luna saw it, and a
+Claude Code registry idle counts against a hook only when set after it. A
 sleep or a clock step (the monotonic gap past six reads, or the wall clock
 drifting 30 s from the monotonic one between reads) starts the window over.
 This shape was chosen over point fixes after review found wrongful-shutdown
@@ -90,6 +97,19 @@ record is serialized as is on the power board (`power://state`'s
 - Residuals, each erring active or limited to the session that causes it:
   a process a turn started that left its job (a Windows breakaway, a Unix
   process that cleared its environment and lost its parents) is not seen; a
+  hook or a key that comes between the barrier's read of the stamp and the
+  OS's answer is not waited for (nothing a person does is refused, and a
+  turn it starts may be cut by the shutdown, with the 30 s grace and
+  `shutdown /a` to take it back); a Claude Code older than `statusUpdatedAt`
+  that misses a `Stop` holds its record active until its next hook; a Codex
+  chat moved to an older thread in its TUI (`/resume`) whose last turn there
+  was cut off reads `unknown` until a turn of its own ends, as nothing dates
+  that turn against the spawn but the clock; a known subagent's rollout that
+  will not read holds its session for as long as that lasts; a helper turn in
+  no job leaves its walk by parent links, which misses what reparented away
+  from its tree; a `Stop` whose turn's start was missed and that comes after
+  a read counted the turn before is taken for that turn's, late, and counts
+  nothing (a `wait` then runs to its timeout); a
   Codex MCP server started after the last read before a first turn that
   itself began before any read is counted as a shell off Windows, where start
   times cannot date it against the turn (active, never quiet, while it runs);

@@ -3,7 +3,7 @@
 //! deleting a chat, and the sessions no chat claims any more.
 
 use super::probe::{meta_from_disk, probe_of, Probe};
-use super::screen::{draft_after, paste_lapsed, typed_by_person};
+use super::screen::{draft_after, paste_lapsed, typed_by_person, DRAFT_FLAGS};
 use super::start::claude_instructions_dir;
 use super::{manager, now_ms, Input, PtyManager, Session, READER_WAIT};
 use crate::provider::Provider;
@@ -16,6 +16,16 @@ use std::sync::Arc;
 
 #[tauri::command]
 pub fn write_session(id: String, data: String) -> Result<(), String> {
+    // A person at the keys is activity before the key lands: an Enter that
+    // starts a turn after a power-off's fresh read moves the stamp it is
+    // decided by (power/ `barrier`). Never refused: a person is not.
+    if typed_by_person(&data) {
+        crate::activity::touch();
+    }
+    // An Enter on a draft sends a prompt: the CLI's furniture is taken first.
+    if manager().sends_draft(&id, &data) {
+        crate::activity::submitting(&id);
+    }
     let state = manager();
     let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let s = sessions.get(&id).ok_or("no such session")?;
@@ -409,6 +419,18 @@ impl PtyManager {
         (at > 0).then(|| now_ms().saturating_sub(at))
     }
 
+    /// Whether a person's `data` holds an Enter that sends a prompt: one on
+    /// text in the composer, as the keys before it leave it (`draft_after`),
+    /// not inside a paste nor after a backslash. An Enter on an empty composer
+    /// (a startup dialog, a menu) sends none.
+    pub fn sends_draft(&self, id: &str, data: &str) -> bool {
+        let Some(at) = data.find('\r') else { return false };
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(s) = sessions.get(id) else { return false };
+        let before = draft_after(s.draft.load(Ordering::Relaxed), &data[..at]);
+        before & !DRAFT_FLAGS > 0 && before & DRAFT_FLAGS == 0
+    }
+
     /// Keeps a person's keys back from the session until the hold is
     /// dropped, then sends them on in the order they came: Luna is typing
     /// around their draft, and a key landing in between would go out with
@@ -420,8 +442,17 @@ impl PtyManager {
         Some(KeyHold { id: id.to_string() })
     }
 
-    /// Queues bytes for the session's writer thread.
+    /// Queues bytes for the session's writer thread: Luna's own text, which
+    /// is activity, and which a power-off being decided refuses. The stamp
+    /// first, then the gate (power/ `closed`): a write either moves the stamp
+    /// before the decision reads it, or finds the gate shut.
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
+        crate::activity::touch();
+        crate::power::open_or_refuse()?;
+        // Luna's Enter sends what it typed: the CLI's furniture is taken first.
+        if data.contains(&b'\r') {
+            crate::activity::submitting(id);
+        }
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let s = sessions.get(id).ok_or("no such session")?;
         s.input_tx.send(Input::Bytes(data.to_vec()))
@@ -814,6 +845,26 @@ mod tests {
         assert!(refused.contains("deleted"), "{refused}");
         assert!(capture::take(id).is_none(), "nothing of a start was built");
         assert!(said::at(&format!("exit {id}")).is_some(), "the old session's exit was said");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A person's keys are activity as they come, before they land: an Enter
+    /// after a power-off's fresh read moves the stamp that decides it. Only an
+    /// Enter on text in the composer sends a prompt.
+    #[test]
+    fn a_persons_enter_moves_the_stamp_and_sends_a_draft() {
+        let id = "keys-enter";
+        let dir = scratch("keys-enter");
+        let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        assert!(!manager().sends_draft(id, "\r"), "an Enter on an empty composer: a dialog, a menu");
+        let before = std::time::Instant::now();
+        write_session(id.into(), "\r".into()).unwrap();
+        assert!(crate::activity::last_activity() >= before, "the Enter moved the stamp");
+        write_session(id.into(), "fix it".into()).unwrap();
+        assert!(manager().sends_draft(id, "\r"));
+        assert!(manager().sends_draft(id, " now\r"));
+        assert!(!manager().sends_draft(id, "\x1b[200~a\rb"), "inside a paste: text");
+        quit.store(true, Ordering::SeqCst);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
