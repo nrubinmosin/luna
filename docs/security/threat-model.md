@@ -620,7 +620,8 @@ Residuals:
   so (`role.layers-kept`), no helper it starts inherits them, and a new chat
   drops them; a take-over onto a fresh thread would lose the conversation.
 - **R9. The window's single-instance hand-over is not authenticated**
-  (`desktop/single.rs`, release 0.20). On Windows any process on the same
+  (`desktop/single.rs`, release 0.20; claimed in lib.rs `run` for the native
+  and the WebView window alike, in place of tauri-plugin-single-instance). On Windows any process on the same
   desktop at the same integrity or above can find the first window's
   message-only window and send it the hand-over; on Unix only a process of
   this user's reaches its socket, which sits in the data dir's private

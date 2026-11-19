@@ -150,6 +150,7 @@ pub(crate) fn deliver(models: &Models, message: Message, cx: &mut App) {
     match message {
         Message::Run(f) => f(),
         Message::Event { name, payload } => on_event(models, &name, payload, cx),
+        Message::Request(request) => crate::desktop::on_request(request, cx),
         // The inbox hands these out as the event they stand for.
         Message::Latest(_) => {}
     }
@@ -163,5 +164,7 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
             Ok(link) => models.core.update(cx, |c, cx| c.take(link, cx)),
             Err(e) => log::warn!("{name}: {e}"),
         }
+    } else {
+        crate::desktop::on_event(name, &payload, cx);
     }
 }

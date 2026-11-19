@@ -100,9 +100,9 @@ pub fn tooltip(holders: Option<&str>) -> String {
 }
 
 /// The menu's items, by id.
-const OPEN: &str = "open";
-const RESTART: &str = "restart";
-const QUIT: &str = "quit";
+pub const OPEN: &str = "open";
+pub const RESTART: &str = "restart";
+pub const QUIT: &str = "quit";
 
 /// The actions of the tray shown now, by its number. `tray-icon` keeps one
 /// menu handler and one icon handler for the whole process: Luna sets them
@@ -129,9 +129,10 @@ fn let_go(id: u64) {
     }
 }
 
-/// Runs what the current tray's menu item `item` does, if anything; the
-/// lock is let go before the callback runs.
-fn on_menu(item: &str) {
+/// Runs what the current tray's menu item `item` does, if anything, as a
+/// click on it does; the lock is let go before the callback runs. The test
+/// build's hook (native/desktop.rs) calls it for a script.
+pub fn on_menu(item: &str) {
     let Some(actions) = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(_, a)| std::sync::Arc::clone(a)) else {
         return;
     };

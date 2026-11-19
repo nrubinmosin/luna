@@ -13,8 +13,13 @@
 //!   before they are serialized. A session's output goes to the sink the
 //!   window routed for it (`Outputs`), if any, never through the inbox.
 //!
+//! - The desktop's services (the tray, notifications, the clipboard,
+//!   pickers, the window's place, the updater) are native/desktop.rs's.
+//!
 //! Each call runs on a thread of its own, as `core_call` runs on a blocking
 //! one: the window waits for the answer on a task, never on its thread.
+
+mod desktop;
 
 use crate::corecmd::{self, Lane};
 use luna_window::{Answer, Host, Mailbox, OutputSink, ThemePref};
@@ -29,12 +34,17 @@ use std::time::Duration;
 type Command = fn(Value) -> Result<Value, String>;
 
 /// Every command of the window's own it may call, by name.
-const OWN: &[(&str, Command)] =
-    &[("core_state", |_| serde_json::to_value(crate::corelink::core_state()).map_err(|e| e.to_string())), ("core_restart", core_restart)];
+const OWN: &[(&str, Command)] = &[
+    ("core_state", |_| serde_json::to_value(crate::corelink::core_state()).map_err(|e| e.to_string())),
+    ("core_restart", core_restart),
+    ("update_check", desktop::update_check),
+    ("update_download", desktop::update_download),
+    ("update_install", desktop::update_install),
+];
 
 /// Every command of the window's own it may send, by name: taken on the
 /// window's thread, so each hands its work over and returns at once.
-const OWN_SENT: &[(&str, Command)] = &[("set_window_theme", set_window_theme)];
+const OWN_SENT: &[(&str, Command)] = &[("set_window_theme", set_window_theme), ("tray_awake", desktop::tray_awake)];
 
 /// `{ revision }`: the link's state the restart was offered on.
 fn core_restart(args: Value) -> Result<Value, String> {
@@ -289,9 +299,10 @@ impl log_facade::Log for ToLunaLog {
     fn flush(&self) {}
 }
 
-/// Runs the native window until it is closed: the window, then, once it is
-/// open, what `setup()` does for the WebView window that needs no Tauri. The
-/// core runs on after it, as it does after the WebView window. Err with why
+/// Runs the native window until its app quits (the tray's Quit, an update):
+/// the window, then, once it is open, what `setup()` does for the WebView
+/// window. Closing the window hides it to the tray. The core runs on after
+/// it, as it does after the WebView window. Err with why
 /// when the window could not open (no usable GPU device, shaders that do not
 /// compile): nothing was started then, and the WebView window can take over
 /// (lib.rs `run`). On macOS that never comes back: gpui ends the process.
@@ -316,7 +327,8 @@ pub(crate) fn run() -> Result<(), String> {
         background: crate::background(),
         on_open: Box::new(move || start(services)),
         on_quit: Box::new(|| {
-            crate::lifecycle::exiting("the window was closed; the core and its sessions stay");
+            crate::lifecycle::exiting("the window's app quit; the core and its sessions stay");
+            desktop::stop();
             if !theme_writer().drain(THEME_DRAIN) {
                 crate::log::warn("window", "the theme chosen last was not written in time");
             }
@@ -346,10 +358,11 @@ fn start(mailbox: Mailbox) {
             events.event(event, payload);
         }
     });
+    // The tray, a notification's click, a second launch's hand-over and the
+    // session's end; the single instance was claimed before the window opened.
+    desktop::start(mailbox.clone());
     // The previous run's end is reported before the heartbeat starts; it
-    // pings the window's thread through its inbox. No single-instance check
-    // runs before it yet: the native window's desktop services (single
-    // instance, tray, notifications, window state) come in a later change.
+    // pings the window's thread through its inbox.
     crate::lifecycle::start(Box::new(move |f| mailbox.run_on_ui(f)));
     // The sessions, the hooks' listener, the agents and power all run in the
     // core (coreproc.rs); the window finds or starts it.
@@ -369,11 +382,11 @@ mod tests {
     /// sends a taker, and none of the window's own shadows one of the core's.
     #[test]
     fn every_command_the_window_names_is_dispatched() {
-        for cmd in luna_window::cmd::ALL {
+        for cmd in luna_window::cmd::ALL.iter().chain(luna_window::desktop::cmd::CALLED) {
             let own = OWN.iter().any(|(c, _)| c == cmd);
             assert!(own || corecmd::lane(cmd) == Some(Lane::Call), "{cmd} has no answer in native.rs");
         }
-        for cmd in luna_window::cmd::SENT {
+        for cmd in luna_window::cmd::SENT.iter().chain(luna_window::desktop::cmd::SENT) {
             let own = OWN_SENT.iter().any(|(c, _)| c == cmd);
             assert!(own || corecmd::lane(cmd) == Some(Lane::Send), "{cmd} has no taker in native.rs");
         }
@@ -391,10 +404,12 @@ mod tests {
     fn the_windows_own_commands_are_the_pages_where_the_page_has_them() {
         let lib = include_str!("lib.rs");
         let start = lib.find("generate_handler![").unwrap();
-        let registered = &lib[start..start + lib[start..].find(']').unwrap()];
-        let native_only = ["set_window_theme"];
+        let registered: Vec<&str> =
+            lib[start..start + lib[start..].find(']').unwrap()].split(',').filter_map(|e| e.trim().rsplit("::").next()).collect();
+        // The page has the updater's from the plugin, not as commands of Luna's.
+        let native_only = ["set_window_theme", "update_check", "update_download", "update_install"];
         for (cmd, _) in OWN.iter().chain(OWN_SENT) {
-            let tauri = registered.contains(&format!("::{cmd},"));
+            let tauri = registered.contains(cmd);
             assert!(tauri != native_only.contains(cmd), "{cmd}: registered {tauri}");
         }
     }
@@ -406,6 +421,14 @@ mod tests {
         for event in luna_window::event::ALL {
             assert!(corelink.contains(&format!("\"{event}\"")), "{event} is sent nowhere");
         }
+        // The desktop's, by their names in the window crate.
+        let desktop = include_str!("native/desktop.rs");
+        for (name, event) in
+            [("OPEN_CHAT", luna_window::desktop::event::OPEN_CHAT), ("UPDATE_PROGRESS", luna_window::desktop::event::UPDATE_PROGRESS)]
+        {
+            assert!(desktop.contains(&format!("emit::to_ui(event::{name},")), "{event} is sent nowhere");
+        }
+        assert_eq!(luna_window::desktop::event::ALL.len(), 2);
         let output = luna_window::event::PTY_OUTPUT;
         assert!(include_str!("pty/spawn.rs").contains(&format!("\"{output}\"")), "{output} is sent nowhere");
     }

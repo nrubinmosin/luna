@@ -17,8 +17,8 @@ yanked = "warn"
 # has passed, so an ignore is looked at again rather than kept for good.
 ignore = [
     # zbus 5 split its name and value types into crates that zbus 6 folds back
-    # in. zbus is the D-Bus client of notify-rust and tauri-plugin-opener and
-    # -single-instance on Linux only, absent from the Windows build, and none of
+    # in. zbus is the D-Bus client of notify-rust and tauri-plugin-opener on
+    # Linux only, absent from the Windows build, and neither of
     # them moves to zbus 6 yet. Unmaintained, with no vulnerability reported.
     { id = "RUSTSEC-2026-0370", reason = "zvariant: Linux-only, through zbus 5; no upstream on zbus 6 yet. Expires 2027-02-08" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: Linux-only, through zbus 5; no upstream on zbus 6 yet. Expires 2027-02-08" },

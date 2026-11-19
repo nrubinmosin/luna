@@ -77,16 +77,17 @@ pub fn file(ask: &Ask, parent: Option<&dyn Parent>) -> Option<PathBuf> {
     dressed!(rfd::FileDialog::new(), ask, parent).pick_file()
 }
 
-/// `folder`, awaited.
-pub async fn folder_async(ask: &Ask, parent: Option<&dyn Parent>) -> Option<PathBuf> {
+/// `folder`, awaited. The dialog is made, `parent` read, before this
+/// returns: the future holds neither `ask` nor `parent`.
+pub fn folder_async(ask: &Ask, parent: Option<&dyn Parent>) -> impl std::future::Future<Output = Option<PathBuf>> + 'static {
     let picked = dressed!(rfd::AsyncFileDialog::new(), ask, parent).pick_folder();
-    picked.await.map(|h| h.path().to_path_buf())
+    async move { picked.await.map(|h| h.path().to_path_buf()) }
 }
 
-/// `file`, awaited.
-pub async fn file_async(ask: &Ask, parent: Option<&dyn Parent>) -> Option<PathBuf> {
+/// `file`, awaited, as `folder_async`.
+pub fn file_async(ask: &Ask, parent: Option<&dyn Parent>) -> impl std::future::Future<Output = Option<PathBuf>> + 'static {
     let picked = dressed!(rfd::AsyncFileDialog::new(), ask, parent).pick_file();
-    picked.await.map(|h| h.path().to_path_buf())
+    async move { picked.await.map(|h| h.path().to_path_buf()) }
 }
 
 #[cfg(test)]

@@ -5,9 +5,10 @@
 //! taking callbacks, no window type of any toolkit, so that the native window
 //! wires one in with a few lines.
 //!
-//! Not wired into `run()` yet: the window there is still Tauri's, with its
-//! plugins.
-// Nothing calls these until the native window does.
+//! The native window wires them in (native.rs, native/desktop.rs); the
+//! WebView window takes the single instance (lib.rs `run`) and keeps Tauri's
+//! plugins for the rest.
+// The blocking pickers and a few accessors wait for the window's callers.
 #![allow(dead_code)]
 
 pub mod clipboard;
@@ -28,6 +29,24 @@ pub fn identifier() -> &'static str {
         "rm.luna.test"
     } else {
         "rm.luna"
+    }
+}
+
+/// What brings the running window up: a second launch (`single`), set by
+/// whichever window runs.
+static BRING_UP: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>> = std::sync::Mutex::new(None);
+
+/// Sets what `bring_up` does, once the window that does it is there.
+pub fn on_bring_up(f: impl Fn() + Send + Sync + 'static) {
+    *BRING_UP.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(f));
+}
+
+/// Brings the running window up, if one has said how; on the caller's
+/// thread, the lock let go first.
+pub fn bring_up() {
+    let f = BRING_UP.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(f) = f {
+        f();
     }
 }
 

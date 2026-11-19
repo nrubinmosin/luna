@@ -660,7 +660,7 @@ fn launch(file: &str, parameters: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use base64::Engine;
     use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -679,19 +679,19 @@ mod tests {
     /// as tauri.conf.json holds one, and a signer of legacy signatures
     /// (over the file itself), which needs no BLAKE2b. The prehashed form is
     /// the checked-in Tauri fixture's.
-    struct Key {
+    pub(crate) struct Key {
         pair: Ed25519KeyPair,
         id: [u8; 8],
     }
 
     impl Key {
-        fn new(id: [u8; 8]) -> Key {
+        pub(crate) fn new(id: [u8; 8]) -> Key {
             let rng = ring::rand::SystemRandom::new();
             let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
             Key { pair: Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap(), id }
         }
 
-        fn public(&self) -> String {
+        pub(crate) fn public(&self) -> String {
             let mut bin = b"Ed".to_vec();
             bin.extend(self.id);
             bin.extend(self.pair.public_key().as_ref());
@@ -709,7 +709,7 @@ mod tests {
             b64(format!("untrusted comment: signature from tauri secret key\n{}\ntrusted comment: {trusted}\n{}\n", b64(bin), b64(global)))
         }
 
-        fn sign(&self, data: &[u8], version: &str) -> String {
+        pub(crate) fn sign(&self, data: &[u8], version: &str) -> String {
             self.sign_with_comment(data, &format!("timestamp:1763500000\tfile:setup.exe\tversion:{version}"))
         }
     }
@@ -751,7 +751,7 @@ mod tests {
         b
     }
 
-    const SETUP: &[u8] = &stub(0x014C);
+    pub(crate) const SETUP: &[u8] = &stub(0x014C);
 
     #[test]
     fn a_good_signature_checks_out_and_every_kind_of_bad_one_does_not() {
@@ -971,6 +971,12 @@ mod tests {
     /// `LUNA_CHECK_SETUP=<setup> <test exe> --ignored --exact desktop::updater::tests::the_setup_in_luna_check_setup_passes_for_one`.
     #[test]
     #[ignore = "needs a built setup, named in LUNA_CHECK_SETUP"]
+    /// latest.json offering `version` for this platform at `url`, so signed.
+    pub(crate) fn manifest_for(version: &str, url: &str, signature: &str) -> String {
+        let platform = targets().last().unwrap().clone();
+        serde_json::json!({ "version": version, "platforms": { platform: { "signature": signature, "url": url } } }).to_string()
+    }
+
     fn the_setup_in_luna_check_setup_passes_for_one() {
         let path = std::env::var_os("LUNA_CHECK_SETUP").expect("LUNA_CHECK_SETUP names no setup");
         let bytes = std::fs::read(&path).unwrap();
@@ -1028,7 +1034,7 @@ mod tests {
     }
 
     /// A server that answers each of `answers` in turn, one request each.
-    fn serve(answers: Vec<Vec<u8>>) -> String {
+    pub(crate) fn serve(answers: Vec<Vec<u8>>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1042,7 +1048,7 @@ mod tests {
         format!("http://{addr}")
     }
 
-    fn ok(body: &[u8]) -> Vec<u8> {
+    pub(crate) fn ok(body: &[u8]) -> Vec<u8> {
         let mut answer = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
         answer.extend_from_slice(body);
         answer

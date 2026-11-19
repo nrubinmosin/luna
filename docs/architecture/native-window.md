@@ -4,8 +4,9 @@ Release 0.20 moves Luna's window from Tauri + WebView2 + React to GPUI
 ([ADR-0030](../adr/0030-scope-of-0-20.md)). The native window is built surface
 by surface; until it has them all, the WebView window
 ([frontend.md](frontend.md)) is still in the exe, behind a flag. So far the
-native window has its title bar, the theme switch, the core banner and an
-empty board.
+native window has its title bar, the theme switch, the core banner, an
+empty board, and the desktop services: tray, close to tray, single
+instance, notifications, window state and the updater's backend.
 
 ## Which window starts
 
@@ -18,16 +19,28 @@ the keeper are the same exe with their own flags, and neither window touches
 them. `scripts/test-build.ps1 -Run -WebView` starts the test build's WebView
 window.
 
-The native window does what the WebView window's `setup()` does that needs no
-Tauri (native.rs `run` and `start`): the log's start line with the build stamp
-(and "(native window)") and the panic hook first; then, once the window is
-open (`Options::on_open`), the event sink, the run record and its heartbeat
-(lifecycle.rs, which now pings whichever event loop it is handed), the core
-link (`corelink::start`), the CLI refresh and the settings sync at start.
-The tray, single instance, notifications, window state and updater are not
-wired into it yet. Closing the window ends the window's process; the core and
-its sessions run on, as after the WebView window closes to the tray. A second
-launch opens a second window (no single instance yet).
+Before either window, lib.rs `run` claims the single instance
+(desktop/single.rs): one claim per identifier and data dir, the same for
+both kinds, so a native window and a `--webview` one never run side by side
+on one data dir. A second launch of either kind hands over to the first,
+which comes up (`desktop::bring_up`, set by whichever window runs), and exits
+before it has started anything. No claim under `LUNA_DEV_TOKEN`; in the
+background a second launch is logged and leaves the window where it is. The
+WebView window no longer uses tauri-plugin-single-instance.
+
+The native window does what the WebView window's `setup()` does (native.rs
+`run` and `start`): the log's start line with the build stamp (and "(native
+window)") and the panic hook first; then, once the window is open
+(`Options::on_open`), the event sink, the desktop services
+(native/desktop.rs `start`: what a second launch and a notification's click
+do, the tray, the session-end hook), the run record and its heartbeat
+(lifecycle.rs, which pings whichever event loop it is handed), the core link
+(`corelink::start`), the CLI refresh and the settings sync at start.
+
+Closing the window hides it to the tray (below); the tray's Quit ends the
+sessions, the core and the window, its Restart window starts a new native
+window (`--after <pid>`, no `--webview`) and leaves the core alone, as the
+WebView window's do (lifecycle.rs `quit`, `restart`).
 
 A window that cannot open at all (no usable Direct3D device, shaders that do
 not compile at startup) has started nothing: `luna_window::run` returns why,
@@ -93,6 +106,68 @@ What the native window keeps between runs is in `<data>/window.json`
 window's. One thread writes it (native.rs `Writer`): each choice replaces one
 not written yet, an earlier one is never written after a later one, and
 quitting waits up to 2 s for the last.
+
+## Desktop services
+
+The window reaches the desktop through its host too: `Host` has `Desktop`
+(crates/window/src/desktop.rs) for a supertrait, which native/desktop.rs
+implements over luna_lib's `desktop/` ([desktop-services.md](desktop-services.md))
+and the fake host over `FakeDesktop`:
+
+| `Desktop` | Shape |
+| --- | --- |
+| `has_tray()` | whether closing hides the window |
+| `notify(Notice { title, body, chat_id, sound })` | a toast; a click sends `Request::Show` and `ui://open-chat` `{ chatId }` |
+| `read_clipboard()` | `Pending<Clip>`: `Empty`, `Text`, `Files(paths)`, `Image { width, height, png }` |
+| `write_clipboard_text(text)` | `Pending<()>` |
+| `pick(Pick { kind: Folder or File, title, start, filters }, parent)` | `LocalPending<Option<PathBuf>>`, modal to `parent` (a gpui `Window`) |
+| `placement(displays, min)` / `keep_placement(p)` | where the window opens / keeps it (`Placement { bounds, maximized }`, logical pixels) |
+
+`Pending` futures are made off the window's thread; a picker's is awaited on
+it (macOS runs dialogs there). Commands beside `cmd::ALL`/`SENT`, in
+`desktop::cmd`: `tray_awake` `{ holders }` (sent; the page's own), and
+`update_check` (`UpdateCheck { current, offer: { version, notes, pubDate,
+coreFingerprint } }`), `update_download` (`{ version }`, with
+`update://progress` `{ got, total }` at most every 100 ms) and
+`update_install` `{ reason }` (called), which take only what the last check
+offered and the last download staged, never a URL or a file from the window.
+Events beside `event::ALL`, in `desktop::event`: `ui://open-chat` and
+`update://progress`, held in the globals `OpenChat` and `UpdateProgress`
+until the board and the status bar show them.
+
+What the host asks of the window itself goes through its mailbox,
+`Mailbox::request(Request)`: `Show` (the tray's Open and click, a toast's
+click, a second launch), `Hide` (the tray's Quit, at once) and `Quit` (the
+end of the tray's Quit or Restart, an update). On Windows the window is
+hidden and shown by its own handle (`ShowWindow`), restored if minimized and
+brought to the front with `SetForegroundWindow`, using the foreground right
+the tray's click, a toast's or a second launch's `AllowSetForegroundWindow`
+gave the process (gpui's `activate` would press Alt for it), on a task after
+the update the request runs in: `ShowWindow` sends the window its size and
+move at once, which gpui cannot take while the app is borrowed. macOS hides
+and shows the app. In the background `Show` only shows the window where it is,
+off screen and not activated.
+
+`on_window_should_close` hides the window while there is a tray, its place
+kept first; without one (it could not be made, or Linux) the window closes
+and the app quits. Its place goes to the host half a second after the last
+move or resize (`Keeper`), at once as it hides and as the app quits
+(`flush_all`, before the host's own quit waits for its writer); the
+host writes it to `<data>/window-state.json` through one writer, as the
+theme (`Writer`), and quitting waits for it. It opens where the host says,
+held to the displays there are now (`window_state::fit`). Neither in the
+background.
+
+The tray lives on the window's thread (a `thread_local` in
+native/desktop.rs), made once the window is open and dropped as the app
+quits; `tray_awake` reaches it there. The session's end is logged with its
+reason through `sysmenu::exit_with_session`, hooked on every top-level window
+of that thread (the window, gpui's hidden platform window, the tray's),
+whichever Windows tells first; under Restart Manager it waits for a model
+ask, as the WebView window does. The test build alone subclasses the same
+windows for `WM_APP + 0x4C` (wParam 0 Open, 1 Restart window, 2 Quit, 3 asks
+whether the tray is up), which runs the tray's own handler, so a script tries
+the close-to-tray and Quit paths on a background window without a click.
 
 ## Models and views
 
@@ -179,7 +254,11 @@ The crate's tests run the window on GPUI's test platform over the fake host
 them redraw, a state older than the one shown is dropped, nothing redraws
 while nothing happens, the theme button goes round and the host is sent each
 choice, system follows the appearance, the banner's wording per state, and
-Restart asks the host for the state shown. `host.rs`'s own tests hold the
+Restart asks the host for the state shown. desktop.rs's tests hold a
+notification and its click's request and event, the close to the tray (the
+place kept, the window not closed; closed without a tray), the place kept
+once after a burst of resizes, and the bounds the window opens with.
+`host.rs`'s own tests hold the
 inbox to the events the window takes, the core's state to one waiting with
 the newest revision, and a batch to its bound. The tests that click
 the buttons where they are drawn need debug assertions (gpui records the

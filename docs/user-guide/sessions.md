@@ -2,14 +2,20 @@
 
 ## Closing, quitting, restarting
 
-- Closing the window hides Luna to the tray; sessions keep running.
+- Closing the window hides Luna to the tray; sessions keep running. A click
+  on the tray icon, or its **Open**, brings the window back.
+- One Luna window runs per Luna folder: starting Luna again (from the Start
+  menu, a shortcut, `luna --webview`) brings the running window up instead
+  of opening a second one. A copy of Luna in another folder is another Luna,
+  with its own window.
 - **Quit** from the tray ends all of Luna: every session is asked to quit as
   deleting a chat would, background helper turns are stopped, then the core and
   the window go. A core still there 30 seconds later is killed with everything
   it started.
 - **Restart window** in the tray starts only the window over (terminals drawing
   garbage, say): the core and its sessions keep running, turns in progress
-  included, and the new window picks them up.
+  included, and the new window, of the same kind (native, or `--webview`),
+  picks them up.
 
 ## The core
 

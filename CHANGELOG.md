@@ -27,8 +27,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.
 
-- The desktop services the native window of 0.20 will use in place of
-  Tauri's plugins, not wired in yet (`src-tauri/src/desktop/`,
+- The desktop services the native window of 0.20 uses in place of
+  Tauri's plugins (`src-tauri/src/desktop/`,
   [desktop services](docs/architecture/desktop-services.md)): the tray, toasts
   and macOS notifications that open their chat when clicked, one window per
   data folder with a second launch bringing the first up, folder and file
@@ -50,13 +50,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   x64; and `scripts/macos-app.sh`, which
   assembles an unsigned `Luna.app` for a macOS runner.
 
+- The native window's desktop services, wired in: Luna's tray (Open,
+  Restart window, Quit; a click opens the window; the dot while the PC is
+  held awake), closing to the tray with the sessions running, the window
+  opening where it was left, and the session's end logged with its reason.
+  Its host takes notifications (a click opens the chat), the clipboard,
+  folder and file pickers and the updater's check, download and install,
+  for the surfaces of the window that come next.
+
 ### Changed
 
-- The window Luna opens by default, now the native one, has no tray icon,
-  desktop notifications, updater or single instance yet: a second launch
-  opens a second window, and closing the window leaves nothing in the tray.
-  They come back to it in a later change; until then `luna --webview` (or
-  `LUNA_WINDOW=webview`) opens the WebView window, which has them all.
+- One Luna window per data folder, whichever kind: a second launch, of the
+  native window or with `--webview`, brings up the window already running
+  and exits, so the two never run side by side. The WebView window's single
+  instance is Luna's own now, in place of tauri-plugin-single-instance.
 
 ## [0.19.0] - 2026-11-18
 

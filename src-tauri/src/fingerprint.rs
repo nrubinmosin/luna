@@ -131,7 +131,12 @@ mod tests {
         while let Some(line) = lines.next() {
             let t = line.trim_start();
             let gated = t.starts_with("#[cfg(") && t.contains("test") && !t.contains("not(test");
-            if gated && lines.peek().is_some_and(|l| l.trim_start().starts_with("mod ") && l.trim_end().ends_with('{')) {
+            // A test module, its helpers shared with other tests' or not.
+            let module = |l: &&str| {
+                let l = l.trim_start();
+                ["mod ", "pub mod ", "pub(crate) mod "].iter().any(|m| l.starts_with(m)) && l.trim_end().ends_with('{')
+            };
+            if gated && lines.peek().is_some_and(module) {
                 let mut depth = 0i32;
                 for l in lines.by_ref() {
                     depth += l.matches('{').count() as i32 - l.matches('}').count() as i32;
@@ -150,7 +155,8 @@ mod tests {
     #[test]
     fn a_test_module_is_not_what_ships() {
         let text = "const A: &str = include_str!(\"a\");\n#[cfg(all(test, not(windows)))]\nmod acl {\n    fn f() { format!(\"{x}\"); }\n    \
-                    const B: &str = include_str!(\"b\");\n}\nconst C: u8 = 0;\n#[cfg(test)]\nmod tests {\n    const D: &str = include_str!(\"d\");\n}\n";
+                    const B: &str = include_str!(\"b\");\n}\nconst C: u8 = 0;\n#[cfg(test)]\nmod tests {\n    const D: &str = include_str!(\"d\");\n}\n\
+                    #[cfg(test)]\npub(crate) mod shared {\n    const E: &str = include_str!(\"e\");\n}\n";
         assert_eq!(shipped(text), "const A: &str = include_str!(\"a\");\nconst C: u8 = 0;\n");
     }
 

@@ -114,13 +114,9 @@ pub type Ping = Box<dyn Fn(Box<dyn FnOnce() + Send>) -> bool + Send>;
 
 /// Reports the previous run if it ended without saying why, then starts
 /// keeping this one's record, its watcher and its heartbeat. A second launch
-/// must not take over the running one's record: the WebView window calls this
-/// from setup, which a launch that only focuses the running Luna never reaches
-/// (the single-instance plugin ends it first). The native window calls it once
-/// it is open (native.rs `start`), with no single-instance check yet: a second
-/// native window starts a record of its own over the first's. The native
-/// window's desktop services, single instance among them, come in a later
-/// change.
+/// must not take over the running one's record: either window calls this
+/// only past the single-instance claim (lib.rs `run`), which ends a launch
+/// that only brings the running Luna up.
 pub fn start(ping: Ping) {
     // A scripted dev build may run beside another Luna from the same folder.
     if std::env::var_os("LUNA_DEV_TOKEN").is_some() {
@@ -284,44 +280,63 @@ const PAGE_WRITE: Duration = Duration::from_millis(300);
 /// Quit from the tray takes all of Luna along: the core is asked to stop,
 /// which has every session quit as a delete would, each leaving a whole
 /// transcript behind, and the window goes once it is gone. The window hides
-/// at once, as that takes seconds. Off the event loop for the same reason.
-pub fn quit_from_tray(app: &AppHandle) {
+/// at once (`hide`, on the caller's thread), as that takes seconds; `exit`
+/// ends the window's app, on a thread of its own, off the event loop for the
+/// same reason.
+pub fn quit(hide: impl FnOnce(), exit: impl FnOnce() + Send + 'static) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
     }
     exiting("Quit from the tray menu");
     crate::emit::to_ui(EXITING, true);
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.hide();
-    }
-    let app = app.clone();
+    hide();
     std::thread::spawn(move || {
         let told = std::time::Instant::now();
         crate::corelink::shut_down();
         std::thread::sleep(PAGE_WRITE.saturating_sub(told.elapsed()));
-        app.exit(0);
+        exit();
     });
+}
+
+/// `quit` for the WebView window.
+pub fn quit_from_tray(app: &AppHandle) {
+    let (window, app) = (app.get_webview_window("main"), app.clone());
+    quit(
+        move || {
+            if let Some(w) = window {
+                let _ = w.hide();
+            }
+        },
+        move || app.exit(0),
+    );
 }
 
 /// Restart from the tray starts the window over and leaves the core alone:
 /// the sessions keep running, and the new window finds them as it would after
-/// a close to the tray. For when the page goes wrong in a way the watchdog
-/// cannot see — terminals drawing garbage while the page still answers.
-pub fn restart_from_tray(app: &AppHandle) {
+/// a close to the tray. For when the window goes wrong in a way the watchdog
+/// cannot see — terminals drawing garbage while the page still answers. The
+/// new window is of the same kind: `webview` passes the flag on. `exe` names
+/// the exe to start; `exit` ends this window's app once it has started.
+pub fn restart(exe: impl FnOnce() -> Result<PathBuf, String> + Send + 'static, webview: bool, exit: impl FnOnce() + Send + 'static) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
     }
     // Off the event loop, which has to carry the event to the page meanwhile.
     crate::emit::to_ui(EXITING, true);
-    let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(PAGE_WRITE);
-        restart_now(&app);
+        restart_now(exe, webview, exit);
     });
 }
 
-fn restart_now(app: &AppHandle) {
-    let exe = match tauri::process::current_binary(&app.env()) {
+/// `restart` for the WebView window.
+pub fn restart_from_tray(app: &AppHandle) {
+    let (env, app) = (app.env(), app.clone());
+    restart(move || tauri::process::current_binary(&env).map_err(|e| e.to_string()), true, move || app.exit(0));
+}
+
+fn restart_now(exe: impl FnOnce() -> Result<PathBuf, String>, webview: bool, exit: impl FnOnce()) {
+    let exe = match exe() {
         Ok(exe) => exe,
         Err(e) => {
             crate::log::warn("app", &format!("cannot restart: {e}"));
@@ -330,12 +345,12 @@ fn restart_now(app: &AppHandle) {
             return;
         }
     };
-    // The WebView window restarts as itself, not as the native window a
-    // launch without the flag opens.
+    // The window restarts as itself: the WebView window with its flag, not
+    // as the native window a launch without it opens.
     let started = std::process::Command::new(&exe)
         .arg(AFTER_FLAG)
         .arg(std::process::id().to_string())
-        .arg(crate::WEBVIEW_FLAG)
+        .args(webview.then_some(crate::WEBVIEW_FLAG))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -347,7 +362,7 @@ fn restart_now(app: &AppHandle) {
         return;
     }
     exiting("Restart from the tray menu; the core and its sessions stay");
-    app.exit(0);
+    exit();
 }
 
 const AFTER_FLAG: &str = "--after";

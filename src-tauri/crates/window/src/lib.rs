@@ -12,6 +12,7 @@ mod banner;
 mod board;
 #[cfg(any(test, feature = "shots"))]
 pub mod demo;
+pub mod desktop;
 pub mod dto;
 mod font;
 mod host;
@@ -27,12 +28,13 @@ mod widgets;
 #[cfg(test)]
 mod tests;
 
+pub use desktop::{Desktop, Request};
 pub use dto::ThemePref;
 pub use host::{Answer, Host, Inbox, Mailbox, OutputSink, cmd, event, mailbox};
 #[cfg(feature = "shots")]
 pub use shots::run as shots;
 
-use gpui::{App, AppContext, Bounds, Size, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point, px, size};
+use gpui::{App, AppContext, Size, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point, px, size};
 use gpui_component::Root;
 use models::Models;
 use std::cell::{Cell, RefCell};
@@ -77,7 +79,10 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
         let Options { title, theme, background, on_open, on_quit } = options;
         let opened = Rc::new(Cell::new(false));
         let (is_open, mut on_quit) = (opened.clone(), Some(on_quit));
-        cx.on_app_quit(move |_| {
+        cx.on_app_quit(move |cx| {
+            // The window's last place reaches the host before its quit
+            // waits for what it was given.
+            desktop::flush_all(cx);
             if is_open.get()
                 && let Some(f) = on_quit.take()
             {
@@ -86,7 +91,9 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
             async {}
         })
         .detach();
-        // The window's close quits the app; the core runs on.
+        // The window's close hides it to the tray (desktop.rs `on_close`);
+        // without a tray it closes, which quits the app. The core runs on.
+        cx.default_global::<desktop::Shown>().background = background;
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -94,8 +101,11 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
         })
         .detach();
         let models = start(host, inbox, theme, cx);
-        let size = SIZE;
-        let bounds = if background { offscreen::bounds(size, cx) } else { Bounds::centered(None, size, cx) };
+        let bounds = if background {
+            WindowBounds::Windowed(offscreen::bounds(SIZE, cx))
+        } else {
+            desktop::initial(&*models.host, SIZE, MIN_SIZE, cx)
+        };
         match open(&models, &title, bounds, background, cx) {
             Ok(_) => {
                 opened.set(true);
@@ -176,9 +186,9 @@ impl Future for YieldNow {
     }
 }
 
-fn open(models: &Models, title: &str, bounds: Bounds<gpui::Pixels>, background: bool, cx: &mut App) -> gpui::Result<WindowHandle<Root>> {
+fn open(models: &Models, title: &str, bounds: WindowBounds, background: bool, cx: &mut App) -> gpui::Result<WindowHandle<Root>> {
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(bounds),
         // The window draws its own title bar (title_bar.rs).
         titlebar: Some(TitlebarOptions {
             title: Some(title.to_owned().into()),
@@ -196,6 +206,11 @@ fn open(models: &Models, title: &str, bounds: Bounds<gpui::Pixels>, background: 
     };
     let models = models.clone();
     cx.open_window(options, move |window: &mut Window, cx| {
+        // Its place is kept as it changes, except in the background; the
+        // close handler holds the keeper for as long as the window lives.
+        let keeper = (!background).then(|| desktop::Keeper::watch(models.host.clone(), window, cx));
+        let host = models.host.clone();
+        window.on_window_should_close(cx, move |window, cx| desktop::on_close(&host, keeper.as_ref(), window, cx));
         let view = cx.new(|cx| root::LunaWindow::new(models, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     })

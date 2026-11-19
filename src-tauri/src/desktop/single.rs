@@ -70,6 +70,14 @@ pub fn claim(on_second: impl Fn() + Send + Sync + 'static) -> Result<Claim, Stri
     let quiet = crate::background();
     let dir = crate::paths::data_dir();
     claim_as(&name(super::identifier(), &dir), &dir, move || {
+        crate::log::warn(
+            "app",
+            if quiet {
+                "a second launch was handed over; the background window stays where it is"
+            } else {
+                "a second launch was handed over"
+            },
+        );
         if !quiet {
             on_second()
         }

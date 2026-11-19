@@ -4,8 +4,10 @@ What Tauri's plugins and tray do for the window, as plain Rust in
 `src-tauri/src/desktop/` that needs no Tauri: for the native (GPUI) window of
 release 0.20 ([ADR-0030](../adr/0030-scope-of-0-20.md)). Each service is
 functions and structs taking callbacks, no window type of any toolkit, so the
-window wires one in with a few lines. None is wired into `run()` yet: the
-Tauri window there still uses the plugins.
+window wires one in with a few lines. The native window wires them all in
+(native/desktop.rs; [native-window.md](native-window.md), "Desktop
+services"); the single instance is claimed in lib.rs `run` for both kinds of
+window, and the WebView window keeps Tauri's plugins for the rest.
 
 ## Responsibility
 
@@ -24,7 +26,7 @@ Tauri window there still uses the plugins.
 | `desktop/mod.rs` | `identifier()`, `product_name()`: `rm.luna`/`Luna`, the test build's `rm.luna.test`/`Luna Test` | `tauri.conf.json` |
 | `desktop/tray.rs` | `Tray::new(Actions)`, `Tray::set_awake`; the icon, its dot, the tooltip | `TrayIconBuilder` in `run()`, `tray_awake` |
 | `desktop/notify.rs` | `show(Notice)`, `on_click(f)` | tauri-plugin-notification, the page's `notify()` |
-| `desktop/single.rs` | `claim(on_second) -> Claim`, focus only | tauri-plugin-single-instance |
+| `desktop/single.rs` | `claim(on_second) -> Claim`, focus only; `desktop::bring_up` what it calls | tauri-plugin-single-instance (both windows) |
 | `desktop/dialog.rs` | `folder`, `file` and their `_async` forms, `Ask` | tauri-plugin-dialog, the page's `pickFolder` |
 | `desktop/clipboard.rs` | `read() -> Clip`, `write_text` | the WebView's clipboard |
 | `desktop/window_state.rs` | `load`, `save`, `fit` | tauri-plugin-window-state |
@@ -117,7 +119,7 @@ same user (Unix), can call the window up, which such a process can do to any
 of this user's windows anyway; it is acceptable only because the hand-over is
 focus only (threat model R9). `claim` makes no claim under `LUNA_DEV_TOKEN`;
 in the background (`crate::background`) it claims, but a second launch does
-not call the window up, as today. The second launch's `Claim::Second` tells
+not call the window up, as today; the first logs each hand-over either way. The second launch's `Claim::Second` tells
 the caller to exit; the plugin exited for it.
 
 **Dialogs.** On `rfd`, as the plugin. A missing start folder opens at its
@@ -230,7 +232,14 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
 
 The page's part stays the window's: the chip, the notes, the core
 fingerprint compared to decide whether the sessions keep running, the stop of
-the sessions before the install (power-and-lifecycle.md, "Updates").
+the sessions before the install (power-and-lifecycle.md, "Updates"). The
+native window reaches the updater through three commands of its host
+(native/desktop.rs: `update_check`, `update_download` with
+`update://progress`, `update_install { reason }`), which hold the release
+the check offered and the installer the download staged, so the window
+names neither a URL nor a file; `update_install` notes the exit as the
+page's `note_exit` does, takes it back if the setup does not start, and
+otherwise quits the window's app.
 
 ## Installer
 
@@ -339,13 +348,20 @@ ships (nothing of it is changed yet):
 ## Failure modes
 
 - **Toasts do not show** when the exe runs without a shortcut carrying its
-  AUMID (a copy run from another folder than the installer's, the test
-  build): Windows drops a toast of an unknown AUMID. As with the plugin.
+  AUMID (a copy run from another folder than the installer's): Windows drops
+  a toast of an unknown AUMID. As with the plugin. An installed Luna has one:
+  the installer's Start-menu shortcut `Luna.lnk`, AUMID `rm.luna`, as 0.19's
+  had. The test build's is the "Luna Test" shortcut `test-build.ps1 -Run`
+  writes into the Start menu, AUMID `rm.luna.test`.
 - **The exe needs a manifest for common controls v6**: `tray-icon`'s menus
   (muda, with the common-controls-v6 feature Tauri turns on in this tree)
   import comctl32 functions that only load with it, as lib.rs's `acl` tests
-  note. Tauri's build embeds that manifest today; the native window's build
-  must too. The unit tests never make a tray for that reason.
+  note; so does `SetWindowSubclass` (sysmenu.rs). Every mode of the exe
+  carries gpui's manifest, which asks for it (native-window.md,
+  "Platforms"). The unit tests never make a tray for that reason.
+- **No tray** (`Tray::new` fails, or Linux): the native window says so in
+  the log and closing it quits, as there would be nothing to bring it back
+  from.
 - **A second launch that finds no listener** (the first still starting, or
   hung) waits a second, says so in the log and exits anyway. One whose
   hand-over is refused (a first run as administrator, which UIPI keeps it
