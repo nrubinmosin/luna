@@ -15,7 +15,9 @@
 #   ./scripts/test-build.ps1 -Run -Background
 #       the window off screen, unfocused and off the taskbar (LUNA_TEST_WINDOW,
 #       lib.rs background), out of the way of whoever is at the screen; the
-#       WebView window's tray icon brings it up. -DevCaller implies it unless
+#       WebView window's tray icon brings it up, the native window's shows it
+#       where it is, off screen and not activated (native-window.md, "Desktop
+#       services", has the test hook that drives its tray). -DevCaller implies it unless
 #       -Foreground is given.
 #   ./scripts/test-build.ps1 -Run -WebView
 #       the WebView window (lib.rs `--webview`) instead of the native one

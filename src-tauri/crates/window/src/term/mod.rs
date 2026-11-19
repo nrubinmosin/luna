@@ -30,6 +30,7 @@ pub mod bench;
 #[cfg(test)]
 mod tests;
 
+use crate::desktop::Clip;
 use crate::dto::LinkState;
 use crate::host::cmd;
 use crate::models::Models;
@@ -50,7 +51,7 @@ use gpui::{
 use io::Io;
 use keys::Mods;
 use parser::{Parser, UiMsg};
-use paste::{Clip, Provider, Quoting};
+use paste::{Provider, Quoting};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cell::Cell;
@@ -467,8 +468,19 @@ impl TermPane {
 
     fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.selection() {
-            self.models.clipboard.write_text(text, cx);
+            self.write_clipboard(text, cx);
         }
+    }
+
+    /// `text` onto the host's clipboard, off the window's thread.
+    fn write_clipboard(&self, text: String, cx: &mut Context<Self>) {
+        let written = self.models.host.write_clipboard_text(text);
+        cx.background_spawn(async move {
+            if let Err(e) = written.await {
+                log::warn!("copy: {e}");
+            }
+        })
+        .detach();
     }
 
     /// Ctrl+C: a selection is copied and cleared, as in any Windows terminal;
@@ -478,18 +490,31 @@ impl TermPane {
             cx.propagate();
             return;
         };
-        self.models.clipboard.write_text(text, cx);
+        self.write_clipboard(text, cx);
         self.parser.term.lock().selection = None;
         cx.notify();
     }
 
+    /// What the host's clipboard holds, read off the window's thread, typed
+    /// in once it is there.
     fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(clip) = self.models.clipboard.read(cx) else { return };
+        let read = self.models.host.read_clipboard();
+        cx.spawn(async move |this, cx| match read.await {
+            Ok(clip) => {
+                let _ = this.update(cx, |this, cx| this.paste_clip(clip, cx));
+            }
+            Err(e) => log::warn!("paste: {e}"),
+        })
+        .detach();
+    }
+
+    fn paste_clip(&mut self, clip: Clip, cx: &mut Context<Self>) {
         match clip {
+            Clip::Empty => {}
             Clip::Text(text) => self.paste_text(&text, cx),
             Clip::Files(paths) => self.paste_paths(&paths, cx),
             // The CLI reads the clipboard itself on its own key.
-            Clip::Image => {
+            Clip::Image { .. } => {
                 let key = self.spec.provider.image_key();
                 self.send_input(key, cx);
             }

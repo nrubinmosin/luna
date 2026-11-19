@@ -38,6 +38,9 @@
 - [Worktrees](architecture/worktrees.md)
 - [Power and lifecycle](architecture/power-and-lifecycle.md): busyness, jobs,
   keep-awake, core and window lifecycle, updates
+- [Desktop services](architecture/desktop-services.md): the tray,
+  notifications, single instance, pickers, clipboard, window state, updater,
+  installer and macOS bundle the native window takes over from Tauri
 - [Frontend](architecture/frontend.md): layout, stores, IPC modules, styles
 - [The native window](architecture/native-window.md): the GPUI window crate, its
   host, models, theme and font, the mode switch, the screenshot harness

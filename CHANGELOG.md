@@ -43,13 +43,47 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `pixelHeight`), which the native window sends and the core passes to the
   PTY.
 
+- The desktop services the native window of 0.20 uses in place of
+  Tauri's plugins (`src-tauri/src/desktop/`,
+  [desktop services](docs/architecture/desktop-services.md)): the tray, toasts
+  and macOS notifications that open their chat when clicked, one window per
+  data folder with a second launch bringing the first up, folder and file
+  pickers, a clipboard read that tells files, text and images apart, the
+  window's size and place kept in the data folder, and an updater that reads
+  the same `latest.json`, checks the same signature and runs the installer as
+  0.19's does, so 0.19 updates onto 0.20 and 0.20 onto later releases. The
+  updater takes only https and only an NSIS setup, stages it privately under
+  a name of its own in a data folder that is no link (a OneDrive folder's
+  included) and on a local fixed drive, holds that folder from its last
+  check through the write, keeps the setup open from its last check until it
+  has started, starts it by the path that handle resolves to, and passes
+  Luna's arguments on to the restart only whole, with a unit of the setup's
+  command line to spare. A pasted PNG is taken only once all of it decodes,
+  and a TIFF that gives its size twice is not taken.
+- An NSIS installer built without Tauri's bundler
+  (`./scripts/build-windows.ps1 -Installer -Native`), adapted from Tauri's
+  template (credited, its license among the third-party notices), installing
+  as today's in place over it, without the WebView2 bootstrap, and starting
+  Luna again after an update through the desktop's shell, with the arguments
+  it ran with as they stood, only where it would not run elevated (and not
+  at all where that cannot be told); the build holds the exe it installs to
+  x64; and `scripts/macos-app.sh`, which
+  assembles an unsigned `Luna.app` for a macOS runner.
+
+- The native window's desktop services, wired in: Luna's tray (Open,
+  Restart window, Quit; a click opens the window; the dot while the PC is
+  held awake), closing to the tray with the sessions running, the window
+  opening where it was left, and the session's end logged with its reason.
+  Its host takes notifications (a click opens the chat), the clipboard,
+  folder and file pickers and the updater's check, download and install,
+  for the surfaces of the window that come next.
+
 ### Changed
 
-- The window Luna opens by default, now the native one, has no tray icon,
-  desktop notifications, updater or single instance yet: a second launch
-  opens a second window, and closing the window leaves nothing in the tray.
-  They come back to it in a later change; until then `luna --webview` (or
-  `LUNA_WINDOW=webview`) opens the WebView window, which has them all.
+- One Luna window per data folder, whichever kind: a second launch, of the
+  native window or with `--webview`, brings up the window already running
+  and exits, so the two never run side by side. The WebView window's single
+  instance is Luna's own now, in place of tauri-plugin-single-instance.
 
 ## [0.19.0] - 2026-11-18
 

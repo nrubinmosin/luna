@@ -308,8 +308,13 @@ another program's and is left alone.
   stopped (an older build's, another user's) leaves, with no session, ten
   minutes after its last window; the banner says so. Off Windows, euid 0 is
   refused the same way, with no de-elevation.
-- **Restart window** (tray) starts a new window as `--after <pid>`, the core left
-  running. `watchdog.rs` rebuilds a window whose WebView died.
+- **One window per data dir**: lib.rs `run` claims the single instance
+  (`desktop/single.rs`) before either window starts anything; a second
+  launch, native or `--webview`, brings the running window up and exits.
+- **Restart window** (tray) starts a new window of the same kind as
+  `--after <pid>` (with `--webview` for the WebView window), the core left
+  running; the new one waits for the old one's exit before it claims the
+  single instance. `watchdog.rs` rebuilds a window whose WebView died.
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
   the core and the window go; a core still there 30 s later is killed with its
   tree.

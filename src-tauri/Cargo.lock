@@ -4768,10 +4768,19 @@ dependencies = [
  "libc",
  "log",
  "luna-window",
+ "minisign-verify",
+ "notify-rust",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "png 0.18.1",
  "portable-pty",
+ "raw-window-handle",
  "reqwest",
+ "rfd",
  "ring",
  "rustls",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4783,10 +4792,11 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
- "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tauri-winrt-notification",
  "toml_edit 0.25.19+spec-1.1.0",
+ "tray-icon",
  "vt100",
  "windows 0.62.2",
 ]
@@ -4803,6 +4813,7 @@ dependencies = [
  "gpui-pre-windows",
  "image",
  "log",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "unicode-width",
@@ -8811,22 +8822,6 @@ dependencies = [
  "thiserror 2.0.21",
  "url",
  "windows 0.62.2",
- "zbus 5.19.0",
-]
-
-[[package]]
-name = "tauri-plugin-single-instance"
-version = "2.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "726b6da0dd5bd1344f84f4108a622c07d01923baacb5c803a605189672c5352f"
-dependencies = [
- "serde",
- "serde_json",
- "tauri",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "windows-sys 0.61.2",
  "zbus 5.19.0",
 ]
 

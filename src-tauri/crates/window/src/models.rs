@@ -6,7 +6,6 @@
 use crate::dto::{CoreState, LinkState, ThemePref};
 use crate::host::{Host, Message, cmd, event};
 use crate::term::TermPane;
-use crate::term::paste::{Clipboard, SystemClipboard};
 use crate::theme::Palette;
 use gpui::{App, AppContext, Context, Entity, WeakEntity};
 use serde::Deserialize;
@@ -98,8 +97,6 @@ pub struct Models {
     pub host: Arc<dyn Host>,
     pub core: Entity<CoreLink>,
     pub shell: Entity<Shell>,
-    /// What the terminals copy to and paste from.
-    pub clipboard: Rc<dyn Clipboard>,
     /// The terminal panes open, for the events about their sessions.
     pub(crate) panes: Rc<RefCell<Vec<WeakEntity<TermPane>>>>,
 }
@@ -112,7 +109,6 @@ impl Models {
             host,
             core: cx.new(|_| CoreLink { link: CoreState::default(), was_up: false }),
             shell: cx.new(|_| Shell { pref: theme, system_dark }),
-            clipboard: Rc::new(SystemClipboard),
             panes: Rc::default(),
         }
     }
@@ -168,6 +164,7 @@ pub(crate) fn deliver(models: &Models, message: Message, cx: &mut App) {
     match message {
         Message::Run(f) => f(),
         Message::Event { name, payload } => on_event(models, &name, payload, cx),
+        Message::Request(request) => crate::desktop::on_request(request, cx),
         // The inbox hands these out as the event they stand for.
         Message::Latest(_) => {}
     }
@@ -190,8 +187,8 @@ struct InputRefused {
     waiting_kb: u64,
 }
 
-/// An event from the host, into the model or the panes it is about. One the
-/// window has no use for yet is dropped.
+/// An event from the host, into the model or the panes it is about, or to
+/// the desktop's side of the window (desktop.rs).
 pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
     match name {
         event::CORE_STATE => match serde_json::from_value::<CoreState>(payload) {
@@ -214,6 +211,6 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
             }
             Err(e) => log::warn!("{name}: {e}"),
         },
-        _ => {}
+        _ => crate::desktop::on_event(name, &payload, cx),
     }
 }

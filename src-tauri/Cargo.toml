@@ -23,7 +23,6 @@ tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
-tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 base64 = "0.23"
 jiff = "1"
@@ -73,6 +72,26 @@ luna-window = { version = "0.1.0", path = "crates/window" }
 futures = "0.3"
 log-facade = { package = "log", version = "0.4" }
 
+# The desktop services the native window takes over from Tauri's plugins
+# (src/desktop/). Each is the crate the plugin itself is built on, at the
+# version the tree already resolves through it, so this adds no crate the exe
+# does not link today.
+# The tray icon and its menu (desktop/tray.rs), as tauri's tray-icon feature
+# builds it.
+tray-icon = { version = "0.25", default-features = false, features = ["libappindicator"] }
+# The folder and file pickers (desktop/dialog.rs), as tauri-plugin-dialog
+# builds them: no message boxes, so no common controls v6 asked for here.
+rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
+# The parent window a picker is modal to; rfd's own trait version.
+raw-window-handle = "0.6"
+# The updater's signature check (desktop/updater.rs), the crate
+# tauri-plugin-updater checks with, and its version compare.
+minisign-verify = "0.3"
+semver = "1"
+# The tray icon decoded, and a clipboard bitmap encoded (desktop/tray.rs,
+# desktop/clipboard.rs). The version tray-icon and muda already link.
+png = "0.18"
+
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it
 # (src/procs/win.rs); power requests, suspend, the shutdown call with the
@@ -84,20 +103,28 @@ log-facade = { package = "log", version = "0.4" }
 # pipe, overlapped, and the token its client opened it with (src/endpoint/,
 # src/peer/); the core started with the desktop user's token and profile
 # environment from a window run as administrator (src/elevation.rs); the
-# local wall clock Codex names its rollouts by (src/codex/session/rollouts.rs).
+# local wall clock Codex names its rollouts by (src/codex/session/rollouts.rs);
+# the clipboard, its global memory and the ANSI code page a file list may
+# come in (src/desktop/clipboard.rs); the second launch's hand-over, a
+# message-only window and WM_COPYDATA (src/desktop/single.rs); the installer
+# started by the updater (src/desktop/updater.rs).
 # Pinned to the version tauri already resolves, so this adds features to a
 # crate in the tree rather than a second copy of it.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Environment",
     "Win32_System_EventLog",
     "Win32_System_IO",
     "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_Power",
     "Win32_System_Registry",
@@ -109,10 +136,33 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Windows toasts (desktop/notify.rs), on the crate notify-rust and
+# tauri-plugin-notification show them with, at the version they resolve: its
+# own activation callback, with no thread left waiting on each toast.
+tauri-winrt-notification = "0.8"
+
 # The tie to the core off Windows: signals, and a look at every process
 # (src/keeper/). Already in the tree through most of the above.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Notifications off Windows (desktop/notify.rs), as
+# tauri-plugin-notification sends them.
+[target.'cfg(not(windows))'.dependencies]
+notify-rust = "4.18"
+
+# The pasteboard on macOS (src/desktop/clipboard.rs): text, file URLs and
+# images. The versions tao, muda and rfd already link there.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSBitmapImageRep",
+    "NSImageRep",
+    "NSPasteboard",
+    "NSPasteboardItem",
+] }
 
 # Tauri's mock runtime, for the tests that hold the window's commands to its
 # capability (lib.rs `acl`, not built on Windows). A feature of the tauri

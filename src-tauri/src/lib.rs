@@ -19,6 +19,7 @@ mod context_page;
 mod corecmd;
 mod corelink;
 mod coreproc;
+mod desktop;
 mod elevation;
 mod emit;
 mod endpoint;
@@ -299,6 +300,21 @@ pub fn run() {
     }
     lifecycle::wait_for_previous();
     log::install_panic_hook();
+    // One window per data folder, whichever kind it is: a second launch,
+    // native or `--webview`, brings the running one up and exits, before it
+    // starts anything (the run record, the CLI refresh, the settings sync).
+    // No claim under LUNA_DEV_TOKEN, a dev build a script runs beside the
+    // Luna a person is using; in the background a second launch, a
+    // script's, leaves the window where it is (desktop/single.rs). Held
+    // until the process ends.
+    let _single = match desktop::single::claim(desktop::bring_up) {
+        Ok(desktop::single::Claim::First(guard)) => Some(guard),
+        Ok(desktop::single::Claim::Second) => return,
+        Err(e) => {
+            log::warn("app", &format!("no single-instance claim, a second launch opens a second window: {e}"));
+            None
+        }
+    };
     if wants_webview() {
         run_webview();
     } else if let Err(why) = native::run() {
@@ -310,27 +326,10 @@ pub fn run() {
 }
 
 /// The WebView window (Tauri + React), as Luna had it before the native one:
-/// its tray, single instance, notifications, window state and updater too.
+/// its tray, notifications, window state and updater too. The single
+/// instance is `run`'s, shared with the native window.
 fn run_webview() {
-    // A dev build driven by a script runs beside the Luna a person is using,
-    // possibly under the same identifier, and the second launch would only
-    // focus the first. The same variable turns on the dev caller (agents/);
-    // the test flavor (scripts/test-build.ps1) has an identifier of its own anyway.
-    let dev = std::env::var_os("LUNA_DEV_TOKEN").is_some();
     let builder = tauri::Builder::default();
-    let builder = if dev {
-        builder
-    } else {
-        // Must be the first plugin: a second launch focuses the running
-        // instance instead of spawning a duplicate app + tray icon.
-        // A second launch of a test build run in the background is a
-        // script's, and must not bring the window up.
-        builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if !background() {
-                show_main(app);
-            }
-        }))
-    };
     // Restores size, position and maximized state from last run. Not in the
     // background: it would bring the test window back on screen, and save
     // the off-screen place for the next run that is not.
@@ -345,6 +344,9 @@ fn run_webview() {
             #[cfg(windows)]
             paths::adopt_webview_profile(&app.path().app_local_data_dir()?);
             build_main(app.handle())?;
+            // A second launch brings this window up (`run`'s claim).
+            let handle = app.handle().clone();
+            desktop::on_bring_up(move || show_main(&handle));
             // Events reach the page through the window; installed before
             // anything that could send one starts.
             let handle = app.handle().clone();
@@ -365,9 +367,7 @@ fn run_webview() {
                     emit::to_ui("ui://open-chat", serde_json::json!({ "chatId": chat_id }));
                 }
             })?;
-            // Here rather than at the top of run(): a second launch that only
-            // focuses the running Luna has exited by now, and must not read as
-            // a restart. The build stamp as well as the version: test builds
+            // The build stamp as well as the version: test builds
             // between two releases share a version, and only the commit tells
             // them apart.
             log::start(&format!("starting luna {} build {} core {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD"), env!("LUNA_CORE_FP")));

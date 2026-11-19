@@ -17,6 +17,8 @@ pub struct FakeHost {
     calls: Mutex<Vec<(String, Value)>>,
     sends: Mutex<Vec<(String, Value)>>,
     outputs: Mutex<HashMap<String, Arc<dyn OutputSink>>>,
+    /// Its desktop (desktop.rs `FakeDesktop`).
+    pub desktop: crate::desktop::FakeDesktop,
 }
 
 impl FakeHost {

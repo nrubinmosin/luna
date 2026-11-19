@@ -1,4 +1,6 @@
-//! What a paste or a drop types into a session, and the clipboard it reads.
+//! What a paste or a drop types into a session. The clipboard is the host's
+//! (desktop.rs `Desktop::read_clipboard`), which says what is on it: files
+//! before text, text before an image.
 //!
 //! - Text goes in as text, framed for bracketed paste when the program asked
 //!   for it (keys.rs `paste`).
@@ -6,14 +8,9 @@
 //!   session's CLI on this OS, space-separated, through the same paste: the
 //!   CLIs attach an image whose path is pasted. A path that cannot be typed
 //!   whole (not Unicode, or a control character in it) is left out.
-//! - A bitmap with no text presses the CLI's own image-paste key, which reads
-//!   the clipboard itself (docs/cli-compatibility.md).
-//!
-//! The clipboard is a trait: the system's through gpui, or, in the test build
-//! only, a file standing in for it, so a smoke run never touches the
-//! clipboard of the person at the machine.
+//! - An image presses the CLI's own image-paste key, which reads the
+//!   clipboard itself (docs/cli-compatibility.md).
 
-use gpui::{App, ClipboardEntry, ClipboardItem};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -32,102 +29,6 @@ impl Provider {
         match self {
             Provider::Claude => "\x1bv",
             Provider::Codex => "\x16",
-        }
-    }
-}
-
-/// What the clipboard holds, as a paste takes it.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Clip {
-    Text(String),
-    Files(Vec<PathBuf>),
-    /// A bitmap and no text.
-    Image,
-}
-
-/// What a paste reads and a copy writes.
-pub trait Clipboard: 'static {
-    fn read(&self, cx: &mut App) -> Option<Clip>;
-    fn write_text(&self, text: String, cx: &mut App);
-}
-
-/// The system's clipboard, through gpui's platform.
-pub struct SystemClipboard;
-
-impl Clipboard for SystemClipboard {
-    fn read(&self, cx: &mut App) -> Option<Clip> {
-        cx.read_from_clipboard().and_then(|item| clip_of(&item))
-    }
-
-    fn write_text(&self, text: String, cx: &mut App) {
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-    }
-}
-
-/// What a clipboard item pastes as: files before text (Explorer's copy
-/// carries both), text before a bitmap (a spreadsheet's copy carries both,
-/// and the text is what was meant), and nothing for an empty one.
-pub fn clip_of(item: &ClipboardItem) -> Option<Clip> {
-    let entries = item.entries();
-    let files: Vec<PathBuf> = entries
-        .iter()
-        .filter_map(|e| match e {
-            ClipboardEntry::ExternalPaths(p) => Some(p.paths().to_vec()),
-            _ => None,
-        })
-        .flatten()
-        .collect();
-    if !files.is_empty() {
-        return Some(Clip::Files(files));
-    }
-    let text: String = entries
-        .iter()
-        .filter_map(|e| match e {
-            ClipboardEntry::String(s) => Some(s.text().as_str()),
-            _ => None,
-        })
-        .collect();
-    if !text.is_empty() {
-        return Some(Clip::Text(text));
-    }
-    entries.iter().any(|e| matches!(e, ClipboardEntry::Image(_))).then_some(Clip::Image)
-}
-
-/// The test build's stand-in (`LUNA_TEST_CLIPBOARD`, src/native.rs): a JSON
-/// file a smoke script writes what is "on the clipboard" into —
-/// `{"text": "..."}`, `{"files": ["..."]}` or `{"image": true}` — and a copy
-/// writes `{"text": "..."}` into.
-pub struct FileClipboard(pub PathBuf);
-
-#[derive(Default, Deserialize, Serialize)]
-#[serde(default)]
-struct FileClip {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    text: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    files: Vec<PathBuf>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    image: bool,
-}
-
-impl Clipboard for FileClipboard {
-    fn read(&self, _cx: &mut App) -> Option<Clip> {
-        let clip: FileClip = serde_json::from_slice(&std::fs::read(&self.0).ok()?).ok()?;
-        if !clip.files.is_empty() {
-            Some(Clip::Files(clip.files))
-        } else if let Some(text) = clip.text.filter(|t| !t.is_empty()) {
-            Some(Clip::Text(text))
-        } else {
-            clip.image.then_some(Clip::Image)
-        }
-    }
-
-    fn write_text(&self, text: String, _cx: &mut App) {
-        let clip = FileClip { text: Some(text), ..Default::default() };
-        let written =
-            serde_json::to_vec(&clip).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&self.0, b).map_err(|e| e.to_string()));
-        if let Err(e) = written {
-            log::warn!("the test clipboard {}: {e}", self.0.display());
         }
     }
 }
@@ -179,7 +80,6 @@ pub fn paths_text(paths: &[PathBuf], quoting: Quoting) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{ExternalPaths, Image, ImageFormat};
 
     #[test]
     fn paths_are_quoted_for_each_os() {
@@ -197,39 +97,8 @@ mod tests {
     }
 
     #[test]
-    fn files_before_text_before_a_bitmap() {
-        let image = ClipboardEntry::Image(Image::from_bytes(ImageFormat::Png, vec![1, 2, 3]));
-        let files = ClipboardEntry::ExternalPaths(ExternalPaths(vec![PathBuf::from("/a.png")].into()));
-        let text = ClipboardEntry::String(gpui::ClipboardString::new("hi".into()));
-        let item = |entries: Vec<ClipboardEntry>| ClipboardItem { entries };
-        assert_eq!(clip_of(&item(vec![text.clone(), files.clone()])), Some(Clip::Files(vec![PathBuf::from("/a.png")])));
-        assert_eq!(clip_of(&item(vec![image.clone(), text.clone()])), Some(Clip::Text("hi".into())));
-        assert_eq!(clip_of(&item(vec![image])), Some(Clip::Image));
-        assert_eq!(clip_of(&item(vec![])), None);
-    }
-
-    #[test]
     fn each_cli_has_its_image_key() {
         assert_eq!(Provider::Claude.image_key(), "\x1bv");
         assert_eq!(Provider::Codex.image_key(), "\x16");
-    }
-
-    #[test]
-    fn the_test_clipboard_is_a_file() {
-        let dir = std::env::temp_dir().join(format!("luna-window-clip-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("clipboard.json");
-        let clip = FileClipboard(file.clone());
-        let app = gpui::TestAppContext::single();
-        app.update(|cx| {
-            assert_eq!(clip.read(cx), None, "no file, nothing on it");
-            std::fs::write(&file, r#"{"files":["/x y.png"]}"#).unwrap();
-            assert_eq!(clip.read(cx), Some(Clip::Files(vec![PathBuf::from("/x y.png")])));
-            std::fs::write(&file, r#"{"image":true}"#).unwrap();
-            assert_eq!(clip.read(cx), Some(Clip::Image));
-            clip.write_text("copied".into(), cx);
-            assert_eq!(clip.read(cx), Some(Clip::Text("copied".into())));
-        });
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

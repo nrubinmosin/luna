@@ -12,6 +12,7 @@ mod banner;
 mod board;
 #[cfg(any(test, feature = "shots"))]
 pub mod demo;
+pub mod desktop;
 mod drive;
 pub mod dto;
 mod font;
@@ -29,6 +30,7 @@ mod widgets;
 #[cfg(test)]
 mod tests;
 
+pub use desktop::{Desktop, Request};
 pub use dto::ThemePref;
 pub use host::{Answer, Host, Inbox, Mailbox, OutputSink, cmd, event, mailbox};
 #[cfg(feature = "shots")]
@@ -36,7 +38,7 @@ pub use shots::{bench, run as shots};
 pub use term::SessionSpec;
 pub use term::paste::Provider;
 
-use gpui::{App, AppContext, Bounds, Entity, Size, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point, px, size};
+use gpui::{App, AppContext, Entity, Size, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point, px, size};
 use gpui_component::Root;
 use models::Models;
 use std::cell::{Cell, RefCell};
@@ -55,10 +57,6 @@ pub struct Options {
     /// Terminals to open on the board, side by side: the test build's
     /// `--dev-open` (src/native.rs), until the board has its own way.
     pub terminals: Vec<SessionSpec>,
-    /// A file standing in for the clipboard (paste.rs `FileClipboard`): the
-    /// test build's `LUNA_TEST_CLIPBOARD`, so a smoke run never touches the
-    /// clipboard of the person at the machine.
-    pub clipboard_file: Option<std::path::PathBuf>,
     /// A file of keys to press in the window (drive.rs): the test build's
     /// `LUNA_TEST_DRIVE`, for a smoke run that may use no global input.
     pub drive_file: Option<std::path::PathBuf>,
@@ -88,10 +86,13 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
     let failed = Rc::new(RefCell::new(None));
     let failure = failed.clone();
     gpui_platform::application().run(move |cx: &mut App| {
-        let Options { title, theme, background, terminals, clipboard_file, drive_file, on_open, on_quit } = options;
+        let Options { title, theme, background, terminals, drive_file, on_open, on_quit } = options;
         let opened = Rc::new(Cell::new(false));
         let (is_open, mut on_quit) = (opened.clone(), Some(on_quit));
-        cx.on_app_quit(move |_| {
+        cx.on_app_quit(move |cx| {
+            // The window's last place reaches the host before its quit
+            // waits for what it was given.
+            desktop::flush_all(cx);
             if is_open.get()
                 && let Some(f) = on_quit.take()
             {
@@ -100,19 +101,21 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
             async {}
         })
         .detach();
-        // The window's close quits the app; the core runs on.
+        // The window's close hides it to the tray (desktop.rs `on_close`);
+        // without a tray it closes, which quits the app. The core runs on.
+        cx.default_global::<desktop::Shown>().background = background;
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
             }
         })
         .detach();
-        let mut models = start(host, inbox, theme, cx);
-        if let Some(file) = clipboard_file {
-            models.clipboard = Rc::new(term::paste::FileClipboard(file));
-        }
-        let size = SIZE;
-        let bounds = if background { offscreen::bounds(size, cx) } else { Bounds::centered(None, size, cx) };
+        let models = start(host, inbox, theme, cx);
+        let bounds = if background {
+            WindowBounds::Windowed(offscreen::bounds(SIZE, cx))
+        } else {
+            desktop::initial(&*models.host, SIZE, MIN_SIZE, cx)
+        };
         match open(&models, terminals, &title, bounds, background, cx) {
             Ok((window, view)) => {
                 if let Some(file) = drive_file {
@@ -201,12 +204,12 @@ fn open(
     models: &Models,
     terminals: Vec<SessionSpec>,
     title: &str,
-    bounds: Bounds<gpui::Pixels>,
+    bounds: WindowBounds,
     background: bool,
     cx: &mut App,
 ) -> gpui::Result<(WindowHandle<Root>, Entity<root::LunaWindow>)> {
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(bounds),
         // The window draws its own title bar (title_bar.rs).
         titlebar: Some(TitlebarOptions {
             title: Some(title.to_owned().into()),
@@ -225,6 +228,11 @@ fn open(
     let models = models.clone();
     let mut root = None;
     let window = cx.open_window(options, |window: &mut Window, cx| {
+        // Its place is kept as it changes, except in the background; the
+        // close handler holds the keeper for as long as the window lives.
+        let keeper = (!background).then(|| desktop::Keeper::watch(models.host.clone(), window, cx));
+        let host = models.host.clone();
+        window.on_window_should_close(cx, move |window, cx| desktop::on_close(&host, keeper.as_ref(), window, cx));
         let view = cx.new(|cx| root::LunaWindow::new(models, terminals, window, cx));
         root = Some(view.clone());
         cx.new(|cx| Root::new(view, window, cx))

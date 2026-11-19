@@ -1815,7 +1815,7 @@ mod tests {
     /// once they are done its parent hears all it wrote since.
     #[test]
     fn a_leads_turns_wait_while_its_delegates_work_unless_a_status_word_opens_one() {
-        let (top, id) = ("ln-top", "ln-lead");
+        let (top, id) = ("lw-top", "lw-lead");
         let interim = format!("Gate started, both checkers out; nothing for you yet. {}", "Detail. ".repeat(60));
         let (known, path) = lead(top, id, 1, true, &said_line(&interim));
         let pty = crate::pty::manager();

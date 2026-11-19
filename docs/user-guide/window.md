@@ -4,11 +4,14 @@ Luna 0.20 is moving to a native window, which Luna opens from now on. It has
 so far its title bar (Luna's name, the theme button, minimize, maximize and
 close; drag it to move the window, double-click it to maximize), the core
 banner and an empty board, in one font, Cascadia Mono, light, dark or as the
-system is. Closing it leaves the core and its sessions running. It has no
-tray icon, notifications, updater or single instance yet. Start Luna with
-`--webview` for the window this page describes, which still has everything
-else; Luna opens that one by itself where the native window cannot open
-(no usable graphics device).
+system is. Like the window this page describes, it has Luna's tray icon
+(Open, Restart window, Quit; a click opens the window), closes to the tray
+with the core and its sessions running, opens where you left it, and is the
+one Luna window for its folder: starting Luna again, with `--webview` or
+without, brings up the window already running. Start Luna with `--webview`
+for the window this page describes, which still has everything else; Luna
+opens that one by itself where the native window cannot open (no usable
+graphics device).
 
 ## The native window's terminal
 

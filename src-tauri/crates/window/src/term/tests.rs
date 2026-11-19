@@ -13,14 +13,15 @@
 use super::paste::{Provider, Quoting, quote};
 use super::{Phase, SessionSpec, TermPane};
 use crate::demo::{self, FakeHost};
+use crate::desktop::Clip;
 use crate::dto::{CoreState, LinkState, ThemePref};
 use crate::host::{Mailbox, cmd, event, mailbox};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::TermMode;
 use gpui::{
-    Bounds, ClipboardEntry, ClipboardItem, ElementInputHandler, Entity, ExternalPaths, FileDropEvent, Focusable, Image, ImageFormat,
-    InputHandler, Modifiers, MouseButton, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, point, px, size,
+    Bounds, ElementInputHandler, Entity, ExternalPaths, FileDropEvent, Focusable, InputHandler, Modifiers, MouseButton, ScrollDelta,
+    ScrollEvent, TestAppContext, VisualTestContext, point, px, size,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -134,12 +135,14 @@ impl Pane<'_> {
         point(g.origin.x + g.cell_w * (col + 0.5), g.origin.y + g.line_h * (row + 0.5))
     }
 
-    fn clipboard(&mut self, item: ClipboardItem) {
-        self.cx.update(|_, cx| cx.write_to_clipboard(item));
+    /// What the host's clipboard holds from now on.
+    fn clipboard(&mut self, clip: Clip) {
+        *self.host.desktop.clip.lock().unwrap() = clip;
     }
 
+    /// The text last copied to the host's clipboard.
     fn clipboard_text(&mut self) -> Option<String> {
-        self.cx.update(|_, cx| cx.read_from_clipboard().and_then(|i| i.text()))
+        self.host.desktop.written.lock().unwrap().last().cloned()
     }
 
     fn display_offset(&mut self) -> usize {
@@ -232,7 +235,7 @@ fn selection_by_drag_word_and_line_and_copy(cx: &mut TestAppContext) {
 #[gpui::test]
 fn paste_is_bracketed_when_the_program_asks(cx: &mut TestAppContext) {
     let mut p = open(cx);
-    p.clipboard(ClipboardItem::new_string("echo hi\x1b[201~\nrm -rf x\x03\r\n".into()));
+    p.clipboard(Clip::Text("echo hi\x1b[201~\nrm -rf x\x03\r\n".into()));
     // Mode 2004 off: the text as it is, line ends as CR.
     p.cx.simulate_keystrokes("ctrl-v");
     assert_eq!(p.take(), "echo hi\x1b[201~\rrm -rf x\x03\r");
@@ -250,7 +253,7 @@ fn files_pasted_or_dropped_are_typed_as_quoted_paths(cx: &mut TestAppContext) {
     let (a, b) = if cfg!(windows) { (r"C:\shots\a b.png", r"C:\notes.txt") } else { ("/shots/a b.png", "/notes.txt") };
     let paths = vec![PathBuf::from(a), PathBuf::from(b)];
     let typed = format!("{} {}", quote(&paths[0], Quoting::HERE).unwrap(), quote(&paths[1], Quoting::HERE).unwrap());
-    p.clipboard(ClipboardItem { entries: vec![ClipboardEntry::ExternalPaths(ExternalPaths(paths.clone().into()))] });
+    p.clipboard(Clip::Files(paths.clone()));
     p.cx.simulate_keystrokes("ctrl-v");
     assert_eq!(p.take(), typed);
     // Dropped from outside the window, with the program taking pastes framed.
@@ -274,18 +277,13 @@ fn files_pasted_or_dropped_are_typed_as_quoted_paths(cx: &mut TestAppContext) {
 fn a_bitmap_presses_the_clis_own_image_key(cx: &mut TestAppContext) {
     for (provider, key) in [(Provider::Claude, "\x1bv"), (Provider::Codex, "\x16")] {
         let mut p = open_with(cx, provider, LinkState::Up, demo::attached("", 1));
-        p.clipboard(ClipboardItem { entries: vec![ClipboardEntry::Image(Image::from_bytes(ImageFormat::Png, vec![0x89, 0x50]))] });
+        p.clipboard(Clip::Image { width: 1, height: 1, png: vec![0x89, 0x50] });
         p.cx.simulate_keystrokes("ctrl-v");
         assert_eq!(p.take(), key, "{provider:?}");
-        // With text beside it, the text is what is pasted.
-        p.clipboard(ClipboardItem {
-            entries: vec![
-                ClipboardEntry::Image(Image::from_bytes(ImageFormat::Png, vec![0x89])),
-                ClipboardEntry::String(gpui::ClipboardString::new("cells".into())),
-            ],
-        });
+        // Nothing on it, nothing typed.
+        p.clipboard(Clip::Empty);
         p.cx.simulate_keystrokes("ctrl-v");
-        assert_eq!(p.take(), "cells");
+        assert_eq!(p.take(), "");
     }
 }
 

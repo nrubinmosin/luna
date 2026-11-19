@@ -21,8 +21,9 @@ use std::sync::{Arc, Mutex};
 /// A command's answer, or why there is none.
 pub type Answer = Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
 
-/// What the window asks of the app.
-pub trait Host: Send + Sync + 'static {
+/// What the window asks of the app: its commands, and the desktop's
+/// services (desktop.rs).
+pub trait Host: crate::desktop::Desktop + Send + Sync + 'static {
     /// A command answered off the window's thread: the future resolves when
     /// the answer is there, and the window waits for it on a task, never on
     /// its thread.
@@ -101,9 +102,9 @@ pub mod event {
     /// `revision`, an older one never replacing a newer (`Mailbox::event`).
     pub const LATEST: &[&str] = &[CORE_STATE];
 
-    /// The inbox takes `name`.
+    /// The inbox takes `name`: one of these, or of the desktop's.
     pub fn wants(name: &str) -> bool {
-        ALL.contains(&name)
+        ALL.contains(&name) || crate::desktop::event::ALL.contains(&name)
     }
 }
 
@@ -116,6 +117,7 @@ pub(crate) enum Message {
     /// The latest payload of an `event::LATEST` event waits in `Latest`.
     Latest(&'static str),
     Run(Box<dyn FnOnce() + Send>),
+    Request(crate::desktop::Request),
 }
 
 /// The latest payload of each `event::LATEST` event not taken yet.
@@ -156,6 +158,12 @@ impl Mailbox {
                 self.tx.unbounded_send(Message::Latest(latest)).is_ok()
             }
         }
+    }
+
+    /// Asks the window to come up or the app to quit (desktop.rs), after
+    /// whatever came in before it.
+    pub fn request(&self, request: crate::desktop::Request) -> bool {
+        self.tx.unbounded_send(Message::Request(request)).is_ok()
     }
 
     /// Runs `f` on the window's thread, after whatever came in before it.
@@ -227,6 +235,7 @@ mod tests {
                 Message::Event { name, payload } => (name, payload),
                 Message::Latest(_) => panic!("a note is never handed out"),
                 Message::Run(_) => ("run".into(), Value::Null),
+                Message::Request(_) => ("request".into(), Value::Null),
             })
             .collect()
     }
