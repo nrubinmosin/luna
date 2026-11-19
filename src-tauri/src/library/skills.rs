@@ -1,5 +1,5 @@
 //! The library's skills and instructions files as it holds them: read, checked
-//! fit to lay out, and named.
+//! fit to lay out (a skill only by what copying it takes), and named.
 
 use super::*;
 
@@ -8,7 +8,8 @@ use super::*;
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
-    /// Why it is laid out nowhere, while it is not fit to be.
+    /// Why it is laid out nowhere: its folder will not read, holds no
+    /// SKILL.md, or is named what no folder can be.
     pub problem: Option<String>,
     /// The accounts it goes into, wherever no folder says otherwise.
     pub accounts: Reach,
@@ -28,29 +29,50 @@ pub(super) fn check_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `name` and `description` from SKILL.md's front matter — what both CLIs
-/// need of it — as plain strings: quoted, folded (`>`) and literal (`|`)
-/// values and indented continuation lines all read.
-fn front_matter(text: &str) -> Result<(Option<String>, Option<String>), String> {
+/// A name Luna can make a folder of, on any platform the library may be read
+/// on: what a skill's folder is called, and all Luna asks of it. Whether the
+/// CLIs take the name is theirs to say.
+pub(super) fn check_skill_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.trim() != name {
+        return Err("A name is not empty and has no space at either end".into());
+    }
+    if name.len() > 255 {
+        return Err("A name is 255 bytes at most".into());
+    }
+    // A leading dot is a folder the library does not list (`read_skills`).
+    if name.starts_with('.') || name.ends_with('.') {
+        return Err("A name neither starts nor ends with a dot".into());
+    }
+    if name.chars().any(|c| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')) {
+        return Err("A name has none of / \\ : * ? \" < > | in it".into());
+    }
+    let stem = name.split('.').next().unwrap_or_default().to_ascii_lowercase();
+    let reserved = matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+        || (stem.len() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) && stem.ends_with(|c: char| c.is_ascii_digit()));
+    if reserved {
+        return Err(format!("{name} is a name Windows keeps for itself"));
+    }
+    Ok(())
+}
+
+/// The `description` in SKILL.md's front matter, to show beside the skill's
+/// name, as plain text: quoted, folded (`>`) and literal (`|`) values and
+/// indented continuation lines all read. Best effort and display only: a
+/// file with no front matter, or none that closes, shows no description and
+/// is laid out all the same.
+fn description(text: &str) -> String {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.lines();
     if lines.next().map(str::trim_end) != Some("---") {
-        return Err("SKILL.md does not open with front matter (a --- line)".into());
+        return String::new();
     }
     let mut keys: BTreeMap<&str, (String, bool)> = BTreeMap::new();
     let mut current: Option<&str> = None;
     for line in lines {
         if line.trim_end() == "---" {
-            let get = |k: &str| {
-                keys.get(k).map(|(v, _)| {
-                    let v = v.trim();
-                    let unquoted = (v.len() >= 2
-                        && ((v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\''))))
-                    .then(|| &v[1..v.len() - 1]);
-                    unquoted.unwrap_or(v).to_string()
-                })
-            };
-            return Ok((get("name"), get("description")));
+            let v = keys.get("description").map(|(v, _)| v.trim()).unwrap_or_default();
+            let quoted = v.len() >= 2 && ((v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')));
+            return if quoted { v[1..v.len() - 1].to_string() } else { v.to_string() };
         }
         if line.starts_with([' ', '\t']) || line.trim().is_empty() {
             if let Some((value, literal)) = current.and_then(|k| keys.get_mut(k)) {
@@ -76,28 +98,14 @@ fn front_matter(text: &str) -> Result<(Option<String>, Option<String>), String> 
         current = Some(key.trim());
         keys.insert(key.trim(), (value.to_string(), literal));
     }
-    Err("SKILL.md's front matter is never closed (a second --- line)".into())
+    String::new()
 }
 
-/// Why this SKILL.md would not do for a skill of this name, if it would not.
-pub(super) fn check_skill(name: &str, text: &str) -> Result<String, String> {
-    check_name(name)?;
-    let (n, description) = front_matter(text)?;
-    match n.as_deref() {
-        None | Some("") => return Err("The front matter has no name".into()),
-        Some(n) if n != name => return Err(format!("The front matter says name: {n}, the folder is {name}")),
-        _ => {}
-    }
-    let description = description.filter(|d| !d.is_empty()).ok_or("The front matter has no description")?;
-    if description.chars().count() > 1024 {
-        return Err("The description is longer than 1024 characters".into());
-    }
-    Ok(description)
-}
-
-/// Every skill in the library, by name, with its files when it is fit to be
-/// laid out. A `skills/` that will not list is an error, not an empty one: a
-/// skill missed reads as taken out of the library, and its copies with it.
+/// Every skill in the library, by name, with its files when its folder can be
+/// laid out: a name that makes a folder, a folder that reads, a SKILL.md in
+/// it. What SKILL.md says is the CLI's to judge. A `skills/` that will not
+/// list is an error, not an empty one: a skill missed reads as taken out of
+/// the library, and its copies with it.
 pub(super) fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
     let mut out = BTreeMap::new();
     let failed = |e: std::io::Error| format!("{}: {e}", dirs.skills().display());
@@ -112,16 +120,13 @@ pub(super) fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
         if name.starts_with('.') || !entry.file_type().map_err(failed)?.is_dir() {
             continue;
         }
-        let files = read_dir_files(&entry.path());
-        let checked = files.as_ref().map_err(String::clone).and_then(|f| {
-            let text = f.get(SKILL_FILE).ok_or("There is no SKILL.md")?;
-            check_skill(&name, &String::from_utf8_lossy(text))
-        });
-        let (description, problem) = match &checked {
-            Ok(d) => (d.clone(), None),
+        let files = check_skill_name(&name)
+            .and_then(|()| read_dir_files(&entry.path()))
+            .and_then(|f| if f.contains_key(SKILL_FILE) { Ok(f) } else { Err("There is no SKILL.md".to_string()) });
+        let (description, problem) = match &files {
+            Ok(f) => (description(&String::from_utf8_lossy(&f[SKILL_FILE])), None),
             Err(e) => (String::new(), Some(e.clone())),
         };
-        let files = checked.and(files);
         out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new(), audience: Audience::EVERY }, files));
     }
     Ok(out)
@@ -264,17 +269,64 @@ mod tests {
     use crate::settings::FIRST_INSTRUCTIONS;
 
     #[test]
-    fn front_matter_reads_the_ways_yaml_writes_a_line() {
-        let ok = |t: &str| check_skill("review", t);
-        assert_eq!(ok("---\nname: review\ndescription: Reviews code.\n---\nbody").unwrap(), "Reviews code.");
-        assert_eq!(ok("---\nname: \"review\"\ndescription: 'Quoted: yes'\n---\n").unwrap(), "Quoted: yes");
-        assert_eq!(ok("---\nname: review\ndescription: >\n  Folded\n  over lines\nother: x\n---\n").unwrap(), "Folded over lines");
-        assert_eq!(ok("---\nname: review\ndescription: Plain\n  continued\n---\n").unwrap(), "Plain continued");
-        assert!(ok("no front matter").unwrap_err().contains("front matter"));
-        assert!(ok("---\nname: review\ndescription: x\n").unwrap_err().contains("never closed"));
-        assert!(ok("---\nname: other\ndescription: x\n---\n").unwrap_err().contains("other"));
-        assert!(ok("---\nname: review\n---\n").unwrap_err().contains("description"));
-        assert!(check_skill("Bad Name", "---\nname: Bad Name\ndescription: x\n---\n").is_err());
+    fn the_description_is_read_the_ways_yaml_writes_a_line_and_never_judged() {
+        assert_eq!(description("---\nname: review\ndescription: Reviews code.\n---\nbody"), "Reviews code.");
+        assert_eq!(description("---\nname: \"review\"\ndescription: 'Quoted: yes'\n---\n"), "Quoted: yes");
+        assert_eq!(description("---\nname: review\ndescription: >\n  Folded\n  over lines\nother: x\n---\n"), "Folded over lines");
+        assert_eq!(description("---\nname: review\ndescription: Plain\n  continued\n---\n"), "Plain continued");
+        // Whatever else the file is, it shows what it can and no more.
+        assert_eq!(description("no front matter"), "");
+        assert_eq!(description("---\nname: review\ndescription: x\n"), "");
+        assert_eq!(description("---\nname: other\n---\n"), "");
+    }
+
+    #[test]
+    fn a_skill_name_is_only_a_name_a_folder_can_have() {
+        for ok in ["review", "Code Review", "ünï-cödé", "v1.2", "a_b", "console"] {
+            assert!(check_skill_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", " review", "review ", ".hidden", "dots.", "a/b", "a\\b", "a:b", "a*b", "a\"b", "a|b", "a\nb", "NUL", "con.txt", "Com1", "lpt9"] {
+            assert!(check_skill_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(check_skill_name(&"x".repeat(256)).is_err());
+    }
+
+    #[test]
+    fn a_skill_is_laid_out_as_it_is_whatever_its_skill_md_says() {
+        let f = Fixture::new("as-is");
+        let long = "d".repeat(2000);
+        let put = |name: &str, text: &str| write_file(&f.dirs.skills().join(name).join(SKILL_FILE), text.as_bytes()).unwrap();
+        put("long", &format!("# No front matter\n\ndescription: {long}\n"));
+        put("Mixed Case", &format!("---\nname: something-else\ndescription: {long}\n---\n"));
+        put("empty", "");
+        let found = read_skills(&f.dirs).unwrap();
+        for name in ["long", "Mixed Case", "empty"] {
+            let (info, files) = &found[name];
+            assert!(info.problem.is_none(), "{name}: {:?}", info.problem);
+            assert!(files.as_ref().is_ok_and(|f| f.contains_key(SKILL_FILE)), "{name}");
+        }
+        assert_eq!(found["Mixed Case"].0.description.len(), 2000, "shown as written, not cut");
+
+        let lib = LibrarySettings { skills: skills(&["long", "Mixed Case"]), ..Default::default() };
+        let p = f.run(&lib, &mut Ledger::default(), true);
+        assert!(p.places.iter().all(|p| p.problem.is_none()), "{:?}", p.places);
+        // Claude Code's accounts and Codex's get the same copy.
+        for account in 0..3 {
+            for name in ["long", "Mixed Case"] {
+                let copy = f.account(account).join("skills").join(name).join(SKILL_FILE);
+                assert!(std::fs::read_to_string(copy).unwrap().contains(&long), "account {account}: {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_folder_without_skill_md_is_the_one_thing_a_skill_lacks() {
+        let f = Fixture::new("bare-folder");
+        std::fs::create_dir_all(f.dirs.skills().join("bare")).unwrap();
+        std::fs::write(f.dirs.skills().join("bare/notes.md"), "x").unwrap();
+        let found = read_skills(&f.dirs).unwrap();
+        assert_eq!(found["bare"].0.problem.as_deref(), Some("There is no SKILL.md"));
+        assert!(found["bare"].1.is_err());
     }
 
     #[test]

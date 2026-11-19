@@ -24,9 +24,16 @@ each name has a copy button, to name a skill or instructions in a chat.
   earlier versions becomes `instructions/main.md`.
 - A Codex account with an `AGENTS.override.md` reads that instead of
   `AGENTS.md`; the window says so.
-- A **skill** is a folder with a `SKILL.md` (front matter with its `name` and a
-  `description`, then the instructions) and any files beside it. It goes into
-  each picked account's `skills/`, for every session in every project.
+- A **skill** is a folder with a `SKILL.md` and any files beside it. It goes
+  into each picked account's `skills/`, for every session in every project.
+  Luna lays it out as it is and does not judge what `SKILL.md` says (its front
+  matter, its `name`, how long its description is): that is up to Claude Code
+  and Codex, which take or leave the skill as they see fit. Luna asks only
+  that the folder reads, holds a `SKILL.md`, and is named what a folder can be
+  called on any system (no `/`, `\` or `:`, nothing Windows keeps for itself
+  such as `con` or `nul`). The description the window shows under a skill's
+  name is read from the front matter when there is one, and left empty when
+  there is not.
 
 ## Whose sessions: chats, leads, helpers
 
@@ -185,8 +192,8 @@ they stay where they are, Luna never takes them back even if they come to hold
 just what the library has, and the log names them once.
 
 **Sync all**, at the top of the window, lays the library out at once. A copy
-that cannot be laid out (a skill whose `SKILL.md` does not do) stays as it is
-until it can.
+that cannot be laid out (a skill folder with no `SKILL.md`, or one that will
+not read) stays as it is until it can.
 
 ## When it is laid out
 
@@ -195,10 +202,9 @@ of a helper), on every change made in the window and on Sync all, so a file
 changed in the library by another program reaches the accounts by the next
 session. It is looked at again whenever the window comes to the front.
 
-A skill whose `SKILL.md` does not do (no front matter, a name other than its
-folder's) is laid out nowhere until it does, and its copies stay as they were;
-so do those of a library that will not read for a moment (a file held open
-mid-save). Paths compare as the system compares them (on Windows regardless of
+A skill folder with no `SKILL.md`, or one that will not read, is laid out
+nowhere until it does, and its copies stay as they were; so do those of a
+library that will not read for a moment (a file held open mid-save). Paths compare as the system compares them (on Windows regardless of
 case), so an account renamed in case only keeps its copies.
 
 ## System texts

@@ -717,7 +717,7 @@ export const LIBRARY: LibraryOverviewDto = {
     {
       name: 'migrations',
       description: '',
-      problem: 'The front matter has no description',
+      problem: 'There is no SKILL.md',
       accounts: ['claude'],
       audience: 'every'
     },
@@ -776,7 +776,7 @@ export const LIBRARY: LibraryOverviewDto = {
         target: { kind: 'account', provider: 'claude', name: n },
         skill: 'migrations',
         status: 'failed',
-        problem: 'The front matter has no description'
+        problem: 'There is no SKILL.md'
       })
     ),
     ...['personal', 'team'].map(n =>
