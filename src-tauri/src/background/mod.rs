@@ -298,6 +298,29 @@ pub fn running_counts() -> (usize, usize) {
     counts_of(lock().entries.values(), crate::throttle::now_ms())
 }
 
+/// For a core asked to leave only if nothing but what helpers' turns left
+/// runs in it (coreproc.rs `left_only_now`): closes the registry, as the
+/// core's going does, unless a helper is in a turn, claimed or with a process.
+/// Looked at and closed under one lock, so no turn starts after the look.
+/// Says whether it closed.
+pub fn close_if_left_only() -> bool {
+    let mut r = lock();
+    if !between_turns(r.entries.values()) {
+        return false;
+    }
+    r.closed = true;
+    true
+}
+
+/// `close_if_left_only` taken back: the core does not leave after all.
+pub fn reopen_closed() {
+    lock().closed = false;
+}
+
+fn between_turns<'a>(mut entries: impl Iterator<Item = &'a Entry>) -> bool {
+    entries.all(|e| e.run.is_none())
+}
+
 fn counts_of<'a>(entries: impl Iterator<Item = &'a Entry>, now: u64) -> (usize, usize) {
     entries.filter(|e| keeps_core(e, now)).fold((0, 0), |(all, left), e| (all + 1, left + usize::from(e.run.is_none())))
 }
@@ -577,6 +600,11 @@ mod tests {
             let idle = entry(provider);
             assert_eq!(counts_of([&turn, &left, &both, &idle].into_iter(), now), (3, 1), "{provider:?}");
             assert_eq!(counts_of([&left].into_iter(), now), (1, 1), "{provider:?}");
+            // Asked to leave only so (`close_if_left_only`): not with a turn,
+            // claimed or running, whatever else is left.
+            assert!(between_turns([&left, &idle].into_iter()), "{provider:?}");
+            assert!(!between_turns([&left, &turn].into_iter()), "{provider:?}");
+            assert!(!between_turns([&both].into_iter()), "{provider:?}");
         }
     }
 

@@ -266,12 +266,18 @@ another program's and is left alone.
   `core.json` whose pid is dead, runs restarts one at a time. Before it says
   anything it checks that the endpoint's server is the pid `core.json` names. A
   core of another build with no sessions is replaced at once; with sessions only
-  on a button. Sessions that are all helpers between turns counted only for
-  what their turns left running (`Welcome.left_only`, read with the count under
-  one lock, `background::running_counts`) count as none: the core's going ends
-  those jobs, and after an update the person agreed to the stop. A pane or a
-  helper's turn is work to ask about; a core older than the field (0.19 and
-  before) says none are left only, and is asked about as ever. While a core is
+  on a button. A core of an older version whose sessions are all helpers
+  between turns counted only for what their turns left running
+  (`Welcome.left_only`, read with the count under one lock,
+  `background::running_counts`) is replaced too (`Verdict::ReplaceLeftOnly`):
+  this window is that core's update, whose stop the person agreed to, and the
+  core's going ends those jobs. It is asked to stop only so (`ifLeftOnly`,
+  coreproc.rs `left_only_now`): it looks again, closing helper turns off under
+  the registry's lock as it looks, and refuses with a pane or a helper in a
+  turn, which leaves it running for the window to ask about. A pane or a
+  helper's turn is work to ask about; so is any session of a newer version's
+  core or one of the same version built otherwise (a dev build), and of a core
+  older than the field (0.19 and before), which says none are left only. While a core is
   being found, started or replaced (a restart, or another build's), the page's
   calls wait for it rather than fail, for a budget of the old core's stop and
   the new one's start (`LINK_WAIT`, 59 s, the sum in its comment; a budget, not
@@ -341,13 +347,16 @@ another program's and is left alone.
   window. Any other stops the sessions (each asked to quit with its exit hooks,
   `stop_all_sessions` also stopping helper turns and then, once those turns are
   over or 15 s on, ending what every helper's turns left running,
-  `background::stop_for_update`; a turn it stopped still not over then, claimed
-  and not started or its reader kept waiting by a leftover on its pipe, has its
-  job ended too and 5 s more to end, and what its end notes as left goes as
-  well, `LATE_WAIT`) and the chats resume from their transcripts. What a
-  helper's turns left counts as a session (`background::running`, in
-  `Welcome.sessions`), and as left only (`Welcome.left_only`), which the
-  updated window replaces the old core over all the same (above). Nothing
+  `background::stop_for_update`; a turn still not over then is left as it is,
+  its job untouched, as its end may start what was queued behind it in that
+  same job) and the chats resume from their transcripts. What a helper's turns
+  left counts as a session (`background::running`, in `Welcome.sessions`), and
+  as left only (`Welcome.left_only`), which the updated window replaces the old
+  core over all the same (above), its going ending them: what a turn that
+  ended late left among them. On Linux and macOS a job lists nothing
+  (`procs/unix.rs`): what helpers' turns left is neither seen, counted nor ended
+  here, and a core that leaves lets go of its keeper's ties (keeper/), so it
+  runs on after the old core. Nothing
   keeps turns from starting meanwhile: one started by text sent during the
   stop, which the stop neither waits for nor touches (it knows its own by
   `Run::claim`), is a session the updated window asks about, and text queued

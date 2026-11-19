@@ -487,6 +487,27 @@ fn turned_away(cmd: &str, stop_only: bool) -> Option<String> {
     crate::elevation::refusal().filter(|_| !matches!(cmd, "info" | "shutdown")).map(String::from)
 }
 
+/// Why a core is not to leave on a window's word that it holds only what
+/// helpers' turns left (corelink.rs `Verdict::ReplaceLeftOnly`), its hello's
+/// count being a look some time ago: a pane, or a helper's turn started since.
+const AT_WORK: &str = "the core has a session or a helper in a turn now";
+
+/// A shutdown asked `ifLeftOnly`: looked at again as it is to be made, helper
+/// turns closed off under their registry's lock as they are looked at, so none
+/// starts between this look and the leaving (`background::close_if_left_only`);
+/// panes before and after it, as one opened meanwhile is work too.
+fn left_only_now() -> Result<(), String> {
+    let panes = || crate::pty::manager().live_count() > 0;
+    if panes() || !crate::background::close_if_left_only() {
+        return Err(AT_WORK.into());
+    }
+    if panes() {
+        crate::background::reopen_closed();
+        return Err(AT_WORK.into());
+    }
+    Ok(())
+}
+
 fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: bool) -> io::Result<()> {
     loop {
         let (kind, payload) = ipc::read_frame(stream)?;
@@ -500,6 +521,12 @@ fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: boo
         match req.cmd.as_str() {
             "info" => answer(replies, req.id, serde_json::to_value(Welcome::of_this_process(started)).map_err(|e| e.to_string())),
             "shutdown" => {
+                if req.args.get("ifLeftOnly").and_then(serde_json::Value::as_bool) == Some(true) {
+                    if let Err(why) = left_only_now() {
+                        answer(replies, req.id, Err(why));
+                        continue;
+                    }
+                }
                 answer(replies, req.id, Ok(serde_json::Value::Null));
                 leave("the window asked it to stop");
             }
