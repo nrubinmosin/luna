@@ -162,6 +162,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- A provider's accounts folder that is there and cannot be read (denied, a
+  share that dropped) now makes `list_accounts` fail, where it listed no
+  accounts: the page and the native window ask again instead of keeping an
+  empty list, and the callers that listed without a folder now see its error.
+  A folder that is not there is still no accounts.
 - One Luna window per data folder, whichever kind: a second launch, of the
   native window or with `--webview`, brings up the window already running
   and exits, so the two never run side by side. The WebView window's single

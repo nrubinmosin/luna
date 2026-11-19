@@ -52,28 +52,40 @@ pub(crate) fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The accounts, by provider and name. A provider's folder that is not there
+/// is no accounts; one that cannot be read (denied, a share that dropped, a
+/// root that is a file) is an error: an empty list would stop the page's and
+/// the window's retries and leave every chat without an account to start on.
 #[tauri::command(async)]
 pub fn list_accounts() -> Result<Vec<AccountInfo>, String> {
     let mut out = vec![];
     for provider in Provider::ALL {
-        let root = provider_root(provider)?;
-        if !root.exists() {
-            continue;
-        }
-        for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // `<name>.lock` beside an account is Claude Code's token-refresh
-            // lock (Luna takes it too) — there for a second, never an account.
-            if name.ends_with(".lock") {
-                continue;
-            }
-            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-                out.push(AccountInfo { provider, name, path: entry.path().to_string_lossy().into_owned() });
-            }
-        }
+        out.extend(list_in(&provider_root(provider)?, provider)?);
     }
     out.sort_by(|a, b| a.provider.index().cmp(&b.provider.index()).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Ok(out)
+}
+
+/// The account folders in `root`, none where it is not there.
+fn list_in(root: &Path, provider: Provider) -> Result<Vec<AccountInfo>, String> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(format!("{}: {e}", root.display())),
+    };
+    let mut out = vec![];
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", root.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // `<name>.lock` beside an account is Claude Code's token-refresh
+        // lock (Luna takes it too) — there for a second, never an account.
+        if name.ends_with(".lock") {
+            continue;
+        }
+        if entry.file_type().map_err(|e| format!("{}: {e}", entry.path().display()))?.is_dir() {
+            out.push(AccountInfo { provider, name, path: entry.path().to_string_lossy().into_owned() });
+        }
+    }
     Ok(out)
 }
 
@@ -170,6 +182,25 @@ mod tests {
         assert_eq!(default_root(true, data, None).unwrap(), data.join("accounts"));
         assert_eq!(default_root(false, data, docs).unwrap(), PathBuf::from("/home/me/Documents").join("luna-accounts"));
         assert!(default_root(false, data, None).is_err());
+    }
+
+    /// A root that is not there lists no accounts; one that is there and
+    /// cannot be read is an error, so that the callers ask again instead of
+    /// taking an empty list for the answer.
+    #[test]
+    fn a_root_that_cannot_be_read_is_an_error_not_an_empty_list() {
+        let root = std::env::temp_dir().join(format!("luna-list-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        assert!(list_in(&root.join("anthropic"), Provider::Claude).unwrap().is_empty(), "not there: none");
+        fs::create_dir_all(root.join("anthropic").join("work")).unwrap();
+        fs::create_dir_all(root.join("anthropic").join("work.lock")).unwrap();
+        fs::write(root.join("anthropic").join("note.txt"), "x").unwrap();
+        let listed = list_in(&root.join("anthropic"), Provider::Claude).unwrap();
+        assert_eq!(listed.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["work"]);
+        // A file where the folder should be: there, and not readable as one.
+        let err = list_in(&root.join("anthropic").join("note.txt"), Provider::Claude).err().unwrap();
+        assert!(err.contains("note.txt"), "{err}");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
