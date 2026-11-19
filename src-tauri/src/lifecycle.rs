@@ -113,9 +113,14 @@ fn booted_ms() -> Option<u64> {
 pub type Ping = Box<dyn Fn(Box<dyn FnOnce() + Send>) -> bool + Send>;
 
 /// Reports the previous run if it ended without saying why, then starts
-/// keeping this one's record, its watcher and its heartbeat. From setup: a
-/// second launch that only focuses the running Luna exits before it, and must
-/// not take over the running one's record.
+/// keeping this one's record, its watcher and its heartbeat. A second launch
+/// must not take over the running one's record: the WebView window calls this
+/// from setup, which a launch that only focuses the running Luna never reaches
+/// (the single-instance plugin ends it first). The native window calls it once
+/// it is open (native.rs `start`), with no single-instance check yet: a second
+/// native window starts a record of its own over the first's. The native
+/// window's desktop services, single instance among them, come in a later
+/// change.
 pub fn start(ping: Ping) {
     // A scripted dev build may run beside another Luna from the same folder.
     if std::env::var_os("LUNA_DEV_TOKEN").is_some() {

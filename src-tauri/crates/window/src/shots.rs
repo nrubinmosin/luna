@@ -57,12 +57,15 @@ pub fn run(out: PathBuf, only: String) {
 
 /// The scene's window, off screen and never activated, over its fake host.
 fn open(scene: &Scene, cx: &mut AsyncApp) -> Result<AnyWindowHandle, String> {
+    #[cfg(windows)]
+    gpui_windows::set_unattended_windows(true);
     let (host, _mailbox, inbox) = scene.host();
     cx.update(|cx| {
         let models = Models::new(host, scene.theme, false, cx);
         theme::apply_to_components(&models.shell.read(cx).palette(), cx);
         crate::pump(models.clone(), inbox, cx);
         models.ask_core_state(cx);
+        scene.tell(&models, cx);
         let bounds = offscreen::bounds(size(px(1000.), px(620.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),

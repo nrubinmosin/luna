@@ -18,6 +18,8 @@ struct Fixture<'a> {
     models: Models,
     view: Entity<LunaWindow>,
     cx: &'a mut VisualTestContext,
+    /// The revision of the last state told.
+    revision: u64,
 }
 
 /// The window as `run` makes it, on the test platform, its core first
@@ -30,15 +32,26 @@ fn open(cx: &mut TestAppContext, theme: ThemePref, first: CoreState) -> Fixture<
     let window_models = models.clone();
     let (view, cx) = cx.add_window_view(move |window, cx| LunaWindow::new(window_models, window, cx));
     cx.run_until_parked();
-    Fixture { host, mailbox, models, view, cx }
+    Fixture { host, mailbox, models, view, cx, revision: 0 }
 }
 
 fn state(state: LinkState) -> CoreState {
-    CoreState { state, core: (state != LinkState::Starting).then(demo::core), error: None }
+    CoreState { state, core: (state != LinkState::Starting).then(demo::core), error: None, revision: 0 }
+}
+
+fn at(link: LinkState, revision: u64) -> CoreState {
+    CoreState { revision, ..state(link) }
 }
 
 impl Fixture<'_> {
+    /// Tells the window a state, a revision newer than the last.
     fn tell(&mut self, link: CoreState) {
+        self.revision += 1;
+        self.tell_at(CoreState { revision: self.revision, ..link });
+    }
+
+    /// Tells the window a state with the revision it has.
+    fn tell_at(&mut self, link: CoreState) {
         assert!(self.mailbox.event(event::CORE_STATE, serde_json::to_value(link).unwrap()));
         self.cx.run_until_parked();
     }
@@ -82,19 +95,38 @@ fn the_first_answer_and_every_event_reach_the_core_model(cx: &mut TestAppContext
 /// put the older state back.
 #[gpui::test]
 fn an_answer_older_than_an_event_is_dropped(cx: &mut TestAppContext) {
-    let mut f = open(cx, ThemePref::Light, state(LinkState::Up));
-    f.host.answer(cmd::CORE_STATE, serde_json::to_value(state(LinkState::Starting)).unwrap());
+    let mut f = open(cx, ThemePref::Light, state(LinkState::Starting));
+    f.host.answer(cmd::CORE_STATE, serde_json::to_value(at(LinkState::Starting, 1)).unwrap());
     f.cx.update(|_, cx| {
         f.models.ask_core_state(cx);
         // Taken before the answer's task gets to run.
-        crate::models::on_event(&f.models, event::CORE_STATE, serde_json::to_value(state(LinkState::Up)).unwrap(), cx);
+        crate::models::on_event(&f.models, event::CORE_STATE, serde_json::to_value(at(LinkState::Up, 2)).unwrap(), cx);
     });
     f.cx.run_until_parked();
     assert_eq!(f.link(), LinkState::Up);
-    // With no event in between, the answer stands.
+    // An answer newer than the last event stands.
+    f.host.answer(cmd::CORE_STATE, serde_json::to_value(at(LinkState::Starting, 3)).unwrap());
     f.cx.update(|_, cx| f.models.ask_core_state(cx));
     f.cx.run_until_parked();
     assert_eq!(f.link(), LinkState::Starting);
+}
+
+/// A state sent before a newer one but come after it (corelink.rs emits
+/// outside its lock) is dropped: the banner does not go back to `down` over
+/// a core that is up.
+#[gpui::test]
+fn an_event_older_than_the_last_taken_is_dropped(cx: &mut TestAppContext) {
+    let mut f = open(cx, ThemePref::Light, state(LinkState::Starting));
+    f.tell_at(at(LinkState::Up, 5));
+    let before = f.renders();
+    f.tell_at(at(LinkState::Down, 4));
+    assert_eq!(f.link(), LinkState::Up);
+    assert_eq!(f.renders(), before, "nothing redraws for it");
+    // A newer revision of what is shown already is no change to draw.
+    f.tell_at(at(LinkState::Up, 6));
+    assert_eq!(f.renders(), before);
+    f.tell_at(at(LinkState::Down, 7));
+    assert_eq!(f.link(), LinkState::Down);
 }
 
 #[gpui::test]
@@ -111,7 +143,7 @@ fn work_handed_to_the_window_runs_on_its_thread_in_order(cx: &mut TestAppContext
 
 #[gpui::test]
 fn a_core_state_redraws_the_banner_and_nothing_else(cx: &mut TestAppContext) {
-    let down = |why: &str| CoreState { state: LinkState::Down, core: None, error: Some(why.into()) };
+    let down = |why: &str| CoreState { state: LinkState::Down, core: None, error: Some(why.into()), revision: 0 };
     let mut f = open(cx, ThemePref::Light, down("pipe closed: a"));
     let (bar, banner, board) = f.renders();
     assert!(bar >= 1 && banner >= 1 && board >= 1, "drawn once at least");
@@ -152,7 +184,7 @@ fn the_theme_button_goes_round_and_the_host_keeps_each_choice(cx: &mut TestAppCo
         f.cx.run_until_parked();
         assert_eq!(f.models.shell.read_with(f.cx, |s, _| s.pref()), pref);
         assert_eq!(f.dark(), dark, "{pref:?}");
-        assert_eq!(f.host.calls_of(cmd::SET_WINDOW_THEME).last(), Some(&demo::theme_args(pref)));
+        assert_eq!(f.host.sends_of(cmd::SET_WINDOW_THEME).last(), Some(&demo::theme_args(pref)));
     }
     // gpui-component's theme went along with it.
     f.cx.update(|_, cx| f.models.cycle_theme(cx));
@@ -187,9 +219,11 @@ fn system_follows_the_windows_appearance_and_a_choice_does_not(cx: &mut TestAppC
 #[gpui::test]
 fn restart_asks_the_host_once_and_the_state_tells_the_rest(cx: &mut TestAppContext) {
     let mut f = open(cx, ThemePref::Light, state(LinkState::Down));
+    f.tell(state(LinkState::Down));
     f.cx.update(|_, cx| f.models.restart_core(cx));
     f.cx.run_until_parked();
-    assert_eq!(f.host.calls_of(cmd::CORE_RESTART).len(), 1);
+    // For the state the banner shows, by its revision.
+    assert_eq!(f.host.calls_of(cmd::CORE_RESTART), vec![json!({ "revision": 1 })]);
     // The model moves only on what the host says next.
     assert_eq!(f.link(), LinkState::Down);
     f.tell(state(LinkState::Starting));
@@ -232,7 +266,7 @@ mod clicks {
         let mut f = open(cx, ThemePref::System, state(LinkState::Up));
         click(&mut f, "theme");
         assert_eq!(f.models.shell.read_with(f.cx, |s, _| s.pref()), ThemePref::Light);
-        assert_eq!(f.host.calls_of(cmd::SET_WINDOW_THEME), vec![demo::theme_args(ThemePref::Light)]);
+        assert_eq!(f.host.sends_of(cmd::SET_WINDOW_THEME), vec![demo::theme_args(ThemePref::Light)]);
     }
 }
 
@@ -240,9 +274,15 @@ mod clicks {
 fn the_host_contract_lists_what_the_window_names() {
     // Every command the window calls is in the list luna_lib's dispatch is
     // held to, and so is every event it listens to.
-    for c in [cmd::CORE_STATE, cmd::CORE_RESTART, cmd::SET_WINDOW_THEME] {
+    for c in [cmd::CORE_STATE, cmd::CORE_RESTART] {
         assert!(cmd::ALL.contains(&c), "{c}");
     }
+    assert_eq!(cmd::SENT, [cmd::SET_WINDOW_THEME]);
     assert!(event::ALL.contains(&event::CORE_STATE));
+    // A session's output goes to its sink, never the inbox.
+    assert!(!event::wants(event::PTY_OUTPUT));
+    for e in event::LATEST {
+        assert!(event::ALL.contains(e), "{e}");
+    }
     assert_eq!(serde_json::to_value(ThemePref::System).unwrap(), json!("system"));
 }

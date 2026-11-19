@@ -43,6 +43,11 @@ pub struct LinkState {
     pub state: &'static str,
     pub core: Option<Welcome>,
     pub error: Option<String>,
+    /// One more with every state set (`set`): the native window tells a
+    /// state that came late, after a newer one, by it, and a restart asked
+    /// for a state that has moved on since (`core_restart`). The page reads
+    /// no further than `state`, `core` and `error`.
+    pub revision: u64,
 }
 
 /// The connection in use: its writing end and the requests waiting on it.
@@ -151,8 +156,15 @@ fn link() -> &'static Mutex<LinkState> {
     L.get_or_init(|| Mutex::new(LinkState { state: "starting", ..Default::default() }))
 }
 
-fn set(state: LinkState) {
-    *link().lock().unwrap_or_else(|e| e.into_inner()) = state.clone();
+/// The link's new state, numbered after the one before it. Emitted outside
+/// the lock, so two set at once can reach the window in either order: the
+/// revision says which is the latest.
+fn set(mut state: LinkState) {
+    {
+        let mut link = link().lock().unwrap_or_else(|e| e.into_inner());
+        state.revision = link.revision + 1;
+        *link = state.clone();
+    }
     crate::emit::to_ui("core://state", state);
 }
 
@@ -173,7 +185,7 @@ fn connect() {
             let (mut link, mut rejoined) = (Some((stream, core)), false);
             while let Some((stream, core)) = link.take() {
                 let Ok(writer) = stream.try_clone() else {
-                    set(LinkState { state: "down", core: None, error: Some("cannot use the connection".into()) });
+                    set(LinkState { state: "down", core: None, error: Some("cannot use the connection".into()), ..Default::default() });
                     return;
                 };
                 let conn = Conn::over(writer);
@@ -191,7 +203,7 @@ fn connect() {
                         set(LinkState { state: "starting", ..Default::default() });
                     }
                     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&conn));
-                    set(LinkState { state: "up", core: Some(core), error: None });
+                    set(LinkState { state: "up", core: Some(core), error: None, ..Default::default() });
                 }
                 hold(stream, conn);
                 {
@@ -208,7 +220,7 @@ fn connect() {
             let _taking = TAKING.lock().unwrap_or_else(|e| e.into_inner());
             if GENERATION.load(Ordering::SeqCst) == generation && !RESTARTING.load(Ordering::SeqCst) {
                 crate::log::warn("core", "the core went away");
-                set(LinkState { state: "down", core: None, error: None });
+                set(LinkState { state: "down", core: None, error: None, ..Default::default() });
             }
         }
         Ok(Attached::Foreign(core)) => {
@@ -219,15 +231,15 @@ fn connect() {
                     core.build, core.fingerprint, core.sessions
                 ),
             );
-            set(LinkState { state: "mismatch", core: Some(core), error: None });
+            set(LinkState { state: "mismatch", core: Some(core), error: None, ..Default::default() });
         }
         Ok(Attached::Elevated { core, why }) => {
             crate::log::error("core", &why);
-            set(LinkState { state: "elevated", core, error: Some(why) });
+            set(LinkState { state: "elevated", core, error: Some(why), ..Default::default() });
         }
         Err(e) => {
             crate::log::warn("core", &format!("no core: {e}"));
-            set(LinkState { state: "down", core: None, error: Some(e) });
+            set(LinkState { state: "down", core: None, error: Some(e), ..Default::default() });
         }
     }
 }
@@ -650,12 +662,22 @@ pub fn core_state() -> LinkState {
 }
 
 /// Stops the running core, whatever its build — its sessions quit and resume
-/// in the new one — and starts one of this build.
+/// in the new one — and starts one of this build. `revision`: that of the
+/// state the restart was offered on (the native window's banner); nothing
+/// happens once the link has moved on from it, as a core that came back
+/// meanwhile is not one to stop. The page passes none.
 #[tauri::command]
-pub fn core_restart() {
+pub fn core_restart(revision: Option<u64>) {
+    let link = link().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(asked) = revision.filter(|&r| r != link.revision) {
+        crate::log::info("core", &format!("a restart asked for state {asked} is not done: the link is at state {} now", link.revision));
+        return;
+    }
+    // Under the link's lock, so no state comes between the check and this.
     if RESTARTING.swap(true, Ordering::SeqCst) {
         return;
     }
+    drop(link);
     std::thread::spawn(|| {
         // The page's calls wait for the new core rather than fail meanwhile.
         set(LinkState { state: "starting", ..Default::default() });
@@ -695,6 +717,21 @@ pub fn core_send(cmd: String, args: Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every state set is numbered after the one before it, and a restart
+    /// asked for a state the link has moved on from starts nothing.
+    #[test]
+    fn states_are_numbered_and_a_restart_for_a_past_one_does_nothing() {
+        let before = core_state().revision;
+        set(LinkState { state: "down", ..Default::default() });
+        let after = core_state().revision;
+        assert!(after > before);
+        core_restart(Some(after - 1));
+        assert!(!RESTARTING.load(Ordering::SeqCst));
+        assert_eq!(core_state().revision, after, "nothing was set");
+        let sent = crate::emit::sent_for_test("core://state");
+        assert!(sent.iter().any(|v| v["revision"] == after && v["state"] == "down"), "the event carries it");
+    }
 
     /// A pipe end whose writes wait until `open`, as a core that is not
     /// reading holds them, or fail at once with `fail`.

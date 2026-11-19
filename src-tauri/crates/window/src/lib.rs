@@ -28,14 +28,15 @@ mod widgets;
 mod tests;
 
 pub use dto::ThemePref;
-pub use host::{Answer, Host, Inbox, Mailbox, cmd, event, mailbox};
+pub use host::{Answer, Host, Inbox, Mailbox, OutputSink, cmd, event, mailbox};
 #[cfg(feature = "shots")]
 pub use shots::run as shots;
 
-use futures::StreamExt;
 use gpui::{App, AppContext, Bounds, Size, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point, px, size};
 use gpui_component::Root;
 use models::Models;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// How the window opens.
@@ -47,8 +48,12 @@ pub struct Options {
     /// Off every display, never activated, off the taskbar: the test build
     /// run in the background, out of the way of the person at the screen.
     pub background: bool,
-    /// Called once as the app quits, on the window's thread, before the
-    /// process goes: on macOS `run` never returns.
+    /// Called once the window is open, on its thread: what needs the window
+    /// there starts here, so that a window that cannot open leaves nothing
+    /// started for the WebView window to find in its way.
+    pub on_open: Box<dyn FnOnce() + 'static>,
+    /// Called once as the app quits after the window opened, on the window's
+    /// thread, before the process goes: on macOS `run` never returns.
     pub on_quit: Box<dyn FnOnce() + 'static>,
 }
 
@@ -58,13 +63,24 @@ const SIZE: Size<gpui::Pixels> = size(px(1280.), px(800.));
 const MIN_SIZE: Size<gpui::Pixels> = size(px(900.), px(600.));
 
 /// Opens the window and runs it until it closes, which quits the app. Returns
-/// once it has (on Windows and Linux; macOS ends the process instead).
-pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) {
+/// once it has (on Windows and Linux; macOS ends the process instead), with
+/// why when the window could not open at all: no usable GPU device, shaders
+/// that do not compile. Neither `on_open` nor `on_quit` has run then.
+pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), String> {
+    #[cfg(windows)]
+    if options.background {
+        gpui_windows::set_unattended_windows(true);
+    }
+    let failed = Rc::new(RefCell::new(None));
+    let failure = failed.clone();
     gpui_platform::application().run(move |cx: &mut App| {
-        let Options { title, theme, background, on_quit } = options;
-        let mut on_quit = Some(on_quit);
+        let Options { title, theme, background, on_open, on_quit } = options;
+        let opened = Rc::new(Cell::new(false));
+        let (is_open, mut on_quit) = (opened.clone(), Some(on_quit));
         cx.on_app_quit(move |_| {
-            if let Some(f) = on_quit.take() {
+            if is_open.get()
+                && let Some(f) = on_quit.take()
+            {
                 f();
             }
             async {}
@@ -80,11 +96,18 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) {
         let models = start(host, inbox, theme, cx);
         let size = SIZE;
         let bounds = if background { offscreen::bounds(size, cx) } else { Bounds::centered(None, size, cx) };
-        if let Err(e) = open(&models, &title, bounds, background, cx) {
-            log::error!("cannot open the window: {e:#}");
-            cx.quit();
+        match open(&models, &title, bounds, background, cx) {
+            Ok(_) => {
+                opened.set(true);
+                on_open();
+            }
+            Err(e) => {
+                *failure.borrow_mut() = Some(format!("{e:#}"));
+                cx.quit();
+            }
         }
     });
+    failed.take().map_or(Ok(()), Err)
 }
 
 /// Everything but the window: the font, gpui-component, the models and the
@@ -112,15 +135,45 @@ pub(crate) fn start(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mu
     models
 }
 
+/// The most messages the window's thread takes from the inbox in one turn.
+const BATCH: usize = 64;
+
 /// The one task that drains the inbox, on the window's thread, until the
-/// host's mailboxes are all gone.
+/// host's mailboxes are all gone: what is there in batches of `BATCH` at most,
+/// each in one update, and after a full one it lets the rest of the thread's
+/// work (input, frames) run before it takes the next.
 fn pump(models: Models, mut inbox: Inbox, cx: &mut App) {
     cx.spawn(async move |cx| {
-        while let Some(message) = inbox.0.next().await {
-            cx.update(|cx| models::deliver(&models, message, cx));
+        while let Some(batch) = inbox.next_batch(BATCH).await {
+            let full = batch.len() >= BATCH;
+            cx.update(|cx| {
+                for message in batch {
+                    models::deliver(&models, message, cx);
+                }
+            });
+            if full {
+                YieldNow(false).await;
+            }
         }
     })
     .detach();
+}
+
+/// Pending once, woken at once: the task goes to the back of the thread's
+/// queue, behind what came in meanwhile.
+struct YieldNow(bool);
+
+impl Future for YieldNow {
+    type Output = ();
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        if self.0 {
+            return std::task::Poll::Ready(());
+        }
+        self.0 = true;
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    }
 }
 
 fn open(models: &Models, title: &str, bounds: Bounds<gpui::Pixels>, background: bool, cx: &mut App) -> gpui::Result<WindowHandle<Root>> {

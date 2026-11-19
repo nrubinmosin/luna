@@ -50,6 +50,9 @@ image = { version = "0.25", default-features = false, features = ["png"], option
 # (src/offscreen.rs). The version the app already links, with features of its
 # own.
 [target.'cfg(windows)'.dependencies]
+# The patched platform crate itself, for its switch for unattended windows
+# (vendor/PATCHES.md, patch 2): gpui reaches it through gpui_platform.
+gpui_windows = { package = "gpui-pre-windows", version = "=0.3.12" }
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]

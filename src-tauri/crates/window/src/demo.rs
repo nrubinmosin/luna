@@ -4,7 +4,7 @@
 //! for those two, never into the app.
 
 use crate::dto::{Core, CoreState, LinkState, ThemePref};
-use crate::host::{Answer, Host, Inbox, Mailbox, cmd, mailbox};
+use crate::host::{Answer, Host, Inbox, Mailbox, OutputSink, cmd, mailbox};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -14,6 +14,7 @@ pub struct FakeHost {
     answers: Mutex<HashMap<String, Value>>,
     calls: Mutex<Vec<(String, Value)>>,
     sends: Mutex<Vec<(String, Value)>>,
+    outputs: Mutex<HashMap<String, Arc<dyn OutputSink>>>,
 }
 
 impl FakeHost {
@@ -39,6 +40,18 @@ impl FakeHost {
     pub fn sends(&self) -> Vec<(String, Value)> {
         self.sends.lock().unwrap().clone()
     }
+
+    /// The sends of `cmd` so far, their arguments.
+    pub fn sends_of(&self, cmd: &str) -> Vec<Value> {
+        self.sends().into_iter().filter(|(c, _)| c == cmd).map(|(_, a)| a).collect()
+    }
+
+    /// Output for `session`, as a host's reader hands it over: false when no
+    /// sink is routed or it is gone.
+    pub fn output(&self, session: &str, data: &[u8]) -> bool {
+        let sink = self.outputs.lock().unwrap().get(session).cloned();
+        sink.is_some_and(|s| s.bytes(data))
+    }
 }
 
 impl Host for FakeHost {
@@ -52,6 +65,14 @@ impl Host for FakeHost {
         self.sends.lock().unwrap().push((cmd.to_owned(), args));
         Ok(())
     }
+
+    fn route_output(&self, session: &str, sink: Option<Arc<dyn OutputSink>>) {
+        let mut outputs = self.outputs.lock().unwrap();
+        match sink {
+            Some(sink) => outputs.insert(session.to_owned(), sink),
+            None => outputs.remove(session),
+        };
+    }
 }
 
 /// A screenshot's state of things: what the fake host answers, and what it
@@ -62,22 +83,28 @@ pub struct Scene {
     pub theme: ThemePref,
     /// The core's state as the window first asks for it.
     pub core: CoreState,
-    /// Told after that, in order. Events come before the first answer can
-    /// land, which drops it (models.rs `ask_core_state`): a core being
+    /// Told after that, in order, each newer than the first answer, which
+    /// they come before and so drop (models.rs `CoreLink::take`): a core being
     /// replaced is told `up`, then `starting`.
     pub then: Vec<CoreState>,
 }
 
 impl Scene {
-    /// The host and the inbox it feeds, the scene's events already in it.
+    /// The host, and the inbox it feeds.
     pub fn host(&self) -> (Arc<FakeHost>, Mailbox, Inbox) {
         let host = FakeHost::new();
         host.answer(cmd::CORE_STATE, serde_json::to_value(&self.core).unwrap());
         let (mailbox, inbox) = mailbox();
-        for link in &self.then {
-            mailbox.event(crate::event::CORE_STATE, serde_json::to_value(link).unwrap());
-        }
         (host, mailbox, inbox)
+    }
+
+    /// Tells the models the scene's events, one by one: through the inbox,
+    /// the state events would come down to the last (`event::LATEST`).
+    #[cfg(feature = "shots")]
+    pub(crate) fn tell(&self, models: &crate::models::Models, cx: &mut gpui::App) {
+        for link in &self.then {
+            crate::models::on_event(models, crate::event::CORE_STATE, serde_json::to_value(link).unwrap(), cx);
+        }
     }
 }
 
@@ -95,7 +122,7 @@ pub fn core() -> Core {
 }
 
 fn link(state: LinkState, core: Option<Core>, error: Option<&str>) -> CoreState {
-    CoreState { state, core, error: error.map(String::from) }
+    CoreState { state, core, error: error.map(String::from), revision: 0 }
 }
 
 /// Every scene, in both themes: the title bar over an empty board, and the
@@ -107,7 +134,13 @@ pub fn scenes() -> Vec<Scene> {
                     they quit and resume in the new one.";
     let mut out = Vec::new();
     for theme in [ThemePref::Light, ThemePref::Dark] {
-        let one = |name, core: CoreState, then: Vec<CoreState>| Scene { name, theme, core, then };
+        // The answer first, then each event a revision newer.
+        let one = |name, core: CoreState, then: Vec<CoreState>| Scene {
+            name,
+            theme,
+            core: CoreState { revision: 1, ..core },
+            then: then.into_iter().zip(2..).map(|(link, revision)| CoreState { revision, ..link }).collect(),
+        };
         out.extend([
             one("board", up.clone(), vec![]),
             one("core-starting", link(LinkState::Starting, None, None), vec![]),

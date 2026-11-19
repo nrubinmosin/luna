@@ -135,7 +135,7 @@ mod tests {
     use crate::dto::Core;
 
     fn link(state: LinkState, core: Option<Core>, error: Option<&str>) -> CoreState {
-        CoreState { state, core, error: error.map(String::from) }
+        CoreState { state, core, error: error.map(String::from), revision: 0 }
     }
 
     #[test]

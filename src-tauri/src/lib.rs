@@ -301,8 +301,11 @@ pub fn run() {
     log::install_panic_hook();
     if wants_webview() {
         run_webview();
-    } else {
-        native::run();
+    } else if let Err(why) = native::run() {
+        // Nothing of the native window's was started: the WebView window
+        // starts all of its own.
+        log::error("window", &format!("the native window cannot open: {why}; opening the WebView window instead"));
+        run_webview();
     }
 }
 

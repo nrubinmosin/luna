@@ -4759,6 +4759,7 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
+ "gpui-pre-windows",
  "image",
  "log",
  "serde",

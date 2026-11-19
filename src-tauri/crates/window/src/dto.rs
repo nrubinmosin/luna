@@ -14,6 +14,18 @@ pub struct CoreState {
     pub core: Option<Core>,
     #[serde(default)]
     pub error: Option<String>,
+    /// Counts up with every change of the line (corelink.rs `set`): a state
+    /// older than one already taken is stale, however late it arrives. 0 from
+    /// a host that does not count.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+impl CoreState {
+    /// The same state for whoever shows it, whatever the revisions.
+    pub fn shows_as(&self, other: &CoreState) -> bool {
+        (self.state, &self.core, &self.error) == (other.state, &other.core, &other.error)
+    }
 }
 
 /// Where the line to the core stands.

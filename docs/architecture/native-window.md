@@ -19,14 +19,20 @@ them. `scripts/test-build.ps1 -Run -WebView` starts the test build's WebView
 window.
 
 The native window does what the WebView window's `setup()` does that needs no
-Tauri (native.rs `run`): the log's start line with the build stamp (and
-"(native window)"), the panic hook, the run record and its heartbeat
+Tauri (native.rs `run` and `start`): the log's start line with the build stamp
+(and "(native window)") and the panic hook first; then, once the window is
+open (`Options::on_open`), the event sink, the run record and its heartbeat
 (lifecycle.rs, which now pings whichever event loop it is handed), the core
 link (`corelink::start`), the CLI refresh and the settings sync at start.
 The tray, single instance, notifications, window state and updater are not
 wired into it yet. Closing the window ends the window's process; the core and
 its sessions run on, as after the WebView window closes to the tray. A second
 launch opens a second window (no single instance yet).
+
+A window that cannot open at all (no usable Direct3D device, shaders that do
+not compile at startup) has started nothing: `luna_window::run` returns why,
+and lib.rs `run` logs it and opens the WebView window instead. On macOS gpui
+ends the process as it quits, so there is no fallback there.
 
 ## The crate and its host
 
@@ -37,32 +43,56 @@ host (`host.rs`):
 
 - `Host::call(cmd, args)`: a command answered off the window's thread; the
   window waits for the answer on a task.
-- `Host::send(cmd, args)`: keystrokes and resizes, in order, never answered.
+- `Host::send(cmd, args)`: keystrokes, resizes and the window's own settings,
+  handed over on the window's thread in order, never answered.
 - The inbox (`mailbox()`): the host's `Mailbox` sends events, `(name,
   payload)`, and work to run on the window's thread; one task on that thread
   drains the `Inbox`.
+- `Host::route_output(session, sink)`: where a session's output goes (below).
 
 The commands, their camelCase arguments and the events are the page's own,
 by the same names (`src/ipc/*.ts` is their spec), so the window asks for what
-the page asks for. `cmd::ALL` and `event::ALL` list what the window uses.
+the page asks for. `cmd::ALL` (called), `cmd::SENT` and `event::ALL` list
+what the window uses.
+
+The inbox takes only the events in `event::ALL`: `Mailbox::event` drops any
+other, and the host's side of `emit` drops them before they are serialized
+(`emit::install_for`), so the sessions' output and the page's other events
+never queue for the window. An event in `event::LATEST` (`core://state`)
+waits in the inbox once at most: a newer payload replaces the one waiting,
+but never one with a newer `revision`. The pump (lib.rs `pump`) takes what is
+there in batches of 64 at most, each in one update, and after a full batch
+lets the thread's other work (input, frames) run before the next: a burst
+cannot hold up the window or the heartbeat's ping.
+
+A session's output does not come through the inbox at all. The terminal
+routes each session to an `OutputSink` (`Host::route_output`): the host hands
+every `pty://output` chunk to it on the thread that read it from the core
+(native.rs `Outputs`), the sink feeds the pane's parser on a thread of the
+pane's own, and the pane has the window draw once it has parsed. While no
+sink is routed, `pty://output` is not even serialized.
 
 luna_lib is the host (`src/native.rs`):
 
 | What the window asks | How it is answered |
 | --- | --- |
 | a command in `corecmd::COMMANDS` (lane Call) | `corelink::request`, as `core_call` does |
-| `send` | `corelink::core_send` |
-| one of the window's own | `OWN`: a name to a function over the Tauri commands' own (`core_state`, `core_restart`), plus what only the native window has (`set_window_theme`) |
-| events | `emit::install` puts every `emit::to_ui` into the inbox |
+| `send` | `OWN_SENT` for the window's own (`set_window_theme`), else `corelink::core_send` |
+| one of the window's own | `OWN`: a name to a function over the Tauri commands' own (`core_state`, `core_restart`) |
+| events | `emit::install_for` puts those the window takes (`event::ALL`) into the inbox |
+| a session's output | `Outputs`: to the sink routed for its session, if any |
 
 Each call runs on a thread of its own. Tests in native.rs hold the dispatch to
-`cmd::ALL`, the window's own commands to `app_handler!`'s names where the page
-has them, the events to what Luna sends, and the core's state as corelink
-serializes it to the window's DTO (`dto.rs`).
+`cmd::ALL` and `cmd::SENT`, the window's own commands to `app_handler!`'s
+names where the page has them, the events to what Luna sends, the core's
+state as corelink serializes it to the window's DTO (`dto.rs`), the output
+routing and the theme's writer.
 
 What the native window keeps between runs is in `<data>/window.json`
 (the theme), written by the host; the core's `settings.json` is not the
-window's.
+window's. One thread writes it (native.rs `Writer`): each choice replaces one
+not written yet, an earlier one is never written after a later one, and
+quitting waits up to 2 s for the last.
 
 ## Models and views
 
@@ -70,7 +100,15 @@ The state the host reports lives in GPUI entities (`models.rs`): `CoreLink`
 (the line to the core, from `core_state` at start and every `core://state`)
 and `Shell` (the theme: the choice and the window's appearance). The inbox's
 task updates them on the window's thread; a model notifies only when what it
-holds changed. Views observe the models they show:
+holds changed.
+
+Every state of the core link carries a `revision` (corelink.rs `set`: one
+more each time, taken under the link's lock and emitted after it), which the
+page ignores. `CoreLink::take` drops a state older than the one it holds:
+an event that lost a race to a newer one, or the answer to a `core_state`
+asked before an event that came first. Restart sends the revision of the
+state the banner shows, and corelink restarts nothing once the link has moved
+on from it. Views observe the models they show:
 
 | View | Shows | Observes |
 | --- | --- | --- |
@@ -115,9 +153,13 @@ License 1.1 (`assets/fonts/OFL.txt`, and in the third-party notices).
 
 The test build with `LUNA_TEST_WINDOW=background` (`test-build.ps1
 -Background`) opens the window past the right edge of every display
-(`offscreen.rs`), without focus. The patched gpui-pre-windows keeps such a
-window where it is put, off the taskbar and never activated (vendor/PATCHES.md,
-patch 2). gpui's cap of 30 frames a second for an inactive window is off
+(`offscreen.rs`), without focus, having turned on the patched
+gpui-pre-windows' switch for unattended windows
+(`gpui_windows::set_unattended_windows`; the shots harness does too). That
+crate keeps such a window where it is put, shows it there without activating
+it or moving it in the z-order, keeps it off the taskbar and has a click not
+activate it (vendor/PATCHES.md, patch 2). Without the switch a `focus: false`
+window is upstream's. gpui's cap of 30 frames a second for an inactive window is off
 (`inactive_frame_interval: None`): a background window never is active.
 
 ## Screenshots
@@ -134,9 +176,12 @@ carries it. A new surface adds its scenes to `demo.rs`.
 
 The crate's tests run the window on GPUI's test platform over the fake host
 (`tests.rs`): what the host says reaches the models and only the views showing
-them redraw, nothing redraws while nothing happens, the theme button goes
-round and the host keeps each choice, system follows the appearance, the
-banner's wording per state, and Restart asks the host. The tests that click
+them redraw, a state older than the one shown is dropped, nothing redraws
+while nothing happens, the theme button goes round and the host is sent each
+choice, system follows the appearance, the banner's wording per state, and
+Restart asks the host for the state shown. `host.rs`'s own tests hold the
+inbox to the events the window takes, the core's state to one waiting with
+the newest revision, and a batch to its bound. The tests that click
 the buttons where they are drawn need debug assertions (gpui records the
 selectors only then): the Linux and macOS runs have them, the release-built
 Windows tests do not.

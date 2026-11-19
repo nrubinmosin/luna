@@ -20,10 +20,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `LUNA_WINDOW=webview`) opens the WebView window, which still has
   everything else. The window is a crate of its own
   (`src-tauri/crates/window`) over a host in the app, on GPUI's Windows
-  crate with Luna's three patches (`src-tauri/vendor/`).
+  crate with Luna's three patches (`src-tauri/vendor/`). Where the native
+  window cannot open (no usable GPU device), Luna opens the WebView window
+  instead.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.
+
+### Changed
+
+- The window Luna opens by default, now the native one, has no tray icon,
+  desktop notifications, updater or single instance yet: a second launch
+  opens a second window, and closing the window leaves nothing in the tray.
+  They come back to it in a later change; until then `luna --webview` (or
+  `LUNA_WINDOW=webview`) opens the WebView window, which has them all.
 
 ## [0.19.0] - 2026-11-18
 

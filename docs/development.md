@@ -83,7 +83,9 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 
 With Node installed locally, `pnpm install` and `pnpm dev` serve the frontend
 alone in a browser (Tauri commands are no-ops; `?demo` loads the fixture).
-`pnpm tauri dev` needs a Rust toolchain the project does not provide.
+`pnpm tauri dev` needs a Rust toolchain the project does not provide, and
+`LUNA_WINDOW=webview` in its environment: without it the exe opens the native
+window, which never loads the dev server's page.
 
 The text check (`pnpm check:text`) keeps every tracked file in US English: no
 letters outside the Latin script and no British spellings. A line that must keep

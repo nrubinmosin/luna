@@ -17,9 +17,6 @@ pub struct CoreLink {
     /// a core being replaced (a restart, or one found again after it let the
     /// window go), not the first one being found.
     was_up: bool,
-    /// `core://state` events taken so far. An answer to `core_state` asked
-    /// before the last of them is older than what it says, and is dropped.
-    events: u64,
 }
 
 impl CoreLink {
@@ -31,27 +28,20 @@ impl CoreLink {
         self.was_up
     }
 
-    /// Takes a state from a `core://state` event.
-    pub fn take_event(&mut self, link: CoreState, cx: &mut Context<Self>) {
-        self.events += 1;
-        self.take(link, cx);
-    }
-
-    /// Takes the answer to a `core_state` asked when `events` events had come:
-    /// one that has come since is newer than the answer.
-    pub fn take_answer(&mut self, link: CoreState, asked_at: u64, cx: &mut Context<Self>) {
-        if asked_at == self.events {
-            self.take(link, cx);
+    /// Takes a state the host reported, from a `core://state` event or as
+    /// the answer to `core_state`, unless it is older than the one taken last
+    /// (its `revision`): a `down` that lost a race to the `up` after it, or
+    /// an answer asked before the event that came first. The views hear of it
+    /// only when what they show changed.
+    pub fn take(&mut self, link: CoreState, cx: &mut Context<Self>) {
+        if link.revision < self.link.revision {
+            return;
         }
-    }
-
-    /// Takes a state the host reported; the views hear of it only when it
-    /// changed.
-    fn take(&mut self, link: CoreState, cx: &mut Context<Self>) {
         let was_up = self.was_up || link.state == LinkState::Up;
-        if link != self.link || was_up != self.was_up {
-            self.link = link;
-            self.was_up = was_up;
+        let changed = !link.shows_as(&self.link) || was_up != self.was_up;
+        self.link = link;
+        self.was_up = was_up;
+        if changed {
             cx.notify();
         }
     }
@@ -111,41 +101,41 @@ impl Models {
     pub fn new(host: Arc<dyn Host>, theme: ThemePref, system_dark: bool, cx: &mut App) -> Models {
         Models {
             host,
-            core: cx.new(|_| CoreLink { link: CoreState::default(), was_up: false, events: 0 }),
+            core: cx.new(|_| CoreLink { link: CoreState::default(), was_up: false }),
             shell: cx.new(|_| Shell { pref: theme, system_dark }),
         }
     }
 
     /// Asks for the core's state, as the page does at start. Events keep
-    /// coming meanwhile, and the answer may land after some of them: it is
-    /// taken only if none did (`CoreLink::take_answer`). A window busy with
-    /// its first frame while the core came up kept a stale `starting` so.
+    /// coming meanwhile, and the answer may land after some of them: its
+    /// revision says whether it is still news (`CoreLink::take`). A window
+    /// busy with its first frame while the core came up kept a stale
+    /// `starting` without it.
     pub fn ask_core_state(&self, cx: &mut App) {
-        let asked_at = self.core.read(cx).events;
         let answer = self.host.call(cmd::CORE_STATE, json!({}));
         let core = self.core.clone();
         cx.spawn(async move |cx| match answer.await.and_then(|v| serde_json::from_value::<CoreState>(v).map_err(|e| e.to_string())) {
-            Ok(link) => core.update(cx, |c, cx| c.take_answer(link, asked_at, cx)),
+            Ok(link) => core.update(cx, |c, cx| c.take(link, cx)),
             Err(e) => log::warn!("core_state: {e}"),
         })
         .detach();
     }
 
     /// The theme button: the next theme, kept by the host for the next start.
+    /// Sent, so the host has the choices in the order they were made.
     pub fn cycle_theme(&self, cx: &mut App) {
         let pref = self.shell.update(cx, |s, cx| s.cycle(cx));
-        let answer = self.host.call(cmd::SET_WINDOW_THEME, json!({ "theme": pref.name() }));
-        cx.background_spawn(async move {
-            if let Err(e) = answer.await {
-                log::warn!("set_window_theme: {e}");
-            }
-        })
-        .detach();
+        if let Err(e) = self.host.send(cmd::SET_WINDOW_THEME, json!({ "theme": pref.name() })) {
+            log::warn!("set_window_theme: {e}");
+        }
     }
 
-    /// Restart on the core banner: the core's state says how it goes.
+    /// Restart on the core banner: the core's state says how it goes. For
+    /// the state the banner shows: one that has moved on since (the core
+    /// came back meanwhile) restarts nothing.
     pub fn restart_core(&self, cx: &mut App) {
-        let answer = self.host.call(cmd::CORE_RESTART, json!({}));
+        let revision = self.core.read(cx).link.revision;
+        let answer = self.host.call(cmd::CORE_RESTART, json!({ "revision": revision }));
         cx.background_spawn(async move {
             if let Err(e) = answer.await {
                 log::warn!("core_restart: {e}");
@@ -160,6 +150,8 @@ pub(crate) fn deliver(models: &Models, message: Message, cx: &mut App) {
     match message {
         Message::Run(f) => f(),
         Message::Event { name, payload } => on_event(models, &name, payload, cx),
+        // The inbox hands these out as the event they stand for.
+        Message::Latest(_) => {}
     }
 }
 
@@ -168,7 +160,7 @@ pub(crate) fn deliver(models: &Models, message: Message, cx: &mut App) {
 pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
     if name == event::CORE_STATE {
         match serde_json::from_value::<CoreState>(payload) {
-            Ok(link) => models.core.update(cx, |c, cx| c.take_event(link, cx)),
+            Ok(link) => models.core.update(cx, |c, cx| c.take(link, cx)),
             Err(e) => log::warn!("{name}: {e}"),
         }
     }
