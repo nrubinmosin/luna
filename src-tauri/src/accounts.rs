@@ -161,6 +161,49 @@ fn rename_in(root: &Path, name: &str, to: &str) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
+    /// A junction on Windows (no privilege needed), a symlink elsewhere.
+    fn link_dir(link: &Path, target: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|o| o.status.success()));
+    }
+
+    /// The provider's folder or the account's a link to a folder elsewhere:
+    /// the deletion is refused and nothing there goes.
+    #[test]
+    fn a_deletion_goes_through_no_link() {
+        let base = std::env::temp_dir().join(format!("luna-accounts-delete-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (root, elsewhere) = (base.join("root"), base.join("elsewhere"));
+        fs::create_dir_all(elsewhere.join("work")).unwrap();
+        fs::write(elsewhere.join("work").join("keep.json"), "{}").unwrap();
+        fs::create_dir_all(&root).unwrap();
+        // The provider's folder a junction to another tree.
+        let provider = root.join(Provider::Claude.accounts_dir());
+        link_dir(&provider, &elsewhere);
+        assert!(remove_account_dir(&provider.join("work"), &root).is_err());
+        assert!(elsewhere.join("work").join("keep.json").is_file());
+        let _ = fs::remove_dir(&provider).or_else(|_| fs::remove_file(&provider));
+        // The account's folder a link out of the root.
+        fs::create_dir_all(&provider).unwrap();
+        link_dir(&provider.join("work"), &elsewhere.join("work"));
+        assert!(remove_account_dir(&provider.join("work"), &root).is_err());
+        assert!(elsewhere.join("work").join("keep.json").is_file());
+        let _ = fs::remove_dir(provider.join("work")).or_else(|_| fs::remove_file(provider.join("work")));
+        // A plain one goes; nothing there is nothing to do.
+        fs::create_dir_all(provider.join("work")).unwrap();
+        remove_account_dir(&provider.join("work"), &root).unwrap();
+        assert!(!provider.join("work").exists());
+        remove_account_dir(&provider.join("work"), &root).unwrap();
+        let _ = fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn the_test_build_defaults_to_accounts_of_its_own() {
         let data = Path::new("/x/test-build");
@@ -199,17 +242,40 @@ mod tests {
 #[tauri::command(async)]
 pub fn delete_account(provider: Provider, name: String) -> Result<(), String> {
     validate_name(&name)?;
-    let dir = provider_root(provider)?.join(&name);
+    let root = accounts_root()?;
+    let dir = root.join(provider.accounts_dir()).join(&name);
     // A folder gone already still has what Luna keeps of it cleaned up: a
     // deletion that failed after the folder went is finished by another.
     crate::library::delete_account_held(
         provider,
         &dir,
         &name,
-        || match dir.exists() {
-            true => fs::remove_dir_all(&dir).map_err(|e| e.to_string()),
-            false => Ok(()),
-        },
+        || remove_account_dir(&dir, &root),
         |library| crate::settings::update(|s| library(&mut s.library)),
     )
+}
+
+/// An account's folder removed, checked first as an account folder of Luna's
+/// (`boundary::account_in`): neither the provider's folder nor the account's
+/// a link or a junction, and the folder inside the accounts root once both
+/// are resolved, so a provider folder planted as a junction leads no rm -rf
+/// elsewhere. Nothing at the name (a link to nothing included, which
+/// `symlink_metadata` still sees) is nothing to remove.
+fn remove_account_dir(dir: &Path, root: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // The provider's folder may be the link that makes the name
+            // empty: it is looked at too, as the account would be.
+            let provider = dir.parent().unwrap_or(dir);
+            match fs::symlink_metadata(provider) {
+                Ok(m) if crate::boundary::is_link(&m) => Err(format!("{} is a link — Luna leaves it alone", provider.display())),
+                _ => Ok(()),
+            }
+        }
+        Err(e) => Err(format!("{}: {e}", dir.display())),
+        Ok(_) => {
+            crate::boundary::account_in(&dir.to_string_lossy(), root)?;
+            fs::remove_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))
+        }
+    }
 }
