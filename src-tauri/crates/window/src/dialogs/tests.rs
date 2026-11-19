@@ -10,7 +10,9 @@ use crate::models::Models;
 use crate::root::LunaWindow;
 use crate::state::WindowState;
 use crate::term::paste::Provider;
-use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
+#[cfg(debug_assertions)]
+use gpui::Modifiers;
+use gpui::{Entity, TestAppContext, VisualTestContext};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -68,12 +70,14 @@ impl D<'_> {
         self.cx.run_until_parked();
     }
 
+    #[cfg(debug_assertions)]
     fn click(&mut self, selector: &'static str) {
         let at = self.cx.debug_bounds(selector).unwrap_or_else(|| panic!("no {selector} drawn")).center();
         self.cx.simulate_click(at, Modifiers::none());
         self.settle();
     }
 
+    #[cfg(debug_assertions)]
     fn drawn(&mut self, selector: &'static str) -> bool {
         self.cx.debug_bounds(selector).is_some()
     }
@@ -130,6 +134,7 @@ fn ctrl_n_opens_the_dialog_on_what_the_accounts_settings_say(cx: &mut TestAppCon
     assert_eq!(chat_ids(&d.state()), before);
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn create_makes_the_chat_through_the_one_path_and_remembers_where(cx: &mut TestAppContext) {
     let mut d = open(cx);
@@ -169,6 +174,7 @@ fn create_makes_the_chat_through_the_one_path_and_remembers_where(cx: &mut TestA
     assert!(d.calls(cmd::CLAUDE_TRUST_FOLDER).is_empty());
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn the_worktree_box_is_for_folders_in_git_only(cx: &mut TestAppContext) {
     let mut d = open_as(cx, |host| {
@@ -191,6 +197,7 @@ fn the_worktree_box_is_for_folders_in_git_only(cx: &mut TestAppContext) {
     assert_eq!(d.calls(cmd::CHAT_FOLDER_CHECK).last().unwrap()["worktree"], json!(false));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_folder_the_start_would_refuse_keeps_create_shut(cx: &mut TestAppContext) {
     let mut d =
@@ -205,6 +212,7 @@ fn a_folder_the_start_would_refuse_keeps_create_shut(cx: &mut TestAppContext) {
     assert_eq!(d.name(), Some("new-chat"));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn trust_is_asked_and_written_only_when_ticked(cx: &mut TestAppContext) {
     let mut d = open_as(cx, |host| host.answer(cmd::CLAUDE_FOLDER_TRUSTED, json!(false)));
@@ -222,6 +230,7 @@ fn trust_is_asked_and_written_only_when_ticked(cx: &mut TestAppContext) {
     assert_eq!(d.name(), None);
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_ticked_trust_is_written_before_the_chat_exists(cx: &mut TestAppContext) {
     let mut d = open_as(cx, |host| host.answer(cmd::CLAUDE_FOLDER_TRUSTED, json!(false)));
@@ -280,6 +289,7 @@ fn what_was_changed_here_survives_another_folder_and_the_boxes_start_afresh(cx: 
     assert_eq!(d.calls(cmd::CLAUDE_DEFAULTS).last().unwrap()["folder"], json!("C:\\work\\site"));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_codex_account_opens_on_its_own_settings_and_auto_review_brings_its_sandbox(cx: &mut TestAppContext) {
     let mut d = open(cx);
@@ -342,6 +352,7 @@ fn the_quick_chat_is_made_at_once_in_the_folder_and_account_on_screen(cx: &mut T
     assert!(!d.calls(cmd::CHAT_FOLDER_CHECK).is_empty());
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn the_quick_chat_leaves_trust_to_the_dialog(cx: &mut TestAppContext) {
     let mut d = open_as(cx, |host| host.answer(cmd::CLAUDE_FOLDER_TRUSTED, json!(false)));
@@ -354,6 +365,7 @@ fn the_quick_chat_leaves_trust_to_the_dialog(cx: &mut TestAppContext) {
     assert!(d.calls(cmd::CLAUDE_TRUST_FOLDER).is_empty());
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_quick_chat_that_fails_falls_back_to_the_dialog_with_the_reason(cx: &mut TestAppContext) {
     let mut d =
@@ -366,6 +378,7 @@ fn a_quick_chat_that_fails_falls_back_to_the_dialog_with_the_reason(cx: &mut Tes
     assert!(d.drawn("newchat-refusal"));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn the_delete_dialog_asks_first_and_deletes_through_one_path(cx: &mut TestAppContext) {
     let mut d = open(cx);
@@ -398,6 +411,7 @@ fn the_delete_dialog_asks_first_and_deletes_through_one_path(cx: &mut TestAppCon
     assert!(d.calls(cmd::BACKGROUND_DELETE).is_empty());
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_chats_helpers_are_kept_unless_the_person_says_otherwise(cx: &mut TestAppContext) {
     let mut d = open(cx);
@@ -413,6 +427,7 @@ fn a_chats_helpers_are_kept_unless_the_person_says_otherwise(cx: &mut TestAppCon
     assert_eq!(d.calls(cmd::DELETE_SESSION).len(), 1);
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn helpers_at_work_are_stopped_only_with_a_yes_of_their_own(cx: &mut TestAppContext) {
     let mut d = open(cx);
@@ -426,6 +441,7 @@ fn helpers_at_work_are_stopped_only_with_a_yes_of_their_own(cx: &mut TestAppCont
     assert_eq!((gone[0]["stopWorking"].clone(), gone[0]["ofChat"].clone()), (json!(false), json!("c-parser")));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn every_box_is_a_yes_of_its_own(cx: &mut TestAppContext) {
     let mut d = open(cx);
@@ -443,6 +459,7 @@ fn every_box_is_a_yes_of_its_own(cx: &mut TestAppContext) {
     assert_eq!((gone[2]["stopWorking"].clone(), gone[2]["dropUnsaved"].clone()), (json!(false), json!(false)));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn the_helpers_popover_lists_a_chats_helpers_and_nothing_else(cx: &mut TestAppContext) {
     let mut d = open(cx);
@@ -465,6 +482,7 @@ fn the_helpers_popover_lists_a_chats_helpers_and_nothing_else(cx: &mut TestAppCo
     assert_eq!(d.name(), None);
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_helper_is_watched_as_plain_text_stopped_and_deleted(cx: &mut TestAppContext) {
     let mut d = open(cx);
@@ -490,6 +508,7 @@ fn a_helper_is_watched_as_plain_text_stopped_and_deleted(cx: &mut TestAppContext
     );
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_helper_opened_as_a_chat_is_the_persons_for_good(cx: &mut TestAppContext) {
     let mut d = open_as(cx, |host| {
@@ -545,6 +564,7 @@ fn a_row_that_could_not_be_made_leaves_the_helper_its_agents(cx: &mut TestAppCon
     assert!(told[0]["error"].as_str().unwrap().contains("no codex account"));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_run_that_did_not_end_by_itself_is_told_at_start(cx: &mut TestAppContext) {
     let mut d = open_as(cx, |host| {
@@ -556,4 +576,26 @@ fn a_run_that_did_not_end_by_itself_is_told_at_start(cx: &mut TestAppContext) {
     assert_eq!(d.calls(cmd::RESTART_WINDOW).len(), 1);
     d.click("crash-continue");
     assert_eq!(d.name(), None);
+}
+
+#[gpui::test]
+fn the_accounts_models_are_not_waited_for(cx: &mut TestAppContext) {
+    // Asking the CLI for its models takes seconds: the dialog is usable on the aliases meanwhile.
+    let mut d = open_as(cx, |host| host.defer(cmd::CLAUDE_MODELS));
+    let v = d.new_chat();
+    assert!(v.read_with(d.cx, |v, _| v.can_create()));
+    assert_eq!(v.read_with(d.cx, |v, _| v.claude.settings.model.clone()), "Opus");
+    // Haiku is among the aliases, and takes no effort once the list comes: Sonnet is not in it.
+    assert!(d.host.resolve(
+        cmd::CLAUDE_MODELS,
+        Ok(json!([{ "slug": "opus", "displayName": "Opus", "efforts": ["low", "high"], "defaultEffort": "low" }]))
+    ));
+    d.settle();
+    assert_eq!(v.read_with(d.cx, |v, _| v.claude.settings.effort.clone()), "high");
+    v.update(d.cx, |v, cx| v.pick_effort("max", cx));
+    assert_eq!(
+        v.read_with(d.cx, |v, _| v.claude.settings.effort.clone()),
+        "low",
+        "held to what the account's own list says the model takes"
+    );
 }

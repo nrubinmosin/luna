@@ -137,7 +137,7 @@ fn tick(id: &str, p: &Palette, label: SharedString, on: bool, enabled: bool, rad
         .min_h(px(18.))
         .text_color(fg)
         .child(div().flex_none().child(square))
-        .when(!label.is_empty(), |d| d.child(label))
+        .when(!label.is_empty(), |d| d.child(div().min_w_0().child(label)))
         .when(enabled, |d| {
             d.on_click(move |_, window, cx| {
                 cx.stop_propagation();

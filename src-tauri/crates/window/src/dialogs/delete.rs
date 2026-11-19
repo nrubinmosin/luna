@@ -135,8 +135,12 @@ impl DeleteChat {
             }
             match session.await {
                 Ok(r) => {
-                    if let Some(kept) = r.get("worktreeKept").and_then(|k| k.as_bool()).filter(|k| *k) {
-                        log::warn!("the worktree was kept for another session in it: {kept}");
+                    // A worktree asked to go that another session is in stays.
+                    if r.get("worktreeKept").and_then(Value::as_bool) == Some(true) {
+                        log::warn!(
+                            "the chat's worktree was kept, another session is in it: {}",
+                            r.get("worktree").and_then(Value::as_str).unwrap_or("?")
+                        );
                     }
                 }
                 Err(e) => log::warn!("deleting the session failed: {e}"),

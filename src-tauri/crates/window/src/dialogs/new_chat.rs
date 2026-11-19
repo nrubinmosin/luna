@@ -56,8 +56,6 @@ impl<S: Clone> Draft<S> {
 struct Resolved {
     claude: Option<(ClaudeSettings, Origins, HashMap<String, Setting>)>,
     codex: Option<(CodexSettings, Origins)>,
-    claude_models: Option<Vec<ClaudeModel>>,
-    codex_models: Option<Vec<CodexModel>>,
 }
 
 /// The settings `account` opens on in `folder`, as a start that cannot wait
@@ -231,8 +229,23 @@ impl NewChat {
         {
             let (host, account, folder, draft) = (host.clone(), account.clone(), folder.clone(), draft.clone());
             cx.spawn(async move |this, cx| {
-                let got = resolve(&host, &account, &folder, models_asked).await;
+                let got = resolve(&host, &account, &folder).await;
                 let _ = this.update(cx, |v, cx| v.resolved(draft, got, cx));
+            })
+            .detach();
+        }
+        if models_asked {
+            let (host, account) = (host.clone(), account.clone());
+            cx.spawn(async move |this, cx| {
+                let (claude, codex) = fetch_models(&host, &account).await;
+                let _ = this.update(cx, |v, cx| {
+                    if v.models_for == account.path {
+                        v.claude_models = claude.or(v.claude_models.take());
+                        v.codex_models = codex.or(v.codex_models.take());
+                        v.settle_claude();
+                        cx.notify();
+                    }
+                });
             })
             .detach();
         }
@@ -285,12 +298,6 @@ impl NewChat {
 
     /// The files' answer for `draft`'s account and folder is in.
     fn resolved(&mut self, draft: String, got: Resolved, cx: &mut Context<Self>) {
-        if let Some(m) = got.claude_models {
-            self.claude_models = Some(m);
-        }
-        if let Some(m) = got.codex_models {
-            self.codex_models = Some(m);
-        }
         if self.draft_key() == draft {
             if let Some((values, origins, by_model)) = got.claude {
                 let d = &mut self.claude;
@@ -573,38 +580,34 @@ impl NewChat {
 }
 
 /// The files' answer for an account in a folder, and the account's models.
-async fn resolve(host: &Arc<dyn Host>, account: &Account, folder: &str, models_asked: bool) -> Resolved {
+async fn resolve(host: &Arc<dyn Host>, account: &Account, folder: &str) -> Resolved {
     let args = json!({ "accountPath": account.path, "folder": folder });
-    let models_args = json!({ "accountPath": account.path, "ask": true });
     match account.provider {
         Provider::Claude => {
-            let defaults = ask::<ClaudeDefaults>(host, cmd::CLAUDE_DEFAULTS, args);
-            let models = async {
-                match models_asked {
-                    true => Some(ask::<Vec<ClaudeModel>>(host, cmd::CLAUDE_MODELS, models_args).await.unwrap_or_default()),
-                    false => None,
-                }
-            };
-            let (dto, models) = futures::join!(defaults, models);
-            let dto = dto.ok();
-            let known = models.clone().unwrap_or_default();
-            let (values, origins) = choice::claude_settings(dto.as_ref(), &known);
+            let dto = ask::<ClaudeDefaults>(host, cmd::CLAUDE_DEFAULTS, args).await.ok();
+            let (values, origins) = choice::claude_settings(dto.as_ref(), &[]);
             let by_model = dto.map(|d| d.effort_by_model).unwrap_or_default();
-            Resolved { claude: Some((values, origins, by_model)), codex: None, claude_models: models, codex_models: None }
+            Resolved { claude: Some((values, origins, by_model)), codex: None }
         }
         Provider::Codex => {
-            let defaults = ask::<CodexDefaults>(host, cmd::CODEX_DEFAULTS, args);
-            let models = async {
-                match models_asked {
-                    true => Some(
-                        ask::<Vec<CodexModel>>(host, cmd::CODEX_MODELS, json!({ "accountPath": account.path })).await.unwrap_or_default(),
-                    ),
-                    false => None,
-                }
-            };
-            let (dto, models) = futures::join!(defaults, models);
-            let (values, origins) = choice::codex_settings(dto.ok().as_ref());
-            Resolved { claude: None, codex: Some((values, origins)), claude_models: None, codex_models: models }
+            let dto = ask::<CodexDefaults>(host, cmd::CODEX_DEFAULTS, args).await.ok();
+            let (values, origins) = choice::codex_settings(dto.as_ref());
+            Resolved { claude: None, codex: Some((values, origins)) }
+        }
+    }
+}
+
+/// The account's models: asked of the CLI where its catalog does not say,
+/// which takes seconds, so the dialog is usable on the four aliases meanwhile.
+async fn fetch_models(host: &Arc<dyn Host>, account: &Account) -> (Option<Vec<ClaudeModel>>, Option<Vec<CodexModel>>) {
+    match account.provider {
+        Provider::Claude => {
+            let m = ask::<Vec<ClaudeModel>>(host, cmd::CLAUDE_MODELS, json!({ "accountPath": account.path, "ask": true })).await;
+            (Some(m.unwrap_or_default()), None)
+        }
+        Provider::Codex => {
+            let m = ask::<Vec<CodexModel>>(host, cmd::CODEX_MODELS, json!({ "accountPath": account.path })).await;
+            (None, Some(m.unwrap_or_default()))
         }
     }
 }
