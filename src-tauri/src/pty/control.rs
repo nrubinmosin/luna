@@ -140,11 +140,14 @@ pub(crate) fn fake_terminal_of(id: &str) -> (String, bool) {
 /// thread. A failure there is logged rather than returned: by the time it
 /// happens the caller has moved on, and it never looked at the result anyway.
 #[tauri::command]
-pub fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
+pub fn resize_session(id: String, cols: u16, rows: u16, pixel_width: Option<u16>, pixel_height: Option<u16>) -> Result<(), String> {
     let state = manager();
     let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let s = sessions.get(&id).ok_or("no such session")?;
-    s.input_tx.send(Input::Resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }))
+    // The grid's size in pixels, as TIOCSWINSZ carries it on Unix (ConPTY
+    // takes the cells only): the native window sends it, the page does not.
+    let (pixel_width, pixel_height) = (pixel_width.unwrap_or(0), pixel_height.unwrap_or(0));
+    s.input_tx.send(Input::Resize(PtySize { rows, cols, pixel_width, pixel_height }))
 }
 
 // The pty child is the CLI; everything it spawned (node, MCP servers, shells)

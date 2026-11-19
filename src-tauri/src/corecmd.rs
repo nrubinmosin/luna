@@ -174,7 +174,9 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
             approval: String, sandbox: String, worktree: Option<bool>, resume: Option<String>, login: bool,
             tools: Option<bool>, hooks_unasked: Option<bool>, guard: Option<bool>, handoff: Option<u8>),
         "write_session" => call!(res args, pty::write_session, id: String, data: String),
-        "resize_session" => call!(res args, pty::resize_session, id: String, cols: u16, rows: u16),
+        "resize_session" => {
+            call!(res args, pty::resize_session, id: String, cols: u16, rows: u16, pixel_width: Option<u16>, pixel_height: Option<u16>)
+        }
         "kill_session" => call!(wait res args, pty::kill_session, id: String),
         "delete_session" => call!(wait res args, pty::delete_session,
             id: String, folder: AbsPath, worktree_path: Option<AbsPath>, drop_worktree: bool),

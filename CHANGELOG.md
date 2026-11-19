@@ -26,6 +26,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.
+- `resize_session` takes the terminal's size in pixels too (`pixelWidth`,
+  `pixelHeight`), which the native window sends and the core passes to the
+  PTY.
 
 ### Changed
 
