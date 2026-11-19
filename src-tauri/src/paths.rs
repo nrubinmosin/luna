@@ -6,7 +6,9 @@ const APP_DIR: &str = "luna";
 /// everything — log, attachments, settings, downloaded CLIs — next to its exe
 /// in the repo's ignored `test-build/`, and shares none of it.
 pub fn is_test() -> bool {
-    env!("LUNA_FLAVOR") == "test"
+    // build.rs sets the cfg for LUNA_FLAVOR=test; comparing the flavor's
+    // text was `"" == "test"` in a release, which clippy refuses.
+    cfg!(luna_test)
 }
 
 fn exe_dir() -> Option<PathBuf> {
