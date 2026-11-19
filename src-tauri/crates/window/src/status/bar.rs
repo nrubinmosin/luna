@@ -304,7 +304,8 @@ impl Render for StatusBar {
             + chip_w("Settings")
             + 4. * (chips.len() as f32 + 6.);
         let width: f32 = f32::from(window.viewport_size().width);
-        let room = (width - 4. - fixed).max(0.);
+        // The accounts' own field has its bevel and padding, and the estimate errs short.
+        let room = (width - 4. - fixed - 28.).max(0.);
         let accounts_el = if !v.accounts_loaded() {
             div()
         } else if v.accounts().is_empty() {

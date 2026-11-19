@@ -51,7 +51,7 @@ impl Render for OrphanLine {
                 .id(id)
                 .debug_selector(move || id.into())
                 .flex_none()
-                .on_click(move |_, _, cx| vitals.update(cx, |v, cx| f(v, cx)))
+                .on_click(move |_, _, cx| vitals.update(cx, f))
                 .child(button(&p, label))
                 .into_any_element()
         };

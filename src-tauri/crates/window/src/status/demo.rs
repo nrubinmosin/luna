@@ -17,6 +17,7 @@ pub const NOW_MS: u64 = 1_795_089_600_000;
 
 /// What a shot holds still: the clock, and the pause between the accounts'
 /// asks (a shot is taken a moment after the window opens).
+#[cfg_attr(not(feature = "shots"), allow(dead_code))]
 pub fn hold(v: &mut Vitals) {
     v.set_clock(Rc::new(|| NOW_MS));
     v.set_gap(Duration::ZERO);

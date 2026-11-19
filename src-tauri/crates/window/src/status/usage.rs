@@ -380,7 +380,7 @@ pub fn width_of(a: &Usage, fit: Fit, now_ms: u64) -> f32 {
             w += 4. + METER_W;
         }
         if fit == Fit::Full {
-            w += 4. + fmt_reset(win.reset_at.as_deref(), now_ms).chars().count() as f32 * CELL * 0.85;
+            w += 4. + fmt_reset(win.reset_at.as_deref(), now_ms).chars().count() as f32 * CELL;
         }
     }
     w
