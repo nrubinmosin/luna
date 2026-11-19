@@ -197,6 +197,7 @@ macro_rules! app_handler {
             agents::spawn::set_helper_mode,
             cli::cli_status,
             cli::cli_update_now,
+            cli::cli_roll_back,
             cli::cli_versions,
             claude::defaults::claude_defaults,
             claude::models::claude_models,

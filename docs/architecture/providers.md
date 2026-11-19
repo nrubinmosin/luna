@@ -224,6 +224,23 @@ the sweep's re-read with a hook between its listing and its hold; a pass and
 a rollback on two threads are run too, which shows only that the outcomes it
 happens on are sound.
 
+**Rollback by hand.** `cli_roll_back(provider)` (Settings → CLIs → Roll back)
+reads the current version from the record and calls the same `roll_back_by`
+the canary's rollback does, with the mark's origin `person` in place of
+`rollback`: the same checks, the same hashing outside the lock, the same one
+write and sweep. Its Err is the refusal's own words (nothing current or kept,
+below the floor, turned away, not whole, a hash that no longer matches, a
+record that would not read or write). On success it returns
+`{ from, to }`, logs, and sends `cli://canary` so the window reads the versions
+again. The mark holds like the others (until the pointer names another
+version), so the next pass stays (`pass_in`) rather than fetching `from`
+again; with nothing kept to go back to afterwards, a second press refuses.
+`cli_versions` carries `wayBack` (`dir`, `version`, `refusal`) for the button:
+the record's `previous`, with the refusal that costs no hashing (below the
+floor, turned away, not whole, no sha256 kept); a hash that no longer matches
+shows only when the command runs. Codex needs nothing of its own: the record,
+the floor and the checks are the same for both CLIs.
+
 A version turned away is not taken while the pointer names it: each pass
 that reads the pointer drops every mark of another version, so a release is
 tried once and taken again only if the pointer moves away and comes back. A

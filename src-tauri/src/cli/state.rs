@@ -66,6 +66,8 @@ pub(crate) enum By {
     Probe,
     /// Its first sessions failed and Luna rolled back from it.
     Rollback,
+    /// A person rolled back from it (`cli.rs` `cli_roll_back`).
+    Person,
     /// Marked before this file, by a person (Luna 0.19's "Mark bad") or its
     /// probe of then.
     Earlier,
