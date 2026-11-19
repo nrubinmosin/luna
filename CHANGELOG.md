@@ -10,8 +10,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Added
 
-- **Roll back** for each CLI in Settings → CLIs, beside **Check**: it goes
-  back to the version Luna keeps before the current one, by the same checks as
+- **Roll back** for each CLI in Settings → CLIs of the new window, beside
+  **Check**: it goes back to the version Luna keeps before the current one, by the same checks as
   the automatic rollback (a whole install, not below the oldest this Luna
   runs, every file matching its checksum), and says why where it cannot. The
   version left is skipped while it is the newest release, until a different

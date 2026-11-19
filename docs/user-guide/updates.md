@@ -64,13 +64,16 @@ nothing depends on a global install.
   the CLI ended on (for a chat, the last line it printed); the next session
   is watched in its place. If the version gone back to fails its first
   sessions too, Luna stays on it: the failures were then not the version's.
-- **Roll back** in Settings → CLIs does the same on your word: it goes back
-  to the version before (shown beside the button) and does not take the
-  version it left again while that is the newest release; the next different
-  release installs as usual. It checks what the automatic rollback checks
-  and refuses, saying why, when nothing is kept to go back to or that version
-  is older than the oldest this Luna runs, was turned away, or has files that
-  no longer match their checksums. Running sessions keep their version.
+- **Roll back**, a control of the new window's Settings → CLIs (it arrives
+  with that window; the old window has none), does the same on your word: it
+  goes back to the version before (shown beside the button) and does not take
+  the version it left again while that is the newest release; the next
+  different release installs as usual. It checks what the automatic rollback
+  checks and refuses, saying why, when nothing is kept to go back to or that
+  version is older than the oldest this Luna runs, was turned away, or has
+  files that no longer match their checksums, or when the version it was to
+  leave is not the one now current (a check installed a newer one since you
+  looked). Running sessions keep their version.
 - What Luna keeps of this (which version is current, the one before, the
   versions it turned away) is one file in each CLI's folder. If it is lost or
   damaged, Luna takes up again the newest installed version whose files still

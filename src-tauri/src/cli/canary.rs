@@ -476,12 +476,19 @@ pub(super) fn tripped(provider: Provider, root: &Path, canary: &Canary) {
 /// noted, so no core tries it again; one that failed (the record would not
 /// be read or written) is not, and the next core's start tries again.
 pub(super) fn settle_rollback(provider: Provider, root: &Path, version: &str, seen: &str, rolled: Result<String, super::NoRollback>) {
+    // The person's own rollback (or a pass) got there first: nothing failed
+    // that the person needs telling of.
+    if let Err(super::NoRollback::Moved(why)) = &rolled {
+        crate::log::info("cli", &format!("canary: {} {version}: no rollback to make: {why}", provider.as_str()));
+        return;
+    }
     if let Err(super::NoRollback::Refused(why)) = &rolled {
         note_outcome(root, version, why);
     }
     let rolled = rolled.map_err(|e| match e {
         super::NoRollback::Refused(why) => why,
         super::NoRollback::Failed(why) => format!("{why}; it is tried again as Luna next starts"),
+        super::NoRollback::Moved(why) => why,
     });
     tell(provider, version, seen, &rolled);
 }
