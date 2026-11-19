@@ -5,7 +5,14 @@
  * windows as the usage endpoint names them.
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import type { Account, CodexApproval, CodexChat, CodexEffort, CodexSettings } from '../../../shared/types';
+import type {
+  Account,
+  CodexApproval,
+  CodexChat,
+  CodexEffort,
+  CodexSandbox,
+  CodexSettings
+} from '../../../shared/types';
 import {
   AUTO_REVIEW_SANDBOX,
   CODEX_APPROVAL_HINTS,
@@ -31,16 +38,19 @@ export const label = 'Codex';
  *  if it cannot say, or for a session whose own mode nobody knows (an orphan
  *  taken in): Codex's own default model, and the approval and sandbox Luna
  *  takes where it cannot tell (codex/defaults.rs `CLOSED_APPROVAL`,
- *  `CLOSED_SANDBOX`) — never the core's stock bypass, which is for files that
- *  were read and said nothing. */
+ *  `CLOSED_SANDBOX`). */
 export const STOCK: CodexSettings = { model: null, effort: 'high', approval: 'on-request', sandbox: 'read-only' };
 
 export const SOURCE_LABELS: Record<Exclude<CodexDefaultSource, 'stock'>, string> = {
+  system: "Codex's machine-wide config.toml",
   account: "the account's config.toml",
   project: "the project's .codex/config.toml",
   codex: "Codex's own default",
   closed: 'Luna’s safe choice: a config.toml it could not read, or a value it does not know'
 };
+
+/** A chat left on Codex's own approval or sandbox gets no flag for it (codex/defaults.rs left_to_codex). */
+const leftToCodex = (s: { source: CodexDefaultSource }) => (s.source === 'codex' ? ': Luna passes nothing for it' : '');
 
 export const settingsNote =
   'Opens on this account’s Codex config.toml; anything changed here applies to this chat only';
@@ -74,12 +84,15 @@ export async function settingsDefaults(
   const approval = dto?.approval ? codexApprovalFromSetting(dto.approval.value) : null;
   if (approval && dto?.approval) {
     values.approval = approval;
-    if (dto.approval.source !== 'stock') from.approval = SOURCE_LABELS[dto.approval.source];
+    if (dto.approval.source !== 'stock') from.approval = SOURCE_LABELS[dto.approval.source] + leftToCodex(dto.approval);
   }
   const sandbox = dto?.sandbox ? codexSandboxFromSetting(dto.sandbox.value) : null;
   if (sandbox && dto?.sandbox) {
     values.sandbox = sandbox;
-    if (dto.sandbox.source !== 'stock') from.sandbox = SOURCE_LABELS[dto.sandbox.source];
+    if (dto.sandbox.source !== 'stock') {
+      const profile = sandbox === 'profile' && dto.profile ? `: permission profile “${dto.profile}”` : '';
+      from.sandbox = SOURCE_LABELS[dto.sandbox.source] + profile + leftToCodex(dto.sandbox);
+    }
   }
   return { values, from };
 }
@@ -185,6 +198,10 @@ export function Fields({
   // it on as they say it, and cannot make one up.
   const approvals: CodexApproval[] =
     draft.resolved.approval === 'granular' ? [...CODEX_APPROVALS, 'granular'] : CODEX_APPROVALS;
+  // Likewise a permission profile of the user's own: passed through as the
+  // files name it.
+  const sandboxes: CodexSandbox[] =
+    draft.resolved.sandbox === 'profile' ? [...CODEX_SANDBOXES, 'profile'] : CODEX_SANDBOXES;
   const pickApproval = (a: CodexApproval) => {
     pick('approval', a);
     if (a === 'auto-review') pick('sandbox', AUTO_REVIEW_SANDBOX);
@@ -246,7 +263,7 @@ export function Fields({
             {origin('approval')}
           </div>
           <div style={{ flex: 1.4, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
-            {CODEX_SANDBOXES.map(s => {
+            {sandboxes.map(s => {
               const id = `codex-sandbox-${s}`;
               return (
                 <div

@@ -229,12 +229,12 @@ describe('agent bridge: opening a background helper as a chat', () => {
     expect(mocked.backgroundPromoted).toHaveBeenCalledWith('bg2', null);
   });
 
-  it('opens a Codex helper in a mode the window does not know closed, not on the account’s bypass', async () => {
+  it('opens a Codex helper in a mode the window does not know closed, not on the account’s default', async () => {
     vi.mocked(defaults).codexDefaults.mockResolvedValueOnce({
       model: null,
       effort: null,
-      approval: { value: 'never', source: 'stock' },
-      sandbox: { value: 'danger-full-access', source: 'stock' }
+      approval: { value: 'never', source: 'account' },
+      sandbox: { value: 'danger-full-access', source: 'account' }
     });
     mocked.backgroundPromote.mockResolvedValue(
       helper({

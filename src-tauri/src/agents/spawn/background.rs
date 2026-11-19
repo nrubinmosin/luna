@@ -98,10 +98,13 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                     Some(m) => crate::claude::defaults::effort_of(account_path, folder, m),
                     None => d["effort"].as_str().unwrap_or("high").to_owned(),
                 })?;
-            let mode = match asked(&params.permission_mode) {
-                Some(p) if CLAUDE_MODES.contains(&p) => p.to_string(),
+            // Named, spelled exactly as the CLI takes it; not named, none is
+            // passed and the account's and project's settings decide, which
+            // `mode` says for show.
+            let (mode, own_mode) = match asked(&params.permission_mode) {
+                Some(p) if CLAUDE_MODES.contains(&p) => (p.to_string(), false),
                 Some(p) => return Err(format!("unknown permission mode \"{p}\"; use {}", CLAUDE_MODES.join(", "))),
-                None => d["permissionMode"].as_str().unwrap_or("default").to_string(),
+                None => (d["permissionMode"].as_str().unwrap_or("default").to_string(), true),
             };
             Ok(crate::background::Spec {
                 provider,
@@ -110,6 +113,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 model,
                 effort,
                 mode,
+                own_mode,
                 auto_review: false,
                 tools,
                 read_only: params.read_only.unwrap_or(false),
@@ -137,18 +141,20 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 }
             };
             let d = crate::codex::defaults::flags(account_path, folder);
-            let sandbox = match asked(&params.sandbox) {
+            // Not named, none is passed: the sandbox Codex's own config
+            // settles on, which `mode` says for show (codex/defaults.rs).
+            let (sandbox, own_mode) = match asked(&params.sandbox) {
                 Some(s) if auto_review && s != AUTO_REVIEW_SANDBOX => {
                     return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX} only; leave sandbox out"))
                 }
                 Some(s) if ["read-only", crate::codex::launch::READ_ONLY_NET, "workspace-write", "danger-full-access"].contains(&s) => {
-                    s.to_string()
+                    (s.to_string(), false)
                 }
                 Some(s) => {
                     return Err(format!("unknown sandbox \"{s}\"; use read-only, read-only-net, workspace-write, danger-full-access"))
                 }
-                None if auto_review => AUTO_REVIEW_SANDBOX.to_string(),
-                None => d["sandbox"].as_str().unwrap_or("read-only").to_string(),
+                None if auto_review => (AUTO_REVIEW_SANDBOX.to_string(), false),
+                None => (d["sandbox"].as_str().unwrap_or("read-only").to_string(), true),
             };
             let models = crate::codex::models::models_known(account_path);
             let model = asked(&params.model).map(str::to_owned).or_else(|| d["model"].as_str().map(str::to_owned));
@@ -175,6 +181,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 model,
                 effort,
                 mode: sandbox,
+                own_mode,
                 auto_review,
                 tools,
                 read_only: false,
@@ -263,9 +270,10 @@ pub(in crate::agents) fn spawn_background(
     if spec.connectors {
         settings["connectors"] = serde_json::json!(true);
     }
-    // Where its mode came from when the spawn named none (privilege.rs `settle_mode`).
-    if let Some(from) = params.mode_from {
-        settings["modeFrom"] = serde_json::json!(from);
+    // The spawn named no mode: the CLI's own settings decide it, and the
+    // mode shown is what Luna read of them.
+    if spec.own_mode {
+        settings["modeFrom"] = serde_json::json!("cli");
     }
     // Kept in the registry too, where `luna_session_get` shows them and every
     // spawn of its own reads them to pass on (`constraints_for`).

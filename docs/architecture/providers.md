@@ -38,7 +38,7 @@ and a why. Per provider:
 | Self-update off (Runtime) | `DISABLE_AUTOUPDATER=1` | `-c check_for_update_on_startup=false` per start, never written |
 | Renderer and TUI (Runtime) | `tui: "fullscreen"` in the `--settings` file and `CLAUDE_CODE_NO_FLICKER=1`, chats and logins | `-c tui.notifications=false`, `-c tui.copy_on_select="never"`, chats only |
 | Reviewer | n/a | `approvals_reviewer="user"` for helpers only |
-| Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one |
+| Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one, whose value goes as it is: so Codex runs commands at all, not a guarantee |
 | Trust | the CLI's prompt, or the dialog's write | the CLI's screen, the dialog's write, or a helper's `-c` for its run |
 | `--skip-git-repo-check` (Runtime) | n/a | a helper outside a Git repository only |
 | Core read deny (Boundary) | `permissions.deny` in `--settings` | a profile deny, off Windows (ADR-0014) |
@@ -289,20 +289,29 @@ files themselves and the dialog opens on what they say:
 - **Claude Code**, in its order: the account's `settings.json` → the project's
   `.claude/settings.json` → `.claude/settings.local.json` → the machine-wide
   managed file.
-- **Codex**: the account's `config.toml`, then the project's
-  `.codex/config.toml` layers from its root down to the folder, found as
-  Codex finds them (only for a trusted folder; `codex/config.rs`
-  `project_layers`). No model there: the first model of the catalog (sorted
-  by `priority`; source `codex`); no effort: that model's
-  `default_reasoning_level`. Codex always gets `--model`. The approval and
-  the sandbox fail closed: a layer that will not read or parse, or a value
-  Luna does not know (`untrusted` among them, which 0.169.0 refuses), gives
-  `on-request` and `read-only` (source `closed`), a value left unsaid beside
-  one unknown too; `on-failure` reads as `on-request`; a `{ granular = … }`
-  table is `granular`, and a chat in it is started with the table as
-  `-c approval_policy=…` (`granular_policy`), never `--ask-for-approval`,
-  which takes `on-request` and `never` only. `launch_mode` puts what the
-  window asks through the same reading.
+- **Codex**: its system layer (`codex/config.rs` `system_layer`), the
+  account's `config.toml`, then the project's `.codex/config.toml` layers
+  from its root down to the folder, found as Codex finds them (only for a
+  trusted folder; `codex/config.rs` `project_layers`). No model there: the
+  first model of the catalog (sorted by `priority`; source `codex`); no
+  effort: that model's `default_reasoning_level`. Codex always gets
+  `--model`. No approval or sandbox there: Codex's own defaults (source
+  `codex`: `on-request`; `read-only`, or `workspace-write` in a trusted
+  folder, 0.169.0), and a chat left on them gets no `--ask-for-approval` or
+  `--sandbox` (`left_to_codex`; off Windows a `read-only` one still takes
+  Luna's profile denying its `core/`). A sandbox may come of
+  `default_permissions`: a built-in profile as its mode, one of the user's
+  own as `profile`, by name, passed through with no sandbox flag. Where Luna
+  has to pick and cannot tell, it fails closed: a layer that will not read or
+  parse, or a value Luna does not know, gives `on-request` and `read-only`
+  (source `closed`), a value left unsaid beside one unknown too;
+  `on-failure` reads as `on-request`; `untrusted` as the last word refuses
+  the chat by name (`refuses_untrusted`), as 0.169.0 refuses it whatever the
+  flags; a `{ granular = … }` table is `granular`, and a chat in it is
+  started with the table as `-c approval_policy=…` (`granular_policy`), never
+  `--ask-for-approval`, which takes `on-request` and `never` only.
+  `launch_mode` puts what the window asks through the same reading, an
+  approval closed closing the sandbox with it.
 
 Picking another Codex model moves the effort to that model's default unless the
 effort came from a file or was picked by hand (`draft.follow`). Picking another
@@ -310,7 +319,7 @@ Claude model moves it to that model's default only where the model does not
 take the level shown, and then whoever chose it (`draft.force`); a model that
 takes no effort shows no effort buttons and runs without `--effort`. What Codex actually ran
 is read from the rollout's `turn_context` (`modelSeen`). The core normalizes and
-supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
+supplies the values nothing names (Codex's own, or Luna's stock where it picks) so the dialog, `luna_session_spawn` and
 `luna_session_list` say the same thing.
 
 ## Models
@@ -479,7 +488,8 @@ live registry.
 ## The Codex sandbox on Windows
 
 - Without `windows.sandbox` Codex rejects or sends for approval every command
-  under `read-only`, `read-only-net` and `workspace-write`. Those modes get
+  under `read-only`, `read-only-net` and `workspace-write`. Those modes, and a
+  permission profile of the user's own, get
   `-c windows.sandbox="unelevated"` unless the account's `config.toml` names
   a `windows.sandbox` of its own (`config.rs` `windows_sandbox_set`), which
   then stands; a project's does not count (a restricted token per command: no

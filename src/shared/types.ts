@@ -60,8 +60,10 @@ export type CodexEffort = string;
  *  passes on as the files say it (codex/defaults.rs). */
 export type CodexApproval = 'on-request' | 'never' | 'auto-review' | 'granular';
 /** `read-only-net` is Luna's own: read-only with the network on, passed to
- *  Codex as a permission profile (codex/launch.rs). */
-export type CodexSandbox = 'read-only' | 'read-only-net' | 'workspace-write' | 'danger-full-access';
+ *  Codex as a permission profile (codex/launch.rs). `profile` is a permission
+ *  profile of the user's own that config.toml names (`default_permissions`),
+ *  which the core passes through, never overriding it (codex/defaults.rs). */
+export type CodexSandbox = 'read-only' | 'read-only-net' | 'workspace-write' | 'danger-full-access' | 'profile';
 
 /** What Codex's `config.toml` can say and Luna passes as flags. The model is
  *  a free string — Codex's list moves too fast to enumerate — and null means
@@ -324,6 +326,7 @@ export const permFromSetting = (raw: string): PermMode | null => PERM_OF_CLI[raw
 export const CODEX_EFFORTS: CodexEffort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 /** The approvals a chat can be given by hand; `granular` only where the files set it. */
 export const CODEX_APPROVALS: CodexApproval[] = ['on-request', 'never', 'auto-review'];
+/** The sandboxes a chat can be given by hand; `profile` only where the files name one. */
 export const CODEX_SANDBOXES: CodexSandbox[] = ['read-only', 'read-only-net', 'workspace-write', 'danger-full-access'];
 /** The one sandbox `auto-review` runs in. */
 export const AUTO_REVIEW_SANDBOX: CodexSandbox = 'workspace-write';
@@ -339,7 +342,8 @@ export const CODEX_SANDBOX_HINTS: Record<CodexSandbox, string> = {
   'read-only': 'commands can only read the disk',
   'read-only-net': 'commands can only read the disk, with the network on',
   'workspace-write': 'writes inside the folder and temp, nowhere else',
-  'danger-full-access': 'no sandbox at all'
+  'danger-full-access': 'no sandbox at all',
+  profile: 'config.toml’s own permission profile, as Codex runs it'
 };
 
 /** What an approval and a sandbox come to together, as one line. */
@@ -361,4 +365,4 @@ export const codexEffortFromSetting = (raw: string): CodexEffort | null => {
 export const codexApprovalFromSetting = (raw: string): CodexApproval | null =>
   [...CODEX_APPROVALS, 'granular' as const].find(e => e === raw.toLowerCase()) ?? null;
 export const codexSandboxFromSetting = (raw: string): CodexSandbox | null =>
-  CODEX_SANDBOXES.find(e => e === raw.toLowerCase()) ?? null;
+  [...CODEX_SANDBOXES, 'profile' as const].find(e => e === raw.toLowerCase()) ?? null;

@@ -155,7 +155,6 @@ fn a_move_is_refused_whole_naming_why() {
     refused(&h, &plain, "runs without Luna's tools");
     refused(&h, &g, "a helper does not move into its own line");
     refused(&h, &lead, "is a lead or a helper");
-    refused(&h, &low, "above chat");
     refused(&h, &a, "already");
     refused(&h, "mr-nobody", "not running under Luna");
     refused(&g, &b, &format!("Move {h} and {g} goes with it"));
@@ -179,7 +178,8 @@ fn a_move_is_refused_whole_naming_why() {
     let why = |to: &str| menu.targets.iter().find(|t| t.id == to).map(|t| (t.ok, t.why.clone().unwrap_or_default()));
     assert_eq!(why(&b), Some((true, String::new())));
     assert!(why(&plain).unwrap().1.contains("without Luna's tools"));
-    assert!(why(&low).unwrap().1.contains("above chat"));
+    // A chat in a lower mode than the line's takes it all the same: modes are not compared.
+    assert_eq!(why(&low), Some((true, String::new())));
     assert!(why(&a).unwrap().1.contains("already"));
     assert_eq!(why(&lead), None, "a lead is no chat to list");
     assert!(move_targets(&g).blocked.unwrap().contains("goes with it"));

@@ -12,7 +12,7 @@ different cost. CI runs the first two; the third is run by hand.
 | 3. Live | Do today's real CLIs, signed in, still do what Luna counts on? | `live-tests.ps1`, by hand only | quota on test accounts, network |
 
 Pick the lowest level that can catch the bug. A wrong state transition, a parse
-of a CLI event, a privilege rule: level 1. A flag the CLI is launched with, the
+of a CLI event, an admission rule: level 1. A flag the CLI is launched with, the
 hub's HTTP framing, a window that will not open: level 2. A CLI release that
 renamed a stream event or stopped honoring a flag: only level 3 sees it, and
 what it finds becomes a fixture at level 1 or a golden at level 2.
@@ -134,7 +134,7 @@ the corpus as well.
 ## 3. Live
 
 `src-tauri/src/live.rs` drives background helpers on the real CLIs through the
-same path a `luna_session_spawn` takes: `agents::spawn` with its privilege cap,
+same path a `luna_session_spawn` takes: `agents::spawn`,
 `background::start` and `command_for`, the CLI's headless mode, Luna's MCP
 server on the hub, and `agents::wait` for the answer. For each provider it
 checks that:
@@ -143,9 +143,7 @@ checks that:
   gives Luna what it reads off it (the conversation id, the model, the turn
   busy and then over, the transcript on disk);
 - a helper with tools calls Luna's MCP server and is authenticated by the
-  token in its environment;
-- a spawn asking for more privilege than its caller has is refused before any
-  CLI starts.
+  token in its environment.
 
 For Claude Code alone, the model ask (`claude/models.rs` `from_cli`) is run
 on the account with its token's `expiresAt` set two minutes ahead: the CLI

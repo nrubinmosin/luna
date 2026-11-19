@@ -22,6 +22,7 @@
 //! ago, so the notifier here types a one-line notice into the caller once it
 //! is idle: the helper answered, stopped on a prompt, or exited.
 
+pub(crate) mod admission;
 mod answer;
 mod ask;
 mod delivery;
@@ -32,7 +33,6 @@ mod lost;
 mod notifier;
 mod owed;
 mod persist;
-pub(crate) mod privilege;
 mod read;
 mod registry;
 mod reparent;
@@ -43,6 +43,7 @@ mod teardown;
 mod test_support;
 mod wait;
 
+pub(crate) use admission::{command_prefix, command_reach_now};
 pub use answer::answer;
 pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion, AskSource};
 pub use delivery::{notes_dir, send};
@@ -61,7 +62,6 @@ pub use persist::{
 #[cfg(test)]
 pub(crate) use persist::{chats_frozen, stops_for_test};
 pub(crate) use persist::{of_retired_handoff, retired_opening, without_handed_off};
-pub(crate) use privilege::{command_prefix, command_reach_now};
 pub use read::{read, report_get, Message};
 pub(crate) use registry::mint;
 #[cfg(test)]

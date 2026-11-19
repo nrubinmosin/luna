@@ -98,9 +98,10 @@ fn servers_in(doc: &DocumentMut) -> Vec<(String, Vec<String>)> {
 }
 
 /// Codex's system layer, under the account's in its stack (0.169.0,
-/// codex-rs/config loader): `%ProgramData%\OpenAI\Codex\config.toml` on
-/// Windows, `/etc/codex/config.toml` elsewhere.
-fn system_layer() -> PathBuf {
+/// codex-rs/config loader `system_config_toml_file`):
+/// `%ProgramData%\OpenAI\Codex\config.toml` on Windows, `/etc/codex/config.toml`
+/// elsewhere.
+pub(crate) fn system_layer() -> PathBuf {
     if cfg!(windows) {
         let data = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
         data.join("OpenAI").join("Codex").join("config.toml")
@@ -175,7 +176,7 @@ fn managed_layers(account_path: &str) -> Vec<PathBuf> {
 
 /// `developer_instructions` as Codex's config stack sets it, which a `-c` of
 /// Luna's replaces whole (a higher layer's string takes a lower one's place,
-/// codex-rs/config): the system layer (`/etc/codex/config.toml`, Unix), the
+/// codex-rs/config): the system layer (`system_layer`), the
 /// account's `config.toml`, the project's layers where the run trusts the
 /// project (`project_trusted`), each later one's value over the earlier. No
 /// profile: 0.167.2 refuses to start on a `profile = "<name>"` in a config
@@ -187,11 +188,7 @@ fn managed_layers(account_path: &str) -> Vec<PathBuf> {
 /// the session is started all the same (ADR-0026).
 pub fn developer_instructions_in(account_path: &str, folder: &str, project_trusted: bool) -> StackInstructions {
     let mut out = StackInstructions::default();
-    let mut files: Vec<PathBuf> = Vec::new();
-    if cfg!(unix) {
-        files.push(PathBuf::from("/etc/codex/config.toml"));
-    }
-    files.push(Path::new(account_path).join("config.toml"));
+    let mut files = vec![system_layer(), Path::new(account_path).join("config.toml")];
     if project_trusted {
         match project_layers(account_path, folder) {
             Ok(layers) => files.extend(layers),

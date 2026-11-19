@@ -719,9 +719,11 @@ pub async fn ensure_codex_session(
         let project_trusted =
             trust.is_some() || crate::codex::trust::codex_folder_trusted(account_path.clone(), folder.clone()).unwrap_or(false);
         let chosen_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+        crate::codex::defaults::refuses_untrusted(&account_path, &folder)?;
         // As Luna runs them: what it does not know closed, `on-failure` as
         // `on-request`; a granular approval as the table the files say now,
-        // or closed where they no longer say one (codex/defaults.rs).
+        // or closed where they no longer say one, and a profile of the
+        // user's own likewise (codex/defaults.rs).
         let (approval, sandbox) = crate::codex::defaults::launch_mode(&approval, &sandbox);
         let granular = (approval == crate::codex::defaults::GRANULAR)
             .then(|| crate::codex::defaults::granular_policy(&account_path, &folder))
@@ -730,6 +732,13 @@ pub async fn ensure_codex_session(
             crate::codex::defaults::CLOSED_APPROVAL.to_string()
         } else {
             approval
+        };
+        // What the files leave to Codex's own defaults goes without a flag.
+        let (own_approval, own_sandbox) = crate::codex::defaults::left_to_codex(&account_path, &folder, &approval, &sandbox);
+        let sandbox = if sandbox == crate::codex::defaults::PROFILE && !own_sandbox {
+            crate::codex::defaults::CLOSED_SANDBOX.to_string()
+        } else {
+            sandbox
         };
         let sandbox: &str = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX } else { &sandbox };
         // What the sandbox takes from this machine, ahead of the
@@ -769,6 +778,8 @@ pub async fn ensure_codex_session(
             approval: &approval,
             granular: granular.as_deref(),
             sandbox,
+            own_approval,
+            own_sandbox,
             profile: profile.as_deref(),
             deny: deny.as_deref(),
             sandbox_path: sandbox_path.as_deref(),
@@ -1493,11 +1504,14 @@ mod tests {
     }
 
     /// `--ask-for-approval` and the sandbox: whatever reviewer the account
-    /// or the project names stands.
+    /// or the project names stands. The golden accounts name neither, so
+    /// Codex's own `on-request` and `read-only` go without a flag
+    /// (codex/defaults.rs `left_to_codex`), but for Luna's profile keeping
+    /// the session out of its `core/` off Windows.
     fn codex_asks(approval: &str, sandbox: &str) -> Vec<String> {
-        let mut args = strings(&["--ask-for-approval", approval]);
+        let mut args = if approval == "on-request" { Vec::new() } else { strings(&["--ask-for-approval", approval]) };
         if sandbox == "read-only" {
-            args.extend(golden::codex_read_only(&["--sandbox", sandbox]));
+            args.extend(golden::codex_read_only(&[]));
         } else {
             args.extend(strings(&["--sandbox", sandbox]));
         }
@@ -1535,7 +1549,6 @@ mod tests {
             ("codex.no-daemon", Runtime, "--no-daemon".into()),
             ("model", UserAction, "--model gpt-5.5".into()),
             ("effort", UserAction, "-c model_reasoning_effort=\"medium\"".into()),
-            ("approval", UserAction, "--ask-for-approval on-request".into()),
             ("sandbox", UserAction, "--sandbox workspace-write".into()),
         ];
         if cfg!(windows) {
@@ -1659,8 +1672,7 @@ mod tests {
             a.extend(golden::codex_windows_sandbox());
             a
         };
-        let mut read_only_net = strings(&["--ask-for-approval", "on-request"]);
-        read_only_net.extend(golden::codex_read_only_net());
+        let read_only_net = golden::codex_read_only_net();
         // (approval, sandbox, the flags for them, PATH cut for the sandbox, the approval and sandbox it runs in)
         let cases: [(&str, &str, Vec<String>, bool, (&str, &str)); 8] = [
             (
@@ -1725,9 +1737,7 @@ mod tests {
         let table = "{granular={sandbox_approval=true,rules=false,skill_approval=false,request_permissions=false,mcp_elicitations=true}}";
         let mut flags = strings(&["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"medium\""]);
         flags.extend(strings(&["-c", &format!("approval_policy={table}")]));
-        let mut asks = codex_asks("on-request", "read-only");
-        asks.drain(..2);
-        flags.extend(asks);
+        flags.extend(codex_asks("on-request", "read-only"));
         assert_eq!(s.args, codex_args(&[], flags, Vec::new()));
         assert!(!s.args.iter().any(|a| a == "--ask-for-approval"), "{:?}", s.args);
         assert_eq!(s.value("approval").map(str::to_owned), Some(format!("-c approval_policy={table}")));

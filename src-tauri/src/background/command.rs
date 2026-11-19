@@ -81,8 +81,11 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 args.extend(["--effort".into(), s.effort.clone()]);
                 applied.push(Item::Effort.with(format!("--effort {}", s.effort)));
             }
-            args.extend(["--permission-mode".into(), s.mode.clone()]);
-            applied.push(Item::PermissionMode.with(format!("--permission-mode {}", s.mode)));
+            // A spawn that named none runs in what Claude Code's own settings say.
+            if !s.own_mode {
+                args.extend(["--permission-mode".into(), s.mode.clone()]);
+                applied.push(Item::PermissionMode.with(format!("--permission-mode {}", s.mode)));
+            }
             match (&e.session, &made) {
                 (Some(sid), Some(wt)) if std::path::Path::new(wt).is_dir() => {
                     dir = wt.clone();
@@ -272,8 +275,18 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 applied.push(Item::HelperApprovalNever.with("-c approval_policy=\"never\""));
                 args.extend(["-c".into(), crate::codex::launch::CODEX_PERSON_REVIEWS.into()]);
                 applied.push(Item::HelperReviewer.with(format!("-c {}", crate::codex::launch::CODEX_PERSON_REVIEWS)));
-                let sandbox = crate::pty::codex_sandbox_args(&s.mode);
-                applied.push(crate::codex::launch::sandbox_applied(&s.mode, &sandbox));
+                // A spawn that named none runs in the sandbox Codex's own config
+                // settles on, with no flag of Luna's; its read-only still takes
+                // Luna's profile where that keeps it out of Luna's `core/`
+                // (codex/launch.rs `denies_core`).
+                let sandbox = if s.own_mode && !crate::codex::launch::takes_profile(&s.mode, cfg!(windows)) {
+                    Vec::new()
+                } else {
+                    crate::pty::codex_sandbox_args(&s.mode)
+                };
+                if !sandbox.is_empty() {
+                    applied.push(crate::codex::launch::sandbox_applied(&s.mode, &sandbox));
+                }
                 if let Some((profile, dir)) = profile_deny(&sandbox) {
                     applied.push(crate::codex::launch::core_deny_applied(&profile, &dir));
                 }

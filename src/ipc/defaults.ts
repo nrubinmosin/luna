@@ -5,10 +5,12 @@ import { call } from './core';
  *  an effort that is the model's own default in Claude Code's catalog. */
 export type ClaudeDefaultSource = 'account' | 'project' | 'project-local' | 'managed' | 'model' | 'stock';
 /** `codex`: what Codex itself would pick — the first model of its catalog,
- *  at that model's own reasoning level. */
-/** `closed`: Luna could not read a layer, or does not know the value, and
- *  takes `on-request` and `read-only` (codex/defaults.rs). */
-export type CodexDefaultSource = 'account' | 'project' | 'codex' | 'stock' | 'closed';
+ *  at that model's own reasoning level; its own approval and sandbox where
+ *  the files name none, which the core then passes no flag for. `system`:
+ *  Codex's machine-wide config.toml. `closed`: Luna could not read a layer,
+ *  or does not know the value, and takes `on-request` and `read-only`
+ *  (codex/defaults.rs). */
+export type CodexDefaultSource = 'system' | 'account' | 'project' | 'codex' | 'stock' | 'closed';
 
 export interface SettingDto<S extends string = string> {
   value: string;
@@ -45,10 +47,12 @@ export interface CodexDefaultsDto {
   effort: SettingDto<CodexDefaultSource> | null;
   approval: SettingDto<CodexDefaultSource> | null;
   sandbox: SettingDto<CodexDefaultSource> | null;
+  /** The name of the user's own permission profile where `sandbox` is `profile`. */
+  profile?: string;
 }
 
-/** The same out of Codex's `config.toml` — the account's, then the project's
- *  (which Codex only reads once the folder is trusted). */
+/** The same out of Codex's `config.toml` — the machine's, the account's, then
+ *  the project's (which Codex only reads once the folder is trusted). */
 export const codexDefaults = (accountPath: string, folder: string) =>
   call<CodexDefaultsDto>(
     'codex_defaults',

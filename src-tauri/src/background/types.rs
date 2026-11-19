@@ -16,6 +16,10 @@ pub struct Spec {
     pub effort: String,
     /// Claude: the permission mode. Codex: the sandbox.
     pub mode: String,
+    /// The spawn named no mode: Luna passes none, and the CLI runs in what
+    /// its own settings say; `mode` is what Luna read of them, for show.
+    #[serde(default)]
+    pub own_mode: bool,
     /// Codex: `--approve-for-me`, a reviewer model answering what it would ask.
     pub auto_review: bool,
     pub tools: bool,

@@ -59,6 +59,14 @@ fn codex_copy(parent: &str, child: &DocumentMut) -> Result<String, String> {
             t.remove(k);
         }
         let Some(item) = child.get(top).and_then(|t| t.get(k)) else { continue };
+        // A parent's `hooks = { … }` is closed where it stands: the child's
+        // `[hooks.state.…]` after it would define the table twice. It goes
+        // under a header of its own, keys and all.
+        if doc.get(top).is_some_and(toml_edit::Item::is_inline_table) {
+            if let Some(inline) = doc.remove(top) {
+                doc.insert(top, headed(inline));
+            }
+        }
         let mut under = toml_edit::Table::new();
         under.set_implicit(true);
         under.insert(k, headed(item.clone()));
@@ -301,6 +309,9 @@ mod tests {
             // Inline, and dotted.
             "[hooks]\nstate = { \"k:pre:0:0\" = { trusted_hash = \"sha256:parent\" } }\n",
             "hooks.state.\"k:pre:0:0\".trusted_hash = \"sha256:parent\"\n[tui]\nx = 1\n",
+            // The hooks themselves as one inline table, its trust in it too.
+            "model = \"m\"\nhooks = { Stop = [{ hooks = [{ type = \"command\", command = \"notify\" }] }], state = { \"k:stop:0:0\" = { trusted_hash = \"sha256:parent\" } } }\n[tui]\nx = 1\n",
+            "hooks = { Stop = [{ hooks = [{ type = \"command\", command = \"notify\" }] }] }\n",
         ];
         let children = [
             ("", None),

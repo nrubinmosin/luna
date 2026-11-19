@@ -34,6 +34,10 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) granular: Option<&'a str>,
     /// The sandbox it runs in: `AUTO_REVIEW_SANDBOX` under the reviewer.
     pub(crate) sandbox: &'a str,
+    /// The approval, and the sandbox, are Codex's own as the files leave them
+    /// (codex/defaults.rs `left_to_codex`): Luna passes no flag for them.
+    pub(crate) own_approval: bool,
+    pub(crate) own_sandbox: bool,
     /// The name of Luna's profile for that sandbox, new on every start
     /// (`profile_args`); None where Codex's own mode serves (`takes_profile`).
     pub(crate) profile: Option<&'a str>,
@@ -108,6 +112,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             // `--ask-for-approval` takes `on-request` and `never` alone
             // (0.169.0); a granular table goes as the config key it is.
             match (approval, s.granular) {
+                _ if s.own_approval => {}
                 (GRANULAR, Some(table)) => {
                     args.push("-c".into());
                     args.push(format!("approval_policy={table}"));
@@ -123,7 +128,10 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             // A person's chat keeps whatever reviewer its account or project
             // names (a helper's turn is kept to a person's: background/command.rs).
             // Without its profile, `--sandbox read-only-net`, which Codex
-            // refuses: never a sandbox looser than the one asked for.
+            // refuses: never a sandbox looser than the one asked for. Codex's
+            // own read-only still takes Luna's profile where that keeps the
+            // session out of Luna's `core/` (`denies_core`): the same sandbox,
+            // and a wall of Luna's own.
             match s.profile.filter(|_| takes_profile(sandbox, cfg!(windows))) {
                 Some(profile) => {
                     let held = profile_args(profile, sandbox == READ_ONLY_NET, s.deny);
@@ -133,6 +141,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
                         applied.push(core_deny_applied(profile, dir));
                     }
                 }
+                None if s.own_sandbox => {}
                 None => {
                     args.push("--sandbox".into());
                     args.push(sandbox.to_string());
@@ -415,8 +424,12 @@ pub(crate) fn sandbox_args(sandbox: &str, profile: Option<&str>, deny: Option<&s
 /// command with a restricted token: no administrator, no extra users; under
 /// `workspace-write` Codex grants its sandbox write access to the folder
 /// once, in the folder's ACL.
+/// A profile of the user's own (`PROFILE`) may be either, so it gets one too:
+/// unused where the profile turns the sandbox off. Luna's choice where the
+/// account names none, for Codex to run its commands at all: what the sandbox
+/// holds is Codex's own, not Luna's.
 pub(crate) fn codex_windows_sandbox(sandbox: &str) -> Option<String> {
-    (cfg!(windows) && matches!(sandbox, "read-only" | READ_ONLY_NET | "workspace-write"))
+    (cfg!(windows) && matches!(sandbox, "read-only" | READ_ONLY_NET | "workspace-write" | crate::codex::defaults::PROFILE))
         .then(|| "windows.sandbox=\"unelevated\"".to_string())
 }
 
