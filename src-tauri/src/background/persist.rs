@@ -62,9 +62,64 @@ pub(super) struct Saved {
     pub(super) ties: crate::agents::Ties,
     #[serde(default)]
     pub(super) observed: Observed,
-    /// See `Entry::switch`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) switch: Option<LeadSwitch>,
+    /// A lead's handoff a 0.19 core had under way (ADR-0030 removed it): read
+    /// only to take the lead back to its conversation (`retire_handoff`),
+    /// never written.
+    #[serde(default, rename = "switch", skip_serializing)]
+    pub(super) retired_switch: Option<RetiredSwitch>,
+    /// Written by a core with no handoff (0.20 on): nothing in it is 0.19's
+    /// handoff's to sort out (`retire_handoff`).
+    #[serde(default)]
+    pub(super) no_handoff: bool,
+}
+
+/// What `retire_handoff` needs of 0.19's `LeadSwitch`: the conversation the
+/// lead was leaving, and the id of the opening queued for the fresh one.
+#[derive(Deserialize, Debug, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RetiredSwitch {
+    #[serde(default)]
+    pub(super) before: Option<String>,
+    #[serde(default)]
+    pub(super) opening_id: Option<String>,
+}
+
+/// A helper as 0.19 saved it goes on where it was, with nothing of the
+/// handoff left (ADR-0030). Once 0.19 had let go of its conversation for the
+/// fresh one (`switch.before` holding it, no `session` named yet), that
+/// conversation is its own again, and the fresh one's opening, the one the
+/// switch names (`openingId`), is dropped. Luna's own lines about the handoff
+/// queued for it (an ask, a failure, as 0.19 wrote them) are dropped, and the
+/// line a notice to it said of leads below it that handed off is taken out of
+/// that notice: they point at a tool and a document there no longer are. A
+/// file this core wrote (`no_handoff`) is left as it is.
+fn retire_handoff(s: &mut Saved) {
+    let switch = s.retired_switch.take();
+    let opening = switch.as_ref().and_then(|w| w.opening_id.clone());
+    if s.session.is_none() {
+        s.session = switch.and_then(|w| w.before);
+    }
+    let legacy = !s.no_handoff;
+    for store in [&mut s.queue, &mut s.in_flight, &mut s.fed, &mut s.undelivered] {
+        store.retain_mut(|q| {
+            if opening.as_deref() == Some(q.id.as_str()) {
+                return false;
+            }
+            if !legacy || q.from.is_some() {
+                return true;
+            }
+            if crate::agents::of_retired_handoff(&q.text) {
+                return false;
+            }
+            match crate::agents::without_handed_off(&q.text) {
+                Some(kept) => {
+                    q.text = kept;
+                    true
+                }
+                None => false,
+            }
+        });
+    }
 }
 
 fn saved_file() -> std::path::PathBuf {
@@ -129,7 +184,8 @@ pub(super) fn snapshot() -> Vec<Saved> {
             cut_short: e.cut_short,
             observed: e.observed.clone(),
             ties: Default::default(),
-            switch: e.switch.clone(),
+            retired_switch: None,
+            no_handoff: true,
         })
         .collect();
     // The agent layer's lock after this one is let go: it is the one taken
@@ -138,10 +194,6 @@ pub(super) fn snapshot() -> Vec<Saved> {
     let ties = crate::agents::ties_of_each(&ids);
     for (s, ties) in saved.iter_mut().zip(ties) {
         s.ties = ties.unwrap_or_default();
-        // Its CLI has said where it works.
-        if s.session.is_some() || s.cwd.is_some() {
-            s.ties.worktrees_before = None;
-        }
     }
     saved.sort_by_key(|s| s.started_ms);
     saved
@@ -198,17 +250,6 @@ pub fn restore() {
 /// `resumeOnRestart`: each starts its next turn by itself. Off this thread,
 /// and only once the hub listens: a turn's MCP config names its port.
 pub fn resume_stopped() {
-    // A lead a core left mid-handoff goes on with its switch, whatever
-    // `resumeOnRestart` says (agents/handoff/lead.rs `taken_up`); one whose
-    // switch is through goes on below as any helper.
-    let switching = switching();
-    if !switching.is_empty() {
-        let _ = std::thread::Builder::new().name("luna-lead-handoff".into()).spawn(move || {
-            for id in switching {
-                crate::agents::handoff::lead_taken_up(&id);
-            }
-        });
-    }
     let (ids, unsure): (Vec<(String, bool)>, Vec<(String, bool)>) = lock()
         .entries
         .iter()
@@ -414,13 +455,13 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
 /// behind it, which never reached the CLI (as `stop` counts them) and is kept
 /// for its sender.
 pub(super) fn taken_up(mut s: Saved) -> Entry {
+    retire_handoff(&mut s);
     let stopped = s.running || s.cut_short;
     let resumable = turn_known_over(&s);
     let first: Vec<Queued> = lone_opening(&mut s, stopped).into_iter().collect();
     let undelivered = [first, s.undelivered, s.in_flight, s.fed, s.queue].concat();
     let cwd = s.cwd.map(|c| home_of(&s.spec, c));
     let mut e = Entry {
-        hold: hold_of(&s.spec),
         spec: s.spec,
         started_ms: s.started_ms,
         session: s.session,
@@ -453,7 +494,6 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         moving: false,
         handing: false,
         observed: s.observed,
-        switch: s.switch,
     };
     if s.running {
         note(&mut e, "Luna's core went mid-turn and stopped the turn");
@@ -467,10 +507,10 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
 }
 
 /// Where a helper works, from a cwd an older core saved after the CLI's shell
-/// had moved it: the worktree it made and is in, else the folder it was sent
-/// to if it is in that.
+/// had moved it: the worktree it went into from the project, else the folder it
+/// was sent to if it is in that (a folder of a worktree it was handed included).
 pub(super) fn home_of(spec: &Spec, cwd: String) -> String {
-    if let Some((root, _)) = crate::worktree::root_of(&cwd).filter(|_| spec.worktree) {
+    if let Some((root, _)) = crate::checkout::root_of(&cwd).filter(|_| crate::checkout::project_of(&spec.folder).is_none()) {
         return root;
     }
     let inside = std::path::Path::new(&cwd).ancestors().any(|dir| crate::pty::same_dir(&dir.to_string_lossy(), &spec.folder));
@@ -554,38 +594,8 @@ pub fn background_stop_untold(id: &str, caller: &str, turn: u32) {
 
 /// Whether a core's going stopped it before any turn named its conversation:
 /// nothing it did can be carried on from.
-/// Not a lead between conversations of its own: its switch has its opening
-/// (switch.rs).
 pub fn never_started(id: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none() && e.switch.is_none())
-}
-
-/// A helper a core's going stopped before its CLI said where it works: what its next
-/// turn does of the worktree that turn began, and what its parent hears of it. Claude
-/// Code goes back into the one Luna named if that is still as made (`agents::
-/// name_to_go_on`), and Codex makes another, naming none. A first turn no core cut off
-/// is no business of this: it has not been stopped.
-pub fn settle_worktree(id: &str) {
-    let (provider, folder, account, name) = {
-        let r = lock();
-        // A lead between conversations of its own works where its first turn
-        // made it (switch.rs): nothing to settle.
-        let Some(e) = r.entries.get(id).filter(|e| e.cut_short && e.session.is_none() && e.spec.worktree && e.switch.is_none()) else {
-            return;
-        };
-        (e.spec.provider, e.spec.folder.clone(), e.spec.account_path.clone(), e.spec.worktree_name.clone())
-    };
-    match (provider, name) {
-        (Provider::Codex, _) => crate::agents::report_codex_worktrees(id, &folder, &account),
-        (Provider::Claude, None) => {}
-        (Provider::Claude, Some(name)) => {
-            let name = crate::agents::name_to_go_on(id, &name, &folder, &account);
-            if let Some(e) = lock().entries.get_mut(id) {
-                e.spec.worktree_name = name;
-            }
-            save();
-        }
-    }
+    lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none())
 }
 
 #[cfg(test)]
@@ -648,7 +658,8 @@ mod tests {
             cut_short: false,
             ties: Default::default(),
             observed: Default::default(),
-            switch: None,
+            retired_switch: None,
+            no_handoff: true,
         };
 
         let e = taken_up(saved(true, true));
@@ -737,6 +748,87 @@ mod tests {
         let e = taken_up(s);
         assert_eq!(e.turns_ended, 5, "what it queued is counted though its words are gone");
         assert!(e.undelivered.is_empty());
+    }
+
+    /// A lead 0.19 saved mid-handoff, and a chat's auto-handoff in its ties'
+    /// settings: 0.20 has no handoff, and reads the rest as it was.
+    #[test]
+    fn a_helper_saved_with_a_handoff_still_reads() {
+        let mut spec = serde_json::to_value(&entry(Provider::Claude).spec).unwrap();
+        spec["tools"] = json!(true);
+        let s: Saved = serde_json::from_value(json!({
+            "id": "l1", "spec": spec, "startedMs": 5, "session": "old", "cwd": null, "turnsEnded": 2,
+            "running": false, "queued": false, "cutShort": false,
+            "switch": { "n": 1, "copy": "C:\\data\\handoffs\\l1\\1.md", "sha256": "h", "source": "C:\\w\\handoff.md",
+                "phase": "scheduled", "before": "old" },
+            "ties": {
+                "parent": "p1", "name": null, "settings": { "handoff": 70 }, "tools": true, "borrowed": false, "autoDelete": false,
+                "owed": [], "seen": [],
+            },
+        }))
+        .expect("a 0.19 record reads");
+        assert_eq!((s.session.as_deref(), s.turns_ended, s.ties.settings["handoff"].as_u64()), (Some("old"), 2, Some(70)));
+        let e = taken_up(s);
+        assert_eq!(e.session.as_deref(), Some("old"), "it goes on in the conversation it was on");
+        assert!(!e.held_back(), "nothing holds its next turn back");
+    }
+
+    /// A lead 0.19 saved after letting go of its conversation for the fresh
+    /// one and before that one's CLI named it: no `session`, the old one in
+    /// `switch.before`, the fresh one's opening on its way. It goes on in the
+    /// old conversation, and neither that opening nor Luna's handoff lines go
+    /// in; what its parent sent does.
+    #[test]
+    fn a_lead_saved_between_its_conversations_goes_back_to_the_one_it_left() {
+        let mut spec = serde_json::to_value(&entry(Provider::Claude).spec).unwrap();
+        spec["tools"] = json!(true);
+        let s: Saved = serde_json::from_value(json!({
+            "id": "l2", "spec": spec, "startedMs": 5, "session": null, "cwd": null, "turnsEnded": 2,
+            "running": true, "queued": true, "cutShort": false,
+            "inFlight": [{ "from": null, "text": "[Luna handoff 1, not typed by the user] This is a new conversation of session l2, a lead.", "id": "op1" }],
+            "queue": [
+                { "from": null, "text": "[Luna notice, not typed by the user] Handoff 1 started no new conversation: it timed out.", "id": "q1" },
+                { "from": "p1", "text": "[From session p1 via Luna] Keep going", "id": "q2" },
+            ],
+            "switch": { "n": 1, "copy": "C:\\data\\handoffs\\l2\\1.md", "sha256": "h", "source": "C:\\w\\handoff.md",
+                "phase": "fresh", "before": "old", "openingId": "op1" },
+            "ties": {
+                "parent": "p1", "name": null, "settings": {}, "tools": true, "borrowed": false, "autoDelete": false,
+                "owed": [], "seen": [],
+            },
+        }))
+        .expect("a 0.19 record reads");
+        let e = taken_up(s);
+        assert_eq!(e.session.as_deref(), Some("old"), "back on the conversation it left");
+        let texts: Vec<&str> = e.undelivered.iter().map(|q| q.text.as_str()).collect();
+        assert_eq!(texts, ["[From session p1 via Luna] Keep going"], "nothing of the handoff");
+        assert!(e.opening.is_none());
+    }
+
+    /// A helper whose opening reads like 0.19's lines ("Handoff 2FA …"), its
+    /// conversation not named yet as the core went, keeps it, from a file of
+    /// either core: only the opening a 0.19 switch names is dropped. A
+    /// notice 0.19 queued for a lead loses only the line of leads that handed
+    /// off.
+    #[test]
+    fn an_opening_is_dropped_only_where_a_0_19_switch_names_it() {
+        for no_handoff in [false, true] {
+            let mut s = unnamed("Handoff 2FA ownership to support", Some("op"));
+            s.no_handoff = no_handoff;
+            s.cut_short = true;
+            let e = taken_up(s);
+            let texts: Vec<&str> = e.undelivered.iter().map(|q| q.text.as_str()).collect();
+            assert_eq!(texts, ["Handoff 2FA ownership to support"], "no_handoff {no_handoff}");
+        }
+        let notice = format!(
+            "{} Your helper h1 answered. Lead l3 handed off (2): it goes on in a fresh conversation; its helpers stay with it.",
+            crate::agents::NOTICE_TAG
+        );
+        let mut s = with_lines(false);
+        s.queue = vec![Queued::new(None, notice, Vec::new())];
+        let e = taken_up(s);
+        let texts: Vec<String> = e.undelivered.iter().map(|q| q.text.clone()).collect();
+        assert_eq!(texts, [format!("{} Your helper h1 answered.", crate::agents::NOTICE_TAG)]);
     }
 
     #[test]
@@ -851,7 +943,8 @@ mod tests {
                 cut_short: false,
                 observed: Default::default(),
                 ties: Default::default(),
-                switch: None,
+                retired_switch: None,
+                no_handoff: true,
             })
         };
         let mut claude = entry(Provider::Claude);

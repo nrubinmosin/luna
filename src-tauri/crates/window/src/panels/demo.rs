@@ -49,7 +49,6 @@ pub fn overview() -> Value {
         ],
         "systemAside": [],
         "places": [],
-        "kept": [],
     })
 }
 
@@ -75,11 +74,8 @@ pub fn answer_all(host: &FakeHost) {
         cmd::LIBRARY_SET_FOLDER_INSTRUCTIONS,
         cmd::LIBRARY_WRITE,
         cmd::LIBRARY_SYSTEM_RESET,
-        cmd::LIBRARY_SYSTEM_ADOPT,
         cmd::LIBRARY_NEW_SKILL,
         cmd::LIBRARY_DELETE_SKILL,
-        cmd::LIBRARY_PUT_BACK,
-        cmd::LIBRARY_KEPT,
         cmd::LIBRARY_NEW_INSTRUCTIONS,
         cmd::LIBRARY_RENAME_INSTRUCTIONS,
         cmd::LIBRARY_DELETE_INSTRUCTIONS,

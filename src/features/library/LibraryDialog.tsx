@@ -74,7 +74,7 @@ export function LibraryDialog({ onClose }: { onClose: () => void }) {
   // Every place that differs from the library and can be made like it; a
   // failed one has nothing fit to put there, one left out stays out.
   const differ = o ? o.places.filter(p => p.status === 'gone' || p.status === 'changed' || p.status === 'taken') : [];
-  const kept = o ? o.kept : [];
+  const kept = o?.kept ?? [];
   // The copies no longer meant for a place but changed there are taken out
   // first, which no pass does unasked, then the library's put back; what
   // either could not settle is shown together.

@@ -12,12 +12,6 @@ pub struct Spec {
     pub account_path: String,
     /// The project folder, or the worktree it was handed to run in.
     pub folder: String,
-    /// A worktree of its own, made by the CLI on the first turn.
-    pub worktree: bool,
-    /// What Luna named that worktree (`agents::helper_worktree_name`): Claude Code's,
-    /// as Codex takes no name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_name: Option<String>,
     pub model: Option<String>,
     pub effort: String,
     /// Claude: the permission mode. Codex: the sandbox.
@@ -25,9 +19,6 @@ pub struct Spec {
     /// Codex: `--approve-for-me`, a reviewer model answering what it would ask.
     pub auto_review: bool,
     pub tools: bool,
-    /// Codex: run the project's hooks without their trust, which `exec` has
-    /// no way to ask for (codex/hooks.rs).
-    pub hooks_unasked: bool,
     /// Claude: without the edit tools. Codex's sandbox says it there.
     #[serde(default)]
     pub read_only: bool,
@@ -53,53 +44,6 @@ pub struct Spec {
     /// started later issues its own.
     #[serde(skip)]
     pub token: Option<String>,
-}
-
-/// A lead's handoff to a fresh conversation of its own (agents/handoff/lead.rs),
-/// from its call with a file, or Luna's document for a lead that writes none,
-/// until the fresh conversation has its id. Saved with the helper
-/// (`helpers.json`), in the same write as its conversation and its queue, so
-/// a core started again finds the three agreeing: `Scheduled` still on the
-/// conversation that called, `Fresh` on none, `Done` on the new one.
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct LeadSwitch {
-    pub n: u32,
-    /// Luna's copy of the handoff (handoff `copies_of`), and its SHA-256.
-    pub copy: String,
-    pub sha256: String,
-    /// The file as the lead named it, or Luna's word for its own document.
-    pub source: String,
-    pub phase: LeadPhase,
-    /// The conversation it leaves, and that conversation's transcript: what a
-    /// fresh start that never names a conversation goes back to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub before: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
-    /// The id of the opening's message once it is queued: a core started
-    /// again takes it out of what it would hand back as undelivered, and
-    /// queues it anew with the facts as of then.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opening_id: Option<String>,
-    /// The conversation the fresh start opened, once its CLI named it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opened: Option<String>,
-    /// Luna wrote the handoff from its records: the lead writes no file.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub from_records: bool,
-}
-
-/// Where a lead's handoff stands.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum LeadPhase {
-    /// The copy is made; at the end of the turn that called, the switch.
-    Scheduled,
-    /// Its conversation let go of, the opening its next turn, on none.
-    Fresh,
-    /// Its CLI named the fresh conversation: what is left is Luna's record.
-    Done,
 }
 
 /// How full a session's context window is, as its pane's meter reads it: what
@@ -495,6 +439,18 @@ mod tests {
         }))
         .expect("helpers.json from before them still reads");
         assert!(!spec.read_only && spec.agent.is_none() && spec.parent.is_none());
+    }
+
+    /// A helper 0.19 saved with a worktree of its own comes back: what Luna kept
+    /// of the worktree is let go, the helper runs on.
+    #[test]
+    fn a_helper_saved_with_a_worktree_of_its_own_still_reads() {
+        let spec: Spec = serde_json::from_value(json!({
+            "provider": "claude", "accountPath": "C:\\acc", "folder": "C:\\p", "worktree": true, "worktreeName": "luna-x",
+            "model": null, "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
+        }))
+        .expect("a helpers.json of 0.19 still reads");
+        assert_eq!(spec.folder, "C:\\p");
     }
 
     #[test]

@@ -55,12 +55,6 @@ pub mod cmd {
     /// `{ entry, text, root, rootId, revision, force }`: `Written`, a save bound to
     /// the library and the file as they were read (library/editor.rs).
     pub const LIBRARY_WRITE_CHECKED: &str = "library_write_checked";
-    /// `{ dests, replace }`: the library's copy put back at each of `dests`,
-    /// over what is there only at those in `replace` (Sync).
-    pub const LIBRARY_PUT_BACK: &str = "library_put_back";
-    /// `{ dests, takeOut }`: copies no longer wanted but changed, taken out
-    /// (backed up) or kept as the person's own (Sync takes them out).
-    pub const LIBRARY_KEPT: &str = "library_kept";
     /// `{}`: the editor's text not saved when the window last went, if any.
     pub const LIBRARY_DRAFT: &str = "library_draft";
     /// `{ draft }`: keeps it; `{ draft: null, forget: id }` forgets the one
@@ -70,7 +64,6 @@ pub mod cmd {
     pub const LIBRARY_CHECK_SYSTEM: &str = "library_check_system";
     pub const LIBRARY_SYSTEM_COMPARE: &str = "library_system_compare";
     pub const LIBRARY_SYSTEM_RESET: &str = "library_system_reset";
-    pub const LIBRARY_SYSTEM_ADOPT: &str = "library_system_adopt";
     pub const LIBRARY_NEW_SKILL: &str = "library_new_skill";
     pub const LIBRARY_RENAME_SKILL: &str = "library_rename_skill";
     pub const LIBRARY_DELETE_SKILL: &str = "library_delete_skill";
@@ -131,14 +124,11 @@ pub mod cmd {
         LIBRARY_READ,
         LIBRARY_WRITE,
         LIBRARY_WRITE_CHECKED,
-        LIBRARY_PUT_BACK,
-        LIBRARY_KEPT,
         LIBRARY_DRAFT,
         LIBRARY_CHECK_SKILL,
         LIBRARY_CHECK_SYSTEM,
         LIBRARY_SYSTEM_COMPARE,
         LIBRARY_SYSTEM_RESET,
-        LIBRARY_SYSTEM_ADOPT,
         LIBRARY_NEW_SKILL,
         LIBRARY_RENAME_SKILL,
         LIBRARY_DELETE_SKILL,

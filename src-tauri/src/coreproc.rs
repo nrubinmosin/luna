@@ -218,6 +218,7 @@ fn run() {
         crate::agents::restore_chats();
         crate::background::restore();
         crate::agents::take_up_spawns();
+        crate::library::note_retired_system();
         // The hook listener before any session can be spawned with hooks
         // pointing at it; the activity sampler feeds power/ from then on.
         crate::hub::start();
@@ -490,6 +491,32 @@ fn turned_away(cmd: &str, stop_only: bool) -> Option<String> {
     crate::elevation::refusal().filter(|_| !matches!(cmd, "info" | "shutdown")).map(String::from)
 }
 
+/// Why a core is not to leave on a window's word that it holds only what
+/// helpers' turns left (corelink.rs `Verdict::ReplaceLeftOnly`), its hello's
+/// count being a look some time ago: a pane, or a helper's turn started since.
+const AT_WORK: &str = "the core has a session or a helper in a turn now";
+
+/// A shutdown asked `ifLeftOnly`: looked at again as it is to be made, helper
+/// turns closed off under their registry's lock as they are looked at, so none
+/// starts between this look and the leaving (`background::close_if_left_only`);
+/// panes before and after it, as one opened meanwhile is work too.
+fn left_only_now() -> Result<(), String> {
+    left_only_given(|| crate::pty::manager().live_count() > 0, crate::background::close_if_left_only, crate::background::Closed::reopen)
+}
+
+/// `left_only_now`, with what it looks at and does given.
+fn left_only_given<T>(panes: impl Fn() -> bool, close: impl FnOnce() -> Option<T>, reopen: impl FnOnce(T)) -> Result<(), String> {
+    if panes() {
+        return Err(AT_WORK.into());
+    }
+    let Some(closed) = close() else { return Err(AT_WORK.into()) };
+    if panes() {
+        reopen(closed);
+        return Err(AT_WORK.into());
+    }
+    Ok(())
+}
+
 fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: bool) -> io::Result<()> {
     loop {
         let (kind, payload) = ipc::read_frame(stream)?;
@@ -503,6 +530,12 @@ fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: boo
         match req.cmd.as_str() {
             "info" => answer(replies, req.id, serde_json::to_value(Welcome::of_this_process(started)).map_err(|e| e.to_string())),
             "shutdown" => {
+                if req.args.get("ifLeftOnly").and_then(serde_json::Value::as_bool) == Some(true) {
+                    if let Err(why) = left_only_now() {
+                        answer(replies, req.id, Err(why));
+                        continue;
+                    }
+                }
                 answer(replies, req.id, Ok(serde_json::Value::Null));
                 leave("the window asked it to stop");
             }
@@ -544,6 +577,35 @@ fn answer(replies: &Replies, id: u64, result: Result<serde_json::Value, String>)
 mod tests {
     use super::*;
     use std::io::Read;
+
+    /// A shutdown asked `ifLeftOnly` looks again: a pane before the helpers'
+    /// look refuses it untouched, a helper in a turn refuses it, and a pane
+    /// opened while the helpers were closed off refuses it and opens them
+    /// again. Only with neither does the core leave, its helpers closed.
+    #[test]
+    fn a_shutdown_if_left_only_looks_again_and_refuses_work() {
+        use std::cell::Cell;
+        let (closes, reopens) = (Cell::new(0), Cell::new(0));
+        let run = |panes: Vec<bool>, at_work: bool| {
+            let panes = std::cell::RefCell::new(panes.into_iter());
+            left_only_given(
+                || panes.borrow_mut().next().unwrap_or(false),
+                || {
+                    closes.set(closes.get() + 1);
+                    (!at_work).then_some(())
+                },
+                |()| reopens.set(reopens.get() + 1),
+            )
+        };
+        assert_eq!(run(vec![true], false), Err(AT_WORK.into()), "a pane");
+        assert_eq!((closes.get(), reopens.get()), (0, 0), "nothing closed for it");
+        assert_eq!(run(vec![false], true), Err(AT_WORK.into()), "a helper in a turn");
+        assert_eq!((closes.get(), reopens.get()), (1, 0));
+        assert_eq!(run(vec![false, true], false), Err(AT_WORK.into()), "a pane opened meanwhile");
+        assert_eq!((closes.get(), reopens.get()), (2, 1), "opened again");
+        assert_eq!(run(vec![false, false], false), Ok(()));
+        assert_eq!((closes.get(), reopens.get()), (3, 1), "closed, to leave");
+    }
 
     /// A window's queue is full past its bytes as well as past its frames;
     /// what the writer has written makes room again.

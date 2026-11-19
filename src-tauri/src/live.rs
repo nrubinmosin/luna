@@ -206,7 +206,7 @@ struct Spawned {
 impl Drop for Spawned {
     fn drop(&mut self) {
         let _ = crate::agents::kill(&self.caller, &self.id);
-        if let Err(e) = crate::agents::delete(&self.caller, &self.id, true, true) {
+        if let Err(e) = crate::agents::delete(&self.caller, &self.id) {
             eprintln!("could not delete live helper {}: {e}", self.id);
         }
         crate::background::gone_for_test(&self.caller);

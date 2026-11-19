@@ -84,7 +84,7 @@ pub(crate) fn trust_folder(account_path: &str, folder: &str) -> Result<(), Strin
     // A model ask's CLI rewriting the file meanwhile would undo the mark:
     // the few seconds of one are waited out (claude/models.rs).
     let _rewriting = crate::account_settings::rewriting_claude_config(account_path, crate::claude::models::ASK_WAIT)?;
-    let editing = crate::account_settings::editing()?;
+    let _editing = crate::account_settings::editing()?;
     let mut cfg = read_config_for_write(&path)?;
 
     let projects = cfg.as_object_mut().ok_or("Malformed .claude.json")?.entry("projects").or_insert_with(|| Value::Object(Map::new()));
@@ -109,7 +109,6 @@ pub(crate) fn trust_folder(account_path: &str, folder: &str) -> Result<(), Strin
         let _ = fs::remove_file(&tmp);
         e.to_string()
     })?;
-    crate::applied::record(&editing, account_path, crate::applied::Item::TrustWritten, folder);
     Ok(())
 }
 

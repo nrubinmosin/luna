@@ -158,8 +158,9 @@ export const moveBuildFromRecords = (chatId: string, moveId: string, sessionId: 
 /** A chat's usage limit still in force, and what keeps it from being asked. */
 export const moveFacts = (chatId: string) => call<MoveFactsDto>('move_facts', { chatId });
 
-/** Every move under way, and those ended lately. */
-export const moveList = () => call<MoveStatusDto[]>('move_list', {}, []);
+/** Every move under way, and those ended lately: none, as the core has no
+ *  moves since 0.20 (ADR-0030), so the window's poll asks it nothing. */
+export const moveList = (): Promise<MoveStatusDto[]> => Promise.resolve([]);
 
 /** SHA-256 of `text` as UTF-8, hex: what Send is bound to. */
 export async function sha256Hex(text: string): Promise<string> {

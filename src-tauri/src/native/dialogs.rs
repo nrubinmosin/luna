@@ -8,7 +8,6 @@
 
 use super::Command;
 use crate::boundary::{AbsPath, AccountPath, OrEmpty};
-use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -65,13 +64,11 @@ pub(super) const OWN: &[(&str, Command)] = &[
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct A {
-            provider: Provider,
-            account_path: AccountPath,
             folder: AbsPath,
             worktree: bool,
         }
-        let A { provider, account_path, folder, worktree } = args(a)?;
-        answer(tauri::async_runtime::block_on(crate::pty::folder::chat_folder_check(provider, account_path, folder, worktree)))
+        let A { folder, worktree } = args(a)?;
+        answer(tauri::async_runtime::block_on(crate::pty::folder::chat_folder_check(folder, worktree)))
     }),
     ("claude_folder_trusted", |a| {
         #[derive(Deserialize)]

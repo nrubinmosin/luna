@@ -34,7 +34,7 @@ vi.mock('../../ipc/trust', async importOriginal => ({
 // Every folder is one a chat can start in, unless a test says otherwise.
 vi.mock('../../ipc/sessions', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/sessions')>()),
-  chatFolderCheck: vi.fn(() => Promise.resolve({ refusal: null, warning: null }))
+  chatFolderCheck: vi.fn(() => Promise.resolve({ refusal: null, inGit: true }))
 }));
 
 // xterm cannot run in jsdom.
@@ -73,7 +73,7 @@ const fromAccount = (value: string) => ({ value, source: 'account' as const });
 
 beforeEach(() => {
   // What a test told the settings to say goes back to nothing said.
-  vi.mocked(sessions.chatFolderCheck).mockResolvedValue({ refusal: null, warning: null });
+  vi.mocked(sessions.chatFolderCheck).mockResolvedValue({ refusal: null, inGit: true });
   vi.mocked(trust.claudeFolderTrusted).mockResolvedValue(true);
   vi.mocked(trust.claudeTrustFolder).mockClear();
   mocked.claudeDefaults.mockImplementation(() => Promise.resolve(STOCK_CLAUDE));
@@ -279,7 +279,7 @@ describe('NewChatDialog: creating', () => {
 
   it('says why a folder will not do, and creates nothing there', async () => {
     const why = '/repo does not exist (moved or deleted?): pick another folder';
-    vi.mocked(sessions.chatFolderCheck).mockResolvedValue({ refusal: why, warning: null });
+    vi.mocked(sessions.chatFolderCheck).mockResolvedValue({ refusal: why, inGit: false });
     const user = userEvent.setup();
     render(<NewChatDialog />);
     await settle();
@@ -289,36 +289,27 @@ describe('NewChatDialog: creating', () => {
     expect(allChats(useChats.getState().folders)).toEqual([]);
   });
 
-  it('asks again as Git worktree is flipped: a folder outside git takes no worktree', async () => {
-    const why = '/repo is not in a git repository: untick Git worktree, or pick a folder in one';
-    vi.mocked(sessions.chatFolderCheck).mockImplementation((_p, _a, _f, worktree) =>
-      Promise.resolve({ refusal: worktree ? why : null, warning: null })
-    );
+  it('offers the Git worktree box only in a git repository, and starts a chat outside one without a worktree', async () => {
+    vi.mocked(sessions.chatFolderCheck).mockResolvedValue({ refusal: null, inGit: false });
     const user = userEvent.setup();
     render(<NewChatDialog />);
-    const worktree = screen.getByRole('checkbox', { name: 'Git worktree' });
-    if (!(worktree as HTMLInputElement).checked) await user.click(worktree);
     await settle();
-    expect(screen.getByRole('alert')).toHaveTextContent(why);
-    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
-    await user.click(worktree);
-    await settle();
+    expect(screen.queryByRole('checkbox', { name: 'Git worktree' })).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Create' }));
     const [chat] = allChats(useChats.getState().folders);
+    // The default is a worktree, which a folder outside git cannot have.
     expect(chat).toMatchObject({ worktree: false });
+    expect(sessions.chatFolderCheck).toHaveBeenCalledWith('/repo', false);
   });
 
-  it('only warns where a source Luna cannot read may still make the worktree, and creates', async () => {
-    const warning = '/repo is not in a git repository: Claude Code makes a worktree there only through a hook';
-    vi.mocked(sessions.chatFolderCheck).mockResolvedValue({ refusal: null, warning });
+  it('passes the box on as a flag for a folder in git, and says Luna removes the worktree never', async () => {
     const user = userEvent.setup();
     render(<NewChatDialog />);
-    const worktree = screen.getByRole('checkbox', { name: 'Git worktree' });
-    if (!(worktree as HTMLInputElement).checked) await user.click(worktree);
     await settle();
-    expect(screen.getByRole('status')).toHaveTextContent(warning);
-    expect(screen.queryByRole('alert')).toBeNull();
+    const worktree = screen.getByRole('checkbox', { name: 'Git worktree' });
+    expect(worktree.closest('.field-row')).toHaveAttribute('title', expect.stringContaining('Luna does not remove it'));
+    if (!(worktree as HTMLInputElement).checked) await user.click(worktree);
     await user.click(screen.getByRole('button', { name: 'Create' }));
     const [chat] = allChats(useChats.getState().folders);
     expect(chat).toMatchObject({ worktree: true });
@@ -705,11 +696,12 @@ describe('NewChatDialog: where the wait guard starts', () => {
     expect(guardBox()).toBeChecked();
   });
 
-  it('follows the default where a folder’s start was kept before it had the guard', () => {
+  it('follows the default where a folder’s start was kept before it had the guard', async () => {
     // As an earlier Luna stored it: the two boxes it knew, no guard.
     useChats.getState().setStart('/repo', { worktree: false, tools: true });
     useNewChat.getState().setDefault('guard', true);
     render(<NewChatDialog />);
+    await settle();
     expect(guardBox()).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Git worktree' })).not.toBeChecked();
     expect(screen.getByText('as kept for this folder')).toBeInTheDocument();

@@ -1,53 +1,32 @@
 //! System texts: text Luna serves at its own trigger, never laid out
-//! (docs/adr/0022-content-luna-serves-at-its-own-trigger.md, ADR-0026). One
-//! is a skill, `session-handoff`, what a chat with auto-handoff on is given to
-//! write its handoff by (agents/handoff); the others are plain texts, what a
-//! session is told of its role (role.rs): Luna's default for each role
-//! (`role-chat`, empty, `role-lead`, `role-helper`) and the note after a task
-//! from another agent (`note-lead`, `note-helper`). Luna's own text is
-//! compiled in, so it cannot be missing; the person may override each with
-//! one file for everyone, `<library>/system/<name>/SKILL.md` for the skill,
-//! checked as a library skill is, and `<library>/system/<name>/TEXT.md` for a
-//! text, checked as UTF-8 within its cap (a note also as one plain line). An
-//! override that will not do is not served: Luna's own is, and the reason
-//! goes with it.
+//! (docs/adr/0026-session-roles-at-memory-level.md): what a session is told
+//! of its role (role.rs), Luna's default for each role (`role-chat`, empty,
+//! `role-lead`, `role-helper`), and the note after a task from another agent
+//! (`note-lead`, `note-helper`). Luna's own text is compiled in, so it cannot
+//! be missing; the person may override each with one file for everyone,
+//! `<library>/system/<name>/TEXT.md`, checked as UTF-8 within its cap (a note
+//! also as one plain line). An override that will not do is not served:
+//! Luna's own is, and the reason goes with it.
 //!
 //! What stays Luna's alone, as mechanism rather than behavior: tool schemas,
 //! refusals, the guide's facts, the tag a note opens on.
 //!
 //! The pass reads only `skills/` and `instructions/`, so `system/` reaches no
-//! account or folder. A library skill under `skills/` that takes a system
-//! skill's name is not its override (`resolve_in` never reads it) and is laid
-//! out nowhere (`reserved`): every session it went to would hear of the
-//! handoff, which only a chat with auto-handoff on may.
+//! account or folder.
 //!
-//! - `handoff_instructions`: what is served now, `Resolved`, with where the
-//!   override is or would go (`path`) and why one there is not used.
+//! - `resolve_text`: what is served now, `Resolved`, with where the override
+//!   is or would go (`path`) and why one there is not used.
 //! - `Resolved::state`: the same as the window is shown it, `SystemSkillState`.
-//! - `LUNA_HANDOFF`: Luna's own text, what an override starts from or is
-//!   compared with.
-//! - `read_system`, `write_system`, `reset_system`, `adopt_system`: what the
-//!   window's System skills section does with an override (commands.rs),
-//!   nowhere but `system/<name>` and Luna's backups, and never through a link
-//!   anywhere below the library's folder (`inside`). A replaced override goes
-//!   to the backups whole, by a rename; an adoption is staged and swapped in
-//!   under a lock the resolver shares (`system_lock`), undone if it fails.
+//! - `read_system`, `write_system`, `reset_system`: what the window's System
+//!   texts section does with an override (commands.rs), nowhere but
+//!   `system/<name>` and Luna's backups, and never through a link anywhere
+//!   below the library's folder (`inside`). A replaced override goes to the
+//!   backups whole, by a rename.
 
 use super::*;
 
-/// The handoff's instructions, by their skill name: what the override's folder
-/// and its front matter are called, and the name a library skill does not take.
-pub const HANDOFF: &str = "session-handoff";
-
-/// Under the library's root: the system skills' overrides, a folder each.
+/// Under the library's root: the system texts' overrides, a folder each.
 const SYSTEM_DIR: &str = "system";
-
-/// The most an override's SKILL.md may hold: all of it goes into the chat's
-/// context at once, as a tool's answer.
-pub const SYSTEM_MAX_BYTES: usize = 64 * 1024;
-
-/// Luna's own instructions for a handoff: its version's, compiled in.
-pub const LUNA_HANDOFF: &str = include_str!("../../resources/skills/session-handoff/SKILL.md");
 
 /// The system texts of a role and of its note, by name.
 pub const ROLE_CHAT: &str = "role-chat";
@@ -68,8 +47,6 @@ pub const NOTE_MAX_CHARS: usize = 1000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TextKind {
-    /// A skill's SKILL.md, front matter and all.
-    Skill,
     /// A role's default, Markdown with no front matter; empty is none.
     Role,
     /// A note: one line of plain text, never empty.
@@ -85,7 +62,6 @@ pub struct SystemText {
 
 /// The system texts there are.
 pub const SYSTEM_TEXTS: &[SystemText] = &[
-    SystemText { name: HANDOFF, kind: TextKind::Skill, luna: LUNA_HANDOFF },
     SystemText { name: ROLE_CHAT, kind: TextKind::Role, luna: include_str!("../../resources/system/role-chat.md") },
     SystemText { name: ROLE_LEAD, kind: TextKind::Role, luna: include_str!("../../resources/system/role-lead.md") },
     SystemText { name: ROLE_HELPER, kind: TextKind::Role, luna: include_str!("../../resources/system/role-helper.md") },
@@ -100,18 +76,9 @@ pub(super) fn text_of(name: &str) -> Result<&'static SystemText, String> {
 }
 
 impl TextKind {
-    /// The override's one file in its folder.
-    fn file(self) -> &'static str {
-        match self {
-            TextKind::Skill => SKILL_FILE,
-            TextKind::Role | TextKind::Note => TEXT_FILE,
-        }
-    }
-
     /// The most its override may hold, in bytes.
     fn max_bytes(self) -> usize {
         match self {
-            TextKind::Skill => SYSTEM_MAX_BYTES,
             TextKind::Role => ROLE_MAX_BYTES,
             // Characters are what a note is held to; four bytes at most each.
             TextKind::Note => NOTE_MAX_CHARS * 4,
@@ -119,7 +86,7 @@ impl TextKind {
     }
 }
 
-/// A plain text override's file.
+/// An override's one file in its folder.
 const TEXT_FILE: &str = "TEXT.md";
 
 /// Whose text is served.
@@ -138,7 +105,7 @@ pub struct Resolved {
     pub name: &'static str,
     pub kind: TextKind,
     pub source: Source,
-    /// The SKILL.md or text served, front matter and all.
+    /// The text served, as it is.
     pub text: String,
     /// SHA-256 of `text`, as hex: what tells one text from another.
     pub sha256: String,
@@ -149,13 +116,9 @@ pub struct Resolved {
 }
 
 impl Resolved {
-    /// What a session reads: a skill past its front matter, a text with no
-    /// blank lines around it.
+    /// What a session reads: the text with no blank lines around it.
     pub fn body(&self) -> &str {
-        match self.kind {
-            TextKind::Skill => body_of(&self.text),
-            TextKind::Role | TextKind::Note => self.text.strip_prefix('\u{feff}').unwrap_or(&self.text).trim(),
-        }
+        self.text.strip_prefix('\u{feff}').unwrap_or(&self.text).trim()
     }
 
     /// The first 12 characters of the hash, as the window and a log line say it.
@@ -181,7 +144,7 @@ impl Resolved {
     }
 }
 
-/// Where a system skill stands, for the window.
+/// Where a system text stands, for the window.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SystemState {
@@ -193,7 +156,7 @@ pub enum SystemState {
     Broken,
 }
 
-/// A system skill as the window is shown it: whose text is served, Luna's
+/// A system text as the window is shown it: whose text is served, Luna's
 /// version, the hash of what is served, where the override is or would go, and
 /// why it is not used when it is not.
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -213,24 +176,6 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `text` past its front matter, the blank lines after it too; all of it when
-/// it has none.
-pub fn body_of(text: &str) -> &str {
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut lines = text.split_inclusive('\n');
-    if lines.next().map(str::trim_end) != Some("---") {
-        return text;
-    }
-    let mut at = text.find('\n').map_or(text.len(), |i| i + 1);
-    for line in lines {
-        at += line.len();
-        if line.trim_end() == "---" {
-            return text[at..].trim_start_matches(['\r', '\n']);
-        }
-    }
-    text
-}
-
 impl Dirs {
     fn system(&self, name: &str) -> PathBuf {
         self.root.join(SYSTEM_DIR).join(name)
@@ -243,33 +188,14 @@ pub(super) fn luna_text(name: &str) -> Result<&'static str, String> {
     text_of(name).map(|t| t.luna)
 }
 
-/// Whether a library skill named `name` takes a system skill's name: then it
-/// is not that skill's override, and it is laid out nowhere (pass.rs `units`,
-/// folders.rs `hidden_here`), its copies taken out as those of a skill no
-/// longer wanted. Laid out, it would tell every session of the handoff, which
-/// only a chat with auto-handoff on may hear of. The plain texts are no
-/// skills: a skill may have their names.
-pub(super) fn reserved(name: &str) -> bool {
-    text_of(name).is_ok_and(|t| t.kind == TextKind::Skill)
-}
-
-/// Why a library skill of a system skill's name is laid out nowhere, and why
-/// no new one is made under it.
-pub(super) fn reserved_why(name: &str) -> String {
-    format!(
-        "{name} is the name of Luna's system skill for handoffs: no skill of that name is laid out, so that no session without \
-         Auto-handoff hears of it. Your own text for it is the override, under System texts"
-    )
-}
-
 /// The most of an override the editor opens: one larger than Luna serves
-/// (SYSTEM_MAX_BYTES) still opens, to be cut down to size.
+/// (`TextKind::max_bytes`) still opens, to be cut down to size.
 pub(super) const EDIT_MAX_BYTES: u64 = 1024 * 1024;
 
 fn too_large(kind: TextKind) -> String {
     match kind {
         TextKind::Note => format!("{TEXT_FILE} is over {NOTE_MAX_CHARS} characters"),
-        _ => format!("{} is over {} KB", kind.file(), kind.max_bytes() / 1024),
+        TextKind::Role => format!("{TEXT_FILE} is over {} KB", kind.max_bytes() / 1024),
     }
 }
 
@@ -336,46 +262,6 @@ pub(super) fn plain_tree(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Beside the ledger in Luna's data: held shared while the override is read
-/// to be served (`resolve_in`) and exclusive while an adoption swaps one in,
-/// so no handoff reads the moment between its renames, when there is none. A
-/// file lock: the window adopts, the core serves.
-const SYSTEM_LOCK: &str = "library-system.lock";
-
-/// The lock on `system/`, held for as long as it lives.
-struct SystemLock {
-    _file: Option<std::fs::File>,
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Where this test's system lock is, in place of the one in `dirs.data`.
-    static SYSTEM_LOCK_AT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Exclusive for a swap, which one that cannot be had refuses: a handoff
-/// would read the moment between its renames. Shared for serving, which goes
-/// on without it, said in the log: refused, a handoff would be left with no
-/// instructions at all.
-fn system_lock(dirs: &Dirs, exclusive: bool) -> Result<SystemLock, String> {
-    let path = dirs.data.join(SYSTEM_LOCK);
-    #[cfg(test)]
-    let path = SYSTEM_LOCK_AT.with(|p| p.borrow().clone()).unwrap_or(path);
-    let _ = std::fs::create_dir_all(&dirs.data);
-    let file = crate::secret::open_private(&path).and_then(|f| {
-        let locked = if exclusive { f.lock() } else { f.lock_shared() };
-        locked.map(|()| f)
-    });
-    match file {
-        Ok(file) => Ok(SystemLock { _file: Some(file) }),
-        Err(e) if exclusive => Err(format!("Nothing changed: no lock on {}: {e}", path.display())),
-        Err(e) => {
-            crate::log::warn("library", &format!("system lock {}: {e}; serving without it", path.display()));
-            Ok(SystemLock { _file: None })
-        }
-    }
-}
-
 // The steps of a move a test makes fail as the disk would, by name.
 #[cfg(test)]
 thread_local! {
@@ -439,10 +325,24 @@ pub(super) enum Moved {
     Aside(PathBuf),
 }
 
+/// The system skill 0.19 served for its handoff, which ADR-0030 removed. What
+/// it left in `system/`: its override, `session-handoff/`, and what a reset or
+/// an adoption cut short set aside as `.session-handoff.<…>`, an adoption's
+/// holding the person's own library skill. Nothing reads them any more.
+const RETIRED_SKILL: &str = "session-handoff";
+
+/// Whether a name in `system/` is one 0.19's handoff left (`RETIRED_SKILL`),
+/// in any case: Windows and macOS find a folder whatever case its name is
+/// written in, so 0.19 served an override named `Session-Handoff` there.
+fn retired(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == RETIRED_SKILL || name.starts_with(&format!(".{RETIRED_SKILL}."))
+}
+
 /// Folders set aside in `system/`, read by nothing: a former override a copy
-/// into the backups did not take whole, one an adoption replaced and could
-/// not move, a move cut short. The window names them, for the person to move
-/// or delete.
+/// into the backups did not take whole, a move cut short, and what 0.19's
+/// handoff left (`retired`). The window names them, for the person to move or
+/// delete.
 pub(super) fn set_aside(dirs: &Dirs) -> Vec<String> {
     let Ok(system) = inside(&dirs.root, &[SYSTEM_DIR]) else { return Vec::new() };
     let Ok(entries) = std::fs::read_dir(&system) else { return Vec::new() };
@@ -450,12 +350,32 @@ pub(super) fn set_aside(dirs: &Dirs) -> Vec<String> {
         .flatten()
         .filter(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            SYSTEM_TEXTS.iter().any(|s| name.starts_with(&format!(".{}.", s.name)))
+            retired(&name) || SYSTEM_TEXTS.iter().any(|s| name.starts_with(&format!(".{}.", s.name)))
         })
         .map(|e| e.path().to_string_lossy().into_owned())
         .collect();
     out.sort();
     out
+}
+
+/// What 0.19's handoff left in the library's `system/` (`retired`), said once
+/// in the log as a core starts. Left where it is: one may hold the person's
+/// own skill, theirs to move back or delete.
+pub(crate) fn note_retired_system() {
+    let dirs = Dirs::current();
+    for path in set_aside(&dirs) {
+        let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if !retired(&name) {
+            continue;
+        }
+        let what = if name.eq_ignore_ascii_case(RETIRED_SKILL) {
+            "the override of 0.19's handoff skill, which nothing reads since 0.20"
+        } else {
+            "set aside by 0.19's handoff skill (an interrupted Make it the override… left your own skill here), \
+             which nothing reads since 0.20"
+        };
+        crate::log::info("library", &format!("{path}: {what}; left as it is, for you to move or delete"));
+    }
 }
 
 /// Every file and folder under `from` copied to `to`, a new folder, as they
@@ -546,9 +466,7 @@ fn move_to_backups(dirs: &Dirs, dir: &Path, was: &Path) -> Result<Moved, String>
 }
 
 /// Why this text would not do as the override of `name`, if it would not. A
-/// skill's SKILL.md is checked as a library skill's is, held to
-/// SYSTEM_MAX_BYTES, and with something past its front matter. A role's text
-/// is held to ROLE_MAX_BYTES; empty, it says nothing. A note is one line of
+/// role's text is held to ROLE_MAX_BYTES; empty, it says nothing. A note is one line of
 /// plain text, not empty, at most NOTE_MAX_CHARS long, with no brackets: it
 /// goes inside the brackets of the note Luna puts after a task, which the
 /// readers take off by its closing one (pty/start.rs `without_note`).
@@ -558,12 +476,6 @@ pub(super) fn check_override(name: &str, text: &str) -> Result<(), String> {
         return Err(too_large(kind));
     }
     match kind {
-        TextKind::Skill => {
-            check_skill(name, text)?;
-            if body_of(text).trim().is_empty() {
-                return Err("SKILL.md has nothing past its front matter".into());
-            }
-        }
         TextKind::Role => {}
         TextKind::Note => {
             let line = text.strip_prefix('\u{feff}').unwrap_or(text).trim();
@@ -592,13 +504,13 @@ pub(super) fn check_override(name: &str, text: &str) -> Result<(), String> {
 pub(super) fn read_system(dirs: &Dirs, name: &str) -> Result<LibraryFile, String> {
     let t = text_of(name)?;
     let luna = t.luna;
-    let path = dirs.system(name).join(t.kind.file());
+    let path = dirs.system(name).join(TEXT_FILE);
     let shown = path.to_string_lossy().into_owned();
     let root = dirs.root.to_string_lossy().into_owned();
     let start = || LibraryFile { path: shown.clone(), text: luna.to_string(), exists: false, root: root.clone(), ..Default::default() };
     let Some(dir) = override_dir(dirs, name)? else { return Ok(start()) };
-    match read_own_file(&dir, t.kind.file(), EDIT_MAX_BYTES + 1)? {
-        // A folder without SKILL.md: what saving puts there starts from Luna's.
+    match read_own_file(&dir, TEXT_FILE, EDIT_MAX_BYTES + 1)? {
+        // A folder without TEXT.md: what saving puts there starts from Luna's.
         None => Ok(start()),
         Some(bytes) if bytes.len() as u64 > EDIT_MAX_BYTES => {
             Err(format!("{} is over {} KB, too large to open here", path.display(), EDIT_MAX_BYTES / 1024))
@@ -620,7 +532,7 @@ pub(super) fn system_place(name: &str, text: &str) -> Result<(Vec<String>, &'sta
     if text.len() > t.kind.max_bytes() {
         return Err(format!("{}, more than Luna serves: not saved", too_large(t.kind)));
     }
-    Ok((vec![SYSTEM_DIR.to_string(), t.name.to_string()], t.kind.file()))
+    Ok((vec![SYSTEM_DIR.to_string(), t.name.to_string()], TEXT_FILE))
 }
 
 /// Saves the editor's text as the override of `name`. One that will not do
@@ -632,14 +544,14 @@ pub(super) fn write_system(dirs: &Dirs, name: &str, text: &str) -> Result<PathBu
     if text.len() > kind.max_bytes() {
         return Err(format!("{}, more than Luna serves: not saved", too_large(kind)));
     }
-    let path = inside(&dirs.root, &[SYSTEM_DIR, name, kind.file()])?;
+    let path = inside(&dirs.root, &[SYSTEM_DIR, name, TEXT_FILE])?;
     if let Ok(m) = std::fs::symlink_metadata(&path) {
         if !m.is_file() {
             return Err(format!("{} is a folder — Luna leaves it alone", path.display()));
         }
     }
-    // Through a temp file and a rename (`Dirs::write`): a handoff reads the
-    // old text or the new, never part of either.
+    // Through a temp file and a rename (`Dirs::write`): a session's start
+    // reads the old text or the new, never part of either.
     dirs.write(&path, text.as_bytes())?;
     Ok(path)
 }
@@ -648,8 +560,8 @@ pub(super) fn write_system(dirs: &Dirs, name: &str, text: &str) -> Result<PathBu
 /// Luna's backups (kept BACKUP_DAYS, as a replaced library file is), or, where
 /// a copy to them on another volume does not come out whole, stays aside in
 /// `system/` (`move_to_backups`); `system/` goes too once empty. Where it is
-/// now, or None where there was none. A handoff meanwhile reads the override
-/// or none, either a text it may be served, so this takes no system lock.
+/// now, or None where there was none. A session's start meanwhile reads the
+/// override or none, either a text it may be served.
 pub(super) fn reset_system(dirs: &Dirs, name: &str) -> Result<Option<Moved>, String> {
     luna_text(name)?;
     let Some(dir) = override_dir(dirs, name)? else { return Ok(None) };
@@ -659,86 +571,12 @@ pub(super) fn reset_system(dirs: &Dirs, name: &str) -> Result<Option<Moved>, Str
     Ok(Some(moved))
 }
 
-/// Makes the library skill named as the system skill `name` its override:
-/// the skill's folder moves to where the override goes, its SKILL.md the one
-/// served and the files beside it there for the text to name. Moved as it is:
-/// one that will not do is then an override that will not do, shown so, and
-/// Luna's own served.
-///
-/// Staged first: the skill is renamed into `system/` under a name nothing
-/// reads, the step that fails where its folder is held open, before anything
-/// served changes. Then an override there is renamed aside and the staged one
-/// into its place, each undone if the next fails; the one set aside goes to
-/// the backups after. The staging and the swap go under the system lock,
-/// which an adoption that cannot have it is refused for.
-pub(super) fn adopt_system(dirs: &Dirs, name: &str) -> Result<(), String> {
-    if !reserved(name) {
-        return Err(format!("{name} is not a system skill: no skill of the library is its override"));
-    }
-    let from = inside(&dirs.root, &["skills", name])?;
-    match std::fs::symlink_metadata(&from) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("The library has no skill named {name}")),
-        Err(e) => return Err(format!("{}: {e}", from.display())),
-        Ok(m) if !m.is_dir() => return Err(format!("{} is not a skill's folder", from.display())),
-        Ok(_) => {}
-    }
-    plain_tree(&from)?;
-    if !from.join(SKILL_FILE).is_file() {
-        return Err(format!("{} has no SKILL.md", from.display()));
-    }
-    let current = override_dir(dirs, name)?;
-    if let Some(dir) = &current {
-        plain_tree(dir)?;
-        // Where the one replaced goes, sound before anything moves.
-        crate::boundary::private_chain(&dirs.backups(), &[])?;
-    }
-    // Before anything moves: with none to be had, nothing does.
-    let held = system_lock(dirs, true)?;
-    let system = inside(&dirs.root, &[SYSTEM_DIR])?;
-    std::fs::create_dir_all(&system).map_err(|e| format!("{}: {e}", system.display()))?;
-    let to = system.join(name);
-    let staged = system.join(format!(".{name}.adopting-{}", crate::secret::random_hex(4)));
-    if let Err(e) = rename("stage", &from, &staged) {
-        let _ = std::fs::remove_dir(&system);
-        return Err(format!("{} to {}: {e}", from.display(), staged.display()));
-    }
-    let aside = match current {
-        Some(dir) => {
-            let aside = system.join(format!(".{name}.replaced-{}", crate::secret::random_hex(4)));
-            if let Err(e) = rename("aside", &dir, &aside) {
-                let _ = std::fs::rename(&staged, &from);
-                return Err(format!("{} to {}: {e}", dir.display(), aside.display()));
-            }
-            Some(aside)
-        }
-        None => None,
-    };
-    if let Err(e) = rename("swap", &staged, &to) {
-        if let Some(aside) = &aside {
-            let _ = std::fs::rename(aside, &to);
-        }
-        let _ = std::fs::rename(&staged, &from);
-        return Err(format!("{} to {}: {e}", staged.display(), to.display()));
-    }
-    drop(held);
-    if let Some(aside) = aside {
-        // In place already; the one replaced stays set aside in `system/`,
-        // read by nothing and named by the window, where it will not move.
-        match move_to_backups(dirs, &aside, &to) {
-            Ok(Moved::Backup(_)) => {}
-            Ok(Moved::Aside(kept)) => crate::log::warn("library", &format!("the override replaced is kept at {}", kept.display())),
-            Err(e) => crate::log::warn("library", &format!("the override replaced is kept at {}: {e}", aside.display())),
-        }
-    }
-    Ok(())
-}
-
-/// Luna's own text of a system skill beside the library's override of it.
+/// Luna's own text of a system text beside the library's override of it.
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemCompare {
     pub luna: String,
-    /// The override's SKILL.md; None where there is none.
+    /// The override's TEXT.md; None where there is none.
     pub yours: Option<String>,
 }
 
@@ -748,19 +586,11 @@ pub(super) fn compare_system(dirs: &Dirs, name: &str) -> Result<SystemCompare, S
     Ok(SystemCompare { luna, yours: file.exists.then_some(file.text) })
 }
 
-/// What a chat with auto-handoff on is served to write its handoff by, now:
-/// the override when there is one that will do, else Luna's own.
-pub fn handoff_instructions() -> Resolved {
-    resolve_in(&Dirs::current())
-}
-
-pub(super) fn resolve_in(dirs: &Dirs) -> Resolved {
-    resolve_text(dirs, HANDOFF).expect("the handoff is a system text")
-}
-
+/// What the system text `name` is served as now: the override when there is
+/// one that will do, else Luna's own. None for a name that is no system text.
 pub(super) fn resolve_text(dirs: &Dirs, name: &str) -> Option<Resolved> {
     let t = text_of(name).ok()?;
-    let path = dirs.system(t.name).join(t.kind.file());
+    let path = dirs.system(t.name).join(TEXT_FILE);
     let luna = |problem: Option<String>| Resolved {
         name: t.name,
         kind: t.kind,
@@ -770,10 +600,7 @@ pub(super) fn resolve_text(dirs: &Dirs, name: &str) -> Option<Resolved> {
         path: path.clone(),
         problem,
     };
-    let held = system_lock(dirs, false);
-    let read = read_override(dirs, t);
-    drop(held);
-    Some(match read {
+    Some(match read_override(dirs, t) {
         Ok(None) => luna(None),
         Ok(Some(text)) => Resolved {
             name: t.name,
@@ -793,11 +620,11 @@ pub(super) fn resolve_text(dirs: &Dirs, name: &str) -> Option<Resolved> {
 /// cap. Its one file alone is read, as it alone is served: opened as itself
 /// (no link at it, `system/` or its folder; a FIFO there no reason to wait,
 /// `boundary::open_no_follow`) and read no further than the cap, so what lies
-/// beside it cannot hold up or swell the read, which the handoff's beat makes
-/// for every firm notice and a helper's start for its role.
+/// beside it cannot hold up or swell the read, which every session's start
+/// makes for its role.
 fn read_override(dirs: &Dirs, t: &SystemText) -> Result<Option<String>, String> {
     let Some(dir) = override_dir(dirs, t.name)? else { return Ok(None) };
-    let (file, max) = (t.kind.file(), t.kind.max_bytes());
+    let (file, max) = (TEXT_FILE, t.kind.max_bytes());
     let bytes = read_own_file(&dir, file, max as u64 + 1)?.ok_or_else(|| format!("There is no {file}"))?;
     if bytes.len() > max {
         return Err(too_large(t.kind));
@@ -881,27 +708,21 @@ pub(super) fn plain_or_none(path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    const OURS: &str = "Lead our way.\n";
+
+    fn luna() -> &'static str {
+        luna_text(ROLE_LEAD).unwrap()
+    }
+
+    fn resolved(dirs: &Dirs) -> Resolved {
+        resolve_text(dirs, ROLE_LEAD).unwrap()
+    }
+
     fn write_override(f: &Fixture, text: &str) -> PathBuf {
-        let path = f.dirs.system(HANDOFF).join(SKILL_FILE);
+        let path = f.dirs.system(ROLE_LEAD).join(TEXT_FILE);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, text).unwrap();
         path
-    }
-
-    #[test]
-    fn luna_s_own_text_is_a_skill_of_its_name() {
-        assert!(check_skill(HANDOFF, LUNA_HANDOFF).is_ok(), "{:?}", check_skill(HANDOFF, LUNA_HANDOFF));
-        assert!(LUNA_HANDOFF.len() <= SYSTEM_MAX_BYTES);
-        assert!(!body_of(LUNA_HANDOFF).starts_with("---") && !body_of(LUNA_HANDOFF).trim().is_empty());
-    }
-
-    /// Luna's own text goes in with LF endings from every checkout
-    /// (.gitattributes), so the hash a handoff's record names is the same on
-    /// every machine; a change to the text changes it here, on purpose.
-    #[test]
-    fn luna_s_own_text_has_one_hash_from_every_checkout() {
-        assert!(!LUNA_HANDOFF.contains('\r'));
-        assert_eq!(sha256_hex(LUNA_HANDOFF.as_bytes()), "55823632fb66e7dd403e426c2656f923ee5bd798ce0a0e00c456ae7de413b2ec");
     }
 
     /// The override is served, never laid out: a pass that lays the
@@ -910,7 +731,7 @@ mod tests {
     #[test]
     fn the_override_reaches_no_account() {
         let f = Fixture::new("system-nowhere");
-        write_override(&f, "---\nname: session-handoff\ndescription: Ours.\n---\nBody\n");
+        write_override(&f, OURS);
         f.skill("review", "Reviews.");
         f.instructions("main", "Be brief.\n");
         let lib = LibrarySettings { skills: skills(&["review"]), instructions: first(all()), ..Default::default() };
@@ -920,7 +741,7 @@ mod tests {
             for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
                 let path = entry.path();
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name.contains(HANDOFF) || name == SYSTEM_DIR {
+                if name.contains(ROLE_LEAD) || name == SYSTEM_DIR {
                     found.push(path.clone());
                 }
                 if path.is_dir() {
@@ -932,32 +753,32 @@ mod tests {
         walk(&f.base.join("accounts"), &mut found);
         walk(&f.dirs.folders(), &mut found);
         assert!(found.is_empty(), "{found:?}");
-        assert!(p.places.iter().all(|place| !place.dest.contains(HANDOFF)));
+        assert!(p.places.iter().all(|place| !place.dest.contains(ROLE_LEAD)));
     }
 
     #[test]
     fn without_an_override_luna_s_own_is_served() {
         let f = Fixture::new("system-none");
-        let r = resolve_in(&f.dirs);
-        assert_eq!((r.source, r.problem.as_deref(), r.text.as_str()), (Source::Luna, None, LUNA_HANDOFF));
-        assert_eq!(r.sha256, sha256_hex(LUNA_HANDOFF.as_bytes()));
-        assert_eq!(r.path, f.dirs.root.join("system").join("session-handoff").join("SKILL.md"));
+        let r = resolved(&f.dirs);
+        assert_eq!((r.source, r.problem.as_deref(), r.text.as_str()), (Source::Luna, None, luna()));
+        assert_eq!(r.sha256, sha256_hex(luna().as_bytes()));
+        assert_eq!(r.path, f.dirs.root.join("system").join(ROLE_LEAD).join(TEXT_FILE));
         let s = r.state();
-        assert_eq!((s.state, s.version, s.name), (SystemState::Luna, env!("CARGO_PKG_VERSION"), "session-handoff"));
+        assert_eq!((s.state, s.version, s.name), (SystemState::Luna, env!("CARGO_PKG_VERSION"), ROLE_LEAD));
         // A library skill of the same name is not the override.
-        f.skill(HANDOFF, "Mine, laid out as a skill.");
-        assert_eq!(resolve_in(&f.dirs).source, Source::Luna, "skills/session-handoff is never read for it");
+        f.skill(ROLE_LEAD, "Mine, laid out as a skill.");
+        assert_eq!(resolved(&f.dirs).source, Source::Luna, "skills/role-lead is never read for it");
     }
 
     #[test]
     fn an_override_that_will_do_is_served_over_luna_s() {
         let f = Fixture::new("system-ok");
-        let text = "---\nname: session-handoff\ndescription: Ours.\n---\n\n# Our handoff\nWrite it our way.\n";
+        let text = "\n# Our lead\nLead our way.\n\n";
         let path = write_override(&f, text);
-        let r = resolve_in(&f.dirs);
+        let r = resolved(&f.dirs);
         assert_eq!((r.source, r.problem.as_deref(), r.text.as_str(), &r.path), (Source::Library, None, text, &path));
         assert_eq!(r.sha256, sha256_hex(text.as_bytes()));
-        assert_eq!(r.body(), "# Our handoff\nWrite it our way.\n");
+        assert_eq!(r.body(), "# Our lead\nLead our way.");
         assert_eq!(r.state().state, SystemState::Library);
         assert_eq!(r.short_sha().len(), 12);
     }
@@ -965,30 +786,24 @@ mod tests {
     #[test]
     fn a_broken_override_falls_back_to_luna_s_and_says_why() {
         let f = Fixture::new("system-broken");
-        for (text, why) in [
-            ("no front matter", "front matter"),
-            ("---\nname: other\ndescription: x\n---\nbody", "other"),
-            ("---\nname: session-handoff\n---\nbody", "description"),
-            ("---\nname: session-handoff\ndescription: x\n---\n \n", "nothing past"),
-        ] {
-            write_override(&f, text);
-            let r = resolve_in(&f.dirs);
-            assert_eq!((r.source, r.text.as_str()), (Source::Luna, LUNA_HANDOFF), "{text}");
-            assert!(r.problem.as_deref().is_some_and(|p| p.contains(why)), "{text}: {:?}", r.problem);
-            assert_eq!(r.state().state, SystemState::Broken);
-        }
         let path = write_override(&f, "x");
-        std::fs::write(&path, [0x2d, 0x2d, 0x2d, 0x0a, 0xff]).unwrap();
-        assert!(resolve_in(&f.dirs).problem.unwrap().contains("UTF-8"));
-        let big = format!("---\nname: session-handoff\ndescription: x\n---\n{}", "a".repeat(SYSTEM_MAX_BYTES));
-        std::fs::write(&path, big).unwrap();
-        assert!(resolve_in(&f.dirs).problem.unwrap().contains("KB"));
-        // A folder without SKILL.md is an override that will not do, not none.
+        std::fs::write(&path, [0x2d, 0xff]).unwrap();
+        let r = resolved(&f.dirs);
+        assert_eq!((r.source, r.text.as_str()), (Source::Luna, luna()));
+        assert!(r.problem.as_deref().is_some_and(|p| p.contains("UTF-8")), "{:?}", r.problem);
+        assert_eq!(r.state().state, SystemState::Broken);
+        std::fs::write(&path, "a".repeat(ROLE_MAX_BYTES + 1)).unwrap();
+        assert!(resolved(&f.dirs).problem.unwrap().contains("KB"));
+        // A folder without TEXT.md is an override that will not do, not none.
         std::fs::remove_file(&path).unwrap();
-        assert!(resolve_in(&f.dirs).problem.unwrap().contains("no SKILL.md"));
+        assert!(resolved(&f.dirs).problem.unwrap().contains("no TEXT.md"));
+        // A note's own checks: one plain line.
+        let note = f.dirs.system(NOTE_LEAD).join(TEXT_FILE);
+        std::fs::create_dir_all(note.parent().unwrap()).unwrap();
+        std::fs::write(&note, "two\nlines").unwrap();
+        let r = resolve_text(&f.dirs, NOTE_LEAD).unwrap();
+        assert!(r.problem.as_deref().is_some_and(|p| p.contains("more than one line")), "{:?}", r.problem);
     }
-
-    const OURS: &str = "---\nname: session-handoff\ndescription: Ours.\n---\nBody\n";
 
     /// A file link, where this machine lets a test make one (Windows asks for
     /// Developer Mode or an administrator).
@@ -1001,28 +816,28 @@ mod tests {
     }
 
     #[test]
-    fn only_skill_md_is_read_and_no_further_than_the_cap() {
+    fn only_text_md_is_read_and_no_further_than_the_cap() {
         let f = Fixture::new("system-bounded");
         let path = write_override(&f, OURS);
         let dir = path.parent().unwrap().to_path_buf();
         // What lies beside it is never read: a file many times the cap, a link.
-        std::fs::write(dir.join("notes.md"), vec![b'a'; SYSTEM_MAX_BYTES * 8]).unwrap();
+        std::fs::write(dir.join("notes.md"), vec![b'a'; ROLE_MAX_BYTES * 8]).unwrap();
         let _ = make_link(&dir.join("notes.md"), &dir.join("linked.md"));
-        assert_eq!(resolve_in(&f.dirs).source, Source::Library);
-        // SKILL.md a link to a file that would do: not the file itself.
+        assert_eq!(resolved(&f.dirs).source, Source::Library);
+        // TEXT.md a link to a file that would do: not the file itself.
         let real = f.base.join("elsewhere.md");
         std::fs::write(&real, OURS).unwrap();
         std::fs::remove_file(&path).unwrap();
         if make_link(&real, &path) {
-            assert!(resolve_in(&f.dirs).problem.unwrap().contains("link or not a file"));
+            assert!(resolved(&f.dirs).problem.unwrap().contains("link or not a file"));
             std::fs::remove_file(&path).unwrap();
         }
         std::fs::create_dir(&path).unwrap();
-        assert!(resolve_in(&f.dirs).problem.unwrap().contains("not a file"), "a folder at its name");
+        assert!(resolved(&f.dirs).problem.unwrap().contains("not a file"), "a folder at its name");
     }
 
-    /// A FIFO beside SKILL.md, or at its name, holds no read up: the beat that
-    /// resolves the instructions for a firm notice is every chat's.
+    /// A FIFO beside TEXT.md, or at its name, holds no read up: every
+    /// session's start resolves its role's text.
     #[cfg(unix)]
     #[test]
     fn a_fifo_in_the_override_s_folder_holds_nothing_up() {
@@ -1032,25 +847,17 @@ mod tests {
             let c = std::ffi::CString::new(p.to_string_lossy().as_bytes()).unwrap();
             assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         };
-        let resolved = |f: &Fixture| {
+        let resolved_now = |f: &Fixture| {
             let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
             let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || tx.send(resolve_in(&dirs)));
+            std::thread::spawn(move || tx.send(resolved(&dirs)));
             rx.recv_timeout(std::time::Duration::from_secs(5)).expect("resolved without waiting on a FIFO")
         };
         fifo(&path.with_file_name("pipe.md"));
-        assert_eq!(resolved(&f).source, Source::Library, "beside it");
+        assert_eq!(resolved_now(&f).source, Source::Library, "beside it");
         std::fs::remove_file(&path).unwrap();
         fifo(&path);
-        assert!(resolved(&f).problem.unwrap().contains("not a file"), "at its name");
-    }
-
-    #[test]
-    fn front_matter_is_left_out_of_what_is_read() {
-        assert_eq!(body_of("---\nname: a\n---\n\nBody\n"), "Body\n");
-        assert_eq!(body_of("\u{feff}---\r\nname: a\r\n---\r\nBody"), "Body");
-        assert_eq!(body_of("No front matter\n---\n"), "No front matter\n---\n");
-        assert_eq!(body_of("---\nnever closed\n"), "---\nnever closed\n");
+        assert!(resolved_now(&f).problem.unwrap().contains("not a file"), "at its name");
     }
 
     /// A symlink on Unix, a junction on Windows (no privilege needed).
@@ -1078,95 +885,80 @@ mod tests {
     #[test]
     fn the_editor_starts_an_override_from_luna_s_text_and_what_it_saves_is_served() {
         let f = Fixture::new("system-edit");
-        let start = read_system(&f.dirs, HANDOFF).unwrap();
-        let path = f.dirs.root.join("system").join(HANDOFF).join(SKILL_FILE);
-        assert_eq!((start.text.as_str(), start.exists, &start.path), (LUNA_HANDOFF, false, &path.to_string_lossy().into_owned()));
+        let start = read_system(&f.dirs, ROLE_LEAD).unwrap();
+        let path = f.dirs.root.join("system").join(ROLE_LEAD).join(TEXT_FILE);
+        assert_eq!((start.text.as_str(), start.exists, &start.path), (luna(), false, &path.to_string_lossy().into_owned()));
         assert!(!f.dirs.root.join("system").exists(), "reading makes nothing");
-        assert_eq!(compare_system(&f.dirs, HANDOFF).unwrap(), SystemCompare { luna: LUNA_HANDOFF.into(), yours: None });
+        assert_eq!(compare_system(&f.dirs, ROLE_LEAD).unwrap(), SystemCompare { luna: luna().into(), yours: None });
 
-        assert_eq!(write_system(&f.dirs, HANDOFF, OURS).unwrap(), path);
-        let r = resolve_in(&f.dirs);
+        assert_eq!(write_system(&f.dirs, ROLE_LEAD, OURS).unwrap(), path);
+        let r = resolved(&f.dirs);
         assert_eq!((r.source, r.text.as_str()), (Source::Library, OURS));
-        let read = read_system(&f.dirs, HANDOFF).unwrap();
+        let read = read_system(&f.dirs, ROLE_LEAD).unwrap();
         assert_eq!((read.text.as_str(), read.exists), (OURS, true));
-        assert_eq!(compare_system(&f.dirs, HANDOFF).unwrap().yours.as_deref(), Some(OURS));
+        assert_eq!(compare_system(&f.dirs, ROLE_LEAD).unwrap().yours.as_deref(), Some(OURS));
 
         // One that will not do is saved all the same, and Luna's own served.
-        write_system(&f.dirs, HANDOFF, "---\nname: session-handoff\n---\nNo description\n").unwrap();
-        let r = resolve_in(&f.dirs);
+        write_system(&f.dirs, NOTE_LEAD, "a [bracket]").unwrap();
+        let r = resolve_text(&f.dirs, NOTE_LEAD).unwrap();
         assert_eq!((r.source, r.state().state), (Source::Luna, SystemState::Broken));
-        assert!(r.problem.unwrap().contains("description"));
-        assert_eq!(check_override(HANDOFF, OURS), Ok(()));
-        assert!(check_override(HANDOFF, "---\nname: session-handoff\ndescription: x\n---\n").unwrap_err().contains("nothing past"));
+        assert!(r.problem.unwrap().contains("bracket"));
     }
 
-    /// Only a system skill's own folder is reached, whatever name the window
+    /// Only a system text's own folder is reached, whatever name the window
     /// sends: the commands refuse any other before they touch anything.
     #[test]
-    fn no_name_but_a_system_skill_s_reaches_anywhere() {
+    fn no_name_but_a_system_text_s_reaches_anywhere() {
         let f = Fixture::new("system-names");
         f.skill("review", "v1");
-        for name in ["review", "../skills/review", "..", "", "system", "Session-Handoff"] {
+        for name in ["review", "../skills/review", "..", "", "system", "Role-Lead", "session-handoff"] {
             assert!(read_system(&f.dirs, name).is_err(), "{name}");
             assert!(write_system(&f.dirs, name, OURS).is_err(), "{name}");
             assert!(reset_system(&f.dirs, name).is_err(), "{name}");
-            assert!(adopt_system(&f.dirs, name).is_err(), "{name}");
             assert!(compare_system(&f.dirs, name).is_err(), "{name}");
             assert!(library_check_system(name.into(), OURS.into()).is_some(), "{name}");
             assert!(library_system_compare(name.into()).is_err(), "{name}");
             assert!(library_system_reset(name.into()).is_err(), "{name}");
-            assert!(library_system_adopt(name.into()).is_err(), "{name}");
             assert!(library_read(Entry::System(name.into())).is_err(), "{name}");
             assert!(library_write(Entry::System(name.into()), OURS.into()).is_err(), "{name}");
         }
         assert!(f.dirs.skills().join("review").join(SKILL_FILE).is_file(), "the skill there is untouched");
         assert!(!f.dirs.root.join("system").exists());
-        assert_eq!(library_check_system(HANDOFF.into(), OURS.into()), None);
-        // It has no audience, and its name takes no skill of yours.
-        assert!(library_set_audience(Entry::System(HANDOFF.into()), Audience::CHATS).err().is_some_and(|e| e.contains("no audience")));
-        assert!(library_new_skill(HANDOFF.into()).err().is_some_and(|e| e.contains("System texts")));
-        assert!(library_check_skill(HANDOFF.into(), OURS.into()).is_some_and(|why| why.contains("laid out")));
+        assert_eq!(library_check_system(ROLE_LEAD.into(), OURS.into()), None);
+        // It has no audience.
+        assert!(library_set_audience(Entry::System(ROLE_LEAD.into()), Audience::CHATS).err().is_some_and(|e| e.contains("no audience")));
     }
 
     #[test]
     fn a_link_on_the_way_is_neither_read_nor_written_through_nor_taken_out() {
         let f = Fixture::new("system-link");
         let elsewhere = f.base.join("elsewhere");
-        std::fs::create_dir_all(elsewhere.join(HANDOFF)).unwrap();
-        std::fs::write(elsewhere.join(HANDOFF).join(SKILL_FILE), OURS).unwrap();
+        std::fs::create_dir_all(elsewhere.join(ROLE_LEAD)).unwrap();
+        std::fs::write(elsewhere.join(ROLE_LEAD).join(TEXT_FILE), OURS).unwrap();
         let system = f.dirs.root.join("system");
         link_dir(&system, &elsewhere);
-        assert!(read_system(&f.dirs, HANDOFF).err().is_some_and(|e| e.contains("link")));
-        assert!(write_system(&f.dirs, HANDOFF, "theirs").unwrap_err().contains("link"));
-        assert!(reset_system(&f.dirs, HANDOFF).unwrap_err().contains("link"));
-        f.skill(HANDOFF, "mine");
-        assert!(adopt_system(&f.dirs, HANDOFF).unwrap_err().contains("link"));
-        assert!(compare_system(&f.dirs, HANDOFF).is_err());
-        assert_eq!(std::fs::read_to_string(elsewhere.join(HANDOFF).join(SKILL_FILE)).unwrap(), OURS, "nothing written there");
-        assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file(), "the skill stays where it was");
+        assert!(read_system(&f.dirs, ROLE_LEAD).err().is_some_and(|e| e.contains("link")));
+        assert!(write_system(&f.dirs, ROLE_LEAD, "theirs").unwrap_err().contains("link"));
+        assert!(reset_system(&f.dirs, ROLE_LEAD).unwrap_err().contains("link"));
+        assert!(compare_system(&f.dirs, ROLE_LEAD).is_err());
+        assert_eq!(std::fs::read_to_string(elsewhere.join(ROLE_LEAD).join(TEXT_FILE)).unwrap(), OURS, "nothing written there");
         assert!(backups(&f).is_empty());
         unlink_dir(&system);
 
         // A link inside the override's folder: its folder is not taken out
         // through it, nor moved into the backups.
-        let dir = f.dirs.root.join("system").join(HANDOFF);
+        let dir = f.dirs.root.join("system").join(ROLE_LEAD);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(SKILL_FILE), OURS).unwrap();
+        std::fs::write(dir.join(TEXT_FILE), OURS).unwrap();
         link_dir(&dir.join("more"), &elsewhere);
-        assert!(reset_system(&f.dirs, HANDOFF).unwrap_err().contains("link"));
-        assert!(dir.join(SKILL_FILE).is_file() && elsewhere.join(HANDOFF).join(SKILL_FILE).is_file());
+        assert!(reset_system(&f.dirs, ROLE_LEAD).unwrap_err().contains("link"));
+        assert!(dir.join(TEXT_FILE).is_file() && elsewhere.join(ROLE_LEAD).join(TEXT_FILE).is_file());
         unlink_dir(&dir.join("more"));
-        // The skill to be made the override, a link: not moved.
-        std::fs::remove_dir_all(f.dirs.skills().join(HANDOFF)).unwrap();
-        link_dir(&f.dirs.skills().join(HANDOFF), &elsewhere.join(HANDOFF));
-        assert!(adopt_system(&f.dirs, HANDOFF).unwrap_err().contains("link"));
-        assert_eq!(std::fs::read_to_string(dir.join(SKILL_FILE)).unwrap(), OURS);
-        unlink_dir(&f.dirs.skills().join(HANDOFF));
     }
 
-    /// A FIFO in the override's folder or in the skill to make it: refused at
-    /// once, never read whole and waited on with the library's lock held; and
-    /// one at SKILL.md's name is no file for the editor either.
+    /// A FIFO in the override's folder: refused at once, never read whole and
+    /// waited on with the library's lock held; and one at TEXT.md's name is
+    /// no file for the editor either.
     #[cfg(unix)]
     #[test]
     fn a_fifo_in_the_way_is_refused_without_waiting() {
@@ -1184,78 +976,43 @@ mod tests {
         let path = write_override(&f, OURS);
         fifo(&path.with_file_name("pipe.md"));
         let d = dirs();
-        assert!(within(Box::new(move || reset_system(&d, HANDOFF).map(|_| ()))).unwrap_err().contains("not a plain file"));
+        assert!(within(Box::new(move || reset_system(&d, ROLE_LEAD).map(|_| ()))).unwrap_err().contains("not a plain file"));
         assert!(path.is_file(), "nothing taken out");
         std::fs::remove_file(path.with_file_name("pipe.md")).unwrap();
-        f.skill(HANDOFF, "Mine.");
-        fifo(&f.dirs.skills().join(HANDOFF).join("pipe.md"));
-        let d = dirs();
-        assert!(within(Box::new(move || adopt_system(&d, HANDOFF))).unwrap_err().contains("not a plain file"));
-        assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file(), "nothing moved");
         std::fs::remove_file(&path).unwrap();
         fifo(&path);
         let d = dirs();
-        assert!(within(Box::new(move || read_system(&d, HANDOFF).map(|_| ()))).unwrap_err().contains("not a file"));
+        assert!(within(Box::new(move || read_system(&d, ROLE_LEAD).map(|_| ()))).unwrap_err().contains("not a file"));
     }
 
     #[test]
     fn an_oversized_override_is_not_saved_and_one_too_large_to_edit_not_opened() {
         let f = Fixture::new("system-size");
-        let big = format!("---\nname: session-handoff\ndescription: x\n---\n{}", "a".repeat(SYSTEM_MAX_BYTES));
-        assert!(write_system(&f.dirs, HANDOFF, &big).unwrap_err().contains("not saved"));
+        let big = "a".repeat(ROLE_MAX_BYTES + 1);
+        assert!(write_system(&f.dirs, ROLE_LEAD, &big).unwrap_err().contains("not saved"));
         assert!(!f.dirs.root.join("system").exists());
-        assert!(check_override(HANDOFF, &big).unwrap_err().contains("KB"));
+        assert!(check_override(ROLE_LEAD, &big).unwrap_err().contains("KB"));
         // Over what Luna serves but not what the editor opens: opened, to be
         // cut down; Luna's own is served meanwhile.
         let path = write_override(&f, &big);
-        assert!(read_system(&f.dirs, HANDOFF).unwrap().exists);
-        assert_eq!(resolve_in(&f.dirs).state().state, SystemState::Broken);
+        assert!(read_system(&f.dirs, ROLE_LEAD).unwrap().exists);
+        assert_eq!(resolved(&f.dirs).state().state, SystemState::Broken);
         std::fs::write(&path, vec![b'a'; EDIT_MAX_BYTES as usize + 1]).unwrap();
-        assert!(read_system(&f.dirs, HANDOFF).err().is_some_and(|e| e.contains("too large")));
+        assert!(read_system(&f.dirs, ROLE_LEAD).err().is_some_and(|e| e.contains("too large")));
     }
 
     #[test]
     fn back_to_luna_s_keeps_the_override_in_the_backups() {
         let f = Fixture::new("system-reset");
-        assert_eq!(reset_system(&f.dirs, HANDOFF), Ok(None), "none to take out");
+        assert_eq!(reset_system(&f.dirs, ROLE_LEAD), Ok(None), "none to take out");
         let path = write_override(&f, OURS);
         std::fs::write(path.with_file_name("example.md"), "beside it").unwrap();
-        let Some(Moved::Backup(saved)) = reset_system(&f.dirs, HANDOFF).unwrap() else { panic!("backed up") };
-        assert_eq!(std::fs::read_to_string(saved.join(HANDOFF).join(SKILL_FILE)).unwrap(), OURS);
-        assert_eq!(std::fs::read_to_string(saved.join(HANDOFF).join("example.md")).unwrap(), "beside it");
+        let Some(Moved::Backup(saved)) = reset_system(&f.dirs, ROLE_LEAD).unwrap() else { panic!("backed up") };
+        assert_eq!(std::fs::read_to_string(saved.join(ROLE_LEAD).join(TEXT_FILE)).unwrap(), OURS);
+        assert_eq!(std::fs::read_to_string(saved.join(ROLE_LEAD).join("example.md")).unwrap(), "beside it");
         assert!(saved.starts_with(f.dirs.backups()));
         assert!(!f.dirs.root.join("system").exists(), "nothing left of it in the library");
-        assert_eq!(resolve_in(&f.dirs).state().state, SystemState::Luna);
-    }
-
-    #[test]
-    fn a_skill_of_the_reserved_name_becomes_the_override_files_and_all() {
-        let f = Fixture::new("system-adopt");
-        assert!(adopt_system(&f.dirs, HANDOFF).unwrap_err().contains("no skill named"));
-        f.skill(HANDOFF, "Ours, from before there was an override.");
-        std::fs::write(f.dirs.skills().join(HANDOFF).join("template.md"), "# Template").unwrap();
-        adopt_system(&f.dirs, HANDOFF).unwrap();
-        let dir = f.dirs.root.join("system").join(HANDOFF);
-        assert!(!f.dirs.skills().join(HANDOFF).exists(), "moved, not copied");
-        assert_eq!(std::fs::read_to_string(dir.join("template.md")).unwrap(), "# Template");
-        let r = resolve_in(&f.dirs);
-        assert_eq!(r.source, Source::Library);
-        assert!(r.body().contains("Ours, from before"));
-        assert!(backups(&f).is_empty(), "nothing was there to replace");
-
-        // Made the override where there is one: that one goes to the backups.
-        f.skill(HANDOFF, "Newer.");
-        adopt_system(&f.dirs, HANDOFF).unwrap();
-        assert!(resolve_in(&f.dirs).body().contains("Newer."));
-        assert!(!dir.join("template.md").exists(), "the folder moved in whole");
-        let saved = backups(&f);
-        assert_eq!(saved.len(), 1);
-        assert_eq!(std::fs::read_to_string(saved[0].join(HANDOFF).join("template.md")).unwrap(), "# Template");
-
-        // Without a SKILL.md it is no skill to make the override.
-        std::fs::create_dir_all(f.dirs.skills().join(HANDOFF)).unwrap();
-        assert!(adopt_system(&f.dirs, HANDOFF).unwrap_err().contains("no SKILL.md"));
-        assert_eq!(names(&f.dirs.root.join("system")), [HANDOFF], "nothing staged or set aside is left");
+        assert_eq!(resolved(&f.dirs).state().state, SystemState::Luna);
     }
 
     /// Makes a step of a move fail as the disk would, for this test's thread.
@@ -1274,81 +1031,6 @@ mod tests {
         names
     }
 
-    /// An adoption that fails at any step leaves what was served, and the
-    /// skill, as they were: the move that may fail (its folder held open) comes
-    /// before anything served changes, and the swap is undone.
-    #[test]
-    fn an_adoption_that_fails_changes_nothing() {
-        let f = Fixture::new("system-adopt-fails");
-        write_override(&f, OURS);
-        f.skill(HANDOFF, "Mine.");
-        let served = resolve_in(&f.dirs).sha256;
-        for step in ["stage", "aside", "swap"] {
-            fail(step, std::io::ErrorKind::PermissionDenied);
-            assert!(adopt_system(&f.dirs, HANDOFF).is_err(), "{step}");
-            heal();
-            let r = resolve_in(&f.dirs);
-            assert_eq!((r.source, &r.sha256), (Source::Library, &served), "{step}: the override as it was");
-            assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file(), "{step}: the skill where it was");
-            assert_eq!(names(&f.dirs.root.join("system")), [HANDOFF], "{step}: nothing staged or set aside is left");
-            assert!(backups(&f).is_empty(), "{step}");
-        }
-        // Then it goes through.
-        adopt_system(&f.dirs, HANDOFF).unwrap();
-        assert!(resolve_in(&f.dirs).body().contains("Mine."));
-        assert_eq!(backups(&f).len(), 1, "the one replaced");
-    }
-
-    /// The source folder held open with no sharing, as an editor or a scanner
-    /// may hold a file on Windows: its rename fails, and the override stays.
-    #[cfg(windows)]
-    #[test]
-    fn an_adoption_of_a_folder_held_open_changes_nothing() {
-        use std::os::windows::fs::OpenOptionsExt;
-        let f = Fixture::new("system-adopt-held");
-        write_override(&f, OURS);
-        f.skill(HANDOFF, "Mine.");
-        let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(f.dirs.skills().join(HANDOFF).join(SKILL_FILE)).unwrap();
-        assert!(adopt_system(&f.dirs, HANDOFF).is_err());
-        drop(held);
-        assert_eq!(resolve_in(&f.dirs).text, OURS);
-        assert_eq!(names(&f.dirs.root.join("system")), [HANDOFF]);
-        assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file());
-    }
-
-    /// With no system lock to be had (a folder where it goes), an adoption is
-    /// refused before anything moves, and what is served is still served.
-    #[test]
-    fn an_adoption_without_the_system_lock_changes_nothing() {
-        let f = Fixture::new("system-no-lock");
-        write_override(&f, OURS);
-        f.skill(HANDOFF, "Mine.");
-        let at = f.base.join("no-lock");
-        std::fs::create_dir_all(at.join("inside")).unwrap();
-        SYSTEM_LOCK_AT.with(|l| *l.borrow_mut() = Some(at));
-        let why = adopt_system(&f.dirs, HANDOFF).unwrap_err();
-        assert!(why.contains("no lock"), "{why}");
-        assert_eq!(resolve_in(&f.dirs).text, OURS, "served without it");
-        SYSTEM_LOCK_AT.with(|l| *l.borrow_mut() = None);
-        assert_eq!(names(&f.dirs.root.join("system")), [HANDOFF]);
-        assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file());
-    }
-
-    /// While an adoption holds the system lock, what is served waits for it:
-    /// no handoff reads the moment between its renames.
-    #[test]
-    fn what_is_served_waits_for_an_adoption_s_swap() {
-        let f = Fixture::new("system-lock");
-        write_override(&f, OURS);
-        let held = system_lock(&f.dirs, true).unwrap();
-        let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || tx.send(resolve_in(&dirs).source));
-        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "it waits");
-        drop(held);
-        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(), Source::Library);
-    }
-
     /// Back to Luna's moves the override's folder whole: its temp files and
     /// whatever else is in it, by a rename, or across volumes by a copy of all
     /// of it before the folder goes.
@@ -1358,21 +1040,39 @@ mod tests {
             let f = Fixture::new(if across { "system-reset-across" } else { "system-reset-whole" });
             let path = write_override(&f, OURS);
             let dir = path.parent().unwrap().to_path_buf();
-            std::fs::write(dir.join("SKILL.md.1-0.luna-tmp"), "a save under way").unwrap();
+            std::fs::write(dir.join("TEXT.md.1-0.luna-tmp"), "a save under way").unwrap();
             std::fs::create_dir_all(dir.join("more")).unwrap();
             std::fs::write(dir.join("more").join("notes.md"), "notes").unwrap();
             if across {
                 fail("backup", std::io::ErrorKind::CrossesDevices);
             }
-            let Some(Moved::Backup(saved)) = reset_system(&f.dirs, HANDOFF).unwrap() else { panic!("across: {across}: backed up") };
-            let saved = saved.join(HANDOFF);
+            let Some(Moved::Backup(saved)) = reset_system(&f.dirs, ROLE_LEAD).unwrap() else { panic!("across: {across}: backed up") };
+            let saved = saved.join(ROLE_LEAD);
             heal();
-            assert_eq!(std::fs::read_to_string(saved.join(SKILL_FILE)).unwrap(), OURS, "across: {across}");
-            assert_eq!(std::fs::read_to_string(saved.join("SKILL.md.1-0.luna-tmp")).unwrap(), "a save under way");
+            assert_eq!(std::fs::read_to_string(saved.join(TEXT_FILE)).unwrap(), OURS, "across: {across}");
+            assert_eq!(std::fs::read_to_string(saved.join("TEXT.md.1-0.luna-tmp")).unwrap(), "a save under way");
             assert_eq!(std::fs::read_to_string(saved.join("more").join("notes.md")).unwrap(), "notes");
             assert!(!dir.exists() && !f.dirs.root.join("system").exists(), "across: {across}");
             assert!(set_aside(&f.dirs).is_empty(), "across: {across}: nothing left aside");
         }
+    }
+
+    /// What 0.19's handoff left in `system/`, its skill's override and an
+    /// adoption cut short with the person's own skill in it, is named with
+    /// what is set aside, and left as it is; a folder of no system text's is not.
+    #[test]
+    fn what_0_19_s_handoff_left_in_system_is_named_and_kept() {
+        let f = Fixture::new("system-retired");
+        let system = f.dirs.root.join("system");
+        for dir in ["Session-Handoff", ".session-handoff.adopting-ab12", "notes"] {
+            std::fs::create_dir_all(system.join(dir)).unwrap();
+            std::fs::write(system.join(dir).join("SKILL.md"), "mine").unwrap();
+        }
+        let named: Vec<String> =
+            set_aside(&f.dirs).iter().map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(named, [".session-handoff.adopting-ab12", "Session-Handoff"], "whatever its case");
+        assert!(retired("session-handoff") && retired(".Session-Handoff.replaced-1") && !retired("session-handoffs"));
+        assert_eq!(std::fs::read_to_string(system.join(".session-handoff.adopting-ab12").join("SKILL.md")).unwrap(), "mine");
     }
 
     /// Across volumes, a save that lands in the folder while it is copied (a
@@ -1388,19 +1088,19 @@ mod tests {
         fail("backup", std::io::ErrorKind::CrossesDevices);
         MEANWHILE.with(|m| {
             *m.borrow_mut() = Some(Box::new(|aside: &Path| {
-                std::fs::write(aside.join(SKILL_FILE), "saved while it was copied").unwrap();
+                std::fs::write(aside.join(TEXT_FILE), "saved while it was copied").unwrap();
                 std::fs::write(aside.join("added.md"), "added while it was copied").unwrap();
             }))
         });
-        let moved = reset_system(&f.dirs, HANDOFF).unwrap();
+        let moved = reset_system(&f.dirs, ROLE_LEAD).unwrap();
         heal();
         let Some(Moved::Aside(kept)) = moved else { panic!("set aside: {moved:?}") };
-        assert_eq!(std::fs::read_to_string(kept.join(SKILL_FILE)).unwrap(), "saved while it was copied");
+        assert_eq!(std::fs::read_to_string(kept.join(TEXT_FILE)).unwrap(), "saved while it was copied");
         assert_eq!(std::fs::read_to_string(kept.join("added.md")).unwrap(), "added while it was copied");
         assert_eq!(std::fs::read_to_string(kept.join("notes.md")).unwrap(), "notes");
         assert!(backups(&f).is_empty(), "the copy that was not whole is taken out");
         assert!(!path.parent().unwrap().exists(), "out of its place");
-        assert_eq!(resolve_in(&f.dirs).state().state, SystemState::Luna);
+        assert_eq!(resolved(&f.dirs).state().state, SystemState::Luna);
         assert_eq!(set_aside(&f.dirs), [kept.to_string_lossy().into_owned()], "named to the window");
     }
 
@@ -1415,51 +1115,35 @@ mod tests {
         std::fs::write(&other, OURS).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::hard_link(&other, &path).unwrap();
-        let r = resolve_in(&f.dirs);
+        let r = resolved(&f.dirs);
         assert_eq!(r.source, Source::Luna);
         assert!(r.problem.as_deref().is_some_and(|p| p.contains("not a file of yours")), "{:?}", r.problem);
-        assert!(read_system(&f.dirs, HANDOFF).err().is_some_and(|e| e.contains("not a file of yours")));
+        assert!(read_system(&f.dirs, ROLE_LEAD).err().is_some_and(|e| e.contains("not a file of yours")));
         std::fs::remove_file(&path).unwrap();
         std::fs::write(&path, OURS).unwrap();
-        assert_eq!(resolve_in(&f.dirs).source, Source::Library, "its own file again");
+        assert_eq!(resolved(&f.dirs).source, Source::Library, "its own file again");
         // Another user's, where this test may hand one over.
         #[cfg(unix)]
         if unsafe { libc::geteuid() } == 0 {
             std::os::unix::fs::chown(&path, Some(4242), Some(4242)).unwrap();
-            assert!(resolve_in(&f.dirs).problem.is_some_and(|p| p.contains("owned by uid 4242")));
+            assert!(resolved(&f.dirs).problem.is_some_and(|p| p.contains("owned by uid 4242")));
         }
     }
 
-    /// A link planted above what the window changes: `skills/` a junction to
-    /// an account's, `library-backups/` one to elsewhere. Neither adoption nor
-    /// Back to Luna's goes through it, and nothing there is touched.
+    /// A link planted above what the window changes, `library-backups/` one to
+    /// elsewhere: Back to Luna's does not go through it, and nothing there is
+    /// touched.
     #[test]
     fn a_link_above_what_is_changed_is_refused() {
         let f = Fixture::new("system-ancestors");
-        let theirs = f.account(0).join("skills");
-        std::fs::create_dir_all(theirs.join(HANDOFF)).unwrap();
-        std::fs::write(theirs.join(HANDOFF).join(SKILL_FILE), OURS).unwrap();
-        link_dir(&f.dirs.skills(), &theirs);
-        assert!(adopt_system(&f.dirs, HANDOFF).unwrap_err().contains("link"));
-        assert!(theirs.join(HANDOFF).join(SKILL_FILE).is_file(), "the account's skill stays where it is");
-        assert!(!f.dirs.root.join("system").exists());
-        unlink_dir(&f.dirs.skills());
-
         let elsewhere = f.base.join("elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
         std::fs::create_dir_all(&f.dirs.data).unwrap();
         link_dir(&f.dirs.backups(), &elsewhere);
         let path = write_override(&f, OURS);
-        let e = reset_system(&f.dirs, HANDOFF).unwrap_err();
+        let e = reset_system(&f.dirs, ROLE_LEAD).unwrap_err();
         assert!(e.contains("no private folder of Luna's"), "{e}");
         assert!(path.is_file(), "the override stays");
-        assert!(names(&elsewhere).is_empty(), "nothing put through the link");
-        // Nor an adoption over an override, whose replaced one goes there too:
-        // refused before anything moves.
-        f.skill(HANDOFF, "Mine.");
-        assert!(adopt_system(&f.dirs, HANDOFF).unwrap_err().contains("no private folder of Luna's"));
-        assert_eq!(resolve_in(&f.dirs).text, OURS);
-        assert!(f.dirs.skills().join(HANDOFF).join(SKILL_FILE).is_file());
         assert!(names(&elsewhere).is_empty(), "nothing put through the link");
         unlink_dir(&f.dirs.backups());
     }
@@ -1472,61 +1156,9 @@ mod tests {
         let via = f.base.join("via");
         link_dir(&via, &f.dirs.root);
         let dirs = Dirs { root: via.clone(), data: f.dirs.data.clone() };
-        write_system(&dirs, HANDOFF, OURS).unwrap();
-        assert_eq!(resolve_in(&dirs).source, Source::Library);
-        assert!(reset_system(&dirs, HANDOFF).unwrap().is_some());
+        write_system(&dirs, ROLE_LEAD, OURS).unwrap();
+        assert_eq!(resolved(&dirs).source, Source::Library);
+        assert!(reset_system(&dirs, ROLE_LEAD).unwrap().is_some());
         unlink_dir(&via);
-    }
-
-    /// A skill of the reserved name among the library's is laid out nowhere:
-    /// not into an account, not for a folder's sessions, and its name hidden
-    /// from no session's start; a copy of it laid out before goes, unless
-    /// changed there since.
-    #[test]
-    fn a_skill_of_the_reserved_name_is_laid_out_nowhere_and_its_old_copies_go() {
-        let f = Fixture::new("system-reserved");
-        f.skill(HANDOFF, "Mine.");
-        f.skill("review", "v1");
-        let repo = f.base.join("repo");
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        let folder = LibraryFolder {
-            path: repo.to_string_lossy().into_owned(),
-            // Kept from every account's sessions there, as `review` is.
-            skills: BTreeMap::from([(HANDOFF.to_string(), Vec::new()), ("review".to_string(), Vec::new())]),
-            slug: "repo".into(),
-            ..Default::default()
-        };
-        let mut lib = LibrarySettings { skills: skills(&[HANDOFF, "review"]), folders: vec![folder], ..Default::default() };
-        lib.audience.skills.insert(HANDOFF.into(), Audience::CHATS);
-        let found = read_skills(&f.dirs).unwrap();
-        assert!(found[HANDOFF].0.problem.as_deref().is_some_and(|p| p.contains("System texts")));
-        assert!(found["review"].0.problem.is_none());
-
-        // Copies an earlier Luna laid out: one as it wrote it, one changed since.
-        let mut ledger = Ledger::default();
-        for i in [0, 2] {
-            let dest = f.account(i).join("skills").join(HANDOFF);
-            let files = Files::from([(SKILL_FILE.to_string(), b"old".to_vec())]);
-            write_at(&dest, false, &files).unwrap();
-            ledger.wrote(&dest.to_string_lossy(), hashes(&files), Audience::EVERY);
-        }
-        std::fs::write(f.account(2).join("skills").join(HANDOFF).join(SKILL_FILE), "changed there").unwrap();
-
-        let p = f.run(&lib, &mut ledger, true);
-        assert!(p.places.iter().all(|place| place.skill.as_deref() != Some(HANDOFF)), "no place wants it");
-        assert!(f.account(0).join("skills").join("review").is_dir(), "the rest is laid out");
-        assert!(!f.account(0).join("skills").join(HANDOFF).exists(), "Luna's old copy taken out");
-        assert!(!f.account(1).join("skills").join(HANDOFF).exists());
-        assert_eq!(p.kept, [f.account(2).join("skills").join(HANDOFF).to_string_lossy().into_owned()], "a changed one stays");
-        // Failures name the account by its place and the kind of session,
-        // not what the arguments hold: a test's output is a log too.
-        for (i, a) in f.accounts.iter().enumerate() {
-            for kind in Role::ALL {
-                let s = folder_args(&f.dirs, &lib, a, &repo.to_string_lossy(), kind);
-                let said = format!("{:?} {:?} {:?}", s.args, s.hidden, s.audience);
-                assert!(!said.contains(HANDOFF), "account {i}, {kind:?}: the folder's arguments name the reserved skill");
-                assert!(said.contains("review"), "account {i}, {kind:?}: the folder no longer keeps review");
-            }
-        }
     }
 }

@@ -4,15 +4,15 @@
 
 pub(crate) mod account;
 pub(super) mod background;
+pub(super) mod folder;
 pub(super) mod settle;
-pub(super) mod worktree;
 
 use crate::agents::privilege::{command_reach, plain_text, reaches_luna, settle_mode, settle_role, Privilege};
 use crate::agents::registry::{depth_of, descendants, is_descendant, reg, top_of, Registry, DEV_CALLER};
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
 use crate::agents::spawn::background::spawn_background;
-use crate::agents::spawn::worktree::{caller_worktree, Neighbor, Worktree};
+use crate::agents::spawn::folder::{caller_worktree, Neighbor};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,6 @@ pub struct SpawnParams {
     pub approval: Option<String>,
     pub sandbox: Option<String>,
     pub folder: Option<String>,
-    pub worktree: Option<bool>,
     pub prompt: String,
     pub name: Option<String>,
     pub tools: Option<bool>,
@@ -104,7 +103,7 @@ pub struct SpawnParams {
 /// session's are its caller's, then its own spawn's: set once at the spawn,
 /// never changed, and passed down whole to every session it starts. Text,
 /// not enforcement: a session is told them as the last of its role layers
-/// (library/role.rs), at every start, resume and handoff, and its privilege
+/// (library/role.rs), at every start and resume, and its privilege
 /// is what it was (agents/privilege.rs).
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Constraint {
@@ -184,8 +183,6 @@ pub(super) struct SpawnTaken {
     pub(super) connectors: bool,
     pub(super) in_worktree: Option<String>,
     pub(super) account_path: String,
-    /// With `worktree`: the worktrees there were as it was taken on.
-    pub(super) worktrees_before: Vec<String>,
     /// The session it came to, as soon as there is one (`spawn_is`).
     pub(super) helper: Option<String>,
     /// That session owes its caller by now, whatever has become of the debt since,
@@ -219,10 +216,6 @@ impl SpawnUnderWay {
         in_worktree: Option<&str>,
         replaces: Option<u64>,
     ) -> Result<SpawnUnderWay, String> {
-        let worktrees_before = match (params.worktree, params.folder.as_deref()) {
-            (Some(true), Some(folder)) => crate::worktree::made_for(folder, account_path),
-            _ => Vec::new(),
-        };
         let most = max_descendants();
         let taken = SpawnTaken {
             request: 0,
@@ -235,7 +228,6 @@ impl SpawnUnderWay {
             connectors: params.connectors == Some(true),
             in_worktree: in_worktree.map(str::to_owned),
             account_path: account_path.to_string(),
-            worktrees_before,
             helper: None,
             owed_placed: false,
             left_by_core: false,
@@ -244,14 +236,6 @@ impl SpawnUnderWay {
         };
         let request = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            // A chat stopping for a move into another account looks at its
-            // helpers and then stops: nothing of its may start between the two
-            // (agents/handoff/moving.rs `stopping`), so the mark is looked at
-            // under the same lock the spawn is recorded under.
-            let top = top_of(&r, caller);
-            if crate::agents::handoff::stopping_for_move(&top) {
-                return Err(format!("{top} is being stopped for a move to another account: no helper starts under it now"));
-            }
             if let Err(e) = cap_room(&r, caller, replaces, most) {
                 refused_a_place(&mut r, caller);
                 return Err(e);
@@ -409,13 +393,6 @@ pub struct Spawned {
     /// they share its files and its git index, commits and all.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub same_folder: Vec<Neighbor>,
-    /// The worktree it works in and its branch, once the CLI has made it.
-    #[serde(flatten)]
-    pub worktree: Worktree,
-    /// Asked for a worktree of its own and the CLI has not said where yet:
-    /// `luna_session_list` names it once it has.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub worktree_pending: bool,
     /// A Codex helper spawned without connectors: the MCP servers it keeps
     /// all the same, which Codex cannot turn off for a run (codex/config.rs
     /// `servers_left_on`).
@@ -448,7 +425,8 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
         return Err("budgetPct is a share of the context window: 0 (never) to 100".into());
     }
     // Off the registry lock: this reads the CLI's registry from disk. A
-    // helper works where its caller does, worktree and all.
+    // helper works where its caller does, in the worktree its CLI made for it
+    // as well.
     let worktree = if params.folder.is_none() { caller_worktree(caller) } else { None };
     let most = max_descendants();
     let me = {
@@ -475,13 +453,10 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     }
     // A folder inside a CLI-made worktree files the helper under the
     // worktree's project, like the chat it came from; it runs in that
-    // worktree unless it asked for one of its own.
+    // worktree.
     let mut in_worktree = None;
-    if let Some(project) = params.folder.as_deref().and_then(crate::worktree::project_of) {
-        let wt = params.folder.replace(project);
-        if !params.worktree.unwrap_or(false) {
-            in_worktree = wt;
-        }
+    if let Some(project) = params.folder.as_deref().and_then(crate::checkout::project_of) {
+        in_worktree = params.folder.replace(project);
     }
     for dir in params.folder.iter().chain(in_worktree.iter()).filter(|d| !d.trim().is_empty()) {
         if reaches_luna(dir) {
@@ -550,7 +525,7 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     let run_in = in_worktree.clone().or_else(|| params.folder.clone()).unwrap_or_default();
     // A folder the helper's CLI could not start in (pty/folder.rs), said to
     // the caller now rather than as a first turn that fails.
-    if let Some(why) = crate::pty::folder_refusal(provider, &run_in, &account.path, params.worktree.unwrap_or(false)) {
+    if let Some(why) = crate::pty::folder_refusal(&run_in, false) {
         return Err(why);
     }
     // The dev caller has no mode of its own to pass on.
@@ -586,15 +561,8 @@ pub(super) fn spawn_is(request: u64, id: &str) -> Result<(), String> {
         };
         s.helper = Some(id.to_string());
         let task = first_words(&s.params.prompt, TASK_CHARS);
-        // Codex names no worktree: what is new since is all that tells what a core
-        // may have cut it off making (`report_codex_worktrees`).
-        let codex = s.params.provider.as_deref() == Some(Provider::Codex.as_str());
-        let before = (s.params.worktree == Some(true) && codex).then(|| s.worktrees_before.clone());
         if let Some(task) = task {
             r.tasks.insert(id.to_string(), task);
-        }
-        if let Some(before) = before {
-            r.worktrees_before.insert(id.to_string(), before);
         }
     }
     crate::background::save();
@@ -604,8 +572,7 @@ pub(super) fn spawn_is(request: u64, id: &str) -> Result<(), String> {
 /// The helpers' settings the window shows beside `helpersAboveCaller`: how
 /// many places a line has (`max_descendants`), the range it may be set in,
 /// the mode a helper takes when its spawn names none (privilege.rs
-/// `settle_mode`), the context share its notices speak past, and auto-handoff
-/// for leads (handoff/lead.rs).
+/// `settle_mode`) and the context share its notices speak past.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelperSettings {
@@ -615,7 +582,6 @@ pub struct HelperSettings {
     pub helper_mode: crate::settings::HelperMode,
     /// `Settings::helper_context_pct`, 0 for off.
     pub helper_context_pct: u32,
-    pub lead_handoff: crate::settings::LeadHandoff,
 }
 
 /// The share of a helper's context window past which notices about it say
@@ -632,7 +598,6 @@ pub fn helper_settings() -> HelperSettings {
         max: *HELPERS_RANGE.end(),
         helper_mode: s.helper_mode,
         helper_context_pct: s.helper_context_pct.min(100),
-        lead_handoff: crate::agents::handoff::lead_settings(),
     }
 }
 
@@ -653,17 +618,6 @@ pub fn set_max_helpers(n: u32) -> Result<HelperSettings, String> {
     let n = n.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end());
     crate::settings::update(|s| s.max_helpers = n)?;
     crate::log::info("agents", &format!("places on a line: {n}"));
-    Ok(helper_settings())
-}
-
-/// Auto-handoff for leads on or off, at `threshold`. No dialog either: a lead
-/// asked for a handoff goes on in a fresh conversation of its own, with no
-/// more reach than it had (handoff/lead.rs).
-#[tauri::command]
-pub fn set_lead_handoff(on: bool, threshold: u8) -> Result<HelperSettings, String> {
-    let threshold = threshold.clamp(crate::agents::handoff::THRESHOLD_MIN, crate::agents::handoff::THRESHOLD_MAX);
-    crate::settings::update(|s| s.lead_handoff = crate::settings::LeadHandoff { on, threshold })?;
-    crate::log::info("agents", &format!("auto-handoff for leads: {}, at {threshold}%", if on { "on" } else { "off" }));
     Ok(helper_settings())
 }
 
@@ -716,8 +670,9 @@ mod tests {
         // A record a core of an earlier version wrote, a visible spawn's marks and
         // all, still reads.
         let old = serde_json::json!({
-            "request": 7, "caller": "c", "params": { "prompt": "go", "visible": true }, "autoDelete": null,
-            "resumeOnRestart": false, "visible": true, "inWorktree": null, "accountPath": "a", "worktreesBefore": [], "helper": null
+            "request": 7, "caller": "c", "params": { "prompt": "go", "visible": true, "worktree": true }, "autoDelete": null,
+            "resumeOnRestart": false, "visible": true, "inWorktree": null, "accountPath": "a",
+            "worktreesBefore": ["/p/.claude/worktrees/a"], "helper": null
         });
         let back: SpawnTaken = serde_json::from_value(old).expect("an older chat-ties.json still reads");
         assert_eq!(back.params.prompt, "go");

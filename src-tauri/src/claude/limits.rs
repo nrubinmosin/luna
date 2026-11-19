@@ -77,10 +77,6 @@ pub struct ScopedLimit {
     pub label: String,
     pub used: f64,
     pub resets_at: Option<String>,
-    /// The model it counts alone, where its scope names one (`model_scope`):
-    /// what a usage limit's hold on a chat goes by, not shown.
-    #[serde(skip)]
-    pub model: Option<String>,
 }
 
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
@@ -92,15 +88,6 @@ pub struct OtherLimit {
     pub label: String,
     pub used: f64,
     pub resets_at: Option<String>,
-    /// As `ScopedLimit::model`.
-    #[serde(skip)]
-    pub model: Option<String>,
-}
-
-/// The model a row counts alone, by its scope's model name; None for a row
-/// scoped to no model or to a surface, which every model counts against.
-fn model_scope(lim: &Value) -> Option<String> {
-    lim["scope"]["model"]["display_name"].as_str().filter(|n| !n.trim().is_empty()).map(str::to_owned)
 }
 
 fn read_json(path: &Path) -> Option<Value> {
@@ -194,7 +181,7 @@ fn apply_limits(out: &mut AccountLimits, limits: &Value) {
                     .or_else(|| scope["surface"]["display_name"].as_str())
                     .unwrap_or("model")
                     .to_string();
-                out.scoped.push(ScopedLimit { label, used: pct, resets_at: reset, model: model_scope(lim) });
+                out.scoped.push(ScopedLimit { label, used: pct, resets_at: reset });
             }
             kind => {
                 let label = own_label(lim, kind);
@@ -204,7 +191,7 @@ fn apply_limits(out: &mut AccountLimits, limits: &Value) {
                         &format!("the usage endpoint sent a row of kind {kind:?}, unknown to Luna; shown as {label:?}"),
                     );
                 }
-                out.other.push(OtherLimit { kind: kind.to_string(), label, used: pct, resets_at: reset, model: model_scope(lim) });
+                out.other.push(OtherLimit { kind: kind.to_string(), label, used: pct, resets_at: reset });
             }
         }
     }
@@ -258,43 +245,6 @@ fn newest_known(cfg: Option<&Value>, account_path: &str) -> Option<(u64, Value, 
         (Some((at, limits)), None) => Some((at, limits, "cache", CACHE_FRESH_MS)),
         (None, None) => None,
     }
-}
-
-/// The account's usage as last known, asking nothing of the network: what a
-/// usage limit's hold on a chat is judged on (activity `limit_in_force`).
-pub(crate) fn known_reading(account_path: &str) -> Option<crate::activity::UsageReading> {
-    use crate::activity::UsageWindow;
-    let cfg = read_json(&Path::new(account_path).join(".claude.json"));
-    let (at, limits, _, _) = newest_known(cfg.as_ref(), account_path)?;
-    let mut out = AccountLimits::default();
-    apply_limits(&mut out, &limits);
-    let mut windows = Vec::new();
-    if let Some(used) = out.h5 {
-        windows.push(UsageWindow { label: "5 hours".into(), used, resets_at: out.reset_h5.clone(), model: None, at: None });
-    }
-    if let Some(used) = out.week {
-        windows.push(UsageWindow { label: "week".into(), used, resets_at: out.reset_week.clone(), model: None, at: None });
-    }
-    // A window scoped to a model holds only a chat on it (`UsageReading::for_model`).
-    for s in &out.scoped {
-        windows.push(UsageWindow {
-            label: format!("week, {}", s.label),
-            used: s.used,
-            resets_at: s.resets_at.clone(),
-            model: s.model.clone(),
-            at: None,
-        });
-    }
-    for o in &out.other {
-        windows.push(UsageWindow {
-            label: o.label.clone(),
-            used: o.used,
-            resets_at: o.resets_at.clone(),
-            model: o.model.clone(),
-            at: None,
-        });
-    }
-    Some(crate::activity::UsageReading { at: Some(at), windows })
 }
 
 pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String> {
@@ -421,33 +371,12 @@ mod scoped_tests {
         assert_eq!(out.scoped[1].label, "Opus");
         assert_eq!(out.scoped[1].resets_at.as_deref(), Some("2026-10-20T09:00:00Z"));
         assert!(out.other.is_empty());
-        assert_eq!((out.scoped[0].model.as_deref(), out.scoped[1].model.as_deref()), (Some("Fable"), Some("Opus")));
-        assert!(serde_json::to_value(&out.scoped[0]).unwrap().get("model").is_none(), "not shown: the label says it");
-    }
-
-    /// The reading a limit's hold goes by keeps each row's model, and none for
-    /// a row scoped to a surface, which every model counts against.
-    #[test]
-    fn a_reading_keeps_each_windows_model_scope() {
-        let limits = serde_json::json!([
-            { "kind": "session", "percent": 100, "resets_at": null },
-            { "kind": "weekly_scoped", "percent": 100, "resets_at": null, "scope": { "model": { "display_name": "Opus" } } },
+        // A row scoped to a surface, not a model, goes by the surface's name.
+        let surface = serde_json::json!([
             { "kind": "weekly_scoped", "percent": 10, "resets_at": null, "scope": { "surface": { "display_name": "Claude Code" } } },
-            { "kind": "monthly_scoped", "group": "monthly", "percent": 30, "resets_at": null, "scope": { "model": { "display_name": "Fable" } } },
         ]);
-        let (dir, path) = account_with_cache("scoped-reading", 1_000, limits);
-        let r = known_reading(&path).unwrap();
-        let scopes: Vec<(&str, Option<&str>)> = r.windows.iter().map(|w| (w.label.as_str(), w.model.as_deref())).collect();
-        assert_eq!(
-            scopes,
-            [
-                ("5 hours", None),
-                ("week, Opus", Some("Opus")),
-                ("week, Claude Code", None),
-                ("Fable · monthly (monthly_scoped)", Some("Fable")),
-            ]
-        );
-        let _ = std::fs::remove_dir_all(&dir);
+        apply_limits(&mut out, &surface);
+        assert_eq!((out.scoped.len(), out.scoped[0].label.as_str()), (1, "Claude Code"));
     }
 
     /// The answer as the endpoint gave it on 2026-11-09: weekly rows, no

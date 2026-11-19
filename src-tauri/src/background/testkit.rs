@@ -127,7 +127,7 @@ pub fn lose_for_test(id: &str, from: &str, text: &str) {
 #[cfg(test)]
 pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str], opening: Option<&str>) {
     let spec: Spec = serde_json::from_value(json!({
-        "provider": "claude", "accountPath": "C:\\acc", "folder": folder, "worktree": false, "model": null,
+        "provider": "claude", "accountPath": "C:\\acc", "folder": folder, "model": null,
         "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
     }))
     .unwrap();
@@ -153,7 +153,8 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         cut_short: false,
         observed: Default::default(),
         ties: Default::default(),
-        switch: None,
+        retired_switch: None,
+        no_handoff: true,
     });
     lock().entries.insert(id.to_string(), e);
 }
@@ -296,17 +297,6 @@ pub(crate) fn gone_for_test(id: &str) {
     lock().entries.remove(id);
 }
 
-/// A lead's look at its handoff at its turn's end under way, or over, as
-/// `turn_over` marks it and its thread lets it go (events.rs `handoff_looks`).
-#[cfg(test)]
-pub(crate) fn handoff_look_for_test(id: &str, on: bool) {
-    if on {
-        handoff_looks().insert(id.to_string());
-    } else {
-        handoff_looks().remove(id);
-    }
-}
-
 /// Its turn is over and what was queued is reserved for the next, as
 /// `turn_over` reserves it, the turn's command not made yet.
 #[cfg(test)]
@@ -387,14 +377,11 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             provider: Provider::Claude,
             account_path: account_path.into(),
             folder: account_path.into(),
-            worktree: false,
-            worktree_name: None,
             model: None,
             effort: "low".into(),
             mode: "default".into(),
             auto_review: false,
             tools: false,
-            hooks_unasked: false,
             read_only: false,
             agent: None,
             parent: None,
@@ -402,7 +389,6 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             constraints: Vec::new(),
             token: None,
         },
-        hold: Default::default(),
         started_ms: 0,
         session: session.map(str::to_owned),
         cwd: None,
@@ -434,7 +420,6 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         moving: false,
         handing: false,
         observed: Observed::default(),
-        switch: None,
     };
     lock().entries.insert(id.to_string(), e);
 }
@@ -454,14 +439,11 @@ pub(super) fn entry(provider: Provider) -> Entry {
             provider,
             account_path: "C:\\acc".into(),
             folder: "C:\\p".into(),
-            worktree: false,
-            worktree_name: None,
             model: Some("haiku".into()),
             effort: "low".into(),
             mode: "read-only".into(),
             auto_review: false,
             tools: false,
-            hooks_unasked: false,
             read_only: false,
             agent: None,
             parent: None,
@@ -469,7 +451,6 @@ pub(super) fn entry(provider: Provider) -> Entry {
             constraints: Vec::new(),
             token: None,
         },
-        hold: Default::default(),
         started_ms: 0,
         session: None,
         cwd: None,
@@ -501,7 +482,6 @@ pub(super) fn entry(provider: Provider) -> Entry {
         moving: false,
         handing: false,
         observed: Observed::default(),
-        switch: None,
     }
 }
 

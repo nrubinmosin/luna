@@ -5,18 +5,8 @@ use super::*;
 
 /// Starts a helper on its opening prompt.
 pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
-    // Resolved now, as it starts, and held until the helper is in the
-    // registry, which carries the same hold for as long as it is there
-    // (`Entry::hold`), where a delete asking whether its worktree is shared
-    // sees it: a helper sent into a worktree being removed is refused
-    // (`worktree::entering`). One sent into a new worktree keeps where its
-    // CLI makes them from the sweep until then, as its running turn does
-    // after (`holds`).
-    let hold = hold_of(&spec);
-    let _entering = crate::worktree::entering(std::sync::Arc::clone(&hold))?;
     let mut e = Entry {
         spec,
-        hold,
         started_ms: crate::throttle::now_ms(),
         session: None,
         cwd: None,
@@ -48,7 +38,6 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         moving: false,
         handing: false,
         observed: Observed::default(),
-        switch: None,
     };
     claim(&mut e);
     lock().entries.insert(id.to_string(), e);
@@ -67,9 +56,8 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
 /// behind it, counts on its end, and `turn_over` never comes for it. Text
 /// queued behind it fails with it, counted as the turn after, so whoever
 /// waits on it hears — rather than starting what would most likely fail the
-/// same way. Not behind a lead's fresh start (switch.rs): what was sent for
-/// the conversation after it waits on, and goes in on the conversation the
-/// lead goes back to once the switch is given up (`revert_switch`).
+/// same way; behind a turn stopped before it started, or one Luna stopped
+/// (`cut_short`), it is kept as undelivered.
 pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     let started = spawn_turn(id, prompt);
     // Overtaken by a move: its batch is queued again, for when the move lets go
@@ -84,13 +72,25 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     if let Err(err) = &started {
         if let Some(e) = lock().entries.get_mut(id) {
             if e.run.as_ref().is_some_and(|r| r.pid.is_none()) {
+                let stopped = e.run.as_ref().is_some_and(|r| r.stopped);
                 e.run = None;
                 note(e, &format!("could not start the turn: {err}"));
                 e.error = Some(err.clone());
                 e.turns_ended += 1;
-                if !e.queue.is_empty() && !e.switch_waits() {
-                    e.queue.clear();
-                    note(e, "dropped what was queued behind it");
+                if !e.queue.is_empty() {
+                    // Behind a claim a stop ended before its process started
+                    // (the person's Stop, which dropped what was queued then, or
+                    // Luna's own, an update's say: `stop_for_luna`), it came
+                    // after that stop and never got its chance: kept for its
+                    // senders.
+                    if stopped || e.cut_short {
+                        let queued = std::mem::take(&mut e.queue);
+                        e.undelivered.extend(queued);
+                        note(e, "kept what was queued behind it for its senders");
+                    } else {
+                        e.queue.clear();
+                        note(e, "dropped what was queued behind it");
+                    }
                     e.turns_ended += 1;
                 }
             }
@@ -311,21 +311,16 @@ fn stops_background(line: &str) -> bool {
 fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // Nothing runs as administrator.
     crate::elevation::guard()?;
-    settle_worktree(id);
     // Before the registry is locked for the command line: a pass reads and
     // writes every account's copies, and every helper's events wait on that
     // lock (library/folders.rs `session_args`).
     // The helper's account counted as in use from here, as a chat's start
     // counts its own (`library::lay_out_for`).
-    let (account_path, role, spec) =
-        lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec), e.spec.clone())).ok_or("no such helper")?;
+    let (account_path, role) = lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec))).ok_or("no such helper")?;
     let reserved = crate::library::lay_out_for("before a helper's turn", &account_path)?;
-    // Its role's texts, also off the lock: an override's read waits on the
-    // library's system lock while an adoption swaps one in.
+    // Its role's texts, also off the lock: an override is a file of the
+    // person's, read from disk.
     let texts = crate::library::role_texts(role);
-    // A lead's drafts folder, made private before its CLI runs: off the lock
-    // too, as it resets the folder's DACL.
-    let handoff = handoff_dir(id, &spec);
     // A move to another chat it has not been told of (agents/reparent.rs): off
     // the lock, which nothing may hold while it takes the registry's. Told for
     // good only once the turn's model has answered it (events.rs `turn_over`).
@@ -342,7 +337,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
         if overtaken(e) {
             return Ok(false);
         }
-        let (args, dir, envs, applied) = command_with(e, id, &texts, handoff.as_ref())?;
+        let (args, dir, envs, applied) = command_with(e, id, &texts)?;
         // Made: from here it starts as made, and a move waits for its process.
         if let Some(run) = e.run.as_mut() {
             run.starting = true;
@@ -602,15 +597,12 @@ pub(super) fn overtaken(e: &mut Entry) -> bool {
     true
 }
 
-/// A turn's arguments as the log keeps them. The chat's hook and guard URLs
-/// carry its secret (a Codex start passes them in `-c` overrides) and go in as
-/// what they are; a Codex helper's role layers, the same for every turn and
+/// A turn's arguments as the log keeps them. The chat's hook URL carries its
+/// secret (an argument that held it would be a `-c` override) and goes in as
+/// what it is; a Codex helper's role layers, the same for every turn and
 /// most of the line's length, go in as their length.
 fn args_for_log(id: &str, args: &[String]) -> String {
-    let urls: Vec<(String, &str)> = [(crate::hub::hook_url(id), "<hook-url>"), (crate::hub::guard_url(id), "<guard-url>")]
-        .into_iter()
-        .filter_map(|(url, to)| Some((url?, to)))
-        .collect();
+    let urls: Vec<(String, &str)> = crate::hub::hook_url(id).map(|url| (url, "<hook-url>")).into_iter().collect();
     let mut shown = Vec::with_capacity(args.len());
     for a in args {
         if let Some(value) = a.strip_prefix("developer_instructions=") {
@@ -637,11 +629,11 @@ mod tests {
     #[test]
     fn the_log_gets_no_hub_secret_and_not_the_role_layers() {
         crate::hub::start();
-        let guard = crate::hub::guard_url("log-1").expect("the hub is listening");
-        let secret = guard.rsplit('/').next().unwrap().to_string();
+        let hook = crate::hub::hook_url("log-1").expect("the hub is listening");
+        let secret = hook.rsplit('/').next().unwrap().to_string();
         let args: Vec<String> = [
             "-c".into(),
-            format!("hooks.PreToolUse=[{{command='curl {guard}'}}]"),
+            format!("hooks.Stop=[{{command='curl {hook}'}}]"),
             "-c".into(),
             "developer_instructions=\"Your role\"".into(),
             "--model".into(),
@@ -650,7 +642,7 @@ mod tests {
         .into();
         let shown = args_for_log("log-1", &args);
         assert!(!shown.contains(&secret), "{shown}");
-        assert_eq!(shown, "-c hooks.PreToolUse=[{command='curl <guard-url>'}] -c developer_instructions=<11 chars> --model opus");
+        assert_eq!(shown, "-c hooks.Stop=[{command='curl <hook-url>'}] -c developer_instructions=<11 chars> --model opus");
     }
 
     #[test]

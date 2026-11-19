@@ -138,16 +138,6 @@ pub(super) struct Launch {
     /// The account counted as in use since before the start's library pass
     /// (`library::lay_out_for`), until the process is counted itself.
     pub(super) reserved: Option<crate::account_use::Running>,
-    /// A worktree the process goes into though it is not its `cwd`: Claude
-    /// Code's by `--worktree <name>`, there already or made again. Held against its
-    /// removal as the `cwd` is, from before the session starts for as long
-    /// as it runs (`Session::hold`).
-    pub(super) enters: Option<String>,
-    /// It asks its CLI for a new worktree whose path the CLI picks: Codex's
-    /// `--worktree`, Claude Code's with no name. Where that CLI makes them is
-    /// held from the sweep from before the session starts until it has said
-    /// where it went (`Session::hold`).
-    pub(super) makes_worktree: bool,
 }
 
 impl Launch {
@@ -195,7 +185,7 @@ pub(super) mod capture {
     }
 }
 
-// Creating a session means a `git fetch` before a worktree plus a process spawn — seconds of
+// Creating a session means a process spawn, and for a worktree the CLI's own git — seconds of
 // blocking work that must not run on the main thread, where it would stall
 // every other chat's IPC. It used to hold the session map for that whole
 // stretch to keep two calls from double-spawning one chat, which put every
@@ -267,24 +257,12 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let launch = launch()?.finished();
     #[cfg(test)]
     said::note(&format!("launch {id}"));
-    // Where it goes, resolved now, as it starts (`worktree::Hold`), and held
-    // from here until the session is in the map, which carries the same hold:
-    // a start going into a worktree being removed is refused
-    // (`worktree::entering`).
-    let into: Vec<&str> = [Some(launch.cwd.as_str()), launch.enters.as_deref()].into_iter().flatten().collect();
-    let making = launch.makes_worktree.then(|| crate::worktree::Unplaced {
-        provider: launch.provider,
-        folder: launch.cwd.clone(),
-        account_path: launch.account_path.clone(),
-    });
-    let hold = Arc::new(crate::worktree::Hold::start(&into, making.as_ref()));
-    let _entering = crate::worktree::entering(Arc::clone(&hold))?;
     // A test reads what a start would run, and nothing runs (`capture`).
     #[cfg(test)]
     let Some(launch) = capture::keep(&id, launch) else {
         return Ok(Attached::fresh(generation));
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters, makes_worktree: _ } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -634,8 +612,6 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             work_output_ms,
             pid,
             cwd,
-            enters,
-            hold,
             spawned_at_ms,
             resume,
             account_path,
@@ -643,8 +619,6 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             size,
             typed_ms: Arc::new(AtomicU64::new(0)),
             draft: Arc::new(AtomicU64::new(0)),
-            keys_draft: Arc::new(AtomicU64::new(0)),
-            keys_dialog: Arc::new(AtomicBool::new(false)),
             draft_seen: Arc::new(Mutex::new((0, false))),
             held_keys: Arc::new(Mutex::new(None)),
             stashing: Arc::new(AtomicBool::new(false)),
@@ -777,12 +751,16 @@ pub(crate) fn clean_env(cmd: &mut Command) {
 
 /// The variables a CLI process starts without, though this one has them: the
 /// inherited session's (`INHERITED_SESSION_VARS`), and NO_COLOR only when it
-/// came with such a session — set by hand, it stays.
+/// came with such a session — set by hand, it stays. The fullscreen switch
+/// always goes: a core started from a fullscreen Claude chat's shell has it
+/// from that chat, and a helper or any other CLI would draw fullscreen on it.
+/// A Claude chat is given it again after this (`claude/launch.rs`).
 pub(crate) fn removed_env() -> Vec<&'static str> {
     let mut out = INHERITED_SESSION_VARS.to_vec();
     if INHERITED_SESSION_VARS.iter().any(|k| std::env::var_os(k).is_some()) {
         out.push("NO_COLOR");
     }
+    out.push(crate::claude::launch::NO_FLICKER_ENV);
     out
 }
 
@@ -1036,5 +1014,17 @@ mod tests {
             assert!(INHERITED_SESSION_VARS.contains(&k), "{k}");
         }
         assert!(!INHERITED_SESSION_VARS.contains(&"CODEX_HOME"), "a person's to set, and Luna sets its own for Codex");
+    }
+
+    /// A core started from a fullscreen Claude chat's shell has the chat's
+    /// switch; a helper or a model probe started from it must not.
+    #[test]
+    fn the_fullscreen_switch_is_taken_off_every_cli_process() {
+        assert!(removed_env().contains(&"CLAUDE_CODE_NO_FLICKER"));
+        let mut cmd = Command::new("claude");
+        cmd.env("CLAUDE_CODE_NO_FLICKER", "1");
+        clean_env(&mut cmd);
+        let got = cmd.get_envs().find(|(k, _)| *k == "CLAUDE_CODE_NO_FLICKER").map(|(_, v)| v.map(|v| v.to_owned()));
+        assert_eq!(got, Some(None), "removed from the child's environment, not left set");
     }
 }

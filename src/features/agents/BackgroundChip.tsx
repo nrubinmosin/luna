@@ -458,15 +458,8 @@ export function HelperPanel({
                   className="slim"
                   style={ACTION}
                   disabled={busy || left.length > 0}
-                  title={
-                    busy || left.length > 0 ? 'Stop it first: it is at work' : 'Delete it, and the worktree it made'
-                  }
-                  onClick={act('deleting a helper', async () => {
-                    const r = await backgroundDelete(h.id);
-                    // Its worktree held work saved nowhere else: kept, and said.
-                    if (r.worktreeKept)
-                      setError(`Deleted; its worktree was kept for its uncommitted work: ${r.worktreeKept}`);
-                  })}
+                  title={busy || left.length > 0 ? 'Stop it first: it is at work' : 'Delete it'}
+                  onClick={act('deleting a helper', () => backgroundDelete(h.id))}
                 >
                   Delete
                 </button>

@@ -538,10 +538,6 @@ fn a_system_text_opens_compares_resets_and_adopts(cx: &mut TestAppContext) {
     assert_eq!(f.calls(cmd::LIBRARY_SYSTEM_RESET), vec![json!({ "name": "role-lead" })]);
     // The editor opens again, on Luna's own.
     assert_eq!(f.calls(cmd::LIBRARY_READ).last(), Some(&json!({ "entry": { "system": "role-lead" } })));
-    let library = lib.read_with(f.cx, |v, _| v.library.clone());
-    library.update(f.cx, |l, cx| l.system_adopt("role-chat", cx).detach());
-    f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::LIBRARY_SYSTEM_ADOPT), vec![json!({ "skill": "role-chat" })]);
 }
 
 #[gpui::test]
@@ -553,44 +549,36 @@ fn a_sync_says_where_it_is_in_words(cx: &mut TestAppContext) {
     assert_eq!(library.read_with(f.cx, |l, _| l.sync.clone()), crate::library::SyncState::Syncing);
     f.cx.run_until_parked();
     assert_eq!(library.read_with(f.cx, |l, _| l.sync.clone()), crate::library::SyncState::Synced(Default::default()));
-    assert!(f.calls(cmd::LIBRARY_PUT_BACK).is_empty(), "nothing to put back");
+    assert_eq!(f.calls(cmd::LIBRARY_SYNC).len(), 1, "one pass, nothing after it");
     f.host.fail(cmd::LIBRARY_SYNC, Some("no lock"));
     library.update(f.cx, |l, cx| l.sync_now(cx));
     f.cx.run_until_parked();
     assert_eq!(library.read_with(f.cx, |l, _| l.sync.clone()), crate::library::SyncState::Failed("no lock".into()));
 }
 
-/// Sync makes every copy Luna manages the library's again: the changed ones
-/// overwritten, the deleted ones put back, those no longer wanted taken out;
-/// a file not Luna's left alone; and it says which, and what would not.
+/// Sync is the core's pass alone (ADR-0030): one command, after which it
+/// says what it left alone as not Luna's and what it could not lay out.
 #[gpui::test]
-fn a_sync_overwrites_restores_and_takes_out_what_luna_manages(cx: &mut TestAppContext) {
+fn a_sync_says_what_it_left_alone_and_what_it_could_not_lay_out(cx: &mut TestAppContext) {
     let mut f = open(cx);
     let lib = f.library();
     let library = lib.read_with(f.cx, |v, _| v.library.clone());
     let mut o = demo::overview();
     o["places"] = json!([
-        { "dest": "C:\\a\\skills\\review", "status": "changed" },
-        { "dest": "C:\\b\\skills\\review", "status": "gone" },
+        { "dest": "C:\\a\\skills\\review", "status": "failed", "problem": "not written over, its backup would not write" },
+        { "dest": "C:\\b\\skills\\review", "status": "behind" },
         { "dest": "C:\\c\\CLAUDE.md", "status": "taken" },
         { "dest": "C:\\d\\skills\\review", "status": "current" },
     ]);
-    o["kept"] = json!([{ "dest": "C:\\a\\skills\\old" }]);
     f.host.answer(cmd::LIBRARY_SYNC, o);
-    let mut back = demo::overview();
-    back["unsettled"] = json!(["C:\\b\\skills\\review: something is there again; it waits under Needs a look"]);
-    f.host.answer(cmd::LIBRARY_PUT_BACK, back);
     library.update(f.cx, |l, cx| l.sync_now(cx));
     f.cx.run_until_parked();
-    assert_eq!(
-        f.calls(cmd::LIBRARY_PUT_BACK),
-        vec![json!({ "dests": ["C:\\a\\skills\\review", "C:\\b\\skills\\review"], "replace": ["C:\\a\\skills\\review"] })]
-    );
-    assert_eq!(f.calls(cmd::LIBRARY_KEPT), vec![json!({ "dests": ["C:\\a\\skills\\old"], "takeOut": true })]);
+    assert_eq!(f.calls(cmd::LIBRARY_SYNC), vec![json!({})]);
     let crate::library::SyncState::Synced(r) = library.read_with(f.cx, |l, _| l.sync.clone()) else { panic!("not synced") };
-    assert_eq!((r.overwritten, r.restored, r.taken_out, r.foreign), (1, 0, 1, 1));
-    assert!(!r.clean(), "a copy not put back is no success");
-    assert!(r.said().contains("Not settled: C:\\b\\skills\\review"), "{}", r.said());
+    assert_eq!(r.foreign, 1);
+    assert!(!r.clean(), "a copy not laid out is no success");
+    assert!(r.said().contains("Not laid out: C:\\a\\skills\\review: not written over, its backup would not write."), "{}", r.said());
+    assert!(r.said().contains("C:\\b\\skills\\review: changed there while Sync was at it"), "{}", r.said());
 }
 
 /// An editor left alone schedules nothing: its caret is steady and nothing

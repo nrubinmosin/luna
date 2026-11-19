@@ -81,16 +81,6 @@ fn last_resort_dir() -> PathBuf {
     std::env::temp_dir().join(APP_DIR)
 }
 
-/// What Settings' checks say of the data dir's DACL (checks.rs).
-#[cfg_attr(not(windows), allow(dead_code))]
-pub struct Privacy {
-    /// Private down to the last file, as a full pass last verified.
-    pub private: bool,
-    /// What the row adds: only Luna's own things were made private, what the
-    /// last pass found, or why it failed.
-    pub note: Option<String>,
-}
-
 /// What Luna keeps at the top of its data dir, its exe and uninstaller
 /// aside: a folder holding only these (and those two) is Luna's own. A file
 /// name may also be one being written through a temp file (`<name>.….tmp`).
@@ -106,16 +96,20 @@ const OWN_NAMES: &[&str] = &[
     "claude-models.json",
     "codex-cli",
     "core",
+    // Kept by 0.19 and no longer written: still Luna's, so a data folder an
+    // update leaves it in is Luna's alone as before.
     "handoffs",
     "helpers.json",
     "hooks",
     "library",
     "library-backups",
+    // 0.19's, taken out at the library's first pass (library/files.rs).
     "library-blobs",
     "library-draft.json",
     "library-folders",
     "library-state.json",
     "library-state.json.lock",
+    // As "handoffs" above.
     "library-system.lock",
     "luna.core.run",
     "luna.log",
@@ -232,6 +226,7 @@ pub fn protect_data_dir() -> Result<(), String> {
             Scope::Whole => (vec![dir.clone()], "whole".to_string()),
             Scope::Own(items, why) => (items, format!("own: {why}")),
         };
+        remove_handoff_drafts(&dir);
         let done = make_private(&targets, &label, &verified_marker());
         match &done {
             Ok(Pass::Held) => {}
@@ -261,6 +256,58 @@ pub fn protect_data_dir() -> Result<(), String> {
 enum Pass {
     Held,
     Done(Vec<String>),
+}
+
+/// 0.19's handoff drafts folders, `handoffs/<chat>/drafts` (ADR-0030 removed
+/// the handoff), gone before the privacy check: Codex's sandbox gave each an
+/// access entry of its own, which that check would find at the first start.
+/// Nothing writes or reads them since 0.20. Only where no link or junction is
+/// at the data dir, above it or on the way down to the folder (each looked at
+/// as itself, `boundary::is_link`): otherwise it is left, said in the log, for
+/// the privacy check to name. `remove_dir_all` goes into no link inside it.
+/// A same-user process swapping a folder on the way for a junction between
+/// the look and the removal is the threat model's R6. Luna's copies of the
+/// handoffs beside them stay.
+#[cfg(windows)]
+fn remove_handoff_drafts(dir: &Path) {
+    let meta = |p: &Path| std::fs::symlink_metadata(p).ok();
+    let linked = |p: &Path| meta(p).is_some_and(|m| crate::boundary::is_link(&m));
+    let left = |p: &Path, link: &Path| {
+        crate::log::warn(
+            "app",
+            &format!("left 0.19's handoff drafts at {} as they are: {} is a link or junction", p.display(), link.display()),
+        )
+    };
+    let handoffs = dir.join("handoffs");
+    if meta(&handoffs).is_none() {
+        return;
+    }
+    if let Some(link) = handoffs.ancestors().find(|a| linked(a)) {
+        return left(&handoffs, link);
+    }
+    if !meta(&handoffs).is_some_and(|m| m.is_dir()) {
+        return;
+    }
+    let Ok(chats) = std::fs::read_dir(&handoffs) else { return };
+    for chat in chats.flatten() {
+        let (chat, drafts) = (chat.path(), chat.path().join("drafts"));
+        if linked(&chat) {
+            left(&drafts, &chat);
+            continue;
+        }
+        let Some(m) = meta(&drafts) else { continue };
+        if crate::boundary::is_link(&m) {
+            left(&drafts, &drafts);
+            continue;
+        }
+        if !m.is_dir() {
+            continue;
+        }
+        match std::fs::remove_dir_all(&drafts) {
+            Ok(()) => crate::log::info("app", &format!("removed 0.19's handoff drafts folder {}", drafts.display())),
+            Err(e) => crate::log::warn("app", &format!("could not remove 0.19's handoff drafts folder {}: {e}", drafts.display())),
+        }
+    }
 }
 
 /// Verifies `targets` down to the last file, every time: the marker only
@@ -319,34 +366,6 @@ fn protect_and_verify(targets: &[PathBuf]) -> Result<Vec<String>, String> {
     }
 }
 
-/// The data dir's privacy, for Settings' checks: private only once this run's
-/// `protect_data_dir` has verified it (red until then), None where there is
-/// nothing to check (off Windows).
-pub fn data_dir_privacy() -> Option<Privacy> {
-    #[cfg(windows)]
-    {
-        let dir = data_dir();
-        let (label, own) = match scope(&dir) {
-            Scope::Whole => ("whole".to_string(), None),
-            Scope::Own(_, why) => (format!("own: {why}"), Some(format!("Only Luna's own folders and files are made private: {why}."))),
-        };
-        let last = LAST_PROTECT.lock().unwrap_or_else(|e| e.into_inner());
-        let private = matches!(&*last, Some(Ok(_))) && std::fs::read_to_string(verified_marker()).is_ok_and(|said| said == label);
-        let last = match &*last {
-            Some(Err(e)) => Some(e.clone()),
-            Some(Ok(odd)) if !odd.is_empty() => Some(format!(
-                "Found when it was made private, see the log: {}. A file someone else owned may have been changed by them; the next update reinstalls Luna's own.",
-                odd.join("; ")
-            )),
-            _ => None,
-        };
-        let note = [own, last].into_iter().flatten().collect::<Vec<_>>().join(" ");
-        Some(Privacy { private, note: (!note.is_empty()).then_some(note) })
-    }
-    #[cfg(not(windows))]
-    None
-}
-
 fn writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".luna-write-probe-{}", std::process::id()));
     let ok = std::fs::write(&probe, b"").is_ok();
@@ -367,8 +386,7 @@ pub const KEY_SEP: char = if cfg!(windows) { '\\' } else { '/' };
 /// be the mistake: nothing is deleted on a likeness. Only Windows has them the
 /// same in any case and either separator; on Linux `/p/Foo` and `/p/foo` are two
 /// folders and a backslash is part of a name. So is macOS taken at its word: APFS
-/// is usually case-insensitive but may not be, and there two spellings of one
-/// folder only leave a worktree on disk, where one taken for another deletes it.
+/// is usually case-insensitive but may not be.
 pub fn path_key(p: &str) -> String {
     if cfg!(windows) {
         p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
@@ -378,8 +396,7 @@ pub fn path_key(p: &str) -> String {
 }
 
 /// `path_key` for where it is missing a likeness that would be the mistake: a
-/// live session not seen in a worktree leaves that worktree to be deleted under
-/// it, and a session not recognized as a chat's leaves the chat without it. On
+/// session not recognized as a chat's leaves the chat without it. On
 /// macOS the spelling a chat was given and the one its CLI reports differ only
 /// where the volume does not care, as it usually does not.
 pub fn path_key_loose(p: &str) -> String {
@@ -391,7 +408,7 @@ pub fn path_key_loose(p: &str) -> String {
 }
 
 /// A session id as the name of a file or folder of its own under the data dir
-/// (`hooks/`, `mcp/`, `media/`, `handoffs/`, a note's name): the one spelling
+/// (`hooks/`, `mcp/`, `media/`, a note's name): the one spelling
 /// every such path takes. Lowercase letters, digits, `-` and `_` stay as they
 /// are, which is every id Luna mints, so the files of a chat keep their names;
 /// any other byte becomes `.` and two hex digits. A capital is one of them, so
@@ -592,6 +609,68 @@ mod tests {
         assert!(matches!(scope(&link.join("Luna")), Scope::Own(_, why) if why.contains("link")));
         std::fs::remove_dir(&link).unwrap();
         assert!(matches!(scope(Path::new("C:\\")), Scope::Own(_, why) if why.contains("root of a drive")));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 0.19's handoff drafts folders go at start, Luna's copies of the
+    /// handoffs beside them stay, and nothing goes where a junction is on the
+    /// way: at the data dir, at `handoffs`, at a chat's folder or at `drafts`.
+    #[cfg(windows)]
+    #[test]
+    fn handoff_drafts_0_19_left_go_and_nothing_through_a_junction() {
+        let base = data_dir().join(format!("drafts-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let junction = |link: &Path, to: &Path| {
+            let made = std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(link).arg(to).output().unwrap();
+            assert!(made.status.success(), "{link:?}");
+        };
+        // A tree 0.19 would leave: drafts with a file, and Luna's copy beside them.
+        let tree = |root: &Path, chat: &str| {
+            std::fs::create_dir_all(root.join("handoffs").join(chat).join("drafts")).unwrap();
+            std::fs::write(root.join("handoffs").join(chat).join("drafts").join("handoff.md"), "draft").unwrap();
+            std::fs::write(root.join("handoffs").join(chat).join("1.md"), "copy").unwrap();
+        };
+        let drafts_of = |root: &Path, chat: &str| root.join("handoffs").join(chat).join("drafts").join("handoff.md");
+
+        // Plain: its drafts go, the copy stays; a junction at another chat's
+        // `drafts` or at a chat's folder is not gone into.
+        let root = base.join("root");
+        tree(&root, "c1");
+        let out_drafts = base.join("out-drafts");
+        std::fs::create_dir_all(&out_drafts).unwrap();
+        std::fs::write(out_drafts.join("keep.md"), "elsewhere").unwrap();
+        std::fs::create_dir_all(root.join("handoffs").join("c2")).unwrap();
+        junction(&root.join("handoffs").join("c2").join("drafts"), &out_drafts);
+        let out_chat = base.join("out-chat");
+        std::fs::create_dir_all(out_chat.join("drafts")).unwrap();
+        std::fs::write(out_chat.join("drafts").join("keep.md"), "elsewhere").unwrap();
+        junction(&root.join("handoffs").join("c3"), &out_chat);
+        remove_handoff_drafts(&root);
+        assert!(!drafts_of(&root, "c1").exists(), "its drafts gone");
+        assert_eq!(std::fs::read_to_string(root.join("handoffs").join("c1").join("1.md")).unwrap(), "copy", "Luna's copy stays");
+        assert!(out_drafts.join("keep.md").exists(), "not through a junction at drafts");
+        assert!(out_chat.join("drafts").join("keep.md").exists(), "not through a junction at a chat's folder");
+
+        // A junction at `handoffs`.
+        let root2 = base.join("root2");
+        std::fs::create_dir_all(&root2).unwrap();
+        let out_handoffs = base.join("out-handoffs");
+        tree(&out_handoffs, "c1");
+        junction(&root2.join("handoffs"), &out_handoffs.join("handoffs"));
+        remove_handoff_drafts(&root2);
+        assert!(drafts_of(&out_handoffs, "c1").exists(), "not through a junction at handoffs");
+
+        // A junction at the data dir itself.
+        let real = base.join("real");
+        tree(&real, "c1");
+        let via = base.join("via");
+        junction(&via, &real);
+        remove_handoff_drafts(&via);
+        assert!(drafts_of(&real, "c1").exists(), "not through a junction at the data dir");
+
+        for link in [root.join("handoffs").join("c2").join("drafts"), root.join("handoffs").join("c3"), root2.join("handoffs"), via] {
+            std::fs::remove_dir(&link).unwrap();
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

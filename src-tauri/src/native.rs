@@ -635,6 +635,7 @@ fn start(mailbox: Mailbox) {
     // The previous run's end is reported before the heartbeat starts; it
     // pings the window's thread through its inbox.
     crate::lifecycle::start(Box::new(move |f| mailbox.run_on_ui(f)));
+    crate::applied::drop_0_19_ledger();
     // The sessions, the hooks' listener, the agents and power all run in the
     // core (coreproc.rs); the window finds or starts it.
     crate::corelink::start();
@@ -875,6 +876,8 @@ mod tests {
             fingerprint: "0011223344556677".into(),
             started: 1_763_500_000_000,
             sessions: 3,
+            left_only: 0,
+            stopped_for_update: false,
             refused: Some("elevated".into()),
         };
         for (state, seen) in [

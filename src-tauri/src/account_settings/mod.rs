@@ -1,45 +1,31 @@
 //! An account's own settings file — Claude Code's `settings.json`, Codex's
-//! `config.toml` — as Luna can help with it: settings recommended for anyone
-//! running the CLI inside Luna, added or taken out key by key, the file
-//! itself checked and formatted for editing by hand, and a "parent" account
-//! per provider whose file the others get an exact copy of.
-//!
-//! Recommendations keep what they do not touch: other keys, their order, and
-//! in the TOML file the user's comments. Credentials, logins and Codex's
+//! `config.toml` — as Luna copies it: a "parent" account per provider whose
+//! file the others get an exact copy of. Credentials, logins and Codex's
 //! trusted projects never travel.
+//!
+//! Luna writes no setting into an account for its own sake: what a CLI needs
+//! inside Luna is passed at every launch (claude/launch.rs, codex/launch.rs).
 //!
 //! This module holds the lock every change of those files goes under. The
 //! rest is split by what it does:
 //!
-//! - `specs`: the settings recommended, and what an account's files say of
-//!   each.
-//! - `files`: the files read and written, and keys found, set and removed in
-//!   them, JSON and TOML alike.
-//! - `edit`: changes key by key, to one account or several together, and the
-//!   recommendations taken or taken out.
-//! - `editor`: the file as text, checked and laid out for editing by hand.
+//! - `files`: the file found, checked and written.
 //! - `sync`: a parent account's file copied onto the others.
 
 use crate::provider::Provider;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use toml_edit::{DocumentMut, Item};
+use toml_edit::DocumentMut;
 
-mod edit;
-mod editor;
 mod files;
-mod specs;
 mod sync;
 #[cfg(test)]
 mod testkit;
 
 // Every file of the module reaches the others' items through `use super::*`,
 // and the rest of the crate keeps its `crate::account_settings::X` paths.
-pub(crate) use edit::*;
-pub(crate) use editor::*;
 use files::*;
-pub(crate) use specs::*;
 pub(crate) use sync::*;
 #[cfg(test)]
 use testkit::*;
@@ -49,7 +35,7 @@ use testkit::*;
 pub(crate) const CLAUDE_CONFIG_LOCKS: &str = "claude-config-locks";
 
 /// One rewrite of an account's `.claude.json` at a time, between Luna's own
-/// writes (a trust mark, a recommended key) and a Claude Code that Luna
+/// writes (a trust mark) and a Claude Code that Luna
 /// starts on the account only to ask it something (claude/models.rs): the
 /// CLI rewrites the file from what it read as it starts, so a write made
 /// meanwhile would be lost. Per account, so another account's write never
@@ -102,7 +88,7 @@ fn lock_path() -> PathBuf {
 
 /// One change of the accounts' config files at a time. Each reads its file,
 /// changes it and writes it back, and two at once — a sync, a chat starting
-/// that writes its folder's trust, a recommendation — would each write back
+/// that writes its folder's trust — would each write back
 /// what it read without the other's change. A read that decides a write
 /// belongs inside this. A file lock as well as a mutex: the window writes them
 /// and so does the core, and a lock that cannot be had is an error, as each
@@ -151,12 +137,6 @@ mod tests {
         // A folder where the lock file should be: as good as one unwritable
         // while the account files are not.
         LOCK_AT.with(|l| *l.borrow_mut() = Some(d.clone()));
-        let off = |d: &Doc| d.bool_at(&["disableAllHooks"]) == Some(true);
-        let one = std::slice::from_ref(&p);
-        let e = edit_together(KeyFile::ClaudeSettings, one, one, &[Edit::Remove(&["disableAllHooks"])], &off).unwrap_err();
-        assert!(e.contains("no lock"), "{e}");
-        assert!(apply(Provider::Claude, &p, &["tui".into()], &[]).is_err());
-        assert!(write_config_file(Provider::Claude, &p, "{}".into()).is_err());
         assert!(sync_one(Provider::Claude, &parent.to_string_lossy(), &p).is_err());
         assert!(crate::codex::trust::codex_trust_folder(p.clone(), "/somewhere".into()).is_err());
         assert!(crate::claude::trust::trust_folder(&p, "/somewhere").is_err());

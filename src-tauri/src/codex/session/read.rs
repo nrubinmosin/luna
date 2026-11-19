@@ -154,12 +154,6 @@ fn message_of(v: &Value) -> Option<crate::agents::Message> {
     Some(crate::agents::Message { role: role.to_string(), text, after_cli: false, final_answer })
 }
 
-/// One rollout line as something said in the conversation, if it is one
-/// (`message_of`): what a moved chat's document quotes
-/// (agents/handoff/excerpts.rs).
-pub(crate) fn said_line(line: &str) -> Option<crate::agents::Message> {
-    message_of(&serde_json::from_str::<Value>(line).ok()?)
-}
 /// `limit_at_in` without its time.
 #[cfg(test)]
 pub(crate) fn limit_in(text: &str) -> Option<&'static str> {
@@ -270,14 +264,6 @@ pub struct Tail {
 pub fn read_tail(path: &Path) -> Tail {
     static SEEN: std::sync::LazyLock<crate::stamped::ByStamp<Tail>> = std::sync::LazyLock::new(|| crate::stamped::ByStamp::new(256));
     SEEN.get(path, |path| tail(path, 128 * 1024).map(|text| tail_in(&text))).unwrap_or_default()
-}
-
-/// The context the last `token_count` in `text` states, as (tokens, window),
-/// as `read_tail` reads it: what a reading of the context at a point of a
-/// rollout goes by (agents/handoff `handoffs_first_turn`).
-pub(crate) fn context_in_text(text: &str) -> Option<(f64, f64)> {
-    let t = tail_in(text);
-    Some((t.context_tokens?, t.context_window?))
 }
 
 /// See `read_tail`, of the tail's text.
@@ -622,83 +608,6 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
         }
     }
     best.map(|(_, hit)| hit)
-}
-
-/// How many of the newest rollouts `latest_rate_limits_by_id` reads: what a
-/// usage limit's hold is judged on, not a walk of every file of two days.
-const LIMIT_FILES: usize = 32;
-
-/// The newest `rate_limits` snapshot of each limit (`limit_id`, `codex` where
-/// it names none) among the account's newest rollouts of the last two days
-/// and `own` (a chat's own rollout, wherever it falls among them), with the
-/// timestamp of its line. Each snapshot holds one limit alone: a chat on a
-/// model with a limit of its own writes that one, the others the general one,
-/// so the newest snapshot of all is not the account's whole picture; and a
-/// chat that changed models wrote each one's in turn, so every limit a
-/// rollout's tail holds is read (`rate_limits_in`). What this core has read
-/// is kept, newest per limit: a limit whose rollouts fall out of the newest is
-/// still known, as of when it was read, not taken for gone, however old.
-pub fn latest_rate_limits_by_id(account_path: &str, own: Option<&Path>) -> Vec<(Value, String)> {
-    let today = local_today();
-    let ms = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-    let mut files: Vec<(i64, PathBuf)> = rollouts_on(account_path, days_back(today, 2))
-        .into_iter()
-        .map(|(_, _, p)| (std::fs::metadata(&p).and_then(|m| m.modified()).map_or(0, ms), p))
-        .collect();
-    files.sort_by_key(|e| std::cmp::Reverse(e.0));
-    let mut paths: Vec<PathBuf> = files.into_iter().take(LIMIT_FILES).map(|(_, p)| p).collect();
-    if let Some(own) = own.filter(|o| !paths.iter().any(|p| p == o)) {
-        paths.push(own.to_path_buf());
-    }
-    let mut seen = seen_limits().lock().unwrap_or_else(|e| e.into_inner());
-    let known = seen.entry(account_path.to_string()).or_default();
-    for path in paths {
-        let Some(text) = tail(&path, 128 * 1024) else { continue };
-        for hit in rate_limits_in(&text) {
-            let at = hit.1.parse::<jiff::Timestamp>().map_or(i64::MIN, |t| t.as_millisecond());
-            let id = limit_id(&hit.0);
-            if known.get(&id).is_none_or(|(b, _)| at > *b) {
-                known.insert(id, (at, hit));
-            }
-        }
-    }
-    // None is dropped for its age: a reading is judged as of its own time
-    // (activity/limit.rs), and one gone is a limit unknown, which a newer
-    // reading of another limit would then stand in for. A model's full limit
-    // days from its reset would let the general one lift a chat on it. One
-    // reading a limit, a handful an account: nothing grows.
-    known.values().map(|(_, hit)| hit.clone()).collect()
-}
-
-/// Each account's limits as this core has read them (`latest_rate_limits_by_id`):
-/// by limit id, the newest snapshot with when, in ms.
-fn seen_limits() -> &'static Mutex<HashMap<String, HashMap<String, (i64, (Value, String))>>> {
-    static S: OnceLock<Mutex<HashMap<String, HashMap<String, (i64, (Value, String))>>>> = OnceLock::new();
-    S.get_or_init(Default::default)
-}
-
-/// The limit a `rate_limits` snapshot is of: its `limit_id`, `codex` where
-/// it names none.
-fn limit_id(snapshot: &Value) -> String {
-    snapshot["limit_id"].as_str().filter(|id| !id.is_empty()).unwrap_or("codex").to_string()
-}
-
-/// Each limit's newest `rate_limits` snapshot in `text`, a rollout's lines in
-/// the order written, with its line's timestamp: one a limit, newest first.
-pub(super) fn rate_limits_in(text: &str) -> Vec<(Value, String)> {
-    let mut out: Vec<(Value, String)> = Vec::new();
-    for line in text.lines().rev().filter(|l| l.contains("\"rate_limits\"")) {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        let payload = &v["payload"];
-        if v["type"] != "event_msg" || payload["type"] != "token_count" || !payload["rate_limits"].is_object() {
-            continue;
-        }
-        let id = limit_id(&payload["rate_limits"]);
-        if !out.iter().any(|(s, _)| limit_id(s) == id) {
-            out.push((payload["rate_limits"].clone(), v["timestamp"].as_str().unwrap_or("").to_string()));
-        }
-    }
-    out
 }
 
 /// The conversation as another agent reads it: user and assistant messages
@@ -1053,92 +962,5 @@ mod limit_tests {
         assert_eq!(limit_in(&rollout(&[error(serde_json::json!("usage_limit_exceeded")), started.clone(), count(Value::Null)])), None);
         // Another error is no limit.
         assert_eq!(limit_in(&rollout(&[started, error(serde_json::json!("context_window_exceeded"))])), None);
-    }
-
-    /// Every limit a rollout's tail holds is read, newest of each: a chat
-    /// that went from Spark to the general model wrote both. A limit whose
-    /// rollout falls out of the newest is still known as of its reading, and
-    /// a chat's own rollout is read wherever it falls.
-    #[test]
-    fn every_limit_a_rollout_holds_stays_known_by_its_own_reading() {
-        let line = |at: &str, id: &str, used: u64| {
-            serde_json::json!({ "timestamp": at, "type": "event_msg", "payload": { "type": "token_count", "info": null,
-                "rate_limits": { "limit_id": id, "primary": { "used_percent": used, "window_minutes": 300 } } } })
-            .to_string()
-        };
-        let text = [
-            line("2026-11-12T10:00:00Z", "codex_spark", 100),
-            line("2026-11-12T10:01:00Z", "codex_spark", 100),
-            line("2026-11-12T10:02:00Z", "codex", 4),
-        ]
-        .join("\n");
-        let read = rate_limits_in(&text);
-        let ids: Vec<(String, String)> = read.iter().map(|(v, at)| (limit_id(v), at.clone())).collect();
-        assert_eq!(
-            ids,
-            [("codex".into(), "2026-11-12T10:02:00Z".into()), ("codex_spark".into(), "2026-11-12T10:01:00Z".into())],
-            "both limits, each its newest"
-        );
-
-        let (root, at) = rollout_bench("limits-by-id");
-        let iso = |ms: u64| jiff::Timestamp::from_millisecond(ms as i64).unwrap().to_string();
-        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(at - 50_000);
-        // The Spark chat's own rollout, written to before the others.
-        write_rollout(&root, at, "00000000-0000-4000-8000-0000000000ff", Some(r#""cli""#));
-        let own = rollout_path(&root, "00000000-0000-4000-8000-0000000000ff", at);
-        append(own.clone(), format!("{}\n", line(&iso(at), "codex_spark", 100)));
-        std::fs::File::options().write(true).open(&own).unwrap().set_modified(old).unwrap();
-        for i in 0..LIMIT_FILES {
-            let uuid = format!("00000000-0000-4000-8000-{i:012}");
-            write_rollout(&root, at + 1_000, &uuid, Some(r#""cli""#));
-            append(rollout_path(&root, &uuid, at + 1_000), format!("{}\n", line(&iso(at + 2_000), "codex", 3)));
-        }
-        let account = root.to_string_lossy().into_owned();
-        let ids = |got: Vec<(Value, String)>| {
-            let mut ids: Vec<String> = got.iter().map(|(v, _)| limit_id(v)).collect();
-            ids.sort();
-            ids
-        };
-        assert_eq!(ids(latest_rate_limits_by_id(&account, None)), ["codex"], "out of the newest, never read");
-        assert_eq!(ids(latest_rate_limits_by_id(&account, Some(&own))), ["codex", "codex_spark"], "the chat's own, read");
-        assert_eq!(ids(latest_rate_limits_by_id(&account, None)), ["codex", "codex_spark"], "and known since");
-        seen_limits().lock().unwrap().remove(&account);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A Spark chat stopped days ago on its own limit, whose week resets days
-    /// from now: its reading, days old, stays known however often it is read
-    /// again, and a newer general reading, not full, lifts nothing of it.
-    #[test]
-    fn a_full_reading_days_old_is_not_dropped_for_its_age() {
-        let (root, at) = rollout_bench("limits-old-full");
-        let day = 24 * 60 * 60_000;
-        let iso = |ms: u64| jiff::Timestamp::from_millisecond(ms as i64).unwrap().to_string();
-        let snapshot = |ts: u64, id: &str, used: u64, resets_s: u64| {
-            serde_json::json!({ "timestamp": iso(ts), "type": "event_msg", "payload": { "type": "token_count", "info": null,
-                "rate_limits": { "limit_id": id, "limit_name": "GPT-5 Codex Spark",
-                    "primary": { "used_percent": used, "window_minutes": 10080, "resets_at": resets_s } } } })
-            .to_string()
-        };
-        let own_id = "00000000-0000-4000-8000-0000000000aa";
-        write_rollout(&root, at, own_id, Some(r#""cli""#));
-        let own = rollout_path(&root, own_id, at);
-        append(own.clone(), format!("{}\n", snapshot(at - 3 * day, "codex_spark", 100, (at + 2 * day) / 1000)));
-        let other = "00000000-0000-4000-8000-0000000000bb";
-        write_rollout(&root, at, other, Some(r#""cli""#));
-        append(rollout_path(&root, other, at), format!("{}\n", snapshot(at, "codex", 5, (at + day) / 1000)));
-        let account = root.to_string_lossy().into_owned();
-        let spark = |got: &[(Value, String)]| got.iter().any(|(v, _)| limit_id(v) == "codex_spark");
-        for round in 0..2 {
-            let got = latest_rate_limits_by_id(&account, Some(&own));
-            assert!(spark(&got), "round {round}: the chat's own limit, read again from its own rollout");
-            let reading = crate::codex::limits::known_limits_for_test(got);
-            let held =
-                crate::activity::in_force("usage_limit", at - 3 * day + 1_000, Some(&reading.for_model(Some("gpt-5-codex-spark"))), at);
-            assert!(held.is_some(), "round {round}: the general reading does not lift it");
-        }
-        assert!(spark(&latest_rate_limits_by_id(&account, None)), "known without the chat's rollout too");
-        seen_limits().lock().unwrap().remove(&account);
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

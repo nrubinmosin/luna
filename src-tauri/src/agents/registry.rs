@@ -80,19 +80,9 @@ pub(super) struct Registry {
     /// put text in before that owes nothing of the person's chat after it
     /// (owed.rs `owe_from_at`).
     pub(super) handovers: HashMap<String, u64>,
-    /// A Codex helper to make a worktree of its own, by id, until its CLI has said
-    /// where: the worktrees there were as it was spawned. Codex takes no name, so one
-    /// new since is all that tells what a core may have cut it off making.
-    pub(super) worktrees_before: HashMap<String, Vec<String>>,
-    /// What a helper began and is not going on in, by id, until its parent has heard
-    /// (`worktrees_left_line`).
-    pub(super) worktrees_left: HashMap<String, Vec<String>>,
     /// Past which turn count a helper's answer to a caller's text lies, the text
     /// having missed the turn it joined (`retried`): above any count the caller holds.
     pub(super) delivery_floors: HashMap<(String, String), u32>,
-    /// Helpers that run in a worktree they were handed rather than made:
-    /// deleting one never drops that worktree, whose work is its caller's.
-    pub(super) borrowed: std::collections::HashSet<String>,
     /// The `turnsEnded` each caller was last shown for each session, by
     /// (caller, session). `wait(turn_done)` without `afterTurn` waits for a
     /// turn past that — the one the caller has not seen — rather than past
@@ -169,10 +159,6 @@ pub(super) struct Registry {
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
     pub(super) places_refused: HashMap<String, PlacesRefused>,
-    /// Leads under a session that went on in a fresh conversation since it
-    /// was last told, by that session (handoff/lead.rs `handed_off`): a line
-    /// that rides with its notices.
-    pub(super) handed_off: HashMap<String, crate::agents::handoff::HandedOff>,
     /// What Luna applied to each session's latest start, a helper's latest
     /// turn (applied.rs), with the account and folder it ran on: what the
     /// window's "What Luna applied" shows.
@@ -192,7 +178,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
         Mutex::new(Registry {
             tokens: HashMap::new(),
             known: HashMap::new(),
-            borrowed: Default::default(),
             // Above any request a core gone since may have left on disk.
             next_request: now_ms(),
             spawns: HashMap::new(),
@@ -202,8 +187,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             suggested: HashMap::new(),
             parent_changes: 0,
             handovers: HashMap::new(),
-            worktrees_before: HashMap::new(),
-            worktrees_left: HashMap::new(),
             delivery_floors: HashMap::new(),
             seen: HashMap::new(),
             names: HashMap::new(),
@@ -230,7 +213,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             quota_told: HashMap::new(),
             news: Vec::new(),
             places_refused: HashMap::new(),
-            handed_off: HashMap::new(),
             applied: HashMap::new(),
         })
     });
@@ -295,7 +277,7 @@ pub fn register(
     let parent = parent_by_record(previous.as_ref(), parent);
     // The window's settings are the flags it starts a CLI with: this one is the
     // core's, kept across every start.
-    let mut settings = settings;
+    let mut settings = without_retired(settings);
     if let Some(k) = &previous {
         // And what a Codex helper taken over still carries (handover.rs).
         for key in CORE_SETTINGS.into_iter().chain([crate::agents::handover::STARTED_WITH]) {
@@ -320,8 +302,6 @@ pub fn register(
     );
     // One token per session: a respawn invalidates the last one.
     r.tokens.retain(|_, chat| chat != id);
-    // Its CLI lists its tools afresh as it starts (agents/handoff).
-    crate::agents::handoff::unlisted(id);
     if !tools {
         return None;
     }
@@ -453,6 +433,22 @@ pub fn settings_of(id: &str) -> serde_json::Value {
 /// `constraints` (agents/spawn `Constraint`), which a spawn of its own passes on.
 const CORE_SETTINGS: [&str; 7] =
     ["resumeOnRestart", "budgetTokens", "budgetPct", "budgetBreach", "budgetTold", "connectors", "constraints"];
+
+/// Settings an older Luna kept that this one has no use for: 0.19's
+/// auto-handoff threshold (`handoff`), in a chat's settings from the window and
+/// in ties a 0.19 core saved. Taken out wherever a session's settings come in
+/// (`register`, persist.rs `take_up_chats`), so no row a tool gives shows them.
+const RETIRED_SETTINGS: [&str; 1] = ["handoff"];
+
+/// `settings` without `RETIRED_SETTINGS`.
+pub(super) fn without_retired(mut settings: serde_json::Value) -> serde_json::Value {
+    if let Some(o) = settings.as_object_mut() {
+        for key in RETIRED_SETTINGS {
+            o.remove(key);
+        }
+    }
+    settings
+}
 
 /// Whether a helper was spawned with `resumeOnRestart`.
 pub fn resumes_on_restart(id: &str) -> bool {

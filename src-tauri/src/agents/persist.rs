@@ -6,7 +6,7 @@
 use crate::agents::held::{GoingIn, Held};
 use crate::agents::owed::Owed;
 use crate::agents::read::transcripts;
-use crate::agents::registry::{account_name, issue_token, label, reg, register, Known, Registry, DEV_CALLER};
+use crate::agents::registry::{account_name, issue_token, label, reg, register, without_retired, Known, Registry, DEV_CALLER};
 use crate::agents::spawn::SpawnTaken;
 use crate::agents::teardown::Auto;
 use crate::provider::Provider;
@@ -23,8 +23,8 @@ pub(super) const SESSION_RETURN_MS: u64 = 60_000;
 /// (background/persist.rs `save`) so a core started later takes it up where this one
 /// left it: whose it is, what it is called, and what its callers are owed. The same
 /// of a chat of the person's that is owed something, in `chat-ties.json`. A file an
-/// earlier Luna wrote may hold more (a visible helper's opening, its worktree's
-/// name): what is not read here is let go.
+/// earlier Luna wrote may hold more (a visible helper's opening, the worktrees
+/// it made): what is not read here is let go.
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Ties {
@@ -32,7 +32,6 @@ pub struct Ties {
     pub name: Option<String>,
     pub settings: serde_json::Value,
     pub tools: bool,
-    pub borrowed: bool,
     pub auto_delete: bool,
     /// See `Known::orphan`.
     #[serde(default)]
@@ -50,12 +49,6 @@ pub struct Ties {
     /// with the core.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub told_pending: Vec<String>,
-    /// See `Registry::worktrees_before`: written only until its CLI has said.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktrees_before: Option<Vec<String>>,
-    /// See `Registry::worktrees_left`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub worktrees_left: Vec<String>,
     /// See `Registry::tasks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
@@ -88,15 +81,12 @@ pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         name: r.names.get(id).cloned(),
         settings: k.settings.clone(),
         tools: k.tools,
-        borrowed: r.borrowed.contains(id),
         auto_delete: r.auto.contains_key(id),
         orphan: k.orphan,
         owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
         seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
         cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
         told_pending: r.owed.iter().filter(|((_, s), o)| s == id && o.told_pending).map(|((c, _), _)| c.clone()).collect(),
-        worktrees_before: r.worktrees_before.get(id).cloned(),
-        worktrees_left: r.worktrees_left.get(id).cloned().unwrap_or_default(),
         task: r.tasks.get(id).cloned(),
         auto_delete_passed_up: r.auto.get(id).is_some_and(|a| a.by_pass_up),
         moved: r.moved.get(id).cloned(),
@@ -123,9 +113,6 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     if let Some(k) = r.known.get_mut(id) {
         k.orphan = ties.orphan;
     }
-    if ties.borrowed {
-        r.borrowed.insert(id.to_string());
-    }
     // Its idle time counts afresh: nobody has had the chance to look at it.
     if ties.auto_delete {
         r.auto.insert(id.to_string(), Auto { by_pass_up: ties.auto_delete_passed_up, ..Auto::default() });
@@ -139,12 +126,6 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     }
     for (caller, n) in ties.seen {
         r.seen.insert((caller, id.to_string()), n);
-    }
-    if let Some(before) = ties.worktrees_before {
-        r.worktrees_before.insert(id.to_string(), before);
-    }
-    if !ties.worktrees_left.is_empty() {
-        r.worktrees_left.insert(id.to_string(), ties.worktrees_left);
     }
     if let Some(task) = ties.task {
         r.tasks.insert(id.to_string(), task);
@@ -193,6 +174,10 @@ pub(super) struct SavedChats {
     /// took over is told of once, whatever comes between.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) news: Vec<(String, String)>,
+    /// Written by a core with no handoff (0.20 on): nothing in it is 0.19's
+    /// handoff's to sort out (`of_retired_handoff`).
+    #[serde(default)]
+    pub(super) no_handoff: bool,
 }
 
 fn chat_ties_file() -> std::path::PathBuf {
@@ -365,6 +350,13 @@ pub fn freeze_for_update() -> UpdateStopping {
     UpdateStopping(())
 }
 
+/// Whether the sessions are being or have been stopped for an update that is
+/// neither called off nor lapsed (`Stop::Update`), as a window asks a core of
+/// another version in its hello (ipc.rs `Welcome::stopped_for_update`).
+pub fn stopped_for_update() -> bool {
+    stops().bits & Stop::Update.bit() != 0
+}
+
 /// The window's word that the update the sessions were stopped for is not
 /// being installed (its install failed): the freeze lifts at once or, while
 /// the sessions are still being stopped for it, as that stop returns. Said
@@ -446,7 +438,7 @@ pub(super) fn chats_now() -> SavedChats {
     }
     chats.sort_by(|a, b| a.id.cmp(&b.id));
     spawns.sort_by_key(|s| s.request);
-    SavedChats { chats, sends, spawns, news }
+    SavedChats { chats, sends, spawns, news, no_handoff: true }
 }
 
 /// Writes `chats_now` out if it changed since the last write (background/persist.rs
@@ -485,8 +477,8 @@ fn snapshot_unless(frozen: &std::sync::atomic::AtomicBool, snapshot: impl FnOnce
 
 /// Takes a snapshot and writes it if it differs from the last one written,
 /// all under `last`: a save that took its snapshot ahead of another's and
-/// wrote behind it would leave the older one on disk (the notifier's, a
-/// handoff's and the periodic save run at once), for a core killed before
+/// wrote behind it would leave the older one on disk (the notifier's and the
+/// periodic save run at once), for a core killed before
 /// the next save to restore. `write` says whether the bytes are on disk.
 fn save_in_order(last: &Mutex<Vec<u8>>, snapshot: impl FnOnce() -> Option<Vec<u8>>, write: impl FnOnce(&[u8]) -> bool) {
     let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
@@ -521,6 +513,7 @@ pub fn restore_chats() {
 pub(super) fn take_up_chats(saved: SavedChats) {
     let mut counts: Vec<(String, u32, Option<std::path::PathBuf>)> = Vec::new();
     let mut migrated: Vec<String> = Vec::new();
+    let mut retired = 0usize;
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     for c in saved.chats {
         let ties = c.ties;
@@ -530,7 +523,7 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         if ties.parent.is_some() || ties.orphan {
             migrated.push(c.id.clone());
         }
-        let mut settings = ties.settings;
+        let mut settings = without_retired(ties.settings);
         if let Some(o) = settings.as_object_mut() {
             for key in HELPER_SETTINGS {
                 o.remove(key);
@@ -585,11 +578,19 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         r.spawns.insert(s.request, s);
     }
     for line in saved.news {
-        if !r.news.contains(&line) {
+        // 0.19's handoff and move lines, an ask, a lapse or a failure with
+        // the continuation it carried, are dropped: they point at a tool, a
+        // document and a conversation there no longer are (ADR-0030).
+        if !saved.no_handoff && of_retired_handoff(&line.1) {
+            retired += 1;
+        } else if !r.news.contains(&line) {
             r.news.push(line);
         }
     }
     drop(r);
+    if retired > 0 {
+        crate::log::info("agents", &format!("dropped {retired} handoff line(s) the last core had queued: Luna has no handoff since 0.20"));
+    }
     for id in migrated {
         crate::log::warn("agents", &format!("{} was a visible helper: the person's own chat from now on", label(&id)));
     }
@@ -599,6 +600,82 @@ pub(super) fn take_up_chats(saved: SavedChats) {
             transcripts().lock().unwrap_or_else(|e| e.into_inner()).insert(id, path);
         }
     }
+}
+
+/// Whether `line`, queued by a 0.19 core, is one of its handoff's or a move's
+/// lines as it wrote them (ADR-0030 removed both), Luna's notice tag aside:
+/// a chat's threshold ask, the person's ask, its lapse or withdrawal, a
+/// failure line and what took its place, a lead's ask and failure, the
+/// prompts it typed. Not to be typed into anything. Only a file 0.19 wrote
+/// is looked at so (`SavedChats::no_handoff`, background `Saved::no_handoff`).
+pub(crate) fn of_retired_handoff(line: &str) -> bool {
+    let line = line.trim_start();
+    let line = line.strip_prefix(crate::agents::NOTICE_TAG).unwrap_or(line).trim_start();
+    if retired_opening(line) {
+        return true;
+    }
+    if let Some(rest) = line.strip_prefix("Handoff ").and_then(numbered) {
+        const AFTER: [&str; 5] = [
+            " cleared the conversation, but Luna",
+            " did not go through: ",
+            " of this chat did not go through: ",
+            " of this chat cleared the conversation that wrote it",
+            " started no new conversation: ",
+        ];
+        return AFTER.iter().any(|a| rest.starts_with(a));
+    }
+    const WHOLE: [&str; 4] = [
+        "The person asks for a handoff of this chat now: ",
+        "The person's request for a handoff of this chat lapsed: ",
+        "The person asked for a handoff of this chat, but Luna could not deliver the request",
+        "A handoff of this chat cleared the conversation that wrote it",
+    ];
+    WHOLE.iter().any(|w| line.starts_with(w)) || (line.starts_with("This chat's context is at ") && line.contains("luna_session_handoff"))
+}
+
+/// A run of digits at the start of `s`, and what follows it.
+fn numbered(s: &str) -> Option<&str> {
+    let rest = s.trim_start_matches(|c: char| c.is_ascii_digit());
+    (rest.len() < s.len()).then_some(rest)
+}
+
+/// Whether `text` opens on the tag 0.19's handoff or a move typed its
+/// prompts under, as it wrote it: `[Luna handoff <n>, not typed by the
+/// user]`, `[Luna move <id>, not typed by the user]` or `[Luna move <id>
+/// request, not typed by the user]`.
+pub(crate) fn retired_opening(text: &str) -> bool {
+    let text = text.trim_start();
+    if let Some(rest) = text.strip_prefix("[Luna handoff ").and_then(numbered) {
+        return rest.starts_with(", not typed by the user]");
+    }
+    let Some(rest) = text.strip_prefix("[Luna move ") else { return false };
+    let (id, tail) = rest.split_at(rest.find([' ', ',']).unwrap_or(rest.len()));
+    !id.is_empty()
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && (tail.starts_with(", not typed by the user]") || tail.starts_with(" request, not typed by the user]"))
+}
+
+/// `text`, a notice 0.19 put together for a session above a lead, without
+/// the line it added there of the leads under it that handed off (`Lead <id>
+/// handed off (<n>): …`, `Leads handed off: …`), what else it says kept.
+/// None where nothing else is left of it.
+pub(crate) fn without_handed_off(text: &str) -> Option<String> {
+    const ONE: (&str, &str) = ("Lead ", ": it goes on in a fresh conversation; its helpers stay with it.");
+    const MANY: (&str, &str) = ("Leads handed off: ", ": each goes on in a fresh conversation; their helpers stay with them.");
+    let mut text = text.to_string();
+    for (start, end) in [ONE, MANY] {
+        while let Some(e) = text.find(end) {
+            let Some(s) = text[..e].rfind(start) else { break };
+            if start == ONE.0 && !(text[s..e].contains(" handed off (") && text[s..e].ends_with(')')) {
+                break;
+            }
+            let from = if text[..s].ends_with(' ') { s - 1 } else { s };
+            text.replace_range(from..e + end.len(), "");
+        }
+    }
+    let said = text.trim_start();
+    let said = said.strip_prefix(crate::agents::NOTICE_TAG).unwrap_or(said).trim();
+    (!said.is_empty()).then_some(text)
 }
 
 /// What only a helper's settings hold (`registry::CORE_SETTINGS`, `background`):
@@ -815,12 +892,16 @@ mod tests {
         assert!(chats_frozen(), "not while the sessions are stopped");
         lapse(t0 + 2 * UPDATE_FREEZE_FOR);
         assert!(chats_frozen(), "nor by the clock while they are");
+        assert!(stopped_for_update(), "a window's hello hears it is stopped for an update");
         stopping.returned_at(t0);
         assert!(!chats_frozen(), "as the stop returns");
+        assert!(!stopped_for_update(), "and hears it no more once that is called off");
         freeze_for_update().returned_at(t0);
         assert!(chats_frozen(), "the next update's freeze is its own");
+        assert!(stopped_for_update(), "past the stop, until the update is called off");
         call_off_update();
         assert!(!chats_frozen(), "called off at once once the stop has returned");
+        assert!(!stopped_for_update());
     }
 
     /// An update's freeze not called off lifts by itself `UPDATE_FREEZE_FOR`
@@ -886,7 +967,8 @@ mod tests {
         // visible helpers wrote reads all the same.
         let older: Ties = serde_json::from_value(serde_json::json!({
             "parent": null, "name": null, "settings": {}, "tools": false, "borrowed": false, "autoDelete": false, "owed": [], "seen": [],
-            "opening": "go", "openingLost": true, "worktreeName": "luna-x", "worktreesBefore": []
+            "opening": "go", "openingLost": true, "worktreeName": "luna-x", "worktreesBefore": ["/p/.claude/worktrees/a"],
+            "worktreesLeft": ["/p/.claude/worktrees/b"]
         }))
         .unwrap();
         assert_eq!(older.task, None);
@@ -996,7 +1078,6 @@ mod tests {
         chat.ties.parent = Some("vm-parent".into());
         chat.ties.settings = serde_json::json!({ "model": "sonnet", "resumeOnRestart": true, "connectors": true, "budgetTokens": 9 });
         chat.ties.auto_delete = true;
-        chat.ties.borrowed = true;
         let mut orphan = owed_chat("vm-orphan", "vm-parent", 3, 40);
         orphan.ties.orphan = true;
         take_up(vec![chat, orphan], Vec::new(), Vec::new());
@@ -1006,7 +1087,7 @@ mod tests {
             let k = &r.known["vm-chat"];
             assert_eq!(k.settings, serde_json::json!({ "model": "sonnet" }), "a helper's settings go");
             assert!(!r.known["vm-orphan"].orphan);
-            assert!(!r.auto.contains_key("vm-chat") && !r.borrowed.contains("vm-chat"), "nothing deletes it but the person");
+            assert!(!r.auto.contains_key("vm-chat"), "nothing deletes it but the person");
             assert!(r.owed.contains_key(&("vm-parent".to_string(), "vm-chat".to_string())), "what it was asked is still owed");
         }
         // Started again by the window, which names no parent: still nobody's.
@@ -1016,6 +1097,30 @@ mod tests {
         for id in ["vm-chat", "vm-orphan"] {
             forget(id);
             crate::activity::forget(id);
+        }
+    }
+
+    /// A chat 0.19 saved with auto-handoff on comes back without its
+    /// threshold, and so does one the window starts with it again: no row a
+    /// tool gives says it, to the chat itself or to anyone else.
+    #[test]
+    fn a_chat_saved_with_auto_handoff_comes_back_without_it() {
+        let (id, other) = ("ah-chat", "ah-other");
+        let mut chat = owed_chat(id, "ah-peer", 2, 10);
+        chat.ties.settings = serde_json::json!({ "model": "opus", "handoff": 70 });
+        take_up(vec![chat], Vec::new(), Vec::new());
+        assert_eq!(reg().lock().unwrap().known[id].settings, serde_json::json!({ "model": "opus" }), "taken up without it");
+        let from_window = serde_json::json!({ "model": "opus", "handoff": 70 });
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, from_window);
+        register(other, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        for caller in [id, other] {
+            let rows = super::super::list::list(caller, Some(&[id.to_string()]), true).sessions;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].settings, serde_json::json!({ "model": "opus" }), "{caller}");
+        }
+        for s in [id, other] {
+            forget(s);
+            crate::activity::forget(s);
         }
     }
 
@@ -1074,6 +1179,63 @@ mod tests {
         reg().lock().unwrap().news.retain(|l| *l != line);
         let older: SavedChats = serde_json::from_str(r#"{"chats":[],"sends":[]}"#).unwrap();
         assert!(older.news.is_empty(), "a file from before reads as none");
+    }
+
+    /// What 0.19's handoff and moves queued for a chat, word for word as it
+    /// wrote them, is not typed after the upgrade (ADR-0030); a line of
+    /// anything else queued beside them still is.
+    #[test]
+    fn a_line_0_19_queued_for_a_handoff_is_dropped_as_a_core_takes_it_up() {
+        let chat = "rh-chat";
+        let retired = [
+            "This chat's context is at 72% (auto-handoff at 70%): hand off to a fresh conversation at the next point where your work can pause. luna_session_handoff without arguments says how.",
+            "The person asks for a handoff of this chat now: hand off to a fresh conversation at the next point where your work can pause. luna_session_handoff without arguments says how.",
+            "The person's request for a handoff of this chat lapsed: no handoff came within 10 minutes of it. luna_session_handoff refuses again until Luna asks for one; go on as you were.",
+            "The person asked for a handoff of this chat, but Luna could not deliver the request within 10 minutes, so it is withdrawn. luna_session_handoff refuses until Luna asks for one; go on as you were.",
+            "Handoff 2 cleared the conversation, but Luna's prompt for the new one did not go in (timed out). It was:\n[Luna handoff 2, not typed by the user] This is a new conversation of this chat.",
+            "Handoff 3 did not go through: it is busy. This conversation goes on as it was; your handoff's copy is at C:\\d\\handoffs\\c\\3.md. Call luna_session_handoff again once what stood in the way is done.",
+            "A handoff of this chat cleared the conversation that wrote it, but Luna's prompt for the new one did not go in, and this chat may be on another conversation since, so that prompt is not typed here.",
+            "[Luna notice, not typed by the user] Handoff 1 did not go through: no file. Luna's copy of it stays at C:\\d\\1.md.",
+            "[Luna move 3fa9c2, not typed by the user] This chat goes on from…",
+        ];
+        let kept = (chat.to_string(), "Your helper h1 answered.".to_string());
+        let mut news: Vec<(String, String)> = retired.iter().map(|l| (chat.to_string(), l.to_string())).collect();
+        news.push(kept.clone());
+        take_up_chats(SavedChats { news, ..Default::default() });
+        let queued: Vec<(String, String)> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == chat).cloned().collect();
+        assert_eq!(queued, [kept], "only the line that is not the handoff's");
+        reg().lock().unwrap().news.retain(|(c, _)| c != chat);
+        for line in [
+            "Handoffs are gone.",
+            "Handoff the keys to the reviewer",
+            "Handoff 2FA ownership to support",
+            "Your helper said: This chat's context is at 72%",
+            "[Luna movement notes] for the release",
+            "[Luna handoff notes] the plan",
+        ] {
+            assert!(!of_retired_handoff(line), "{line}");
+        }
+        // A file this core wrote is no 0.19 file: what it queued goes in as it is.
+        let line = (chat.to_string(), retired[0].to_string());
+        take_up_chats(SavedChats { news: vec![line.clone()], no_handoff: true, ..Default::default() });
+        assert!(reg().lock().unwrap().news.contains(&line), "kept");
+        reg().lock().unwrap().news.retain(|(c, _)| c != chat);
+    }
+
+    /// The line 0.19 added to a notice for a session above a lead of the
+    /// leads below it that handed off goes, alone or after what else the
+    /// notice said, which stays.
+    #[test]
+    fn the_handed_off_line_0_19_added_to_a_notice_goes_and_the_rest_stays() {
+        let one = "Lead l2 handed off (1): it goes on in a fresh conversation; its helpers stay with it.";
+        let many = "Leads handed off: l2 (1), l3 (2): each goes on in a fresh conversation; their helpers stay with them.";
+        let update = format!("{} Your helper h1 answered: lane 2 is green.", crate::agents::NOTICE_TAG);
+        assert_eq!(without_handed_off(&format!("{update} {one}")).as_deref(), Some(update.as_str()));
+        assert_eq!(without_handed_off(&format!("{update} {many}")).as_deref(), Some(update.as_str()));
+        assert_eq!(without_handed_off(&format!("{} {one}", crate::agents::NOTICE_TAG)), None, "nothing else in it");
+        assert_eq!(without_handed_off(&update).as_deref(), Some(update.as_str()), "a notice without it as it was");
+        let plain = "Lead the review: it goes on in a fresh conversation; its helpers stay with it.";
+        assert_eq!(without_handed_off(plain).as_deref(), Some(plain), "not 0.19's line");
     }
 
     #[test]

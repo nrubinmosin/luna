@@ -55,7 +55,7 @@ pub(super) fn owed_chat(id: &str, caller: &str, baseline: u32, cursor: u64) -> S
 }
 
 pub(super) fn take_up(chats: Vec<SavedChat>, sends: Vec<SavedSend>, spawns: Vec<SpawnTaken>) {
-    let saved = SavedChats { chats, sends, spawns, news: Vec::new() };
+    let saved = SavedChats { chats, sends, spawns, news: Vec::new(), no_handoff: true };
     take_up_chats(serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap());
 }
 
@@ -78,7 +78,6 @@ pub(super) fn spawn_taken(request: u64, caller: &str, helper: Option<&str>, resu
         connectors: false,
         in_worktree: None,
         account_path: "C:\\acc\\anthropic\\one".into(),
-        worktrees_before: Vec::new(),
         helper: helper.map(str::to_owned),
         owed_placed: false,
         left_by_core: false,

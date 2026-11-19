@@ -140,9 +140,6 @@ fn change_hands(id: &str) -> Option<TakenOver> {
     r.stopped.retain(|(_, s), _| s != id);
     // What only a helper has: nothing deletes it now but the person.
     r.auto.remove(id);
-    r.borrowed.remove(id);
-    r.worktrees_before.remove(id);
-    r.worktrees_left.remove(id);
     if let Some(p) = &parent {
         r.taken_over.insert(id.to_string(), p.clone());
     }

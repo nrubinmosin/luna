@@ -50,7 +50,6 @@ impl Sel {
 enum Ask {
     Delete(Entry),
     Reset(String),
-    Adopt(String),
     /// Unsaved text in the editor, before what replaces or closes it.
     Discard(Next),
 }
@@ -63,11 +62,9 @@ pub enum Next {
     /// The window closes.
     Close,
     Rename(Entry, String),
-    /// Delete..., Back to Luna's..., Make it the override...: their own
-    /// question after.
+    /// Delete..., Back to Luna's...: their own question after.
     Delete(Entry),
     Reset(String),
-    Adopt(String),
     /// Another library folder ("": Luna's own).
     Source(String),
     AddFolder(String),
@@ -191,7 +188,6 @@ impl LibraryPanel {
             Next::Rename(entry, to) => self.rename(entry, to, window, cx),
             Next::Delete(entry) => self.ask = Some(Ask::Delete(entry)),
             Next::Reset(name) => self.ask = Some(Ask::Reset(name)),
-            Next::Adopt(name) => self.ask = Some(Ask::Adopt(name)),
             Next::Source(path) => {
                 let task = self.library.update(cx, |l, cx| l.set_source(&path, cx));
                 // The editor's file was the old library's: nothing of it is
@@ -360,19 +356,6 @@ impl LibraryPanel {
                             v.editor = None;
                             v.selected = None;
                             v.show(Sel::System(name), None, window, cx);
-                        });
-                    }
-                })
-                .detach();
-            }
-            Ask::Adopt(skill) => {
-                let task = self.library.update(cx, |l, cx| l.system_adopt(&skill, cx));
-                cx.spawn_in(window, async move |this, cx| {
-                    if task.await {
-                        let _ = this.update_in(cx, |v, window, cx| {
-                            v.editor = None;
-                            v.selected = None;
-                            v.show(Sel::System(skill), None, window, cx);
                         });
                     }
                 })
@@ -1056,7 +1039,6 @@ impl LibraryPanel {
 
     fn skill_info(&self, o: &Overview, s: &super::Skill, busy: bool, p: &Palette, cx: &Context<Self>) -> Div {
         let entry = Entry::Skill(s.name.clone());
-        let reserved = o.system.iter().any(|x| x.name == s.name);
         let open = s.name.clone();
         let extra = vec![
             ui::button(
@@ -1072,21 +1054,6 @@ impl LibraryPanel {
             Some(problem) => ui::alert(p, Tone::Attention, problem.clone()),
             None => ui::note(p, s.description.clone()),
         });
-        if reserved {
-            let name = s.name.clone();
-            return d.child(ui::row(
-                p,
-                "A system text's name",
-                Some("Laid out nowhere, and not the override. Made the override, its folder moves to system/.".into()),
-                ui::button(
-                    "lib-adopt",
-                    p,
-                    "Make it the override...",
-                    !busy,
-                    self.act(cx, move |v, window, cx| v.guard(Next::Adopt(name.clone()), window, cx)),
-                ),
-            ));
-        }
         let set_entry = entry.clone();
         d = d
             .child(ui::row(
@@ -1301,14 +1268,6 @@ impl LibraryPanel {
                     "Moves your override of {n} out of the library into Luna's backups, kept for 30 days. Luna's own text is served from then on."
                 ),
                 "Back to Luna's",
-            ),
-            Ask::Adopt(n) => (
-                "Make it the override",
-                format!(
-                    "Moves skills/{n}, with any files beside its SKILL.md, to system/{n}, where it is the override served in place of Luna's own. \
-                     An override there now goes to Luna's backups first. It is no longer among your skills."
-                ),
-                "Make it the override",
             ),
             Ask::Discard(_) => ("Unsaved changes", "The editor has changes not saved. Throw them away?".to_owned(), "Throw away"),
         };

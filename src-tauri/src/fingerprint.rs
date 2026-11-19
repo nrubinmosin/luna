@@ -14,16 +14,15 @@ use std::path::{Path, PathBuf};
 /// What the core is compiled from beside `src/`, `Cargo.toml` and
 /// `Cargo.lock`, relative to the crate: build.rs itself, and the files an
 /// `include_str!` or `include_bytes!` outside a test reaches outside `src/` —
-/// the system texts Luna serves: the handoff's instructions, its roles'
-/// defaults and notes (library/system.rs). The CLI floors, which a release may
-/// raise alone, are in `src/` (cli.rs `floor`).
+/// the system texts Luna serves: its roles' defaults and notes
+/// (library/system.rs). The CLI floors, which a release may raise alone, are in
+/// `src/` (cli.rs `floor`).
 /// What `tauri::generate_context!` compiles in (`tauri.conf.json`,
 /// `capabilities/`, `permissions/`, `icons/`, the frontend) is the window's: the
 /// core never builds a Tauri app (lib.rs `run`, coreproc.rs). So is the tray's
 /// icon in `icons/` (desktop/tray.rs): the core never makes a tray.
 pub const INPUTS: &[&str] = &[
     "build.rs",
-    "resources/skills/session-handoff/SKILL.md",
     "resources/system/role-chat.md",
     "resources/system/role-lead.md",
     "resources/system/role-helper.md",

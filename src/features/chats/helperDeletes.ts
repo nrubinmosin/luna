@@ -1,9 +1,9 @@
 /**
  * What deleting a chat does to the helpers its agent runs (DeleteChatDialog).
  * The chat's own boxes never reach further than the person said: a helper at
- * work is stopped only with a yes of its own, and a worktree holding unsaved work
- * goes only with one too. The core holds the same line (agents/teardown.rs
- * `delete_by_user`), against what changed since the dialog looked. A helper
+ * work is stopped only with a yes of its own. The core holds the same line
+ * (agents/teardown.rs `delete_by_user`), against what changed since the dialog
+ * looked. A helper
  * passed to another chat goes there, the helpers under it with it, before the
  * chat is deleted, and none of them is deleted.
  */
@@ -14,15 +14,11 @@ import { suggestedChats } from '../agents/ownership';
 export interface HelperChoices {
   /** Delete the chat's helpers at all. */
   withHelpers: boolean;
-  /** Drop the worktrees they made, as the chat's own box says. */
-  dropWorktree: boolean;
   /** Stop and delete the ones still working too. */
   stopWorking: boolean;
-  /** Drop worktrees with unsaved work in them too. */
-  dropUnsaved: boolean;
 }
 
-/** One helper as the dialog lists it: what it is doing and what its worktree holds. */
+/** One helper as the dialog lists it: what it is doing. */
 export interface HelperLine {
   id: string;
   name: string;
@@ -30,8 +26,6 @@ export interface HelperLine {
   parent: string | null;
   /** What a delete would cut off, in words; null when it is done. */
   working: string | null;
-  /** Its worktree's unsaved work, in words; null with none or no worktree. */
-  unsaved: string | null;
 }
 
 /** A state as a person reads it, for one that is at work. */
@@ -50,8 +44,7 @@ export function helperLines(helpers: BackgroundHelperDto[], stake: Record<string
       id: h.id,
       name: h.name || h.id,
       parent: h.parent,
-      working: s?.working ?? WORKING[h.state] ?? null,
-      unsaved: s?.unsaved ? `${s.worktree ? `${s.worktree}: ` : ''}${s.unsaved}` : null
+      working: s?.working ?? WORKING[h.state] ?? null
     };
   });
 }
@@ -59,9 +52,7 @@ export function helperLines(helpers: BackgroundHelperDto[], stake: Record<string
 /** What goes, and how, for what was ticked. */
 export interface HelperDelete {
   id: string;
-  dropWorktree: boolean;
   stopWorking: boolean;
-  dropUnsaved: boolean;
 }
 
 /** Each helper passed to a chat (`passing`, helper id to chat id), and every
@@ -114,11 +105,6 @@ export function helperDeletes(
       // Only what the dialog listed: a helper spawned under the chat since was never shown.
       .filter(l => !shown || shown.has(l.id))
       .filter(l => !l.working || c.stopWorking)
-      .map(l => ({
-        id: l.id,
-        dropWorktree: c.dropWorktree,
-        stopWorking: !!l.working && c.stopWorking,
-        dropUnsaved: c.dropWorktree && !!l.unsaved && c.dropUnsaved
-      }))
+      .map(l => ({ id: l.id, stopWorking: !!l.working && c.stopWorking }))
   );
 }

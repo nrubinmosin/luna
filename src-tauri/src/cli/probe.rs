@@ -6,8 +6,9 @@
 //! - `--help` of each command Luna launches still lists every flag Luna
 //!   passes it (`COMMANDS`, which the golden launch tests hold to every
 //!   argument list they pin: `covers`);
-//! - Codex takes the hooks and MCP overrides as Luna writes them: it loads
-//!   its configuration with them (`features list`) without refusing it.
+//! - Codex takes the `-c` overrides as Luna writes them (its update check
+//!   and TUI settings, its MCP server): it loads its configuration with them
+//!   (`features list`) without refusing it.
 //!
 //! A flag gone from the help is the commonest way a CLI update breaks the
 //! sessions Luna starts, and the cheapest to see before anyone's chat does.
@@ -75,7 +76,6 @@ const CODEX: &[Command] = &[
             "--sandbox",
             "--approve-for-me",
             "--dangerously-bypass-approvals-and-sandbox",
-            "--dangerously-bypass-hook-trust",
             "--add-dir",
         ],
     },
@@ -90,24 +90,11 @@ const CODEX: &[Command] = &[
             "--sandbox",
             "--approve-for-me",
             "--dangerously-bypass-approvals-and-sandbox",
-            "--dangerously-bypass-hook-trust",
             "--add-dir",
         ],
     },
-    Command {
-        path: &["exec"],
-        flags: &[
-            "-C",
-            "--worktree",
-            "--json",
-            "--skip-git-repo-check",
-            "--model",
-            "-c",
-            "--approve-for-me",
-            "--dangerously-bypass-hook-trust",
-        ],
-    },
-    Command { path: &["exec", "resume"], flags: &["--json", "--skip-git-repo-check", "--model", "-c", "--dangerously-bypass-hook-trust"] },
+    Command { path: &["exec"], flags: &["-C", "--worktree", "--json", "--skip-git-repo-check", "--model", "-c", "--approve-for-me"] },
+    Command { path: &["exec", "resume"], flags: &["--json", "--skip-git-repo-check", "--model", "-c"] },
     Command { path: &["login"], flags: &[] },
     Command { path: &["debug", "models"], flags: &["--bundled"] },
 ];
@@ -135,11 +122,15 @@ pub(crate) fn missing(help: &str, command: &Command) -> Vec<&'static str> {
     command.flags.iter().copied().filter(|f| !listed(help, f)).collect()
 }
 
-/// The `-c` overrides Luna gives a Codex session, in their shapes: the
-/// guard's hook (codex/launch.rs `guard_override`) and its MCP server
-/// (`mcp_args`), aimed at nothing that answers.
+/// The `-c` overrides Luna gives a Codex chat, in their shapes: the update
+/// check and the TUI's settings (codex/launch.rs `no_update_check`,
+/// `TUI_SETTINGS`) and its MCP server (`mcp_args`), aimed at nothing that
+/// answers.
 fn codex_overrides() -> Vec<String> {
-    let mut args = vec!["-c".to_string(), crate::codex::launch::guard_override("http://127.0.0.1:9/probe", "curl")];
+    let mut args = crate::codex::launch::no_update_check().to_vec();
+    for setting in crate::codex::launch::TUI_SETTINGS {
+        args.extend(["-c".to_string(), setting.to_string()]);
+    }
     args.extend(crate::codex::launch::mcp_args("http://127.0.0.1:9/mcp"));
     args
 }

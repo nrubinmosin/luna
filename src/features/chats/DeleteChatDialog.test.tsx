@@ -2,12 +2,11 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { backgroundDelete, backgroundMove, backgroundMoveTargets, type BackgroundHelperDto } from '../../ipc/agents';
-import { deleteSession } from '../../ipc/worktrees';
+import { deleteSession } from '../../ipc/sessions';
 import type { Chat } from '../../shared/types';
 import { useBackground } from '../agents/background.store';
 import { useChats } from './chats.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
-import { useKeptWorktrees } from './keptWorktrees.store';
 
 // xterm cannot run in jsdom.
 vi.mock('../panes/terminals', () => ({
@@ -32,8 +31,8 @@ vi.mock('../../ipc/agents', async importOriginal => ({
     })
   )
 }));
-vi.mock('../../ipc/worktrees', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../ipc/worktrees')>()),
+vi.mock('../../ipc/sessions', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/sessions')>()),
   deleteSession: vi.fn(() => Promise.resolve())
 }));
 
@@ -50,7 +49,6 @@ const row = (id: string, over: Partial<BackgroundHelperDto> = {}): BackgroundHel
   account: 'work',
   model: null,
   effort: 'low',
-  worktree: false,
   startedMs: 0,
   turnStartedMs: null,
   lastActivityMs: null,
@@ -213,7 +211,7 @@ describe('DeleteChatDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(deleteChat).toHaveBeenCalledWith('chat'));
     expect(vi.mocked(backgroundDelete).mock.calls).toEqual([
-      ['watched', { id: 'watched', dropWorktree: true, stopWorking: false, dropUnsaved: false, ofChat: 'chat' }]
+      ['watched', { id: 'watched', stopWorking: false, ofChat: 'chat' }]
     ]);
   });
 
@@ -277,13 +275,13 @@ describe('DeleteChatDialog', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('says on the status bar when the worktree it was asked to take stayed', async () => {
+  it('deletes the chat by its id and says its worktree stays on disk', async () => {
     const user = userEvent.setup();
-    useKeptWorktrees.setState({ paths: [] });
-    vi.mocked(deleteSession).mockResolvedValueOnce({ worktree: '/repo/.claude/worktrees/w', worktreeKept: true });
-    render(<DeleteChatDialog chat={chat('docs', 'Docs')} onClose={vi.fn()} />);
+    const inWorktree = { ...chat('docs', 'Docs'), worktree: true, worktreePath: '/repo/.claude/worktrees/w' } as Chat;
+    render(<DeleteChatDialog chat={inWorktree} onClose={vi.fn()} />);
+    expect(screen.getByText(/Its git worktree stays on disk: Luna does not remove worktrees\./)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => expect(useKeptWorktrees.getState().paths).toEqual(['/repo/.claude/worktrees/w']));
+    await waitFor(() => expect(deleteSession).toHaveBeenCalledWith('docs'));
   });
 
   it('asks where only the chat’s own helpers may go', async () => {

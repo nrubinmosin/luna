@@ -113,9 +113,9 @@ export function summaryLabel(helpers: BackgroundHelperDto[], now: number): strin
     .join(' ');
 }
 
-/** What it runs on: "sonnet · medium · team · worktree". */
+/** What it runs on: "sonnet · medium · team". */
 export function setupLine(h: BackgroundHelperDto): string {
-  return [h.model ?? 'default model', h.effort, h.account, h.worktree ? 'worktree' : null].filter(Boolean).join(' · ');
+  return [h.model ?? 'default model', h.effort, h.account].filter(Boolean).join(' · ');
 }
 
 /** "working 4m" on its turn, "done · up 12m" after it: since the turn or the spawn. */
