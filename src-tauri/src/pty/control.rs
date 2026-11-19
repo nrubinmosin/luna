@@ -18,11 +18,20 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+/// Input for a session. `reply`: the terminal's own answer to the program's
+/// query (its size, a color, the device's attributes), which the native
+/// window's terminal sends itself: it goes straight to the PTY, neither held
+/// with a person's keys nor counted as their typing (`typed_ago_ms`,
+/// `has_draft`), which an OSC color reply would otherwise count as text. The
+/// page never sends it: xterm.js's replies take the keys' path as before.
 #[tauri::command]
-pub fn write_session(id: String, data: String) -> Result<(), String> {
+pub fn write_session(id: String, data: String, reply: Option<bool>) -> Result<(), String> {
     let state = manager();
     let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let s = sessions.get(&id).ok_or("no such session")?;
+    if reply == Some(true) {
+        return s.input_tx.send(Input::Bytes(data.into_bytes()));
+    }
     if let Some(held) = s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         held.push(data);
         return Ok(());
@@ -1244,6 +1253,34 @@ mod tests {
         let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
         assert!(sessions[id].input_tx.reply(b"\x1b[1;1R".to_vec()).is_ok(), "a cursor answer goes whatever waits");
         drop(sessions);
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+
+    /// The native window's terminal answers the program's queries itself and
+    /// says so (`reply`): an OSC color or a size report is not a person
+    /// typing, and starts no draft; the same bytes as keys would.
+    #[test]
+    fn a_reply_from_the_windows_terminal_is_not_typing() {
+        let id = "dl-reply";
+        let quit = fake_session(id, "/nowhere", PROMPT);
+        let counts = || {
+            let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = &sessions[id];
+            (s.typed_ms.load(Ordering::Relaxed), s.draft.load(Ordering::Relaxed), s.keys_draft.load(Ordering::Relaxed))
+        };
+        for data in ["\x1b]11;rgb:ffff/ffff/ffff\x1b\\", "\x1b[8;30;100t", "\x1b[?62;22c"] {
+            let sent = crate::corecmd::dispatch("write_session", serde_json::json!({ "id": id, "data": data, "reply": true }));
+            assert!(sent.is_ok(), "{data:?}: {sent:?}");
+            assert_eq!(counts(), (0, 0, 0), "{data:?}");
+        }
+        // Without it, as the page sends everything: the color's digits count
+        // as a draft, the size report as typing.
+        for data in ["\x1b]11;rgb:ffff/ffff/ffff\x1b\\", "\x1b[8;30;100t"] {
+            crate::corecmd::dispatch("write_session", serde_json::json!({ "id": id, "data": data })).unwrap();
+        }
+        let (typed, draft, _) = counts();
+        assert!(typed > 0 && draft > 0, "{:?}", counts());
         quit.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     }

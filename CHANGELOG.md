@@ -42,6 +42,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - `resize_session` takes the terminal's size in pixels too (`pixelWidth`,
   `pixelHeight`), which the native window sends and the core passes to the
   PTY.
+- `write_session` takes `reply: true` for a terminal's own answers to the
+  program's queries (sizes, colors, device attributes): the core writes them
+  straight to the PTY and does not count them as a person typing or as a
+  draft. The native window's terminal sends its replies so; the page sends
+  none.
 
 - The desktop services the native window of 0.20 uses in place of
   Tauri's plugins (`src-tauri/src/desktop/`,

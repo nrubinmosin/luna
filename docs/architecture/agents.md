@@ -743,7 +743,9 @@ turn, stopped on a prompt (once per stop) or exited.
   typed since. `type_text` holds a person's keys back (`hold_keys`) from its
   look at the draft to the Enter; they go on after, into an empty composer.
 - **Drafts.** `write_session` counts a likely draft from keystrokes
-  (`pty::draft_after`); once keys settle (1.5 s) `has_draft` reads the composer
+  (`pty::draft_after`), never from a write marked `reply` (the native
+  window's terminal answering the program's queries, which goes straight to
+  the PTY); once keys settle (1.5 s) `has_draft` reads the composer
   off the screen (`pty::read_composer`). In Claude Code a real draft is put
   aside (`stash_and_type`: Ctrl+S, text, Enter; the CLI's "Draft restored" is the
   sign it went), unless a stash is already shown (`› stashed`). Codex has no
