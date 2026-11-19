@@ -99,7 +99,6 @@ const row = (over: Partial<BackgroundHelperDto> = {}): BackgroundHelperDto => ({
   account: 'work',
   model: 'haiku',
   effort: 'low',
-  worktree: false,
   startedMs: 0,
   turnStartedMs: null,
   lastActivityMs: null,

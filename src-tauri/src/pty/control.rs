@@ -185,9 +185,8 @@ fn shut_down(mut s: Session, grace: std::time::Duration) {
     // Claude Code in a worktree answers the quit with "Exiting worktree
     // session — keep or remove?", which Ctrl+C does not dismiss: every deleted
     // worktree chat sat out the whole grace and then took the hard kill. Enter
-    // takes the focused default, Keep — the right answer either way, since
-    // Luna removes the worktree itself afterwards when the delete asks for
-    // that. The Ctrl+Cs have already cleared the prompt, so an Enter that
+    // takes the focused default, Keep — the right answer, as Luna removes no
+    // worktree. The Ctrl+Cs have already cleared the prompt, so an Enter that
     // finds no dialog submits nothing. Again until the CLI is gone: the dialog
     // comes up only once Claude Code has looked the worktree over, its
     // submodules with up to 5 s of their own, and in a large repository one
@@ -225,8 +224,8 @@ impl PtyManager {
     /// shutdown waits on the process, and waiting under the map would put
     /// every other chat's keystrokes behind it. Then waits for its reader to
     /// have said it exited (`ReaderEnd`). Called under the chat's spawn gate,
-    /// held throughout: a spawn of the chat still in flight (a worktree being
-    /// fetched, a helper deleted the moment it was made) is waited out, as a
+    /// held throughout: a spawn of the chat still in flight (a helper deleted
+    /// the moment it was made) is waited out, as a
     /// session removed before that spawn put its process in the map would run
     /// on with no chat to reach it from; and a start after it waits until the
     /// old session's exit is said, which said after the start would name the
@@ -299,41 +298,15 @@ pub async fn kill_session(id: String) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// Tears a chat down in one shot: resolve where the session actually lives,
-/// kill it, drop its worktree (and the branch made for it) and its
-/// attachments. Doing this in one command removes the race the UI had — it
-/// used to rely on a 4s poll having already reported the worktree path.
+/// Tears a chat down in one shot: kill its session and remove its attachments.
+/// A worktree it ran in is left as it is: Luna removes none.
 #[tauri::command]
-// Async for the same reason as the worktree commands: removing a worktree can
-// take seconds, and on the main thread every keystroke in every other chat
-// waits behind it.
-pub async fn delete_session(
-    id: String,
-    folder: String,
-    worktree_path: Option<String>,
-    // Off by default at the call site: the worktree may hold work that exists
-    // nowhere else, and a deleted chat is a cheaper mistake than a deleted
-    // branch. Returns the path either way, so the caller can say where the
-    // kept worktree is.
-    drop_worktree: bool,
-) -> Result<Deleted, String> {
+// Async: the session quits in up to `GRACE`, and on the main thread every
+// keystroke in every other chat waits behind it.
+pub async fn delete_session(id: String) -> Result<(), String> {
     // On a thread for blocking work: the delete holds the chat's gate while
     // the session quits, which takes up to `GRACE`.
-    tauri::async_runtime::spawn_blocking(move || manager().delete(&id, &folder, worktree_path, drop_worktree))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// What a chat's delete did with its worktree.
-#[derive(Serialize, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Deleted {
-    /// The chat's worktree, as the delete found it, gone or kept.
-    pub worktree: Option<String>,
-    /// Asked to go with the chat, it stayed: another session is in it or on
-    /// its way in. The window says so; the worktree is the sweep's to offer
-    /// once nobody is in it.
-    pub worktree_kept: bool,
+    tauri::async_runtime::spawn_blocking(move || manager().delete(&id)).await.map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -448,24 +421,9 @@ impl PtyManager {
         }
     }
 
-    /// Whether a session other than `id` is in this worktree, for a delete
-    /// of its own (`worktree::Look::Delete`): a running one started in it or
-    /// into it (`Session::enters`: Claude Code's registry says so only once
-    /// the CLI is up) or moved into it itself, or a background helper sent to
-    /// it or working in it, between its turns too. By where each path leads
-    /// as well as by its spelling (`worktree::Hold`): a session started
-    /// through a link to the project is in the worktree a delete names by its
-    /// real path, the link gone since or not.
-    pub fn worktree_shared(&self, id: &str, wt: &str) -> bool {
-        self.holds(Some(id)).keeps(&crate::worktree::Target::of(wt, None), crate::worktree::Look::Delete)
-    }
-
-    /// Tears a chat's session down: resolve its worktree, quit the process,
-    /// drop attachments and the hooks file, and the worktree only if asked.
-    /// Returns the worktree path either way, and whether one asked to go
-    /// stayed (`Deleted`). Blocks while the session quits
-    /// (`GRACE` at most) and the worktree goes: callers run it off the main
-    /// thread.
+    /// Tears a chat's session down: quit the process, drop attachments and the
+    /// hooks file. Blocks while the session quits (`GRACE` at most): callers
+    /// run it off the main thread.
     ///
     /// Under the chat's spawn gate from before the session is taken until
     /// the last of it is gone. The cleanup below goes by the chat's id alone:
@@ -480,7 +438,7 @@ impl PtyManager {
     /// that has not let go yet waits out the delete on the gate and is then
     /// refused, where it would have brought back a session the delete had just
     /// cleared away. The window never gives a chat id out twice.
-    pub fn delete(&self, id: &str, folder: &str, worktree_path: Option<String>, drop_worktree: bool) -> Result<Deleted, String> {
+    pub fn delete(&self, id: &str) {
         let gate = self.gate(id);
         let _deleting = gate.lock().unwrap_or_else(|e| e.into_inner());
         {
@@ -491,13 +449,6 @@ impl PtyManager {
             }
             deleted.insert(id.to_string());
         }
-        // Resolve before killing: once the process is gone its registry entry goes too.
-        let resolved = worktree_path.filter(|p| !p.is_empty()).or_else(|| {
-            let probe = self.probe(id)?;
-            let scwd = probe.working_dir().unwrap_or(probe.cwd);
-            crate::worktree::is_worktree_of(folder, &scwd).then_some(scwd)
-        });
-
         self.take_and_quit(id);
         // Everything else that kept count of it, so nothing keeps the chat on
         // after it is gone: the agent registry (luna_session_list, the helper
@@ -513,33 +464,7 @@ impl PtyManager {
             let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{}.json", crate::paths::id_file_name(id))));
         }
         let _ = claude_instructions_dir(id, None);
-        crate::log::info("delete", &format!("chat {}, worktree {resolved:?}, dropping {drop_worktree}", crate::agents::label(id)));
-
-        // A helper spawned from a chat in a worktree runs in that same
-        // worktree. Dropping "its" worktree would take the other chat's work
-        // with it, so a worktree another session or a helper is in stays.
-        // Looked at only now, its own session gone, so one that went in while
-        // this one quit counts too; and held from the look to the end of the
-        // removal (`worktree::removing`), so a start that is on its way in,
-        // not yet listed where the look goes, keeps it as well, and one that
-        // comes during the removal is refused.
-        let worktree_kept = match &resolved {
-            Some(wt) if drop_worktree => {
-                let target = crate::worktree::Target::of(wt, Some(crate::worktree::Place::of(folder)));
-                match crate::worktree::removing(target, crate::worktree::Look::Delete, || self.worktree_shared(id, wt)) {
-                    Some(_removing) => {
-                        crate::worktree::remove_worktree_now(folder.to_string(), wt.clone())?;
-                        false
-                    }
-                    None => {
-                        crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it or on its way in"));
-                        true
-                    }
-                }
-            }
-            _ => false,
-        };
-        Ok(Deleted { worktree: resolved, worktree_kept })
+        crate::log::info("delete", &format!("chat {}", crate::agents::label(id)));
     }
 
     /// Asks every live session to quit, each with `grace` to do it on its
@@ -721,8 +646,6 @@ mod tests {
             work_output_ms: Arc::new(AtomicU64::new(now_ms())),
             pid: None,
             cwd: cwd.to_string(),
-            enters: None,
-            hold: Arc::new(crate::worktree::Hold::start(&[cwd], None)),
             spawned_at_ms: now_ms() as u128,
             resume: None,
             account_path: String::new(),
@@ -736,22 +659,6 @@ mod tests {
         };
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
         quit
-    }
-
-    /// `id`'s session given what a start would have held (`Session::hold`):
-    /// the folders it went into and, given `making`, where its CLI makes the
-    /// worktree it asked for.
-    fn held_as(id: &str, into: &[&str], making: bool) {
-        let mut sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let s = sessions.get_mut(id).unwrap();
-        let making =
-            making.then(|| crate::worktree::Unplaced { provider: s.provider, folder: s.cwd.clone(), account_path: s.account_path.clone() });
-        s.hold = Arc::new(crate::worktree::Hold::start(into, making.as_ref()));
-    }
-
-    /// What a delete answers where it kept the chat's worktree `wt`.
-    fn kept(wt: &str) -> Result<Deleted, String> {
-        Ok(Deleted { worktree: Some(wt.to_string()), worktree_kept: true })
     }
 
     /// Until the delete or kill has taken `id`'s session out of the map.
@@ -786,8 +693,6 @@ mod tests {
                     describe: String::new(),
                     applied: Vec::new(),
                     reserved: None,
-                    enters: None,
-                    makes_worktree: false,
                 })
             }))
             .map(|a: Attached| a.backlog)
@@ -804,14 +709,13 @@ mod tests {
         let dir = scratch("respawn");
         let cwd = dir.to_string_lossy().into_owned();
         let quit = fake_session(id, &cwd, Fake { reader_lag: Duration::from_millis(200), ..PROMPT });
-        let folder = cwd.clone();
-        let deleting = std::thread::spawn(move || manager().delete(id, &folder, None, false));
+        let deleting = std::thread::spawn(move || manager().delete(id));
         taken(id);
         let respawn = start(id, cwd);
         // Let through, the start would be done by now.
         std::thread::sleep(Duration::from_millis(300));
         quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), Ok(Deleted { worktree: None, worktree_kept: false }));
+        deleting.join().unwrap();
         let refused = respawn.join().unwrap().unwrap_err();
         assert!(refused.contains("deleted"), "{refused}");
         assert!(capture::take(id).is_none(), "nothing of a start was built");
@@ -851,180 +755,6 @@ mod tests {
         assert!(end.wait(Duration::ZERO), "through all the same");
     }
 
-    /// A worktree another session went into while the deleted chat's process
-    /// was quitting is kept: whether it is shared is asked once that process
-    /// is gone.
-    #[test]
-    fn a_worktree_entered_while_the_delete_waits_is_kept() {
-        let (id, other) = ("dl-wt-gone", "dl-wt-came");
-        let dir = scratch("worktree");
-        let wt = dir.join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        let (folder, wt_path) = (dir.to_string_lossy().into_owned(), wt.to_string_lossy().into_owned());
-        let quit = fake_session(id, &wt_path, PROMPT);
-        let (f, w) = (folder.clone(), wt_path.clone());
-        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
-        taken(id);
-        let came = fake_session(other, &wt_path, PROMPT);
-        quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
-        assert!(wt.exists());
-        came.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A session in a worktree by way of a link or junction to its project
-    /// keeps it from a delete that names it by its real path.
-    #[test]
-    fn a_worktree_reached_through_a_link_is_kept_from_a_delete_by_its_real_path() {
-        let (id, other) = ("dl-wt-real", "dl-wt-linked");
-        let dir = scratch("linked");
-        let wt = dir.join("real").join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        crate::worktree::link_dir(&dir.join("link"), &dir.join("real"));
-        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
-        let (folder, wt_path) = (s(&dir.join("real")), s(&wt));
-        let came = fake_session(other, &s(&dir.join("link").join("wt")), PROMPT);
-        let quit = fake_session(id, &wt_path, PROMPT);
-        let (f, w) = (folder.clone(), wt_path.clone());
-        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
-        taken(id);
-        quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
-        assert!(wt.exists());
-        came.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A session started through a link to its project, the link gone
-    /// before its CLI has said anything, is still where the link led as it
-    /// started: a delete by the real path keeps the worktree it is in, and
-    /// the one it was started into by name.
-    #[test]
-    fn a_session_started_through_a_link_since_gone_keeps_its_worktree() {
-        let (id, other) = ("dl-wt-pinned", "dl-wt-unlinked");
-        let dir = scratch("unlinked");
-        let wt = dir.join("real").join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        crate::worktree::link_dir(&dir.join("link"), &dir.join("real"));
-        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
-        let (folder, wt_path) = (s(&dir.join("real")), s(&wt));
-        let came = fake_session(other, &s(&dir.join("link")), PROMPT);
-        held_as(other, &[&s(&dir.join("link")), &s(&dir.join("link").join("wt"))], false);
-        crate::worktree::unlink_dir(&dir.join("link"));
-        let quit = fake_session(id, &wt_path, PROMPT);
-        let (f, w) = (folder.clone(), wt_path.clone());
-        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
-        taken(id);
-        quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
-        assert!(wt.exists());
-        came.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A session started into a worktree by name, its `cwd` the project
-    /// (Claude Code's `--worktree <name>`), keeps that worktree from another
-    /// chat's delete from its start on: Claude Code's registry says where it
-    /// went only once the CLI has come up.
-    #[test]
-    fn a_worktree_a_session_was_started_into_is_kept_from_its_start() {
-        let (id, other) = ("dl-wt-before", "dl-wt-named");
-        let dir = scratch("named");
-        let wt = dir.join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        let (folder, wt_path) = (dir.to_string_lossy().into_owned(), wt.to_string_lossy().into_owned());
-        let came = fake_session(other, &folder, PROMPT);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(other).unwrap().enters = Some(wt_path.clone());
-        held_as(other, &[&folder, &wt_path], false);
-        let target = crate::worktree::Target::of(&wt_path, Some(crate::worktree::Place::of(&folder)));
-        assert!(super::super::holds(None).keeps(&target, crate::worktree::Look::Sweep), "in use to the orphan sweep too");
-        let quit = fake_session(id, &wt_path, PROMPT);
-        let (f, w) = (folder.clone(), wt_path.clone());
-        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
-        taken(id);
-        quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
-        assert!(wt.exists());
-        came.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A session started with a new worktree whose place its CLI picks
-    /// keeps every worktree of its folder where that CLI makes them from the
-    /// sweep, while its working folder has not said where it went; one
-    /// started without does not, and neither keeps one from a delete.
-    #[test]
-    fn a_session_making_a_worktree_is_waited_for_until_it_says_where() {
-        let (making, plain) = ("dl-unplaced", "dl-placed");
-        let dir = scratch("unplaced");
-        let folder = dir.to_string_lossy().into_owned();
-        let wt = crate::worktree::named_path(&folder, "picked-by-its-cli");
-        let target = || crate::worktree::Target::of(&wt, Some(crate::worktree::Place::of(&folder)));
-        let plain_quit = fake_session(plain, &folder, PROMPT);
-        assert!(!super::super::holds(None).keeps(&target(), crate::worktree::Look::Sweep), "one started without");
-        let making_quit = fake_session(making, &folder, PROMPT);
-        held_as(making, &[&folder], true);
-        assert!(super::super::holds(None).keeps(&target(), crate::worktree::Look::Sweep), "waited for");
-        assert!(!super::super::holds(None).keeps(&target(), crate::worktree::Look::Delete), "not by a delete");
-        for (id, quit) in [(making, making_quit), (plain, plain_quit)] {
-            quit.store(true, Ordering::SeqCst);
-            manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The sweep's last look before it removes an orphan, under the removal's
-    /// hold, keeps one a session making a worktree may have made since the
-    /// orphans were listed, which no session is in yet.
-    #[test]
-    fn the_sweeps_last_look_keeps_what_a_session_making_a_worktree_may_have_made() {
-        let id = "dl-making";
-        let dir = scratch("making");
-        let folder = dir.to_string_lossy().into_owned();
-        let quit = fake_session(id, &folder, PROMPT);
-        let wt = crate::worktree::named_path(&folder, "made-by-its-cli");
-        std::fs::create_dir_all(&wt).unwrap();
-        assert!(!crate::worktree::kept_from_removal(&folder, &wt, &[], &[]), "nobody making one: an orphan still");
-        held_as(id, &[&folder], true);
-        assert!(!manager().worktree_shared("", &wt), "nobody is in it");
-        assert!(crate::worktree::kept_from_removal(&folder, &wt, &[], &[]), "kept for the session making one");
-        quit.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The sweep's removal looks again before it removes each orphan: one a
-    /// session went into after Luna's sessions were read for the listing is
-    /// kept, said as in use again, and nothing of it goes.
-    #[test]
-    fn the_sweep_keeps_an_orphan_a_session_went_into_since_the_listing() {
-        let id = "dl-swept";
-        let dir = scratch("swept");
-        let folder = dir.to_string_lossy().into_owned();
-        let wt = crate::worktree::named_path(&folder, "gone-into");
-        std::fs::create_dir_all(&wt).unwrap();
-        let quit = fake_session(id, &format!("{wt}/src"), PROMPT);
-        // Read before the session went in: nobody there.
-        let read_before = crate::worktree::Hold::default();
-        let swept = crate::worktree::remove_orphans_now(&folder, &[], &[], &[], vec![wt.clone()], &read_before, 0).unwrap();
-        assert!(swept.removed.is_empty());
-        let failed: Vec<_> = swept.failed.iter().map(|f| (f.path.as_str(), f.error.as_str())).collect();
-        assert_eq!(failed, [(wt.as_str(), crate::worktree::IN_USE_AGAIN)]);
-        assert!(std::path::Path::new(&wt).exists());
-        quit.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A session running once every session has been stopped for an update
-    /// (one started while the stop went on) leaves the chats' ties frozen:
-    /// the installer may yet end the process, and a save then would write
-    /// what the stopping did. The update called off lifts it.
     #[test]
     fn a_session_running_after_a_stop_leaves_the_chats_frozen_until_it_is_called_off() {
         let _alone = crate::agents::stops_for_test();
@@ -1138,25 +868,6 @@ mod tests {
         let (by_then, told, generation) = kill_with_a_held_reader("dl-reader-first", true, true);
         let exit = serde_json::json!({ "id": "dl-reader-first", "code": 0, "generation": generation });
         assert_eq!((by_then, told), (vec![exit.clone()], vec![exit]));
-    }
-
-    /// A start into a worktree that a delete has found free and is removing
-    /// is refused, saying so; the same start once the removal is over goes.
-    #[test]
-    fn a_start_into_a_worktree_being_removed_is_refused() {
-        let id = "dl-wt-late";
-        let dir = scratch("removing");
-        let wt = dir.join("wt").to_string_lossy().into_owned();
-        let target = crate::worktree::Target::of(&wt, None);
-        let removal = crate::worktree::removing(target, crate::worktree::Look::Delete, || manager().worktree_shared("dl-wt-owner", &wt))
-            .expect("free");
-        let refused = start(id, format!("{wt}/sub")).join().unwrap().unwrap_err();
-        assert!(refused.contains("being removed"), "{refused}");
-        assert!(capture::take(id).is_none());
-        drop(removal);
-        assert_eq!(start(id, wt).join().unwrap(), Ok(String::new()));
-        assert!(capture::take(id).is_some());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Keys a session does not take, sent as the window sends them (a send

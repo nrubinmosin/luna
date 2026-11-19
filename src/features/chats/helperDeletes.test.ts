@@ -18,7 +18,6 @@ const row = (id: string, state: string, over: Partial<BackgroundHelperDto> = {})
   account: 'work',
   model: null,
   effort: 'low',
-  worktree: true,
   startedMs: 0,
   turnStartedMs: null,
   lastActivityMs: null,
@@ -26,7 +25,7 @@ const row = (id: string, state: string, over: Partial<BackgroundHelperDto> = {})
   ...over
 });
 
-const all: HelperChoices = { withHelpers: true, dropWorktree: true, stopWorking: false, dropUnsaved: false };
+const all: HelperChoices = { withHelpers: true, stopWorking: false };
 
 describe('deleting a chat with helpers', () => {
   const helpers = [
@@ -36,19 +35,17 @@ describe('deleting a chat with helpers', () => {
     row('codex', 'idle', { provider: 'codex' })
   ];
   const stake = {
-    done: { id: 'done', worktree: '/wt/done', unsaved: '2 uncommitted files' },
-    codex: { id: 'codex', worktree: '/wt/codex' },
     // The core's look found a job left running that the row had not shown yet.
     asks: { id: 'asks', working: 'waits on a question or permission' }
   };
   const lines = helperLines(helpers, stake);
 
-  it('lists what each one is doing and what its worktree holds', () => {
+  it('lists what each one is doing', () => {
     expect(lines).toEqual([
-      { id: 'done', name: 'done', parent: 'chat', working: null, unsaved: '/wt/done: 2 uncommitted files' },
-      { id: 'busy', name: 'busy', parent: 'chat', working: 'working', unsaved: null },
-      { id: 'asks', name: 'asks', parent: 'chat', working: 'waits on a question or permission', unsaved: null },
-      { id: 'codex', name: 'codex', parent: 'chat', working: null, unsaved: null }
+      { id: 'done', name: 'done', parent: 'chat', working: null },
+      { id: 'busy', name: 'busy', parent: 'chat', working: 'working' },
+      { id: 'asks', name: 'asks', parent: 'chat', working: 'waits on a question or permission' },
+      { id: 'codex', name: 'codex', parent: 'chat', working: null }
     ]);
     // Before the core has looked, the row's state alone.
     expect(helperLines(helpers, null).map(l => l.working)).toEqual([null, 'working', 'asks a question', null]);
@@ -58,14 +55,14 @@ describe('deleting a chat with helpers', () => {
     expect(helperDeletes(lines, { ...all, withHelpers: false })).toEqual([]);
   });
 
-  it('never stops one at work or drops unsaved work on the chat’s boxes alone', () => {
+  it('never stops one at work on the chat’s box alone', () => {
     expect(helperDeletes(lines, all)).toEqual([
-      { id: 'done', dropWorktree: true, stopWorking: false, dropUnsaved: false },
-      { id: 'codex', dropWorktree: true, stopWorking: false, dropUnsaved: false }
+      { id: 'done', stopWorking: false },
+      { id: 'codex', stopWorking: false }
     ]);
   });
 
-  it('stops the working ones and drops unsaved work each only on its own yes', () => {
+  it('stops the working ones only on a yes of its own', () => {
     const stopped = helperDeletes(lines, { ...all, stopWorking: true });
     expect(stopped.map(d => [d.id, d.stopWorking])).toEqual([
       ['done', false],
@@ -73,14 +70,6 @@ describe('deleting a chat with helpers', () => {
       ['asks', true],
       ['codex', false]
     ]);
-    const dropped = helperDeletes(lines, { ...all, dropUnsaved: true });
-    expect(dropped.find(d => d.id === 'done')?.dropUnsaved).toBe(true);
-    // Worktrees kept: nothing to drop, unsaved or not.
-    expect(
-      helperDeletes(lines, { ...all, dropWorktree: false, dropUnsaved: true }).every(
-        d => !d.dropUnsaved && !d.dropWorktree
-      )
-    ).toBe(true);
   });
 });
 

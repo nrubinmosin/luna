@@ -55,7 +55,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         applied.push(Item::Resume.with(format!("--resume {session_id}")));
     }
     if let Some(name) = s.worktree {
-        let arg = crate::worktree::worktree_arg(name);
+        let arg = crate::checkout::worktree_arg(name);
         applied.push(Item::Worktree.with(&arg));
         args.push(arg);
     }

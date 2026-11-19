@@ -37,7 +37,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/answer.rs`, `wait.rs`, `list.rs` | `luna_session_answer`, `luna_session_wait`, `luna_session_list` / `luna_session_list` |
 | `agents/teardown.rs` | kill, delete, the person's guarded delete (`delete_by_user`, `at_stake`), `reap` (autoDelete), `forget` |
 | `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
-| `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
+| `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `folder.rs` (where the caller works, who else is there), `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and context news |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
 | `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic its opening and the topics; every session with tools reads it |
@@ -178,8 +178,9 @@ see Places below. The full matrix with code references is in the
 **Lineage.** Children outlive their parent (`forget`): each passes to the
 parent's own parent; with none it is an orphan (`Known::orphan`, saved in
 `Ties`), listed under "Helpers with no chat" (`LooseHelpers`), and joins
-`auto`. A helper started without a folder works where its caller does,
-worktree included (`agents::caller_worktree`). A helper that passes to another
+`auto`. A helper started without a folder works where its caller does, in the
+worktree its CLI made for the caller included (`agents::caller_worktree`: a
+read of where the caller works, nothing made). A helper that passes to another
 parent (`pass_up`) is told as it next starts.
 
 **Handed over.** A helper the person opens as a chat (`background_promote`,
@@ -233,7 +234,7 @@ never past such a run (`mcp.rs` `runs_in_scope`).
 **Moved.** The person moves a helper, with every helper under it, to another
 of their chats from the window (`background_move`, `reparent::move_helper`;
 [ADR-0028](../adr/0028-writes-into-a-helper-come-from-above.md)); no tool
-does. Only its parent changes, so its line follows; its id, worktree,
+does. Only its parent changes, so its line follows; its id,
 settings and constraints stay. It moves only a direct child of a person's chat
 or a helper with no chat above it, only to a person's chat with Luna's tools,
 not in its own line, whose privilege covers every moved session's
@@ -255,7 +256,7 @@ have spawned a lead). In this order:
    chat started (an agent's delete asks again under its claim, which a move
    refuses); and a spawn from its
    registration to its caller's debt (`spawn/background.rs`
-   `register_spawned`, past its wait for the worktree queue), which asks
+   `register_spawned`), which asks
    `spawnable_at` again for the helper under that hold and refuses the spawn
    if a move of its caller's line since put it too deep; so one checked
    against the old chat has its debt in
@@ -347,8 +348,7 @@ and shows "Move to <chat>?" only for a chat that may take it now.
 first holds it (`background::claim_delete`): no turn starts and it cannot be
 opened as a chat until the delete has removed it or let it be, and an opening
 under way refuses the delete. An agent's delete asks `authorize` again under
-that hold, so ownership, idleness and the worktree it went by are what it
-removes; `remove` refuses a chat the person took over.
+that hold, so ownership and idleness are what it removes; `remove` refuses a chat the person took over.
 
 ## Spawning
 
@@ -356,11 +356,12 @@ Every helper runs in the core (`spawn/background.rs`, [background
 helpers](background-helpers.md)); the window takes no part. `spawn` settles the
 account, folder and privilege (`settle_mode`, `command_reach`), records the
 spawn on disk (`SpawnUnderWay`), registers the helper with its parent
-(`spawn_is` notes its task and, for a Codex one in a worktree of its own, the
-worktrees there were), starts its first turn and answers with `id`,
+(`spawn_is` notes its task), starts its first turn and answers with `id`,
 `settings`, `turnsEnded`, `sameFolder` (other live sessions in its folder) and
-the worktree once the CLI has made it (`worktreePending` until then), and
-`places`.
+`places`. Luna makes, inspects and removes no worktree
+([ADR-0030](../adr/0030-scope-of-0-20.md)): a caller that wants isolation
+makes one with `git worktree add` and passes it as `folder`, and `luna_session_spawn`
+refuses a `worktree` argument saying so (`mcp/args.rs` `worktree_instead`).
 
 **Places.** The cap is the line's: every session under the top chat, every
 generation, and every spawn under way with no session yet, counted in the hold
@@ -397,20 +398,6 @@ person's Claude Code chat may start in `auto` as well (the dialog's Auto);
 `Reviewed` with the network, above `acceptEdits` and Codex's
 `workspace-write`, below `bypassPermissions`, so such a chat's helpers run in
 `auto` or below and it takes in a moved helper only that far.
-
-**One worktree at a time per repository.** Each CLI makes a helper's worktree
-with `git worktree add` as its first turn starts, and two of those in one
-repository at once failed with "unable to stat just-written file". A spawn
-with `worktree: true` holds its repository's queue (`worktree_queue`, keyed by
-the common git folder, `worktree::repository_key`) from starting the turn
-until the CLI has said where its worktree is, the turn has ended without one,
-or `WORKTREE_WAIT` is up.
-
-**Looking into a helper's worktree.** `luna_session_get` on a helper in a
-worktree adds `lastCommit` (its subject) and `status` (`git status
---porcelain`, the same lines as `--short`, at most 20, `statusMore` the rest;
-`worktree::work_in`): a parent whose CLI keeps it out of other worktrees can
-see uncommitted work all the same.
 
 `account` may be a list of one provider's accounts: the first signed in with
 every window under 95%, else the one with most room; `accountChoice` says why.
@@ -519,8 +506,7 @@ person's. `send` into a session on a blocking dialog refuses.
   that exits first is announced as such (`Owed::lost`).
 - The page sends chat names (and window groups) as `chat_names` on every change,
   for `luna_session_list`.
-- `list` adds per helper: `task`, `branch` and `sha` (`worktree::head_at`, off
-  the `.git` files), `Signs` (turn start, last activity, model, `context` via
+- `list` adds per helper: `task`, `Signs` (turn start, last activity, model, `context` via
   `Context::of`), `leftRunning`, `deletesInMin`, `settings`. Codex's model is
   the rollout's `turn_context` of a turn its model actually answered.
   `defaults` per account come from `claude::defaults::flags` /
@@ -770,22 +756,20 @@ none is `transcriptMissing`, not "no reply".
 
 `reap`, on every notifier pass, deletes a helper with no debt either way, no
 `wait` on it, no helper of its own, nothing left running that still holds the
-machine (`left_holds`), and no turn for 30 minutes, as `delete` would, without
-its worktree. Any `read` / `wait` / `send` restarts the clock (`deletesInMin`).
+machine (`left_holds`), and no turn for 30 minutes, as `delete` would. Any `read` / `wait` / `send` restarts the clock (`deletesInMin`).
 A helper an agent killed mid-turn is left alone. On by default.
 
 The person's Delete on a helper, or on a chat with its helpers ticked
 (`delete_by_user`), refuses one at work (a turn, an ask held, what its turns
-left running) unless told to stop it, and keeps a worktree with unsaved work
-(`worktree::unsaved_work`) unless told to drop it, saying so
-(`UserDeleted::worktree_kept`). The dialog asks the core what each has at stake
+left running) unless told to stop it. A worktree it ran in stays as it is.
+The dialog asks the core what each has at stake
 first (`at_stake`) and offers each as a box of its own. From a chat's dialog
 it names that chat (`of_chat`) and refuses a helper whose line hangs from
 another chat by then, asked under the delete's hold (`claim_delete`), which a
 move's `claim_move` waits on.
 
 Before any delete `remove` writes a `left` line to `agents.jsonl` (transcript
-path, worktree, last message, cut to 400 characters by `history`).
+path, last message, cut to 400 characters by `history`).
 
 ## Failure modes
 

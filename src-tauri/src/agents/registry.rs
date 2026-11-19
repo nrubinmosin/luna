@@ -80,19 +80,9 @@ pub(super) struct Registry {
     /// put text in before that owes nothing of the person's chat after it
     /// (owed.rs `owe_from_at`).
     pub(super) handovers: HashMap<String, u64>,
-    /// A Codex helper to make a worktree of its own, by id, until its CLI has said
-    /// where: the worktrees there were as it was spawned. Codex takes no name, so one
-    /// new since is all that tells what a core may have cut it off making.
-    pub(super) worktrees_before: HashMap<String, Vec<String>>,
-    /// What a helper began and is not going on in, by id, until its parent has heard
-    /// (`worktrees_left_line`).
-    pub(super) worktrees_left: HashMap<String, Vec<String>>,
     /// Past which turn count a helper's answer to a caller's text lies, the text
     /// having missed the turn it joined (`retried`): above any count the caller holds.
     pub(super) delivery_floors: HashMap<(String, String), u32>,
-    /// Helpers that run in a worktree they were handed rather than made:
-    /// deleting one never drops that worktree, whose work is its caller's.
-    pub(super) borrowed: std::collections::HashSet<String>,
     /// The `turnsEnded` each caller was last shown for each session, by
     /// (caller, session). `wait(turn_done)` without `afterTurn` waits for a
     /// turn past that — the one the caller has not seen — rather than past
@@ -177,7 +167,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
         Mutex::new(Registry {
             tokens: HashMap::new(),
             known: HashMap::new(),
-            borrowed: Default::default(),
             // Above any request a core gone since may have left on disk.
             next_request: now_ms(),
             spawns: HashMap::new(),
@@ -187,8 +176,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             suggested: HashMap::new(),
             parent_changes: 0,
             handovers: HashMap::new(),
-            worktrees_before: HashMap::new(),
-            worktrees_left: HashMap::new(),
             delivery_floors: HashMap::new(),
             seen: HashMap::new(),
             names: HashMap::new(),

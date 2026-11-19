@@ -3,6 +3,18 @@
 use super::tools::tools;
 use serde_json::Value;
 
+/// What a caller that still passes an argument of the worktrees Luna used to manage is to do
+/// instead.
+fn worktree_instead(key: &str) -> Option<&'static str> {
+    match key {
+        "worktree" => {
+            Some("for isolation create one yourself with `git worktree add`, pass it as `folder`, and remove it when you are done")
+        }
+        "dropWorktree" => Some("one you made for a helper is yours to remove, with `git worktree remove`, once its work is merged or kept"),
+        _ => None,
+    }
+}
+
 /// A call's arguments held to its tool's schema (`tools`) before anything runs:
 /// an object, of keys the tool has, each of the type it says (an `integer` a
 /// whole number from 0, an `enum` one of its values), the `required` ones
@@ -26,6 +38,10 @@ pub(super) fn arguments_fit(name: &str, a: &Value) -> Result<(), String> {
     let known: Vec<&str> = props.keys().map(String::as_str).collect();
     for (key, v) in given.iter().filter(|(_, v)| !v.is_null()) {
         let Some(spec) = props.get(key) else {
+            // Luna made and removed worktrees for a helper before 0.20: say what to do now.
+            if let Some(instead) = worktree_instead(key) {
+                return Err(format!("{name} has no argument `{key}`: Luna does not create or remove worktrees; {instead}"));
+            }
             // `read_only`, `ReadOnly`, `read-only`: the one meant, by its spelling.
             let loose = |k: &str| k.replace(['_', '-'], "").to_lowercase();
             let meant = known.iter().find(|k| loose(k) == loose(key)).map(|k| format!(" (did you mean `{k}`?)")).unwrap_or_default();

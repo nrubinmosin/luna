@@ -21,8 +21,6 @@ export interface ProviderUi {
   worktreeRe: RegExp;
   /** The project a session's worktree cwd belongs to, where the path says. */
   projectOf: (cwd: string) => string | null;
-  /** The throwaway branch a worktree is made on; null for a detached one. */
-  branchPrefix: string | null;
   /** The key the CLI takes an image from the clipboard on, as it reaches a pty. */
   pasteImageKey: string;
 }

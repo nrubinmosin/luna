@@ -1,17 +1,12 @@
 //! A spawn as a background helper: the `Spec` background.rs runs it from, and
 //! the call that waits for its first turn.
 
-use crate::agents::delivery::POLL;
 use crate::agents::owed::{owe_asked, shown, Asked};
 use crate::agents::registry::{chat_name, depth_of, issue_token, ownership_steady, reg, register, set_name};
-use crate::agents::spawn::worktree::{helper_worktree_name, neighbors_in, worktree_of, worktree_queue, Worktree};
+use crate::agents::spawn::folder::neighbors_in;
 use crate::agents::spawn::{spawn_is, spawnable_at, SpawnParams, Spawned};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
-
-/// How long a background spawn in a worktree of its own waits for the CLI
-/// to say where it made it.
-const WORKTREE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The levels a Claude model the account's list does not know may be asked
 /// at. `ultracode` is Claude Code's standing orchestration, which it runs at
@@ -88,7 +83,6 @@ fn claude_model_and_effort(
 /// The settings a helper runs with: what the request asks for over the
 /// account's defaults, refused in the words the new-chat dialog would use.
 fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str, folder: &str) -> Result<crate::background::Spec, String> {
-    let worktree = params.worktree.unwrap_or(false);
     let tools = params.tools.unwrap_or(false);
     match provider {
         Provider::Claude => {
@@ -113,8 +107,6 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 provider,
                 account_path: account_path.to_string(),
                 folder: folder.to_string(),
-                worktree,
-                worktree_name: None,
                 model,
                 effort,
                 mode,
@@ -180,8 +172,6 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 provider,
                 account_path: account_path.to_string(),
                 folder: folder.to_string(),
-                worktree,
-                worktree_name: None,
                 model,
                 effort,
                 mode: sandbox,
@@ -201,8 +191,8 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
 /// The helper a spawn makes, registered under `caller` once the hold on whose
 /// the helpers are (`ownership_steady`) is taken; returned with its token for
 /// the spawn to keep until its caller is owed its answer. How deep it would
-/// sit is asked again under that hold: `spawn_with` asked before the worktree
-/// queue and the folders and logins it reads, and the person may have moved
+/// sit is asked again under that hold: `spawn_with` asked before the folders
+/// and logins it reads, and the person may have moved
 /// the caller's line under a chat since. A spawn made now could not put it
 /// there (`spawnable_at`, which a move holds to as well): it is refused, not
 /// registered.
@@ -242,17 +232,15 @@ pub(in crate::agents) fn spawn_background(
 ) -> Result<Spawned, String> {
     let provider = if params.provider.as_deref() == Some("codex") { Provider::Codex } else { Provider::Claude };
     let project = params.folder.clone().unwrap_or_default();
-    let own_worktree = params.worktree.unwrap_or(false);
-    // A helper handed its caller's worktree works in it and never owns it.
+    // A helper handed its caller's worktree works in it.
     let run_in = in_worktree.clone().unwrap_or_else(|| project.clone());
     let mut spec = background_spec(&params, provider, &account_path, &run_in)?;
     spec.parent = Some(caller.to_string());
     let id = crate::background::mint_id();
-    spec.worktree_name = (own_worktree && provider == Provider::Claude).then(|| helper_worktree_name(&id));
     let mut settings = match provider {
         Provider::Claude => crate::claude::launch::with_role(
             serde_json::json!({
-                "model": spec.model, "effort": spec.effort, "permissionMode": spec.mode, "worktree": own_worktree, "background": true,
+                "model": spec.model, "effort": spec.effort, "permissionMode": spec.mode, "background": true,
             }),
             spec.read_only,
             spec.agent.as_deref(),
@@ -287,13 +275,6 @@ pub(in crate::agents) fn spawn_background(
     spec.constraints = constraints;
     let tools = spec.tools;
     let auto_delete = params.auto_delete.unwrap_or(true);
-    // Its CLI makes its worktree as its first turn starts: one at a time per
-    // repository (`worktree_queue`), held until it has said where, its turn
-    // has ended without, or WORKTREE_WAIT is up. Waited for here, before the
-    // hold below: a wait under that hold would hold up every write into a
-    // helper behind a move waiting on it.
-    let queue = own_worktree.then(|| worktree_queue(&project));
-    let making = queue.as_ref().map(|q| q.lock().unwrap_or_else(|e| e.into_inner()));
     // Whose it is stays as registered, from here until its caller is owed its
     // answer: the person's move of it (or of the helper spawning it) to
     // another chat waits, and never leaves its CLI started under the old
@@ -312,9 +293,6 @@ pub(in crate::agents) fn spawn_background(
     set_name(&id, &name);
     {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        if in_worktree.is_some() {
-            r.borrowed.insert(id.clone());
-        }
         // Nobody sees it to delete it: it goes once its answer is out,
         // unless its caller means to delete it itself.
         if auto_delete {
@@ -334,7 +312,6 @@ pub(in crate::agents) fn spawn_background(
         parent: caller,
         parent_name: chat_name(caller),
         folder: &project,
-        worktree: own_worktree,
         provider: provider.as_str(),
         account: params.account_name().unwrap_or(""),
         settings: &settings,
@@ -343,28 +320,11 @@ pub(in crate::agents) fn spawn_background(
         auto_delete,
         background: true,
     });
-    let same_folder = if own_worktree { Vec::new() } else { neighbors_in(&run_in, caller, &[caller, &id]) };
+    let same_folder = neighbors_in(&run_in, caller, &[caller, &id]);
     shown(caller, &id, 0);
     owe_asked(caller, &id, 0, 0, &Asked { text: &params.prompt, key: params.request_key.as_deref(), reply: true });
     drop(steady);
-    // The CLI makes its worktree as the first turn starts: worth a few
-    // seconds, so the caller need not go looking for it.
-    let pty = crate::pty::manager();
-    let mut worktree = Worktree::default();
-    if own_worktree {
-        let deadline = std::time::Instant::now() + WORKTREE_WAIT;
-        loop {
-            worktree = worktree_of(pty, &id);
-            let ended = crate::activity::turn_state(&id).is_some_and(|t| t.turns_ended > 0);
-            if worktree.path.is_some() || ended || std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(POLL);
-        }
-    }
-    drop(making);
-    let worktree_pending = own_worktree && worktree.path.is_none();
-    Ok(Spawned { id, turns_ended: 0, settings, same_folder, worktree, worktree_pending, account_choice: None, places: Default::default() })
+    Ok(Spawned { id, turns_ended: 0, settings, same_folder, account_choice: None, places: Default::default() })
 }
 
 #[cfg(test)]

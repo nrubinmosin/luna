@@ -10,6 +10,7 @@ mod asking;
 mod background;
 mod backlog;
 mod boundary;
+mod checkout;
 mod claude;
 mod cli;
 mod codex;
@@ -51,7 +52,6 @@ mod stamped;
 mod sysmenu;
 mod throttle;
 mod watchdog;
-mod worktree;
 
 /// The transcript readers as pure functions of a file's bytes, for the fuzz
 /// targets in fuzz/: the one way into the crate from outside it.
@@ -244,11 +244,8 @@ macro_rules! app_handler {
             settings::get_accounts_root,
             settings::set_accounts_root,
             watchdog::ui_heartbeat,
-            worktree::fetch_before_worktree,
-            worktree::set_fetch_before_worktree,
             asking::waiting_marker,
             asking::set_waiting_marker,
-            worktree::inspect_worktrees,
         ]
     };
 }

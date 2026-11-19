@@ -24,8 +24,8 @@ the CLIs' own files.
   CLI's registry, transcript or rollout (`claude/session/`, `codex/session/`).
 - An account is a folder (`accounts.rs`): no database, and chats remember
   provider and account name, so moving the accounts root needs no migration.
-- Worktrees are made by each CLI's own `--worktree`; Luna only finds them again
-  ([worktrees](../architecture/worktrees.md)).
+- Worktrees are made by each CLI's own `--worktree`; Luna reads where a session works
+  (Luna makes, inspects and removes none: [ADR-0030](0030-scope-of-0-20.md)).
 - Resuming a chat is the CLI's `--resume` / `resume`, after a core restart or an
   app update alike.
 

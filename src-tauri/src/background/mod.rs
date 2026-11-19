@@ -75,18 +75,12 @@ const DRAINED_KEPT: usize = 16;
 
 struct Entry {
     spec: Spec,
-    /// What it holds against a worktree's removal (`worktree::Hold`),
-    /// resolved as it started, or as this core took it up (`hold_of`): where
-    /// the folder it was sent to led then, whatever becomes of the spelling
-    /// it was sent by, and, sent into a new worktree, where its CLI makes
-    /// them. Not saved: a new core resolves it again.
-    hold: std::sync::Arc<crate::worktree::Hold>,
     /// When it was spawned.
     started_ms: u64,
     /// Claude Code's session id / Codex's thread id, once the first turn has
     /// said it.
     session: Option<String>,
-    /// Where the CLI says it works: the worktree it made, if it made one.
+    /// Where the CLI says it works: the worktree it went into, if it did.
     cwd: Option<String>,
     run: Option<Run>,
     turns_ended: u32,
@@ -176,7 +170,7 @@ struct Entry {
     promoting_since: u64,
     /// A delete is under way (`claim_delete`), until it has removed the helper or
     /// been refused: no turn starts, and it is not opened as a chat, meanwhile, so
-    /// what the delete went by (whose it is, that it is idle, its worktree) still
+    /// what the delete went by (whose it is, that it is idle) still
     /// holds when it removes it. Text sent queues, and goes with it.
     deleting: bool,
     /// The person is moving it, with the helpers under it, to another chat
@@ -333,79 +327,6 @@ fn keeps_core(e: &Entry, now: u64) -> bool {
 /// turn starts there.
 pub fn uses_account(account_path: &str) -> bool {
     lock().entries.values().any(|e| crate::pty::same_dir(&e.spec.account_path, account_path))
-}
-
-/// What a helper of `spec` holds against a worktree's removal, resolved now,
-/// as it starts or a core takes it up (`Entry::hold`).
-pub(super) fn hold_of(spec: &Spec) -> std::sync::Arc<crate::worktree::Hold> {
-    let making = spec.worktree.then(|| crate::worktree::Unplaced {
-        provider: spec.provider,
-        folder: spec.folder.clone(),
-        account_path: spec.account_path.clone(),
-    });
-    std::sync::Arc::new(crate::worktree::Hold::start(&[spec.folder.as_str()], making.as_ref()))
-}
-
-/// One helper as `holds` reads it under the registry's lock: its hold, the
-/// folder it was sent to, where its CLI said it works, whether it is in a
-/// turn sent into a new worktree, and what finds a Codex turn's rollout.
-type HelperHold = (std::sync::Arc<crate::worktree::Hold>, String, Option<String>, bool, Provider, String, Option<String>);
-
-/// What the helpers other than `except` hold against a worktree's removal,
-/// between turns too: each one's hold, resolved as it started (`hold_of`),
-/// the folder it was sent to as it leads now as well, and the worktree it
-/// made once its CLI has said where, under a place it started in by that
-/// place's spelling as that place led then (`Hold::add_at`). One sent into a
-/// new worktree whose turn is running and has not said where it works yet
-/// may be making one where its CLI makes them (`worktree::Unplaced`): Claude
-/// Code says where as the turn starts, Codex only in its rollout, read here
-/// off the registry, once for both.
-pub fn holds(except: Option<&str>) -> crate::worktree::Hold {
-    let found: Vec<HelperHold> = lock()
-        .entries
-        .iter()
-        .filter(|(id, _)| Some(id.as_str()) != except)
-        .map(|(_, e)| {
-            let making = e.spec.worktree && e.run.is_some();
-            let (folder, cwd) = (e.spec.folder.clone(), e.cwd.clone());
-            (std::sync::Arc::clone(&e.hold), folder, cwd, making, e.spec.provider, e.spec.account_path.clone(), e.session.clone())
-        })
-        .collect();
-    let mut held = crate::worktree::Hold::default();
-    for (hold, folder, cwd, making, provider, account, session) in found {
-        let cwd = cwd.or_else(|| match provider {
-            Provider::Codex => crate::codex::session::thread_cwd(&account, session.as_deref()?),
-            Provider::Claude => None,
-        });
-        held.add(&hold, making && cwd.is_none());
-        held.add_path(&folder);
-        if let Some(cwd) = cwd {
-            held.add_at(&hold, &cwd);
-        }
-    }
-    held
-}
-
-/// Every folder the helpers other than `except` work in, between turns too:
-/// the one each was sent to, and the worktree it made once the CLI has said
-/// where — Codex says it only in its rollout, read here off the registry.
-pub fn working_dirs(except: Option<&str>) -> Vec<String> {
-    let found: Vec<(String, Option<String>, Provider, String, Option<String>)> = lock()
-        .entries
-        .iter()
-        .filter(|(id, _)| Some(id.as_str()) != except)
-        .map(|(_, e)| (e.spec.folder.clone(), e.cwd.clone(), e.spec.provider, e.spec.account_path.clone(), e.session.clone()))
-        .collect();
-    found
-        .into_iter()
-        .flat_map(|(folder, cwd, provider, account, session)| {
-            let cwd = cwd.or_else(|| match provider {
-                Provider::Codex => crate::codex::session::thread_cwd(&account, session.as_deref()?),
-                Provider::Claude => None,
-            });
-            [Some(folder), cwd].into_iter().flatten()
-        })
-        .collect()
 }
 
 /// The core is leaving: every turn in progress is stopped with its process
@@ -636,64 +557,6 @@ mod tests {
             assert!(!between_turns([&left, &turn].into_iter()), "{provider:?}");
             assert!(!between_turns([&both].into_iter()), "{provider:?}");
         }
-    }
-
-    /// A helper sent into a new worktree keeps where its CLI makes them for
-    /// its folder from the sweep while its turn runs with nowhere said yet;
-    /// not once it has said where it works, not between turns, and not one
-    /// sent to its folder as it is.
-    #[test]
-    fn a_helper_making_a_worktree_is_waited_for_while_its_turn_runs_unplaced() {
-        use crate::worktree::{Look, Place, Target};
-        let since = crate::throttle::now_ms() - 60_000;
-        let cases = [
-            ("up-claude", Provider::Claude, true, false, true, true),
-            ("up-codex", Provider::Codex, true, false, true, true),
-            ("up-placed", Provider::Claude, true, true, true, false),
-            ("up-between", Provider::Codex, true, false, false, false),
-            ("up-plain", Provider::Claude, false, false, true, false),
-        ];
-        for (id, provider, worktree, placed, running, waited) in cases {
-            let folder = format!(r"C:\unplaced-helpers\{id}");
-            let mut e = entry(provider);
-            let cwd = placed.then(|| format!(r"{folder}\.claude\worktrees\w"));
-            (e.spec.folder, e.spec.worktree, e.cwd) = (folder.clone(), worktree, cwd);
-            e.run = running.then(|| Run::claimed(None, since));
-            e.hold = hold_of(&e.spec);
-            // Where each CLI makes them: under the folder, or in a bucket of
-            // the account's (`entry`'s).
-            let made = match provider {
-                Provider::Claude => std::path::Path::new(&folder).join(".claude").join("worktrees").join("picked"),
-                Provider::Codex => std::path::Path::new(r"C:\acc").join("worktrees").join("b1c2").join("repo"),
-            };
-            let made = made.to_string_lossy().into_owned();
-            lock().entries.insert(id.into(), e);
-            let kept = holds(None).keeps(&Target::of(&made, Some(Place::of(&folder))), Look::Sweep);
-            lock().entries.remove(id);
-            assert_eq!(kept, waited, "{id}");
-        }
-    }
-
-    /// A helper sent through a link to its project keeps the worktree it was
-    /// sent to where the link led as it started, the link gone since: a
-    /// delete by the real path finds it there.
-    #[test]
-    fn a_helper_sent_through_a_link_since_gone_keeps_its_worktree() {
-        let root = std::env::temp_dir().join(format!("luna-helper-unlinked-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
-        let wt = root.join("real").join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        crate::worktree::link_dir(&root.join("link"), &root.join("real"));
-        let mut e = entry(Provider::Claude);
-        e.spec.folder = s(&root.join("link").join("wt"));
-        e.hold = hold_of(&e.spec);
-        lock().entries.insert("hl-unlinked".into(), e);
-        crate::worktree::unlink_dir(&root.join("link"));
-        let shared = crate::pty::manager().worktree_shared("hl-other", &s(&wt));
-        lock().entries.remove("hl-unlinked");
-        assert!(shared, "kept for the helper sent to it through the link");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

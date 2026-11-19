@@ -154,6 +154,31 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   data folder) are removed once, at the first save of 0.19's ledger. An
   account's own instructions where none of the library's go can still be
   taken into the library.
+- Worktree management ([ADR-0030](docs/adr/0030-scope-of-0-20.md)): Luna
+  creates, inspects and removes no worktree. Gone are the Worktrees window on
+  the title bar and its sweep of worktrees no chat uses, the delete dialog's
+  box that took a chat's worktree and its branch with it and its second box for
+  a helper's unsaved work, the status bar's **worktree kept**, Settings →
+  Chats → Worktrees (fetch origin before Claude Code makes a worktree, delete
+  worktrees by default: Luna fetches nothing now), a helper's worktree (the
+  `worktree` argument of `luna_session_spawn`, `worktreePending`, the queue that
+  made helpers' worktrees one at a time, the `worktreeLeft` notices), the
+  `dropWorktree` and `force` arguments of `luna_session_delete`, and the
+  `worktree`, `branch`, `sha`, `lastCommit` and `status` fields of
+  `luna_session_list` and `luna_session_get`. A call that
+  still passes `worktree` to `luna_session_spawn`, or `dropWorktree` to
+  `luna_session_delete`, is refused, saying that Luna does not create or remove
+  worktrees: create one yourself with `git worktree add`, pass it as `folder`
+  and remove it when you are done.
+  A chat's **Git worktree** box stays, now only for a folder in a git
+  repository: it passes `--worktree` to Claude Code or Codex, which make the
+  worktree, and Luna does not remove it, with its chat or otherwise. Worktrees
+  0.19 made stay on disk as they are, yours now: list them with `git worktree
+  list` and remove what you do not need with `git worktree remove`. Settings,
+  chats and helpers saved by 0.19 still load: the worktree fields in them are
+  passed over. `luna_guide_get` now also says that implementers and reviewers that must
+  outlive a turn are Luna helpers, never a CLI's own background subagents,
+  which end with the caller's turn process.
 
 ### Fixed
 

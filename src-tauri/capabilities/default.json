@@ -86,10 +86,7 @@
     "allow-get-accounts-root",
     "allow-set-accounts-root",
     "allow-ui-heartbeat",
-    "allow-fetch-before-worktree",
-    "allow-set-fetch-before-worktree",
     "allow-waiting-marker",
-    "allow-set-waiting-marker",
-    "allow-inspect-worktrees"
+    "allow-set-waiting-marker"
   ]
 }

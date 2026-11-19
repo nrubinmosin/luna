@@ -9,7 +9,6 @@ use crate::agents::notifier::{left_holds, left_quiet};
 use crate::agents::read::{transcript_path, transcripts};
 use crate::agents::registry::{authorize, descendants, label, named, ownership_steady, persons_chat_in, reg, top_of, Known, Registry};
 use crate::agents::said::replies_since;
-use crate::agents::spawn::worktree::worktree_of;
 use crate::throttle::now_ms;
 use serde::Serialize;
 
@@ -38,8 +37,8 @@ pub(super) struct Auto {
 }
 
 /// What a helper has at stake in a delete, as the person's Delete dialog lists it:
-/// whether it is at work, and the worktree that would go with it and the work in
-/// that. Neither goes by a parent's checkbox alone (`delete_by_user`).
+/// whether it is at work, which a parent's checkbox alone does not stop
+/// (`delete_by_user`).
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AtStake {
@@ -48,12 +47,6 @@ pub struct AtStake {
     /// waits on, what its turns left running.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working: Option<String>,
-    /// The worktree it made, which a delete that drops worktrees takes with it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<String>,
-    /// What in that worktree is not saved anywhere else.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub unsaved: Option<String>,
 }
 
 /// What a helper is doing that a delete would cut off, if anything.
@@ -67,53 +60,22 @@ fn at_work(id: &str) -> Option<String> {
     }
 }
 
-/// `AtStake` of each helper named, for the Delete dialog: looked at on demand, as
-/// the worktree's state takes git to read.
+/// `AtStake` of each helper named, for the Delete dialog: looked at on demand.
 pub fn at_stake(ids: &[String]) -> Vec<AtStake> {
-    ids.iter()
-        .filter(|id| crate::background::has(id))
-        .map(|id| {
-            let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).map(|k| k.folder.clone()).unwrap_or_default();
-            let folder = crate::worktree::project_of(&folder).unwrap_or(folder);
-            let worktree = worktree_to_drop(id);
-            let unsaved = worktree.as_deref().and_then(|wt| crate::worktree::unsaved_work(&folder, wt));
-            AtStake { id: id.clone(), working: at_work(id), worktree, unsaved }
-        })
-        .collect()
+    ids.iter().filter(|id| crate::background::has(id)).map(|id| AtStake { id: id.clone(), working: at_work(id) }).collect()
 }
 
-/// What the person's Delete did beyond deleting the helper.
-#[derive(Serialize, Debug, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct UserDeleted {
-    /// The worktree kept, with what in it is unsaved, though the delete said to
-    /// drop worktrees: that takes its own yes (`drop_unsaved`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_kept: Option<String>,
-    /// A worktree that would not go.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_error: Option<String>,
-}
-
-/// The window's Delete on a background helper: as its agent would, the worktree
-/// it made going too, unless it was handed one or the person said to keep it.
-/// A helper at work is refused unless `stop_working` says to stop it, and a
-/// worktree holding unsaved work is kept unless `drop_unsaved` says to drop it:
-/// each is its own yes, which a parent chat's checkbox is not. Held from the first
-/// look to the removal (`claim_delete`): no turn starts in between, so one found idle
-/// is idle when it goes, and the person's opening it as a chat waits.
+/// The window's Delete on a background helper. A helper at work is refused
+/// unless `stop_working` says to stop it: its own yes, which a parent chat's
+/// checkbox is not. Held from the first look to the removal (`claim_delete`): no
+/// turn starts in between, so one found idle is idle when it goes, and the
+/// person's opening it as a chat waits.
 ///
 /// `of_chat`: the chat whose Delete dialog listed it. Refused if its line hangs
 /// from another chat by now (moved there from another window meanwhile); one
 /// that hangs from none still goes, as that chat's own going leaves its helpers
 /// so and may come first. Asked under the hold, which a move waits on too.
-pub fn delete_by_user(
-    id: &str,
-    drop_worktree: bool,
-    stop_working: bool,
-    drop_unsaved: bool,
-    of_chat: Option<&str>,
-) -> Result<UserDeleted, String> {
+pub fn delete_by_user(id: &str, stop_working: bool, of_chat: Option<&str>) -> Result<(), String> {
     let claim = crate::background::claim_delete(id)?;
     if !claim.held() {
         return Err("no such helper".into());
@@ -138,18 +100,8 @@ pub fn delete_by_user(
             return Err(format!("{} is still working ({what}); not deleted", label(id)));
         }
     }
-    let folder = crate::worktree::project_of(&known.folder).unwrap_or_else(|| known.folder.clone());
-    let mut kept = None;
-    if drop_worktree && !drop_unsaved {
-        if let Some(wt) = worktree_to_drop(id) {
-            // Stopped first (idle, or told to stop it) and looked at after, as an
-            // agent's delete does: what a turn writes meanwhile counts too.
-            crate::background::stop_for_good(id);
-            kept = crate::worktree::unsaved_work(&folder, &wt).map(|work| format!("{wt} ({work})"));
-        }
-    }
-    let removed = remove(id, known, drop_worktree && kept.is_none(), None, &claim)?;
-    Ok(UserDeleted { worktree_kept: kept, worktree_error: removed.worktree_error })
+    remove(id, known, &claim)?;
+    Ok(())
 }
 
 /// What `kill` did beyond stopping a turn.
@@ -188,104 +140,31 @@ pub fn kill(caller: &str, id: &str) -> Result<Killed, String> {
     Ok(Killed { ok: true, ended })
 }
 
-/// Stops the helper, removes it and — when asked — the worktree it made (never
-/// one it was handed). Returns the worktree removed, if any. Its own helpers go
-/// on, passed up to its parent (see `forget`).
-///
-/// A person's Delete has its dialog to warn of the work in a worktree; an
-/// agent's refuses while there is any, unless `force`. Nothing has been touched
-/// by the time it does, the helper still running if it was.
+/// Stops the helper and removes it. Its own helpers go on, passed up to its
+/// parent (see `forget`). A worktree it worked in is left as it is: Luna made
+/// none and removes none.
 ///
 /// Held from the first look to the removal (`claim_delete`), and whose it is asked
 /// again under that hold: a person's opening it as a chat either finished before
 /// (it is theirs, and refused) or waits until this is through, never lands between
 /// what this went by and what it removes.
-pub fn delete(caller: &str, id: &str, drop_worktree: bool, force: bool) -> Result<Removed, String> {
+pub fn delete(caller: &str, id: &str) -> Result<Removed, String> {
     authorize(caller, id)?;
     let claim = crate::background::claim_delete(id)?;
     let known = authorize(caller, id)?;
-    if drop_worktree && !force {
-        let folder = crate::worktree::project_of(&known.folder).unwrap_or_else(|| known.folder.clone());
-        if let Some(wt) = worktree_to_drop(id) {
-            if let Some(work) = crate::worktree::unsaved_work(&folder, &wt) {
-                return Err(format!(
-                    "not deleted: worktree {wt} holds {work}, which removing it would lose (files git ignores do not count, and would go too). \
-                     Save what matters (commit and merge, or copy it), or call luna_session_delete without dropWorktree to keep the worktree, \
-                     or with force: true to remove it anyway"
-                ));
-            }
-            // Clean as it stands; a helper still at it may yet change that. It
-            // is stopped first and looked at again.
-            crate::background::stop_for_good(id);
-            if let Some(work) = crate::worktree::unsaved_work(&folder, &wt) {
-                return remove(id, known, false, None, &claim)
-                    .map(|_| Removed::left(Some(wt), format!("kept: it came to hold {work} as the session was stopped")));
-            }
-            return remove(id, known, true, Some(wt), &claim);
-        }
-    }
-    remove(id, known, drop_worktree, None, &claim)
+    remove(id, known, &claim)
 }
 
-/// The worktree `remove` would take with the helper, as it would judge it: one
-/// it made, that it was not handed and no other session is in.
-fn worktree_to_drop(id: &str) -> Option<String> {
-    if reg().lock().unwrap_or_else(|e| e.into_inner()).borrowed.contains(id) {
-        return None;
-    }
-    let wt = crate::background::removable_worktree(id)?;
-    (!crate::pty::manager().worktree_shared(id, &wt)).then_some(wt)
-}
-
-/// What a delete did with the helper's worktree. The helper is gone either
-/// way: a worktree that would not go (a file held open) is named, for the
-/// caller to deal with, not an error that a retry could only answer with "not
-/// one you spawned".
+/// What a delete answers: the helper is gone.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Removed {
     pub ok: bool,
-    pub worktree_removed: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_left: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_error: Option<String>,
-    /// What went with a worktree without counting as work, said when one goes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<&'static str>,
 }
 
-/// Files git ignores do not stop a delete: build output would stop every one.
-const IGNORED_GO: &str = "files git ignores went with it";
-
-/// Why a worktree asked to go with its helper stayed, where someone else is
-/// in it (`PtyManager::worktree_shared`) or on their way in.
-const WORKTREE_IN_USE: &str = "kept: another session is in it or on its way in";
-
-impl Removed {
-    /// `ignored`: whether the worktree held files git ignores, as looked at
-    /// before it went (`worktree::ignored_in`); not known, the note is said.
-    fn of(worktree_removed: Option<String>, ignored: Option<bool>) -> Removed {
-        let note = (worktree_removed.is_some() && ignored != Some(false)).then_some(IGNORED_GO);
-        Removed { ok: true, worktree_removed, worktree_left: None, worktree_error: None, note }
-    }
-
-    fn left(worktree: Option<String>, why: String) -> Removed {
-        crate::log::warn("delete", &format!("the session is gone, its worktree is not: {why}"));
-        Removed { ok: true, worktree_removed: None, worktree_left: worktree, worktree_error: Some(why), note: None }
-    }
-}
-
-/// `worktree`: the one to drop, where the helper may no longer say itself. Only
-/// under a delete's hold on it (`claim_delete`), and only while it is still a
-/// helper: never a chat the person took over, nor what is theirs in it.
-fn remove(
-    id: &str,
-    known: Known,
-    drop_worktree: bool,
-    worktree: Option<String>,
-    _held: &crate::background::DeleteClaim,
-) -> Result<Removed, String> {
+/// Only under a delete's hold on the helper (`claim_delete`), and only while it
+/// is still a helper: never a chat the person took over.
+fn remove(id: &str, known: Known, _held: &crate::background::DeleteClaim) -> Result<Removed, String> {
     if reg().lock().unwrap_or_else(|e| e.into_inner()).taken_over.contains_key(id) {
         return Err(format!("{id} is the person's own chat now, not a helper to delete"));
     }
@@ -293,48 +172,20 @@ fn remove(
     // What `luna_run_list` has left to go on once it is gone.
     let transcript = transcript_path(pty, id);
     let last = transcript.as_ref().and_then(|_| replies_since(pty, id, known.provider, 0, false).texts.pop());
-    crate::agentlog::left(
-        id,
-        transcript.map(|p| p.to_string_lossy().into_owned()).as_deref(),
-        worktree_of(pty, id).path.as_deref(),
-        last.as_deref(),
-    );
-    // A helper resumed in a worktree knows the worktree as its folder.
-    let folder = crate::worktree::project_of(&known.folder).unwrap_or(known.folder);
-    let drop_worktree = drop_worktree && !reg().lock().unwrap_or_else(|e| e.into_inner()).borrowed.contains(id);
+    crate::agentlog::left(id, transcript.map(|p| p.to_string_lossy().into_owned()).as_deref(), last.as_deref());
     let who = label(id);
-    let made = crate::background::remove(id).or(worktree);
+    crate::background::remove(id);
     forget(id);
     crate::activity::forget(id);
-    crate::log::info("delete", &format!("helper {who}, worktree {made:?}, dropping {drop_worktree}"));
-    Ok(match made {
-        // As for a chat (`PtyManager::delete`): a worktree another session or
-        // helper is in, or is on its way into, stays, its work with it; held
-        // from that look to the end of the removal (`worktree::removing`), so
-        // a start that comes meanwhile is refused.
-        Some(wt) if drop_worktree => {
-            let target = crate::worktree::Target::of(&wt, Some(crate::worktree::Place::of(&folder)));
-            match crate::worktree::removing(target, crate::worktree::Look::Delete, || pty.worktree_shared(id, &wt)) {
-                Some(_removing) => {
-                    let ignored = crate::worktree::ignored_in(&wt);
-                    match crate::worktree::remove_worktree_now(folder, wt.clone()) {
-                        Ok(()) => Removed::of(Some(wt), ignored),
-                        Err(why) => Removed::left(Some(wt), why),
-                    }
-                }
-                None => Removed::left(Some(wt), WORKTREE_IN_USE.to_string()),
-            }
-        }
-        _ => Removed::of(None, None),
-    })
+    crate::log::info("delete", &format!("helper {who}"));
+    Ok(Removed { ok: true })
 }
 
 /// Deletes the `autoDelete` helpers that are done with: nobody is owed their
 /// answer or waiting on them, nothing is owed to them, no helper of theirs is
 /// still there, and they have sat idle — or exited — for AUTO_DELETE_IDLE_MS
 /// since. Idle with processes left is idle once none of those holds the machine
-/// any more (`left_holds`); they go with it. Its worktree stays, with whatever
-/// work is in it.
+/// any more (`left_holds`); they go with it.
 pub(super) fn reap(pty: &crate::pty::PtyManager) {
     let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.keys().cloned().collect();
     reap_these(pty, ids);
@@ -396,7 +247,7 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
         } else {
             Vec::new()
         };
-        match known.map(|k| (k.parent.clone(), remove(&id, k, false, None, &claim))) {
+        match known.map(|k| (k.parent.clone(), remove(&id, k, &claim))) {
             Some((parent, Ok(_))) => {
                 crate::log::info("agents", &format!("auto-deleted helper {}", label(&id)));
                 if let Some((quiet, names)) = left {
@@ -495,9 +346,6 @@ pub fn forget(id: &str) {
     for asked in r.suggested.values_mut() {
         asked.retain(|s| s.chat != id);
     }
-    r.worktrees_before.remove(id);
-    r.worktrees_left.remove(id);
-    r.borrowed.remove(id);
     r.waits.retain(|(who, chat), _| who != id && chat != id);
     r.notified.remove(id);
     r.places_refused.remove(id);
@@ -770,45 +618,6 @@ mod tests {
         forget(parent);
     }
 
-    /// A helper's delete with its worktree keeps a worktree a start or helper
-    /// is on its way into, not yet listed where the sharing check looks; with
-    /// the start gone, the same delete goes on to the removal.
-    #[test]
-    fn a_helper_delete_keeps_a_worktree_a_start_is_entering() {
-        let wt = std::env::temp_dir().join(format!("luna-helper-wt-{}", std::process::id()));
-        std::fs::create_dir_all(&wt).unwrap();
-        let wt_path = wt.to_string_lossy().into_owned();
-        for (id, entering) in [("hw-kept", true), ("hw-gone", false)] {
-            register("hw-c", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
-            register(
-                id,
-                Provider::Claude,
-                "C:\\p",
-                "C:\\acc\\anthropic\\one",
-                Some("hw-c"),
-                false,
-                serde_json::json!({ "background": true }),
-            );
-            let start = entering.then(|| {
-                crate::worktree::entering(std::sync::Arc::new(crate::worktree::Hold::start(&[&format!("{wt_path}/src")], None))).unwrap()
-            });
-            let known = authorize("hw-c", id).unwrap();
-            let claim = crate::background::claim_delete(id).unwrap();
-            let removed = remove(id, known, true, Some(wt_path.clone()), &claim).unwrap();
-            if entering {
-                assert_eq!((removed.worktree_removed, removed.worktree_left), (None, Some(wt_path.clone())), "kept, said as kept");
-                assert_eq!(removed.worktree_error.as_deref(), Some(WORKTREE_IN_USE));
-                assert!(wt.exists());
-            } else {
-                // Not a worktree of any repository: the removal is tried, and refused.
-                assert!(removed.worktree_error.is_some_and(|e| e.contains("refusing")), "went on to the removal");
-            }
-            drop(start);
-            forget("hw-c");
-        }
-        let _ = std::fs::remove_dir_all(&wt);
-    }
-
     /// A helper the person is opening as a chat is theirs to be: its parent can
     /// neither stop nor delete it meanwhile.
     #[test]
@@ -820,7 +629,7 @@ mod tests {
             crate::background::idle_for_test("po-s", provider, 1, false);
             crate::background::promoting_for_test("po-s", true);
             assert!(kill("po-c", "po-s").err().unwrap().contains("the person is opening po-s"));
-            assert!(delete("po-c", "po-s", true, true).err().unwrap().contains("the person is opening po-s"));
+            assert!(delete("po-c", "po-s").err().unwrap().contains("the person is opening po-s"));
             assert!(crate::background::has("po-s"), "nothing was touched");
             crate::background::promoting_for_test("po-s", false);
             assert!(kill("po-c", "po-s").is_ok(), "not opened after all: its parent's again");
@@ -845,7 +654,7 @@ mod tests {
             assert!(claim.held());
             assert!(background_promote("dh-s".into()).err().unwrap().contains("being deleted"));
             assert!(claim_delete("dh-s").err().unwrap().contains("being deleted already"));
-            assert!(delete_by_user("dh-s", false, false, false, None).is_err(), "nor the person's at once");
+            assert!(delete_by_user("dh-s", false, None).is_err(), "nor the person's at once");
             // Text sent meanwhile waits: it found the helper idle, and idle it stays.
             assert_eq!(crate::background::send("dh-s", "one more", Some("dh-c")).unwrap(), Placed::Queued);
             assert_eq!(at_work("dh-s"), None);
@@ -855,8 +664,8 @@ mod tests {
             crate::background::idle_for_test("dh-s", provider, 1, false);
             crate::background::promoting_for_test("dh-s", true);
             assert!(claim_delete("dh-s").err().unwrap().contains("the person is opening dh-s"));
-            assert!(delete_by_user("dh-s", true, true, true, None).err().unwrap().contains("the person is opening dh-s"));
-            assert!(delete("dh-c", "dh-s", true, true).is_err());
+            assert!(delete_by_user("dh-s", true, None).err().unwrap().contains("the person is opening dh-s"));
+            assert!(delete("dh-c", "dh-s").is_err());
             assert!(crate::background::has("dh-s"), "nothing was touched");
 
             // Handed over all the same: never removed as a helper.
@@ -864,7 +673,7 @@ mod tests {
             crate::background::promoting_for_test("dh-s", false);
             let known = reg().lock().unwrap().known.get("dh-s").cloned().unwrap();
             let claim = claim_delete("dh-s").unwrap();
-            assert!(remove("dh-s", known, true, None, &claim).err().unwrap().contains("the person's own chat"));
+            assert!(remove("dh-s", known, &claim).err().unwrap().contains("the person's own chat"));
             assert!(reg().lock().unwrap().known.contains_key("dh-s"), "the chat is still there");
             crate::background::gone_for_test("dh-s");
             drop(claim);
@@ -874,8 +683,8 @@ mod tests {
         }
     }
 
-    /// The person's Delete never stops a helper at work, or drops a worktree that
-    /// holds unsaved work, on a parent chat's checkbox alone: each takes its own yes.
+    /// The person's Delete never stops a helper at work on a parent chat's
+    /// checkbox alone: that takes its own yes.
     #[test]
     fn the_persons_delete_spares_a_working_helper_unless_told() {
         for provider in [Provider::Claude, Provider::Codex] {
@@ -887,16 +696,16 @@ mod tests {
             let stake = at_stake(&["ud-s".to_string(), "ud-nobody".to_string()]);
             assert_eq!(stake.len(), 1, "only a helper there is");
             assert_eq!(stake[0].working.as_deref(), Some("in the middle of a turn"));
-            let e = delete_by_user("ud-s", true, false, false, Some("ud-c")).unwrap_err();
+            let e = delete_by_user("ud-s", false, Some("ud-c")).unwrap_err();
             assert!(e.contains("still working") && e.contains("not deleted"), "{e}");
             assert!(crate::background::has("ud-s"), "still there");
             // Waiting on a question and a job left running are at work too.
             crate::background::hold_for_test("ud-s");
             assert_eq!(at_stake(&["ud-s".to_string()])[0].working.as_deref(), Some("waits on a question or permission"));
             crate::background::idle_for_test("ud-s", provider, 1, true);
-            assert!(delete_by_user("ud-s", false, false, false, Some("ud-c")).unwrap_err().contains("left is still running"));
+            assert!(delete_by_user("ud-s", false, Some("ud-c")).unwrap_err().contains("left is still running"));
             // Told to stop it, it goes.
-            delete_by_user("ud-s", false, true, false, Some("ud-c")).unwrap();
+            delete_by_user("ud-s", true, Some("ud-c")).unwrap();
             assert!(!crate::background::has("ud-s") && !reg().lock().unwrap().known.contains_key("ud-s"));
             forget("ud-c");
         }

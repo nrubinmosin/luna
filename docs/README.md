@@ -11,7 +11,7 @@
 - [Skills and instructions](user-guide/library.md): the library, reaches,
   folders, copies that changed
 - [Sessions and cleanup](user-guide/sessions.md): the core, quitting, restarts,
-  orphans, worktrees, the log
+  orphans, the log
 - [Agents and MCP tools](user-guide/agents.md): helpers, talking to sessions,
   answers, notices, lifetime
 - [What Luna adds to a model's context](user-guide/context.md): every text Luna
@@ -33,7 +33,6 @@
 - [Accounts and account files](architecture/accounts.md): limits, OAuth, trust,
   shared settings, safe writes
 - [Library](architecture/library.md)
-- [Worktrees](architecture/worktrees.md)
 - [Power and lifecycle](architecture/power-and-lifecycle.md): busyness, jobs,
   keep-awake, core and window lifecycle, updates
 - [Frontend](architecture/frontend.md): layout, stores, IPC modules, styles
