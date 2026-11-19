@@ -81,7 +81,6 @@ pub mod cmd {
     pub const CLI_STATUS: &str = "cli_status";
     pub const CLI_VERSIONS: &str = "cli_versions";
     pub const CLI_UPDATE_NOW: &str = "cli_update_now";
-    pub const CLI_USE_VERSION: &str = "cli_use_version";
 
     pub const LIST_ACCOUNTS: &str = "list_accounts";
     pub const CREATE_ACCOUNT: &str = "create_account";
@@ -133,7 +132,6 @@ pub mod cmd {
         CLI_STATUS,
         CLI_VERSIONS,
         CLI_UPDATE_NOW,
-        CLI_USE_VERSION,
         LIST_ACCOUNTS,
         CREATE_ACCOUNT,
         RENAME_ACCOUNT,

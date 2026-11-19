@@ -164,12 +164,6 @@ pub struct CliVersions {
 }
 
 impl CliVersions {
-    /// The version to go back to: the one before, unless it is too old to
-    /// run or was turned away.
-    pub fn rollback(&self) -> Option<&VersionRow> {
-        self.versions.iter().find(|r| r.previous && !r.current && !r.below_min_safe && r.bad.is_none())
-    }
-
     pub fn current(&self) -> Option<&VersionRow> {
         self.versions.iter().find(|r| r.current)
     }
@@ -180,10 +174,8 @@ impl CliVersions {
 pub struct CliState {
     pub status: Option<CliStatus>,
     pub versions: Option<CliVersions>,
-    /// Why the last Check or Roll back failed.
+    /// Why the last Check failed.
     pub error: Option<String>,
-    /// A roll back under way.
-    pub rolling: bool,
 }
 
 /// Luna's own update, as the Updates page has it.
@@ -215,27 +207,5 @@ mod tests {
         assert!(s(json!({ "phase": "idle" })).starts_with("No working copy"));
         assert_eq!(s(json!({ "phase": "idle", "version": "1.0.0", "note": "held back" })), "held back");
         assert!(s(json!({ "phase": "idle", "version": "1.0.0", "checkedAtMs": 1_763_500_000_000u64 })).starts_with("Checked "));
-    }
-
-    #[test]
-    fn the_version_rolled_back_to_is_the_one_before_if_it_may_run() {
-        let v: CliVersions = serde_json::from_value(json!({ "versions": [
-            { "dir": "b", "version": "2.0.0", "current": true },
-            { "dir": "a", "version": "1.0.0", "previous": true },
-        ] }))
-        .unwrap();
-        assert_eq!(v.rollback().map(|r| r.dir.as_str()), Some("a"));
-        // The core's newer shape names the floor so.
-        let v: CliVersions = serde_json::from_value(json!({ "versions": [
-            { "dir": "b", "version": "2.0.0", "current": true },
-            { "dir": "a", "version": "1.0.0", "previous": true, "belowFloor": true },
-        ] }))
-        .unwrap();
-        assert_eq!(v.rollback(), None);
-        let v: CliVersions = serde_json::from_value(json!({ "versions": [
-            { "dir": "a", "version": "1.0.0", "previous": true, "bad": "rolled back: 2 of 2 failed" },
-        ] }))
-        .unwrap();
-        assert_eq!(v.rollback(), None);
     }
 }

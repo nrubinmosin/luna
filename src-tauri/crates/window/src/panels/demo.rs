@@ -114,7 +114,6 @@ pub fn answer_all(host: &FakeHost) {
         ], "canary": null }),
     );
     host.answer(cmd::CLI_UPDATE_NOW, Value::Null);
-    host.answer(cmd::CLI_USE_VERSION, Value::Null);
     host.answer(
         crate::desktop::cmd::UPDATE_CHECK,
         json!({ "current": "0.20.0", "offer": { "version": "0.20.1", "notes": "- The library's editor keeps its caret steady.\n- Settings say a CLI's check in words.", "pubDate": "2026-11-20", "coreFingerprint": null } }),

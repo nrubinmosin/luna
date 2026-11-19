@@ -236,28 +236,6 @@ impl SettingsPanel {
         cx.notify();
     }
 
-    /// Back to the version before, held there (cli.rs `use_version`): its
-    /// files checked again first, so it takes a moment.
-    pub fn roll_back(&mut self, p: Provider, dir: String, cx: &mut Context<Self>) {
-        let state = &mut self.clis[slot(p)];
-        state.error = None;
-        state.rolling = true;
-        let answer = self.models.host.call(cmd::CLI_USE_VERSION, json!({ "provider": p, "dir": dir }));
-        cx.spawn(async move |this, cx| {
-            let got = answer.await;
-            let _ = this.update(cx, |v, cx| {
-                v.clis[slot(p)].rolling = false;
-                if let Err(e) = got {
-                    v.clis[slot(p)].error = Some(e);
-                }
-                v.refresh_cli(p, cx);
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
     /// Check for Luna's own update.
     pub fn check_update(&mut self, cx: &mut Context<Self>) {
         self.update = UpdateState::Checking;
@@ -629,7 +607,7 @@ impl SettingsPanel {
                     &format!("settings-cli-check-{key}"),
                     p,
                     if passing { "Checking..." } else { "Check" },
-                    !passing && !state.rolling,
+                    !passing,
                     self.act(cx, move |v, _, cx| v.check_cli(provider, cx)),
                 ),
             ))
@@ -649,21 +627,6 @@ impl SettingsPanel {
         }
         for row in versions.versions.iter().filter(|r| r.bad.as_deref().is_some_and(|b| b.starts_with("rolled back"))) {
             group = group.child(ui::note(p, format!("Rolled back from {}: {}", row.version, row.bad.clone().unwrap_or_default())));
-        }
-        if let Some(back) = versions.rollback() {
-            let dir = back.dir.clone();
-            group = group.child(ui::row(
-                p,
-                format!("Roll back to {}", back.version),
-                Some("The version before, kept for this. Its files are checked again first; new sessions start on it.".into()),
-                ui::button(
-                    &format!("settings-cli-rollback-{key}"),
-                    p,
-                    if state.rolling { "Rolling back..." } else { "Roll back" },
-                    !passing && !state.rolling,
-                    self.act(cx, move |v, _, cx| v.roll_back(provider, dir.clone(), cx)),
-                ),
-            ));
         }
         let installed: Vec<String> = versions
             .versions

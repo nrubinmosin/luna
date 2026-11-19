@@ -427,7 +427,7 @@ fn helpers_above_their_caller_go_on_only_after_the_windows_yes(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn a_clis_check_and_roll_back_go_to_the_host_and_its_pass_is_followed(cx: &mut TestAppContext) {
+fn a_clis_check_goes_to_the_host_and_its_pass_is_followed(cx: &mut TestAppContext) {
     let mut f = open(cx);
     let s = f.settings();
     s.update(f.cx, |v, cx| v.check_cli(Provider::Codex, cx));
@@ -444,9 +444,6 @@ fn a_clis_check_and_roll_back_go_to_the_host_and_its_pass_is_followed(cx: &mut T
     f.cx.run_until_parked();
     assert_eq!(f.calls(cmd::CLI_VERSIONS).len(), versions + 1, "its versions read again once it is done");
 
-    s.update(f.cx, |v, cx| v.roll_back(Provider::Claude, "2.1.328".into(), cx));
-    f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::CLI_USE_VERSION), vec![json!({ "provider": "claude", "dir": "2.1.328" })]);
     // A failure is said under its CLI.
     f.host.fail(cmd::CLI_UPDATE_NOW, Some("offline"));
     s.update(f.cx, |v, cx| v.check_cli(Provider::Claude, cx));

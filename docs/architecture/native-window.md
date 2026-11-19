@@ -269,7 +269,7 @@ dispatch test as `cmd::ALL` is):
 | Module | Shows | Commands |
 | --- | --- | --- |
 | `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`, the page's ReachPicker), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*` |
-| `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, Roll back), Updates (Luna's, confirmed with its version and notes; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, `cli_use_version`, the updater's |
+| `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, what the automatic rollback turned away; no version is chosen here, ADR-0030), Updates (Luna's, confirmed with its version and notes; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, the updater's |
 | `accounts/` | each account with its CLI, plan and limits; add, rename, delete; the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `delete_account`, `account_limits`, `codex_limits`, the settings sync's |
 
 The host answers them in native/panels.rs over the Tauri commands' own
@@ -355,7 +355,7 @@ Restart asks the host for the state shown. `panels/tests.rs` holds each
 panel's controls to the commands and arguments the page sends (the editor's
 load, dirty state, check, save and failed save; new, rename and delete; reach,
 audience and each account's instructions; folders; system texts' compare,
-reset and adopt; every settings row; a CLI's Check, its pass and Roll back;
+reset and adopt; every settings row; a CLI's Check and its pass;
 an update installed only once confirmed; the accounts' add, rename, delete,
 limits and settings sync), Esc's order, and an editor left alone that neither
 notifies nor asks the host anything. desktop.rs's tests hold a

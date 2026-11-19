@@ -28,8 +28,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the library's entries, whom each is meant for and whose sessions it is
   for, folders and Luna's system texts, with gpui-component's editor
   (Markdown highlighted, a steady caret) for their files; Settings' sound,
-  accounts folder, new chats, helpers, trusted folders, the CLIs' version,
-  Check and Roll back, and Luna's update confirmed with its version and notes;
+  accounts folder, new chats, helpers, trusted folders, the CLIs' version
+  and Check, and Luna's update confirmed with its version and notes;
   the accounts with their limits, added, renamed, deleted, and the parent
   whose settings the others copy. A skill can now be renamed
   (`library_rename_skill`). The test build's `LUNA_TEST_DRIVE` file drives
@@ -105,6 +105,41 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   components and what they bring); the license texts their packages leave
   out are kept in `third-party-licenses/`, and the vendored GPUI platform
   crate's own are read from `src-tauri/vendor/`.
+
+- Each CLI is kept at its newest release, and rolls back on its own: when
+  two of a new version's first three sessions fail soon after starting, Luna
+  goes back to the version before (once its files match their checksums),
+  says so in a desktop notice and the log, and skips the failed version while
+  it is the newest release. A session that ended on a sign-in, a usage limit,
+  or the network or the provider's service failing (by the error the CLI ended
+  on) does not count, nor one that never started. A rollback Luna was closed
+  before it made is made at its next start. A
+  version whose answers fail the offline check is skipped the same way; one
+  the check could not read to its end (a scanner holding the fresh download)
+  is asked again at the next check. Each Luna release names the oldest
+  version of each CLI it runs (Claude Code 2.1.325, Codex 0.167.0), compiled
+  in; nothing on the machine raises it any more, and Luna never steps down
+  from the version it runs ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+- What Luna keeps of each CLI's versions is one file, `state.json` at its
+  root, every change of it written whole under a lock, so the window and the
+  core changing it at once never leave it half made, and a crash leaves the
+  old record or the new (on Windows a power cut may undo the latest change).
+  A record lost or damaged is rebuilt from the installed versions whose files
+  still match their checksums; the versions it had turned away are lost with
+  it. 0.19's files (`current`, `previous`, `recorded`, `bad.json`,
+  `canary.json` and their locks) are read in at the first check and removed.
+
+### Removed
+
+- The CLI channels (Known-good and Latest) and the known-good list
+  (`cli-known-good.json`), and the commands behind **Use**, **Mark bad**,
+  **Mark good**, **Clear bad**, **Unmark good**, **Roll back** and **Keep
+  it** in Settings → CLIs: until the new window comes, the old one still
+  shows those controls, and they only fail. What 0.19 kept for them at each
+  CLI's root (`channel`, `pinned`, `good.json`, `marks.lock`, `floor`,
+  `signed-floor`) is removed at the first check; its marks bad still hold
+  while the release channel names their version, and its watch over the
+  version you had (one you chose to keep) is not carried over.
 
 ## [0.19.0] - 2026-11-18
 

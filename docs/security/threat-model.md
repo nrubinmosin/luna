@@ -349,10 +349,9 @@ trusted for these downloads until the next start.
   signature or key expiration it gives is honored; an unknown critical one is
   refused. Unhashed subpackets and the digest's two-byte prefix are unsigned
   and skipped unread. The manifest must name the version it was fetched for,
-  and that version must not be below the floor (`cli.rs` `floor_in`: the
-  highest version that has been current, kept in `floor`, the older
-  `signed-floor` still counted, or the shipped list's `minSafe` on a fresh
-  tree). Then the exe's sha256 and size from that manifest.
+  and that version must not be below the floor (`cli.rs` `floor`, compiled
+  into the release per provider). Then the exe's sha256 and size from that
+  manifest.
 - Codex: the package tarball's sha256 from the release's
   `codex-package_SHA256SUMS`, the same origin as the tarball. Then two passes
   over it through a cap on the decompressed stream (`codex/cli.rs`,
@@ -363,17 +362,14 @@ trusted for these downloads until the next start.
   unpacks, budgeting each entry's size as the reader writes it, paths that
   climb out refused by `unpack_in`. Each unpacked file is then held to its
   size, and its sha256 as unpacked goes into the install record.
-- Both: which version is taken is the provider's channel
-  ([ADR-0019](../adr/0019-cli-channels-and-rollback.md)). On `known-good`, the
-  default, it is the newest version on the list compiled into the Luna
-  release (`src-tauri/cli-known-good.json`) or marked good by hand on this
-  machine ("Mark good", `cli_mark_good`: an installed version, off the list,
-  not below `minSafe`; `good.json`, read back held to the reading Luna's
-  `minSafe` and losing to a bad mark, `choice::good_in`); on `latest`, what the unsigned
-  pointer names, never below the floor (`cli.rs` `update_in`). Nothing below
-  `minSafe` is installed, made current, gone back to or started: a launch
-  refuses a current version below it, with no fall back to PATH, and the
-  pass lets no hold by hand keep it (`launch_in`, `choice::plan`). Before a
+- Both: the version taken is what the unsigned release pointer names
+  ([ADR-0030](../adr/0030-scope-of-0-20.md), `cli/choice.rs` `plan`), never
+  below the floor compiled into the Luna release (`cli.rs` `floor`, raised
+  only by a release), never older than the version current here (no step
+  down), never one turned away (rolled back from, or failed by the probe,
+  while the pointer names it). Nothing below the floor is installed, made
+  current, rolled back to or started: a launch refuses a current version
+  below it, with no fall back to PATH (`launch_in`). Before a
   version becomes current, the offline probe runs it (`cli/probe.rs`:
   `--version`, each command's `--help`, Codex's `features list` with Luna's
   overrides) in a scratch home under `staging/`, with the CLI's own variables
@@ -383,63 +379,80 @@ trusted for these downloads until the next start.
   stream, everything it started ended after (on Windows a kill-on-close Job
   Object of the probe's own, the CLI created suspended and never run outside
   it, every member terminated, windowed ones included; on Unix its own
-  process group); one that fails is
-  marked bad and swept. Going back to an installed version ("Use",
-  `cli_use_version`) holds every file to its recorded sha256 again; below the
-  floor every file must have one.
+  process group); one whose answers are wrong is turned away while the
+  pointer names it and swept, while one that could not be asked (not run,
+  out of time, output unread or past its cap) is not turned away, and is
+  asked again. The only way back to an older version is the canary's
+  rollback, in the core (`cli.rs` `roll_back_in`), to the folder the record
+  keeps to go back to, not below the floor, once every file matches the
+  sha256 its record kept (a record without one per file is refused).
 
 **The installation protocol** (`cli.rs`, `install_in`; detail in
 [providers.md](../architecture/providers.md#cli-binaries)): fetched into
 `<root>/staging/`, held to what the source vouched for (`validate`), every
-file and the completion record `luna-install.json` flushed to disk, renamed
-into `versions/` under a name no folder has, probed, `previous` written, the
-floor raised and the canary reset, and `current` flushed and renamed into
-place last; each pass first raises the floor to what is current. A
-version runs only with its record intact; once `recorded` is at the root, one
-without its record never runs. Cleanup and the sweep check every component
-below the CLI root for a link before deleting (`link_free_below`), and the
-sweep takes no folder a process of Luna's still holds (`cli/in_use.rs`: a
-shared lock per running process on `in-use/<dir>`, made private and never
+file and the completion record `luna-install.json` flushed to disk, held in
+use and renamed into `versions/` under a name no folder has, probed, then
+made current in one write of the tree's record, `<root>/state.json`
+(`cli/state.rs`), which holds what is current, the one to go back to, the
+versions turned away and the canary, every change of it one write (temp
+file, flush, rename over the old) under `state.lock`, by the window's pass
+and the core's canary and rollback alike. The rename replaces the file
+atomically where it is let happen; on Windows a program holding the file
+without delete sharing can refuse it (the change fails whole, and is made
+again), and Windows cannot flush the folder, so a power cut there may undo
+the latest change: no power-loss durability is claimed beyond "the old
+record or the new". An install found already in `versions/` is
+held to every recorded sha256 before it is taken up. A version runs only with
+its completion record intact; a folder without one is run only as the
+migration found it current in a tree from before records. Cleanup and the
+sweep check every component below the CLI root for a link before deleting
+(`link_free_below`), and the sweep takes no folder an in-use lock covers
+(`cli/in_use.rs`: a shared lock per running process, and per promotion from
+before its rename to its flip, on `in-use/<dir>`, made private and never
 through a link, and never removed, so a start waiting through a sweep holds
-the same file every later sweep locks). The state at the root (`channel`, `bad.json`, `good.json`,
-`pinned`, `canary.json`, `floor`) is written private like `current`, the two
-marks files under `marks.lock` together; a `bad.json` that does not parse
-marks nothing bad, which only lets the channel choose again, and a `good.json`
-that does not parse marks nothing good. A version marked good is a `chosen`
-one, as a listed one is: below the floor it is taken only while installed,
-never downloaded again.
+the same file every later sweep locks) nor one the record names when read
+afresh, under its lock, once the sweep holds the folder (a flip may have
+named it since the sweep began). The record is written private like the
+files it replaced. One lost or not parsing is rebuilt from the versions on
+disk whose every file matches its recorded sha256, the newest at or above
+the floor current (`cli.rs` `recover_in`); nothing is written where nothing
+verifies, and nothing is swept while there is no record. Its marks are lost
+with it: a release turned away may be tried once more, under the same probe
+and canary. Luna 0.19's files are read into it once and removed; no canary
+of then is carried over.
 
 **What an origin compromise gets.** The bucket or its CDN alone: no new code
 runs. A replaced exe fails the signed checksum, a replaced manifest the
 signature, a signed manifest of another release served under this one's URLs
 its version check, and an older signed release pointed to by the unsigned
-`latest` the floor. It can withhold updates; on the `latest` channel it can
-hold a fresh install at any signed release from `minSafe` up to the newest,
-while on `known-good` the version is the shipped list's and the bucket can
-only withhold it. Anthropic's
+`latest` the floor, or the version already current. It can withhold updates,
+and hold a fresh install at any signed release from the floor up to the
+newest (since 0.20 there is no list of checked versions to keep it to).
+Anthropic's
 release key: everything, as for any user of the official installer. The
 `openai/codex` releases (a maintainer account or the release workflow):
 binary and checksum replaced together, installed and run (F10).
 
 | STRIDE | Threat | Status |
 | --- | --- | --- |
-| T, S | Claude Code's bucket or CDN serves a forged exe or manifest | mitigated: the manifest is verified against the pinned release key before its checksum is used (`claude/manifest_sig.rs`), must name the requested version, and must not be below the floor (`cli.rs` `floor_in`, raised when a version becomes current) |
-| T | A release pointer names an older version, or one Luna has not been checked with | mitigated: the known-good channel, the default, takes only versions on the list compiled into the release or marked good by the person on this machine, never one the pointer names; a pointer's version below the floor is refused, installed or not; nothing below `minSafe` runs (`cli.rs` `update_in`, `cli/choice.rs`, `cli/known_good.rs`) |
-| T, E | A same-user process writes `good.json` to have the known-good channel take a version | accepted with R3: it could already choose `latest` or hold any installed version (`channel`, `pinned`); the floor, `minSafe`, the signed manifest (Claude Code) and the probe still hold; the marks are the person's through Settings only, never an MCP tool (`cli_mark_good`, `cli_clear_mark`: B1 commands of the window) |
-| T, E | A version gone back to by hand was altered on disk since it ran | mitigated: "Use" holds every file to its recorded sha256 first; below the floor a record without one per file is refused (`cli.rs` `reverify`) |
-| D | A new version breaks every session started on it | mitigated: an offline probe before it becomes current (`cli/probe.rs`), a canary over its first sessions that warns (`cli/canary.rs`), the previous version always kept and "Use" to go back; no automatic rollback (ADR-0019) |
+| T, S | Claude Code's bucket or CDN serves a forged exe or manifest | mitigated: the manifest is verified against the pinned release key before its checksum is used (`claude/manifest_sig.rs`), must name the requested version, and must not be below the floor (`cli.rs` `floor`, compiled into the release) |
+| T | A release pointer names an older version | mitigated: one below the floor is refused, installed or not; one below the version current here is not taken (no step down); nothing below the floor runs (`cli.rs` `floor`, `launch_in`, `cli/choice.rs` `plan`). Residual: on a fresh install the pointer picks any release from the floor up, as there is no list of checked versions since 0.20 (ADR-0030) |
+| T, D | A same-user process writes `state.json`, or makes a new version's first sessions fail, to keep Luna off newer versions | accepted with R3: it can only turn versions away (while the pointer names them) or roll back to the version kept before, never below the floor, never to a folder whose files no longer match their recorded sha256 (`cli.rs` `roll_back_in`, `reverify`); a newer release is still taken |
+| T, E | A version rolled back to was altered on disk since it ran | mitigated: the rollback holds every file to its recorded sha256 first, and refuses a record without one per file (`cli.rs` `reverify`) |
+| D | A new version breaks every session started on it | mitigated: an offline probe before it becomes current (`cli/probe.rs`), a canary over its first sessions (`cli/canary.rs`) that rolls back on its own to the previous version, always kept, and turns the failed one away while the pointer names it (ADR-0030); a trip a core went away before rolling back from is rolled back by the next core before any session (`cli.rs` `finish_rollbacks`). Exits whose failure (a helper's error, a pane's last line) says a sign-in, a usage limit, the network or the API, in the CLI's own words, do not count (`canary::cause_outside`); a spawn that failed is not counted, a signal's death is a failure. Residual: early failures of another cause that is not the version's roll back too, until the pointer names a newer release; the version gone back to then stays even if its own sessions fail |
+| T, D | The window's update pass and the core's rollback change the tree at once (a flip over a rollback, a sweep taking the version being probed or rolled back to, a crash between two writes) | mitigated: what changes together is one record (`cli/state.rs`), each change one atomic write under `state.lock`, so a crash leaves the old state or the new one; the rollback re-checks the record in its write and the flip refuses a version turned away since the pass chose it; a version is held in use from before its promotion's rename to its flip, and the sweep judges each folder by the record read afresh under its lock once it holds that folder, so a flip that named the folder after the sweep began is seen; a probe that could not run turns nothing away. Tested: a flip and a rollback cut before and after their write, the sweep's re-read with a hook between its listing and its hold, a rollback target turned away between its hash and its write (`cli.rs` tests). Residual: on Windows a power cut may undo the latest change of the record (the folder cannot be flushed), and a program holding the file can refuse a change, which is then made again later |
 | D, E | The sweep deletes a version folder under a running session (Unix: a Codex session's helpers) | mitigated: a shared lock per running process, the sweep only under the exclusive one (`cli/in_use.rs`); a launch whose lock cannot be had is refused, never started unheld (`cli.rs` `launch_in`) |
 | E | The update pass, in a window started as administrator, runs a new CLI for its probe elevated | mitigated: `probe` refuses through `elevation::guard`, and an elevated window's pass fetches, probes and marks nothing (`cli.rs` `held_for_elevation`) |
 | D | A probed CLI hangs, writes without end, or leaves a process holding its output | mitigated: one deadline over the run and its output, 1 MiB kept per stream, its whole tree ended (`cli/probe.rs` `run_within`; on Windows a mandatory `procs::KillJob`, terminated whole, the CLI created suspended and taken down unrun if it will not resume in it) |
-| T | A Luna release raises `minSafe`, and the version current (or held by hand) is below it | mitigated: no launch of it, no PATH stand-in, the hold dropped and the shipped list's version taken (`cli.rs` `launch_in`, `update_inner`, `cli/choice.rs`) |
+| T | A Luna release raises the floor, and the version current is below it | mitigated: no launch of it, no PATH stand-in, and the next pass takes the pointer's version at or above the floor whatever ran before (`cli.rs` `launch_in`, `pass_in`, `cli/choice.rs`) |
 | T, D | Codex's tarball, matching its checksum, unpacks without bound (a gzip bomb, a PAX size override, a huge metadata record) | mitigated: the stream, each metadata record, the entries and their bytes are capped, a PAX size override refused (`codex/cli.rs`, `unpack_capped`) |
 | T, S | Codex release origin compromised: binary and checksum replaced together | open (F10) |
 | T | Local replacement of the managed binary or its `current` version file | same user: accepted (R3); another OS user: the data dir's mode on Unix, its protected DACL on Windows (F4) |
 | T, E | Archive extraction writes outside the version folder, or fills the disk | mitigated: Codex entries go through `unpack_in`, which refuses paths that climb out, links are refused, entries and bytes are capped (`codex/cli.rs`, `unpack_capped`); Claude Code is a single file renamed after the hash check |
 | T, D | A crash or power cut mid-install leaves a version that runs incomplete | mitigated: only a recorded version runs; files and record are flushed before the rename that publishes them (`cli.rs`, `persist`) |
 | T, E | A link or junction planted below the CLI root turns a cleanup into a delete outside it | mitigated: `link_free_below` on every path deleted, `remove_tree` removes a link as itself (`cli.rs`). Check-then-use remains (R6) |
-| T, E | Before the first download completes, or with its managed copy damaged, a session runs the bare name from `PATH`, which no signature, checksum, probe or `minSafe` has checked, and which a lookup may find in the session's working directory | fixed (0.11.0): only the managed copy `current` names is started (`cli.rs` `launch_in`); nothing installed yet and a damaged copy (`current` unreadable or naming no version directory, files missing from its record, no record in a tree Luna installed) are each refused with what they are, never replaced by the CLI on `PATH`. Tested: `cli.rs` `nothing_installed_or_a_damaged_copy_starts_nothing`. The live suite's test executables take the CLI its script resolves, by its full path (`live_cli`, `#[cfg(test)]` only) |
-| T, E | A release that changes only the CLI policy (`cli-known-good.json`, its `minSafe`) keeps the core's fingerprint, so its window attaches to the old core still running (`corelink.rs` `verdict`), which goes on allowing the old minimum | fixed (0.11.0): the fingerprint hashes every file compiled into the core, the policy included (`fingerprint.rs` `INPUTS`, run by `build.rs`, which reruns on each). Tested: `fingerprint.rs` `a_policy_only_change_is_a_new_core`, and `every_file_the_core_compiles_in_is_fingerprinted` holds each `include_str!`/`include_bytes!` outside a test to `INPUTS` |
+| T, E | Before the first download completes, or with its managed copy damaged, a session runs the bare name from `PATH`, which no signature, checksum, probe or floor has checked, and which a lookup may find in the session's working directory | fixed (0.11.0): only the managed copy `current` names is started (`cli.rs` `launch_in`); nothing installed yet and a damaged copy (`current` unreadable or naming no version directory, files missing from its record, no record in a tree Luna installed) are each refused with what they are, never replaced by the CLI on `PATH`. Tested: `cli.rs` `nothing_installed_or_a_damaged_copy_starts_nothing`. The live suite's test executables take the CLI its script resolves, by its full path (`live_cli`, `#[cfg(test)]` only) |
+| T, E | A release that changes only the CLI policy (a floor) keeps the core's fingerprint, so its window attaches to the old core still running (`corelink.rs` `verdict`), which goes on allowing the old minimum | fixed (0.11.0): the fingerprint hashes every file compiled into the core, the policy included (`src/`, where the floors are since 0.20, and `fingerprint.rs` `INPUTS`, run by `build.rs`, which reruns on each). Tested: `fingerprint.rs` `a_policy_only_change_is_a_new_core`, and `every_file_the_core_compiles_in_is_fingerprinted` holds each `include_str!`/`include_bytes!` outside a test to `INPUTS` |
 
 ## 5. MCP authorization matrix
 
@@ -481,14 +494,14 @@ not cover:
 
 | Limit | Consequence |
 | --- | --- |
-| Recorded modes approximate effective authority | Luna compares the mode, sandbox, approval and network flag it started a session with (`Privilege`, `agents/privilege.rs:75-160`). It does not evaluate allow rules, skills, hooks, extra writable roots or a Codex config's network settings, so two sessions on the same rung can differ in what they may actually do. The rank, and the pane's chip, follow the mode the person picked, not the one the CLI ends up in: a Claude Code chat started in Auto whose CLI falls back to Manual at start, as its review cannot run, still ranks `Reviewed` with the network, and its helpers may run in `auto` or Codex's `auto-review`; that stays within what the person granted by picking Auto, and Luna does not look for the fallback. A mode holds only as the CLI honors it: Claude Code before 2.1.323 could start `--permission-mode auto` (which Luna spawns and inherits, and starts a chat in when the person picks Auto) in a mode that allows more where auto mode was unavailable, and skipped some `lsof` and `rm` prompts; before 2.1.325 some compound Bash commands ran without asking, a Bash allow rule could run another program than the one it names, some deny and ask rules missed certain Bash commands, and zstd-compressed responses were decoded with a security issue (docs/cli-compatibility.md), so the shipped list's `minSafe` is 2.1.325 and nothing older runs (B7) |
+| Recorded modes approximate effective authority | Luna compares the mode, sandbox, approval and network flag it started a session with (`Privilege`, `agents/privilege.rs:75-160`). It does not evaluate allow rules, skills, hooks, extra writable roots or a Codex config's network settings, so two sessions on the same rung can differ in what they may actually do. The rank, and the pane's chip, follow the mode the person picked, not the one the CLI ends up in: a Claude Code chat started in Auto whose CLI falls back to Manual at start, as its review cannot run, still ranks `Reviewed` with the network, and its helpers may run in `auto` or Codex's `auto-review`; that stays within what the person granted by picking Auto, and Luna does not look for the fallback. A mode holds only as the CLI honors it: Claude Code before 2.1.323 could start `--permission-mode auto` (which Luna spawns and inherits, and starts a chat in when the person picks Auto) in a mode that allows more where auto mode was unavailable, and skipped some `lsof` and `rm` prompts; before 2.1.325 some compound Bash commands ran without asking, a Bash allow rule could run another program than the one it names, some deny and ask rules missed certain Bash commands, and zstd-compressed responses were decoded with a security issue (docs/cli-compatibility.md), so Claude Code's floor (`cli.rs` `floor`) is 2.1.325 and nothing older runs (B7) |
 | Helpers may be rooted in any folder except Luna's data dir | a helper is refused only in, inside or above the data dir (`reaches_luna`); the cap limits its mode, not what that folder lets the mode reach (another project, an account folder) |
 | Same-user processes can open the core's endpoint and read environments | anything running as the user unconfined, an agent with a shell included (Claude Code's Bash where it runs unasked), can open the core's endpoint as the window does, or read another process's environment and act as that session. The layer is no OS isolation (R3). A process the OS marks confined (a restricted or AppContainer token, a lower integrity, another user namespace, `no_new_privs`) is refused at the endpoint (`peer/`, F3) |
 | A weaker session can still ask a stronger one in plain words | plain text from a person's chat to the person's other chats stays open with `scope: "all"` (R1), marked as the caller's, and into a helper from the sessions above it (ADR-0028); a helper's reaches only its own subtree; the stronger session's own mode, and its person, decide what it does with it |
 | A Codex helper keeps some MCP servers | Codex 0.167.0 has no switch for every server: a helper's run turns off its apps and each server its account's `config.toml` names, and is not started when one has a name `-c` cannot spell (a dot), as an override for a server no config layer defines, or a dotted name, fails the run. Servers from the project's `.codex/config.toml` files (trusted for the run) and from the plugins on in the config Codex merges for the run (the account's, then each project layer, a later layer's `enabled` over an earlier one's, `[plugins._default]` for one that says nothing) stay on, and are listed in the spawn's result (`mcpLeftOn`) and in "What Luna applied" (`helper.mcp-left-on`; `codex/config.rs` `servers_left_on`, `plugins_on`); a plugin's servers only as the plugin, which Luna does not open. Not listed: plugins a ChatGPT login installs remotely, which no config file names, and the system and managed config layers. Not applied: Codex's marketplace allowlist (`marketplace_policy.rs` `policy_filtered_plugin_config`), so a plugin Codex blocks for its marketplace may still be listed: the list can say more than the helper has, never less of what the layers name (F13) |
 | A library entry's audience, a session's role layers and its constraints are instructions, not containment | an entry for some roles only is kept out of other roles' context (Claude Code `claudeMdExcludes` and `skillOverrides`, Codex `-c skills.config`; `library/audience.rs`) or given per session only, never through an account; one still laid into accounts for the chats says, on Codex, whose it is; a session can still read any of it with its own tools wherever its mode reaches the account or the library folder. "Send, push or post nothing outward unless asked", "install nothing and change nothing machine-wide or in your CLI account's folder unless your task names that change" (the system texts `role-lead`, `role-helper`, ADR-0026) and a spawn's `constraints` are requests to the model, at memory level: what stops it is its mode, sandbox and the CLIs' own prompts. The person may override the role texts (the library's `system/`, B5, as the handoff's override); a spawn's `constraints` are text from the calling agent, held to plain text and 4 KB / 16 KB (`agents/spawn` `constraints_for`), passed only down its own chain and never removed by a later spawn, and told as able only to narrow the session's other instructions, the stricter applying where they conflict (`library/role.rs` `CONSTRAINTS_HEADING`, test `golden_constraints_narrow_the_other_instructions_and_never_outrank_them`): a lead steered by what it read cannot word its descendants out of the role texts' or the account's rules, though the model may still weigh them as it will; a Codex session's whole `developer_instructions` is held to 24,576 characters of its command line, escaped and quoted (`library/role.rs` `CODEX_ROLE_MAX`) |
 | A helper the person opened as a chat | it is the person's chat from then on, started as any of theirs, with its account's servers and connectors; its own helpers stay its, under the person's chat |
-| Screen detection depends on CLI versions | only the person's chats have a screen. Their dialogs and the lists a CLI holds its screen on are recognized from the terminal (`agents/ask.rs:195`, `agents/ask.rs:204`) as Claude Code 2.1.318+ (2.1.325, its `minSafe`, the oldest run) and Codex 0.167.0 draw them, for `state` and for an agent's answer to a question a model asked; a permission there is never an agent's. A dialog another version draws differently is not recognized, and waits for the person |
+| Screen detection depends on CLI versions | only the person's chats have a screen. Their dialogs and the lists a CLI holds its screen on are recognized from the terminal (`agents/ask.rs:195`, `agents/ask.rs:204`) as Claude Code 2.1.318+ (2.1.325, its floor, the oldest run) and Codex 0.167.0 draw them, for `state` and for an agent's answer to a question a model asked; a permission there is never an agent's. A dialog another version draws differently is not recognized, and waits for the person |
 | Two explicit relaxations | `helpersAboveCaller` (`settings.rs:26`) lifts the cap for spawns, answers and command text, and is turned on only through a native dialog the page cannot answer; the dev caller (`LUNA_DEV_TOKEN`, `agents/registry.rs:336`, test builds) stands in for the user and is exempt |
 
 ## 7. Findings and phase 1 status
@@ -507,7 +520,7 @@ on `refactor/phase-1`; "residual" names what is left and why.
 | F7 | Low-Medium | The hook secret was global, so any session could forge another chat's turn and permission events | **fixed** (4540647, b21dadf): each chat's secret is the first 128 bits of HMAC-SHA256(run key, chat id), checked against the path's chat id in constant time (`hub.rs:115`, `hub.rs:238`). Residual: the Codex guard URL rides in a `-c` argument, visible to other OS users in the Unix process list; it opens only that chat's door |
 | F8 | Low; Medium in the fallback deployment | The data dir fell back to a shared, predictable `temp_dir()/luna` | **fixed** (4336990): on Unix the fallback is `temp_dir()/luna-<euid>`, `0700`, used only if a real folder of this uid's, else Luna stops (`paths.rs:66`). Windows keeps `temp_dir()/luna`: its temp folder is the user's own |
 | F9 | Hardening gap | Tauri app commands are not scoped (no `AppManifest` in `build.rs`) and take raw paths, which sets the impact of any script in the page | **fixed** ([ADR-0015](../adr/0015-the-page-gets-only-what-it-calls.md)): the application manifest and a capability that grants each command and plugin call the page makes to the `main` window only; the core bridge passes on only `corecmd::COMMANDS`, each on its lane; account and folder paths typed at the boundary (`boundary.rs`); turning on `helpersAboveCaller` takes a native dialog. Residual: what the page does stays open to a script in it (B1), code execution through a session among it |
-| F10 | Medium | Managed CLI binaries are checked only against a sha256 from the same origin (B7) | **Claude Code part fixed** (3b603be): its manifest is verified against Anthropic's release key pinned in the app (`claude/manifest_sig.rs`), so the exe's checksum is the key holder's. **Residual**: Codex is still checked only against `codex-package_SHA256SUMS` from the same release; it publishes Sigstore bundles for its Linux packages only (`*.tar.gz.sigstore`, seen on rust-v0.167.0), none for Windows or macOS, and verifying them would take a Sigstore client and a pinned workflow identity. Claude Code's `latest` pointer is unsigned: an older signed release is refused below the floor (616d138), but on the `latest` channel a fresh install can still be held anywhere from `minSafe` up (on `known-good`, the default, the version is the shipped list's), and a release Anthropic pulls back is refused until a newer one comes. A new Anthropic key stops Claude Code updates until a Luna release pins it |
+| F10 | Medium | Managed CLI binaries are checked only against a sha256 from the same origin (B7) | **Claude Code part fixed** (3b603be): its manifest is verified against Anthropic's release key pinned in the app (`claude/manifest_sig.rs`), so the exe's checksum is the key holder's. **Residual**: Codex is still checked only against `codex-package_SHA256SUMS` from the same release; it publishes Sigstore bundles for its Linux packages only (`*.tar.gz.sigstore`, seen on rust-v0.167.0), none for Windows or macOS, and verifying them would take a Sigstore client and a pinned workflow identity. Claude Code's `latest` pointer is unsigned: an older signed release is refused below the floor (616d138), and below the version current here, but a fresh install can still be held anywhere from the floor up (since 0.20 there is no list of checked versions, ADR-0030), and a release Anthropic pulls back is not followed down until a newer one comes. A new Anthropic key stops Claude Code updates until a Luna release pins it |
 | F11 | High | Started as administrator ("Run as administrator", an elevated terminal), the window started the core with its elevated token, and the core every CLI and helper: an agent's tool commands with the whole machine in reach. Root likewise off Windows | **fixed** (`fix/never-elevated`): the privilege boundary is the user's ordinary token, and no CLI crosses above it. An elevated window (`TokenIsElevated`, or integrity High or above) starts the core with the desktop shell's token: this user's and not elevated, checked on the token actually duplicated, then `CreateProcessWithTokenW` suspended until the new process's token reads ordinary (`elevation.rs` `plan`, `spawn_as_shell`); no shell, another user's shell (over-the-shoulder credentials: never started as either user) or an elevated one (no limited token) starts no core. The core and the window check their own token: elevated, the core starts no hub, helper or session and answers only `info` and `shutdown` (`coreproc.rs` `requests`), and `elevation::guard` refuses at every CLI start (`pty/spawn.rs` `spawn`, `background/run.rs` `spawn_turn`, `codex/models.rs` and `claude/models.rs` `from_cli`), whatever asked. A running core whose token reads elevated, or cannot be read at all (fail closed; off Windows its effective uid), is never attached (`corelink.rs` `verdict`, `counts_as_elevated`). The de-elevated core's environment is the user's profile's (`CreateEnvironmentBlock`) plus the window's `LUNA_*` alone. The tests read the OS's answer too: the live suite, run from an elevated terminal, is refused (`live.rs`, `scripts/live-tests.ps1`); a test may add a refusal, never lift one. Unix: euid 0 refused the same way. Residuals: the window itself stays elevated (its WebView, the links and folders it opens, dialogs); de-elevation needs the Secondary Logon service, so where hardening disables it Luna refuses rather than falls back; `CreateProcessWithTokenW` from an elevated window was not exercised live (no elevation without a UAC click), only the decision with a stand-in OS and the token, profile-environment and job reads on a medium-integrity token, so whether the core lands outside the window's job is logged at each such start rather than known; an elevated core of this build lets an ordinary window in below its integrity to stop it and nothing else (B2's peer check, `StopOnly`); one that still cannot be reached (another user's) ends only by an elevated `luna --stop-core`, signing out, or its idle exit ten minutes after its last window |
 | F12 | High | `luna_session_send` with `interrupt: true` reached any session: Esc into a person's chat, or for another chat's background helper a kill of its turn that also dismissed the question it waited on | **fixed** (2f8b682): only the caller's descendants, both providers (`agents/delivery.rs:313`), every one a background helper now; refusal tests for another chat's helper and a person's chat |
 | F13 | Medium | Helpers inherited every MCP server of their account, claude.ai connectors with send and write tools among them, and a Claude Code helper's auto-memory wrote into every later session of the account | **fixed** (3fd0f76) for Claude Code; Codex in part: see B4 and section 6 |

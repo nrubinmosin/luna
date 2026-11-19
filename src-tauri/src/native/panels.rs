@@ -119,15 +119,6 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("cli_status", own!(ok crate::cli::cli_status, provider: Provider)),
     ("cli_versions", own!(ok crate::cli::cli_versions, provider: Provider)),
     ("cli_update_now", own!(ok crate::cli::cli_update_now, provider: Provider)),
-    ("cli_use_version", |a| {
-        #[derive(Deserialize)]
-        struct A {
-            provider: Provider,
-            dir: String,
-        }
-        let A { provider, dir } = args(a)?;
-        answer(crate::cli::use_version(provider, &dir)?)
-    }),
     // Accounts.
     ("list_accounts", own!(res crate::accounts::list_accounts)),
     ("create_account", own!(res crate::accounts::create_account, provider: Provider, name: String)),
