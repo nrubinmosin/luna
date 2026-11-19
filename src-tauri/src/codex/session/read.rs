@@ -618,25 +618,80 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
 /// land mid-line: the file is read from the top.
 pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u64) {
     let from = if past_end(path, from) { 0 } else { from };
-    let mut out = Vec::new();
-    let read = crate::pty::complete_lines(path, from, |line| out.extend(message_in(line)));
-    (out, read)
+    let mut said = Conversation::default();
+    let read = crate::pty::complete_lines(path, from, |line| said.line(line));
+    (said.messages, read)
 }
 
 /// `messages_from` of a rollout's bytes in memory, from the top: the messages of
 /// its complete lines, and the offset just past the last of them.
 pub fn messages_in(bytes: &[u8]) -> (Vec<crate::agents::Message>, usize) {
-    let mut out = Vec::new();
-    let read = crate::pty::complete_lines_in(bytes, |line| out.extend(message_in(line)));
-    (out, read)
+    let mut said = Conversation::default();
+    let read = crate::pty::complete_lines_in(bytes, |line| said.line(line));
+    (said.messages, read)
 }
 
-/// One complete line of a rollout as `messages_from` reads it.
-pub(super) fn message_in(line: &str) -> Option<crate::agents::Message> {
-    if !line.contains("\"response_item\"") {
-        return None;
+/// A rollout's conversation, one complete line at a time (`messages_from`).
+/// Its messages come from the `response_item` lines; where they do not say
+/// which is a turn's final answer (no `phase`, as before 0.167), or leave it
+/// out, the turn's end does: `task_complete.last_agent_message` is Codex's own
+/// word for what the turn ended saying.
+#[derive(Default)]
+pub(super) struct Conversation {
+    pub(super) messages: Vec<crate::agents::Message>,
+    /// Where the turn now running began among `messages`, if its start was
+    /// read here: a read from a cursor may open in the middle of one.
+    turn_from: Option<usize>,
+    /// Where the last turn read here ended.
+    turn_end: usize,
+}
+
+impl Conversation {
+    pub(super) fn line(&mut self, line: &str) {
+        let response = line.contains("\"response_item\"");
+        // The many token counts and item events are not parsed for this.
+        const ENDS: [&str; 5] = ["\"task_started\"", "\"turn_started\"", "\"task_complete\"", "\"turn_complete\"", "\"turn_aborted\""];
+        if !response && !(line.contains("\"event_msg\"") && ENDS.iter().any(|e| line.contains(e))) {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return };
+        if response {
+            self.messages.extend(message_of(&v));
+            return;
+        }
+        let payload = &v["payload"];
+        match payload["type"].as_str() {
+            Some("task_started" | "turn_started") => self.turn_from = Some(self.messages.len()),
+            Some("task_complete" | "turn_complete") => {
+                if let Some(said) = payload["last_agent_message"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    self.ended_saying(said);
+                }
+                self.turn_from = None;
+                self.turn_end = self.messages.len();
+            }
+            Some("turn_aborted") => {
+                self.turn_from = None;
+                self.turn_end = self.messages.len();
+            }
+            _ => {}
+        }
     }
-    message_of(&serde_json::from_str::<Value>(line).ok()?)
+
+    /// A turn ended with `said`. The assistant message of it that says exactly
+    /// that is its final answer, `phase` or not. A turn read whole that has no
+    /// assistant message at all in the rollout's `response_item`s gets it as
+    /// its one: a report is never lost for the shape its message was written
+    /// in. A turn begun before this read is only marked, never added to: its
+    /// message may have gone by in the read before.
+    fn ended_saying(&mut self, said: &str) {
+        let (from, whole) = (self.turn_from.unwrap_or(self.turn_end), self.turn_from.is_some());
+        let turn = &mut self.messages[from.min(self.messages.len())..];
+        if let Some(m) = turn.iter_mut().rev().find(|m| m.role == "assistant" && m.text.trim() == said) {
+            m.final_answer = true;
+        } else if whole && !turn.iter().any(|m| m.role == "assistant") {
+            self.messages.push(crate::agents::Message { role: "assistant".into(), text: said.to_string(), after_cli: false, final_answer: true });
+        }
+    }
 }
 
 #[cfg(test)]
