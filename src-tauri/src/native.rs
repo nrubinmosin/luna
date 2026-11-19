@@ -561,6 +561,9 @@ pub(crate) fn run() -> Result<(), String> {
         env!("LUNA_BUILD"),
         env!("LUNA_CORE_FP")
     ));
+    // What the crash screen says of the run before, read before this one's
+    // record replaces it.
+    crate::lifecycle::find_previous();
     let title = if crate::paths::is_test() { "Luna Test" } else { "Luna" };
     let services = mailbox.clone();
     let options = luna_window::Options {

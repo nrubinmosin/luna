@@ -145,17 +145,10 @@ pub fn start_core() {
 }
 
 fn begin(ping: Option<Ping>) {
+    find_previous();
     if let Some(prev) = read() {
         if prev.exit.is_none() && prev.pid != std::process::id() {
-            let said = describe_unannounced(&prev, booted_ms());
-            crate::log::warn("app", &said);
-            if !is_core() {
-                let _ = PREVIOUS.set(Crash {
-                    reason: crash_reason(&prev, said),
-                    at: clock(prev.alive),
-                    log: crate::log::path().to_string_lossy().into_owned(),
-                });
-            }
+            crate::log::warn("app", &describe_unannounced(&prev, booted_ms()));
         }
     }
     let now = now_ms();
@@ -199,11 +192,26 @@ fn crash_reason(prev: &Run, said: String) -> String {
     }
 }
 
-static PREVIOUS: std::sync::OnceLock<Crash> = std::sync::OnceLock::new();
+static PREVIOUS: std::sync::OnceLock<Option<Crash>> = std::sync::OnceLock::new();
+
+/// Reads the record of the run before this one, once, and keeps what the
+/// crash screen says of it if it ended without closing itself. Called before
+/// the window opens, which asks for it as it comes up: `begin` rewrites the
+/// record for this run, and runs only once the window is open.
+pub fn find_previous() {
+    PREVIOUS.get_or_init(|| {
+        if std::env::var_os("LUNA_DEV_TOKEN").is_some() || is_core() {
+            return None;
+        }
+        let prev = read().filter(|p| p.exit.is_none() && p.pid != std::process::id())?;
+        let said = describe_unannounced(&prev, booted_ms());
+        Some(Crash { reason: crash_reason(&prev, said), at: clock(prev.alive), log: crate::log::path().to_string_lossy().into_owned() })
+    });
+}
 
 /// The run before this one, if it ended without closing itself.
 pub fn previous_crash() -> Option<Crash> {
-    PREVIOUS.get().cloned()
+    PREVIOUS.get().cloned().flatten()
 }
 
 /// A panic's text, kept in the run's record for the next start to show. The
