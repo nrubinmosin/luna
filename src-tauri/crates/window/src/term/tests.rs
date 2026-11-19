@@ -869,15 +869,34 @@ fn a_refused_size_is_sent_again(cx: &mut TestAppContext) {
 
 /// Output past the pane's bound is dropped rather than held, and the pane
 /// says how much in a line of its own.
+///
+/// The parser says what it dropped as soon as it has caught up, so one that
+/// outpaces the attach's sending would say it between two chunks, and the
+/// chunks after would scroll it off the screen. The parser is held on its own
+/// thread, by a job that tells when it has started and waits to be let go,
+/// until the whole attach is queued behind it: it then parses all of it
+/// without a moment of being caught up before the end.
 #[gpui::test]
 fn output_past_the_bound_is_dropped_and_said(cx: &mut TestAppContext) {
+    use std::sync::mpsc::channel;
     let mut p = open_with(cx, Provider::Claude, LinkState::Starting, demo::attached("", 1));
     p.view.update(p.cx, |v, cx| v.start(cx));
+    let (held, holding) = channel();
+    let (go, gate) = channel::<()>();
+    p.view.read_with(p.cx, |p, _| {
+        p.parser().mark(move || {
+            let _ = held.send(());
+            let _ = gate.recv();
+        })
+    });
+    // Past its own look at what was dropped, which is nothing yet.
+    holding.recv().expect("the parser took the job");
     let chunk = "x".repeat(64 << 10);
     for _ in 0..(super::parser::OUTPUT_MAX / chunk.len() + 4) {
         assert!(p.host.output("s1", chunk.as_bytes()), "still routed");
     }
     p.cx.run_until_parked();
+    go.send(()).expect("the parser waits");
     p.settle();
     assert_eq!(p.phase(), Phase::Live(1));
     assert!(p.shows("[dropped 256 KB of output: the pane fell behind]"), "{:?}", p.screen());
