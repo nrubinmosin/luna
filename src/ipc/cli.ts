@@ -90,7 +90,8 @@ export const cliUpdateNow = (provider: Provider) => call<void>('cli_update_now',
 /** Go back to the version the record keeps (`CliVersionsDto.wayBack`) and turn
  *  the current one away. `from` is the version the person saw current: the
  *  rollback is made only while it still is. Rejects with why nothing moved. */
-export const cliRollBack = (provider: Provider, from: string) => call<CliRolledBackDto>('cli_roll_back', { provider, from });
+export const cliRollBack = (provider: Provider, from: string) =>
+  call<CliRolledBackDto>('cli_roll_back', { provider, from });
 export const cliVersions = (provider: Provider) => call<CliVersionsDto | null>('cli_versions', { provider }, null);
 /** The channels, "Use", the marks by hand and "Keep it" left the core with
  *  ADR-0030 (it rolls back on its own); this window goes with 0.20, so its
