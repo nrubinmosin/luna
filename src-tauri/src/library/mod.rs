@@ -243,7 +243,8 @@ impl Dirs {
         self.data.join("library-state.json")
     }
     /// Where 0.19 kept the bytes of every copy it wrote, for the window's
-    /// differences: read by nothing now, and taken out at a pass.
+    /// differences: read by nothing now, and taken out at the first save of
+    /// a ledger 0.19 wrote (`Ledger::older`).
     fn old_blobs(&self) -> PathBuf {
         self.data.join("library-blobs")
     }
@@ -274,15 +275,36 @@ pub fn laid_out_in(account_path: &str) -> Vec<String> {
 /// What Luna last wrote at each destination, file by file.
 #[derive(Serialize, Deserialize, Default)]
 struct Ledger {
+    /// What the ledger's file is laid out as: `LEDGER_FORMAT` since 0.20,
+    /// none (0) before.
+    #[serde(default, serialize_with = "this_format")]
+    format: u32,
     written: BTreeMap<String, Hashes>,
-    /// The copies 0.19 left where they lay as no longer wanted but changed
-    /// there, for its window to settle, by destination: read only to be
-    /// named in the log once the ledger is saved without them, the files
-    /// left as the person's own. (0.19's `worded`, the line it wrote into
-    /// each copy for a copy taken back into the library, is not read.)
+    /// Places Luna is never to adopt, by destination: the copies 0.19 left
+    /// where they lay as no longer wanted but changed there (its `kept`),
+    /// the person's own from 0.20 on even where they come to hold the
+    /// library's very bytes. One goes once nothing is there.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    disowned: BTreeSet<String>,
+    /// The manifests Luna wrote for a listed folder's plugin in a Codex
+    /// account (folders.rs `codex_manifests`), by path: only these does it
+    /// take out again.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    manifests: BTreeSet<String>,
+    /// 0.19's `kept`, as it read: moved into `disowned` at the load, and
+    /// named in the log once the ledger is saved without it. (0.19's
+    /// `worded`, the line it wrote into each copy for a copy taken back into
+    /// the library, is not read.)
     #[serde(default, rename = "kept", skip_serializing)]
     left_by_0_19: BTreeMap<String, serde::de::IgnoredAny>,
+    /// Read from a file an earlier Luna wrote (`format` 0): its save is the
+    /// 0.19 migration's, which takes `library-blobs/` out.
+    #[serde(skip)]
+    older: bool,
 }
+
+/// The ledger's layout since 0.20 (`Ledger::format`).
+const LEDGER_FORMAT: u32 = 1;
 
 impl Ledger {
     /// What Luna has now written at `key`: these files.
@@ -303,13 +325,23 @@ impl Ledger {
             map.extend(values);
         }
         rekey(&mut self.written, &new);
+        for set in [&mut self.disowned, &mut self.manifests] {
+            let moving: Vec<(String, String)> = set.iter().filter_map(|k| Some((k.clone(), new(k)?))).collect();
+            for (old, new) in moving {
+                set.remove(&old);
+                set.insert(new);
+            }
+        }
     }
     /// Every note of a place under `dir` gone, as the folder is; whether there
     /// was any.
     fn dropped(&mut self, dir: &Path) -> bool {
-        let before = self.written.len();
+        let count = |l: &Ledger| l.written.len() + l.disowned.len() + l.manifests.len();
+        let before = count(self);
         self.written.retain(|k, _| !within(Path::new(k), dir));
-        before != self.written.len()
+        self.disowned.retain(|k| !within(Path::new(k), dir));
+        self.manifests.retain(|k| !within(Path::new(k), dir));
+        before != count(self)
     }
 }
 
@@ -334,7 +366,23 @@ fn moved_under(place: &str, from: &Path, to: &Path) -> Option<String> {
 
 impl Ledger {
     fn load(dirs: &Dirs) -> Ledger {
-        std::fs::read_to_string(dirs.ledger()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        let Some(mut ledger) = std::fs::read_to_string(dirs.ledger()).ok().and_then(|t| serde_json::from_str::<Ledger>(&t).ok()) else {
+            return Ledger::default();
+        };
+        ledger.older = ledger.format == 0;
+        ledger.disowned.extend(ledger.left_by_0_19.keys().cloned());
+        ledger
+    }
+    /// What the log says of 0.19's kept copies at the save that drops its
+    /// record of them.
+    fn left_by_0_19_line(&self) -> Option<String> {
+        let left: Vec<&str> = self.left_by_0_19.keys().map(String::as_str).collect();
+        (!left.is_empty()).then(|| {
+            format!(
+                "copies an earlier Luna left in place, no longer wanted but changed there, are the person's own now and stay: {}",
+                left.join(", ")
+            )
+        })
     }
     fn save(&self, dirs: &Dirs) -> Result<(), String> {
         #[cfg(test)]
@@ -345,16 +393,17 @@ impl Ledger {
         // Luna's own, in the data dir: private like the rest of it, where
         // `write_file` is for the copies in account folders.
         crate::secret::write_private(&dirs.ledger(), text.as_bytes()).map_err(|e| format!("{}: {e}", dirs.ledger().display()))?;
-        if !self.left_by_0_19.is_empty() {
-            let left: Vec<&str> = self.left_by_0_19.keys().map(String::as_str).collect();
-            crate::log::info(
-                "library",
-                &format!(
-                    "copies an earlier Luna left in place, no longer wanted but changed there, are the person's own now and stay: {}",
-                    left.join(", ")
-                ),
-            );
+        if let Some(line) = self.left_by_0_19_line() {
+            crate::log::info("library", &line);
+        }
+        if self.older {
+            drop_old_blobs(dirs);
         }
         Ok(())
     }
+}
+
+/// `Ledger::format` as every save writes it: this Luna's.
+fn this_format<S: serde::Serializer>(_: &u32, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u32(LEDGER_FORMAT)
 }

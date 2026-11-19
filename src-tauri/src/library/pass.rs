@@ -83,11 +83,14 @@ pub(super) struct Pass {
 /// they differ from it (behind it, or changed or deleted there), adopts a
 /// destination that already holds exactly the library's, and takes out
 /// Luna's copies no longer wanted. The ledger alone says which copies are
-/// Luna's; a destination holding anything else is someone else's file, only
-/// reported, never written over or taken out. A copy changed there goes to
-/// the backups before it is written over or taken out, and each such one is
-/// logged. `accounts` and `folders` (every folder the library lists) are
-/// where a copy no longer wanted may lie (files.rs `top_of`).
+/// Luna's, and in a skill's folder which files (`luna_part`): a destination
+/// holding anything else is someone else's file, only reported, never
+/// written over or taken out, and what else lies in a folder of Luna's is
+/// never looked at. A copy changed there goes to the backups before it is
+/// written over or taken out, and each such one is logged; one that changes
+/// again while the pass is at it is left for the next. `accounts` and
+/// `folders` (every folder the library lists) are where a copy no longer
+/// wanted may lie (files.rs `top_of`).
 pub(super) fn pass(
     dirs: &Dirs,
     accounts: &[AccountInfo],
@@ -103,10 +106,6 @@ pub(super) fn pass(
         let top = top_of(dirs, accounts, folders, dest).ok_or("it lies in no account's folder nor a listed one")?;
         no_link_between(&top, dest)
     };
-    // An account's folder or Luna's own: where a copy of Luna's stays Luna's
-    // when changed there. One an earlier Luna laid into a listed folder
-    // itself, changed since, is that folder's own.
-    let on_lunas_ground = |dest: &Path| within(dest, &dirs.data) || accounts.iter().any(|a| within(dest, Path::new(&a.path)));
     let mut out = Pass::default();
     // Each copy wanted by `ident`, with its path as spelled now: two
     // spellings of one file are one copy.
@@ -147,68 +146,75 @@ pub(super) fn pass(
             }
         };
         let want = hashes(source);
-        // `changed`: what is there, Luna's copy changed there since Luna
-        // wrote it, for the backups before the library's goes over it.
-        let write = |ledger: &mut Ledger, changed: Option<&Files>| -> Result<(), String> {
-            no_link_between(&u.top, &u.dest)?;
-            let saved = match changed {
-                Some(there) => {
-                    Some(back_up(dirs, &u.dest, there).map_err(|e| format!("not written over, its backup would not write: {e}"))?)
+        let noted = ledger.written.get(&key).cloned();
+        // What of the destination is Luna's to look at: in a skill's folder,
+        // the files it wrote there and those the library has for it.
+        let owned: Vec<String> = noted.iter().flat_map(|h| h.keys()).chain(want.keys()).cloned().collect();
+        let part = |all: Files| luna_part(all, u.file, &owned);
+        let disowned = ledger.disowned.iter().find(|d| ident(Path::new(d)) == id).cloned();
+        let read = read_at(&u.dest, u.file);
+        // A place 0.19 left as the person's own is theirs for as long as
+        // anything is there, whatever it holds; once nothing is, the
+        // library's copy may go there as anywhere.
+        if let Some(d) = &disowned {
+            match &read {
+                Ok(Some(_)) if noted.is_none() => {
+                    out.places.push(place(Status::Taken, None));
+                    continue;
                 }
-                None => None,
-            };
-            if let Err(e) = write_at(&u.dest, u.file, source) {
-                // Stopped partway (a file there held open, say): what is there
-                // is noted as Luna's, to finish next time, its backup taken.
-                if let Ok(Some(now)) = read_at(&u.dest, u.file) {
-                    ledger.written.insert(key.clone(), hashes(&now));
+                Ok(None) if act => {
+                    ledger.disowned.remove(d);
                 }
-                return Err(match saved {
-                    Some(saved) => format!("{e}; what was there is in {}", saved.display()),
-                    None => e,
-                });
+                _ => {}
             }
-            ledger.wrote(&key, want.clone());
-            if let Some(saved) = saved {
-                crate::log::info(
-                    "library",
-                    &format!(
-                        "wrote the library's copy over {key}, changed there since Luna wrote it; what was there is in {}",
-                        saved.display()
-                    ),
-                );
-            }
-            Ok(())
-        };
-        let noted = ledger.written.contains_key(&key);
-        let (status, changed) = match read_at(&u.dest, u.file) {
-            Err(e) => (Err(e), None),
-            Ok(None) => (Ok(Status::Missing), None),
-            Ok(Some(have)) => {
-                let now = hashes(&have);
-                match ledger.written.get(&key) {
-                    // Exactly the library's, whoever wrote it: adopted, or
-                    // noted as what Luna's copy holds now.
-                    _ if now == want => {
+        }
+        // `there`: Luna's part of what is there, as read now; `changed`, it
+        // differs from what Luna wrote, for the backups first.
+        let (status, there, changed) = match read {
+            Err(e) => (Err(e), None, false),
+            Ok(None) => (Ok(Status::Missing), None, false),
+            Ok(Some(all)) => match &noted {
+                // Exactly the library's, whoever wrote it: adopted, or noted
+                // as what Luna's copy holds now. Adopted only whole: a folder
+                // with more in it than the library's is not Luna's to take.
+                None if hashes(&all) == want => {
+                    if act {
+                        ledger.wrote(&key, want.clone());
+                    }
+                    (Ok(Status::Current), None, false)
+                }
+                None => (Ok(Status::Taken), None, false),
+                Some(w) => {
+                    let mine = part(all);
+                    let now = hashes(&mine);
+                    if now == want {
                         if act {
                             ledger.wrote(&key, want.clone());
                         }
-                        (Ok(Status::Current), None)
+                        (Ok(Status::Current), None, false)
+                    } else {
+                        let changed = now != *w && !mine.is_empty();
+                        (Ok(Status::Behind), Some(mine), changed)
                     }
-                    None => (Ok(Status::Taken), None),
-                    Some(w) if *w == now => (Ok(Status::Behind), None),
-                    Some(_) => (Ok(Status::Behind), Some(have)),
+                }
+            },
+        };
+        let status = match status {
+            Ok(was @ (Status::Missing | Status::Behind)) if act => {
+                match lay_over(dirs, u, &key, source, &want, noted.as_ref(), there.as_ref(), changed, &part, ledger) {
+                    Ok(true) => {
+                        if was == Status::Missing && noted.is_some() {
+                            crate::log::info(
+                                "library",
+                                &format!("put the library's copy back at {key}, deleted there since Luna wrote it"),
+                            );
+                        }
+                        Ok(Status::Current)
+                    }
+                    Ok(false) => Ok(was),
+                    Err(e) => Err(e),
                 }
             }
-        };
-        let deleted = noted && matches!(status, Ok(Status::Missing));
-        let status = match status {
-            Ok(Status::Missing | Status::Behind) if act => write(ledger, changed.as_ref()).map(|()| {
-                if deleted {
-                    crate::log::info("library", &format!("put the library's copy back at {key}, deleted there since Luna wrote it"));
-                }
-                Status::Current
-            }),
             other => other,
         };
         match status {
@@ -227,26 +233,45 @@ pub(super) fn pass(
             if wanted.contains_key(&ident(&dest)) || in_library(dirs, &dest) {
                 continue;
             }
-            let taken = match read_at(&dest, file) {
-                Ok(None) => continue,
-                Ok(Some(have)) if hashes(&have) == h => removable(&dest).and_then(|()| remove_at(&dest, file)).map(|()| None),
-                // Changed there since: Luna's copy all the same, backed up first.
-                Ok(Some(have)) if on_lunas_ground(&dest) => removable(&dest).and_then(|()| {
-                    let saved = back_up(dirs, &dest, &have)?;
-                    remove_at(&dest, file)?;
-                    Ok(Some(saved))
-                }),
-                Ok(Some(_)) => {
+            let in_account = accounts.iter().any(|a| within(&dest, Path::new(&a.path)));
+            let in_listed = folders.iter().any(|f| within(&dest, Path::new(&f.path)));
+            // In an account Luna does not list now (one taken off its list
+            // with its folder left, or not there for the moment), or a folder
+            // no longer listed: its note stays as it is, for when the account
+            // is back.
+            if !in_account && !in_listed && !within(&dest, &dirs.folders()) {
+                if link_is_news(&dest) {
                     crate::log::info(
                         "library",
-                        &format!("left {key} to the folder it lies in: changed there since an earlier Luna laid it out"),
+                        &format!("kept Luna's note of {key}: it lies in no account Luna lists now, nor a folder it does"),
                     );
+                }
+                ledger.wrote(&key, h);
+                continue;
+            }
+            let there = match read_at(&dest, file) {
+                Ok(None) => continue,
+                Ok(Some(all)) => luna_part(all, file, h.keys()),
+                Err(e) => {
+                    if link_is_news(&dest) {
+                        crate::log::warn("library", &format!("could not take out {key}: {e}"));
+                    }
+                    ledger.wrote(&key, h);
                     continue;
                 }
-                Err(e) => Err(e),
             };
-            match taken {
-                Ok(None) => {}
+            // Nothing of Luna's left in it: only what others put there.
+            if there.is_empty() {
+                continue;
+            }
+            let changed = hashes(&there) != h;
+            // A copy an earlier Luna laid into a listed folder, changed there
+            // since, is that folder's own, wherever the folder lies.
+            if changed && in_listed {
+                crate::log::info("library", &format!("left {key} to the listed folder it lies in: changed there since Luna laid it out"));
+                continue;
+            }
+            match take_out_copy(dirs, &dest, file, &there, changed, &removable) {
                 Ok(Some(saved)) => crate::log::info(
                     "library",
                     &format!(
@@ -254,6 +279,7 @@ pub(super) fn pass(
                         saved.display()
                     ),
                 ),
+                Ok(None) => {}
                 // Not taken out: still Luna's, for a later pass to try.
                 Err(e) => {
                     if link_is_news(&dest) {
@@ -265,6 +291,108 @@ pub(super) fn pass(
         }
     }
     out
+}
+
+/// Whether Luna's part of `dest` is still `before` (None: nothing there),
+/// read again right before it is written over or taken out: a CLI or an
+/// editor saving meanwhile makes it other, and the pass then leaves it to
+/// the next rather than lose what was saved.
+fn still_as(dest: &Path, file: bool, before: Option<&Files>, part: &dyn Fn(Files) -> Files) -> bool {
+    match read_at(dest, file) {
+        Ok(None) => before.is_none(),
+        Ok(Some(all)) => before.is_some_and(|b| part(all) == *b),
+        Err(_) => false,
+    }
+}
+
+/// The library's copy laid at a unit's place: `there`, Luna's part of what
+/// is there now (None: nothing), backed up first where `changed`. Ok(false)
+/// where it changed again meanwhile and was left for the next pass, logged.
+/// A write that stops partway notes as Luna's only what it did write.
+#[allow(clippy::too_many_arguments)]
+fn lay_over(
+    dirs: &Dirs,
+    u: &Unit,
+    key: &str,
+    source: &Files,
+    want: &Hashes,
+    noted: Option<&Hashes>,
+    there: Option<&Files>,
+    changed: bool,
+    part: &dyn Fn(Files) -> Files,
+    ledger: &mut Ledger,
+) -> Result<bool, String> {
+    no_link_between(&u.top, &u.dest)?;
+    let saved = match there {
+        Some(there) if changed => {
+            Some(back_up(dirs, &u.dest, there).map_err(|e| format!("not written over, its backup would not write: {e}"))?)
+        }
+        _ => None,
+    };
+    if !still_as(&u.dest, u.file, there, part) {
+        crate::log::info("library", &format!("left {key} for the next pass: it changed there while this one was at it"));
+        return Ok(false);
+    }
+    if let Err(e) = write_over(&u.dest, u.file, source, there.unwrap_or(&Files::new())) {
+        let now = read_at(&u.dest, u.file).ok().flatten().map(part);
+        let left = noted_after_failure(noted, want, now.as_ref());
+        if left.is_empty() {
+            ledger.written.remove(key);
+        } else {
+            ledger.written.insert(key.to_string(), left);
+        }
+        return Err(match saved {
+            Some(saved) => format!("{e}; what was there is in {}", saved.display()),
+            None => e,
+        });
+    }
+    ledger.wrote(key, want.clone());
+    if let Some(saved) = saved {
+        crate::log::info(
+            "library",
+            &format!("wrote the library's copy over {key}, changed there since Luna wrote it; what was there is in {}", saved.display()),
+        );
+    }
+    Ok(true)
+}
+
+/// What the ledger is to say of a copy whose write stopped partway: what it
+/// said before, less the files gone that the library no longer has, and each
+/// file now exactly the library's noted as Luna's. Nothing else there is
+/// taken for Luna's: a person's file it did not get to stays theirs to back
+/// up at the next pass.
+fn noted_after_failure(before: Option<&Hashes>, want: &Hashes, now: Option<&Files>) -> Hashes {
+    let now = now.map(hashes).unwrap_or_default();
+    let mut out = before.cloned().unwrap_or_default();
+    out.retain(|rel, _| now.contains_key(rel) || want.contains_key(rel));
+    for (rel, h) in want {
+        if now.get(rel) == Some(h) {
+            out.insert(rel.clone(), h.clone());
+        }
+    }
+    out
+}
+
+/// Luna's part of a copy no longer wanted (`there`, as just read) taken
+/// out, backed up first where `changed`: the backup's folder, where there
+/// is one. Refused through a link on the way (`removable`); left, an error,
+/// where it changed again meanwhile.
+fn take_out_copy(
+    dirs: &Dirs,
+    dest: &Path,
+    file: bool,
+    there: &Files,
+    changed: bool,
+    removable: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<Option<PathBuf>, String> {
+    removable(dest)?;
+    let saved = if changed { Some(back_up(dirs, dest, there)?) } else { None };
+    let owned: Vec<String> = there.keys().cloned().collect();
+    if !still_as(dest, file, Some(there), &|all| luna_part(all, file, &owned)) {
+        return Err("it changed there while the pass was at it; left for the next".into());
+    }
+    take_out(dest, file, there)?;
+    Ok(saved)
 }
 
 /// Every copy the library wants, from the settings and what the library and
@@ -487,7 +615,7 @@ mod tests {
         let codex_skill = f.account(1).join("skills").join("review");
         std::fs::write(&claude_md, "Be brief. And kind.\n").unwrap();
         std::fs::write(&agents_md, "Be long.\n").unwrap();
-        std::fs::write(codex_skill.join("extra.md"), "added there").unwrap();
+        std::fs::write(codex_skill.join(SKILL_FILE), "edited there").unwrap();
 
         let p = f.run(&lib, &mut ledger, false);
         for dest in [&claude_md, &agents_md, &codex_skill] {
@@ -500,9 +628,9 @@ mod tests {
         assert!(p.places.iter().all(|x| x.status == Status::Current), "{:?}", p.places);
         assert_eq!(f.read(0, "CLAUDE.md"), "Be brief.\n");
         assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n");
-        assert!(!codex_skill.join("extra.md").exists(), "the copy holds the library's files alone");
+        assert!(std::fs::read_to_string(codex_skill.join(SKILL_FILE)).unwrap().contains("v1"));
         let backed = backed_up(&f.dirs);
-        for was in ["Be brief. And kind.\n", "Be long.\n", "added there"] {
+        for was in ["Be brief. And kind.\n", "Be long.\n", "edited there"] {
             assert!(backed.iter().any(|b| b == was), "{was:?} backed up: {backed:?}");
         }
         // Nothing more to write: no more backups.
@@ -600,19 +728,19 @@ mod tests {
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         let (claude_skill, codex_skill) = (f.account(0).join("skills").join("review"), f.account(1).join("skills").join("review"));
-        std::fs::write(claude_skill.join("extra.md"), "added there").unwrap();
+        std::fs::write(claude_skill.join(SKILL_FILE), "edited there").unwrap();
         std::fs::write(f.account(1).join("AGENTS.md"), "Be long.\n").unwrap();
 
         let none = LibrarySettings::default();
         f.run(&none, &mut ledger, false);
-        assert!(claude_skill.join("extra.md").is_file(), "looking takes nothing out");
+        assert!(claude_skill.join(SKILL_FILE).is_file(), "looking takes nothing out");
         f.run(&none, &mut ledger, true);
         assert!(!claude_skill.exists() && !codex_skill.exists());
         assert!(!f.account(0).join("CLAUDE.md").exists() && !f.account(1).join("AGENTS.md").exists());
         assert!(f.account(2).join("skills").is_dir(), "only the skill's own folder goes");
         assert!(ledger.written.is_empty(), "no longer laid out");
         let backed = backed_up(&f.dirs);
-        assert!(backed.iter().any(|b| b == "added there") && backed.iter().any(|b| b.contains("v1")), "{backed:?}");
+        assert!(backed.iter().any(|b| b == "edited there"), "{backed:?}");
         assert!(backed.iter().any(|b| b == "Be long.\n"), "{backed:?}");
         assert!(!backed.iter().any(|b| b == "Be brief.\n"), "what was still Luna's is not backed up: {backed:?}");
     }
@@ -631,12 +759,12 @@ mod tests {
             write_at(&repo.join(name), false, &files).unwrap();
             ledger.written.insert(repo.join(name).to_string_lossy().into_owned(), hashes(&files));
         }
-        std::fs::write(repo.join("review").join("extra.md"), "the team's").unwrap();
+        std::fs::write(repo.join("review").join(SKILL_FILE), "the team's").unwrap();
         let folder = LibraryFolder { path: repo.to_string_lossy().into_owned(), ..Default::default() };
         let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
 
         f.run(&lib, &mut ledger, true);
-        assert!(repo.join("review").join("extra.md").is_file(), "changed there: the folder's");
+        assert_eq!(std::fs::read_to_string(repo.join("review").join(SKILL_FILE)).unwrap(), "the team's", "changed there: the folder's");
         assert!(!repo.join("notes").exists(), "as Luna wrote it: taken out");
         assert!(ledger.written.is_empty());
         assert!(walk(&f.dirs.backups()).is_empty());
@@ -645,7 +773,9 @@ mod tests {
     /// The ledger 0.19 left, with copies it kept in place as no longer
     /// wanted but changed there (`kept`, for its Needs a look), and the line
     /// it noted for each chats' copy (`worded`): it loads, its kept copies
-    /// stay as they are, no longer Luna's, and the next save drops both.
+    /// stay as they are, the person's own, never adopted even once they hold
+    /// the library's very bytes; the log names them at the save that drops
+    /// 0.19's record. Once one is gone, the library's copy goes there.
     #[test]
     fn a_ledger_with_0_19_s_kept_copies_loads_and_leaves_them_be() {
         let f = Fixture::new("kept-0-19");
@@ -659,6 +789,7 @@ mod tests {
         write_at(&kept, false, &read_dir_files(&f.dirs.skills().join("review")).unwrap()).unwrap();
         std::fs::write(kept.join("extra.md"), "added there").unwrap();
         let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f.dirs.ledger()).unwrap()).unwrap();
+        state.as_object_mut().unwrap().remove("format");
         let mut old = serde_json::Map::new();
         old.insert(kept.to_string_lossy().into_owned(), serde_json::json!({ "SKILL.md": "00", "extra.md": "11" }));
         state["kept"] = serde_json::Value::Object(old);
@@ -670,16 +801,235 @@ mod tests {
 
         let mut ledger = Ledger::load(&f.dirs);
         assert!(ledger.written.contains_key(&*f.account(0).join("skills").join("review").to_string_lossy()), "the rest loads");
+        let line = ledger.left_by_0_19_line().expect("a line for the log");
+        assert!(line.contains(&*kept.to_string_lossy()) && line.contains("person's own"), "{line}");
         f.run(&lib, &mut ledger, true);
         assert!(kept.join("extra.md").is_file(), "left where it lies");
-        // Wanted there now: someone else's file, so left alone too.
+        // Wanted there now: someone else's file, so left alone too, even as
+        // byte for byte the library's.
         let every = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
         let p = f.run(&every, &mut ledger, true);
         assert_eq!(Fixture::status(&p, &kept), Status::Taken);
-        assert!(kept.join("extra.md").is_file());
+        std::fs::remove_file(kept.join("extra.md")).unwrap();
+        let p = f.run(&every, &mut ledger, true);
+        assert_eq!(Fixture::status(&p, &kept), Status::Taken, "never adopted");
+        assert!(!ledger.written.contains_key(&*kept.to_string_lossy()));
         ledger.save(&f.dirs).unwrap();
         let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f.dirs.ledger()).unwrap()).unwrap();
         assert!(saved.get("kept").is_none() && saved.get("worded").is_none(), "{saved}");
+        let mut ledger = Ledger::load(&f.dirs);
+        assert!(ledger.left_by_0_19_line().is_none(), "said once");
+        // Still not adopted after the save; unassigned, it stays.
+        assert_eq!(Fixture::status(&f.run(&every, &mut ledger, true), &kept), Status::Taken);
+        f.run(&lib, &mut ledger, true);
+        assert!(kept.join(SKILL_FILE).is_file(), "not Luna's to take out");
+
+        // Gone: the place is the library's again.
+        std::fs::remove_dir_all(&kept).unwrap();
+        f.run(&every, &mut ledger, true);
+        assert!(ledger.written.contains_key(&*kept.to_string_lossy()) && ledger.disowned.is_empty());
+    }
+
+    /// Files a person or a tool put into a folder of Luna's (a Python
+    /// cache, a `.DS_Store`, a draft named as Luna's temp files are) are no
+    /// part of the copy: not a change, not backed up, not written over; once
+    /// the skill is no longer wanted Luna's own files go and they stay, in
+    /// their folder. On a Claude Code and a Codex account alike.
+    #[test]
+    fn what_others_put_in_a_skill_folder_is_left_alone() {
+        let f = Fixture::new("extras");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let extras = ["__pycache__/helper.cpython-312.pyc", ".DS_Store", "draft.luna-tmp", "node_modules/x/index.js"];
+        let copies = [f.account(0).join("skills").join("review"), f.account(1).join("skills").join("review")];
+        for c in &copies {
+            for e in extras {
+                write_file(&c.join(e), b"theirs").unwrap();
+            }
+        }
+
+        let p = f.run(&lib, &mut ledger, true);
+        for c in &copies {
+            assert_eq!(Fixture::status(&p, c), Status::Current, "{}", c.display());
+        }
+        f.skill("review", "v2");
+        f.run(&lib, &mut ledger, true);
+        assert!(walk(&f.dirs.backups()).is_empty(), "nothing of theirs backed up");
+        for c in &copies {
+            assert!(std::fs::read_to_string(c.join(SKILL_FILE)).unwrap().contains("v2"));
+            for e in extras {
+                assert_eq!(std::fs::read(c.join(e)).unwrap(), b"theirs", "{e}");
+            }
+        }
+
+        f.run(&LibrarySettings::default(), &mut ledger, true);
+        assert!(ledger.written.is_empty());
+        assert!(walk(&f.dirs.backups()).is_empty());
+        for c in &copies {
+            assert!(!c.join(SKILL_FILE).exists(), "Luna's file taken out");
+            for e in extras {
+                assert!(c.join(e).is_file(), "{e} stays");
+            }
+        }
+    }
+
+    /// A copy that changes again between the pass's look and its write or
+    /// removal (a CLI saving it meanwhile) is left for the next pass: what
+    /// was saved stays, nothing of it lost.
+    #[test]
+    fn a_copy_changed_while_the_pass_is_at_it_is_left_for_the_next() {
+        let f = Fixture::new("race");
+        f.instructions("main", "Be brief.\n");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { instructions: first(all()), skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let agents_md = f.account(1).join("AGENTS.md");
+        std::fs::write(&agents_md, "Mine.\n").unwrap();
+        let units = units(&f.dirs, &lib, &f.accounts, &read_skills(&f.dirs), &read_instructions(&f.dirs), &ledger);
+        let u = units.iter().find(|u| u.dest == agents_md).unwrap();
+        let key = agents_md.to_string_lossy().into_owned();
+        let source = u.source.as_ref().unwrap();
+        let there = read_at(&agents_md, true).unwrap().unwrap();
+        // Saved again after the look.
+        std::fs::write(&agents_md, "Mine, saved again.\n").unwrap();
+        let noted = ledger.written.get(&key).cloned();
+        let same = |all: Files| all;
+        let laid = lay_over(&f.dirs, u, &key, source, &hashes(source), noted.as_ref(), Some(&there), true, &same, &mut ledger);
+        assert_eq!(laid, Ok(false));
+        assert_eq!(f.read(1, "AGENTS.md"), "Mine, saved again.\n");
+        assert_eq!(ledger.written.get(&key), noted.as_ref(), "still Luna's, for the next pass");
+
+        // The same for a skill no longer wanted: its file saved meanwhile.
+        let copy = f.account(0).join("skills").join("review");
+        let there = read_at(&copy, false).unwrap().unwrap();
+        std::fs::write(copy.join(SKILL_FILE), "edited meanwhile").unwrap();
+        let ok = |_: &Path| -> Result<(), String> { Ok(()) };
+        assert!(take_out_copy(&f.dirs, &copy, false, &there, false, &ok).unwrap_err().contains("changed"));
+        assert_eq!(std::fs::read_to_string(copy.join(SKILL_FILE)).unwrap(), "edited meanwhile");
+
+        // At the next pass, each is backed up and made the library's.
+        f.run(&lib, &mut ledger, true);
+        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n");
+        assert!(backed_up(&f.dirs).iter().any(|b| b == "Mine, saved again.\n"));
+    }
+
+    /// A write that stops partway notes as Luna's only what it did write: a
+    /// person's file it did not get to is never taken for Luna's.
+    #[test]
+    fn a_failed_write_notes_only_what_it_wrote() {
+        let h = |s: &str| hashes(&Files::from([(String::new(), s.as_bytes().to_vec())]));
+        let one = |s: &str| Files::from([(String::new(), s.as_bytes().to_vec())]);
+        // A file: nothing written, the person's bytes still there.
+        assert_eq!(noted_after_failure(Some(&h("Luna's")), &h("library's"), Some(&one("mine"))), h("Luna's"));
+        assert!(noted_after_failure(None, &h("library's"), Some(&one("mine"))).is_empty());
+        // A skill: SKILL.md written, `guide.md` still the person's, `old.md`
+        // (no longer the library's) taken out.
+        let lib = Files::from([(SKILL_FILE.to_string(), b"v2".to_vec()), ("guide.md".to_string(), b"g2".to_vec())]);
+        let before = hashes(&Files::from([
+            (SKILL_FILE.to_string(), b"v1".to_vec()),
+            ("guide.md".to_string(), b"g1".to_vec()),
+            ("old.md".to_string(), b"o".to_vec()),
+        ]));
+        let now = Files::from([(SKILL_FILE.to_string(), b"v2".to_vec()), ("guide.md".to_string(), b"mine".to_vec())]);
+        let left = noted_after_failure(Some(&before), &hashes(&lib), Some(&now));
+        assert_eq!(left[SKILL_FILE], hashes(&lib)[SKILL_FILE]);
+        assert_eq!(left["guide.md"], before["guide.md"], "the person's file is not noted as Luna's");
+        assert!(!left.contains_key("old.md"));
+    }
+
+    /// An account Luna does not list for the moment, its folder still there:
+    /// its copies, changed there or not, keep their notes as they are, and
+    /// are Luna's again once it is back.
+    #[test]
+    fn an_account_not_listed_keeps_its_notes() {
+        let f = Fixture::new("absent");
+        f.instructions("main", "Be brief.\n");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { instructions: first(all()), skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        std::fs::write(f.account(2).join("CLAUDE.md"), "Mine.\n").unwrap();
+        let before = ledger.written.clone();
+        let two = &f.accounts[..2];
+        let run_two = |ledger: &mut Ledger| {
+            let units = units(&f.dirs, &lib, two, &read_skills(&f.dirs), &read_instructions(&f.dirs), ledger);
+            pass(&f.dirs, two, &lib.folders, &units, &lib.skipped, ledger, true)
+        };
+        run_two(&mut ledger);
+        assert_eq!(ledger.written, before, "its notes stay as they were");
+        assert_eq!(f.read(2, "CLAUDE.md"), "Mine.\n");
+        assert!(f.account(2).join("skills").join("review").join(SKILL_FILE).is_file());
+        assert!(walk(&f.dirs.backups()).is_empty());
+
+        f.run(&lib, &mut ledger, true);
+        assert_eq!(f.read(2, "CLAUDE.md"), "Be brief.\n", "Luna's copy, written over");
+        assert_eq!(backed_up(&f.dirs), ["Mine.\n"]);
+    }
+
+    /// A listed folder that lies in an account (its `skills`, listed as a
+    /// folder of its own): a copy of Luna's in it, changed there and no
+    /// longer wanted, is that folder's own and stays.
+    #[test]
+    fn a_listed_folder_inside_an_account_keeps_a_changed_copy() {
+        let f = Fixture::new("listed-inside");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let copy = f.account(0).join("skills").join("review");
+        std::fs::write(copy.join(SKILL_FILE), "the team's").unwrap();
+        let listed =
+            LibraryFolder { path: f.account(0).join("skills").to_string_lossy().into_owned(), slug: "s".into(), ..Default::default() };
+        let none = LibrarySettings { folders: vec![listed], ..Default::default() };
+        f.run(&none, &mut ledger, true);
+        assert_eq!(std::fs::read_to_string(copy.join(SKILL_FILE)).unwrap(), "the team's");
+        assert!(!f.account(1).join("skills").join("review").exists(), "elsewhere Luna's goes");
+        assert!(ledger.written.is_empty());
+        assert!(walk(&f.dirs.backups()).is_empty());
+    }
+
+    /// A folder's copies changed where they wait (Claude Code's in
+    /// `library-folders/`, Codex's in the account's plugin): written over
+    /// while wanted, taken out once not, each backed up first.
+    #[test]
+    fn a_folders_changed_copies_are_written_over_and_taken_out() {
+        let f = Fixture::new("folder-changed");
+        f.skill("review", "v1");
+        let repo = f.base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let folder = |skills: BTreeMap<String, Reach>| LibraryFolder {
+            path: repo.to_string_lossy().into_owned(),
+            skills,
+            slug: "repo".into(),
+            ..Default::default()
+        };
+        let lib = LibrarySettings { folders: vec![folder(BTreeMap::from([("review".into(), all())]))], ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let claude = claude_folder_dir(&f.dirs, "repo", &f.accounts[0]).join(".claude").join("skills").join("review");
+        let codex = codex_plugin_dir(&f.accounts[1], "repo").join("skills").join("review");
+        for (c, was) in [(&claude, "claude's edit"), (&codex, "codex's edit")] {
+            std::fs::write(c.join(SKILL_FILE), was).unwrap();
+        }
+        f.run(&lib, &mut ledger, true);
+        let backed = backed_up(&f.dirs);
+        for (c, was) in [(&claude, "claude's edit"), (&codex, "codex's edit")] {
+            assert!(std::fs::read_to_string(c.join(SKILL_FILE)).unwrap().contains("v1"), "{}", c.display());
+            assert!(backed.iter().any(|b| b == was), "{was}: {backed:?}");
+            std::fs::write(c.join(SKILL_FILE), format!("{was}, again")).unwrap();
+        }
+
+        let none = LibrarySettings { folders: vec![folder(BTreeMap::new())], ..Default::default() };
+        f.run(&none, &mut ledger, true);
+        let backed = backed_up(&f.dirs);
+        for (c, was) in [(&claude, "claude's edit"), (&codex, "codex's edit")] {
+            assert!(!c.exists(), "{}", c.display());
+            assert!(backed.iter().any(|b| *b == format!("{was}, again")), "{was}: {backed:?}");
+        }
+        assert!(ledger.written.is_empty());
     }
 
     /// A link standing for an account's `skills` folder, to a folder holding

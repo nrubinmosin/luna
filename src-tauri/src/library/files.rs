@@ -117,34 +117,85 @@ pub(super) fn read_at(dest: &Path, file: bool) -> Result<Option<Files>, String> 
 }
 
 /// Makes a destination hold exactly `files`: what differs is written, what is
-/// there beyond them goes, and folders that leaves empty go too. Only ever on
-/// Luna's own copy, a backup taken where it was changed there, or the
-/// library's own files.
+/// there beyond them goes, and folders that leaves empty go too. For the
+/// library's own files, and a test's; a copy in a destination goes through
+/// `write_over`, which leaves alone what is not Luna's there.
 pub(super) fn write_at(dest: &Path, file: bool, files: &Files) -> Result<(), String> {
+    let there = if file || !dest.is_dir() { Files::new() } else { read_dir_files(dest)? };
+    write_over(dest, file, files, &there)?;
+    if !file {
+        prune_empty(dest);
+    }
+    Ok(())
+}
+
+/// Makes Luna's part of a destination `files`, where `there` is that part as
+/// it was just read (`luna_part`): what of `there` the library no longer has
+/// goes, with the folders that leaves empty, and what differs is written.
+/// Nothing else in a skill's folder is looked at, written or taken out.
+pub(super) fn write_over(dest: &Path, file: bool, files: &Files, there: &Files) -> Result<(), String> {
     if file {
         return write_copy(dest, files.get("").map(Vec::as_slice).unwrap_or_default());
     }
     std::fs::create_dir_all(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
-    let old = read_dir_files(dest)?;
     // What goes, goes first: a file renamed only in case (`guide.md` to
     // `GUIDE.md`) is one file where case is ignored, which a write and then
     // the old name's removal would leave with neither.
-    for rel in old.keys().filter(|r| !files.contains_key(*r)) {
-        let p = join_rel(dest, rel);
-        std::fs::remove_file(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    for rel in there.keys().filter(|r| !files.contains_key(*r)) {
+        remove_file_in(dest, rel)?;
     }
-    prune_empty(dest);
     for (rel, bytes) in files {
-        if old.get(rel) != Some(bytes) {
+        if there.get(rel) != Some(bytes) {
             write_copy(&join_rel(dest, rel), bytes)?;
         }
     }
     Ok(())
 }
 
-pub(super) fn remove_at(dest: &Path, file: bool) -> Result<(), String> {
-    let r = if file { std::fs::remove_file(dest) } else { std::fs::remove_dir_all(dest) };
-    r.map_err(|e| format!("{}: {e}", dest.display()))
+/// The file `rel` under `dest` taken out, and each folder on the way to it
+/// that this leaves empty, up to `dest` itself (not included).
+fn remove_file_in(dest: &Path, rel: &str) -> Result<(), String> {
+    let p = join_rel(dest, rel);
+    std::fs::remove_file(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let mut at = p.parent();
+    while let Some(dir) = at.filter(|d| d.starts_with(dest) && *d != dest) {
+        if std::fs::remove_dir(dir).is_err() {
+            break;
+        }
+        at = dir.parent();
+    }
+    Ok(())
+}
+
+/// Takes Luna's part of a destination out, `there` as `luna_part` just read
+/// it: the file, or in a skill's folder those files alone, then the folder
+/// if that leaves it empty. What else a person or a tool put in it stays,
+/// and so does the folder around it.
+pub(super) fn take_out(dest: &Path, file: bool, there: &Files) -> Result<(), String> {
+    if file {
+        return std::fs::remove_file(dest).map_err(|e| format!("{}: {e}", dest.display()));
+    }
+    for rel in there.keys() {
+        remove_file_in(dest, rel)?;
+    }
+    let _ = std::fs::remove_dir(dest);
+    Ok(())
+}
+
+/// The part of what a destination holds that is Luna's to compare, write
+/// over or take out: the file itself, or in a skill's folder the files at
+/// the paths in `owned` (what Luna wrote there, and what the library has for
+/// it). Whatever else a person or a tool put in the folder (a `__pycache__/`,
+/// a `node_modules/`, a `.DS_Store`, a file of its own) is left out of it,
+/// so it is never taken for a change, backed up or removed. Paths are
+/// matched as the file system tells them apart: without case on Windows.
+pub(super) fn luna_part<'a>(all: Files, file: bool, owned: impl IntoIterator<Item = &'a String>) -> Files {
+    if file {
+        return all;
+    }
+    let key = |r: &str| if cfg!(windows) { r.to_lowercase() } else { r.to_string() };
+    let owned: BTreeSet<String> = owned.into_iter().map(|r| key(r)).collect();
+    all.into_iter().filter(|(rel, _)| owned.contains(&key(rel))).collect()
 }
 
 /// Whether a ledger entry is a single file: it has the one key "".
@@ -152,12 +203,20 @@ pub(super) fn is_file(h: &Hashes) -> bool {
     h.len() == 1 && h.contains_key("")
 }
 
-/// 0.19's `library-blobs/` gone, where it is still there. `remove_dir_all`
-/// takes a link there out as itself, never what it leads to.
+/// 0.19's `library-blobs/` gone, at the first save of a ledger 0.19 wrote
+/// (`Ledger::older`): never in a data folder no Luna of 0.19 used. A link
+/// there goes as itself, never what it leads to; `remove_dir_all` takes no
+/// link below it into what that leads to either.
 pub(super) fn drop_old_blobs(dirs: &Dirs) {
     let old = dirs.old_blobs();
-    if std::fs::symlink_metadata(&old).is_ok() {
-        let _ = std::fs::remove_dir_all(&old);
+    match std::fs::symlink_metadata(&old) {
+        Ok(m) if crate::boundary::is_link(&m) => {
+            let _ = std::fs::remove_dir(&old).or_else(|_| std::fs::remove_file(&old));
+        }
+        Ok(m) if m.is_dir() => {
+            let _ = std::fs::remove_dir_all(&old);
+        }
+        _ => {}
     }
 }
 
@@ -187,6 +246,9 @@ pub(super) fn backup_slot(dirs: &Dirs, from: &Path) -> Result<PathBuf, String> {
     let tail: String = tail.into_iter().rev().collect::<Vec<_>>().join("-").chars().filter(|c| !matches!(c, ':' | '\\' | '/')).collect();
     let backups = dirs.backups();
     std::fs::create_dir_all(&backups).map_err(|e| format!("{}: {e}", backups.display()))?;
+    // A link there (a junction to an archive, say) would take the backups,
+    // and their sweep, wherever it leads.
+    backups_are_lunas(dirs)?;
     for n in 1.. {
         let name = if n == 1 { format!("{stamp}-{tail}") } else { format!("{stamp}-{tail}-{n}") };
         let slot = backups.join(name);
@@ -250,12 +312,45 @@ pub(super) fn no_link_between(top: &Path, dest: &Path) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// The backups' folder as Luna's own: a folder, no link or junction.
+fn backups_are_lunas(dirs: &Dirs) -> Result<(), String> {
+    let backups = dirs.backups();
+    match std::fs::symlink_metadata(&backups) {
+        Ok(m) if crate::boundary::is_link(&m) => {
+            Err(format!("{} is a link or junction — Luna keeps no backup through it", backups.display()))
+        }
+        Ok(m) if !m.is_dir() => Err(format!("{} is not a folder", backups.display())),
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("{}: {e}", backups.display())),
+    }
+}
+
+/// Whether `name` is one `backup_slot` gives: `YYYYmmdd-HHMMSS-mmm-` and
+/// the path's tail.
+fn is_slot_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    let digits = |r: std::ops::Range<usize>| b.get(r).is_some_and(|d| d.iter().all(u8::is_ascii_digit));
+    b.len() > 20 && digits(0..8) && b[8] == b'-' && digits(9..15) && b[15] == b'-' && digits(16..19) && b[19] == b'-'
+}
+
+/// Backups past `BACKUP_DAYS` taken out: only folders of Luna's own slot
+/// naming, each as itself. A link among them, or the backups' folder a link,
+/// is left alone, and `remove_dir_all` follows no link below.
 pub(super) fn sweep_backups(dirs: &Dirs) {
-    let limit = std::time::Duration::from_secs(BACKUP_DAYS * 86_400);
+    sweep_backups_past(dirs, std::time::Duration::from_secs(BACKUP_DAYS * 86_400));
+}
+
+fn sweep_backups_past(dirs: &Dirs, limit: std::time::Duration) {
+    if backups_are_lunas(dirs).is_err() {
+        return;
+    }
     if let Ok(entries) = std::fs::read_dir(dirs.backups()) {
         for entry in entries.flatten() {
-            let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > limit);
-            if old {
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+            if crate::boundary::is_link(&meta) || !meta.is_dir() || !is_slot_name(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            if meta.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > limit) {
                 let _ = std::fs::remove_dir_all(entry.path());
             }
         }
@@ -324,20 +419,63 @@ mod tests {
         assert_eq!(std::fs::read(one.join("from.txt")).unwrap(), a.to_string_lossy().as_bytes());
     }
 
-    /// 0.19's blobs go at a pass, all of them; a link in their place goes as
-    /// itself, what it leads to staying.
+    /// 0.19's blobs go at the first save of a ledger 0.19 wrote, all of
+    /// them; a link in their place goes as itself, what it leads to staying.
+    /// A data folder with no such ledger keeps a `library-blobs` of its own.
     #[test]
-    fn the_old_blobs_go() {
+    fn the_old_blobs_go_with_0_19_s_ledger_alone() {
         let f = Fixture::new("old-blobs");
-        write_file(&f.dirs.old_blobs().join("00ab"), b"what Luna wrote").unwrap();
-        drop_old_blobs(&f.dirs);
+        write_file(&f.dirs.old_blobs().join("00ab"), b"not Luna's").unwrap();
+        Ledger::default().save(&f.dirs).unwrap();
+        let mut ledger = Ledger::load(&f.dirs);
+        ledger.save(&f.dirs).unwrap();
+        assert!(f.dirs.old_blobs().join("00ab").is_file(), "no 0.19 ledger: not Luna's to take");
+
+        let old_19 = |f: &Fixture| std::fs::write(f.dirs.ledger(), r#"{ "written": {} }"#).unwrap();
+        old_19(&f);
+        Ledger::load(&f.dirs).save(&f.dirs).unwrap();
         assert!(std::fs::symlink_metadata(f.dirs.old_blobs()).is_err());
+        ledger = Ledger::load(&f.dirs);
+        assert!(!ledger.older, "once");
 
         let elsewhere = f.base.join("elsewhere");
         write_file(&elsewhere.join("keep"), b"not Luna's").unwrap();
         link_dir(&f.dirs.old_blobs(), &elsewhere);
-        drop_old_blobs(&f.dirs);
+        old_19(&f);
+        Ledger::load(&f.dirs).save(&f.dirs).unwrap();
         assert!(std::fs::symlink_metadata(f.dirs.old_blobs()).is_err());
         assert!(elsewhere.join("keep").is_file());
+    }
+
+    /// The backups' folder made a link (a junction on Windows): no backup is
+    /// written through it, and the sweep takes nothing out through it. In
+    /// the folder itself the sweep takes only Luna's own slots, and a link
+    /// among them as nothing.
+    #[test]
+    fn backups_are_kept_and_swept_in_luna_s_own_folder_alone() {
+        let f = Fixture::new("backups-link");
+        let mine = Files::from([(String::new(), b"mine".to_vec())]);
+        let at = f.account(0).join("CLAUDE.md");
+        let slot = back_up(&f.dirs, &at, &mine).unwrap();
+        let theirs = f.dirs.backups().join("archive");
+        write_file(&theirs.join("keep"), b"theirs").unwrap();
+        let elsewhere = f.base.join("elsewhere");
+        write_file(&elsewhere.join("20200101-000000-000-x").join("keep"), b"theirs").unwrap();
+        let linked = f.dirs.backups().join("20200101-000000-000-link");
+        link_dir(&linked, &elsewhere);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        sweep_backups_past(&f.dirs, std::time::Duration::ZERO);
+        assert!(!slot.exists(), "Luna's own slot swept");
+        assert!(theirs.join("keep").is_file(), "a folder not of Luna's naming stays");
+        assert!(elsewhere.join("20200101-000000-000-x").join("keep").is_file(), "nothing through a link");
+        unlink_dir(&linked);
+
+        std::fs::remove_dir_all(f.dirs.backups()).unwrap();
+        link_dir(&f.dirs.backups(), &elsewhere);
+        assert!(back_up(&f.dirs, &at, &mine).unwrap_err().contains("link"));
+        sweep_backups_past(&f.dirs, std::time::Duration::ZERO);
+        assert!(elsewhere.join("20200101-000000-000-x").join("keep").is_file());
+        assert_eq!(walk(&elsewhere).len(), 1, "nothing written there");
+        unlink_dir(&f.dirs.backups());
     }
 }

@@ -145,22 +145,44 @@ skills to each.
 The library is the source of truth and every place holds a copy. Luna remembers
 what it wrote where, and only that makes a copy Luna's: anything else in a
 place, a file of yours or of a CLI's that Luna did not write, stays as it is,
-and the library's copy does not go there until it is gone.
+and the library's copy does not go there while it is. Such a place says so in
+the window; it clears once the file is gone (the library's copy then goes
+there) or once you leave the place out.
 
 Luna's own copies always end up as the library has them. One changed where it
-lies (by hand, or by a model improving a skill in place) has the library's
-written over it the next time the library is laid out; one deleted there is put
-back; one no longer meant for its place (a skill un-ticked for an account, say)
-is taken out, changed there or not. What a change there had made is kept in
-Luna's backups (`library-backups` in its data folder) for 30 days, and Luna's
-log names each place written over or taken out and where its backup is. So a
-skill or instructions are changed for good in the library, not in an account.
-A place left out is no longer Luna's: whatever is there stays.
+lies has the library's written over it the next time the library is laid out,
+which is before every session Luna starts; one deleted there is put back; one
+no longer meant for its place (a skill un-ticked for an account, say) is taken
+out, changed there or not. What a change there had made is kept in Luna's
+backups (`library-backups` in its data folder) for 30 days, and Luna's log names
+each place written over or taken out and where its backup is.
+
+**Edit in the library, not in an account.** An edit made inside an account to
+something Luna laid out there is undone at the next session start, a backup of
+it kept for 30 days: Claude Code's `/memory` on the account's `CLAUDE.md`, a
+model improving a skill in place with skill-creator, a hand edit of an
+account's `AGENTS.md` or `skills/<name>/SKILL.md`. Make the change in the
+library's own file (the editor here, or the file under the library's folder)
+and every copy follows. A place left out is no longer Luna's: whatever is there
+stays.
+
+In a skill's folder only the files Luna wrote are Luna's. Anything a person or
+a tool adds beside them (a `__pycache__/`, a `node_modules/`, a `.DS_Store`, a
+file of your own) is not looked at, backed up or removed; when the skill is no
+longer meant for that place, Luna's files go and the folder stays with the
+rest in it. A copy that changes while the library is being laid out (a CLI
+saving it at that moment) is left until the next time.
 
 A copy an earlier Luna laid into one of the library's folders itself, changed
-there since, is that folder's own and stays. Copies that Luna 0.19 left in
-place as no longer wanted but changed there, waiting under its Needs a look,
-are yours from 0.20 on: they stay where they are, and the log names them once.
+there since, is that folder's own and stays. An account Luna does not list for
+the moment keeps its copies as they are until it is back.
+
+**From 0.19.** The first time 0.20 lays the library out, every copy that waited
+under 0.19's Needs a look as changed there has the library's written over it
+(the change in the backups), and every one deleted there comes back. Copies
+0.19 kept in place as no longer wanted but changed there are yours from 0.20 on:
+they stay where they are, Luna never takes them back even if they come to hold
+just what the library has, and the log names them once.
 
 **Sync all**, at the top of the window, lays the library out at once. A copy
 that cannot be laid out (a skill whose `SKILL.md` does not do) stays as it is

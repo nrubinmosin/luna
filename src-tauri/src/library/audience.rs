@@ -500,8 +500,9 @@ mod tests {
             ("cleanup".into(), LEADS_AND_HELPERS),
             ("solo".into(), Audience::CHATS),
         ]);
-        f.run(&lib, &mut Ledger::default(), true);
-        codex_manifests(&lib, &f.accounts);
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
         let elsewhere = f.base.join("elsewhere").to_string_lossy().into_owned();
         (lib, repo.to_string_lossy().into_owned(), elsewhere)
     }

@@ -116,10 +116,9 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
     let units = if found { units(&dirs, &lib, &accounts, &skills, &instructions, &ledger) } else { Vec::new() };
     let p = pass(&dirs, &accounts, &lib.folders, &units, &lib.skipped, &mut ledger, act && found);
     if act && found {
-        codex_manifests(&lib, &accounts);
+        codex_manifests(&lib, &accounts, &mut ledger);
         prune_folder_dirs(&dirs, &lib);
         ledger.save(&dirs)?;
-        drop_old_blobs(&dirs);
         sweep_backups(&dirs);
     }
     // Where instructions do go, a file Luna did not write is the place's own

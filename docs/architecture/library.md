@@ -240,38 +240,83 @@ there, and the ledger's hashes of what Luna wrote last
 copy Luna wrote, adopted (byte for byte the library's when first seen) or took
 in (an account's own instructions made the library's, `library_take_in`).
 
-| On disk vs. library and ledger | Status looking | Acting |
+In a skill's folder only Luna's part is looked at (`luna_part`): the files at
+the paths the ledger notes for it and those the library has for it, matched
+without case on Windows. Anything else in the folder (a `__pycache__/`, a
+`node_modules/`, a `.DS_Store`, a `*.luna-tmp` someone named so) is never
+compared, backed up, written over or removed: `write_over` writes and removes
+only within that part, and `take_out` removes Luna's files, the folders that
+leaves empty, and the skill's folder only if nothing is left in it. Adoption
+alone looks at the whole folder: only one holding the library's files and
+nothing else becomes Luna's.
+
+| Luna's part on disk vs. library and ledger | Status looking | Acting |
 | --- | --- | --- |
-| equal to the library | `current` | adopted where the ledger has no note |
+| equal to the library | `current` | adopted where the ledger has no note (the whole folder equal) |
 | missing (deleted there, or not yet written) | `missing` | written |
 | equal to the ledger, behind the library | `behind` | written |
 | different from the ledger (changed there) | `behind` | backed up, then written over |
 | no ledger entry and different | `taken` | nothing: someone else's |
+| a place 0.19 kept (`disowned`) holding anything | `taken` | nothing, even equal to the library |
 | no longer wanted, equal to the ledger | not shown | taken out |
 | no longer wanted, different from the ledger | not shown | backed up, then taken out |
+| no longer wanted, changed, in a listed folder | not shown | its note goes, the file stays |
+| in an account not listed now, or a folder no longer listed | not shown | nothing; the note stays |
 | a place left out (`library.skipped`) | `skipped` | nothing: `library_skip` dropped its note, so whatever is there is someone else's |
+
+`taken` clears on its own once the file is gone (the next pass writes the
+library's copy there) or once the place is left out (`skipped`); nothing Luna
+does writes over it. The old window lists it under its Needs a look, where
+only **Leave out** still works.
 
 What a change there had made goes to `<data>/library-backups/` (swept after
 30 days) before the library's goes over it or it is taken out, each backup in
 a folder of its own: `backup_slot` makes it exclusively, with a count after a
 name taken, so two accounts' `skills/review` backed up in one millisecond do
 not share one. A backup that will not write leaves the copy as it is, `failed`
-for the pass with why, and the next pass tries again. Each write over a changed
+for the pass with why, and the next pass tries again. `library-backups` that
+is a link or junction, or no folder, takes no backup (`backups_are_lunas`),
+and the sweep then takes nothing out; otherwise it takes out only folders of
+`backup_slot`'s naming (`YYYYmmdd-HHMMSS-mmm-<tail>`), never one that is a
+link, and `remove_dir_all` follows no link below. Each write over a changed
 copy, each copy put back where it was deleted and each changed copy taken out
 is logged with its path and its backup. Nothing is backed up of a copy still
-as Luna wrote it. A copy no longer wanted, changed since an earlier Luna laid
-it into a listed folder itself (outside every account's folder and Luna's
-data folder), is that folder's own: its note goes, the file stays, said in the
-log.
+as Luna wrote it.
+
+Right before it writes over or takes out a copy, after the backup, the pass
+reads Luna's part again (`still_as`): where it is no longer what was read (and
+backed up), a CLI or an editor having saved meanwhile, the copy is left for
+the next pass, logged, its note as it was. A write that stops partway
+(a file held open) notes as Luna's only the files now exactly the library's,
+the rest keeping the note they had (`noted_after_failure`), so a person's file
+it did not reach is never taken for Luna's and is backed up at the next pass.
+
+A copy no longer wanted, changed since an earlier Luna laid it into a listed
+folder itself, is that folder's own wherever the folder lies, inside an
+account or Luna's data folder too: its note goes, the file stays, said in the
+log. A note of a place in no account `list_accounts` gives now, nor a listed
+folder, nor Luna's `library-folders/` (an account taken off Luna's list with
+its folder left, or one not there for the moment, or a folder no longer
+listed) is kept as it is, logged once a run, and the copy is Luna's again
+once the account is back. Ownership goes by the path: an account registered
+at a path is the one Luna manages there, so a different account later put at
+the same path takes over its notes (accepted).
+
+The Codex plugin manifest of a listed folder (`codex_manifests`) is written
+while the plugin holds a copy and noted in the ledger's `manifests`; one is
+taken out only where noted, so a plugin someone else put in Luna's
+marketplace folder keeps its manifest.
 
 Luna 0.19 kept the bytes of every copy in `library-blobs/` for its window's
 differences, and kept a copy no longer wanted but changed there in the
-ledger's `kept` until the window settled it. Neither is read now: the first
-acting pass takes `library-blobs/` out (`drop_old_blobs`; a link there goes as
-itself), and the first save of the ledger drops `kept`, naming those copies in
-the log; they stay where they are, the person's own. 0.19's `worded`, the line
-it wrote into each chats' copy for taking one back into the library, is
-ignored the same way.
+ledger's `kept` until the window settled it. A ledger read with no `format`
+is 0.19's (`Ledger::older`), and its first save takes `library-blobs/` out
+(`drop_old_blobs`: a link there goes as itself), once; a data folder with no
+such ledger keeps any `library-blobs` it has. `kept` is moved into
+`disowned` at the load and named in the log at that save: those copies stay
+where they are, the person's own, never adopted, until nothing is there.
+0.19's `worded`, the line it wrote into each chats' copy for taking one back
+into the library, is not read.
 
 Passes run when the window starts, before every session start, after every
 change in the window and on Sync all, one at a time under a lock file beside the
@@ -380,6 +425,9 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
 | A copy of Luna's edited in place, then no longer wanted there | backed up, then taken out, logged |
 | A file Luna did not write where a copy goes | `taken`, left alone; the library's copy goes there once it is gone |
 | The backups will not write | the changed copy is neither written over nor taken out: `failed` for the pass, tried again at the next |
+| A copy saved again while the pass is at it | left for the next pass, logged; nothing of it lost |
+| `library-backups` is a link or junction | no backup written, so no changed copy written over or taken out; the sweep takes nothing |
+| Files added inside a skill's folder of Luna's | not part of the copy: never compared, backed up or removed |
 | Settings unreadable | no pass (`get_checked`) |
 | The lock file cannot be opened or locked (tried three times, 50 ms apart; a disk that cannot lock files) | every change, Sync all, a take-in and an adoption refused with `Nothing laid out: no lock on ...`, nothing written; a session or a helper's turn starts without its pass, said in the log; the overview still reads |
 | Sessions started outside Luna | see the account's copies only, not folder skills |

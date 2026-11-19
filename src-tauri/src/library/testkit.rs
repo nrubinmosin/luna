@@ -159,8 +159,9 @@ impl GoldenLibrary {
             slug: Self::SLUG.into(),
         };
         let lib = LibrarySettings { skills: skills(&["review"]), folders: vec![folder], ..Default::default() };
-        f.run(&lib, &mut Ledger::default(), true);
-        codex_manifests(&lib, &f.accounts);
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
         let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
         HELD.lock().unwrap_or_else(|e| e.into_inner()).push((dirs, lib, f.accounts.clone()));
         GoldenLibrary { folder: repo.to_string_lossy().into_owned(), f }
