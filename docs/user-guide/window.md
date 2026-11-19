@@ -14,6 +14,51 @@ for the window this page describes, which still has everything else; Luna
 opens that one by itself where the native window cannot open (no usable
 graphics device).
 
+## The native window's terminal
+
+The native window's terminal shows one chat's CLI and takes its input; the
+board does not open chats in it yet (the test build opens them by hand). What
+it does, and how it differs from the WebView window's terminal:
+
+- **Copy:** select with the mouse (drag; a double-click takes a word, a
+  triple-click a line). Ctrl+C over a selection copies it and clears it; with
+  nothing selected it interrupts the CLI. Ctrl+Shift+C and Ctrl+Insert copy
+  too (in the WebView window Ctrl+Shift+C does nothing). Selecting alone
+  copies nothing. Hold Shift to select where the CLI takes the mouse.
+- **Paste:** Ctrl+V, Ctrl+Shift+V or Shift+Insert (Cmd+V on macOS). Text goes
+  in as a paste the CLI can tell from typing, without the control characters
+  it may hold (all but tabs and line breaks), so a pasted text never acts as
+  keys. What you type while a paste is on its way goes in after it. While
+  the terminal is coming back to a running chat it takes no keys until it
+  has caught up.
+- **Files:** files copied in Explorer and pasted, or dropped on a terminal from
+  outside the window, are typed in as their paths, each in quotes, the way
+  the CLI attaches them. Unlike the WebView window, nothing is copied into
+  Luna's media store first: the paths are the files' own. A path with a
+  control character in it (or, on Windows, a `"`) cannot be typed whole, and
+  the files are not pasted.
+- **Images:** a screenshot or another picture on the clipboard, with no text
+  and no file beside it, presses the CLI's own image-paste key (Alt+V for
+  Claude Code, Ctrl+V for Codex), which reads the clipboard itself; so does a
+  paste of nothing the window can read, as in the WebView window.
+- **Scrolling:** the wheel, or Shift+PageUp and Shift+PageDown, go through the
+  lines above the screen; typing goes back to the bottom. Where the CLI takes
+  the mouse, the wheel is its.
+- **Look:** the window's font (Cascadia Mono) and its light or dark theme;
+  the cursor never blinks, and is hollow while the terminal does not have the
+  keyboard. Box drawing and block characters are drawn as shapes, so frames
+  join up at any size.
+- **Links are plain text:** nothing in the terminal opens a browser.
+- **The core:** while Luna's core is being found or replaced the terminal
+  says it is waiting for it, and starts or resumes the chat once it is up;
+  so it does when the core closed every chat for a shutdown of the PC that
+  you then called off.
+- **A flood of output:** if a CLI writes faster than the terminal can show
+  for long, the terminal drops the excess rather than eat memory, and says
+  `[dropped … of output: the pane fell behind]`.
+  When a chat ends, the terminal says `[session exited]`; keys the CLI did not
+  take are said there too.
+
 ![Four chats in one window](../screenshots/panes.png)
 
 ## Look

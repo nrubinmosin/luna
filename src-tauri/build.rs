@@ -108,9 +108,9 @@ fn main() {
     // "test" for the build scripts/test-build.ps1 makes (paths.rs); empty otherwise.
     println!("cargo:rustc-env=LUNA_FLAVOR={}", std::env::var("LUNA_FLAVOR").unwrap_or_default().trim());
     println!("cargo:rerun-if-env-changed=LUNA_FLAVOR");
-    // `luna_test` for what the test flavor alone may have (the native
-    // window's test hook, native/desktop.rs): compiled out of every other
-    // build, not only switched off.
+    // `luna_test`: what only the test build has (its terminals by argument,
+    // the driver, the stand-in clipboard, the tray's test hook) is compiled
+    // into it alone, never into a release (native.rs, native/desktop.rs).
     println!("cargo::rustc-check-cfg=cfg(luna_test)");
     if flavor.trim() == "test" {
         println!("cargo:rustc-cfg=luna_test");

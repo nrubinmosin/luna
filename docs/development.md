@@ -156,6 +156,26 @@ never activated, and rendered in the app (`Window::render_to_image`) to
 fails the run. It needs gpui's test support, so the app's exe never carries
 it. The macOS workflow (`.github/workflows/gpui.yml`) runs the same harness.
 
+The same exe runs the terminal's burst bench:
+`test-build/luna-window-shots.exe --bench 60 test-build/bench.json` feeds a
+terminal pane 60 s of synthetic bursts through the seam a session's output
+takes and writes its frame times, latencies, lock waits and the grid's
+checksum against a headless replay (architecture/native-window.md,
+"Screenshots").
+
+The test build opens terminals on new sessions with
+`--dev-open claude=<account folder>` and `--dev-open codex=<account folder>`
+(as many as wanted) and `--dev-folder <folder>`; the accounts must be under
+`test-build/accounts`. For a smoke run that may use no global input and must
+not touch the clipboard, `LUNA_TEST_DRIVE` names a file of keys the window
+presses (`keys ctrl-c enter`, `text words`, `focus 2`, `close`, one a line,
+read every 200 ms) and `LUNA_TEST_CLIPBOARD` a JSON file standing in for the
+clipboard (`{"text": ...}`, `{"files": [...]}` or `{"image": true}`; an image
+or nothing types `[test clipboard: image key]` rather than press the CLI's
+key, which would read the real clipboard). They are compiled into the test
+build alone (the `luna_test` cfg both build scripts set for
+`LUNA_FLAVOR=test`); a release has none of them.
+
 ## The native window
 
 The window crate, `src-tauri/crates/window` (package `luna-window`), is a

@@ -23,6 +23,8 @@ mod desktop;
 
 use crate::corecmd::{self, Lane};
 use luna_window::{Answer, Host, Mailbox, OutputSink, ThemePref};
+#[cfg(luna_test)]
+use luna_window::{Provider, SessionSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -321,10 +323,17 @@ pub(crate) fn run() -> Result<(), String> {
     ));
     let title = if crate::paths::is_test() { "Luna Test" } else { "Luna" };
     let services = mailbox.clone();
+    #[cfg(luna_test)]
+    let terminals = dev_terminals(std::env::args().skip(1));
+    #[cfg(not(luna_test))]
+    let terminals = Vec::new();
     let options = luna_window::Options {
         title: title.into(),
         theme: theme(),
         background: crate::background(),
+        terminals,
+        #[cfg(luna_test)]
+        drive_file: std::env::var_os(TEST_DRIVE).map(PathBuf::from),
         on_open: Box::new(move || start(services)),
         on_quit: Box::new(|| {
             crate::lifecycle::exiting("the window's app quit; the core and its sessions stay");
@@ -348,6 +357,66 @@ pub(crate) fn run() -> Result<(), String> {
     let ran = luna_window::run(Arc::new(NativeHost), inbox, options);
     drop(mailbox);
     ran
+}
+
+/// The test build's driver: a file of keys a smoke script has the window
+/// press (luna_window's drive.rs), as no global input may. Compiled into the
+/// test build alone.
+#[cfg(luna_test)]
+const TEST_DRIVE: &str = "LUNA_TEST_DRIVE";
+
+/// The test build's terminals on a session each, until the board has its own
+/// way to open one: `--dev-open claude=<account folder>` or
+/// `--dev-open codex=<account folder>`, as many as wanted, all in
+/// `--dev-folder <folder>`. Session ids are `dev-<provider>-<n>`, by the
+/// order given, so a window started again with the same arguments
+/// reattaches to the sessions the core still runs. The account must be one
+/// the test build lists (test-build/accounts); the core refuses any other.
+/// Compiled into the test build alone.
+#[cfg(luna_test)]
+fn dev_terminals(args: impl Iterator<Item = String>) -> Vec<SessionSpec> {
+    let (mut opens, mut folder) = (Vec::new(), None);
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--dev-open" => opens.extend(args.next()),
+            "--dev-folder" => folder = args.next(),
+            _ => {}
+        }
+    }
+    let Some(folder) = folder else { return Vec::new() };
+    opens
+        .iter()
+        .enumerate()
+        .filter_map(|(n, open)| {
+            let (provider, account) = open.split_once('=')?;
+            Some(match provider {
+                "claude" => SessionSpec {
+                    id: format!("dev-claude-{}", n + 1),
+                    provider: Provider::Claude,
+                    start: luna_window::cmd::ENSURE_CLAUDE_SESSION,
+                    args: serde_json::json!({
+                        "id": format!("dev-claude-{}", n + 1), "folder": folder, "accountPath": account,
+                        "model": "sonnet", "effort": "", "permissionMode": "default", "worktree": false,
+                        "worktreeName": null, "resume": null, "tools": false, "readOnly": false, "agent": null,
+                        "guard": false, "handoff": null,
+                    }),
+                },
+                "codex" => SessionSpec {
+                    id: format!("dev-codex-{}", n + 1),
+                    provider: Provider::Codex,
+                    start: luna_window::cmd::ENSURE_CODEX_SESSION,
+                    args: serde_json::json!({
+                        "id": format!("dev-codex-{}", n + 1), "folder": folder, "accountPath": account,
+                        "model": null, "effort": "medium", "approval": "on-request", "sandbox": "read-only",
+                        "worktree": false, "resume": null, "login": false, "tools": false, "hooksUnasked": false,
+                        "guard": false, "handoff": null,
+                    }),
+                },
+                _ => return None,
+            })
+        })
+        .collect()
 }
 
 /// What runs beside the open window, from its thread.
@@ -421,9 +490,10 @@ mod tests {
     /// Every event the window listens to is one Luna sends.
     #[test]
     fn every_event_the_window_hears_is_sent() {
-        let corelink = include_str!("corelink.rs");
+        let senders =
+            [include_str!("corelink.rs"), include_str!("pty/spawn.rs"), include_str!("pty/mod.rs"), include_str!("power/machine.rs")];
         for event in luna_window::event::ALL {
-            assert!(corelink.contains(&format!("\"{event}\"")), "{event} is sent nowhere");
+            assert!(senders.iter().any(|s| s.contains(&format!("\"{event}\""))), "{event} is sent nowhere");
         }
         // The desktop's, by their names in the window crate.
         let desktop = include_str!("native/desktop.rs");
@@ -549,6 +619,34 @@ mod tests {
         // as none.
         let older = json!({ "state": "up", "core": { "pid": 1, "version": "0.11.0", "build": "x", "fingerprint": "y", "started": 0 }, "error": null });
         assert_eq!(serde_json::from_value::<CoreState>(older).unwrap().core.unwrap().refused, None);
+    }
+
+    /// `--dev-open` makes a terminal per session asked for, each with the
+    /// arguments its start takes, and nothing without a folder.
+    #[cfg(luna_test)]
+    #[test]
+    fn dev_open_asks_for_each_session_as_the_page_would() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter();
+        let specs = dev_terminals(args(&[
+            "--dev-open",
+            "claude=/acc/a",
+            "--dev-folder",
+            "/work",
+            "--dev-open",
+            "codex=/acc/b",
+            "--dev-open",
+            "x=y",
+        ]));
+        assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["dev-claude-1", "dev-codex-2"]);
+        assert_eq!(specs[0].args["accountPath"], "/acc/a");
+        assert_eq!(specs[1].args["folder"], "/work");
+        assert_eq!(specs[1].start, "ensure_codex_session");
+        assert!(dev_terminals(args(&["--dev-open", "claude=/acc/a"])).is_empty());
+        // Every start names the arguments the core's dispatch reads.
+        for spec in &specs {
+            let err = corecmd::dispatch(spec.start, serde_json::json!({})).unwrap_err();
+            assert!(err.starts_with("bad arguments"), "{err}");
+        }
     }
 
     /// The theme's settings file takes what the window sends and gives back

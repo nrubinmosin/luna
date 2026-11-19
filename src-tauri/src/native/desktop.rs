@@ -140,10 +140,18 @@ impl luna_window::Desktop for NativeHost {
     }
 
     fn read_clipboard(&self) -> Pending<Clip> {
+        #[cfg(luna_test)]
+        if let Some(file) = test_clipboard() {
+            return off_thread("read the test clipboard", move || test_clip::read(&file));
+        }
         off_thread("read the clipboard", || clipboard::read().map(clip))
     }
 
     fn write_clipboard_text(&self, text: String) -> Pending<()> {
+        #[cfg(luna_test)]
+        if let Some(file) = test_clipboard() {
+            return off_thread("write the test clipboard", move || test_clip::write(&file, &text));
+        }
         off_thread("write the clipboard", move || clipboard::write_text(&text))
     }
 
@@ -187,12 +195,98 @@ fn rect(b: window_state::Bounds) -> Rect {
     Rect { x: b.x, y: b.y, width: b.width, height: b.height }
 }
 
+/// The test build's stand-in for the clipboard: `LUNA_TEST_CLIPBOARD` names
+/// a file the window's paste reads and its copy writes instead of the
+/// system's, so a smoke run never touches the clipboard of the person at the
+/// machine. Compiled into the test build alone.
+#[cfg(luna_test)]
+fn test_clipboard() -> Option<PathBuf> {
+    std::env::var_os("LUNA_TEST_CLIPBOARD").map(PathBuf::from)
+}
+
+/// The stand-in's file: `{"text": "..."}`, `{"files": ["..."]}` or
+/// `{"image": true}`, a copy writing `{"text": "..."}`. Files are taken as
+/// the system's reader takes them: only when every path can be typed.
+///
+/// An image, or nothing at all, would have the window press the CLI's
+/// image-paste key, and the CLI would read the real clipboard, the person's:
+/// it reads as the text `IMAGE_KEY` instead, which the smoke run looks for.
+#[cfg(luna_test)]
+mod test_clip {
+    use super::{clipboard, Clip};
+    use serde::{Deserialize, Serialize};
+    use std::path::{Path, PathBuf};
+
+    #[derive(Default, Deserialize, Serialize)]
+    #[serde(default)]
+    struct File {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        files: Vec<PathBuf>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        image: bool,
+    }
+
+    /// What a paste types where the window would press the image key.
+    pub(super) const IMAGE_KEY: &str = "[test clipboard: image key]";
+
+    pub(super) fn read(path: &Path) -> Result<Clip, String> {
+        let Ok(bytes) = std::fs::read(path) else { return Ok(Clip::Text(IMAGE_KEY.into())) };
+        let file: File = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        let typeable = |p: &PathBuf| p.to_str().is_some_and(|p| clipboard::typeable_path(p, cfg!(windows)));
+        Ok(if !file.files.is_empty() && file.files.iter().all(typeable) {
+            Clip::Files(file.files)
+        } else if let Some(text) = file.text.filter(|t| !t.is_empty()) {
+            Clip::Text(text)
+        } else {
+            // `image` or nothing: either would press the key.
+            let _ = file.image;
+            Clip::Text(IMAGE_KEY.into())
+        })
+    }
+
+    pub(super) fn write(path: &Path, text: &str) -> Result<(), String> {
+        let json = serde_json::to_vec(&File { text: Some(text.to_owned()), ..Default::default() }).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_test_clipboard_is_a_file() {
+            let dir = std::env::temp_dir().join(format!("luna-test-clip-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("clipboard.json");
+            let key = Ok(Clip::Text(IMAGE_KEY.into()));
+            assert_eq!(read(&file), key, "no file: what would press the image key");
+            std::fs::write(&file, r#"{"files":["/x y.png"],"text":"t"}"#).unwrap();
+            assert_eq!(read(&file), Ok(Clip::Files(vec![PathBuf::from("/x y.png")])));
+            // A path that cannot be typed: not taken as files.
+            let quote = serde_json::json!({ "files": ["/x\ny.png"], "text": "t" });
+            std::fs::write(&file, quote.to_string()).unwrap();
+            assert_eq!(read(&file), Ok(Clip::Text("t".into())));
+            // An image never presses the real key: the CLI would read the
+            // person's clipboard.
+            std::fs::write(&file, r#"{"image":true}"#).unwrap();
+            assert_eq!(read(&file), key);
+            std::fs::write(&file, r#"{}"#).unwrap();
+            assert_eq!(read(&file), key);
+            write(&file, "copied").unwrap();
+            assert_eq!(read(&file), Ok(Clip::Text("copied".into())));
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 fn clip(c: clipboard::Clip) -> Clip {
     match c {
         clipboard::Clip::Empty => Clip::Empty,
         clipboard::Clip::Text(t) => Clip::Text(t),
         clipboard::Clip::Files(f) => Clip::Files(f),
-        clipboard::Clip::Image(i) => Clip::Image { width: i.width, height: i.height, png: i.png },
+        clipboard::Clip::Image => Clip::Image,
     }
 }
 

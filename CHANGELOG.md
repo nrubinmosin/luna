@@ -26,6 +26,35 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.
+- The native window's terminal: one chat's CLI, shown and typed into, on
+  alacritty_terminal's grid and parser, parsing on a thread of its own and
+  drawing only when there is something new (no blink, no timer). Full key
+  encoding with modifiers and the cursor-key mode, bracketed paste, the
+  mouse in SGR and X10, selection by drag, word and line, copy and paste
+  (Ctrl+C copies a selection and interrupts without one), files pasted or
+  dropped typed as quoted paths, a picture on the clipboard pressing the
+  CLI's own image-paste key, the scrollback, the IME's composition at the
+  cursor, box drawing as shapes, truecolor and every text attribute, in the
+  window's light and dark looks. A chat reattached replays the core's
+  backlog as the WebView window does, and takes keys once the CLI's modes
+  are back; its exit and refused keys are said in the terminal, and it waits
+  for a core being found or replaced and starts its chat over in the next
+  one, or after the core's start-over (a shutdown of the PC called off).
+  Pasted text loses its control characters (but tabs and line breaks) with
+  bracketed paste off as well as on, and keys typed while a paste reads the
+  clipboard go after it. Output it cannot keep up with is dropped and said,
+  never held without bound, and a synchronized update left open is drawn at
+  its deadline. The test build opens terminals with `--dev-open`; the board
+  opens them later. That, the test build's driver and stand-in clipboard are
+  compiled into the test build alone (the `luna_test` cfg).
+- `resize_session` takes the terminal's size in pixels too (`pixelWidth`,
+  `pixelHeight`), which the native window sends and the core passes to the
+  PTY.
+- `write_session` takes `reply: true` for a terminal's own answers to the
+  program's queries (sizes, colors, device attributes): the core writes them
+  straight to the PTY and does not count them as a person typing or as a
+  draft. The native window's terminal sends its replies so; the page sends
+  none.
 
 - The desktop services the native window of 0.20 uses in place of
   Tauri's plugins (`src-tauri/src/desktop/`,

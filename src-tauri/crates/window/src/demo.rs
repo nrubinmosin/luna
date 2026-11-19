@@ -5,6 +5,8 @@
 
 use crate::dto::{Core, CoreState, LinkState, ThemePref};
 use crate::host::{Answer, Host, Inbox, Mailbox, OutputSink, cmd, mailbox};
+use crate::term::SessionSpec;
+use crate::term::paste::Provider;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -15,6 +17,8 @@ pub struct FakeHost {
     calls: Mutex<Vec<(String, Value)>>,
     sends: Mutex<Vec<(String, Value)>>,
     outputs: Mutex<HashMap<String, Arc<dyn OutputSink>>>,
+    /// Sends of a command it refuses yet, by name (`refuse`).
+    refusals: Mutex<HashMap<String, usize>>,
     /// Its desktop (desktop.rs `FakeDesktop`).
     pub desktop: crate::desktop::FakeDesktop,
 }
@@ -48,6 +52,12 @@ impl FakeHost {
         self.sends().into_iter().filter(|(c, _)| c == cmd).map(|(_, a)| a).collect()
     }
 
+    /// Refuses the next `times` sends of `cmd`, as a host whose line to the
+    /// core is full for a moment; none of them is kept.
+    pub fn refuse(&self, cmd: &str, times: usize) {
+        self.refusals.lock().unwrap().insert(cmd.to_owned(), times);
+    }
+
     /// Output for `session`, as a host's reader hands it over: false when no
     /// sink is routed or it is gone.
     pub fn output(&self, session: &str, data: &[u8]) -> bool {
@@ -64,6 +74,10 @@ impl Host for FakeHost {
     }
 
     fn send(&self, cmd: &str, args: Value) -> Result<(), String> {
+        if let Some(left) = self.refusals.lock().unwrap().get_mut(cmd).filter(|n| **n > 0) {
+            *left -= 1;
+            return Err(format!("{cmd} refused"));
+        }
         self.sends.lock().unwrap().push((cmd.to_owned(), args));
         Ok(())
     }
@@ -89,6 +103,25 @@ pub struct Scene {
     /// they come before and so drop (models.rs `CoreLink::take`): a core being
     /// replaced is told `up`, then `starting`.
     pub then: Vec<CoreState>,
+    /// A terminal on the board, and what it shows.
+    pub terminal: Option<TermDemo>,
+}
+
+/// What a scene's terminal shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TermDemo {
+    /// Truecolor, the 256 colors, the 16, every attribute, wide characters.
+    Colors,
+    /// Box drawing and block elements, as the CLIs draw their frames.
+    Boxes,
+    /// A session's text with a selection over it.
+    Selection,
+    /// An IME composition at the cursor.
+    Ime,
+    /// A session that exited.
+    Exited,
+    /// The core being found: the pane waits and says so.
+    Waiting,
 }
 
 impl Scene {
@@ -96,6 +129,7 @@ impl Scene {
     pub fn host(&self) -> (Arc<FakeHost>, Mailbox, Inbox) {
         let host = FakeHost::new();
         host.answer(cmd::CORE_STATE, serde_json::to_value(&self.core).unwrap());
+        host.answer(cmd::ENSURE_CLAUDE_SESSION, attached("", 1));
         let (mailbox, inbox) = mailbox();
         (host, mailbox, inbox)
     }
@@ -108,6 +142,87 @@ impl Scene {
             crate::models::on_event(models, crate::event::CORE_STATE, serde_json::to_value(link).unwrap(), cx);
         }
     }
+}
+
+/// What a session's start answers: its backlog and its spawn's number.
+pub fn attached(backlog: &str, generation: u64) -> Value {
+    json!({ "backlog": backlog, "generation": generation })
+}
+
+/// The demo terminal's session: a Claude Code chat.
+pub fn session() -> SessionSpec {
+    SessionSpec { id: "demo-1".into(), provider: Provider::Claude, start: cmd::ENSURE_CLAUDE_SESSION, args: json!({ "id": "demo-1" }) }
+}
+
+/// What the demo session prints for `demo`.
+pub fn term_output(demo: TermDemo) -> String {
+    const R: &str = "\x1b[0m";
+    let mut s = String::new();
+    match demo {
+        TermDemo::Colors => {
+            s += "\x1b[1mTruecolor\x1b[0m  ";
+            for i in 0..48 {
+                let t = i as f32 / 47.;
+                let (r, g, b) = ((255. * (1. - t)) as u8, (255. * (1. - (2. * t - 1.).abs())) as u8, (255. * t) as u8);
+                s += &format!("\x1b[48;2;{r};{g};{b}m ");
+            }
+            s += R;
+            s += "\r\n\x1b[1m256 colors\x1b[0m ";
+            for i in 16..232u32 {
+                if (i - 16) % 36 == 0 && i > 16 {
+                    s += "\r\n           ";
+                }
+                s += &format!("\x1b[48;5;{i}m ");
+            }
+            s += R;
+            s += "\r\n           ";
+            for i in 232..256u32 {
+                s += &format!("\x1b[48;5;{i}m  ");
+            }
+            s += R;
+            s += "\r\n\x1b[1m16 colors\x1b[0m  ";
+            for i in 0..8 {
+                s += &format!("\x1b[3{i}m fg{i} ");
+            }
+            s += "\r\n           ";
+            for i in 0..8 {
+                s += &format!("\x1b[9{i}m br{i} ");
+            }
+            s += R;
+            s += "\r\n           ";
+            for i in 0..8 {
+                s += &format!("\x1b[4{i}m\x1b[3{}m bg{i} ", if i == 0 { 7 } else { 0 });
+            }
+            s += R;
+            s += "\r\n\r\n\x1b[1mbold\x1b[0m \x1b[2mdim\x1b[0m \x1b[3mitalic\x1b[0m \x1b[1;3mbold italic\x1b[0m \x1b[4munderline\x1b[0m \x1b[4:2mdouble\x1b[0m ";
+            s += "\x1b[4:3;58;2;255;64;64mcurly\x1b[0m \x1b[9mstrike\x1b[0m \x1b[7minverse\x1b[0m [\x1b[8mhidden\x1b[0m] \x1b[2;31mdim red\x1b[0m";
+            s += "\r\n\r\nWide: 日本語のテキスト 한국어 中文字符  Emoji: ✅ 🚀 📦  Combining: e\u{301} a\u{308}"; // lang-check: allow
+            s += "\r\n\x1b[38;2;217;119;87m✻\x1b[0m Thinking... \x1b[2m(esc to interrupt)\x1b[0m\r\n\r\n> ";
+        }
+        TermDemo::Boxes => {
+            s += "\x1b[38;2;215;119;87m╭──────────────────────────────────────────────╮\x1b[0m\r\n";
+            s += "\x1b[38;2;215;119;87m│\x1b[0m \x1b[1m✻ Welcome to the demo\x1b[0m                        \x1b[38;2;215;119;87m│\x1b[0m\r\n";
+            s += "\x1b[38;2;215;119;87m│\x1b[0m   /help for help, /status for your setup     \x1b[38;2;215;119;87m│\x1b[0m\r\n";
+            s += "\x1b[38;2;215;119;87m╰──────────────────────────────────────────────╯\x1b[0m\r\n\r\n";
+            s += "┌─┬─┐ ┏━┳━┓ ╔═╦═╗ ╭─╮ ┄┄┄ ┅┅┅ ╱╲╳\r\n";
+            s += "├─┼─┤ ┣━╋━┫ ╠═╬═╣ │ │ ┆ ┇  ╌╍ ╎╏\r\n";
+            s += "└─┴─┘ ┗━┻━┛ ╚═╩═╝ ╰─╯ ╒═╕ ╓─╖ ┍━┑\r\n\r\n";
+            s += "Blocks: █▉▊▋▌▍▎▏ ▁▂▃▄▅▆▇█ ░▒▓ ▖▗▘▙▚▛▜▝▞▟ ▀▐▔▕\r\n";
+            s += "Meter:  \x1b[32m████████████\x1b[2m░░░░░░░░\x1b[0m 60%\r\n\r\n";
+            s += "\x1b[2m─────────────────────────────────────────────────\x1b[0m\r\n";
+            s += "> \r\n";
+            s += "\x1b[2m─────────────────────────────────────────────────\x1b[0m\r\n";
+            s += "  \x1b[2m? for shortcuts\x1b[0m\x1b[14;3H";
+        }
+        TermDemo::Selection | TermDemo::Ime | TermDemo::Exited | TermDemo::Waiting => {
+            s += "\x1b[1m> \x1b[0mwhat does the parser thread do?\r\n\r\n";
+            s += "\x1b[38;2;217;119;87m⏺\x1b[0m It parses the session's output into the pane's grid, off the\r\n";
+            s += "  window's thread, and wakes the pane once it has: the window\r\n";
+            s += "  draws only when there is something new to show.\r\n\r\n";
+            s += "\x1b[2m─────────────────────────────────────────────────\x1b[0m\r\n> ";
+        }
+    }
+    s
 }
 
 /// The demo core: this build, two sessions running.
@@ -127,8 +242,8 @@ fn link(state: LinkState, core: Option<Core>, error: Option<&str>) -> CoreState 
     CoreState { state, core, error: error.map(String::from), revision: 0 }
 }
 
-/// Every scene, in both themes: the title bar over an empty board, and the
-/// core banner in each state.
+/// Every scene, in both themes: the title bar over an empty board, the core
+/// banner in each state, and a terminal in each of its looks.
 pub fn scenes() -> Vec<Scene> {
     let up = link(LinkState::Up, Some(core()), None);
     let older = Core { version: "0.19.0".into(), build: "a1b2c3d".into(), sessions: 3, ..core() };
@@ -142,6 +257,11 @@ pub fn scenes() -> Vec<Scene> {
             theme,
             core: CoreState { revision: 1, ..core },
             then: then.into_iter().zip(2..).map(|(link, revision)| CoreState { revision, ..link }).collect(),
+            terminal: None,
+        };
+        let term = |name, demo: TermDemo| Scene {
+            terminal: Some(demo),
+            ..one(name, if demo == TermDemo::Waiting { link(LinkState::Starting, None, None) } else { up.clone() }, vec![])
         };
         out.extend([
             one("board", up.clone(), vec![]),
@@ -154,6 +274,12 @@ pub fn scenes() -> Vec<Scene> {
                 link(LinkState::Elevated, Some(Core { refused: Some("elevated".into()), ..core() }), Some(elevated)),
                 vec![],
             ),
+            term("term-colors", TermDemo::Colors),
+            term("term-boxes", TermDemo::Boxes),
+            term("term-selection", TermDemo::Selection),
+            term("term-ime", TermDemo::Ime),
+            term("term-exited", TermDemo::Exited),
+            term("term-waiting", TermDemo::Waiting),
         ]);
     }
     out
