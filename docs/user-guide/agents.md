@@ -218,8 +218,9 @@ tools.
 - **Your draft is safe.** Into a chat you are typing in, `luna_session_send` does not
   type: Luna holds the text and types it once you stop. Over an unsent draft in
   Claude Code it stashes the draft (Ctrl+S), sends, and the CLI puts the draft
-  back, pastes and images included, unless a draft is stashed already. Codex has
-  no stash, so the text waits for the draft to be sent or cleared. A chat with a
+  back, pastes and images included, unless a draft is stashed already. Codex
+  (0.169) has no stash, so the text waits for the draft to be sent or cleared,
+  and goes in then. A chat with a
   draft wears a **draft** tag with the count of messages held, and a balloon says
   how many wait; a minute's hold is announced on the desktop.
 - `luna_session_send` to a background Claude Code helper mid-turn joins that turn at its

@@ -19,6 +19,35 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- Codex role layers too long for a command line are no longer refused or
+  dropped. A Codex session's role text, the library's instructions for its role
+  and its constraints go in `-c developer_instructions` as before; over what a
+  Windows command line holds (24,576 characters, Luna's limit, not Codex's)
+  they are written whole to a file in Luna's data folder
+  (`role-layers/`), and the value tells the session to read it first and again
+  after a compaction. A lead's or helper's turn is refused, and a chat starts
+  without its layers, only where the account's own `developer_instructions`
+  leave no room even for that pointer. The Library window flags an entry only
+  then.
+- A Codex account's model list is its own: the new-chat dialog and a helper's
+  model and effort are checked against that account's `models_cache.json` (or
+  what `codex debug models` says of it), never against another account's. An
+  account that has not run yet has no list to check against, and Codex refuses
+  what it does not take.
+- `luna_report_get` and `luna_message_list` read a Codex turn's final answer
+  from its end (`last_agent_message`) when its messages carry no `phase`, and a
+  turn whose end says something its messages do not is given that as its
+  message; a Codex report is no longer a guess in those turns.
+- On Windows a Claude Code or Codex download is refused unless its
+  executables carry their publisher's Authenticode signature ("Anthropic, PBC",
+  "OpenAI OpCo, LLC"), checked before the version is made current. Nothing is
+  checked off Windows.
+- A Codex thread is resumed by its exact id in its own account only (its
+  rollout is looked up per account and thread), and an id that is not a plain
+  thread id is refused. A notice for a Codex chat holding a draft still waits
+  until the draft is sent or cleared: Codex 0.169 has no stash to put it
+  aside.
+
 - The library no longer judges what a skill's `SKILL.md` says. One with an
   over-long description, no front matter, or a `name` other than its folder's
   is laid out like any other, into Claude Code's and Codex's accounts alike,

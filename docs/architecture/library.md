@@ -177,11 +177,23 @@ no override and no entries for chats is started as before.
   same. The `developer_instructions=` argument is held to 24,576 UTF-16 units of
   the command line, measured as it goes there: TOML-escaped and quoted as
   Windows quotes it (`CODEX_ROLE_MAX`, `command_line_units`), the rest of the
-  32,767 left to the executable and the other arguments. Over it a helper's turn
-  is refused, a chat starts without its layers (`role.layers-off`). The
-  overview marks every entry given per session that would, for some role on
-  some Codex account, with Luna's text for the role and the account's own
-  value, not fit (`codex_overflows`, shown as the entry's problem). Codex sends
+  32,767 left to the executable and the other arguments. That is Luna's limit,
+  not Codex's: Codex's own `project_doc_max_bytes` (32 KiB) cuts only the
+  project's `AGENTS.md` files (0.169.0, `core/src/agents_md.rs`), never
+  `developer_instructions` or the account's own `AGENTS.md`. Layers over it are
+  written whole to a file of Luna's (`<data>/role-layers/<hash>.md`, named by
+  their text's hash, kept 30 days past its last use; `Spill`, `write_spill`),
+  and the value says where it is and to read it in full first and again after
+  a compaction; the stack's own value stays, and the constraints too where they
+  fit beside the pointer. Nothing is cut; the log says it (`library`, warn) and
+  the applied list names the file. The file is not made owner-only: the
+  session reads it through its shell tool, inside a sandbox the private ACL
+  would shut out, and it holds only what the library says. A helper's turn is
+  refused and a chat starts without its layers (`role.layers-off`) only where
+  the account's own `developer_instructions` leave no room even for the
+  pointer, or the file will not write. The overview marks every entry given
+  per session that could not be given at all, for some role on some Codex
+  account (`codex_overflows`, shown as the entry's problem). Codex sends
   the value at a thread's start and after a compaction; `exec resume` and
   `codex resume` rebuild the context from the rollout, so a changed value
   reaches a running thread only then.

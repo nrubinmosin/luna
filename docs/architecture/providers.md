@@ -72,7 +72,15 @@ from being replayed; a release Anthropic pulls back is not followed down,
 logged, until a newer one comes. Codex comes as the
 package tarball, the only asset with a line in `codex-package_SHA256SUMS`, which
 also carries `codex-command-runner.exe` and the other Windows sandbox helpers; it
-is unpacked whole into the version folder.
+is unpacked whole into the version folder. On Windows each download's
+executables are also held to their publisher's Authenticode signature before
+the staged folder becomes a version (`cli/authenticode.rs`): every `.exe`
+signed validly by "OpenAI OpCo, LLC" for Codex (ripgrep's `rg.exe`, shipped
+unsigned, excepted), the exe by "Anthropic, PBC" for Claude Code, whose signed
+manifest already vouches for its checksum. One unsigned, altered or
+other-signer executable refuses the whole package. Revocation is not
+consulted (no network call at the end of a download) and DLLs are not
+checked. Off Windows nothing is.
 
 An install is all or nothing:
 
@@ -428,8 +436,13 @@ supplies the values nothing names (Codex's own, or Luna's stock where it picks) 
   background thread reads the accounts root from Rust settings.
 - **Codex:** the catalog (`codex/models.rs`), sorted by priority, with
   per-level descriptions (`effort_hints`): the account's `models_cache.json` →
-  another Codex account's → `codex debug models` → `codex debug models
-  --bundled`. `models_known` never runs the CLI; `models_for` may.
+  `codex debug models` on the account → `codex debug models --bundled`. Always
+  one account's: what an account may run follows its plan, so another account's
+  cache is never borrowed. `models_known` never runs the CLI, and is empty for
+  an account whose cache is not there and that the CLI has not been asked
+  about lately; a helper's model and effort are checked against it, and with
+  no list the CLI is left to refuse what it does not take. `models_for` may run
+  the CLI.
 
 ## Reading a Claude Code session
 
@@ -493,7 +506,16 @@ live registry.
   messages with role user / assistant; developer messages and the blocks
   Codex injects in the user's place (`injected`: `# AGENTS.md instructions`,
   `<environment_context>`, `<turn_aborted>` and the rest it recognizes as its
-  own) are not. A prompt that opens with a tag of its own is a prompt.
+  own) are not. A prompt that opens with a tag of its own is a prompt. A
+  message of several text blocks is one message. Which message is a turn's
+  final answer, the report (`Message::final_answer`), is its `phase`
+  (`final_answer`); where that says none, `task_complete.last_agent_message`
+  does: the assistant message of that turn with exactly that text is final,
+  and a turn read whole whose `response_item`s hold no assistant message is
+  given that text as its one (`Conversation` in `read.rs`; a read that opens
+  inside a turn only marks, never adds). A thread is looked up by its id in
+  its own account's `sessions/` (`rollout_of_thread`, kept per account and
+  thread) and resumed by that id alone (`thread_to_resume`), never `--last`.
 - Approval requests are not in the rollout, so "waiting" for Codex is a turn in
   flight with a screen unchanged for 3 s (Codex draws its spinner continuously),
   or an approval dialog recognized on screen. The rollout appears only with the
