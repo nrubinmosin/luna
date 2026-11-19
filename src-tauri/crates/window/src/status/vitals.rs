@@ -839,7 +839,7 @@ impl Vitals {
     /// Tells the core the update is off, so it stops holding the chats' ties.
     fn call_off(&self) {
         // The call is made as it is asked; what it answers changes nothing.
-        std::mem::drop(self.host.call(cmd::UPDATE_CALLED_OFF, json!({})));
+        drop(self.host.call(cmd::UPDATE_CALLED_OFF, json!({})));
     }
 
     fn fail(&mut self, offer: desktop::Offer, why: String, call_off: bool, cx: &mut Context<Self>) {

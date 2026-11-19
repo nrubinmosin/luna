@@ -521,7 +521,7 @@ rest go to the core.
 **Nothing ticks.** The bar redraws when what it shows changed (the model
 notifies only then), and the one clock is the power countdown's: while
 `countdownEndsAtMs` is set, a task wakes once a second and redraws; it is
-dropped as the countdown ends or is cancelled. Everything else is an event or
+dropped as the countdown ends or is canceled. Everything else is an event or
 a slow poll that draws only if its answer differs: the accounts on the
 page's own cadence (`usage::Cadence`: a minute between rounds, a rung of
 30, 60, 120, 300, 600, 900 seconds after a round where an account has no
