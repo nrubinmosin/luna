@@ -46,9 +46,9 @@ Hold each door to the page's own use, with one list behind each:
 - **The cap.** `set_helpers_above_caller(true)` asks a native dialog in the
   window process, one at a time; a yes applies only if the setting did not
   change while the dialog was open, and a request that finds the cap lifted
-  already writes nothing. The native window of 0.20 has no page and asks in
-  a question of its own instead, through the same gate: only a click on its
-  Turn on sends the yes.
+  already writes nothing.
+  (The cap and its setting are gone since the 2026-11-20 amendment of
+  [ADR-0030](0030-scope-of-0-20.md).)
 
 ## Consequences
 

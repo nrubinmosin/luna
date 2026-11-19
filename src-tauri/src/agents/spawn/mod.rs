@@ -1,18 +1,22 @@
 //! `luna_session_spawn`: a helper run in the background here, in the core, its account,
-//! folder and privilege settled first. A spawn under way is on disk until a
+//! folder and role settled first. A spawn under way is on disk until a
 //! helper comes of it (`SpawnUnderWay`).
 
 pub(crate) mod account;
 pub(super) mod background;
 pub(super) mod folder;
+mod role;
 pub(super) mod settle;
 
-use crate::agents::privilege::{command_reach, plain_text, reaches_luna, settle_mode, settle_role, Privilege};
+use crate::agents::admission::{plain_text, reaches_luna};
 use crate::agents::registry::{depth_of, descendants, is_descendant, reg, top_of, Registry, DEV_CALLER};
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
+#[cfg(test)]
+pub(crate) use crate::agents::spawn::background::background_spec_for_test;
 use crate::agents::spawn::background::spawn_background;
 use crate::agents::spawn::folder::{caller_worktree, Neighbor};
+use crate::agents::spawn::role::settle_role;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
@@ -89,10 +93,6 @@ pub struct SpawnParams {
     /// Codex's apps), which a helper otherwise starts without.
     #[serde(skip_serializing)]
     pub connectors: Option<bool>,
-    /// Where the mode came from when the spawn named none (privilege.rs
-    /// `settle_mode`): Luna's to set, never an argument.
-    #[serde(skip)]
-    pub mode_from: Option<&'static str>,
     /// What the helper and every session under it are to keep to, added word
     /// for word to what its caller was given (`Constraint`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,8 +103,8 @@ pub struct SpawnParams {
 /// session's are its caller's, then its own spawn's: set once at the spawn,
 /// never changed, and passed down whole to every session it starts. Text,
 /// not enforcement: a session is told them as the last of its role layers
-/// (library/role.rs), at every start and resume, and its privilege
-/// is what it was (agents/privilege.rs).
+/// (library/role.rs), at every start and resume, and the mode it runs in
+/// is what it was.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Constraint {
     pub from: String,
@@ -393,11 +393,6 @@ pub struct Spawned {
     /// they share its files and its git index, commits and all.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub same_folder: Vec<Neighbor>,
-    /// A Codex helper spawned without connectors: the MCP servers it keeps
-    /// all the same, which Codex cannot turn off for a run (codex/config.rs
-    /// `servers_left_on`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub mcp_left_on: Vec<String>,
     /// With `account` as a list: the one taken, and why not the ones before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_choice: Option<AccountChoice>,
@@ -520,21 +515,13 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
         });
     };
     params.account = Some(AccountAsk::One(account.name.clone()));
-    // The dev caller stands in for the user (`register_dev_caller`): no cap.
-    let above = caller == DEV_CALLER || crate::settings::get().helpers_above_caller;
     let run_in = in_worktree.clone().or_else(|| params.folder.clone()).unwrap_or_default();
     // A folder the helper's CLI could not start in (pty/folder.rs), said to
     // the caller now rather than as a first turn that fails.
     if let Some(why) = crate::pty::folder_refusal(&run_in, false) {
         return Err(why);
     }
-    // The dev caller has no mode of its own to pass on.
-    let inherit = caller != DEV_CALLER && crate::settings::get().helper_mode == crate::settings::HelperMode::Inherit;
-    settle_mode(&mut params, provider, (me.provider, &me.settings), &account.path, &run_in, above, inherit)?;
-    // A helper's CLI takes its opening prompt as it takes text sent later,
-    // a command among it (`command_reach`); it is its caller's own.
-    let approver = (!above).then(|| Privilege::of_caller(me.provider, &me.settings));
-    command_reach(&params.prompt, caller == DEV_CALLER, true, approver)?;
+
     let account_choice = picked.map(|(_, choice)| choice);
     let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces)?;
     // Counted with its helper in, as `spawn_is` has it by now.
@@ -569,17 +556,15 @@ pub(super) fn spawn_is(request: u64, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The helpers' settings the window shows beside `helpersAboveCaller`: how
-/// many places a line has (`max_descendants`), the range it may be set in,
-/// the mode a helper takes when its spawn names none (privilege.rs
-/// `settle_mode`) and the context share its notices speak past.
+/// The helpers' settings the window shows: how many places a line has
+/// (`max_descendants`), the range it may be set in, and the context share its
+/// notices speak past.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelperSettings {
     pub max_helpers: u32,
     pub min: u32,
     pub max: u32,
-    pub helper_mode: crate::settings::HelperMode,
     /// `Settings::helper_context_pct`, 0 for off.
     pub helper_context_pct: u32,
 }
@@ -596,7 +581,6 @@ pub fn helper_settings() -> HelperSettings {
         max_helpers: s.max_helpers.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end()),
         min: *HELPERS_RANGE.start(),
         max: *HELPERS_RANGE.end(),
-        helper_mode: s.helper_mode,
         helper_context_pct: s.helper_context_pct.min(100),
     }
 }
@@ -610,21 +594,12 @@ pub fn set_helper_context_pct(pct: u32) -> Result<HelperSettings, String> {
     Ok(helper_settings())
 }
 
-/// Neither of these lets a helper do more than its caller: more places are more
-/// processes under one chat, and an inherited mode is held to the caller's as
-/// any other. So no dialog, unlike `set_helpers_above_caller`.
+/// More places are more processes under one chat, each its CLI and its tokens.
 #[tauri::command]
 pub fn set_max_helpers(n: u32) -> Result<HelperSettings, String> {
     let n = n.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end());
     crate::settings::update(|s| s.max_helpers = n)?;
     crate::log::info("agents", &format!("places on a line: {n}"));
-    Ok(helper_settings())
-}
-
-#[tauri::command]
-pub fn set_helper_mode(mode: crate::settings::HelperMode) -> Result<HelperSettings, String> {
-    crate::settings::update(|s| s.helper_mode = mode)?;
-    crate::log::info("agents", &format!("helpers' mode when not given: {mode:?}"));
     Ok(helper_settings())
 }
 
@@ -774,10 +749,12 @@ mod tests {
         assert!(HELPERS_RANGE.contains(&HELPERS_DEFAULT));
         let read: crate::settings::Settings = serde_json::from_str(r#"{"maxHelpers": 0}"#).unwrap();
         assert_eq!(read.max_helpers.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end()), 1, "never none");
-        let read: crate::settings::Settings = serde_json::from_str(r#"{"helperMode": "account"}"#).unwrap();
-        assert_eq!(read.helper_mode, crate::settings::HelperMode::Account);
         let read: crate::settings::Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!((read.max_helpers, read.helper_mode), (8, crate::settings::HelperMode::Inherit), "a file of before");
+        assert_eq!(read.max_helpers, 8, "a file of before");
+        // A file written before the settings for helpers' modes went still reads.
+        let read: crate::settings::Settings =
+            serde_json::from_str(r#"{"helperMode": "account", "helpersAboveCaller": true, "maxHelpers": 3}"#).unwrap();
+        assert_eq!(read.max_helpers, 3);
     }
 
     #[test]

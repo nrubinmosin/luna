@@ -61,7 +61,7 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: your mode or nearest below (modeFrom), else the account's defaults (luna_account_get). Luna does not create or remove worktrees; for isolation create one yourself with `git worktree add`, pass it as `folder`, remove it when done.",
+            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: the account's own (luna_account_get); a mode left out is passed as none, so the CLI's settings decide (modeFrom: cli). Luna does not create or remove worktrees; for isolation create one yourself with `git worktree add`, pass it as `folder`, remove it when done.",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,

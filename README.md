@@ -25,8 +25,8 @@ copies of both CLIs current.
 - **Git worktrees:** a chat's box passes each CLI's own `--worktree`, for a folder
   in a git repository. Luna creates and removes no worktree.
 - **Agents:** sessions spawn helpers on any account or CLI, send them work,
-  answer their prompts and get notified when they finish, within a
-  least-privilege contract.
+  answer their prompts and get notified when they finish; each reaches only
+  the sessions under it.
 - **Background helpers** that need no window and survive a restart of Luna's core.
 - **Skills and instructions library:** your own skills and `CLAUDE.md` /
   `AGENTS.md`, laid out into accounts and per-project folders without touching

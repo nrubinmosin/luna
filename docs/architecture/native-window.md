@@ -880,7 +880,7 @@ dispatch test as `cmd::ALL` is):
 | Module | Shows | Commands |
 | --- | --- | --- |
 | `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`, the page's ReachPicker), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*`, `set_library_draft` (sent) |
-| `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, what the automatic rollback turned away; no version is chosen here, ADR-0030), Updates (Luna's, confirmed with its version and notes; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, the updater's |
+| `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, Roll back, what the automatic rollback turned away; no other version is chosen here, ADR-0030), Updates (Luna's, confirmed with its version and notes; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, `cli_roll_back`, the updater's |
 | `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `ensure_*_session` and `kill_session` for the login |
 
 The host answers them in native/panels.rs over the Tauri commands' own
@@ -949,13 +949,6 @@ a plain string). These are the native window's alone (`NATIVE_ONLY`):
   names the chats set to the account (`Workspace::chats_on`, up to five and
   how many more), which have nowhere to start once it is gone.
 
-`set_helpers_above_caller` takes `confirmed`: the page's Tauri command asks
-the person in a message box of the system's, which a script in the page
-could open but not answer; the native window has no page, and asks in its
-own question, whose Turn on click is the only way `confirmed` is sent. The
-test build's driver has no line that answers it (below), and must not get
-one: a driver line is input no person gave.
-
 Sync is one acting pass of the core's (`library_sync`), the same as runs
 before every session's start, as ADR-0030 has it: Luna's own copies are
 written over with the library's or put back, those no longer wanted taken
@@ -1012,8 +1005,8 @@ The test build's driver (`drive.rs`, compiled in under `luna_test` alone):
 claude <name>`, `delete <n>`, `signin <n>` (the nth account's login
 terminal), `yes` for the library's and the accounts' questions;
 `panels::drive`), so a smoke run drives the background window
-with no global input. No line answers a question of Settings': helpers above
-their caller take a person's click, and so does Luna's update.
+with no global input. No line answers a question of Settings': Luna's update takes a
+person's click, and so does a CLI's rollback.
 
 ## Dialogs
 

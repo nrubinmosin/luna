@@ -124,7 +124,7 @@ sequenceDiagram
   participant S as Helper CLI (headless)
 
   A->>H: POST /mcp tools/call luna_session_spawn (Bearer token)
-  H->>R: arguments_fit, authorize caller, settle privilege, account, folder
+  H->>R: arguments_fit, authorize caller, settle role, account, folder
   R->>R: record SpawnTaken in chat-ties.json
   R->>R: register (lineage, token) + spawn_is (task, save the ties)
   R->>B: start: spec, first turn's prompt

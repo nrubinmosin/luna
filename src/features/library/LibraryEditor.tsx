@@ -4,7 +4,6 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { EditorState } from '@codemirror/state';
 import { EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from '@codemirror/view';
 import {
-  libraryCheckSkill,
   libraryCheckSystem,
   libraryRead,
   libraryWrite,
@@ -74,18 +73,19 @@ export function LibraryEditor({ entry, onClose }: { entry: EditorEntry; onClose:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skill, system, name]);
 
-  // Checked as typed, a moment after the last key; an answer about text
-  // typed over since is dropped, or a slow one would outlive a quick one.
+  // A system skill's override is checked as typed, a moment after the last
+  // key (a skill of yours is not: what its SKILL.md says is the CLI's to
+  // judge); an answer about text typed over since is dropped, or a slow one
+  // would outlive a quick one.
   useEffect(() => {
-    if ((!skill && !system) || !file) return;
+    if (!system || !file) return;
     let stale = false;
-    const check = () => (system ? libraryCheckSystem(system, text) : libraryCheckSkill(skill ?? '', text));
-    const t = setTimeout(() => void check().then(p => !stale && setProblem(p)), 250);
+    const t = setTimeout(() => void libraryCheckSystem(system, text).then(p => !stale && setProblem(p)), 250);
     return () => {
       stale = true;
       clearTimeout(t);
     };
-  }, [skill, system, file, text]);
+  }, [system, file, text]);
 
   useEffect(() => {
     if (!file || !box.current || view.current) return;
@@ -215,12 +215,7 @@ export function LibraryEditor({ entry, onClose }: { entry: EditorEntry; onClose:
             ) : leaving ? (
               <span style={{ color: 'var(--wait)' }}>Unsaved changes — Esc again to throw them away</span>
             ) : problem ? (
-              <span style={{ color: 'var(--wait)' }}>
-                {problem}
-                {system
-                  ? ' — saved, but Luna serves its own until it is fixed'
-                  : ' — saved as a draft, laid out nowhere until it is fixed'}
-              </span>
+              <span style={{ color: 'var(--wait)' }}>{problem} — saved, but Luna serves its own until it is fixed</span>
             ) : saved && !dirty ? (
               <span style={{ color: 'var(--dim)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Icon name="check" size={13} /> {kind ? SAVED[kind] : 'Saved and laid out. New sessions start with it.'}

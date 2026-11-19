@@ -60,8 +60,8 @@ pub(super) struct Batch {
 }
 
 /// Asks, with no lock held, whether each sender of text a CLI would read as a
-/// command may still send it (agents/privilege.rs `command_reach_now`): it may have been
-/// deleted, run lower or lost the user's setting since it was taken. Then,
+/// command may still send it (agents/admission.rs `command_reach_now`): it may have been
+/// deleted, or the helper moved to another chat, since it was taken. Then,
 /// with the reservation still standing, drops what is refused and gives the
 /// batch that is left; with none left, the next queued batch is asked about
 /// the same way, or the claim is given back and no turn starts. A refusal is
@@ -603,26 +603,28 @@ mod tests {
         };
         let take = |items: Vec<Queued>| settle_batch("bq-kid", reserved(items)).map(|b| b.text);
 
-        // Taken while its sender was at full access, and still so: it goes.
+        // Taken while the helper was its sender's, and still so: it goes.
         assert_eq!(take(vec![queued("bq-full", "/project-command")]), Some("/project-command".into()));
         assert!(news_for("bq-full").is_empty());
 
-        // The sender runs lower by the time the turn starts: all of it refused,
-        // no turn, the claim given back, nothing kept for a resume to type in.
-        register("bq-full", Provider::Claude, "C:/p", "C:/acc/one", Some("bq-top"), true, mode("default"));
-        assert_eq!(take(vec![queued("bq-full", "/project-command"), queued("bq-full", "! make")]), None);
+        // Queued by a session the helper is not under (it was, until a move):
+        // all of it refused, whatever mode the sender runs in, no turn, the
+        // claim given back, nothing kept for a resume to type in.
+        register("bq-other", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("bypassPermissions"));
+        assert_eq!(take(vec![queued("bq-other", "/project-command"), queued("bq-other", "! make")]), None);
         {
             let r = lock();
             let e = &r.entries["bq-kid"];
             assert!(e.run.is_none() && e.in_flight.is_empty() && e.queue.is_empty() && e.undelivered.is_empty());
         }
         // The sender hears of each, as it was told the text was taken.
-        let told = news_for("bq-full");
+        let told = news_for("bq-other");
         assert_eq!(told.len(), 2, "{told:?}");
         assert!(told.iter().all(|l| l.contains("Text you sent to helper bq-kid did not go in")), "{told:?}");
 
         // Mixed: only what may go goes.
-        assert_eq!(take(vec![queued("bq-full", "/project-command"), queued("bq-full", "plain words")]), Some("plain words".into()));
+        assert_eq!(take(vec![queued("bq-other", "/project-command"), queued("bq-other", "plain words")]), Some("plain words".into()));
+        forget("bq-other");
 
         // Its sender gone: the helper's parent now hears, without the text. Luna's own goes.
         forget("bq-full");

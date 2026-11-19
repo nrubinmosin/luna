@@ -7,7 +7,7 @@ use crate::agents::held::is_held;
 use crate::agents::lost::undelivered_note;
 use crate::agents::notifier::job_end_stood;
 use crate::agents::notifier::lines::{news_for_parent, real_turn_past, verdict, Verdict};
-use crate::agents::owed::{background_stopped_note, hand_over, last_shown, looked, Owed, QUEUED_GRACE_MS};
+use crate::agents::owed::{background_stopped_note, hand_over_said, last_shown, looked, Owed, QUEUED_GRACE_MS};
 use crate::agents::read::{failure_of, transcript_found, transcript_path, MAX_TEXT};
 use crate::agents::registry::{authorize_view, in_scope, reg, waits_on_helpers, DEV_CALLER};
 use crate::agents::said::{answer_file, answer_text, replies_since, said_since, Said};
@@ -121,6 +121,10 @@ pub struct Waited {
     /// See `background_stopped_note`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background_stopped: Option<String>,
+    /// The turns of the losses `background_stopped` says, which handing
+    /// this over acknowledges (owed.rs `hand_over_said`).
+    #[serde(skip)]
+    pub(super) said: Vec<u32>,
     /// On `job_done`, the debt that end settles (`take_debt`), for whichever
     /// hands it over: this `wait`, or a `wait_many` once it has its response.
     #[serde(skip)]
@@ -148,6 +152,7 @@ impl Waited {
             screen: None,
             undelivered: None,
             background_stopped: None,
+            said: Vec::new(),
             job_debt: None,
         }
     }
@@ -246,6 +251,7 @@ fn wait_for(
                     screen,
                     undelivered: None,
                     background_stopped: None,
+                    said: Vec::new(),
                     job_debt: None,
                 },
                 false,
@@ -416,12 +422,12 @@ fn wait_for(
             let screen = (outcome == "waiting" || bare).then(|| screen_of(pty, id)).flatten();
             // Ahead of the hand-over, which takes it off.
             let undelivered = if answers { undelivered_note(caller, id) } else { None };
-            let background_stopped = if answers { background_stopped_note(caller, id) } else { None };
+            let (background_stopped, said) = if answers { background_stopped_note(caller, id) } else { (None, Vec::new()) };
             let job_debt = told_debt.filter(|_| outcome == "job_done");
             if !answers {
                 // Nothing was handed over: whatever is owed stays owed.
                 looked(id);
-            } else if alone && !call.commit(hand_over(caller, id, turns_ended, job_debt)) {
+            } else if alone && !call.commit(hand_over_said(caller, id, turns_ended, job_debt, said.clone())) {
                 // A cancel since the last look: it stays owed after all.
                 return gone_err();
             }
@@ -439,6 +445,7 @@ fn wait_for(
                     screen,
                     undelivered,
                     background_stopped,
+                    said,
                     job_debt,
                 },
                 answers,
@@ -463,6 +470,7 @@ fn wait_for(
                     screen,
                     undelivered: None,
                     background_stopped: None,
+                    said: Vec::new(),
                     job_debt: None,
                 },
                 false,
@@ -586,7 +594,7 @@ pub fn wait_many(
     }
     // (session, the count it answered by, the debt a job's end settles), for
     // the hand-over below.
-    let mut answers: Vec<(String, u32, Option<u64>)> = Vec::new();
+    let mut answers: Vec<(String, u32, Option<u64>, Vec<u32>)> = Vec::new();
     let mut results: Vec<WaitedOne> = unique
         .iter()
         .copied()
@@ -600,7 +608,7 @@ pub fn wait_many(
             let waited = match r {
                 Some(Ok((w, answered))) => {
                     if answered {
-                        answers.push((id.to_string(), w.turns_ended, w.job_debt));
+                        answers.push((id.to_string(), w.turns_ended, w.job_debt, w.said.clone()));
                     }
                     w
                 }
@@ -627,6 +635,7 @@ pub fn wait_many(
                         screen: None,
                         undelivered: None,
                         background_stopped: None,
+                        said: Vec::new(),
                         job_debt: None,
                     }
                 }
@@ -641,7 +650,10 @@ pub fn wait_many(
     let refused = results.iter().filter(|r| r.waited.outcome == REFUSED).count();
     let over = finished.len() + refused == results.len();
     let outcome = if (!all && !finished.is_empty()) || over { "finished" } else { "timeout" };
-    let undo: Vec<_> = answers.iter().map(|(id, turns_ended, job_debt)| hand_over(caller, id, *turns_ended, *job_debt)).collect();
+    // Each with the losses its own reply said as it was put together: one
+    // recorded while the others were waited on is still to be said.
+    let undo: Vec<_> =
+        answers.into_iter().map(|(id, turns_ended, job_debt, said)| hand_over_said(caller, &id, turns_ended, job_debt, said)).collect();
     if !call.commit(move || undo.into_iter().for_each(|u| u())) {
         return Err(LET_GO.into());
     }
@@ -1030,6 +1042,7 @@ mod tests {
             screen: None,
             undelivered: None,
             background_stopped: None,
+            said: Vec::new(),
             job_debt: None,
         };
         // One report past the limit: cut, and the cut names a file with all of it.
@@ -1079,6 +1092,7 @@ mod tests {
                 screen: None,
                 undelivered: None,
                 background_stopped: None,
+                said: Vec::new(),
                 job_debt: None,
             },
         };

@@ -240,9 +240,24 @@ pub(super) struct Receipt {
 /// that crosses it): returns what puts the debt and the count seen back as
 /// they were. Whatever a later call has recorded meanwhile stands, and a later
 /// call that handed the answer over too has delivered it: this one's response
-/// being dropped then owes nothing.
+/// being dropped then owes nothing. It says no loss of background work.
+#[cfg(test)]
 pub(super) fn hand_over(caller: &str, id: &str, turns_ended: u32, job_debt: Option<u64>) -> impl FnOnce() + Send + 'static {
-    let undo = hand_over_of(caller, id, turns_ended, job_debt, None);
+    hand_over_said(caller, id, turns_ended, job_debt, Vec::new())
+}
+
+/// `hand_over` of a response that said the losses of turns `said` of the
+/// helper's background work (`background_stopped_note`): those, and only
+/// those, `caller` has had, a loss recorded since the note was made staying
+/// to be said.
+pub(super) fn hand_over_said(
+    caller: &str,
+    id: &str,
+    turns_ended: u32,
+    job_debt: Option<u64>,
+    said: Vec<u32>,
+) -> impl FnOnce() + Send + 'static {
+    let undo = hand_over_of(caller, id, turns_ended, job_debt, None, said);
     move || {
         if let Some(undo) = undo {
             undo();
@@ -250,11 +265,12 @@ pub(super) fn hand_over(caller: &str, id: &str, turns_ended: u32, job_debt: Opti
     }
 }
 
-/// `hand_over` of the debt of revision `rev` alone, checked and taken under one
-/// hold of the lock: None, and nothing done, when the caller's debt there is
-/// another by now (a question asked since), which `hand_over` would take.
-pub(super) fn hand_over_rev(caller: &str, id: &str, turns_ended: u32, rev: u64) -> Option<impl FnOnce() + Send + 'static> {
-    hand_over_of(caller, id, turns_ended, None, Some(rev))
+/// `hand_over_said` of the debt of revision `rev` alone, checked and taken
+/// under one hold of the lock: None, and nothing done, when the caller's debt
+/// there is another by now (a question asked since), which `hand_over` would
+/// take.
+pub(super) fn hand_over_rev(caller: &str, id: &str, turns_ended: u32, rev: u64, said: Vec<u32>) -> Option<impl FnOnce() + Send + 'static> {
+    hand_over_of(caller, id, turns_ended, None, Some(rev), said)
 }
 
 fn hand_over_of(
@@ -263,6 +279,7 @@ fn hand_over_of(
     turns_ended: u32,
     job_debt: Option<u64>,
     expected: Option<u64>,
+    said: Vec<u32>,
 ) -> Option<impl FnOnce() + Send + 'static> {
     let key = (caller.to_string(), id.to_string());
     let (taken, seen_before, receipt, goes_on, stop) = {
@@ -284,10 +301,10 @@ fn hand_over_of(
             receipt.put_in = None;
         }
         let (n, taken) = (receipt.n, receipt.stands_for.map(|(o, _)| o.rev));
-        // Said in the reply by the same rule (`background_stopped_note`), before the debt goes.
-        let stop = now.is_some() && crate::background::background_stopped_for(id, caller);
         let goes_on = take_debt(&mut r, &key, turns_ended, job_debt);
-        let stop = stop.then(|| callers_on(&r, id));
+        // Who the helper still owes once this debt goes: a loss all of them
+        // have had is done with.
+        let stop = (now.is_some() && !said.is_empty()).then(|| callers_on(&r, id));
         (taken, seen_before, n, goes_on, stop)
     };
     owed_on_for(key.clone(), turns_ended, goes_on, taken);
@@ -296,15 +313,13 @@ fn hand_over_of(
     // longer finds it, so the receipt below says nothing of it.
     let parent = parent_of(id).as_deref() == Some(caller);
     let taken = take_undelivered(id, caller, parent);
-    let stop_told = stop.and_then(|owed| crate::background::background_stop_told(id, caller, &owed));
+    let stop_told = stop.map(|owed| crate::background::losses_told(id, caller, &said, &owed)).unwrap_or_default();
     let id = id.to_string();
     Some(move || {
         put_undelivered_back(&id, taken);
         // Whatever the receipt below says: a later reply found the caller told
         // and did not say it again.
-        if let Some(turn) = stop_told {
-            crate::background::background_stop_untold(&id, &key.0, turn);
-        }
+        crate::background::losses_untold(&id, &key.0, &stop_told);
         crate::background::save();
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         // As the receipt has them now: a stand-in put in after this response
@@ -344,12 +359,18 @@ pub fn callers_owed(id: &str) -> Vec<String> {
 }
 
 /// What a reply handed over to `caller` (a wait, read or report) says of
-/// helper `id`'s CLI having stopped its background work, while it owes
-/// `caller` an answer and that is still to be said to it (notifier lines.rs
-/// `background_stopped_line`); `hand_over` acknowledges it by the same rule.
-pub(super) fn background_stopped_note(caller: &str, id: &str) -> Option<String> {
-    reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string()))?;
-    crate::agents::notifier::lines::background_stopped_line(id, caller).map(|line| line.trim().to_string())
+/// background work of helper `id`'s that was cut off, while it owes `caller`
+/// an answer and that is still to be said to it (notifier lines.rs
+/// `background_stopped_line`), and the turns of the losses it says: what
+/// `hand_over_said` acknowledges, and nothing that came after.
+pub(super) fn background_stopped_note(caller: &str, id: &str) -> (Option<String>, Vec<u32>) {
+    if !reg().lock().unwrap_or_else(|e| e.into_inner()).owed.contains_key(&(caller.to_string(), id.to_string())) {
+        return (None, Vec::new());
+    }
+    match crate::agents::notifier::lines::background_stopped_line(id, caller) {
+        Some((line, turns)) => (Some(line.trim().to_string()), turns),
+        None => (None, Vec::new()),
+    }
 }
 
 /// Records the turn count a tool answer showed `caller` of `id`, settling
@@ -712,12 +733,13 @@ mod tests {
         crate::background::background_stopped_for_test(id, &[a, b]);
         owe_from(a, id, 2, 0);
         owe_from(b, id, 2, 0);
-        let note = background_stopped_note(a, id).expect("said while it holds");
+        let said = |c: &str| background_stopped_note(c, id).1;
+        let note = background_stopped_note(a, id).0.expect("said while it holds");
         assert!(note.starts_with("Its CLI stopped the subagents") && note.contains("uncommitted"), "{note}");
-        let undo_a = hand_over(a, id, 3, None);
-        assert_eq!(background_stopped_note(a, id), None, "said to the parent");
+        let undo_a = hand_over_said(a, id, 3, None, said(a));
+        assert_eq!(background_stopped_note(a, id).0, None, "said to the parent");
         assert!(background_stopped_for(id, b), "not yet to the other caller");
-        let undo_b = hand_over(b, id, 3, None);
+        let undo_b = hand_over_said(b, id, 3, None, said(b));
         assert!(!background_stopped(id), "both have had it");
         // Both replies dropped, the parent's first: each undo takes back its
         // own caller alone, never the other's as it stood then.
@@ -728,17 +750,41 @@ mod tests {
         assert!(background_stopped_for(id, b));
         // Told to both again; the parent's reply is dropped only after a stop
         // at the end of a later turn has been told to it: that one stands.
-        let undo_a = hand_over(a, id, 3, None);
-        drop(hand_over(b, id, 3, None));
+        let undo_a = hand_over_said(a, id, 3, None, said(a));
+        drop(hand_over_said(b, id, 3, None, said(b)));
         assert!(!background_stopped(id));
         crate::background::idle_for_test(id, Provider::Claude, 4, false);
         crate::background::background_stopped_for_test(id, &[a, b]);
         owe_from(a, id, 3, 0);
         owe_from(b, id, 3, 0);
-        drop(hand_over(a, id, 4, None));
+        drop(hand_over_said(a, id, 4, None, said(a)));
         undo_a();
         assert!(!background_stopped_for(id, a), "told of the later stop, which the undo leaves alone");
         assert!(background_stopped_for(id, b), "and the later stop is still to be told to the peer");
+        crate::background::gone_for_test(id);
+        reg().lock().unwrap().owed.retain(|(_, s), _| s != id);
+    }
+
+    /// A reply put together with one loss in it, handed over after another
+    /// came in (a `wait_many` that waited on other helpers meanwhile): the one
+    /// it said is told, the later one still to be said, and said alone.
+    #[test]
+    fn a_reply_acknowledges_the_losses_it_said_and_no_later_one() {
+        let (id, a) = ("hx-child", "hx-parent");
+        crate::background::idle_for_test(id, Provider::Claude, 3, false);
+        crate::background::loss_for_test(id, 3, &[a], &["Implement slice A"]);
+        owe_from(a, id, 2, 0);
+        let (note, said) = background_stopped_note(a, id);
+        let note = note.expect("said while it holds");
+        assert!(note.contains("\"Implement slice A\"") && said == [3], "{note}");
+        crate::background::loss_for_test(id, 4, &[a], &["Implement slice B"]);
+        drop(hand_over_said(a, id, 3, None, said));
+        owe_from(a, id, 3, 0);
+        let (later, said) = background_stopped_note(a, id);
+        let later = later.expect("the later loss is still to be said");
+        assert!(later.contains("\"Implement slice B\"") && !later.contains("slice A") && said == [4], "{later}");
+        drop(hand_over_said(a, id, 4, None, said));
+        assert!(!crate::background::background_stopped(id));
         crate::background::gone_for_test(id);
         reg().lock().unwrap().owed.retain(|(_, s), _| s != id);
     }
@@ -757,11 +803,13 @@ mod tests {
         crate::background::codex_in_turn_for_test(id, &root.to_string_lossy(), &thread, t0);
         owe_from(parent, id, 0, 0);
         crate::background::turn_over_for_test(id, Some(0));
-        let note = background_stopped_note(parent, id).expect("the parent is told");
-        assert!(note.starts_with("Its CLI interrupted the subagents it had spawned as its turn ended"), "{note}");
+        let (note, said) = background_stopped_note(parent, id);
+        let note = note.expect("the parent is told");
+        assert!(note.starts_with("1 subagent ended with its turn without finishing; their work is not done."), "{note}");
+        assert!(note.contains("waiting for any subagent it spawns"), "{note}");
         owe_from(later, id, 1, 0);
-        assert_eq!(background_stopped_note(later, id), None, "it asked after that turn");
-        drop(hand_over(parent, id, 1, None));
+        assert_eq!(background_stopped_note(later, id).0, None, "it asked after that turn");
+        drop(hand_over_said(parent, id, 1, None, said));
         assert!(!crate::background::background_stopped(id), "everyone it concerned has had it");
         crate::background::gone_for_test(id);
         reg().lock().unwrap().owed.retain(|(_, s), _| s != id);

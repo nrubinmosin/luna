@@ -968,16 +968,17 @@ fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, to
 }
 
 /// A notice that went in, settling `caller`'s debt on helper `id` as answered
-/// (`r`, its debts as settled): if it said that the helper's CLI stopped its
-/// background work (lines.rs `STOPPED_LINES`, in every such line while it
-/// is so), `caller` has had it. The helper is done with saying so once every
-/// caller it concerns and still owes has; a line that does not carry it (a
-/// helper that exited) acknowledges nothing. The helper's lock after the registry's.
+/// (`r`, its debts as settled): each loss of the helper's background work
+/// whose line it carried (lines.rs `loss_line`), `caller` has had. A loss
+/// recorded after the notice was put together, whose line it does not carry,
+/// is still to be said; a line that carries none (a helper that exited)
+/// acknowledges nothing. The helper's lock after the registry's.
 fn ack_background_stop(r: &Registry, caller: &str, id: &str, text: &str) {
-    if !lines::STOPPED_LINES.iter().any(|line| text.contains(line)) {
-        return;
+    let said: Vec<u32> =
+        crate::background::untold_losses(id, caller).iter().filter(|l| text.contains(&lines::loss_line(l))).map(|l| l.turn).collect();
+    if !said.is_empty() {
+        crate::background::losses_told(id, caller, &said, &crate::agents::owed::callers_on(r, id));
     }
-    crate::background::background_stop_told(id, caller, &crate::agents::owed::callers_on(r, id));
 }
 
 /// What a notice that went in does to the debt it told of (`told`). Only to

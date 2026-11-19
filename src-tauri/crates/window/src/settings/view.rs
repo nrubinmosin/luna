@@ -1,6 +1,6 @@
 //! The settings window's view, and what each of its rows asks of the host.
 
-use super::{AccountsRoot, CONTEXT_PCTS, CliState, CliStatus, CliVersions, HelperSettings, Page, UpdateState};
+use super::{AccountsRoot, CONTEXT_PCTS, CliState, CliStatus, CliVersions, HelperSettings, Page, RolledBack, UpdateState};
 use crate::desktop::{self, Pick, PickKind, UpdateCheck, UpdateProgress};
 use crate::dto::LinkState;
 use crate::models::Models;
@@ -19,10 +19,11 @@ use std::rc::Rc;
 /// A question the window waits on.
 #[derive(Clone, Debug, PartialEq)]
 enum Ask {
-    /// Helpers above their caller: the person's yes, in this window.
-    Above,
     /// Luna's update, its version and notes: install it?
     Install(desktop::Offer),
+    /// A CLI's rollback, from the version the person saw current to the one
+    /// the record keeps: made only while `from` still is the current one.
+    RollBack { provider: Provider, from: String, to: String },
 }
 
 pub struct SettingsPanel {
@@ -33,7 +34,6 @@ pub struct SettingsPanel {
     pub version: Option<String>,
     pub prefs: Option<Prefs>,
     pub root: Option<AccountsRoot>,
-    pub above: Option<bool>,
     pub helpers: Option<HelperSettings>,
     pub trusted: Option<Vec<String>>,
     pub clis: [CliState; 2],
@@ -65,7 +65,6 @@ impl SettingsPanel {
             version: None,
             prefs: None,
             root: None,
-            above: None,
             helpers: None,
             trusted: None,
             clis: Default::default(),
@@ -119,7 +118,6 @@ impl SettingsPanel {
         self.call(Page::General, cmd::WINDOW_PREFS, json!({}), cx, |v, p: Prefs, _| v.prefs = Some(p));
         self.call(Page::Updates, cmd::APP_VERSION, json!({}), cx, |v, version: String, _| v.version = Some(version));
         self.call(Page::General, cmd::GET_ACCOUNTS_ROOT, json!({}), cx, |v, r: AccountsRoot, _| v.root = Some(r));
-        self.call(Page::Agents, cmd::HELPERS_ABOVE_CALLER, json!({}), cx, |v, on: bool, _| v.above = Some(on));
         self.call(Page::Agents, cmd::HELPER_SETTINGS, json!({}), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
         self.call(Page::Agents, cmd::CODEX_TRUSTED_ROOTS, json!({}), cx, |v, r: Vec<String>, _| v.trusted = Some(r));
         for p in Provider::ALL {
@@ -196,24 +194,8 @@ impl SettingsPanel {
         self.pick_folder("The accounts folder", window, cx, |v, path, cx| v.set_root(path, cx));
     }
 
-    /// Helpers above their caller: on asks first, in this window.
-    pub fn set_above(&mut self, on: bool, confirmed: bool, cx: &mut Context<Self>) {
-        if on && !confirmed {
-            self.ask = Some(Ask::Above);
-            cx.notify();
-            return;
-        }
-        self.call(Page::Agents, cmd::SET_HELPERS_ABOVE_CALLER, json!({ "on": on, "confirmed": confirmed }), cx, |v, on: bool, _| {
-            v.above = Some(on)
-        });
-    }
-
     pub fn set_max_helpers(&mut self, n: u32, cx: &mut Context<Self>) {
         self.call(Page::Agents, cmd::SET_MAX_HELPERS, json!({ "n": n }), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
-    }
-
-    pub fn set_helper_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
-        self.call(Page::Agents, cmd::SET_HELPER_MODE, json!({ "mode": mode }), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
     }
 
     pub fn set_context_pct(&mut self, pct: u32, cx: &mut Context<Self>) {
@@ -235,6 +217,42 @@ impl SettingsPanel {
                 match got {
                     Ok(_) => v.refresh_cli(p, cx),
                     Err(e) => v.clis[slot(p)].error = Some(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Roll back: asks first, naming the two versions, when the record keeps
+    /// a way back that nothing refuses and a current version is shown.
+    pub fn ask_roll_back(&mut self, p: Provider, cx: &mut Context<Self>) {
+        let Some(versions) = self.clis[slot(p)].versions.as_ref().filter(|v| v.roll_back_offer().2) else { return };
+        let (Some(from), Some(back)) = (versions.current(), versions.way_back.as_ref()) else { return };
+        self.ask = Some(Ask::RollBack { provider: p, from: from.version.clone(), to: back.version.clone() });
+        cx.notify();
+    }
+
+    /// The rollback itself, `from` being the version that was current when
+    /// it was asked for. The core makes it only while that still is, and says
+    /// so when it is not: the versions are read again then, and again after
+    /// it went through.
+    fn roll_back(&mut self, p: Provider, from: String, cx: &mut Context<Self>) {
+        self.clis[slot(p)].rolled = None;
+        self.clis[slot(p)].rolling = true;
+        let answer = ask::<RolledBack>(&self.models.host, cmd::CLI_ROLL_BACK, json!({ "provider": p, "from": from }));
+        cx.spawn(async move |this, cx| {
+            let got = answer.await;
+            let _ = this.update(cx, |v, cx| {
+                let moved = match &got {
+                    Ok(_) => true,
+                    Err(e) => e.contains("look again"),
+                };
+                v.clis[slot(p)].rolling = false;
+                v.clis[slot(p)].rolled = Some(got);
+                if moved {
+                    v.refresh_cli(p, cx);
                 }
                 cx.notify();
             });
@@ -309,8 +327,8 @@ impl SettingsPanel {
 
     fn yes(&mut self, cx: &mut Context<Self>) {
         match self.ask.take() {
-            Some(Ask::Above) => self.set_above(true, true, cx),
             Some(Ask::Install(offer)) => self.install(offer, cx),
+            Some(Ask::RollBack { provider, from, .. }) => self.roll_back(provider, from, cx),
             None => {}
         }
         cx.notify();
@@ -451,7 +469,6 @@ impl SettingsPanel {
     }
 
     fn agents(&self, p: &Palette, cx: &Context<Self>) -> Div {
-        let above = self.above;
         let h = self.helpers.clone();
         let ready = h.is_some();
         let h = h.unwrap_or_default();
@@ -476,19 +493,6 @@ impl SettingsPanel {
                 ready && n < max,
                 self.act(cx, move |v, _, cx| v.set_max_helpers(n + 1, cx)),
             ));
-        let modes = [("inherit", "The spawning chat's"), ("account", "The account's default")];
-        let mode = ui::segmented(
-            "settings-helper-mode",
-            p,
-            modes
-                .iter()
-                .map(|(key, label)| {
-                    let key = *key;
-                    (SharedString::from(*label), h.helper_mode == key, self.act(cx, move |v, _, cx| v.set_helper_mode(key, cx)))
-                })
-                .collect(),
-            ready,
-        );
         let pct = ui::segmented(
             "settings-helper-context",
             p,
@@ -528,22 +532,7 @@ impl SettingsPanel {
             .flex_col()
             .gap(px(2.))
             .child(ui::section(p, "Helpers"))
-            .child(ui::check(
-                "settings-above",
-                p,
-                "Allow helpers more permissions than their parent chat",
-                above.unwrap_or(false),
-                above.is_some(),
-                self.act(cx, move |v, _, cx| v.set_above(!above.unwrap_or(false), false, cx)),
-            ))
-            .child(ui::note(
-                p,
-                "Off, a helper does no more without asking than the chat that spawned it. On, any chat with Luna tools may spawn helpers \
-                 that bypass permissions or run with full access, and approve what they ask, whatever it runs in itself.",
-            ))
             .child(ui::row(p, "Helpers per chat", Some("The most sessions at work under one of your chats, its helpers' helpers included.".into()), stepper))
-            .child(ui::row(p, "Helpers' mode when not given", Some("The permission mode or sandbox a helper starts in when the chat spawning it names none.".into()), div()))
-            .child(mode)
             .child(ui::row(
                 p,
                 "Tell me when a helper's context passes",
@@ -619,6 +608,7 @@ impl SettingsPanel {
                 ),
             ))
             .child(line);
+        group = group.child(self.roll_back_row(provider, &versions, p, cx));
         if let Some(c) = versions.canary.as_ref().filter(|c| !c.failures.is_empty()) {
             group = group.child(ui::alert(
                 p,
@@ -644,7 +634,7 @@ impl SettingsPanel {
                     r.previous.then_some("previous"),
                     (r.in_use && !r.current).then_some("in use"),
                     r.bad.is_some().then_some("turned away"),
-                    r.below_min_safe.then_some("too old to run"),
+                    r.below_floor.then_some("too old to run"),
                 ]
                 .into_iter()
                 .flatten()
@@ -656,6 +646,26 @@ impl SettingsPanel {
             group = group.child(ui::note(p, format!("Installed: {}", installed.join("; "))));
         }
         group.children(state.error.clone().map(|e| ui::alert(p, Tone::Trouble, e)))
+    }
+
+    /// The Roll back row: the version it goes to, or why it does not, and
+    /// how the last one went.
+    fn roll_back_row(&self, provider: Provider, versions: &CliVersions, p: &Palette, cx: &Context<Self>) -> Div {
+        let state = &self.clis[slot(provider)];
+        let key = provider.key();
+        let (label, desc, open) = versions.roll_back_offer();
+        let button = ui::button(
+            &format!("settings-cli-rollback-{key}"),
+            p,
+            if state.rolling { "Rolling back...".to_owned() } else { label },
+            open && !state.rolling,
+            self.act(cx, move |v, _, cx| v.ask_roll_back(provider, cx)),
+        );
+        let done = state.rolled.as_ref().map(|r| match r {
+            Ok(done) => ui::alert(p, Tone::Done, format!("Rolled back {}: {} \u{2192} {}.", provider.label(), done.from, done.to)),
+            Err(e) => ui::alert(p, Tone::Trouble, e.clone()),
+        });
+        div().flex().flex_col().child(ui::row(p, "Roll back", Some(desc.into()), button)).children(done)
     }
 
     fn updates(&self, p: &Palette, cx: &Context<Self>) -> Div {
@@ -734,16 +744,17 @@ impl SettingsPanel {
     }
 
     fn question(&self, ask: Ask, _p: &Palette, cx: &Context<Self>) -> Confirm {
-        let (title, body, yes): (&str, String, String) = match &ask {
-            Ask::Above => (
-                "Let helpers run above their caller?",
-                "Helpers will be able to run with more privilege than the session that spawns them: a session in a read-only or asking \
-                 mode could start one with full access, and answer or type commands into its helpers. Turn this on only if you mean to."
-                    .into(),
-                "Turn on".into(),
+        let (title, body, yes): (String, String, String) = match &ask {
+            Ask::RollBack { provider, from, to } => (
+                roll_back_title(*provider, from, to),
+                format!(
+                    "Luna goes back to {to}, the version it kept before {from}. {from} is not installed again while it is the newest \
+                     release, only a different one. Sessions already running keep the version they started with."
+                ),
+                "Roll back".to_owned(),
             ),
             Ask::Install(offer) => (
-                "Install the update",
+                "Install the update".to_owned(),
                 format!(
                     "Luna {} replaces {}. The installer starts once it is downloaded and checked; Luna closes for it and comes back, \
                      and the sessions resume.\n\n{}",
@@ -779,8 +790,8 @@ impl SettingsPanel {
     #[cfg(test)]
     pub fn asking(&self) -> Option<&'static str> {
         self.ask.as_ref().map(|a| match a {
-            Ask::Above => "above",
             Ask::Install(_) => "install",
+            Ask::RollBack { .. } => "roll-back",
         })
     }
 
@@ -795,6 +806,19 @@ impl SettingsPanel {
     pub fn answer_no(&mut self, cx: &mut Context<Self>) {
         self.ask = None;
         cx.notify();
+    }
+}
+
+fn roll_back_title(provider: Provider, from: &str, to: &str) -> String {
+    format!("Roll back {} from {from} to {to}?", provider.label())
+}
+
+/// The question's title where it is a rollback's, for the tests.
+#[cfg(test)]
+pub fn roll_back_asked(panel: &SettingsPanel) -> Option<String> {
+    match &panel.ask {
+        Some(Ask::RollBack { provider, from, to }) => Some(roll_back_title(*provider, from, to)),
+        _ => None,
     }
 }
 

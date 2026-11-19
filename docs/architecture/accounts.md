@@ -14,7 +14,7 @@
 | Path | What it holds |
 | --- | --- |
 | `accounts.rs` | folders under `<accounts root>/{anthropic,openai}/<name>`; nothing written into a new one |
-| `settings.rs` | `<data>/settings.json` (accounts root, defaults, library reaches, `codexTrustedRoots`, `helpersAboveCaller`) |
+| `settings.rs` | `<data>/settings.json` (accounts root, defaults, library reaches, `codexTrustedRoots`, helpers' places and context share) |
 | `claude/limits.rs`, `codex/limits.rs`, `throttle.rs` | usage windows and the shared 429 cool-off |
 | `claude/oauth.rs` | access-token refresh |
 | `claude/trust.rs`, `codex/trust.rs` | trust before the spawn |

@@ -181,22 +181,13 @@ export const agentBlockedAccounts = () => call<string[]>('agent_blocked_accounts
 export const setAgentAccount = (provider: Provider, name: string, allowed: boolean) =>
   call<string[]>('set_agent_account', { provider, name, allowed }, []);
 
-/** Whether helpers may run with more privilege than the session spawning them
- *  (Settings; agents/privilege.rs `cap`). */
-export const helpersAboveCaller = () => call<boolean>('helpers_above_caller', {}, false);
-export const setHelpersAboveCaller = (on: boolean) => call<boolean>('set_helpers_above_caller', { on }, on);
-
-/** Where a helper's mode comes from when its spawn names none. */
-export type HelperMode = 'inherit' | 'account';
-
-/** The places a line of sessions has, the range they may be set in, the
- *  helpers' mode when not given, and the share of a helper's context past
- *  which its notices say so (0 for off) (agents/spawn `HelperSettings`). */
+/** The places a line of sessions has, the range they may be set in, and the
+ *  share of a helper's context past which its notices say so (0 for off)
+ *  (agents/spawn `HelperSettings`). */
 export interface HelperSettingsDto {
   maxHelpers: number;
   min: number;
   max: number;
-  helperMode: HelperMode;
   helperContextPct: number;
 }
 
@@ -204,14 +195,12 @@ const HELPER_DEFAULTS: HelperSettingsDto = {
   maxHelpers: 8,
   min: 1,
   max: 32,
-  helperMode: 'inherit',
   helperContextPct: 50
 };
 export const helperSettings = () => call<HelperSettingsDto>('helper_settings', {}, HELPER_DEFAULTS);
 export const setMaxHelpers = (n: number) =>
   call<HelperSettingsDto>('set_max_helpers', { n }, { ...HELPER_DEFAULTS, maxHelpers: n });
-export const setHelperMode = (mode: HelperMode) =>
-  call<HelperSettingsDto>('set_helper_mode', { mode }, { ...HELPER_DEFAULTS, helperMode: mode });
+
 export const setHelperContextPct = (pct: number) =>
   call<HelperSettingsDto>('set_helper_context_pct', { pct }, { ...HELPER_DEFAULTS, helperContextPct: pct });
 

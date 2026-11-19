@@ -81,8 +81,11 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 args.extend(["--effort".into(), s.effort.clone()]);
                 applied.push(Item::Effort.with(format!("--effort {}", s.effort)));
             }
-            args.extend(["--permission-mode".into(), s.mode.clone()]);
-            applied.push(Item::PermissionMode.with(format!("--permission-mode {}", s.mode)));
+            // A spawn that named none runs in what Claude Code's own settings say.
+            if !s.own_mode {
+                args.extend(["--permission-mode".into(), s.mode.clone()]);
+                applied.push(Item::PermissionMode.with(format!("--permission-mode {}", s.mode)));
+            }
             match (&e.session, &made) {
                 (Some(sid), Some(wt)) if std::path::Path::new(wt).is_dir() => {
                     dir = wt.clone();
@@ -272,8 +275,18 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 applied.push(Item::HelperApprovalNever.with("-c approval_policy=\"never\""));
                 args.extend(["-c".into(), crate::codex::launch::CODEX_PERSON_REVIEWS.into()]);
                 applied.push(Item::HelperReviewer.with(format!("-c {}", crate::codex::launch::CODEX_PERSON_REVIEWS)));
-                let sandbox = crate::pty::codex_sandbox_args(&s.mode);
-                applied.push(crate::codex::launch::sandbox_applied(&s.mode, &sandbox));
+                // A spawn that named none runs in the sandbox Codex's own config
+                // settles on, with no flag of Luna's; its read-only still takes
+                // Luna's profile where that keeps it out of Luna's `core/`
+                // (codex/launch.rs `denies_core`).
+                let sandbox = if s.own_mode && !crate::codex::launch::takes_profile(&s.mode, cfg!(windows)) {
+                    Vec::new()
+                } else {
+                    crate::pty::codex_sandbox_args(&s.mode)
+                };
+                if !sandbox.is_empty() {
+                    applied.push(crate::codex::launch::sandbox_applied(&s.mode, &sandbox));
+                }
                 if let Some((profile, dir)) = profile_deny(&sandbox) {
                     applied.push(crate::codex::launch::core_deny_applied(&profile, &dir));
                 }
@@ -292,14 +305,14 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             applied.push(Item::NoAutoUpdate.with(format!("-c {}", crate::codex::launch::NO_UPDATE_CHECK)));
             // Luna's own server, with its tools: none while the hub is not up.
             let luna = s.token.clone().filter(|_| s.tools).map(|token| (crate::pty::codex_mcp_args(), token));
+            // Before Luna's own server and the library's plugins: the tables
+            // these give whole would replace what an earlier `-c` set in them.
             if !s.connectors {
                 let supplied = luna.as_ref().is_some_and(|(mcp, _)| !mcp.is_empty());
-                let servers = crate::codex::config::helper_mcp_servers(&s.account_path)?;
-                let off = crate::codex::launch::connectors_off(&servers, supplied)?;
+                let mcp = crate::codex::config::helper_mcp(&s.account_path, &dir)?;
+                let off = crate::codex::launch::connectors_off(&mcp, supplied)?;
                 applied.push(crate::codex::launch::connectors_off_applied(&off));
                 args.extend(off);
-                let left = crate::codex::config::servers_left_on(&s.account_path, &dir);
-                applied.extend(crate::codex::launch::left_on_applied(&left));
             }
             if let Some((mcp, token)) = luna {
                 args.extend(mcp);
@@ -1083,10 +1096,10 @@ mod tests {
         args
     }
 
-    /// The account's apps off for the run, and each server its `config.toml`
-    /// names: the golden account has none.
+    /// The account's apps off for the run, each server its layers name (the
+    /// golden account has none), and plugins no layer names.
     fn apps_off() -> Vec<String> {
-        strings(&["-c", "features.apps=false"])
+        strings(&["-c", "features.apps=false", "-c", "plugins={ _default = { enabled = false } }"])
     }
 
     fn codex_turn_envs(id: &str, sandboxed: bool) -> Vec<(String, String)> {
@@ -1174,6 +1187,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&account);
     }
 
+    /// A helper whose spawn names no mode, as the spawn settles it
+    /// (agents/spawn `background_spec`): Codex's own from its config gets no
+    /// sandbox flag; an account Luna cannot read, the closed read-only,
+    /// passed; Claude Code no `--permission-mode`.
+    #[test]
+    fn golden_headless_turns_whose_spawn_named_no_mode() {
+        let account = std::env::temp_dir().join(format!("luna-golden-bg-own-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let settled = |config: &str, provider: Provider| {
+            std::fs::write(account.join("config.toml"), config).unwrap();
+            crate::agents::spawn::background_spec_for_test(provider, &acc, "C:\\p")
+        };
+        for (config, held) in [
+            ("", codex_held(Vec::new(), true)),
+            ("sandbox_mode = \"danger-full-access\"\n", codex_held(Vec::new(), true)),
+            ("approval_policy = \"sometimes\"\n", codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true)),
+        ] {
+            let id = "golden-bg-codex-own";
+            let r = Redact::for_chat(id);
+            let mut e = entry(Provider::Codex);
+            let (mode, own_mode) = settled(config, Provider::Codex);
+            (e.spec.mode, e.spec.own_mode) = (mode, own_mode);
+            let t = turn(&e, id, &r);
+            let mut want = strings(&["exec", "-C", "C:\\p"]);
+            want.extend(codex_turn(true));
+            want.extend(held);
+            want.extend(apps_off());
+            want.push("-".into());
+            assert_eq!(t.args, want, "{config}");
+            assert_eq!(t.envs, codex_turn_envs(id, true), "{config}");
+        }
+        let id = "golden-bg-claude-own";
+        let r = Redact::for_chat(id);
+        let mut e = entry(Provider::Claude);
+        (e.spec.mode, e.spec.own_mode) = settled("", Provider::Claude);
+        assert!(e.spec.own_mode);
+        let t = turn(&e, id, &r);
+        assert!(!t.args.iter().any(|a| a == "--permission-mode"), "{:?}", t.args);
+        assert!(!t.keys().contains(&"permission-mode"), "{:?}", t.keys());
+        let _ = std::fs::remove_dir_all(&account);
+    }
     #[test]
     fn golden_headless_codex_sandboxes_and_the_reviewer() {
         // (sandbox, auto review, what holds it, whether Windows sandboxes it)
@@ -1278,12 +1333,13 @@ mod tests {
     }
 
     #[test]
-    fn golden_headless_codex_helper_turns_off_the_servers_its_account_names() {
+    fn golden_headless_codex_helper_turns_off_the_servers_and_plugins_of_its_run() {
         const ID: &str = "golden-bg-codex-servers";
         let account = std::env::temp_dir().join(format!("luna-golden-codex-servers-{}", std::process::id()));
         std::fs::create_dir_all(&account).unwrap();
         let config = "[mcp_servers.gmail]\ncommand = \"node\"\n\n\
-                      [mcp_servers.luna]\nurl = \"https://y\"\n\n[mcp_servers.Zoho_CRM-2]\nurl = \"https://z\"\n";
+                      [mcp_servers.luna]\nurl = \"https://y\"\n\n[mcp_servers.\"team.slack\"]\nurl = \"https://z\"\n\n\
+                      [plugins.\"crm@market\"]\nenabled = true\n";
         std::fs::write(account.join("config.toml"), config).unwrap();
         let account = account.to_string_lossy().into_owned();
         let r = Redact::for_chat(ID).with(account.clone(), "<acc>");
@@ -1294,43 +1350,37 @@ mod tests {
         want.extend(codex_turn(true));
         want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
         // One the account calls `luna` is its own, not Luna's, which this helper
-        // without tools is not given: off as well.
-        want.extend(apps_off());
+        // without tools is not given: off as well. A name with a dot is a
+        // quoted key in the table, not split.
         want.extend(strings(&[
             "-c",
-            "mcp_servers.gmail.enabled=false",
+            "features.apps=false",
             "-c",
-            "mcp_servers.luna.enabled=false",
+            "mcp_servers={ gmail = { enabled = false }, luna = { enabled = false }, \"team.slack\" = { enabled = false } }",
             "-c",
-            "mcp_servers.Zoho_CRM-2.enabled=false",
+            "plugins={ \"crm@market\" = { enabled = false }, _default = { enabled = false } }",
             "-",
         ]));
         assert_eq!(t.args, want);
-        assert_eq!(t.value("helper.mcp-left-on"), None, "nothing else to keep");
-        // A name a `-c` key cannot spell cannot be turned off: no turn, rather
-        // than one that keeps it.
-        let file = std::path::Path::new(&account).join("config.toml");
-        std::fs::write(&file, format!("{config}\n[mcp_servers.\"team.slack\"]\nurl = \"https://x\"\n")).unwrap();
-        let err = command_for(&e, ID).err().unwrap();
-        assert!(err.contains("not started") && err.contains("\"team.slack\""), "{err}");
-        std::fs::write(&file, config).unwrap();
-        // What Codex cannot turn off for a run is listed: a project's servers.
+        assert!(t.value("helper.luna-mcp-alone").is_some_and(|v| v.contains("team.slack")));
+        // A project's servers go off as the account's do.
         let project = std::path::Path::new(&account).join("project");
         std::fs::create_dir_all(project.join(".codex")).unwrap();
         std::fs::write(project.join(".codex").join("config.toml"), "[mcp_servers.docs]\ncommand = \"x\"\n").unwrap();
         let mut in_project = entry(Provider::Codex);
         in_project.spec.account_path = account.clone();
         in_project.spec.folder = project.to_string_lossy().into_owned();
-        let (_, _, _, applied) = command_for(&in_project, ID).unwrap();
-        let left = applied.iter().find(|a| a.key == "helper.mcp-left-on").map(|a| a.value.clone());
-        assert!(left.as_deref().is_some_and(|l| l.starts_with("server \"docs\" of ")), "{left:?}");
+        let (args, _, _, _) = command_for(&in_project, ID).unwrap();
+        assert!(args.iter().any(|a| a.starts_with("mcp_servers=") && a.contains("docs = { enabled = false }")), "{args:?}");
         // With tools, Luna's own is `luna`: the account's, a url alone, is replaced
-        // whole and turned on; one with more of its own stops the start.
+        // whole and turned on, and Luna's keys come after the table, which
+        // would otherwise replace them; one with more of its own stops the start.
         e.spec.tools = true;
         e.spec.token = helper_token(ID, &e);
         let t = turn(&e, ID, &r);
-        assert!(t.args.windows(2).any(|w| w == ["-c", "mcp_servers.luna.enabled=true"]), "{:?}", t.args);
-        assert!(!t.args.iter().any(|a| a == "mcp_servers.luna.enabled=false"), "{:?}", t.args);
+        let table = t.args.iter().position(|a| a.starts_with("mcp_servers={")).unwrap();
+        assert!(t.args[table].contains("luna = { enabled = true }"), "{:?}", t.args);
+        assert!(t.args.iter().skip(table + 1).any(|a| a.starts_with("mcp_servers.luna.url=")), "{:?}", t.args);
         assert!(t.args.ends_with(&[golden::codex_mcp(), strings(&["-"])].concat()), "{:?}", t.args);
         std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
         assert!(command_for(&e, ID).err().unwrap().contains("named luna"));

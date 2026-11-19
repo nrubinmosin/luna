@@ -21,15 +21,11 @@ pub struct Settings {
     /// `provider/name` of accounts agents may not spawn on (agents/). Every
     /// account is available unless listed here.
     pub agent_blocked_accounts: Vec<String>,
-    /// Helpers may run with more privilege than the session spawning them
-    /// (agents/privilege.rs `cap`). Off: a helper is held to its caller's.
-    pub helpers_above_caller: bool,
+
     /// The most sessions one chat may have under it, every generation counted
     /// (agents/spawn `max_descendants`, held to its range there).
     pub max_helpers: u32,
-    /// The mode a helper starts in when its spawn names none
-    /// (agents/privilege.rs `settle_mode`).
-    pub helper_mode: HelperMode,
+
     /// The share of its context window past which notices about a helper say
     /// where it stands (agents/notifier usage.rs `budget_news`); 0 is off. A
     /// spawn's `budgetPct` sets its own.
@@ -49,17 +45,6 @@ pub struct Settings {
     /// for its user (asking.rs).
     pub waiting_marker_on: bool,
     pub waiting_marker: String,
-}
-
-/// A helper's mode when its spawn names none: the caller's own, as far as the
-/// helper's CLI has it (`Inherit`), or the account's and project's default
-/// (`Account`), held to the caller's either way.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum HelperMode {
-    #[default]
-    Inherit,
-    Account,
 }
 
 /// Which accounts something goes into: `all`, a provider's every account
@@ -452,9 +437,7 @@ impl Default for Settings {
             quiet_window_s: 120,
             power_action: "shutdown".into(),
             agent_blocked_accounts: Vec::new(),
-            helpers_above_caller: false,
             max_helpers: crate::agents::spawn::HELPERS_DEFAULT,
-            helper_mode: HelperMode::Inherit,
             helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,

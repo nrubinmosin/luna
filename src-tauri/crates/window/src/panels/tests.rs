@@ -155,23 +155,15 @@ fn the_editor_loads_tracks_its_changes_checks_and_saves(cx: &mut TestAppContext)
     f.select(&lib, Sel::Skill("review".into()));
     let doc = lib.read_with(f.cx, |v, _| v.editor.clone().unwrap());
     assert_eq!(doc.read_with(f.cx, |d, cx| (d.text(cx), d.dirty(cx))), (demo::SKILL_TEXT.to_owned(), false));
-    let checks = f.calls(cmd::LIBRARY_CHECK_SKILL).len();
-    assert_eq!(checks, 1, "checked as it is read");
+    // A skill is not judged: what SKILL.md says is the CLIs' to read.
+    assert!(f.calls(cmd::LIBRARY_CHECK_SYSTEM).is_empty());
 
     f.type_in_editor(&lib, "More. ");
     assert!(doc.read_with(f.cx, |d, cx| d.dirty(cx)));
-    // Checked a moment after the last key, not at every one.
-    assert_eq!(f.calls(cmd::LIBRARY_CHECK_SKILL).len(), checks);
     f.cx.executor().advance_clock(Duration::from_millis(300));
     f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::LIBRARY_CHECK_SKILL).len(), checks + 1);
-
-    // A problem found is said, the text saved all the same.
-    f.host.answer(cmd::LIBRARY_CHECK_SKILL, json!("The front matter has no description"));
-    f.type_in_editor(&lib, "x");
-    f.cx.executor().advance_clock(Duration::from_millis(300));
-    f.cx.run_until_parked();
-    assert_eq!(doc.read_with(f.cx, |d, _| d.problem.clone()).as_deref(), Some("The front matter has no description"));
+    assert!(f.calls(cmd::LIBRARY_CHECK_SYSTEM).is_empty());
+    assert_eq!(doc.read_with(f.cx, |d, _| d.problem.clone()), None);
 
     f.cx.dispatch_action(super::Save);
     f.cx.run_until_parked();
@@ -528,6 +520,18 @@ fn a_system_text_opens_compares_resets_and_adopts(cx: &mut TestAppContext) {
     let lib = f.library();
     f.select(&lib, Sel::System("role-lead".into()));
     assert_eq!(f.calls(cmd::LIBRARY_READ).last(), Some(&json!({ "entry": { "system": "role-lead" } })));
+    // A system text is checked as it is read and a moment after the last
+    // key; a problem found is said, the text saved all the same.
+    let checks = f.calls(cmd::LIBRARY_CHECK_SYSTEM).len();
+    assert_eq!(checks, 1, "checked as it is read");
+    f.type_in_editor(&lib, "More. ");
+    assert_eq!(f.calls(cmd::LIBRARY_CHECK_SYSTEM).len(), checks);
+    f.host.answer(cmd::LIBRARY_CHECK_SYSTEM, json!("It names no role"));
+    f.cx.executor().advance_clock(Duration::from_millis(300));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(cmd::LIBRARY_CHECK_SYSTEM).len(), checks + 1);
+    let doc = lib.read_with(f.cx, |v, _| v.editor.clone().unwrap());
+    assert_eq!(doc.read_with(f.cx, |d, _| d.problem.clone()).as_deref(), Some("It names no role"));
     lib.update(f.cx, |v, cx| v.compare_with_luna("role-lead".into(), cx));
     f.cx.run_until_parked();
     assert_eq!(f.calls(cmd::LIBRARY_SYSTEM_COMPARE), vec![json!({ "name": "role-lead" })]);
@@ -612,7 +616,7 @@ fn the_library_editor_is_still_while_left_alone(cx: &mut TestAppContext) {
 fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
     let mut f = open(cx);
     let s = f.settings();
-    for c in [cmd::WINDOW_PREFS, cmd::GET_ACCOUNTS_ROOT, cmd::HELPERS_ABOVE_CALLER, cmd::HELPER_SETTINGS, cmd::CODEX_TRUSTED_ROOTS] {
+    for c in [cmd::WINDOW_PREFS, cmd::GET_ACCOUNTS_ROOT, cmd::HELPER_SETTINGS, cmd::CODEX_TRUSTED_ROOTS] {
         // The window's workspace asked for the preferences at its start too.
         let asked = if c == cmd::WINDOW_PREFS { 2 } else { 1 };
         assert_eq!(f.calls(c).len(), asked, "{c}");
@@ -638,13 +642,11 @@ fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
 
     s.update(f.cx, |v, cx| {
         v.set_max_helpers(9, cx);
-        v.set_helper_mode("account", cx);
         v.set_context_pct(0, cx);
         v.set_trusted(vec!["E:\\Projects".into(), "D:\\work".into()], cx);
     });
     f.cx.run_until_parked();
     assert_eq!(f.calls(cmd::SET_MAX_HELPERS), vec![json!({ "n": 9 })]);
-    assert_eq!(f.calls(cmd::SET_HELPER_MODE), vec![json!({ "mode": "account" })]);
     assert_eq!(f.calls(cmd::SET_HELPER_CONTEXT_PCT), vec![json!({ "pct": 0 })]);
     assert_eq!(f.calls(cmd::SET_CODEX_TRUSTED_ROOTS), vec![json!({ "roots": ["E:\\Projects", "D:\\work"] })]);
     assert_eq!(s.read_with(f.cx, |v, _| v.trusted.clone()), Some(vec!["E:\\Projects".into(), "D:\\work".into()]));
@@ -654,27 +656,6 @@ fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
     s.update(f.cx, |v, cx| v.set_max_helpers(40, cx));
     f.cx.run_until_parked();
     assert_eq!(s.read_with(f.cx, |v, _| v.error.clone()), Some((Page::Agents, "refused".into())));
-}
-
-#[gpui::test]
-fn helpers_above_their_caller_go_on_only_after_the_windows_yes(cx: &mut TestAppContext) {
-    let mut f = open(cx);
-    let s = f.settings();
-    s.update(f.cx, |v, cx| v.set_above(true, false, cx));
-    f.cx.run_until_parked();
-    assert!(f.calls(cmd::SET_HELPERS_ABOVE_CALLER).is_empty(), "nothing before the yes");
-    assert_eq!(s.read_with(f.cx, |v, _| v.asking()), Some("above"));
-    s.update(f.cx, |v, cx| v.answer_no(cx));
-    assert!(f.calls(cmd::SET_HELPERS_ABOVE_CALLER).is_empty());
-    s.update(f.cx, |v, cx| v.set_above(true, false, cx));
-    s.update(f.cx, |v, cx| v.answer_yes(cx));
-    f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::SET_HELPERS_ABOVE_CALLER), vec![json!({ "on": true, "confirmed": true })]);
-    assert_eq!(s.read_with(f.cx, |v, _| v.above), Some(true));
-    // Off takes no yes.
-    s.update(f.cx, |v, cx| v.set_above(false, false, cx));
-    f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::SET_HELPERS_ABOVE_CALLER).last(), Some(&json!({ "on": false, "confirmed": false })));
 }
 
 #[gpui::test]
@@ -700,6 +681,102 @@ fn a_clis_check_goes_to_the_host_and_its_pass_is_followed(cx: &mut TestAppContex
     s.update(f.cx, |v, cx| v.check_cli(Provider::Claude, cx));
     f.cx.run_until_parked();
     assert_eq!(s.read_with(f.cx, |v, _| v.clis[0].error.clone()).as_deref(), Some("offline"));
+}
+
+/// What the Roll back row of `provider` offers: its label, its line and
+/// whether the button works.
+fn roll_back_offer(f: &mut Fixture<'_>, provider: Provider) -> (String, String, bool) {
+    let s = f.settings();
+    s.read_with(f.cx, |v, _| v.clis[usize::from(provider == Provider::Codex)].versions.clone().unwrap_or_default().roll_back_offer())
+}
+
+#[gpui::test]
+fn roll_back_is_open_only_where_a_way_back_is_kept_and_nothing_refuses_it(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    // Open: the version it goes to is in the label.
+    let (label, line, open) = roll_back_offer(&mut f, Provider::Claude);
+    assert_eq!((label.as_str(), open), ("Roll back to 2.1.328", true));
+    assert_eq!(line, "Goes back to 2.1.328, the version kept before this one.");
+    // Refused: shut, and the core's words for why are the line.
+    let (label, line, open) = roll_back_offer(&mut f, Provider::Codex);
+    assert_eq!((label.as_str(), open), ("Roll back to 0.170.0", false));
+    assert_eq!(line, "Roll back is refused: 0.170.0 was turned away (rolled back by hand).");
+    let s = f.settings();
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Codex, cx));
+    assert_eq!(s.read_with(f.cx, |v, _| v.asking()), None, "a refused rollback asks nothing");
+    // Nothing kept.
+    assert_eq!(
+        crate::settings::CliVersions::default().roll_back_offer(),
+        ("Roll back".into(), "No earlier version is kept to go back to.".into(), false)
+    );
+    // No current version shown to go back from.
+    let mut versions = crate::settings::CliVersions { way_back: Some(Default::default()), ..Default::default() };
+    assert!(!versions.roll_back_offer().2);
+    versions.versions.push(crate::settings::VersionRow { version: "2.1.330".into(), current: true, ..Default::default() });
+    assert!(versions.roll_back_offer().2);
+    assert!(f.calls(cmd::CLI_ROLL_BACK).is_empty());
+}
+
+#[gpui::test]
+fn roll_back_asks_once_naming_both_versions_and_then_goes_back_from_the_one_seen(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let s = f.settings();
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Claude, cx));
+    assert_eq!(s.read_with(f.cx, |v, _| v.asking()), Some("roll-back"));
+    assert_eq!(
+        s.read_with(f.cx, |v, _| crate::settings::roll_back_asked(v)).as_deref(),
+        Some("Roll back Claude Code from 2.1.330 to 2.1.328?")
+    );
+    // No: nothing is sent.
+    s.update(f.cx, |v, cx| v.answer_no(cx));
+    f.cx.run_until_parked();
+    assert!(f.calls(cmd::CLI_ROLL_BACK).is_empty());
+
+    // Yes: the version the person saw is the `from`, and what the core says
+    // it did is shown; the CLI's versions are read again.
+    let (statuses, versions) = (f.calls(cmd::CLI_STATUS).len(), f.calls(cmd::CLI_VERSIONS).len());
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Claude, cx));
+    s.update(f.cx, |v, cx| v.answer_yes(cx));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(cmd::CLI_ROLL_BACK), vec![json!({ "provider": "claude", "from": "2.1.330" })]);
+    assert_eq!(
+        s.read_with(f.cx, |v, _| v.clis[0].rolled.clone()),
+        Some(Ok(crate::settings::RolledBack { from: "2.1.330".into(), to: "2.1.328".into() }))
+    );
+    assert_eq!((f.calls(cmd::CLI_STATUS).len(), f.calls(cmd::CLI_VERSIONS).len()), (statuses + 1, versions + 1));
+    assert!(!s.read_with(f.cx, |v, _| v.clis[0].rolling));
+    assert_eq!(s.read_with(f.cx, |v, _| v.asking()), None);
+}
+
+#[gpui::test]
+fn a_rollback_the_core_refuses_says_why_and_a_moved_version_is_looked_at_again(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let s = f.settings();
+    let versions = f.calls(cmd::CLI_VERSIONS).len();
+    // Something else moved the CLI between the look and the click.
+    let moved = "the current version changed (it is 2.1.331 now); look again";
+    f.host.fail(cmd::CLI_ROLL_BACK, Some(moved));
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Claude, cx));
+    s.update(f.cx, |v, cx| v.answer_yes(cx));
+    f.cx.run_until_parked();
+    assert_eq!(s.read_with(f.cx, |v, _| v.clis[0].rolled.clone()), Some(Err(moved.into())));
+    assert_eq!(f.calls(cmd::CLI_VERSIONS).len(), versions + 1, "the versions are read again");
+    assert!(!s.read_with(f.cx, |v, _| v.clis[0].rolling));
+
+    // Any other refusal is said and nothing is read again; asking again
+    // clears it, and a success replaces it.
+    f.host.fail(cmd::CLI_ROLL_BACK, Some("2.1.328: no longer whole"));
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Claude, cx));
+    s.update(f.cx, |v, cx| v.answer_yes(cx));
+    f.cx.run_until_parked();
+    assert_eq!(s.read_with(f.cx, |v, _| v.clis[0].rolled.clone()), Some(Err("2.1.328: no longer whole".into())));
+    assert_eq!(f.calls(cmd::CLI_VERSIONS).len(), versions + 1);
+    assert_eq!(f.calls(cmd::CLI_ROLL_BACK).len(), 2);
+    f.host.fail(cmd::CLI_ROLL_BACK, None);
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Claude, cx));
+    s.update(f.cx, |v, cx| v.answer_yes(cx));
+    f.cx.run_until_parked();
+    assert!(s.read_with(f.cx, |v, _| v.clis[0].rolled.clone()).is_some_and(|r| r.is_ok()));
 }
 
 #[gpui::test]

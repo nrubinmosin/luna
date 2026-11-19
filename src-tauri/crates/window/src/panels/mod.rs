@@ -39,8 +39,7 @@ use std::sync::Arc;
 /// `agents.ts`, `accountSettings.ts`), but for `window_prefs`,
 /// `set_window_prefs`, `app_version`, `library_rename_skill`,
 /// `library_write_checked`, the draft's, `account_identity`,
-/// `delete_account_checked` and `set_helpers_above_caller`'s `confirmed`,
-/// which are the native window's own.
+/// `delete_account_checked`, which are the native window's own.
 pub mod cmd {
     pub const LIBRARY_OVERVIEW: &str = "library_overview";
     pub const LIBRARY_SYNC: &str = "library_sync";
@@ -61,7 +60,6 @@ pub mod cmd {
     /// `{ draft }`: keeps it; `{ draft: null, forget: id }` forgets the one
     /// kept only while it is that editor's. Sent, in order.
     pub const SET_LIBRARY_DRAFT: &str = "set_library_draft";
-    pub const LIBRARY_CHECK_SKILL: &str = "library_check_skill";
     pub const LIBRARY_CHECK_SYSTEM: &str = "library_check_system";
     pub const LIBRARY_SYSTEM_COMPARE: &str = "library_system_compare";
     pub const LIBRARY_SYSTEM_RESET: &str = "library_system_reset";
@@ -81,18 +79,16 @@ pub mod cmd {
     pub const APP_VERSION: &str = "app_version";
     pub const GET_ACCOUNTS_ROOT: &str = "get_accounts_root";
     pub const SET_ACCOUNTS_ROOT: &str = "set_accounts_root";
-    pub const HELPERS_ABOVE_CALLER: &str = "helpers_above_caller";
     /// `{ on, confirmed }`: on only with the window's own yes.
-    pub const SET_HELPERS_ABOVE_CALLER: &str = "set_helpers_above_caller";
     pub const HELPER_SETTINGS: &str = "helper_settings";
     pub const SET_MAX_HELPERS: &str = "set_max_helpers";
-    pub const SET_HELPER_MODE: &str = "set_helper_mode";
     pub const SET_HELPER_CONTEXT_PCT: &str = "set_helper_context_pct";
     pub const CODEX_TRUSTED_ROOTS: &str = "codex_trusted_roots";
     pub const SET_CODEX_TRUSTED_ROOTS: &str = "set_codex_trusted_roots";
     pub const CLI_STATUS: &str = "cli_status";
     pub const CLI_VERSIONS: &str = "cli_versions";
     pub const CLI_UPDATE_NOW: &str = "cli_update_now";
+    pub const CLI_ROLL_BACK: &str = "cli_roll_back";
 
     /// The window's own (`crate::cmd`): the chat list asks for it too.
     pub const LIST_ACCOUNTS: &str = crate::cmd::LIST_ACCOUNTS;
@@ -126,7 +122,6 @@ pub mod cmd {
         LIBRARY_WRITE,
         LIBRARY_WRITE_CHECKED,
         LIBRARY_DRAFT,
-        LIBRARY_CHECK_SKILL,
         LIBRARY_CHECK_SYSTEM,
         LIBRARY_SYSTEM_COMPARE,
         LIBRARY_SYSTEM_RESET,
@@ -141,17 +136,15 @@ pub mod cmd {
         APP_VERSION,
         GET_ACCOUNTS_ROOT,
         SET_ACCOUNTS_ROOT,
-        HELPERS_ABOVE_CALLER,
-        SET_HELPERS_ABOVE_CALLER,
         HELPER_SETTINGS,
         SET_MAX_HELPERS,
-        SET_HELPER_MODE,
         SET_HELPER_CONTEXT_PCT,
         CODEX_TRUSTED_ROOTS,
         SET_CODEX_TRUSTED_ROOTS,
         CLI_STATUS,
         CLI_VERSIONS,
         CLI_UPDATE_NOW,
+        CLI_ROLL_BACK,
         CREATE_ACCOUNT,
         RENAME_ACCOUNT,
         DELETE_ACCOUNT,
@@ -496,9 +489,8 @@ pub(crate) fn describe(cx: &App) -> String {
 /// `update-check`, `update-confirm`, `add-account claude|codex <name>`,
 /// `delete <n>` (the nth account), `signin <n>` (its login terminal), `yes` (the library's or the accounts'
 /// question up), each doing what its click does. True when the line was one
-/// of these and its panel is up. No line answers Settings' questions: turning
-/// helpers above their caller on takes a person's click in the window
-/// (threat model §3), and Luna's update a person's yes.
+/// of these and its panel is up. No line answers Settings' questions: Luna's update
+/// takes a person's yes.
 #[cfg(any(test, luna_test, feature = "shots"))]
 pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -> bool {
     use crate::library::Sel;

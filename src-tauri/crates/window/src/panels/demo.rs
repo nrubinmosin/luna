@@ -90,7 +90,6 @@ pub fn answer_all(host: &FakeHost) {
     );
     host.answer(cmd::LIBRARY_WRITE_CHECKED, json!({ "conflict": null, "revision": "r2", "overview": overview() }));
     host.answer(cmd::LIBRARY_DRAFT, Value::Null);
-    host.answer(cmd::LIBRARY_CHECK_SKILL, Value::Null);
     host.answer(cmd::LIBRARY_CHECK_SYSTEM, Value::Null);
     host.answer(cmd::LIBRARY_SYSTEM_COMPARE, json!({ "luna": "You are a lead.\n", "yours": "You are a lead. Report in English.\n" }));
 
@@ -98,26 +97,41 @@ pub fn answer_all(host: &FakeHost) {
     host.answer(cmd::WINDOW_PREFS, json!({ "sound": true, "newChat": { "worktree": true, "tools": false } }));
     host.answer(cmd::GET_ACCOUNTS_ROOT, json!({ "path": "C:\\Users\\me\\luna-accounts", "isDefault": true }));
     host.answer(cmd::SET_ACCOUNTS_ROOT, json!({ "path": "D:\\accounts", "isDefault": false }));
-    host.answer(cmd::HELPERS_ABOVE_CALLER, json!(false));
-    host.answer(cmd::SET_HELPERS_ABOVE_CALLER, json!(true));
-    let helpers = json!({ "maxHelpers": 8, "min": 1, "max": 32, "helperMode": "inherit", "helperContextPct": 50, "leadHandoff": { "on": true, "threshold": 60 } });
-    for c in [cmd::HELPER_SETTINGS, cmd::SET_MAX_HELPERS, cmd::SET_HELPER_MODE, cmd::SET_HELPER_CONTEXT_PCT] {
+    let helpers = json!({ "maxHelpers": 8, "min": 1, "max": 32, "helperContextPct": 50, "leadHandoff": { "on": true, "threshold": 60 } });
+    for c in [cmd::HELPER_SETTINGS, cmd::SET_MAX_HELPERS, cmd::SET_HELPER_CONTEXT_PCT] {
         host.answer(c, helpers.clone());
     }
     host.answer(cmd::CODEX_TRUSTED_ROOTS, json!(["E:\\Projects"]));
     host.answer(cmd::SET_CODEX_TRUSTED_ROOTS, json!(["E:\\Projects", "D:\\work"]));
-    host.answer(
-        cmd::CLI_STATUS,
-        json!({ "provider": "claude", "phase": "idle", "version": "2.1.330", "path": "C:\\luna\\claude-cli\\current\\claude.exe",
-                "latest": "2.1.330", "got": 0, "total": null, "error": null, "note": null, "checkedAtMs": 1_763_540_000_000u64 }),
-    );
-    host.answer(
-        cmd::CLI_VERSIONS,
-        json!({ "provider": "claude", "versions": [
-            { "dir": "2.1.330", "version": "2.1.330", "current": true, "previous": false, "inUse": true, "belowMinSafe": false, "bad": null },
-            { "dir": "2.1.328", "version": "2.1.328", "current": false, "previous": true, "inUse": false, "belowMinSafe": false, "bad": null },
-        ], "canary": null }),
-    );
+    // Claude Code keeps a version to go back to; Codex's is one Luna turned away.
+    host.respond(cmd::CLI_STATUS, |args| {
+        let (provider, version, path) = match args["provider"].as_str() {
+            Some("codex") => ("codex", "0.171.0", "C:\\luna\\codex-cli\\current\\codex.exe"),
+            _ => ("claude", "2.1.330", "C:\\luna\\claude-cli\\current\\claude.exe"),
+        };
+        json!({ "provider": provider, "phase": "idle", "version": version, "path": path, "latest": version, "got": 0, "total": null,
+                "error": null, "note": null, "checkedAtMs": 1_763_540_000_000u64 })
+    });
+    host.respond(cmd::CLI_VERSIONS, |args| {
+        let row = |version: &str, current: bool, previous: bool, bad: Value| {
+            json!({ "dir": version, "version": version, "current": current, "previous": previous, "inUse": current, "belowFloor": false, "bad": bad })
+        };
+        match args["provider"].as_str() {
+            Some("codex") => json!({
+                "provider": "codex",
+                "versions": [row("0.171.0", true, false, Value::Null), row("0.170.0", false, true, json!("rolled back by hand"))],
+                "canary": null,
+                "wayBack": { "dir": "0.170.0", "version": "0.170.0", "refusal": "0.170.0 was turned away (rolled back by hand)" },
+            }),
+            _ => json!({
+                "provider": "claude",
+                "versions": [row("2.1.330", true, false, Value::Null), row("2.1.328", false, true, Value::Null)],
+                "canary": null,
+                "wayBack": { "dir": "2.1.328", "version": "2.1.328", "refusal": null },
+            }),
+        }
+    });
+    host.answer(cmd::CLI_ROLL_BACK, json!({ "from": "2.1.330", "to": "2.1.328" }));
     host.answer(cmd::CLI_UPDATE_NOW, Value::Null);
     host.answer(
         crate::desktop::cmd::UPDATE_CHECK,

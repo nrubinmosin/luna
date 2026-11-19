@@ -176,13 +176,13 @@ impl EditorDoc {
         }
     }
 
-    /// The text checked as the core checks it; instructions are not.
+    /// A system skill's text checked as the core checks it; a skill's and
+    /// instructions are not: what SKILL.md says is the CLIs' to judge.
     fn check_now(&mut self, cx: &mut Context<Self>) {
         let text = self.text(cx);
         let answer = match &self.entry {
-            Entry::Skill(n) => ask::<Option<String>>(&self.host, cmd::LIBRARY_CHECK_SKILL, json!({ "skill": n, "text": text })),
             Entry::System(n) => ask::<Option<String>>(&self.host, cmd::LIBRARY_CHECK_SYSTEM, json!({ "name": n, "text": text })),
-            Entry::Instructions(_) => return,
+            Entry::Skill(_) | Entry::Instructions(_) => return,
         };
         self.check = Some(cx.spawn(async move |this, cx| {
             let problem = answer.await.ok().flatten();
@@ -291,11 +291,7 @@ impl EditorDoc {
             return (StatusKind::Working, "Saving and laying it out...".into());
         }
         if let Some(p) = &self.problem {
-            let then = match self.entry {
-                Entry::System(_) => " - saved as it is, Luna serves its own until it is fixed",
-                _ => " - saved as a draft, laid out nowhere until it is fixed",
-            };
-            return (StatusKind::Attention, format!("{p}{then}"));
+            return (StatusKind::Attention, format!("{p} - saved as it is, Luna serves its own until it is fixed"));
         }
         if self.dirty(cx) {
             let key = if cfg!(target_os = "macos") { "Cmd+S" } else { "Ctrl+S" };

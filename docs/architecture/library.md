@@ -23,7 +23,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | `library/reach.rs` | whom a skill or instructions file is for |
 | `library/audience.rs` | whose sessions one is for (every session, or some of chat, lead, helper); where each goes; the wording of a copy laid out for the chats |
 | `library/role.rs` | what a session is told of its role: its role's system texts, the layers composed, Codex's `developer_instructions`, the notes served |
-| `library/skills.rs` | the library's own files, read and checked |
+| `library/skills.rs` | the library's own files, read and checked fit to copy |
 | `library/files.rs` | copies on disk, backups |
 | `library/folders.rs` | what waits for a named folder's sessions; `session_args` |
 | `library/pass.rs` | one pass over every copy |
@@ -379,8 +379,14 @@ The window re-reads the overview (no writes) on every focus.
 
 - A pass goes only by settings as the file has them now
   (`settings::get_checked`): on defaults it would take every copy out.
-- A skill whose `SKILL.md` lacks front matter with this `name` and a
-  `description` is `failed`; its copies stay. So is everything fed by a
+- A skill's folder that will not read or holds no `SKILL.md` is `failed`; its
+  copies stay. What `SKILL.md` says is never checked (front matter, `name`,
+  description length): the CLI judges the skill, and both get the same files.
+  Only the folder's name is (`check_skill_name`: not empty, no separator or
+  character a Windows name cannot hold, no reserved Windows name, no leading or
+  trailing dot). The description the window shows is read from the front
+  matter best effort (`skills::description`), never as a gate. So is
+  everything fed by a
   `skills/` that will not list or an instructions file that will not read.
 - A library folder that is not there wants nothing and touches nothing.
 - An account's rename or deletion holds the pass lock throughout: no pass sees
