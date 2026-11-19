@@ -620,7 +620,7 @@ pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u6
     let from = if past_end(path, from) { 0 } else { from };
     let mut said = Conversation::default();
     let read = crate::pty::complete_lines(path, from, |line| said.line(line));
-    (said.messages, read)
+    (said.finish(|said| from > 0 && said_before(path, from, said)), read)
 }
 
 /// `messages_from` of a rollout's bytes in memory, from the top: the messages of
@@ -628,7 +628,34 @@ pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u6
 pub fn messages_in(bytes: &[u8]) -> (Vec<crate::agents::Message>, usize) {
     let mut said = Conversation::default();
     let read = crate::pty::complete_lines_in(bytes, |line| said.line(line));
-    (said.messages, read)
+    (said.finish(|_| false), read)
+}
+
+/// How far back a read from a cursor looks for a message the turn's end
+/// repeats (`Conversation::finish`).
+const LOOKBACK: u64 = 256 * 1024;
+
+/// Whether the last turn before byte `from` of the rollout at `path` said
+/// `said` (as `Conversation::same_words` has it): a read that opened at the
+/// turn's end line, its message handed over in the read before.
+fn said_before(path: &Path, from: u64, said: &str) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let start = from.saturating_sub(LOOKBACK);
+    let mut window = Vec::new();
+    let read = std::fs::File::open(path).and_then(|mut f| {
+        f.seek(SeekFrom::Start(start))?;
+        f.take(from - start).read_to_end(&mut window)
+    });
+    if read.is_err() {
+        return false;
+    }
+    // A window that opens mid-file opens mid-line.
+    let skip = if start > 0 { window.iter().position(|b| *b == b'\n').map_or(window.len(), |i| i + 1) } else { 0 };
+    let mut earlier = Conversation::default();
+    crate::pty::complete_lines_in(&window[skip..], |line| earlier.line(line));
+    earlier.messages[earlier.turn_end.min(earlier.messages.len())..]
+        .iter()
+        .any(|m| m.role == "assistant" && Conversation::same_words(&m.text, said))
 }
 
 /// A rollout's conversation, one complete line at a time (`messages_from`).
@@ -644,6 +671,10 @@ pub(super) struct Conversation {
     turn_from: Option<usize>,
     /// Where the last turn read here ended.
     turn_end: usize,
+    /// Turns that ended in this read, begun before it, saying something none
+    /// of the messages read of them does: where among `messages` (the end of
+    /// what was read of the turn) and what (`finish`).
+    orphans: Vec<(usize, String)>,
 }
 
 impl Conversation {
@@ -677,19 +708,37 @@ impl Conversation {
         }
     }
 
-    /// A turn ended with `said`. The assistant message of it that says exactly
-    /// that is its final answer, `phase` or not. A turn read whole that has no
-    /// assistant message at all in the rollout's `response_item`s gets it as
-    /// its one: a report is never lost for the shape its message was written
-    /// in. A turn begun before this read is only marked, never added to: its
-    /// message may have gone by in the read before.
+    /// Whether two texts are the same words: Luna joins the blocks of a
+    /// message with a newline where Codex's `last_agent_message` runs them
+    /// together, so whitespace is not compared.
+    fn same_words(a: &str, b: &str) -> bool {
+        let mut a = a.chars().filter(|c| !c.is_whitespace());
+        let mut b = b.chars().filter(|c| !c.is_whitespace());
+        loop {
+            match (a.next(), b.next()) {
+                (None, None) => return true,
+                (x, y) if x == y => {}
+                _ => return false,
+            }
+        }
+    }
+
+    /// A turn ended with `said`. The assistant message of it that says that
+    /// (`same_words`) is its final answer, `phase` or not. A turn read whole
+    /// that has no assistant message at all in the rollout's `response_item`s
+    /// gets it as its one: a report is never lost for the shape its message
+    /// was written in. A turn begun before this read (a cursor inside it, or
+    /// at its end line alone) may have had its message in the read before: it
+    /// is only marked, or kept for `finish` to look back for.
     fn ended_saying(&mut self, said: &str) {
         let (from, whole) = (self.turn_from.unwrap_or(self.turn_end), self.turn_from.is_some());
         let from = from.min(self.messages.len());
         let turn = &mut self.messages[from..];
-        if let Some(m) = turn.iter_mut().rev().find(|m| m.role == "assistant" && m.text.trim() == said) {
+        if let Some(m) = turn.iter_mut().rev().find(|m| m.role == "assistant" && Self::same_words(&m.text, said)) {
             m.final_answer = true;
-        } else if whole && !turn.iter().any(|m| m.role == "assistant") {
+        } else if !whole {
+            self.orphans.push((self.messages.len(), said.to_string()));
+        } else if !turn.iter().any(|m| m.role == "assistant") {
             self.messages.push(crate::agents::Message {
                 role: "assistant".into(),
                 text: said.to_string(),
@@ -697,6 +746,19 @@ impl Conversation {
                 final_answer: true,
             });
         }
+    }
+
+    /// The messages read. Turns that ended in this read, begun before it, with
+    /// no message of it that says what its end does, get it as theirs, unless
+    /// `before` says the read before this one handed it over.
+    pub(super) fn finish(mut self, before: impl Fn(&str) -> bool) -> Vec<crate::agents::Message> {
+        for (at, said) in std::mem::take(&mut self.orphans).into_iter().rev() {
+            if !before(&said) {
+                let message = crate::agents::Message { role: "assistant".into(), text: said, after_cli: false, final_answer: true };
+                self.messages.insert(at, message);
+            }
+        }
+        self.messages
     }
 }
 
@@ -708,7 +770,7 @@ mod tests {
     fn message_in(line: &str) -> Option<crate::agents::Message> {
         let mut said = Conversation::default();
         said.line(line);
-        said.messages.into_iter().next()
+        said.finish(|_| false).into_iter().next()
     }
 
     #[test]

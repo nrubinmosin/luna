@@ -47,7 +47,7 @@ pub fn read_rollout(bytes: &[u8], since_ms: i64) -> RolloutRead {
         said.line(line);
         scan.line(line, since_ms);
     });
-    let messages = said.messages;
+    let messages = said.finish(|_| false);
     // As `first_line` reads it: up to its newline, and none if it is no text.
     let first_end = bytes.iter().position(|b| *b == b'\n').map_or(bytes.len(), |i| i + 1);
     let first = std::str::from_utf8(&bytes[..first_end]).ok().and_then(|line| serde_json::from_str::<Value>(line).ok());
