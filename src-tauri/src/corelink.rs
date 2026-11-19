@@ -40,15 +40,18 @@ const CONNECT_WAIT: Duration = Duration::from_secs(2);
 /// How long a core gets to answer a hello.
 const HELLO_WAIT: Duration = Duration::from_secs(5);
 /// What a core that would not stop in `STOP_WAIT` is allowed for its kill
-/// (`pty::kill_tree`, its whole tree), which nothing else bounds.
+/// (`pty::kill_tree`, its whole tree, which gives `taskkill` 5 s).
 const KILL_SLACK: Duration = Duration::from_secs(5);
 /// How long a request waits for a core while one is found or started, and
 /// while the one running is replaced (a restart, or another build's after an
-/// update), at worst: a hello to the old one, its stop and kill, the new one's
-/// start and a hello to it, 7 + 30 + 5 + 10 + 7 = 59 s. The old core's stop
-/// asks its sessions to quit within `pty::GRACE` (10 s) inside `STOP_WAIT`; an
-/// update's `stop_all_sessions` runs in the old window before the install,
-/// outside this wait.
+/// update): a budget for a hello to the old one, its stop and kill, the new
+/// one's start and a hello to it, 7 + 30 + 5 + 10 + 7 = 59 s. Not a bound:
+/// each step's timeout is per read or per call (a hello's answer read in
+/// frames, a launch), so a slow replacement can take longer, and a request
+/// waiting then fails as with no core. The old core's stop asks its sessions to
+/// quit within `pty::GRACE` (10 s) inside `STOP_WAIT`; an update's
+/// `stop_all_sessions` runs in the old window before the install, outside
+/// this wait.
 const LINK_WAIT: Duration = Duration::from_secs(
     2 * (CONNECT_WAIT.as_secs() + HELLO_WAIT.as_secs()) + STOP_WAIT.as_secs() + KILL_SLACK.as_secs() + START_WAIT.as_secs(),
 );
@@ -338,7 +341,11 @@ fn verdict(core: &Welcome, elevated: bool, v1: bool) -> Verdict {
     if elevated || core.refused.is_some() {
         return if core.sessions > 0 { Verdict::Elevated } else { Verdict::Replace };
     }
-    match (!v1 && core.fingerprint == env!("LUNA_CORE_FP"), core.sessions > 0) {
+    // What idle helpers' turns left is no work of the person's to ask about:
+    // the update's stop already ended what it could, and the core's going
+    // ends the rest. A pane or a turn is.
+    let at_work = core.sessions > core.left_only;
+    match (!v1 && core.fingerprint == env!("LUNA_CORE_FP"), at_work) {
         (true, _) => Verdict::Attach,
         (false, true) => Verdict::Foreign,
         (false, false) => Verdict::Replace,
@@ -830,6 +837,7 @@ mod tests {
             fingerprint: fingerprint.into(),
             started: 0,
             sessions,
+            left_only: 0,
             refused: refused.map(String::from),
         }
     }
@@ -863,6 +871,26 @@ mod tests {
         assert_eq!(verdict(&core(ours, 2, None), false, false), Verdict::Attach);
         assert_eq!(verdict(&core("0000000000000000", 2, None), false, false), Verdict::Foreign);
         assert_eq!(verdict(&core("0000000000000000", 0, None), false, false), Verdict::Replace);
+    }
+
+    /// After an update, the old core may have nothing in it but what idle
+    /// helpers' turns left running (their CLI Claude Code's or Codex's alike):
+    /// replaced as one with no sessions, its going ending those jobs. A pane or
+    /// a helper's turn beside them is work to ask about, and so is any session
+    /// of a core older than the count, which does not say what is left only.
+    #[test]
+    fn a_core_of_another_build_with_only_helpers_leftovers_is_replaced() {
+        let other = |sessions, left_only| Welcome { left_only, ..core("0000000000000000", sessions, None) };
+        assert_eq!(verdict(&other(2, 2), false, false), Verdict::Replace, "leftovers only");
+        assert_eq!(verdict(&other(3, 2), false, false), Verdict::Foreign, "a turn or a pane beside them");
+        assert_eq!(verdict(&Welcome { left_only: 2, ..core(env!("LUNA_CORE_FP"), 2, None) }, false, false), Verdict::Attach);
+        assert_eq!(verdict(&Welcome { left_only: 1, ..core(env!("LUNA_CORE_FP"), 1, None) }, true, false), Verdict::Elevated);
+        let older: Welcome = serde_json::from_value(serde_json::json!({
+            "pid": 1, "version": "0.19.0", "build": "b", "fingerprint": "0000000000000000", "started": 0, "sessions": 1
+        }))
+        .unwrap();
+        assert_eq!(older.left_only, 0);
+        assert_eq!(verdict(&older, false, false), Verdict::Foreign, "an older core's session is asked about, as ever");
     }
 
     /// A core of protocol 1 is another build's whatever it says of itself:

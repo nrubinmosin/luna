@@ -147,6 +147,13 @@ pub fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
     s.input_tx.send(Input::Resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }))
 }
 
+/// How long `taskkill` gets to end a tree before it is given up on: a process
+/// that will not die (one in a driver's wait) is left as it is rather than hold
+/// up whoever stops it, a core's going and a window replacing a core among them
+/// (corelink.rs `LINK_WAIT`, which counts this).
+#[cfg(windows)]
+const KILL_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 // The pty child is the CLI; everything it spawned (node, MCP servers, shells)
 // is a grandchild and survives a plain kill. Sweep the tree first, then kill
 // the child directly as a backstop.
@@ -155,10 +162,28 @@ pub(crate) fn kill_tree(pid: Option<u32>) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let _ = Command::new("taskkill")
+        let killer = Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-            .output();
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if let Ok(mut killer) = killer {
+            let deadline = std::time::Instant::now() + KILL_WAIT;
+            loop {
+                match killer.try_wait() {
+                    Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
+                    Ok(None) => {
+                        crate::log::warn("pty", &format!("taskkill of pid {pid}'s tree was not through within {KILL_WAIT:?}; left to it"));
+                        let _ = killer.kill();
+                        let _ = killer.wait();
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+        }
     }
     // No one call does it here: the CLIs start each tool command in a session of
     // its own, out of the CLI's group and with children of its own.
@@ -295,11 +320,10 @@ impl PtyManager {
 /// Asks every session to quit the way a delete does, before an update: the
 /// installer ends the process, and a CLI given its exit hooks leaves a whole
 /// transcript where one killed mid-write would not. A background helper's
-/// turn is stopped too, what helpers' turns left running is ended, and no
-/// helper's turn starts until the update is called off
-/// (`background::stop_for_update`): any of them would count as a session and
-/// keep the old core from being replaced, and the parent chats have just been
-/// stopped. Returns how many it stopped. The chats' ties stay frozen until the update is called off
+/// turn is stopped too, and what helpers' turns left running is ended
+/// (`background::stop_for_update`): a turn would count as a session and keep
+/// the old core from being replaced, the parent chats having just been
+/// stopped, and what was left would go only with that core. Returns how many it stopped. The chats' ties stay frozen until the update is called off
 /// (`update_called_off`), the installer ends the process, or the freeze's
 /// bound after the stop is up (`agents::freeze_for_update`).
 #[tauri::command]

@@ -46,20 +46,12 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         promoting_since: 0,
         deleting: false,
         moving: false,
-        for_update: false,
         handing: false,
         observed: Observed::default(),
         switch: None,
     };
     claim(&mut e);
-    {
-        let mut r = lock();
-        // Its first turn would count as a session and keep the old core.
-        if r.updating {
-            return Err("Luna is installing an update; spawn it again once that is through".into());
-        }
-        r.entries.insert(id.to_string(), e);
-    }
+    lock().entries.insert(id.to_string(), e);
     if let Err(e) = run_turn(id, prompt) {
         lock().entries.remove(id);
         changed();
@@ -75,7 +67,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
 /// behind it, counts on its end, and `turn_over` never comes for it. Text
 /// queued behind it fails with it, counted as the turn after, so whoever
 /// waits on it hears — rather than starting what would most likely fail the
-/// same way. Not behind a lead's fresh start (switch.rs): what was sent for
+/// same way; behind a turn Luna stopped (`cut_short`) it is kept as undelivered. Not behind a lead's fresh start (switch.rs): what was sent for
 /// the conversation after it waits on, and goes in on the conversation the
 /// lead goes back to once the switch is given up (`revert_switch`).
 pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
@@ -97,8 +89,17 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                 e.error = Some(err.clone());
                 e.turns_ended += 1;
                 if !e.queue.is_empty() && !e.switch_waits() {
-                    e.queue.clear();
-                    note(e, "dropped what was queued behind it");
+                    // Behind a claim Luna's own stop ended (an update's, say:
+                    // `stop_for_luna`), it never got its chance: kept for its
+                    // senders, as what that stop found queued is.
+                    if e.cut_short {
+                        let queued = std::mem::take(&mut e.queue);
+                        e.undelivered.extend(queued);
+                        note(e, "kept what was queued behind it for its senders");
+                    } else {
+                        e.queue.clear();
+                        note(e, "dropped what was queued behind it");
+                    }
                     e.turns_ended += 1;
                 }
             }

@@ -9,7 +9,13 @@
   window: sessions keep running in the core and the new window picks them up.
 - Any other release stops them: the dialog lists them, and once the installer is
   downloaded every one is asked to quit, each with its exit hooks; the chats
-  resume from their transcripts afterwards.
+  resume from their transcripts afterwards. Background helpers' turns are
+  stopped too, and what their turns left running (a shell, a watcher, a build)
+  is ended, so the updated Luna replaces the old core at once. Only a session
+  that started after the stop (a helper sent text meanwhile, say) has the
+  updated Luna ask before it restarts the core. Updating from 0.19, the old
+  version does the stopping, and it may ask once when a helper left something
+  running.
 - The updater installs into the folder Luna was installed in, where it keeps its
   data.
 

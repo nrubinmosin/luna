@@ -266,10 +266,18 @@ another program's and is left alone.
   `core.json` whose pid is dead, runs restarts one at a time. Before it says
   anything it checks that the endpoint's server is the pid `core.json` names. A
   core of another build with no sessions is replaced at once; with sessions only
-  on a button. While a core is being found, started or replaced (a restart, or
-  another build's), the page's calls wait for it rather than fail, for up to
-  the old core's stop and the new one's start (`LINK_WAIT`, 59 s); with no core
-  coming (`down`, `mismatch`, `elevated`) they fail at once. A `core.json`
+  on a button. Sessions that are all helpers between turns counted only for
+  what their turns left running (`Welcome.left_only`, read with the count under
+  one lock, `background::running_counts`) count as none: the core's going ends
+  those jobs, and after an update the person agreed to the stop. A pane or a
+  helper's turn is work to ask about; a core older than the field (0.19 and
+  before) says none are left only, and is asked about as ever. While a core is
+  being found, started or replaced (a restart, or another build's), the page's
+  calls wait for it rather than fail, for a budget of the old core's stop and
+  the new one's start (`LINK_WAIT`, 59 s, the sum in its comment; a budget, not
+  a bound, as each step's timeout is per read or per call, `taskkill` given
+  5 s, `pty::KILL_WAIT`); with no core coming (`down`, `mismatch`,
+  `elevated`) they fail at once. A `core.json`
   with a token is a core of Luna 0.11 or before (protocol 1,
   `corelink/v1.rs`): the window says hello on its loopback port
   with that token, to learn its session count, and stops it if it has none;
@@ -333,22 +341,21 @@ another program's and is left alone.
   window. Any other stops the sessions (each asked to quit with its exit hooks,
   `stop_all_sessions` also stopping helper turns and then, once those turns are
   over or 15 s on, ending what every helper's turns left running,
-  `background::stop_for_update`; a turn still not over then, claimed and not
-  started or its reader kept waiting by a leftover on its pipe, has its job
-  ended too and 5 s more to end, and what its end notes as left goes as well,
-  `LATE_WAIT`) and the chats resume from their transcripts.
-  What a helper's turns left counts as a session (`background::running`, in
-  `Welcome.sessions`): left running, the updated window would find the old
-  core with a session and wait for a restart instead of replacing it. From
-  that stop until the update's freeze lifts (below) every helper is held
-  (`Entry::for_update`) and none is spawned: text sent to one queues, and
-  starts its next turn once the freeze lifts (`background::lift_update_hold`,
-  from `Stops::thaw`); if the update goes ahead, the old core's leaving keeps
-  it as undelivered for its sender, as any leaving does (a core killed
-  instead, the next one does so from the queue it saved). It is the outgoing
-  core's code that stops the sessions: an update from 0.19 runs 0.19's
-  `stop_all_sessions`, and may still ask for a restart once when a helper
-  left processes running. The chats' ties stay frozen from that stop until the
+  `background::stop_for_update`; a turn it stopped still not over then, claimed
+  and not started or its reader kept waiting by a leftover on its pipe, has its
+  job ended too and 5 s more to end, and what its end notes as left goes as
+  well, `LATE_WAIT`) and the chats resume from their transcripts. What a
+  helper's turns left counts as a session (`background::running`, in
+  `Welcome.sessions`), and as left only (`Welcome.left_only`), which the
+  updated window replaces the old core over all the same (above). Nothing
+  keeps turns from starting meanwhile: one started by text sent during the
+  stop, which the stop neither waits for nor touches (it knows its own by
+  `Run::claim`), is a session the updated window asks about, and text queued
+  behind a turn the stop ended before it began is kept as undelivered
+  (`run_turn`). It is the outgoing core's code that stops the sessions and
+  answers the hello: an update from 0.19 runs 0.19's `stop_all_sessions` and
+  says no `left_only`, and may still ask for a restart once when a helper left
+  processes running. The chats' ties stay frozen from that stop until the
   installer ends the process, until the window says the install failed
   (`update_called_off`; said while the stop is still under way, it takes
   effect as the stop returns), or until 10 minutes after the stop returned

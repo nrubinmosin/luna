@@ -79,6 +79,7 @@ pub(super) mod tests {
                                 fingerprint: "1e658c94aebe9013".into(),
                                 started: 0,
                                 sessions,
+                                left_only: 0,
                                 refused: None,
                             };
                             Res { id: req.id, ok: serde_json::to_value(core).ok(), err: None }

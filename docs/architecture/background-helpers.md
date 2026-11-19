@@ -399,10 +399,12 @@ a new worktree, and what is new since the spawn is named (`codex_new_since`,
 ## Invariants
 
 - No turn starts after `stop_all`; `stop_all_sessions` before an update stops
-  turns too and ends what helpers' turns left running (`stop_for_update`), or
-  the old core, counting them as sessions, could not be replaced; no turn
-  starts and no helper is spawned from then until the update is called off
-  or its freeze lapses, what is sent meanwhile queuing (`Entry::for_update`).
+  turns too and ends what helpers' turns left running (`stop_for_update`), and
+  a core says which of its sessions are only such leftovers
+  (`running_counts`, `Welcome.left_only`), or the updated window, counting
+  them as sessions, would not replace it. Turns may start during that stop: it
+  waits for and ends only what it stopped (`Run::claim`), and leaves a turn
+  started since as the session it is.
 - A core that dies takes each helper's whole job with it
   ([power and lifecycle](power-and-lifecycle.md#process-jobs)).
 - Luna never copies a transcript; the text it does keep is listed below, each

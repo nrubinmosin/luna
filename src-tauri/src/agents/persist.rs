@@ -278,19 +278,9 @@ impl Stops {
     const NONE: Stops = Stops { bits: 0, updating: 0, called_off: false, lifts_at: None };
 
     fn thaw(&mut self, why: Stop) {
-        let lifted = why == Stop::Update && self.bits & why.bit() != 0;
         self.bits &= !why.bit();
         if why == Stop::Update {
             self.lifts_at = None;
-            UPDATE_HELD.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
-        // The helpers held for the update go on (background `lift_update_hold`):
-        // off this lock, and off whatever lock a save that lapsed it holds.
-        if lifted {
-            let lift = std::thread::Builder::new().name("luna-update-off".into()).spawn(crate::background::lift_update_hold);
-            if let Err(e) = lift {
-                crate::log::warn("agents", &format!("could not let the helpers held for an update go on: {e}"));
-            }
         }
         if self.bits == 0 {
             CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -370,21 +360,9 @@ pub fn freeze_for_update() -> UpdateStopping {
     let mut stops = stops();
     stops.updating += 1;
     stops.bits |= Stop::Update.bit();
-    UPDATE_HELD.store(true, std::sync::atomic::Ordering::SeqCst);
     stops.lifts_at = None;
     freeze(&CHATS_LAST, &CHATS_FROZEN);
     UpdateStopping(())
-}
-
-/// `Stop::Update` among the stops, read without their lock: the helpers'
-/// registry asks under its own (background `lift_update_hold`), and a freeze
-/// takes the saves' lock, which a save holds while it reads that registry.
-static UPDATE_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Whether an update's stop holds: from `freeze_for_update` until it is
-/// called off or lapses.
-pub fn update_held() -> bool {
-    UPDATE_HELD.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// The window's word that the update the sessions were stopped for is not
@@ -408,7 +386,6 @@ pub(crate) fn stops_for_test() -> std::sync::MutexGuard<'static, ()> {
     static ONE: Mutex<()> = Mutex::new(());
     let alone = ONE.lock().unwrap_or_else(|e| e.into_inner());
     *stops() = Stops::NONE;
-    UPDATE_HELD.store(false, std::sync::atomic::Ordering::SeqCst);
     CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
     alone
 }
