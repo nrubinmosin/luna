@@ -15,10 +15,25 @@ whose package no longer ships.
 
 | Folder | License | Taken from |
 | --- | --- | --- |
+| `crates/accesskit` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE`, `LICENSE.chromium` of AccessKit/accesskit at a55d3e1a18bb |
+| `crates/accesskit_consumer`, `crates/accesskit_windows` | MIT OR Apache-2.0 | the same three of AccessKit/accesskit at c88605b96d04 |
 | `crates/alloc-stdlib` | BSD-3-Clause | `LICENSE` of dropbox/rust-alloc-no-stdlib at 0a81fd6928ea |
+| `crates/anes` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of qwandor/anes-rs (formerly zrzka/anes-rs) at 378ac7461eca |
 | `crates/logos` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of maciejhirsz/logos at fba6c4d4255b |
+| `crates/lyon`, `crates/lyon_geom`, `crates/lyon_path` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of nical/lyon at 56219c95c658 |
+| `crates/lyon_algorithms`, `crates/lyon_tessellation` | MIT OR Apache-2.0 | the same two of nical/lyon at 994526f2766c |
+| `crates/mac` | MIT/Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of rust-lang/rust at 1.100.0: reem/rust-mac keeps none, and its README says "MIT/Apache-2.0, like rust itself" (author: Jonathan Reem) |
+| `crates/profiling` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of aclysma/profiling at 8271551172eb |
+| `crates/pulp-wasm-simd-flag` | MIT | `LICENSE` of sarah-quinones/pulp at 5eb07fd7b68e |
+| `crates/rust-i18n-support` | MIT | `LICENSE` of longbridge/rust-i18n at 5f3ea5ba0339 |
+| `crates/seahash` | MIT | the license's text, `text/MIT.txt` of spdx/license-list-data at v3.27.0: redox-os/seahash keeps none (authors, per its Cargo.toml: ticki, Tom Almeida) |
 | `crates/selectors` | MPL-2.0 | the license's text from mozilla.org (servo/stylo, its repository, keeps none) |
+| `crates/svg_fmt` | MIT/Apache-2.0 | `LICENSE` of nical/rust_debug at 93f414cd572b |
+| `crates/taffy` | MIT | `LICENSE` of DioxusLabs/taffy at eb6450694f33 |
 | `crates/taplo` | MIT | `LICENSE` of tamasfe/taplo at 08f343be02ce |
+| `crates/zune-core` | MIT OR Apache-2.0 OR Zlib | `LICENSE.md`, `LICENSE-ZLIB` of etemesi254/zune-image at f8fbb123d5ed |
+| `crates/zune-inflate` | MIT OR Apache-2.0 OR Zlib | the same two of etemesi254/zune-image at 69502ce83fdf |
+| `crates/zune-jpeg` | MIT OR Apache-2.0 OR Zlib | the same two of etemesi254/zune-image at fa2c767a01d7 |
 | `crates/webview2-com`, `crates/webview2-com-sys` | MIT | `LICENSE` of wravery/webview2-rs at edc2caf88617 |
 | `npm/@tauri-apps/plugin-dialog`, `-notification`, `-updater` | MIT OR Apache-2.0 | `LICENSE_MIT`, `LICENSE_APACHE-2.0` of tauri-apps/plugins-workspace at 92e47a1c0866 |
 

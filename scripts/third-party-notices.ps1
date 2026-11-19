@@ -51,10 +51,12 @@ $stage = Join-Path $RepoRoot "test-build/notices/$([guid]::NewGuid().ToString('n
 New-Item -ItemType Directory -Force $stage | Out-Null
 try {
     Use-BuildLock {
-        # The registry's sources of every package in the target's tree, and of
-        # each the files that hold its license, under <name>-<version>/ by their
-        # path in the package. RUSTUP_TOOLCHAIN keeps rustup to the image's own
-        # toolchain, whose doc folder holds the standard library's inventory.
+        # The sources of every package in the target's tree, the registry's and
+        # those vendored in src-tauri/vendor/ (a patched crate, under its
+        # package's name), and of each the files that hold its license, under
+        # <name>-<version>/ by their path in the package. RUSTUP_TOOLCHAIN
+        # keeps rustup to the image's own toolchain, whose doc folder holds the
+        # standard library's inventory.
         Invoke-Checked 'crate licenses' {
             docker run --rm `
               -e RUSTUP_TOOLCHAIN=$toolchain `
@@ -69,10 +71,14 @@ set -e
 cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-msvc > /out/metadata.json
 grep -o '"manifest_path":"[^"]*"' /out/metadata.json | cut -d'"' -f4 | while read -r manifest; do
   dir=$(dirname "$manifest")
-  case "$dir" in /usr/local/cargo/registry/*) ;; *) continue ;; esac
+  case "$dir" in
+    /usr/local/cargo/registry/*) pkg=$(basename "$dir") ;;
+    /app/src-tauri/vendor/*) pkg="$(basename "$dir")-$(sed -n 's/^version = "\(.*\)"$/\1/p' "$dir/Cargo.toml" | head -n 1)" ;;
+    *) continue ;;
+  esac
   (cd "$dir" && find . -maxdepth 2 -type f \( -iname 'licen[cs]e*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'unlicense*' -o -ipath './licenses/*' \)) | while read -r file; do
-    mkdir -p "/out/crates/$(basename "$dir")/$(dirname "$file")"
-    cp "$dir/$file" "/out/crates/$(basename "$dir")/$file"
+    mkdir -p "/out/crates/$pkg/$(dirname "$file")"
+    cp "$dir/$file" "/out/crates/$pkg/$file"
   done
 done
 mkdir -p /out/rust-doc

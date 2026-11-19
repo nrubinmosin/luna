@@ -81,6 +81,12 @@ try {
         Assert-Equal ((Get-ShippedCrates $metadata).name -join ' ') 'linked'
     }
 
+    Check 'a workspace member is not listed, and what it links ships' {
+        $metadata = New-Metadata
+        $metadata | Add-Member -NotePropertyName workspace_members -NotePropertyValue @('root 1.0.0', 'linked 1.0.0')
+        Assert-Equal ((Get-ShippedCrates $metadata).name -join ' ') 'deep'
+    }
+
     Check 'a shipped crate without a license text fails, naming it' {
         $components = @(
             (New-Component with -Staged @{ LICENSE = 'MIT License, Copyright the authors' })

@@ -6,8 +6,11 @@
 # The packages cargo metadata (--filter-platform for the shipped target) says
 # are compiled into the root crate's binary: reached from the root through
 # normal dependencies only. A build or dev dependency ships nothing; nor does a
-# proc macro, which runs at compile time, or what it alone depends on.
+# proc macro, which runs at compile time, or what it alone depends on. A
+# member of the workspace (the native window's crate) is Luna's own code,
+# under Luna's license: what it links ships, and it is not listed itself.
 function Get-ShippedCrates($Metadata) {
+    $members = @($Metadata.workspace_members)
     $packages = @{}
     foreach ($package in $Metadata.packages) { $packages[$package.id] = $package }
     $nodes = @{}
@@ -26,7 +29,7 @@ function Get-ShippedCrates($Metadata) {
             $seen[$dep.pkg] = $true
             $package = $packages[$dep.pkg]
             if ($package.targets | Where-Object { $_.kind -contains 'proc-macro' }) { continue }
-            $shipped += $package
+            if ($members -notcontains $dep.pkg) { $shipped += $package }
             $queue.Enqueue($dep.pkg)
         }
     }
