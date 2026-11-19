@@ -28,8 +28,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the library's entries, whom each is meant for and whose sessions it is
   for, folders and Luna's system texts, with gpui-component's editor
   (Markdown highlighted, a steady caret) for their files; Settings' sound,
-  accounts folder, new chats, helpers, trusted folders, the CLIs' version
-  and Check, and Luna's update confirmed with its version and notes;
+  accounts folder, new chats, helpers, trusted folders, the CLIs' version,
+  Check and Roll back, and Luna's update confirmed with its version and notes;
   the accounts with their limits, added, renamed, deleted, and the parent
   whose settings the others copy. A skill can now be renamed
   (`library_rename_skill`): without following a link, replacing a folder of
@@ -223,7 +223,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the automatic rollback (a whole install, not below the oldest this Luna
   runs, every file matching its checksum), and says why where it cannot. The
   version left is skipped while it is the newest release, until a different
-  one comes out.
+  one comes out. The button names the version it goes to and is shut, with
+  the reason beside it, where it would be refused; it asks once ("Roll back
+  Claude Code from A to B?") and then says what it did (A → B) or why not,
+  looking again at the versions when the current one had moved.
 
 ### Changed
 

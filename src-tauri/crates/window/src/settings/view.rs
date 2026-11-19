@@ -1,6 +1,6 @@
 //! The settings window's view, and what each of its rows asks of the host.
 
-use super::{AccountsRoot, CONTEXT_PCTS, CliState, CliStatus, CliVersions, HelperSettings, Page, UpdateState};
+use super::{AccountsRoot, CONTEXT_PCTS, CliState, CliStatus, CliVersions, HelperSettings, Page, RolledBack, UpdateState};
 use crate::desktop::{self, Pick, PickKind, UpdateCheck, UpdateProgress};
 use crate::dto::LinkState;
 use crate::models::Models;
@@ -21,6 +21,9 @@ use std::rc::Rc;
 enum Ask {
     /// Luna's update, its version and notes: install it?
     Install(desktop::Offer),
+    /// A CLI's rollback, from the version the person saw current to the one
+    /// the record keeps: made only while `from` still is the current one.
+    RollBack { provider: Provider, from: String, to: String },
 }
 
 pub struct SettingsPanel {
@@ -222,6 +225,42 @@ impl SettingsPanel {
         cx.notify();
     }
 
+    /// Roll back: asks first, naming the two versions, when the record keeps
+    /// a way back that nothing refuses and a current version is shown.
+    pub fn ask_roll_back(&mut self, p: Provider, cx: &mut Context<Self>) {
+        let Some(versions) = self.clis[slot(p)].versions.as_ref().filter(|v| v.roll_back_offer().2) else { return };
+        let (Some(from), Some(back)) = (versions.current(), versions.way_back.as_ref()) else { return };
+        self.ask = Some(Ask::RollBack { provider: p, from: from.version.clone(), to: back.version.clone() });
+        cx.notify();
+    }
+
+    /// The rollback itself, `from` being the version that was current when
+    /// it was asked for. The core makes it only while that still is, and says
+    /// so when it is not: the versions are read again then, and again after
+    /// it went through.
+    fn roll_back(&mut self, p: Provider, from: String, cx: &mut Context<Self>) {
+        self.clis[slot(p)].rolled = None;
+        self.clis[slot(p)].rolling = true;
+        let answer = ask::<RolledBack>(&self.models.host, cmd::CLI_ROLL_BACK, json!({ "provider": p, "from": from }));
+        cx.spawn(async move |this, cx| {
+            let got = answer.await;
+            let _ = this.update(cx, |v, cx| {
+                let moved = match &got {
+                    Ok(_) => true,
+                    Err(e) => e.contains("look again"),
+                };
+                v.clis[slot(p)].rolling = false;
+                v.clis[slot(p)].rolled = Some(got);
+                if moved {
+                    v.refresh_cli(p, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Check for Luna's own update.
     pub fn check_update(&mut self, cx: &mut Context<Self>) {
         self.update = UpdateState::Checking;
@@ -289,6 +328,7 @@ impl SettingsPanel {
     fn yes(&mut self, cx: &mut Context<Self>) {
         match self.ask.take() {
             Some(Ask::Install(offer)) => self.install(offer, cx),
+            Some(Ask::RollBack { provider, from, .. }) => self.roll_back(provider, from, cx),
             None => {}
         }
         cx.notify();
@@ -568,6 +608,7 @@ impl SettingsPanel {
                 ),
             ))
             .child(line);
+        group = group.child(self.roll_back_row(provider, &versions, p, cx));
         if let Some(c) = versions.canary.as_ref().filter(|c| !c.failures.is_empty()) {
             group = group.child(ui::alert(
                 p,
@@ -593,7 +634,7 @@ impl SettingsPanel {
                     r.previous.then_some("previous"),
                     (r.in_use && !r.current).then_some("in use"),
                     r.bad.is_some().then_some("turned away"),
-                    r.below_min_safe.then_some("too old to run"),
+                    r.below_floor.then_some("too old to run"),
                 ]
                 .into_iter()
                 .flatten()
@@ -605,6 +646,26 @@ impl SettingsPanel {
             group = group.child(ui::note(p, format!("Installed: {}", installed.join("; "))));
         }
         group.children(state.error.clone().map(|e| ui::alert(p, Tone::Trouble, e)))
+    }
+
+    /// The Roll back row: the version it goes to, or why it does not, and
+    /// how the last one went.
+    fn roll_back_row(&self, provider: Provider, versions: &CliVersions, p: &Palette, cx: &Context<Self>) -> Div {
+        let state = &self.clis[slot(provider)];
+        let key = provider.key();
+        let (label, desc, open) = versions.roll_back_offer();
+        let button = ui::button(
+            &format!("settings-cli-rollback-{key}"),
+            p,
+            if state.rolling { "Rolling back...".to_owned() } else { label },
+            open && !state.rolling,
+            self.act(cx, move |v, _, cx| v.ask_roll_back(provider, cx)),
+        );
+        let done = state.rolled.as_ref().map(|r| match r {
+            Ok(done) => ui::alert(p, Tone::Done, format!("Rolled back {}: {} \u{2192} {}.", provider.label(), done.from, done.to)),
+            Err(e) => ui::alert(p, Tone::Trouble, e.clone()),
+        });
+        div().flex().flex_col().child(ui::row(p, "Roll back", Some(desc.into()), button)).children(done)
     }
 
     fn updates(&self, p: &Palette, cx: &Context<Self>) -> Div {
@@ -683,9 +744,17 @@ impl SettingsPanel {
     }
 
     fn question(&self, ask: Ask, _p: &Palette, cx: &Context<Self>) -> Confirm {
-        let (title, body, yes): (&str, String, String) = match &ask {
+        let (title, body, yes): (String, String, String) = match &ask {
+            Ask::RollBack { provider, from, to } => (
+                roll_back_title(*provider, from, to),
+                format!(
+                    "Luna goes back to {to}, the version it kept before {from}. {from} is not installed again while it is the newest \
+                     release, only a different one. Sessions already running keep the version they started with."
+                ),
+                "Roll back".to_owned(),
+            ),
             Ask::Install(offer) => (
-                "Install the update",
+                "Install the update".to_owned(),
                 format!(
                     "Luna {} replaces {}. The installer starts once it is downloaded and checked; Luna closes for it and comes back, \
                      and the sessions resume.\n\n{}",
@@ -722,6 +791,7 @@ impl SettingsPanel {
     pub fn asking(&self) -> Option<&'static str> {
         self.ask.as_ref().map(|a| match a {
             Ask::Install(_) => "install",
+            Ask::RollBack { .. } => "roll-back",
         })
     }
 
@@ -736,6 +806,19 @@ impl SettingsPanel {
     pub fn answer_no(&mut self, cx: &mut Context<Self>) {
         self.ask = None;
         cx.notify();
+    }
+}
+
+fn roll_back_title(provider: Provider, from: &str, to: &str) -> String {
+    format!("Roll back {} from {from} to {to}?", provider.label())
+}
+
+/// The question's title where it is a rollback's, for the tests.
+#[cfg(test)]
+pub fn roll_back_asked(panel: &SettingsPanel) -> Option<String> {
+    match &panel.ask {
+        Some(Ask::RollBack { provider, from, to }) => Some(roll_back_title(*provider, from, to)),
+        _ => None,
     }
 }
 

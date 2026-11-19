@@ -683,6 +683,102 @@ fn a_clis_check_goes_to_the_host_and_its_pass_is_followed(cx: &mut TestAppContex
     assert_eq!(s.read_with(f.cx, |v, _| v.clis[0].error.clone()).as_deref(), Some("offline"));
 }
 
+/// What the Roll back row of `provider` offers: its label, its line and
+/// whether the button works.
+fn roll_back_offer(f: &mut Fixture<'_>, provider: Provider) -> (String, String, bool) {
+    let s = f.settings();
+    s.read_with(f.cx, |v, _| v.clis[usize::from(provider == Provider::Codex)].versions.clone().unwrap_or_default().roll_back_offer())
+}
+
+#[gpui::test]
+fn roll_back_is_open_only_where_a_way_back_is_kept_and_nothing_refuses_it(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    // Open: the version it goes to is in the label.
+    let (label, line, open) = roll_back_offer(&mut f, Provider::Claude);
+    assert_eq!((label.as_str(), open), ("Roll back to 2.1.328", true));
+    assert_eq!(line, "Goes back to 2.1.328, the version kept before this one.");
+    // Refused: shut, and the core's words for why are the line.
+    let (label, line, open) = roll_back_offer(&mut f, Provider::Codex);
+    assert_eq!((label.as_str(), open), ("Roll back to 0.170.0", false));
+    assert_eq!(line, "Roll back is refused: 0.170.0 was turned away (rolled back by hand).");
+    let s = f.settings();
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Codex, cx));
+    assert_eq!(s.read_with(f.cx, |v, _| v.asking()), None, "a refused rollback asks nothing");
+    // Nothing kept.
+    assert_eq!(
+        crate::settings::CliVersions::default().roll_back_offer(),
+        ("Roll back".into(), "No earlier version is kept to go back to.".into(), false)
+    );
+    // No current version shown to go back from.
+    let mut versions = crate::settings::CliVersions { way_back: Some(Default::default()), ..Default::default() };
+    assert!(!versions.roll_back_offer().2);
+    versions.versions.push(crate::settings::VersionRow { version: "2.1.330".into(), current: true, ..Default::default() });
+    assert!(versions.roll_back_offer().2);
+    assert!(f.calls(cmd::CLI_ROLL_BACK).is_empty());
+}
+
+#[gpui::test]
+fn roll_back_asks_once_naming_both_versions_and_then_goes_back_from_the_one_seen(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let s = f.settings();
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Claude, cx));
+    assert_eq!(s.read_with(f.cx, |v, _| v.asking()), Some("roll-back"));
+    assert_eq!(
+        s.read_with(f.cx, |v, _| crate::settings::roll_back_asked(v)).as_deref(),
+        Some("Roll back Claude Code from 2.1.330 to 2.1.328?")
+    );
+    // No: nothing is sent.
+    s.update(f.cx, |v, cx| v.answer_no(cx));
+    f.cx.run_until_parked();
+    assert!(f.calls(cmd::CLI_ROLL_BACK).is_empty());
+
+    // Yes: the version the person saw is the `from`, and what the core says
+    // it did is shown; the CLI's versions are read again.
+    let (statuses, versions) = (f.calls(cmd::CLI_STATUS).len(), f.calls(cmd::CLI_VERSIONS).len());
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Claude, cx));
+    s.update(f.cx, |v, cx| v.answer_yes(cx));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(cmd::CLI_ROLL_BACK), vec![json!({ "provider": "claude", "from": "2.1.330" })]);
+    assert_eq!(
+        s.read_with(f.cx, |v, _| v.clis[0].rolled.clone()),
+        Some(Ok(crate::settings::RolledBack { from: "2.1.330".into(), to: "2.1.328".into() }))
+    );
+    assert_eq!((f.calls(cmd::CLI_STATUS).len(), f.calls(cmd::CLI_VERSIONS).len()), (statuses + 1, versions + 1));
+    assert!(!s.read_with(f.cx, |v, _| v.clis[0].rolling));
+    assert_eq!(s.read_with(f.cx, |v, _| v.asking()), None);
+}
+
+#[gpui::test]
+fn a_rollback_the_core_refuses_says_why_and_a_moved_version_is_looked_at_again(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let s = f.settings();
+    let versions = f.calls(cmd::CLI_VERSIONS).len();
+    // Something else moved the CLI between the look and the click.
+    let moved = "the current version changed (it is 2.1.331 now); look again";
+    f.host.fail(cmd::CLI_ROLL_BACK, Some(moved));
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Claude, cx));
+    s.update(f.cx, |v, cx| v.answer_yes(cx));
+    f.cx.run_until_parked();
+    assert_eq!(s.read_with(f.cx, |v, _| v.clis[0].rolled.clone()), Some(Err(moved.into())));
+    assert_eq!(f.calls(cmd::CLI_VERSIONS).len(), versions + 1, "the versions are read again");
+    assert!(!s.read_with(f.cx, |v, _| v.clis[0].rolling));
+
+    // Any other refusal is said and nothing is read again; asking again
+    // clears it, and a success replaces it.
+    f.host.fail(cmd::CLI_ROLL_BACK, Some("2.1.328: no longer whole"));
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Claude, cx));
+    s.update(f.cx, |v, cx| v.answer_yes(cx));
+    f.cx.run_until_parked();
+    assert_eq!(s.read_with(f.cx, |v, _| v.clis[0].rolled.clone()), Some(Err("2.1.328: no longer whole".into())));
+    assert_eq!(f.calls(cmd::CLI_VERSIONS).len(), versions + 1);
+    assert_eq!(f.calls(cmd::CLI_ROLL_BACK).len(), 2);
+    f.host.fail(cmd::CLI_ROLL_BACK, None);
+    s.update(f.cx, |v, cx| v.ask_roll_back(Provider::Claude, cx));
+    s.update(f.cx, |v, cx| v.answer_yes(cx));
+    f.cx.run_until_parked();
+    assert!(s.read_with(f.cx, |v, _| v.clis[0].rolled.clone()).is_some_and(|r| r.is_ok()));
+}
+
 #[gpui::test]
 fn an_update_is_installed_only_once_confirmed_with_its_version_and_notes(cx: &mut TestAppContext) {
     let mut f = open(cx);

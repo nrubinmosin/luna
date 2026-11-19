@@ -126,6 +126,7 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("cli_status", own!(ok crate::cli::cli_status, provider: Provider)),
     ("cli_versions", own!(ok crate::cli::cli_versions, provider: Provider)),
     ("cli_update_now", own!(ok crate::cli::cli_update_now, provider: Provider)),
+    ("cli_roll_back", own!(res crate::cli::cli_roll_back, provider: Provider, from: String)),
     // Accounts.
     ("create_account", own!(res crate::accounts::create_account, provider: Provider, name: String)),
     ("delete_account", own!(res crate::accounts::delete_account, provider: Provider, name: String)),

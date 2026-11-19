@@ -12,7 +12,7 @@ mod view;
 
 pub use view::SettingsPanel;
 #[cfg(test)]
-pub(crate) use view::cli_line;
+pub(crate) use view::{cli_line, roll_back_asked};
 
 use crate::panels::Provider;
 use serde::Deserialize;
@@ -134,8 +134,7 @@ pub struct VersionRow {
     pub previous: bool,
     pub in_use: bool,
     /// Older than the oldest this Luna runs: never gone back to.
-    #[serde(alias = "belowFloor")]
-    pub below_min_safe: bool,
+    pub below_floor: bool,
     /// Turned away, and why: by the automatic rollback, as a rule.
     pub bad: Option<String>,
 }
@@ -159,11 +158,46 @@ pub struct CliVersions {
     /// Newest first.
     pub versions: Vec<VersionRow>,
     pub canary: Option<Canary>,
+    /// The version Roll back goes to, when the record keeps one.
+    pub way_back: Option<WayBack>,
+}
+
+/// The version `cli_roll_back` goes back to (`CliWayBackDto`).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WayBack {
+    pub version: String,
+    /// Why Roll back would be refused now, in the core's words; None where
+    /// it is open.
+    pub refusal: Option<String>,
+}
+
+/// What a manual rollback did (`RolledBack`).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct RolledBack {
+    pub from: String,
+    pub to: String,
 }
 
 impl CliVersions {
     pub fn current(&self) -> Option<&VersionRow> {
         self.versions.iter().find(|r| r.current)
+    }
+
+    /// What the Roll back row says: the button's label, the line beside it,
+    /// and whether the button works: only where the record keeps a way back,
+    /// nothing refuses it and a current version is shown to go back from.
+    pub fn roll_back_offer(&self) -> (String, String, bool) {
+        match &self.way_back {
+            None => ("Roll back".into(), "No earlier version is kept to go back to.".into(), false),
+            Some(b) => {
+                let label = format!("Roll back to {}", b.version);
+                match &b.refusal {
+                    Some(why) => (label, format!("Roll back is refused: {why}."), false),
+                    None => (label, format!("Goes back to {}, the version kept before this one.", b.version), self.current().is_some()),
+                }
+            }
+        }
     }
 }
 
@@ -174,6 +208,11 @@ pub struct CliState {
     pub versions: Option<CliVersions>,
     /// Why the last Check failed.
     pub error: Option<String>,
+    /// How the last Roll back went: what it did, or the core's words for why
+    /// it did nothing.
+    pub rolled: Option<Result<RolledBack, String>>,
+    /// A Roll back is with the core.
+    pub rolling: bool,
 }
 
 /// Luna's own update, as the Updates page has it.

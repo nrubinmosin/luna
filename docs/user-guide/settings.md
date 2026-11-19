@@ -62,7 +62,7 @@ list of pages and less on them ([ADR-0030](../adr/0030-scope-of-0-20.md)):
 | General | Play a sound; the accounts folder (Change…, Default) |
 | Chats | Git worktree (offered by the new-chat dialog only in a folder in git) and Luna tools, as the new-chat dialog starts them |
 | Agents & trust | Helpers per chat (- and +); when a helper's context is told; trusted folders (Add folder…, Remove) |
-| CLIs | For each CLI its version, what its last check found, and Check; a version the automatic rollback turned away says so. Nothing here chooses a version ([updates](updates.md#the-clis)) |
+| CLIs | For each CLI its version, what its last check found, and Check; **Roll back to** the version kept before this one, shut with the reason beside it where it would be refused; a version the automatic rollback turned away says so. Nothing here chooses a version otherwise ([updates](updates.md#the-clis)) |
 | Updates | Luna's version and Check; Update… asks with the new version and its notes before it downloads and installs; the core's version, since when it runs, and Restart |
 
 Gone: the cap on helpers' privilege and a helper's default mode,
@@ -71,3 +71,10 @@ CLIs' channels, Use, marks, known-good list and Keep it. Long work says where
 it is in words (Checking…, Downloading 0.171.0: 50%), and a time is the clock
 time it happened. The sound and the new chat's boxes are kept in
 `window.json` in Luna's data folder.
+
+**Roll back** asks once, naming the CLI and both versions ("Roll back Claude
+Code from 2.1.330 to 2.1.328?"), and then says what it did ("Rolled back Claude
+Code: 2.1.330 → 2.1.328.") or why it did nothing, in the core's words. If the
+current version is no longer the one you saw (a check installed another), it
+says so and the versions on the page are read again; look and press it again.
+Running sessions keep their version ([updates](updates.md#the-clis)).

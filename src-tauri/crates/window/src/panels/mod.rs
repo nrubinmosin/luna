@@ -87,6 +87,7 @@ pub mod cmd {
     pub const CLI_STATUS: &str = "cli_status";
     pub const CLI_VERSIONS: &str = "cli_versions";
     pub const CLI_UPDATE_NOW: &str = "cli_update_now";
+    pub const CLI_ROLL_BACK: &str = "cli_roll_back";
 
     /// The window's own (`crate::cmd`): the chat list asks for it too.
     pub const LIST_ACCOUNTS: &str = crate::cmd::LIST_ACCOUNTS;
@@ -142,6 +143,7 @@ pub mod cmd {
         CLI_STATUS,
         CLI_VERSIONS,
         CLI_UPDATE_NOW,
+        CLI_ROLL_BACK,
         CREATE_ACCOUNT,
         RENAME_ACCOUNT,
         DELETE_ACCOUNT,
