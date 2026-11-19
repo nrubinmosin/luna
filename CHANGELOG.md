@@ -37,9 +37,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the same `latest.json`, checks the same signature and runs the installer as
   0.19's does, so 0.19 updates onto 0.20 and 0.20 onto later releases. The
   updater takes only https and only an NSIS setup, stages it privately under
-  a name of its own in a data folder that is no link, keeps it open from its
-  last check until it has started, starts it by the path that handle
-  resolves to, and passes Luna's arguments on to the restart only whole.
+  a name of its own in a data folder that is no link (a OneDrive folder's
+  included) and on a local fixed drive, holds that folder from its last
+  check through the write, keeps the setup open from its last check until it
+  has started, starts it by the path that handle resolves to, and passes
+  Luna's arguments on to the restart only whole, with a unit of the setup's
+  command line to spare. A pasted PNG is taken only once all of it decodes,
+  and a TIFF that gives its size twice is not taken.
 - An NSIS installer built without Tauri's bundler
   (`./scripts/build-windows.ps1 -Installer -Native`), adapted from Tauri's
   template (credited, its license among the third-party notices), installing

@@ -88,19 +88,35 @@ pub fn png_size(png: &[u8]) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
-/// An image from PNG bytes, its size read from the header (`png_size`).
+/// An image from PNG bytes that decode whole (`png_decodes`), its size
+/// read from the header.
 pub fn image_from_png(png: Vec<u8>) -> Result<Image, String> {
     if png.len() > MAX_BYTES {
         return Err(format!("a PNG of {} bytes, over {MAX_BYTES}", png.len()));
     }
-    let (width, height) = png_size(&png)?;
+    let (width, height) = png_decodes(&png)?;
     Ok(Image { width, height, png })
 }
 
+/// A PNG's width and height once all of it has decoded: its header within
+/// `MAX_PIXELS` (`png_size`), then every chunk up to the end of its image
+/// data, checksums and compressed stream included, row by row, so that no
+/// more than a row is held at once. A PNG that is cut short or damaged is
+/// not taken, and gives way to the next format.
+pub fn png_decodes(png: &[u8]) -> Result<(u32, u32), String> {
+    let size = png_size(png)?;
+    let limits = png::Limits { bytes: MAX_BYTES };
+    let decoder = png::Decoder::new_with_limits(std::io::Cursor::new(png), limits);
+    let mut reader = decoder.read_info().map_err(|e| format!("a PNG that does not read: {e}"))?;
+    while reader.next_row().map_err(|e| format!("a PNG that does not decode: {e}"))?.is_some() {}
+    Ok(size)
+}
+
 /// The width and height of a TIFF's first image, from its first directory
-/// (ImageWidth and ImageLength, SHORT or LONG), in either byte order; an
-/// error where they do not read or are over `MAX_PIXELS`. Read before
-/// anything decodes it.
+/// (ImageWidth and ImageLength, each once, one SHORT or LONG), in either byte
+/// order; an error where they do not read, come twice or with more than one
+/// value (a decoder might take another one than this), or are over
+/// `MAX_PIXELS`. Read before anything decodes it.
 pub fn tiff_size(tiff: &[u8]) -> Result<(u32, u32), String> {
     let little = match tiff.get(..4) {
         Some([b'I', b'I', 42, 0]) => true,
@@ -122,17 +138,23 @@ pub fn tiff_size(tiff: &[u8]) -> Result<(u32, u32), String> {
     for i in 0..entries {
         let at = ifd + 2 + i * 12;
         let tag = u16_at(at).ok_or_else(short)?;
-        // SHORT (3) or LONG (4), the value in the entry itself.
-        let value = match u16_at(at + 2).ok_or_else(short)? {
-            3 => u32::from(u16_at(at + 8).ok_or_else(short)?),
-            4 => u32_at(at + 8).ok_or_else(short)?,
+        let slot = match tag {
+            256 => &mut width,
+            257 => &mut height,
             _ => continue,
         };
-        match tag {
-            256 => width = Some(value),
-            257 => height = Some(value),
-            _ => {}
+        if slot.is_some() {
+            return Err("a TIFF that gives its size twice".into());
         }
+        if u32_at(at + 4).ok_or_else(short)? != 1 {
+            return Err("a TIFF that gives its size as more than one value".into());
+        }
+        // SHORT (3) or LONG (4), the value in the entry itself.
+        *slot = Some(match u16_at(at + 2).ok_or_else(short)? {
+            3 => u32::from(u16_at(at + 8).ok_or_else(short)?),
+            4 => u32_at(at + 8).ok_or_else(short)?,
+            _ => return Err("a TIFF that gives no size as one SHORT or LONG".into()),
+        });
     }
     let (Some(width), Some(height)) = (width, height) else { return Err("a TIFF that gives no size".into()) };
     if u64::from(width) * u64::from(height) > MAX_PIXELS {
@@ -593,8 +615,9 @@ mod mac {
                     return Ok(Clip::Text(text));
                 }
             }
-            // Its size read off its header before it is copied: a PNG that
-            // is none, or too large, gives way to the TIFF.
+            // Its size read off its header before it is copied, and all of it
+            // decoded before it is taken (`image_from_png`): a PNG that is
+            // none, too large, cut short or damaged gives way to the TIFF.
             if let Some(data) = pb.dataForType(NSPasteboardTypePNG) {
                 if data.len() <= MAX_BYTES && png_size(data.as_bytes_unchecked()).is_ok() {
                     if let Ok(image) = image_from_png(data.to_vec()) {
@@ -727,6 +750,23 @@ mod tests {
         let back = crate::desktop::tray::decode_png(&png).unwrap();
         assert_eq!(back.pixels, [1, 2, 3, 4, 5, 6, 7, 8]);
         assert!(image_from_png(b"GIF89a and more bytes than that".to_vec()).is_err());
+    }
+
+    /// A PNG whose header reads is taken only once all of it decodes: one cut
+    /// short, or with its image data damaged, is not.
+    #[test]
+    fn a_png_is_taken_only_when_all_of_it_decodes() {
+        let png = encode_png(64, 64, &[7; 64 * 64 * 4]).unwrap();
+        assert_eq!(png_decodes(&png), Ok((64, 64)));
+        let cut = &png[..png.len() / 2];
+        assert_eq!(png_size(cut), Ok((64, 64)));
+        assert!(png_decodes(cut).is_err());
+        assert!(image_from_png(cut.to_vec()).is_err());
+        // A byte of the image data changed: its chunk's checksum fails.
+        let idat = png.windows(4).position(|w| w == b"IDAT").unwrap();
+        let mut damaged = png.clone();
+        damaged[idat + 8] ^= 0xFF;
+        assert!(png_decodes(&damaged).is_err());
     }
 
     /// A DROPFILES of `names`, wide or not.
@@ -868,6 +908,13 @@ mod tests {
             // No height, or only in a type that is no size.
             assert!(tiff_size(&tiff(little, &[(256, 3, 10)])).unwrap_err().contains("no size"));
             assert!(tiff_size(&tiff(little, &[(256, 3, 10), (257, 2, 10)])).unwrap_err().contains("no size"));
+            // A size given twice, which a decoder might read the other way.
+            assert!(tiff_size(&tiff(little, &[(256, 3, 10), (257, 3, 10), (256, 4, 1 << 20)])).unwrap_err().contains("twice"));
+            // A size of more than one value.
+            let mut two = tiff(little, &[(256, 3, 10), (257, 3, 10)]);
+            let count = 10 + 12 + 4;
+            two[count..count + 4].copy_from_slice(&if little { 2u32.to_le_bytes() } else { 2u32.to_be_bytes() });
+            assert!(tiff_size(&two).unwrap_err().contains("more than one value"));
             // A directory that runs off the end.
             let mut cut = tiff(little, &[(256, 3, 10), (257, 3, 10)]);
             cut.truncate(20);

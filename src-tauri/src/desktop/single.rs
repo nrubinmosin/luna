@@ -488,7 +488,8 @@ mod imp {
     /// told. Its socket may not be up yet when two launches come at once,
     /// and a connect to a listener whose backlog is full would wait for
     /// good: each try is held to what is left of the time
-    /// (`endpoint::connect_within`), and so is the write.
+    /// (`endpoint::connect_within`), and so is the write: what is left of
+    /// it once connected.
     fn hand_over(sock: &Path) {
         let deadline = Instant::now() + HAND_OVER_WITHIN;
         loop {
@@ -497,7 +498,10 @@ mod imp {
                 break;
             }
             if let Ok(mut conn) = crate::endpoint::connect_within(sock, left) {
-                let written = conn.set_write_timeout(Some(SAY_WITHIN)).and_then(|()| conn.write_all(MAGIC));
+                // A zero timeout is refused (EINVAL): the deadline passed while
+                // connecting is a timed-out write.
+                let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
+                let written = conn.set_write_timeout(Some(left)).and_then(|()| conn.write_all(MAGIC));
                 if let Err(e) = written {
                     crate::log::warn("app", &format!("another Luna holds this data folder, but did not take the hand-over: {e}"));
                 }

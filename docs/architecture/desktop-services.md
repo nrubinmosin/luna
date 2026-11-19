@@ -113,7 +113,12 @@ within one deadline of a second. A second launch's connect, nonblocking
 (`endpoint::connect_within`), and its write are held to a second all told,
 so a first whose backlog is full does not keep it waiting; the first's
 thread waits on its socket and on one end of a socket pair, whose other end
-the guard drops to stop it, so its stop needs no connection either. The listener is not authenticated beyond
+the guard drops to stop it, so its stop needs no connection either; the
+second's write after its connect is held to what is left of that second. The
+claim is lib.rs `run`'s, before either window starts anything, so a native
+window and a `--webview` one never run side by side on one data dir; the
+first's callback is `desktop::bring_up`, which the running window sets (the
+native window's `Request::Show`, the WebView window's `show_main`). The listener is not authenticated beyond
 that: any process on the desktop at the same integrity (Windows), or of the
 same user (Unix), can call the window up, which such a process can do to any
 of this user's windows anyway; it is acceptable only because the hand-over is
@@ -142,8 +147,13 @@ not decode; a bitmap of a kind not read here; on macOS a PNG that is none or
 too large, which gives way to the TIFF. No format over 257 MiB is read, and
 no image over 64 megapixels decoded or passed on: on macOS a PNG's size is
 read off its header before its bytes are copied, and a TIFF's off its first
-directory (`tiff_size`) before AppKit decodes it, and again as AppKit read
-it before it is made PNG. `write_text` fills the text's memory before it touches the
+directory (`tiff_size`: the width and the height each once, as one SHORT or
+LONG; a TIFF that gives either twice or with more than one value is refused,
+as a decoder might read the other one) before AppKit decodes it, and again
+as AppKit read it before it is made PNG. A PNG, the browser's on Windows or
+the pasteboard's on macOS, is taken over the DIB or the TIFF only once all of
+it decodes (`png_decodes`: every chunk's checksum and the image data to its
+end, a row at a time); one cut short or damaged gives way to the next format. `write_text` fills the text's memory before it touches the
 clipboard, and opens it owned by a message-only window of its own, since
 `SetClipboardData` may fail after `EmptyClipboard` on a clipboard opened
 with no owner. The Windows formats are parsed by functions the tests hold to
@@ -200,6 +210,34 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   only after it checked out. The plugin wrote it to the system's temp
   folder. `clear_downloads` empties the folder, for the window to call as it
   starts.
+- **Held through the write** (`Pin`): from the data dir's last check until
+  the written file is checked, the data dir and `updates/` are open as
+  themselves (a link at their name not followed); on Windows sharing reads
+  and writes but not deletion, so neither they nor a folder above them can be
+  renamed or deleted meanwhile. The file is taken only if it is the one at
+  its name in the folder so held: on Windows the path its own handle
+  resolves to is that folder's, resolved the same way, and its name; on Unix
+  the file reached by its name from the folder's descriptor (`openat`) has
+  the device and inode of the one at the path; and a private file of
+  Luna's. Otherwise the download fails and the file written is left where
+  it is.
+- **A local fixed drive only** (Windows): the data dir, as Windows resolves
+  it through any link above it, must be on a volume `GetDriveTypeW` calls
+  fixed (`fixed_drive`); a share (`\\server\share\…`, refused before the
+  network is asked), a mapped network drive or a removable one is refused
+  before the download and again at the install, and the setup is not
+  started from a path that is not on one. What is on a share is the share's
+  to change under Luna. The download's error, in the log as `updater:
+  download failed: <data dir> is on a network share: no update is staged
+  under it or started from it` (or `on a network drive`, `on a removable
+  drive`), is what `update_download` answers.
+- **A data dir that is a reparse point disables self-update**: a link, a
+  junction or any other reparse point, a OneDrive folder's (files on demand)
+  among them, at the data dir itself. The log says `updater: download
+  failed: <data dir> is not a plain folder (a link, a junction, another
+  reparse point such as a OneDrive folder's, or a file is there): no update
+  is staged under it`; Luna is updated by running the setup by hand, or
+  from a data folder that is none.
 - **No gap between the check and the start**: `install` opens the staged
   file as itself (a link at its name is not followed), sharing reads alone,
   so nobody may write, rename or delete it while it is open; holds it to a
@@ -224,11 +262,14 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   for an option, `/S` or `/NCRC`), one with a control character and one
   that is not Unicode are left out, said in the log. Nor are they cut short:
   NSIS reads its command line into a string of 1024 UTF-16 units
-  (`NSIS_MAX_STRLEN`, far under Windows' 32,767) and drops the rest, so when
-  the whole of it, `"<setup>" /P /UPDATE /R /ARGS <arguments>`, would not fit
-  (`SETUP_CMDLINE_MAX`), none of the arguments go, said in the log, and Luna
-  restarts without them (`parameters_for`); a setup path too long for even
-  the bare update is an error. Off Windows an update is installed by hand.
+  (`NSIS_MAX_STRLEN`, far under Windows' 32,767, its NUL among them) and drops
+  the rest, and the setup takes one that fills it (1023 units) for one that
+  was cut (`ArgsCut`), so when the whole of it,
+  `"<setup>" /P /UPDATE /R /ARGS <arguments>`, would be over 1022 units
+  (`SETUP_CMDLINE_MAX` less its NUL and that unit), none of the arguments
+  go, said in the log, and Luna restarts without them (`parameters_for`); a
+  setup path too long for even the bare update is an error. Off Windows an
+  update is installed by hand.
 
 The page's part stays the window's: the chip, the notes, the core
 fingerprint compared to decide whether the sessions keep running, the stop of

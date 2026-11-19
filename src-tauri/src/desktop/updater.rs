@@ -218,11 +218,12 @@ pub fn downloads_dir(root: &Path) -> PathBuf {
 }
 
 /// Refuses a data dir `root` an installer is not to be staged under: a link
-/// or junction, or any other reparse point, which would put `updates/`
-/// somewhere else than where it is read again; not a folder; or one whose
-/// owner is not this user, Administrators, SYSTEM or TrustedInstaller
-/// (root on Unix), who could swap what is in it. `updates/` itself is
-/// `secret::private_dir`'s to check.
+/// or junction, or any other reparse point (a OneDrive folder's among them),
+/// which would put `updates/` somewhere else than where it is read again;
+/// not a folder; one whose owner is not this user, Administrators, SYSTEM or
+/// TrustedInstaller (root on Unix), who could swap what is in it; or, on
+/// Windows, one not on a local fixed drive (`fixed_drive`). `updates/`
+/// itself is `secret::private_dir`'s to check.
 pub fn check_root(root: &Path) -> Result<(), String> {
     let meta = std::fs::symlink_metadata(root).map_err(|e| format!("{}: {e}", root.display()))?;
     #[cfg(windows)]
@@ -233,7 +234,16 @@ pub fn check_root(root: &Path) -> Result<(), String> {
     #[cfg(not(windows))]
     let link = meta.file_type().is_symlink();
     if link || !meta.is_dir() {
-        return Err(format!("{} is not a plain folder (a link, junction or file is there): no update is staged under it", root.display()));
+        return Err(format!(
+            "{} is not a plain folder (a link, a junction, another reparse point such as a OneDrive folder's, or a file is there): \
+             no update is staged under it",
+            root.display()
+        ));
+    }
+    #[cfg(windows)]
+    {
+        let resolved = open_dir(root).and_then(|d| final_path(&d)).map_err(|e| format!("{}: {e}", root.display()))?;
+        fixed_drive(&resolved).map_err(|why| format!("{} is {why}: no update is staged under it or started from it", root.display()))?;
     }
     #[cfg(windows)]
     let trusted = crate::secret::acl::owner_trusted(root).map_err(|e| format!("{}: {e}", root.display()))?;
@@ -249,6 +259,135 @@ pub fn check_root(root: &Path) -> Result<(), String> {
         return Err(format!("{} belongs to someone else: no update is staged under it", root.display()));
     }
     Ok(())
+}
+
+/// Drive types `GetDriveTypeW` gives (winbase.h): the only one an update is
+/// staged on and started from, and the two refused by name.
+#[cfg(windows)]
+const DRIVE_REMOVABLE: u32 = 2;
+#[cfg(windows)]
+const DRIVE_FIXED: u32 = 3;
+#[cfg(windows)]
+const DRIVE_REMOTE: u32 = 4;
+
+/// Refuses a path, in the plain form `final_path` gives, that is not on a
+/// local fixed drive: a share (`\\server\share\…`, refused before anything
+/// asks the network), a mapped network drive, a removable one, anything
+/// else `GetDriveTypeW` does not call fixed. What is on a share is the
+/// share's to change under Luna, whatever its folder's owner says.
+#[cfg(windows)]
+pub fn fixed_drive(path: &str) -> Result<(), &'static str> {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumePathNameW};
+    if path.starts_with(r"\\") {
+        return Err("on a network share");
+    }
+    let mut volume = vec![0u16; path.encode_utf16().count() + 2];
+    // SAFETY: a path that outlives the call, and a buffer longer than the
+    // path and its NUL, which the path of its volume never passes.
+    unsafe { GetVolumePathNameW(&HSTRING::from(path), &mut volume) }.map_err(|_| "on no volume Windows can name")?;
+    // SAFETY: the volume's path just written, NUL-terminated.
+    match unsafe { GetDriveTypeW(PCWSTR(volume.as_ptr())) } {
+        DRIVE_FIXED => Ok(()),
+        DRIVE_REMOTE => Err("on a network drive"),
+        DRIVE_REMOVABLE => Err("on a removable drive"),
+        _ => Err("not on a local fixed drive"),
+    }
+}
+
+/// A folder opened for its final path (`final_path`), a link at its name
+/// followed: Windows opens a folder only with `FILE_FLAG_BACKUP_SEMANTICS`.
+#[cfg(windows)]
+fn open_dir(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+    std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0).open(path)
+}
+
+/// A folder held where it is while an installer is written into it, and the
+/// check that the file written is the one at its name in it. On Windows the
+/// folder is open as itself (a link at its name not followed), sharing reads
+/// and writes but not deletion, so that neither it nor a folder above it can
+/// be renamed or deleted while it is held; the file is taken only if the path
+/// its own handle resolves to is the folder's, resolved the same way, and its
+/// name. On Unix the folder is open without following a link, and the file
+/// reached by its name from that descriptor must be the one at the path (the
+/// same device and inode).
+struct Pin {
+    dir: std::fs::File,
+}
+
+impl Pin {
+    fn open(path: &Path) -> Result<Pin, String> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            };
+            options
+                .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
+        }
+        let dir = options.open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Pin { dir })
+    }
+
+    /// Whether the file at `path` is the one named `name` in the pinned
+    /// folder, and a private file of Luna's.
+    fn holds(&self, path: &Path, name: &str) -> Result<(), String> {
+        let refuse = |why: String| Err(format!("{} is not the installer just staged: {why}", path.display()));
+        let file = open_held(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        match crate::secret::private_file(&file) {
+            Ok(Ok(())) => {}
+            Ok(Err(why)) => return refuse(why),
+            Err(e) => return refuse(e.to_string()),
+        }
+        #[cfg(windows)]
+        {
+            match (final_path(&self.dir), final_path(&file)) {
+                (Ok(dir), Ok(at)) if at == format!(r"{dir}\{name}") => Ok(()),
+                (Ok(dir), Ok(at)) => refuse(format!("it resolves to {at}, not into {dir}")),
+                (Err(e), _) | (_, Err(e)) => refuse(e.to_string()),
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            use std::os::unix::fs::MetadataExt;
+            use std::os::unix::io::{AsRawFd, FromRawFd};
+            let c_name = match std::ffi::CString::new(std::ffi::OsStr::new(name).as_bytes()) {
+                Ok(n) => n,
+                Err(_) => return refuse("a name with a NUL".into()),
+            };
+            let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+            // SAFETY: the pinned folder's descriptor and a NUL-terminated
+            // name; the descriptor returned is owned by the File made of it.
+            let fd = unsafe { libc::openat(self.dir.as_raw_fd(), c_name.as_ptr(), flags) };
+            if fd < 0 {
+                return refuse(std::io::Error::last_os_error().to_string());
+            }
+            // SAFETY: a descriptor just opened, owned by nothing else.
+            let pinned = unsafe { std::fs::File::from_raw_fd(fd) };
+            match (pinned.metadata(), file.metadata()) {
+                (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino() => Ok(()),
+                (Ok(_), Ok(_)) => refuse("another file is at its name".into()),
+                (Err(e), _) | (_, Err(e)) => refuse(e.to_string()),
+            }
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            let _ = name;
+            Ok(())
+        }
+    }
 }
 
 /// Whether an installer is fetched from `url`: https alone. The signature
@@ -377,12 +516,19 @@ pub fn download(config: &Config, release: &Release, root: &Path, mut progress: i
         Ok(())
     })?;
     check_setup(config, &bytes, &release.version, &release.signature)?;
-    // Again: the download took a while.
+    // Again, the data dir held where it is first: the download took a
+    // while. From here until the written file is checked, neither the data
+    // dir nor `updates/` can be renamed or deleted (`Pin`).
+    let root_pin = Pin::open(root)?;
     check_root(root)?;
     let dir = downloads_dir(root);
     crate::secret::private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join(file_name(&release.version));
+    let dir_pin = Pin::open(&dir)?;
+    let name = file_name(&release.version);
+    let path = dir.join(&name);
     crate::secret::write_private(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    dir_pin.holds(&path, &name)?;
+    drop((dir_pin, root_pin));
     Ok(Downloaded { root: root.to_path_buf(), path, version: release.version.clone(), signature: release.signature.clone() })
 }
 
@@ -465,20 +611,24 @@ pub fn installer_parameters(args: &[String]) -> String {
     parts.join(" ")
 }
 
-/// The most UTF-16 units, its closing NUL among them, of a command line the
-/// setup reads whole. Windows takes 32,767; NSIS copies its own into a
-/// string of `NSIS_MAX_STRLEN` units and cuts the rest, 1024 in the
-/// makensis that builds the setup (installer.nsi refuses a smaller one).
+/// The size of the string NSIS copies the setup's command line into,
+/// `NSIS_MAX_STRLEN` units, its closing NUL among them: 1024 in the makensis
+/// that builds the setup (installer.nsi refuses a smaller one). Windows takes
+/// 32,767. NSIS cuts the rest, and the setup takes a line that fills its
+/// string (1023 units) for one that was cut (installer.nsi `ArgsCut`): a
+/// line it reads whole is 1022 units at most.
 pub const SETUP_CMDLINE_MAX: usize = 1024;
 
 /// The installer's parameters for the setup at `file` (`installer_parameters`),
 /// with `args` when the command line Windows makes of the two, `"file"
-/// parameters`, fits `SETUP_CMDLINE_MAX`; else with none of them, said in
+/// parameters`, with its NUL and the unit left free, fits
+/// `SETUP_CMDLINE_MAX`; else with none of them, said in
 /// the log, rather than cut where NSIS would cut it. An error when even
 /// the bare update's does not fit.
 pub fn parameters_for(file: &str, args: &[String]) -> Result<String, String> {
-    // The two quotes around the file, the space after it and the NUL.
-    let fits = |parameters: &str| file.encode_utf16().count() + 4 + parameters.encode_utf16().count() <= SETUP_CMDLINE_MAX;
+    // The two quotes around the file, the space after it, the NUL, and the
+    // unit a line the setup reads whole leaves free.
+    let fits = |parameters: &str| file.encode_utf16().count() + 5 + parameters.encode_utf16().count() <= SETUP_CMDLINE_MAX;
     let with = installer_parameters(args);
     if fits(&with) {
         return Ok(with);
@@ -560,6 +710,7 @@ pub fn install(config: &Config, downloaded: &Downloaded) -> Result<(), String> {
     #[cfg(windows)]
     {
         let file = final_path(&held.file).map_err(|e| format!("{}: {e}", held.path.display()))?;
+        fixed_drive(&file).map_err(|why| format!("the installer at {file} is {why}: it is not started"))?;
         let parameters = parameters_for(&file, &restart_args(std::env::args_os().skip(1)))?;
         launch(&file, &parameters)
     }
@@ -820,6 +971,12 @@ pub(crate) mod tests {
         .to_string()
     }
 
+    /// latest.json offering `version` for this platform at `url`, so signed.
+    pub(crate) fn manifest_for(version: &str, url: &str, signature: &str) -> String {
+        let platform = targets().last().unwrap().clone();
+        serde_json::json!({ "version": version, "platforms": { platform: { "signature": signature, "url": url } } }).to_string()
+    }
+
     fn windows() -> Vec<String> {
         vec!["windows-x86_64-nsis".into(), "windows-x86_64".into()]
     }
@@ -971,12 +1128,6 @@ pub(crate) mod tests {
     /// `LUNA_CHECK_SETUP=<setup> <test exe> --ignored --exact desktop::updater::tests::the_setup_in_luna_check_setup_passes_for_one`.
     #[test]
     #[ignore = "needs a built setup, named in LUNA_CHECK_SETUP"]
-    /// latest.json offering `version` for this platform at `url`, so signed.
-    pub(crate) fn manifest_for(version: &str, url: &str, signature: &str) -> String {
-        let platform = targets().last().unwrap().clone();
-        serde_json::json!({ "version": version, "platforms": { platform: { "signature": signature, "url": url } } }).to_string()
-    }
-
     fn the_setup_in_luna_check_setup_passes_for_one() {
         let path = std::env::var_os("LUNA_CHECK_SETUP").expect("LUNA_CHECK_SETUP names no setup");
         let bytes = std::fs::read(&path).unwrap();
@@ -990,7 +1141,7 @@ pub(crate) mod tests {
         assert_eq!(parameters_for(file, &args).unwrap(), "/P /UPDATE /R /ARGS --after 4242");
         // Exactly at the limit, and one unit over: then none of them, not some.
         let bare = installer_parameters(&[]);
-        let room = SETUP_CMDLINE_MAX - (file.len() + 4 + bare.len() + 1);
+        let room = SETUP_CMDLINE_MAX - (file.len() + 5 + bare.len() + 1);
         assert_eq!(parameters_for(file, &["x".repeat(room)]).unwrap(), format!("{bare} {}", "x".repeat(room)));
         assert_eq!(parameters_for(file, &["x".repeat(room + 1)]).unwrap(), bare);
         assert_eq!(parameters_for(file, &[args[0].clone(), "x".repeat(room)]).unwrap(), bare);
@@ -1224,6 +1375,42 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&started).unwrap(), SETUP);
         drop(held);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// An update is staged on and started from a local fixed drive only: a
+    /// share is refused before anything asks the network.
+    #[cfg(windows)]
+    #[test]
+    fn only_a_local_fixed_drive_takes_an_update() {
+        assert_eq!(fixed_drive(r"\\server\share\Luna\updates\setup.exe"), Err("on a network share"));
+        let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let temp = dos_path(&temp.to_string_lossy()).unwrap();
+        assert_eq!(fixed_drive(&temp), Ok(()), "{temp}");
+        let root = scratch("fixed");
+        assert_eq!(check_root(&root), Ok(()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The file a download writes is taken only where it is the one at its
+    /// name in the folder held through the write.
+    #[test]
+    fn a_staged_file_is_taken_only_at_its_name_in_the_pinned_folder() {
+        let root = scratch("pin");
+        let dir = downloads_dir(&root);
+        crate::secret::private_dir(&dir).unwrap();
+        let pin = Pin::open(&dir).unwrap();
+        let path = dir.join("setup.exe");
+        crate::secret::write_private(&path, SETUP).unwrap();
+        assert_eq!(pin.holds(&path, "setup.exe"), Ok(()));
+        // The same bytes elsewhere are not the file in the folder.
+        let elsewhere = root.join("setup.exe");
+        crate::secret::write_private(&elsewhere, SETUP).unwrap();
+        assert!(pin.holds(&elsewhere, "setup.exe").unwrap_err().contains("not the installer just staged"));
+        // Held, the folder can be neither renamed nor deleted.
+        #[cfg(windows)]
+        assert!(std::fs::rename(&dir, root.join("moved")).is_err(), "renamed while pinned");
+        drop(pin);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
