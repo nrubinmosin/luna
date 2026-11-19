@@ -239,7 +239,10 @@ mod tests {
         // Never run, whichever accounts have: nothing known, so nothing to refuse a model by.
         assert!(models_known(&fresh).is_empty());
         // What the CLI said of it lately, once it has said.
-        asked().lock().unwrap().insert(fresh.clone(), (Instant::now(), parse(&std::fs::read_to_string(Path::new(&ran).join("models_cache.json")).unwrap())));
+        asked()
+            .lock()
+            .unwrap()
+            .insert(fresh.clone(), (Instant::now(), parse(&std::fs::read_to_string(Path::new(&ran).join("models_cache.json")).unwrap())));
         assert_eq!(models_known(&fresh).len(), 1);
         asked().lock().unwrap().remove(&fresh);
         let _ = std::fs::remove_dir_all(&base);

@@ -426,6 +426,15 @@ pub(crate) fn codex_role_args(
     };
     if let Some(spill) = &given.spill {
         crate::library::write_spill(spill)?;
+        crate::log::warn(
+            "library",
+            &format!(
+                "role layers of {} characters are too long for a Codex command line (over {}): kept whole in {}, with a pointer in developer_instructions",
+                spill.text.chars().count(),
+                crate::library::CODEX_ROLE_MAX,
+                spill.path.display()
+            ),
+        );
         how = format!("{how}, pointing at {}, which holds them whole: too long for a command line", spill.path.display());
     }
     let mut applied = crate::library::layers_applied(texts, skills, constraints, &how);
@@ -591,7 +600,8 @@ pub async fn ensure_claude_session(
         let role = (!login).then(|| crate::library::role_texts(crate::library::Role::Chat));
         let layers = role.as_ref().and_then(|t| crate::library::role_layers(t, &skills, &[]));
         // A chat is the person's: one whose layers will not write starts
-        // without them, and says so (`role.layers-off`), as Codex's over the cap.
+        // without them, and says so (`role.layers-off`), as does a Codex one
+        // whose config leaves no room on the command line.
         let (instructions, layers_off) = match login {
             true => (None, None),
             false => match claude_instructions_dir(&id, layers.as_deref()) {
@@ -774,8 +784,9 @@ pub async fn ensure_codex_session(
             skill_args: &skills.args,
         });
         applied.extend(crate::library::audience_applied(&skills));
-        // Its role layers in developer_instructions; a chat that would not
-        // fit them on the command line starts without them, and says so.
+        // Its role layers in developer_instructions, or in a file of Luna's
+        // that it points at where they are too long for the command line; a
+        // chat that can have neither starts without them, and says so.
         let role = crate::library::role_texts(crate::library::Role::Chat);
         let mut args = args;
         match codex_role_args(&account_path, &folder, false, &role, &skills, &[]) {

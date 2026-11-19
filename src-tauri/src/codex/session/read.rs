@@ -685,11 +685,17 @@ impl Conversation {
     /// message may have gone by in the read before.
     fn ended_saying(&mut self, said: &str) {
         let (from, whole) = (self.turn_from.unwrap_or(self.turn_end), self.turn_from.is_some());
-        let turn = &mut self.messages[from.min(self.messages.len())..];
+        let from = from.min(self.messages.len());
+        let turn = &mut self.messages[from..];
         if let Some(m) = turn.iter_mut().rev().find(|m| m.role == "assistant" && m.text.trim() == said) {
             m.final_answer = true;
         } else if whole && !turn.iter().any(|m| m.role == "assistant") {
-            self.messages.push(crate::agents::Message { role: "assistant".into(), text: said.to_string(), after_cli: false, final_answer: true });
+            self.messages.push(crate::agents::Message {
+                role: "assistant".into(),
+                text: said.to_string(),
+                after_cli: false,
+                final_answer: true,
+            });
         }
     }
 }
@@ -697,6 +703,13 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The message one rollout line comes to on its own.
+    fn message_in(line: &str) -> Option<crate::agents::Message> {
+        let mut said = Conversation::default();
+        said.line(line);
+        said.messages.into_iter().next()
+    }
 
     #[test]
     fn commands_left_running_past_their_call_are_named_until_they_exit() {

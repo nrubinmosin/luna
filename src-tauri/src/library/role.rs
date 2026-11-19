@@ -214,7 +214,12 @@ const SPILL_KEEP: std::time::Duration = std::time::Duration::from_secs(30 * 24 *
 /// layers whole (`Spill`), and the constraints again where they fit, the one
 /// part a session must not miss. Nothing is cut. Err, with why, only where
 /// even that does not fit: the config's own value is too long.
-pub fn codex_developer_instructions(stack: Option<&str>, layers: &str, constraints: &[String], data: &Path) -> Result<CodexInstructions, String> {
+pub fn codex_developer_instructions(
+    stack: Option<&str>,
+    layers: &str,
+    constraints: &[String],
+    data: &Path,
+) -> Result<CodexInstructions, String> {
     let join = |parts: &[&str]| parts.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n") + "\n";
     let stack = stack.map(str::trim).filter(|s| !s.is_empty());
     let whole = match stack {
@@ -236,20 +241,13 @@ pub fn codex_developer_instructions(stack: Option<&str>, layers: &str, constrain
     let rules = compose_layers(None, "", &[], constraints);
     let with_rules = join(&[stack.unwrap_or(""), &pointer, rules.as_deref().unwrap_or("")]);
     let without = join(&[stack.unwrap_or(""), &pointer]);
-    let value = [with_rules, without].into_iter().find(|v| units_of(v) <= CODEX_ROLE_MAX).ok_or_else(|| {
+    let value = [with_rules, without].into_iter().find(|v| units_of(v.as_str()) <= CODEX_ROLE_MAX).ok_or_else(|| {
         format!(
             "its developer_instructions — the config's own, then its role, the library's instructions for it and its constraints — \
              take {units} characters of its command line, escaped and quoted, over the {CODEX_ROLE_MAX} Luna lets them take of \
              the 32,767 Windows allows, and the config's own value leaves no room for a pointer to a file that holds them"
         )
     })?;
-    crate::log::warn(
-        "library",
-        &format!(
-            "role layers take {units} characters of a Codex command line, over {CODEX_ROLE_MAX}: kept whole in {}, with a pointer in developer_instructions",
-            path.display()
-        ),
-    );
     Ok(CodexInstructions { value, spill: Some(Spill { path, text: layers.to_string() }) })
 }
 
@@ -279,7 +277,8 @@ pub fn write_spill(spill: &Spill) -> Result<(), String> {
     }
     let now = std::time::SystemTime::now();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age > SPILL_KEEP);
+        let old =
+            entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age > SPILL_KEEP);
         if old && entry.path().extension().is_some_and(|e| e == "md") {
             let _ = std::fs::remove_file(entry.path());
         }
@@ -520,7 +519,8 @@ mod tests {
     #[test]
     fn codex_gets_the_stack_s_value_first_and_a_file_for_what_a_command_line_cannot_hold() {
         let data = Path::new("data");
-        let given = |stack: Option<&str>, layers: &str, constraints: &[String]| codex_developer_instructions(stack, layers, constraints, data);
+        let given =
+            |stack: Option<&str>, layers: &str, constraints: &[String]| codex_developer_instructions(stack, layers, constraints, data);
         let inline = |value: &str| CodexInstructions { value: value.into(), spill: None };
         assert_eq!(given(Some("Theirs.\n"), "# Your role\n\nMine.\n", &[]).unwrap(), inline("Theirs.\n\n# Your role\n\nMine.\n"));
         assert_eq!(given(Some("  "), "Mine.", &[]).unwrap(), inline("Mine."));
@@ -620,10 +620,13 @@ mod tests {
         let over = codex_overflows(&f.dirs, &lib, &f.accounts);
         assert_eq!(over.keys().collect::<Vec<_>>(), ["big", "small"], "both go into a Codex helper's one value");
         assert!(over["big"].contains("home's own") && over["big"].contains("not started"), "{}", over["big"]);
-        // For leads alone, small fits; Claude Code reads them from a file.
+        // Any instructions for the role: no room is no room, however short.
         lib.audience.instructions.insert("small".into(), Audience::of(&[Role::Lead]));
-        assert_eq!(codex_overflows(&f.dirs, &lib, &f.accounts).keys().collect::<Vec<_>>(), ["big"]);
-        lib.instructions.insert("big".into(), vec!["claude".into()]);
+        assert_eq!(codex_overflows(&f.dirs, &lib, &f.accounts).keys().collect::<Vec<_>>(), ["big", "small"]);
+        // Claude Code reads them from a file: no command line, nothing to flag.
+        for name in ["big", "small"] {
+            lib.instructions.insert(name.into(), vec!["claude".into()]);
+        }
         assert!(codex_overflows(&f.dirs, &lib, &f.accounts).is_empty());
     }
 

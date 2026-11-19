@@ -214,7 +214,8 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             applied.push(Item::HelperHeadless.with("exec --json, the prompt on stdin (-)"));
             match &e.session {
                 Some(thread) => {
-                    let thread = crate::codex::launch::thread_to_resume(thread).map_err(|why| format!("the helper's turn is not started: {why}"))?;
+                    let thread =
+                        crate::codex::launch::thread_to_resume(thread).map_err(|why| format!("the helper's turn is not started: {why}"))?;
                     args.extend(["resume".into(), thread.to_string()]);
                     applied.push(Item::Resume.with(format!("resume {thread}")));
                     if let Some(wt) = made.filter(|w| std::path::Path::new(w).is_dir()) {
@@ -732,7 +733,7 @@ mod tests {
         let text = format!("Keep to src/.{}End.", "x".repeat(crate::library::CODEX_ROLE_MAX));
         e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: text.clone() }];
         let (args, _, _, applied) = command_for(&e, "too-long").unwrap();
-        let value = crate::golden::developer_instructions(&args).unwrap();
+        let value = golden::developer_instructions(&args).unwrap();
         assert!(value.len() < 1024, "a pointer, not the layers: {} bytes", value.len());
         let file = value.split("It is in the file ").nth(1).and_then(|r| r.split_once(": read it")).expect("names its file").0;
         let kept = std::fs::read_to_string(file).unwrap();
