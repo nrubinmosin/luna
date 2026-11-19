@@ -93,10 +93,13 @@ pub mod event {
     pub const PTY_EXIT: &str = "pty://exit";
     /// A session refused input: `{ id, waitingKb }`, once a stretch.
     pub const PTY_INPUT_REFUSED: &str = "pty://input-refused";
+    /// The core closed every session for a shutdown of the PC that was then
+    /// taken back (power/machine.rs): `{ why }`. Every pane starts its over.
+    pub const START_OVER: &str = "pty://start-over";
 
     /// Every event the inbox takes; any other is dropped before it is queued
     /// (`wants`). A view that listens to a new event adds it here.
-    pub const ALL: &[&str] = &[CORE_STATE, PTY_EXIT, PTY_INPUT_REFUSED];
+    pub const ALL: &[&str] = &[CORE_STATE, PTY_EXIT, PTY_INPUT_REFUSED, START_OVER];
     /// Of those, the ones where only the latest counts: one waits in the
     /// inbox at most, a newer replacing it, and where the payload carries a
     /// `revision`, an older one never replacing a newer (`Mailbox::event`).
@@ -214,9 +217,9 @@ impl Inbox {
 
 /// A new inbox and the mailbox that feeds it. Unbounded, but little can wait
 /// in it: only the events the window takes come in (`event::ALL`), the core's
-/// state one at a time (`event::LATEST`), a session's exit and refusals, and
-/// the host's own work (the heartbeat's ping). A session's output never does
-/// (`OutputSink`).
+/// state one at a time (`event::LATEST`), a session's exit and refusals, the
+/// core's rare start-over, and the host's own work (the heartbeat's ping). A
+/// session's output never does (`OutputSink`).
 pub fn mailbox() -> (Mailbox, Inbox) {
     let (tx, rx) = mpsc::unbounded();
     let latest = Latest::default();

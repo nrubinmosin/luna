@@ -55,6 +55,12 @@ pub struct Key<'a> {
 /// nothing a terminal sends).
 pub fn encode(k: &Key, modes: Modes) -> Option<Vec<u8>> {
     let m = k.mods;
+    // Text the platform wants typed (AltGr's characters, AltGr+Space's on a
+    // layout that has one, a dead key's) before any named key: AltGr comes
+    // as Ctrl+Alt, which would make AltGr+Space ESC NUL.
+    if k.prefer_text && k.key_char.is_some_and(|t| !t.is_empty()) {
+        return None;
+    }
     if let Some(seq) = alt_arrow(k.key, m) {
         return Some(seq.to_vec());
     }
@@ -231,18 +237,21 @@ fn keypad(name: &str, m: Mods, modes: Modes) -> Option<Vec<u8>> {
 }
 
 /// Text pasted into the terminal: line ends become CR (what Enter sends), and
-/// with bracketed paste (mode 2004) on, it is framed by CSI 200~ / CSI 201~
-/// with every ESC removed, so the text cannot end the paste early and inject
-/// keystrokes, and every ETX (0x03), which some shells take as the end of a
-/// paste (alacritty 0.17.0 filters both, event.rs `paste`).
+/// with bracketed paste (mode 2004) on, it is framed by CSI 200~ / CSI 201~.
+/// In both modes every control character but tab and the line ends is
+/// dropped, C0 and C1 alike: an ESC would end the paste early and type keys
+/// of its own (so would CSI's C1 form, U+009B), an ETX is the end of a paste
+/// to some shells (alacritty 0.17.0 filters both, event.rs `paste`), and a
+/// ^C or ^D in a paste would act as the key.
 pub fn paste(text: &str, bracketed: bool) -> String {
     let text = text.replace("\r\n", "\r").replace('\n', "\r");
-    if bracketed {
-        let clean: String = text.chars().filter(|&c| c != '\x1b' && c != '\x03').collect();
-        format!("\x1b[200~{clean}\x1b[201~")
-    } else {
-        text
-    }
+    let clean: String = text.chars().filter(|&c| !pasted_control(c)).collect();
+    if bracketed { format!("\x1b[200~{clean}\x1b[201~") } else { clean }
+}
+
+/// A character a paste leaves out: C0 but tab and CR, and C1.
+fn pasted_control(c: char) -> bool {
+    matches!(c, '\0'..='\x1f' | '\u{80}'..='\u{9f}') && !matches!(c, '\t' | '\r')
 }
 
 #[cfg(test)]
@@ -276,6 +285,12 @@ mod tests {
         // AltGr on Windows arrives as ctrl+alt with prefer_text.
         let altgr = Key { key: "q", key_char: Some("@"), mods: CTRL_ALT, prefer_text: true };
         assert_eq!(encode(&altgr, Modes::default()), None);
+        // AltGr+Space on a layout that types a no-break space there: the
+        // text, never Ctrl+Alt+Space's ESC NUL.
+        let altgr_space = Key { key: "space", key_char: Some("\u{a0}"), mods: CTRL_ALT, prefer_text: true };
+        assert_eq!(encode(&altgr_space, Modes::default()), None);
+        // Ctrl+Alt+Space that types nothing is still ESC NUL.
+        assert_eq!(key("space", CTRL_ALT), s(b"\x1b\x00"));
     }
 
     #[test]
@@ -371,7 +386,11 @@ mod tests {
         assert_eq!(paste("a\nb", false), "a\rb");
         assert_eq!(paste("a\r\nb\x1b[201~x", true), "\x1b[200~a\rb[201~x\x1b[201~");
         assert_eq!(paste("a\x03b", true), "\x1b[200~ab\x1b[201~");
-        assert_eq!(paste("a\x03b", false), "a\x03b");
+        // Unframed too: no ESC to type keys, no ^C or ^D to act as them.
+        assert_eq!(paste("a\x03b\x1b[2J\x04", false), "ab[2J");
+        // Tab and the line ends stay; the rest of C0 and all of C1 go.
+        assert_eq!(paste("a\tb\x00\x07\x08\x7f\u{85}\u{9b}31m\u{a0}c", false), "a\tb\x7f31m\u{a0}c");
+        assert_eq!(paste("\u{9b}201~x", true), "\x1b[200~201~x\x1b[201~");
     }
 
     #[test]

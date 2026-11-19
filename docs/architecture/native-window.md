@@ -234,6 +234,22 @@ So a burst costs a frame a wait of one chunk's parse at most, never the
 parsing, and an idle session wakes nothing: the cursor is steady and nothing
 else moves, so no timer runs and an idle pane draws no frame.
 
+**Bounds.** Nothing the program writes makes the pane grow without limit
+(`parser.rs` `Budget`): output held or queued for the parser past 16 MiB, and
+replies to its queries waiting for the window's thread past 1 MiB, are
+dropped, and once the parser has caught up the pane says so in a line of its
+own (`[dropped N KB of output: the pane fell behind]`). An OSC payload is cut
+at 64 KiB before the parser sees it (`OscCap`; the terminator still goes
+through). A synchronized update (mode 2026) is drawn when it ends, at its
+deadline (150 ms, alacritty's, kept as alacritty's own event loop keeps it:
+the parser waits for the next chunk no longer than that), or once it has
+buffered 256 KiB, so one left open never holds later output or the exit
+notice, and its end is never megabytes parsed under one hold of the lock;
+the pane's own notices and a backlog draw what live output left buffered
+first, and leave nothing open for the live bytes after them. The parser's
+messages reach the window's thread 64 at a time, the rest of its work going
+between.
+
 **The seam.** The pane hands the host an `OutputSink` (`Host::route_output`)
 when it starts its session; luna_lib feeds it each `pty://output` chunk on the
 thread that reads the core's line (native.rs `Outputs`), and the sink queues
@@ -254,13 +270,19 @@ arguments; starting one that runs reattaches to it. The pane goes through
   failure is said in the pane, as the page says it.
 - `Live(generation)`: a fresh session (no backlog) gets the held output and
   its first size. A reattach does what the page's `replayTail` does: the
-  backlog is parsed, then wiped (RIS), the modes the core kept for the session
-  put back (`session_modes`), and only then the held output; the CLI is asked
-  to paint again by its PTY made a row shorter and, 60 ms later, the size the
-  pane is at. Queries in a backlog are not answered again (the parser's quiet
-  jobs); live ones are, by the pane: device attributes and modes (alacritty's
-  replies), the colors from the pane's palette (OSC 4/10/11), the text area
-  size. The cursor position query never reaches the pane: the core answers it.
+  backlog is parsed, then wiped (RIS), and the modes the core kept for the
+  session put back (`session_modes`); the held output is dropped, since some
+  of it was sent before the backlog was taken and is in it already, and the
+  modes may be newer than the rest; the CLI is asked to paint again by its
+  PTY made a row shorter and, 60 ms later, the size the pane is at, and that
+  repaint and everything after is live. Keys and pastes go nowhere until the
+  modes are parsed (bracketed paste above all). Queries in a backlog are not
+  answered again (the parser's quiet jobs); live ones are, by the pane:
+  device attributes and modes (alacritty's replies), the colors from the
+  pane's palette (OSC 4/10/11), the text area size, each sent with
+  `reply: true` so the core does not count it as a person typing
+  (pty/control.rs `write_session`). The cursor position query never reaches
+  the pane: the core answers it.
 - `Ended`: `pty://exit` with its own spawn's number (one heard before the
   start answered is kept for it), said in the pane as `[session exited]`.
   `pty://input-refused` is said in the pane as the page says it. The models
@@ -268,21 +290,37 @@ arguments; starting one that runs reattaches to it. The pane goes through
 
 When the core goes away the pane waits, and when one is up again it starts
 the session there afresh, on a clean grid (the page makes a new terminal).
+The `core://state` events in between can be folded into the last one in the
+inbox, so `CoreLink` keeps an epoch, as the page's core store does: each `up`
+that is not the one taken last (another pid, a newer revision, or a state
+other than `up` taken since) begins a new one, and a pane whose start was in
+an older epoch starts over, whatever its phase. `pty://start-over` (the core
+closed every session for a shutdown of the PC that was then taken back)
+starts every pane over too, an ended one included, or once the core is up.
 
 **Input.** Writes and resizes go only while the session runs (io.rs, as the
 page's `ptySender`): `write_session` with the text, `resize_session` with the
 cells and the grid's size in device pixels (`pixelWidth`, `pixelHeight`: the
 cell's exact scaled size rounded, times the cells), sent again whenever either
 changes, a scale change included. The core passes the pixels on to the PTY
-(TIOCSWINSZ on Unix; ConPTY takes the cells).
+(TIOCSWINSZ on Unix; ConPTY takes the cells). A size the host refused to hand
+over (the core's line full for a moment) is not taken for sent, and goes
+again 250 ms later. What is typed while a paste reads the clipboard waits
+behind the paste, and pastes keep their order.
 
 - Keys (`keys.rs`): xterm's encoding, from its control-sequence reference: the
   modifier parameter on cursor, editing and function keys, SS3 under DECCKM,
   Ctrl and Alt characters, LNM. Alt with an arrow alone is the page's (Ctrl's
   sequence, so a word left or right; ESC b and ESC f on macOS). Printable keys
   are left to gpui's input handler, so they arrive as text (IME commits, dead
-  keys, AltGr). The keypad half of DECKPAM is in the encoder, but gpui-pre
-  0.3.12 does not tell keypad keys from the main ones, so nothing reaches it.
+  keys, AltGr). A key the platform wants as text is left to it before any
+  named key is looked at: AltGr comes as Ctrl+Alt, and AltGr+Space would be
+  ESC NUL. Ctrl with a letter goes by gpui's key name, which on Windows is
+  the virtual key's own letter (`MapVirtualKeyW` gives A-Z for VK_A-VK_Z in
+  every layout), so Ctrl+C and Ctrl+V work on a Cyrillic layout as the page's
+  physical-key match does. The keypad half of DECKPAM is in the encoder, but
+  gpui-pre 0.3.12 does not tell keypad keys from the main ones, so nothing
+  reaches it.
 - The pane's own keys, as bindings in its key context: Ctrl+C copies a
   selection and clears it, and goes to the session as ^C without one;
   Ctrl+Shift+C and Ctrl+Insert copy; Ctrl+V, Ctrl+Shift+V and Shift+Insert
@@ -292,8 +330,11 @@ changes, a scale change included. The core passes the pixels on to the PTY
   is drawn underlined at the cursor and sent when committed; the candidate
   window goes to the cursor's cell, moved by the composition's width before
   the range; UTF-16 ranges never split a surrogate pair.
-- The mouse (`mouse.rs`): modes 1000, 1002 and 1003, SGR (1006) or X10, each
-  button tracked on its own so overlapping presses release the right one;
+- The mouse (`mouse.rs`): modes 1000, 1002 and 1003, SGR (1006), UTF-8
+  (1005) or X10. X10's coordinates are raw bytes and `write_session` takes
+  text, so they stop at column and row 95, the last a byte of ASCII carries
+  (xterm stops at 223); past it, a position is reported there. Each
+  button is tracked on its own so overlapping presses release the right one;
   Shift bypasses them. Otherwise drag, double-click and triple-click select
   (simple, word, line). The wheel scrolls the scrollback, reports buttons 64
   and 65 to a program that takes the mouse, and sends arrows in the alternate
@@ -308,13 +349,19 @@ before text before an image, and leaves out a file list it cannot type):
 - Files (Explorer's copy): their paths, each quoted for the CLI on this OS
   (double quotes on Windows, POSIX single quotes elsewhere, bare when nothing
   needs quoting), space-separated, as a paste. A path that cannot be typed
-  whole (not Unicode, a control character, a `"` on Windows) is left out.
-- Text: as typed, line ends as CR; with bracketed paste (2004) on, framed by
-  CSI 200~ and 201~ with every ESC and ETX removed, so a paste cannot end
-  itself early (alacritty 0.17.0 does the same).
-- An image: the CLI's own image-paste key, which reads the clipboard itself
-  (Claude Code's Alt+V, Codex's Ctrl+V).
-- Nothing: nothing is typed.
+  whole (not Unicode, a control character, a `"` on Windows, where POSIX's
+  single quotes hold one) is left out, and so is the list it is in.
+- Text: line ends as CR, every other control character but tab dropped, C0
+  and C1 alike (ESC, ETX and U+009B, CSI's C1 form, among them), with
+  bracketed paste (2004) off as well as on, so a paste can neither end itself
+  early nor act as keys; with 2004 on, framed by CSI 200~ and 201~
+  (alacritty 0.17.0 filters ESC and ETX the same way). No dialog asks first:
+  both CLIs take bracketed pastes, as the page did.
+- An image, or nothing the window reads (no text, no file): the CLI's own
+  image-paste key, which reads the clipboard itself (Claude Code's Alt+V,
+  Codex's Ctrl+V), as the page presses it. Whether an image is there is asked
+  of the formats on offer (CF_DIB, CF_DIBV5, PNG; on macOS PNG and TIFF);
+  none of it is read.
 - Files dropped on the pane from outside the window are typed as pasted
   files. The drop is taken by position (`on_drag_move` and a mouse-up
   listener of the element's), not by gpui's `on_drop`: a drop from outside is
@@ -324,7 +371,9 @@ before text before an image, and leaves out a file list it cannot type):
 A copy goes to the host's clipboard too (`write_clipboard_text`). In the
 test build, with `LUNA_TEST_CLIPBOARD` naming a file, the host reads and
 writes that file instead (native/desktop.rs `test_clip`), so a smoke run
-never touches the clipboard of the person at the machine.
+never touches the clipboard of the person at the machine; an image or
+nothing there reads as the text `[test clipboard: image key]`, since the
+real key would have the CLI read the person's clipboard.
 
 **Drawing** (`element.rs`): background quads merged per run of equal color;
 box drawing and block elements (U+2500-259F) as geometry, from each
@@ -340,12 +389,15 @@ holds it); the selection is the window's own (white on navy, black on white).
 Links are plain text.
 
 **The test build** opens terminals with `--dev-open claude=<account>` or
-`--dev-open codex=<account>` (repeated) and `--dev-folder <folder>`, honored
-only by the test flavor, until the board has its own way (native.rs
-`dev_terminals`). A smoke run types through `LUNA_TEST_DRIVE` (`drive.rs`: a
-file of keys the window dispatches through gpui as if pressed, read every
-200 ms while it is set), since keys with modifiers cannot be posted to a
-window and global input is off limits.
+`--dev-open codex=<account>` (repeated) and `--dev-folder <folder>`, until
+the board has its own way (native.rs `dev_terminals`). A smoke run types
+through `LUNA_TEST_DRIVE` (`drive.rs`: a file of keys the window dispatches
+through gpui as if pressed, read every 200 ms while it is set, a line once
+its newline is written), since keys with modifiers cannot be posted to a
+window and global input is off limits. These, the test clipboard and the
+tray's test hook are compiled into the test build alone: both build scripts
+set the `luna_test` cfg for `LUNA_FLAVOR=test`, and a release has none of
+their code.
 
 ## Theme and font
 
@@ -419,11 +471,15 @@ Windows tests do not.
 The terminal's tests (`term/tests.rs`) drive a pane through gpui's own
 dispatch and the input handler its element registers, over the fake host, its
 output through the real sink and parser thread: keys with modifiers and
-DECCKM, Ctrl+C both ways, paste with 2004 off and on, files pasted and
-dropped, a bitmap per CLI, SGR mouse with overlapping buttons, selection and
-copy, the wheel and the scrollback, the IME, the size in cells and pixels,
-a fresh start, a reattach, the exit and refused input, the wait for the core,
-focus reports, color queries and an idle pane drawing nothing. A test waits
+DECCKM, Ctrl+C both ways, AltGr text, paste with 2004 off and on and in
+order with the keys typed while it reads, files pasted and dropped, a bitmap
+per CLI, SGR mouse with overlapping buttons, selection and copy, the wheel
+and the scrollback, the IME, the size in cells and pixels and a size
+refused, a fresh start, a reattach and what came during it, a core replaced
+between two states and the core's start-over, the exit and refused input,
+the wait for the core, focus reports, color queries and the reply lane,
+output past the bound, a synchronized update left open or too long, and an
+idle pane drawing nothing. A test waits
 for the parse before it lets the window's thread run, and tells gpui's test
 scheduler to expect the parser's thread (`allow_parking`). The encoders, box
 drawing, colors, paste rules and the bench's checksum have unit tests of

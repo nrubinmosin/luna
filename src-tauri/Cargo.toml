@@ -88,8 +88,8 @@ raw-window-handle = "0.6"
 # tauri-plugin-updater checks with, and its version compare.
 minisign-verify = "0.3"
 semver = "1"
-# The tray icon decoded, and a clipboard bitmap encoded (desktop/tray.rs,
-# desktop/clipboard.rs). The version tray-icon and muda already link.
+# The tray icon decoded (desktop/tray.rs). The version tray-icon and muda
+# already link.
 png = "0.18"
 
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
@@ -151,15 +151,13 @@ libc = "0.2"
 [target.'cfg(not(windows))'.dependencies]
 notify-rust = "4.18"
 
-# The pasteboard on macOS (src/desktop/clipboard.rs): text, file URLs and
-# images. The versions tao, muda and rfd already link there.
+# The pasteboard on macOS (src/desktop/clipboard.rs): text, file URLs, and
+# whether an image is there. The versions tao, muda and rfd already link there.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSURL"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
-    "NSBitmapImageRep",
-    "NSImageRep",
     "NSPasteboard",
     "NSPasteboardItem",
 ] }

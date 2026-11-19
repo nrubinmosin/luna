@@ -4,8 +4,13 @@
 //! gates them: before its start answers, or after it exited, there is no
 //! session to take them, and a write would come back as "no such session".
 //! The size is kept meanwhile and sent once it runs.
+//!
+//! A size the host refused to hand over (the core's line was full for a
+//! moment) is not taken for sent: the pane is asked to try again
+//! (`Io::new`'s `retry`), so a size is never left stuck at one the PTY never got.
 
 use crate::host::{Host, cmd};
+use futures::channel::mpsc::UnboundedSender;
 use serde_json::json;
 use std::cell::Cell;
 use std::sync::Arc;
@@ -23,14 +28,16 @@ pub struct Io {
     host: Arc<dyn Host>,
     id: String,
     live: Cell<bool>,
-    /// The size the pane last laid out at, and the last one sent.
+    /// The size the pane last laid out at, and the last one the host took.
     size: Cell<Option<PtySize>>,
     sent: Cell<Option<PtySize>>,
+    /// Told when a size was refused: the pane calls `flush_size` a moment later.
+    retry: UnboundedSender<()>,
 }
 
 impl Io {
-    pub fn new(host: Arc<dyn Host>, id: String) -> Io {
-        Io { host, id, live: Cell::new(false), size: Cell::new(None), sent: Cell::new(None) }
+    pub fn new(host: Arc<dyn Host>, id: String, retry: UnboundedSender<()>) -> Io {
+        Io { host, id, live: Cell::new(false), size: Cell::new(None), sent: Cell::new(None), retry }
     }
 
     /// The session runs (or no longer does). Coming alive sends the size the
@@ -47,10 +54,22 @@ impl Io {
 
     /// Input for the session: dropped while it does not run.
     pub fn write(&self, data: &str) {
+        self.write_as(data, false);
+    }
+
+    /// A reply to the program's query (a size, a color, the device's
+    /// attributes): sent with `reply`, so the core does not count it as a
+    /// person typing (pty/control.rs `write_session`).
+    pub fn reply(&self, data: &str) {
+        self.write_as(data, true);
+    }
+
+    fn write_as(&self, data: &str, reply: bool) {
         if !self.live.get() || data.is_empty() {
             return;
         }
-        if let Err(e) = self.host.send(cmd::WRITE_SESSION, json!({ "id": self.id, "data": data })) {
+        let args = if reply { json!({ "id": self.id, "data": data, "reply": true }) } else { json!({ "id": self.id, "data": data }) };
+        if let Err(e) = self.host.send(cmd::WRITE_SESSION, args) {
             log::warn!("write_session: {e}");
         }
     }
@@ -65,7 +84,8 @@ impl Io {
         self.size.get()
     }
 
-    fn flush_size(&self) {
+    /// The size the pane is at, unless the host has it already.
+    pub fn flush_size(&self) {
         let Some(size) = self.size.get() else { return };
         if self.live.get() && self.sent.get() != Some(size) {
             self.send_size(size);
@@ -78,7 +98,6 @@ impl Io {
         if !self.live.get() || size.cols < 1 || size.rows < 1 {
             return;
         }
-        self.sent.set(Some(size));
         let args = json!({
             "id": self.id,
             "cols": size.cols,
@@ -86,8 +105,14 @@ impl Io {
             "pixelWidth": size.width,
             "pixelHeight": size.height,
         });
-        if let Err(e) = self.host.send(cmd::RESIZE_SESSION, args) {
-            log::warn!("resize_session: {e}");
+        match self.host.send(cmd::RESIZE_SESSION, args) {
+            Ok(()) => self.sent.set(Some(size)),
+            Err(e) => {
+                log::warn!("resize_session: {e}");
+                // Whatever went before, the host does not have this one.
+                self.sent.set(None);
+                let _ = self.retry.unbounded_send(());
+            }
         }
     }
 }

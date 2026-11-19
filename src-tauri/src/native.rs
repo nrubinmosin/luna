@@ -22,7 +22,9 @@
 mod desktop;
 
 use crate::corecmd::{self, Lane};
-use luna_window::{Answer, Host, Mailbox, OutputSink, Provider, SessionSpec, ThemePref};
+use luna_window::{Answer, Host, Mailbox, OutputSink, ThemePref};
+#[cfg(luna_test)]
+use luna_window::{Provider, SessionSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -321,13 +323,17 @@ pub(crate) fn run() -> Result<(), String> {
     ));
     let title = if crate::paths::is_test() { "Luna Test" } else { "Luna" };
     let services = mailbox.clone();
-    let test = crate::paths::is_test();
+    #[cfg(luna_test)]
+    let terminals = dev_terminals(std::env::args().skip(1));
+    #[cfg(not(luna_test))]
+    let terminals = Vec::new();
     let options = luna_window::Options {
         title: title.into(),
         theme: theme(),
         background: crate::background(),
-        terminals: if test { dev_terminals(std::env::args().skip(1)) } else { Vec::new() },
-        drive_file: std::env::var_os(TEST_DRIVE).filter(|_| test).map(PathBuf::from),
+        terminals,
+        #[cfg(luna_test)]
+        drive_file: std::env::var_os(TEST_DRIVE).map(PathBuf::from),
         on_open: Box::new(move || start(services)),
         on_quit: Box::new(|| {
             crate::lifecycle::exiting("the window's app quit; the core and its sessions stay");
@@ -350,8 +356,9 @@ pub(crate) fn run() -> Result<(), String> {
 }
 
 /// The test build's driver: a file of keys a smoke script has the window
-/// press (luna_window's drive.rs), as no global input may. Ignored by any
-/// other build.
+/// press (luna_window's drive.rs), as no global input may. Compiled into the
+/// test build alone.
+#[cfg(luna_test)]
 const TEST_DRIVE: &str = "LUNA_TEST_DRIVE";
 
 /// The test build's terminals on a session each, until the board has its own
@@ -361,6 +368,8 @@ const TEST_DRIVE: &str = "LUNA_TEST_DRIVE";
 /// order given, so a window started again with the same arguments
 /// reattaches to the sessions the core still runs. The account must be one
 /// the test build lists (test-build/accounts); the core refuses any other.
+/// Compiled into the test build alone.
+#[cfg(luna_test)]
 fn dev_terminals(args: impl Iterator<Item = String>) -> Vec<SessionSpec> {
     let (mut opens, mut folder) = (Vec::new(), None);
     let mut args = args.peekable();
@@ -477,7 +486,8 @@ mod tests {
     /// Every event the window listens to is one Luna sends.
     #[test]
     fn every_event_the_window_hears_is_sent() {
-        let senders = [include_str!("corelink.rs"), include_str!("pty/spawn.rs"), include_str!("pty/mod.rs")];
+        let senders =
+            [include_str!("corelink.rs"), include_str!("pty/spawn.rs"), include_str!("pty/mod.rs"), include_str!("power/machine.rs")];
         for event in luna_window::event::ALL {
             assert!(senders.iter().any(|s| s.contains(&format!("\"{event}\""))), "{event} is sent nowhere");
         }
@@ -609,6 +619,7 @@ mod tests {
 
     /// `--dev-open` makes a terminal per session asked for, each with the
     /// arguments its start takes, and nothing without a folder.
+    #[cfg(luna_test)]
     #[test]
     fn dev_open_asks_for_each_session_as_the_page_would() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter();

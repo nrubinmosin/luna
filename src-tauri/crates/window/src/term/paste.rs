@@ -8,8 +8,9 @@
 //!   session's CLI on this OS, space-separated, through the same paste: the
 //!   CLIs attach an image whose path is pasted. A path that cannot be typed
 //!   whole (not Unicode, or a control character in it) is left out.
-//! - An image presses the CLI's own image-paste key, which reads the
-//!   clipboard itself (docs/cli-compatibility.md).
+//! - An image, or nothing the window reads (no text, no file), presses the
+//!   CLI's own image-paste key, which reads the clipboard itself
+//!   (docs/cli-compatibility.md), as the page does.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

@@ -1,8 +1,10 @@
 //! The pane on GPUI's test platform, over a fake host: every way into the
-//! session (keys, Ctrl+C both ways, paste with bracketed paste off and on,
-//! files pasted and dropped, a bitmap, the mouse, the wheel, the IME, the
-//! size), the start and the reattach, the exit and the refused input, and the
-//! wait for the core. Driven through gpui's own dispatch and the input
+//! session (keys, Ctrl+C both ways, AltGr, paste with bracketed paste off and
+//! on and in order with the keys around it, files pasted and dropped, a
+//! bitmap, the mouse, the wheel, the IME, the size and a size refused), the
+//! replies to the program's queries, the start and the reattach, the exit and
+//! the refused input, the wait for the core and a core replaced under it,
+//! output past the pane's bound and synchronized updates left open. Driven through gpui's own dispatch and the input
 //! handler the element registers; asserts what the host was sent and what
 //! the grid shows. Output goes through the real seam: the fake host hands it
 //! to the pane's sink, which its parser thread parses; the test waits for the
@@ -20,8 +22,8 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::TermMode;
 use gpui::{
-    Bounds, ElementInputHandler, Entity, ExternalPaths, FileDropEvent, Focusable, InputHandler, Modifiers, MouseButton, ScrollDelta,
-    ScrollEvent, TestAppContext, VisualTestContext, point, px, size,
+    Bounds, ElementInputHandler, Entity, ExternalPaths, FileDropEvent, Focusable, InputHandler, KeyDownEvent, Keystroke, Modifiers,
+    MouseButton, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, point, px, size,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -47,6 +49,12 @@ fn spec(provider: Provider) -> SessionSpec {
 
 fn link(state: LinkState, revision: u64) -> Value {
     serde_json::to_value(CoreState { state, core: (state == LinkState::Up).then(demo::core), error: None, revision }).unwrap()
+}
+
+/// `up`, a core of `pid`.
+fn up_as(pid: u32, revision: u64) -> Value {
+    let core = crate::dto::Core { pid, ..demo::core() };
+    serde_json::to_value(CoreState { state: LinkState::Up, core: Some(core), error: None, revision }).unwrap()
 }
 
 /// A pane on a session of `provider`, the core first answered as `first`,
@@ -85,8 +93,13 @@ impl Pane<'_> {
 
     /// Everything written to the session since the last take, joined.
     fn take(&mut self) -> String {
+        self.take_all().into_iter().map(|a| a["data"].as_str().unwrap().to_owned()).collect()
+    }
+
+    /// The writes since the last take, as sent.
+    fn take_all(&mut self) -> Vec<Value> {
         let all = self.host.sends_of(cmd::WRITE_SESSION);
-        let new = all[self.seen..].iter().map(|a| a["data"].as_str().unwrap().to_owned()).collect();
+        let new = all[self.seen..].to_vec();
         self.seen = all.len();
         new
     }
@@ -236,9 +249,10 @@ fn selection_by_drag_word_and_line_and_copy(cx: &mut TestAppContext) {
 fn paste_is_bracketed_when_the_program_asks(cx: &mut TestAppContext) {
     let mut p = open(cx);
     p.clipboard(Clip::Text("echo hi\x1b[201~\nrm -rf x\x03\r\n".into()));
-    // Mode 2004 off: the text as it is, line ends as CR.
+    // Mode 2004 off: line ends as CR, and no control character but those:
+    // an ESC would type keys of its own, a ^C would interrupt.
     p.cx.simulate_keystrokes("ctrl-v");
-    assert_eq!(p.take(), "echo hi\x1b[201~\rrm -rf x\x03\r");
+    assert_eq!(p.take(), "echo hi[201~\rrm -rf x\r");
     // On: framed, every ESC and ETX removed, so the paste cannot end early.
     p.output(b"\x1b[?2004h");
     for keys in ["ctrl-v", "ctrl-shift-v", "shift-insert"] {
@@ -273,18 +287,46 @@ fn files_pasted_or_dropped_are_typed_as_quoted_paths(cx: &mut TestAppContext) {
     assert_eq!(p.take(), "");
 }
 
+/// An image, or no text and no file at all (a bitmap in a format the window
+/// does not know), presses the CLI's own image key, as the page does: the
+/// CLI reads the clipboard itself.
 #[gpui::test]
 fn a_bitmap_presses_the_clis_own_image_key(cx: &mut TestAppContext) {
     for (provider, key) in [(Provider::Claude, "\x1bv"), (Provider::Codex, "\x16")] {
         let mut p = open_with(cx, provider, LinkState::Up, demo::attached("", 1));
-        p.clipboard(Clip::Image { width: 1, height: 1, png: vec![0x89, 0x50] });
+        p.clipboard(Clip::Image);
         p.cx.simulate_keystrokes("ctrl-v");
         assert_eq!(p.take(), key, "{provider:?}");
-        // Nothing on it, nothing typed.
         p.clipboard(Clip::Empty);
         p.cx.simulate_keystrokes("ctrl-v");
-        assert_eq!(p.take(), "");
+        assert_eq!(p.take(), key, "{provider:?}: nothing the window reads");
     }
+}
+
+/// A paste waits for the clipboard off the window's thread: what is typed
+/// meanwhile goes after it, and two pastes keep their order whichever read
+/// comes back first.
+#[gpui::test]
+fn keys_typed_while_a_paste_reads_the_clipboard_go_after_it(cx: &mut TestAppContext) {
+    let mut p = open(cx);
+    *p.host.desktop.reads.lock().unwrap() = Some(Vec::new());
+    p.cx.simulate_keystrokes("ctrl-v");
+    p.cx.simulate_input("x");
+    p.cx.simulate_keystrokes("ctrl-v enter");
+    assert_eq!(p.take(), "", "held behind the paste");
+    let reads = p.host.desktop.reads.lock().unwrap().take().unwrap();
+    let mut reads = reads.into_iter();
+    let (first, second) = (reads.next().unwrap(), reads.next().unwrap());
+    // The second read answers first: it waits for the first.
+    second.send(Clip::Text("two".into())).unwrap();
+    p.cx.run_until_parked();
+    assert_eq!(p.take(), "");
+    first.send(Clip::Text("one".into())).unwrap();
+    p.cx.run_until_parked();
+    assert_eq!(p.take(), "onextwo\r");
+    // Nothing pending: keys go at once again.
+    p.cx.simulate_input("y");
+    assert_eq!(p.take(), "y");
 }
 
 #[gpui::test]
@@ -442,28 +484,81 @@ fn a_new_session_shows_what_it_printed_while_starting(cx: &mut TestAppContext) {
 }
 
 /// A reattach: the backlog first, with no old query answered again, wiped
-/// and the session's modes put back, then the output that came meanwhile,
-/// and the CLI asked to repaint (a row less, and back).
+/// and the session's modes put back; what came while the start was asked is
+/// dropped, as some of it is in the backlog already and the modes may be
+/// newer than the rest; the CLI is asked to repaint (a row less, and back),
+/// and only then does the session take keys, framed by the modes put back.
 #[gpui::test]
-fn a_reattach_replays_the_backlog_before_the_live_output(cx: &mut TestAppContext) {
+fn a_reattach_replays_the_backlog_and_drops_what_came_meanwhile(cx: &mut TestAppContext) {
     let mut p = open_with(cx, Provider::Claude, LinkState::Starting, demo::attached("OLD SCREEN\x1b[c\r\n", 7));
     p.host.answer(cmd::SESSION_MODES, json!("\x1b[?2004h\x1b[?1h"));
-    // The live output arrives after the start is asked and before its
-    // answer is taken.
+    // Output arrives after the start is asked and before its answer is
+    // taken: the backlog may hold it already. Keys meanwhile go nowhere.
     p.view.update(p.cx, |v, cx| v.start(cx));
-    assert!(p.host.output("s1", b"LIVE"));
+    assert!(p.host.output("s1", b"OLD SCREEN\x1b[?2004l"));
+    p.cx.simulate_input("early");
     p.cx.run_until_parked();
     p.settle();
     assert_eq!(p.phase(), Phase::Live(7));
     assert_eq!(p.host.calls_of(cmd::SESSION_MODES), vec![json!({ "id": "s1" })]);
-    let screen = p.screen();
-    assert_eq!(screen[0], "LIVE", "the backlog was shown and wiped before the live output: {screen:?}");
-    assert!(!p.shows("OLD SCREEN"));
-    assert_eq!(p.take(), "", "the backlog's query was answered when it was new");
-    assert!(p.mode().contains(TermMode::BRACKETED_PASTE | TermMode::APP_CURSOR), "the session's modes are back");
+    assert!(!p.shows("OLD SCREEN"), "the backlog was shown and wiped, and nothing of before drawn again: {:?}", p.screen());
+    assert_eq!(p.take(), "", "the backlog's query was answered when it was new; keys before the modes went nowhere");
+    assert!(
+        p.mode().contains(TermMode::BRACKETED_PASTE | TermMode::APP_CURSOR),
+        "the session's modes are back, not undone by stale output"
+    );
     let rows: Vec<u64> = p.resizes().iter().map(|r| r["rows"].as_u64().unwrap()).collect();
     let n = rows.len();
     assert!(n >= 2 && rows[n - 2] + 1 == rows[n - 1], "a row less, then back: {rows:?}");
+    // The repaint and everything after it is live.
+    p.output(b"REPAINTED");
+    assert_eq!(p.screen()[0], "REPAINTED");
+    p.clipboard(Clip::Text("hi".into()));
+    p.cx.simulate_keystrokes("ctrl-v");
+    assert_eq!(p.take(), "\x1b[200~hi\x1b[201~");
+}
+
+/// The core replaced under the pane, its `starting` folded into the `up`
+/// after it in the inbox: a new core (pid) or the same one found again (a
+/// newer revision) starts the session over, as the page's epoch does; the
+/// same state taken again does not.
+#[gpui::test]
+fn a_core_replaced_between_two_states_starts_the_session_over(cx: &mut TestAppContext) {
+    let mut p = open(cx);
+    assert_eq!(p.phase(), Phase::Live(1));
+    p.output(b"before");
+    let starts = |p: &mut Pane| p.host.calls_of(cmd::ENSURE_CLAUDE_SESSION).len();
+    assert_eq!(starts(&mut p), 1);
+    // The same `up` again (the answer to `core_state` after the event).
+    p.tell(event::CORE_STATE, link(LinkState::Up, 1));
+    assert_eq!(starts(&mut p), 1);
+    // Another core, nothing in between.
+    p.host.answer(cmd::ENSURE_CLAUDE_SESSION, demo::attached("", 2));
+    p.tell(event::CORE_STATE, up_as(5151, 3));
+    p.settle();
+    assert_eq!((starts(&mut p), p.phase()), (2, Phase::Live(2)));
+    assert!(!p.shows("before"), "started over on a clean grid");
+    // The same core found again: only its revision tells.
+    p.host.answer(cmd::ENSURE_CLAUDE_SESSION, demo::attached("", 3));
+    p.tell(event::CORE_STATE, up_as(5151, 6));
+    assert_eq!((starts(&mut p), p.phase()), (3, Phase::Live(3)));
+}
+
+/// `pty://start-over` (a shutdown taken back closed every session): every
+/// pane starts its session again, an ended one too.
+#[gpui::test]
+fn the_cores_start_over_starts_every_pane_again(cx: &mut TestAppContext) {
+    let mut p = open(cx);
+    p.tell(event::PTY_EXIT, json!({ "id": "s1", "code": 0, "generation": 1 }));
+    assert_eq!(p.phase(), Phase::Ended);
+    p.host.answer(cmd::ENSURE_CLAUDE_SESSION, demo::attached("", 2));
+    p.tell(event::START_OVER, json!({ "why": "the shutdown was taken back" }));
+    assert_eq!(p.phase(), Phase::Live(2));
+    assert_eq!(p.host.calls_of(cmd::ENSURE_CLAUDE_SESSION).len(), 2);
+    // While the core is not up, it waits for it.
+    p.core(LinkState::Starting);
+    p.tell(event::START_OVER, json!({ "why": "again" }));
+    assert_eq!(p.phase(), Phase::Waiting);
 }
 
 #[gpui::test]
@@ -566,6 +661,98 @@ fn color_queries_are_answered_from_the_theme(cx: &mut TestAppContext) {
     p.output(b"\x1b]11;?\x07");
     let reply = p.take();
     assert!(reply.contains("rgb:ffff/ffff/ffff"), "the light ground: {reply:?}");
+}
+
+/// Replies to the program's queries go as replies, which the core does not
+/// count as a person typing; keys do not.
+#[gpui::test]
+fn replies_go_on_their_own_lane(cx: &mut TestAppContext) {
+    let mut p = open(cx);
+    p.output(b"\x1b[c\x1b]10;?\x07\x1b[14t");
+    let replies = p.take_all();
+    assert_eq!(replies.len(), 3, "{replies:?}");
+    assert!(replies.iter().all(|r| r["reply"] == true), "{replies:?}");
+    p.cx.simulate_input("k");
+    assert_eq!(p.take_all(), vec![json!({ "id": "s1", "data": "k" })]);
+}
+
+/// AltGr comes as Ctrl+Alt: its text is typed, never taken for a control
+/// key (AltGr+Space as ESC NUL).
+#[gpui::test]
+fn altgr_text_is_typed_not_sent_as_ctrl_alt(cx: &mut TestAppContext) {
+    let mut p = open(cx);
+    let altgr = Modifiers { control: true, alt: true, ..Modifiers::default() };
+    for (key, text) in [("space", "\u{a0}"), ("e", "\u{20ac}")] {
+        let keystroke = Keystroke { modifiers: altgr, key: key.into(), key_char: Some(text.into()) };
+        p.cx.simulate_event(KeyDownEvent { keystroke, is_held: false, prefer_character_input: true });
+        assert_eq!(p.take(), "", "{key}: left to the text input");
+        // Which then types it.
+        p.cx.simulate_input(text);
+        assert_eq!(p.take(), text);
+    }
+}
+
+/// A size the host refused is not taken for sent: it goes again a moment
+/// later.
+#[gpui::test]
+fn a_refused_size_is_sent_again(cx: &mut TestAppContext) {
+    let p = open(cx);
+    let before = p.resizes().len();
+    p.host.refuse(cmd::RESIZE_SESSION, 1);
+    p.cx.simulate_resize(size(px(500.), px(300.)));
+    p.cx.run_until_parked();
+    assert_eq!(p.resizes().len(), before, "refused, so not sent");
+    p.cx.executor().advance_clock(super::RESIZE_RETRY);
+    p.cx.run_until_parked();
+    let after = p.resizes();
+    assert_eq!(after.len(), before + 1, "{after:?}");
+    let g = p.view.read_with(p.cx, |v, _| v.geom());
+    assert_eq!(after.last().unwrap()["cols"].as_u64(), Some(g.cols as u64));
+}
+
+/// Output past the pane's bound is dropped rather than held, and the pane
+/// says how much in a line of its own.
+#[gpui::test]
+fn output_past_the_bound_is_dropped_and_said(cx: &mut TestAppContext) {
+    let mut p = open_with(cx, Provider::Claude, LinkState::Starting, demo::attached("", 1));
+    p.view.update(p.cx, |v, cx| v.start(cx));
+    let chunk = "x".repeat(64 << 10);
+    for _ in 0..(super::parser::OUTPUT_MAX / chunk.len() + 4) {
+        assert!(p.host.output("s1", chunk.as_bytes()), "still routed");
+    }
+    p.cx.run_until_parked();
+    p.settle();
+    assert_eq!(p.phase(), Phase::Live(1));
+    assert!(p.shows("[dropped 256 KB of output: the pane fell behind]"), "{:?}", p.screen());
+    // Parsed, so the room is back.
+    p.output(b"\r\nafter");
+    assert!(p.shows("after"));
+}
+
+/// A synchronized update (2026) left open is drawn at its deadline, and at
+/// once before the pane's own notice; one that buffers too much is drawn
+/// without waiting for its end.
+#[gpui::test]
+fn an_unfinished_synchronized_update_does_not_hold_the_pane(cx: &mut TestAppContext) {
+    let mut p = open(cx);
+    p.output(b"\x1b[?2026hHALF");
+    assert!(!p.shows("HALF"), "held while the frame is open");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    p.settle();
+    assert!(p.shows("HALF"), "drawn at the deadline");
+    p.output(b"\x1b[?2026h\r\nPART");
+    p.tell(event::PTY_EXIT, json!({ "id": "s1", "code": 0, "generation": 1 }));
+    p.settle();
+    assert!(p.shows("PART") && p.shows("[session exited]"), "{:?}", p.screen());
+}
+
+#[gpui::test]
+fn a_synchronized_update_past_its_bound_is_drawn_without_its_end(cx: &mut TestAppContext) {
+    let mut p = open(cx);
+    let mut big = b"\x1b[?2026h".to_vec();
+    big.extend(std::iter::repeat_n(b'y', super::parser::SYNC_MAX + 8192));
+    p.output(&big);
+    assert!(p.shows("yyyy"), "drawn past the bound without its end");
 }
 
 #[gpui::test]

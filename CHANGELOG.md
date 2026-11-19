@@ -36,9 +36,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   CLI's own image-paste key, the scrollback, the IME's composition at the
   cursor, box drawing as shapes, truecolor and every text attribute, in the
   window's light and dark looks. A chat reattached replays the core's
-  backlog as the WebView window does; its exit and refused keys are said in
-  the terminal, and it waits for a core being found or replaced. The test
-  build opens terminals with `--dev-open`; the board opens them later.
+  backlog as the WebView window does, and takes keys once the CLI's modes
+  are back; its exit and refused keys are said in the terminal, and it waits
+  for a core being found or replaced and starts its chat over in the next
+  one, or after the core's start-over (a shutdown of the PC called off).
+  Pasted text loses its control characters (but tabs and line breaks) with
+  bracketed paste off as well as on, and keys typed while a paste reads the
+  clipboard go after it. Output it cannot keep up with is dropped and said,
+  never held without bound, and a synchronized update left open is drawn at
+  its deadline. The test build opens terminals with `--dev-open`; the board
+  opens them later. That, the test build's driver and stand-in clipboard are
+  compiled into the test build alone (the `luna_test` cfg).
 - `resize_session` takes the terminal's size in pixels too (`pixelWidth`,
   `pixelHeight`), which the native window sends and the core passes to the
   PTY.

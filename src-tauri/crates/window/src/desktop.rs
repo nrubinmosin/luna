@@ -85,12 +85,9 @@ pub enum Clip {
     Text(String),
     /// Typed as quoted paths.
     Files(Vec<PathBuf>),
-    /// The CLI reads it off the clipboard itself, at its image-paste key.
-    Image {
-        width: u32,
-        height: u32,
-        png: Vec<u8>,
-    },
+    /// An image format is there, not read: the CLI reads it off the
+    /// clipboard itself, at its image-paste key (so does a paste of `Empty`).
+    Image,
 }
 
 /// What to pick.
@@ -444,6 +441,8 @@ pub struct FakeDesktop {
     pub tray: std::sync::atomic::AtomicBool,
     pub notices: std::sync::Mutex<Vec<Notice>>,
     pub clip: std::sync::Mutex<Clip>,
+    /// While Some, a read waits here until the test answers it.
+    pub reads: std::sync::Mutex<Option<Vec<futures::channel::oneshot::Sender<Clip>>>>,
     pub written: std::sync::Mutex<Vec<String>>,
     pub picks: std::sync::Mutex<Vec<Pick>>,
     pub picked: std::sync::Mutex<Option<PathBuf>>,
@@ -463,6 +462,11 @@ impl Desktop for crate::demo::FakeHost {
     }
 
     fn read_clipboard(&self) -> Pending<Clip> {
+        if let Some(waiting) = self.desktop.reads.lock().unwrap().as_mut() {
+            let (tx, rx) = futures::channel::oneshot::channel();
+            waiting.push(tx);
+            return Box::pin(async move { rx.await.map_err(|_| "no answer".to_string()) });
+        }
         let clip = self.desktop.clip.lock().unwrap().clone();
         Box::pin(async move { Ok(clip) })
     }

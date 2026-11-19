@@ -1,6 +1,7 @@
 //! Mouse reporting, from xterm's "Mouse Tracking": which events a program
 //! asked for (modes 1000 click, 1002 drag, 1003 any motion) and how they are
-//! encoded (SGR, mode 1006, or the original X10-style bytes).
+//! encoded (SGR, mode 1006; UTF-8, mode 1005; or the original X10-style
+//! bytes, as far as one byte of text carries them).
 
 use super::keys::Mods;
 use alacritty_terminal::term::TermMode;
@@ -37,10 +38,19 @@ pub fn wants(mode: TermMode, action: Action, held: bool) -> bool {
     }
 }
 
+/// The furthest cell, 0-based, the X10 encoding reports: its coordinate
+/// bytes are raw bytes, 32 + 1 + the cell, and the session takes text, which
+/// would turn one past 127 into two bytes of UTF-8. Past it, a position is
+/// reported at this cell, as xterm does at its own limit of 223.
+pub const X10_LAST: usize = 127 - 33;
+
+/// The furthest cell, 0-based, the UTF-8 encoding (mode 1005) reports: its
+/// coordinates are characters, up to U+07FF.
+pub const UTF8_LAST: usize = 0x7ff - 33;
+
 /// The report for one event at 0-based cell (col, line), as the text the
-/// session is sent; None when the X10 encoding cannot express the position
-/// (past column or row 223). X10's coordinate bytes past 127 go as the
-/// characters of those code points, as xterm.js sends them.
+/// session is sent: SGR (mode 1006) at any cell; UTF-8 (1005) and X10 with
+/// the position held to `UTF8_LAST` and `X10_LAST`.
 pub fn encode(mode: TermMode, button: Button, action: Action, mods: Mods, col: usize, line: usize) -> Option<String> {
     let mut code: u32 = match button {
         Button::Left => 0,
@@ -62,10 +72,8 @@ pub fn encode(mode: TermMode, button: Button, action: Action, mods: Mods, col: u
     if action == Action::Release {
         code = (code & !3) | 3;
     }
-    let (x, y) = (col as u32 + 1 + 32, line as u32 + 1 + 32);
-    if x > 255 || y > 255 {
-        return None;
-    }
+    let last = if mode.contains(TermMode::UTF8_MOUSE) { UTF8_LAST } else { X10_LAST };
+    let (x, y) = (col.min(last) as u32 + 1 + 32, line.min(last) as u32 + 1 + 32);
     [32 + code, x, y].into_iter().map(char::from_u32).collect::<Option<String>>().map(|tail| format!("\x1b[M{tail}"))
 }
 
@@ -92,9 +100,16 @@ mod tests {
         let m = TermMode::MOUSE_REPORT_CLICK;
         assert_eq!(encode(m, Button::Left, Action::Press, Mods::NONE, 0, 0).unwrap(), "\x1b[M !!");
         assert_eq!(encode(m, Button::Left, Action::Release, Mods::NONE, 0, 0).unwrap(), "\x1b[M#!!");
-        // Past 95 columns a coordinate is a character above ASCII.
-        assert_eq!(encode(m, Button::Left, Action::Press, Mods::NONE, 100, 0).unwrap(), "\x1b[M \u{85}!");
-        assert_eq!(encode(m, Button::Left, Action::Press, Mods::NONE, 300, 0), None);
+        // The 95th column is the last a single byte of text reports; past it,
+        // the report is held there, every byte of it still ASCII.
+        assert_eq!(encode(m, Button::Left, Action::Press, Mods::NONE, 94, 0).unwrap(), "\x1b[M \x7f!");
+        let far = encode(m, Button::Left, Action::Press, Mods::NONE, 100, 300).unwrap();
+        assert_eq!(far, "\x1b[M \x7f\x7f");
+        assert!(far.is_ascii());
+        // Mode 1005: coordinates as UTF-8 characters, as far as U+07FF.
+        let utf8 = m | TermMode::UTF8_MOUSE;
+        assert_eq!(encode(utf8, Button::Left, Action::Press, Mods::NONE, 100, 0).unwrap(), "\x1b[M \u{85}!");
+        assert_eq!(encode(utf8, Button::Left, Action::Press, Mods::NONE, 5000, 0).unwrap(), "\x1b[M \u{7ff}!");
     }
 
     #[test]

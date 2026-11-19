@@ -132,35 +132,30 @@ nearest folder that is there; extensions are taken as `md`, `.md` or `*.md`.
 
 **Clipboard.** `read` returns what a paste would put in a terminal, the first
 of: files (CF_HDROP; Finder's file URLs, file reference URLs resolved through
-NSURL), text, an image as PNG with its size (the "PNG" format a browser puts
-there, else a CF_DIBV5 or CF_DIB of 24 or 32 bits, uncompressed or by bit
-fields, made PNG; on macOS PNG or TIFF made PNG by AppKit). Text comes before
-an image because a spreadsheet's cells come with a picture of themselves. The
-window types files as quoted paths and, for an image, presses the CLI's image
-key (ADR-0030), so a file list with a path holding a `"` or a control
-character (CR, LF and the rest) is not taken as files, nor one of more than
-1024 paths or with a path longer than 32,767 UTF-16 units (Windows' longest),
-on either platform. A format that does not read gives way to the next: a
-CF_HDROP whose `pFiles` points into its header, whose list runs off its end
-before its closing NUL, or whose ANSI names (in the system's code page) do
-not decode; a bitmap of a kind not read here; on macOS a PNG that is none or
-too large, which gives way to the TIFF. No format over 257 MiB is read, and
-no image over 64 megapixels decoded or passed on: on macOS a PNG's size is
-read off its header before its bytes are copied, and a TIFF's off its first
-directory (`tiff_size`: the width and the height each once, as one SHORT or
-LONG; a TIFF that gives either twice or with more than one value is refused,
-as a decoder might read the other one) before AppKit decodes it, and again
-as AppKit read it before it is made PNG. A PNG, the browser's on Windows or
-the pasteboard's on macOS, is taken over the DIB or the TIFF only once all of
-it decodes (`png_decodes`: every chunk's checksum and the image data to its
-end, a row at a time); one cut short or damaged gives way to the next format. `write_text` fills the text's memory before it touches the
+NSURL), text, an image. Text comes before an image because a spreadsheet's
+cells come with a picture of themselves. An image is never read: the window
+presses the CLI's image key for it (ADR-0030) and the CLI reads it, so `read`
+only asks whether one is on offer (`IsClipboardFormatAvailable` for CF_DIBV5,
+CF_DIB and the "PNG" a browser puts there; on macOS the pasteboard's types,
+PNG or TIFF), with nothing decoded under the open clipboard. The window
+types files as quoted paths, so a file list with a path it cannot type whole
+is not taken as files (`typeable_path`): a control character (CR, LF, C1 and
+the rest) on either platform, and on Windows, whose paths go in double
+quotes, a `"`; POSIX's single quotes hold one. Nor is one of more than 1024
+paths or with a path longer than 32,767 UTF-16 units (Windows' longest). A
+format that does not read gives way to the next: a CF_HDROP whose `pFiles`
+points into its header, whose list runs off its end before its closing NUL,
+or whose ANSI names (in the system's code page) do not decode. No format
+over 64 MiB is read. `write_text` fills the text's memory before it touches the
 clipboard, and opens it owned by a message-only window of its own, since
 `SetClipboardData` may fail after `EmptyClipboard` on a clipboard opened
 with no owner. The Windows formats are parsed by functions the tests hold to
 hand-made bytes; no test reads or writes the real clipboard, which is the
 person's. In the test build `LUNA_TEST_CLIPBOARD` names a JSON file the
 native host reads and writes in its place (native/desktop.rs `test_clip`),
-for a smoke run of the terminal.
+for a smoke run of the terminal; an image or nothing there reads as the text
+`[test clipboard: image key]`, since the CLI's real key would read the
+person's clipboard. That stand-in is compiled into the test build alone.
 
 **Window state.** `<data>/window-state.json` holds the window's normal
 bounds and whether it is maximized, in the coordinates the toolkit gives its

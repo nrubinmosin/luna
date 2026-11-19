@@ -3,8 +3,9 @@
 //! through gpui's own dispatch, as if the keys had been pressed in it. Keys
 //! with modifiers cannot be sent to a window by message (gpui reads the
 //! modifiers off the keyboard's state), and global input is off limits, so a
-//! smoke run types this way. Never on in any other build; the polling runs
-//! only while it is.
+//! smoke run types this way. Compiled into the test build alone (`luna_test`);
+//! the polling runs only while a file is named. A line runs once it is whole,
+//! its newline written: one read while it is being appended waits for it.
 //!
 //! - `keys ctrl-c enter shift-pageup`: keystrokes, in gpui's notation.
 //! - `text some words`: each character typed.
@@ -34,7 +35,8 @@ pub fn start(path: PathBuf, window: AnyWindowHandle, view: Entity<LunaWindow>, c
         loop {
             cx.background_executor().timer(EVERY).await;
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
-            let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+            let whole = text.rfind('\n').map_or("", |end| &text[..end + 1]);
+            let lines: Vec<String> = whole.lines().map(str::to_owned).collect();
             for line in lines.iter().skip(done) {
                 if !run(line, window, &view, cx) {
                     return;

@@ -7,7 +7,9 @@
 //! What one copy puts there often comes in several formats at once, and
 //! `read` takes the first of: files (Explorer's CF_HDROP, Finder's file
 //! URLs), text, an image. Text before an image: a spreadsheet's cells come
-//! with a picture of themselves, a copied image seldom with text.
+//! with a picture of themselves, a copied image seldom with text. An image
+//! is never read here, only looked for among the formats on offer: the CLI
+//! reads it.
 //!
 //! Windows reads the formats itself, through the parsers below that tests
 //! hold to hand-made bytes; macOS asks NSPasteboard. Linux, which Luna does
@@ -22,15 +24,8 @@ pub enum Clip {
     Empty,
     Text(String),
     Files(Vec<PathBuf>),
-    Image(Image),
-}
-
-/// An image, as PNG.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Image {
-    pub width: u32,
-    pub height: u32,
-    pub png: Vec<u8>,
+    /// An image format is on offer (a bitmap, a PNG, a TIFF), not read.
+    Image,
 }
 
 /// What is on the clipboard now.
@@ -56,14 +51,9 @@ pub fn write_text(text: &str) -> Result<(), String> {
     }
 }
 
-/// The most pixels an image off the clipboard may have: 64 megapixels,
-/// 256 MiB as RGBA. Above any screen's or screenshot's, and checked before
-/// anything of the size is allocated.
-pub const MAX_PIXELS: u64 = 64 << 20;
-
-/// The most bytes of one format read off the clipboard: such an image as a
-/// DIB, with room for its header.
-pub const MAX_BYTES: usize = (MAX_PIXELS as usize) * 4 + (1 << 20);
+/// The most bytes of one format read off the clipboard (text, a file list):
+/// far past anything a person pastes into a terminal.
+pub const MAX_BYTES: usize = 64 << 20;
 
 /// The most files one paste takes as files: past this many, the list is
 /// not taken as files, and the clipboard is read for its next format.
@@ -73,114 +63,14 @@ pub const MAX_FILES: usize = 1024;
 /// longest Windows has.
 pub const MAX_PATH_UNITS: usize = 32_767;
 
-/// A PNG's width and height, read from its header, if it is one and they
-/// are within `MAX_PIXELS`: the first 24 bytes are all it reads.
-pub fn png_size(png: &[u8]) -> Result<(u32, u32), String> {
-    // The signature, then IHDR first: length, type, width, height.
-    if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" || &png[12..16] != b"IHDR" {
-        return Err("not a PNG".into());
-    }
-    let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
-    let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err(format!("an image of {width}x{height}, over {MAX_PIXELS} pixels"));
-    }
-    Ok((width, height))
-}
-
-/// An image from PNG bytes that decode whole (`png_decodes`), its size
-/// read from the header.
-pub fn image_from_png(png: Vec<u8>) -> Result<Image, String> {
-    if png.len() > MAX_BYTES {
-        return Err(format!("a PNG of {} bytes, over {MAX_BYTES}", png.len()));
-    }
-    let (width, height) = png_decodes(&png)?;
-    Ok(Image { width, height, png })
-}
-
-/// A PNG's width and height once all of it has decoded: its header within
-/// `MAX_PIXELS` (`png_size`), then every chunk up to the end of its image
-/// data, checksums and compressed stream included, row by row, so that no
-/// more than a row is held at once. A PNG that is cut short or damaged is
-/// not taken, and gives way to the next format.
-pub fn png_decodes(png: &[u8]) -> Result<(u32, u32), String> {
-    let size = png_size(png)?;
-    let limits = png::Limits { bytes: MAX_BYTES };
-    let decoder = png::Decoder::new_with_limits(std::io::Cursor::new(png), limits);
-    let mut reader = decoder.read_info().map_err(|e| format!("a PNG that does not read: {e}"))?;
-    while reader.next_row().map_err(|e| format!("a PNG that does not decode: {e}"))?.is_some() {}
-    Ok(size)
-}
-
-/// The width and height of a TIFF's first image, from its first directory
-/// (ImageWidth and ImageLength, each once, one SHORT or LONG), in either byte
-/// order; an error where they do not read, come twice or with more than one
-/// value (a decoder might take another one than this), or are over
-/// `MAX_PIXELS`. Read before anything decodes it.
-pub fn tiff_size(tiff: &[u8]) -> Result<(u32, u32), String> {
-    let little = match tiff.get(..4) {
-        Some([b'I', b'I', 42, 0]) => true,
-        Some([b'M', b'M', 0, 42]) => false,
-        _ => return Err("not a TIFF".into()),
-    };
-    let u16_at = |at: usize| {
-        let b: [u8; 2] = tiff.get(at..at.checked_add(2)?)?.try_into().ok()?;
-        Some(if little { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) })
-    };
-    let u32_at = |at: usize| {
-        let b: [u8; 4] = tiff.get(at..at.checked_add(4)?)?.try_into().ok()?;
-        Some(if little { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) })
-    };
-    let short = || "a TIFF shorter than its first directory".to_string();
-    let ifd = u32_at(4).ok_or_else(short)? as usize;
-    let entries = u16_at(ifd).ok_or_else(short)? as usize;
-    let (mut width, mut height) = (None, None);
-    for i in 0..entries {
-        let at = ifd + 2 + i * 12;
-        let tag = u16_at(at).ok_or_else(short)?;
-        let slot = match tag {
-            256 => &mut width,
-            257 => &mut height,
-            _ => continue,
-        };
-        if slot.is_some() {
-            return Err("a TIFF that gives its size twice".into());
-        }
-        if u32_at(at + 4).ok_or_else(short)? != 1 {
-            return Err("a TIFF that gives its size as more than one value".into());
-        }
-        // SHORT (3) or LONG (4), the value in the entry itself.
-        *slot = Some(match u16_at(at + 2).ok_or_else(short)? {
-            3 => u32::from(u16_at(at + 8).ok_or_else(short)?),
-            4 => u32_at(at + 8).ok_or_else(short)?,
-            _ => return Err("a TIFF that gives no size as one SHORT or LONG".into()),
-        });
-    }
-    let (Some(width), Some(height)) = (width, height) else { return Err("a TIFF that gives no size".into()) };
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err(format!("an image of {width}x{height}, over {MAX_PIXELS} pixels"));
-    }
-    Ok((width, height))
-}
-
-/// Whether a path off the clipboard may be typed into a CLI as a quoted
-/// path: no `"`, which would end the quotes early, and no control character
-/// (CR, LF, tab, NUL and the rest), which a terminal would act on. A list
-/// with one such path is not taken as files at all.
-pub fn typeable_path(path: &str) -> bool {
-    !path.is_empty() && !path.contains('"') && !path.chars().any(char::is_control)
-}
-
-/// RGBA pixels, row by row from the top, as PNG.
-pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    let mut enc = png::Encoder::new(&mut out, width, height);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut writer = enc.write_header().map_err(|e| e.to_string())?;
-    writer.write_image_data(rgba).map_err(|e| e.to_string())?;
-    writer.finish().map_err(|e| e.to_string())?;
-    Ok(out)
+/// Whether a path off the clipboard may be typed into a CLI whole, quoted
+/// as luna_window types it where it was copied (its paste.rs `quote`): no
+/// control character (CR, LF, tab, NUL, C1 and the rest), which a terminal
+/// would act on, and on Windows, whose paths go in double quotes, no `"`,
+/// which would end them early; POSIX's single quotes hold one. A list with
+/// one such path is not taken as files at all.
+pub fn typeable_path(path: &str, windows: bool) -> bool {
+    !path.is_empty() && !(windows && path.contains('"')) && !path.chars().any(char::is_control)
 }
 
 /// CF_UNICODETEXT's bytes: UTF-16LE up to its NUL.
@@ -248,99 +138,10 @@ pub fn drop_files(bytes: &[u8], ansi: &dyn Fn(&[u8]) -> Option<String>) -> Resul
             rest = &rest[end + 1..];
         }
     }
-    if let Some(bad) = names.iter().find(|n| !typeable_path(n)) {
+    if let Some(bad) = names.iter().find(|n| !typeable_path(n, true)) {
         return Err(format!("a file name with a quote or a control character: {bad:?}"));
     }
     Ok(names.into_iter().map(PathBuf::from).collect())
-}
-
-/// A packed DIB (CF_DIB, CF_DIBV5: a BITMAPINFOHEADER or BITMAPV5HEADER, its
-/// masks or palette, then the rows) as RGBA rows from the top. 24- and
-/// 32-bit, uncompressed or by bit fields: what screenshots and browsers put
-/// there. A 32-bit DIB whose alpha is zero all over carries none and is
-/// opaque.
-pub fn dib_to_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    let u32_at = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-    let u16_at = |at: usize| bytes.get(at..at + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()));
-    let short = || "a bitmap shorter than its header".to_string();
-    let header = u32_at(0).ok_or_else(short)? as usize;
-    if header < 40 {
-        return Err(format!("a bitmap header of {header} bytes"));
-    }
-    let width = u32_at(4).ok_or_else(short)? as i32;
-    let height = u32_at(8).ok_or_else(short)? as i32;
-    let bits = u16_at(14).ok_or_else(short)?;
-    let compression = u32_at(16).ok_or_else(short)?;
-    let colors = u32_at(32).ok_or_else(short)? as usize;
-    const BI_RGB: u32 = 0;
-    const BI_BITFIELDS: u32 = 3;
-    if width <= 0 || height == 0 || width > 1 << 15 || height.unsigned_abs() > 1 << 15 {
-        return Err(format!("a bitmap of {width}x{height}"));
-    }
-    if width as u64 * u64::from(height.unsigned_abs()) > MAX_PIXELS {
-        return Err(format!("a bitmap of {width}x{height}, over {MAX_PIXELS} pixels"));
-    }
-    let (w, h) = (width as usize, height.unsigned_abs() as usize);
-    // Bottom-up unless the height is negative.
-    let top_down = height < 0;
-    let (masks, mut offset) = match (bits, compression) {
-        (24, BI_RGB) => (None, header),
-        (32, BI_RGB) => (Some([0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000]), header),
-        (32, BI_BITFIELDS) => {
-            // The masks follow a 40-byte header; a V4 or V5 one holds them,
-            // with the alpha mask after the three.
-            let at = 40;
-            let rgb = [u32_at(at).ok_or_else(short)?, u32_at(at + 4).ok_or_else(short)?, u32_at(at + 8).ok_or_else(short)?];
-            let alpha = if header >= 56 { u32_at(at + 12).ok_or_else(short)? } else { 0 };
-            (Some([rgb[0], rgb[1], rgb[2], alpha]), if header == 40 { header + 12 } else { header })
-        }
-        _ => return Err(format!("a {bits}-bit bitmap of compression {compression}")),
-    };
-    // A palette, which these depths need not have but may.
-    offset += colors * 4;
-    let stride = (w * bits as usize).div_ceil(32) * 4;
-    let rows = bytes.get(offset..offset + stride * h).ok_or("a bitmap shorter than its rows")?;
-    let mut out = vec![0u8; w * h * 4];
-    for y in 0..h {
-        let src = &rows[(if top_down { y } else { h - 1 - y }) * stride..][..stride];
-        let dst = &mut out[y * w * 4..(y + 1) * w * 4];
-        match masks {
-            None => {
-                for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<3>().0) {
-                    *d = [s[2], s[1], s[0], 0xFF];
-                }
-            }
-            Some(m) => {
-                for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) {
-                    let px = u32::from_le_bytes(*s);
-                    *d = [channel(px, m[0]), channel(px, m[1]), channel(px, m[2]), channel(px, m[3])];
-                }
-            }
-        }
-    }
-    if masks.is_some_and(|m| m[3] == 0) || (masks.is_some() && out.as_chunks::<4>().0.iter().all(|p| p[3] == 0)) {
-        for p in out.as_chunks_mut::<4>().0 {
-            p[3] = 0xFF;
-        }
-    }
-    Ok((w as u32, h as u32, out))
-}
-
-/// The channel `mask` picks out of `px`, scaled to 8 bits.
-fn channel(px: u32, mask: u32) -> u8 {
-    if mask == 0 {
-        return 0;
-    }
-    let shift = mask.trailing_zeros();
-    let width = (mask >> shift).count_ones();
-    let v = (px & mask) >> shift;
-    if width >= 8 {
-        (v >> (width - 8)) as u8
-    } else {
-        // Scaled to the full range: 5 bits of 31 make 255.
-        let max = (1u32 << width) - 1;
-        ((v * 255 + max / 2) / max) as u8
-    }
 }
 
 /// A `file://` URL's path, percent-decoded: what a pasteboard's file URL
@@ -482,8 +283,9 @@ mod win {
     }
 
     /// The first format that reads; one that does not (a file list that
-    /// does not parse, a bitmap of a kind not read here) gives way to the
-    /// next.
+    /// does not parse) gives way to the next. An image is only looked for:
+    /// a bitmap (CF_DIB, CF_DIBV5, and CF_BITMAP, which Windows makes of
+    /// them and they of it) or a browser's PNG on offer, none of it read.
     pub fn read() -> Result<Clip, String> {
         let open = Open::new(None)?;
         if let Some(files) = bytes(&open, CF_HDROP).and_then(|b| drop_files(&b, &ansi).ok()) {
@@ -497,19 +299,14 @@ mod win {
                 return Ok(Clip::Text(text));
             }
         }
-        // Browsers put the image as a PNG too, its alpha kept.
         // SAFETY: a constant name.
         let png = unsafe { RegisterClipboardFormatW(w!("PNG")) };
-        if png != 0 {
-            if let Some(image) = bytes(&open, png).and_then(|b| image_from_png(b).ok()) {
-                return Ok(Clip::Image(image));
-            }
-        }
-        for format in [CF_DIBV5, CF_DIB] {
-            let Some((width, height, rgba)) = bytes(&open, format).and_then(|b| dib_to_rgba(&b).ok()) else { continue };
-            if let Ok(png) = encode_png(width, height, &rgba) {
-                return Ok(Clip::Image(Image { width, height, png }));
-            }
+        let offered = |format: u32| {
+            // SAFETY: asks about a format; reads nothing of it.
+            format != 0 && unsafe { IsClipboardFormatAvailable(format) }.is_ok()
+        };
+        if [CF_DIBV5, CF_DIB, png].into_iter().any(offered) {
+            return Ok(Clip::Image);
         }
         Ok(Clip::Empty)
     }
@@ -568,12 +365,8 @@ mod win {
 #[cfg(target_os = "macos")]
 mod mac {
     use super::*;
-    use objc2::runtime::AnyObject;
-    use objc2_app_kit::{
-        NSBitmapImageFileType, NSBitmapImageRep, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeString,
-        NSPasteboardTypeTIFF,
-    };
-    use objc2_foundation::{NSDictionary, NSString, NSURL};
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF};
+    use objc2_foundation::{NSString, NSURL};
 
     /// A file URL's path. Finder's are file reference URLs
     /// (`file:///.file/id=…`), which only NSURL resolves.
@@ -588,8 +381,7 @@ mod mac {
 
     pub fn read() -> Result<Clip, String> {
         // SAFETY: the general pasteboard, read on the calling thread; the
-        // type names are AppKit's constants. The data's bytes are read while
-        // it is held here, and nothing writes to it meanwhile.
+        // type names are AppKit's constants.
         #[allow(unused_unsafe)]
         unsafe {
             let pb = NSPasteboard::generalPasteboard();
@@ -605,7 +397,7 @@ mod mac {
             }
             // A path that cannot be typed as a quoted one, or longer than any
             // a paste takes: not files, then.
-            let fits = |f: &PathBuf| f.to_str().is_some_and(|f| typeable_path(f) && f.encode_utf16().count() <= MAX_PATH_UNITS);
+            let fits = |f: &PathBuf| f.to_str().is_some_and(|f| typeable_path(f, false) && f.encode_utf16().count() <= MAX_PATH_UNITS);
             if !files.is_empty() && files.iter().all(fits) {
                 return Ok(Clip::Files(files));
             }
@@ -615,34 +407,12 @@ mod mac {
                     return Ok(Clip::Text(text));
                 }
             }
-            // Its size read off its header before it is copied, and all of it
-            // decoded before it is taken (`image_from_png`): a PNG that is
-            // none, too large, cut short or damaged gives way to the TIFF.
-            if let Some(data) = pb.dataForType(NSPasteboardTypePNG) {
-                if data.len() <= MAX_BYTES && png_size(data.as_bytes_unchecked()).is_ok() {
-                    if let Ok(image) = image_from_png(data.to_vec()) {
-                        return Ok(Clip::Image(image));
-                    }
-                }
-            }
-            // A screenshot or an image app's copy is TIFF: made PNG by
-            // AppKit, once its size, read off its header, is known to be in
-            // bounds, and held to them again as AppKit read it.
-            if let Some(data) = pb.dataForType(NSPasteboardTypeTIFF) {
-                if data.len() <= MAX_BYTES && tiff_size(data.as_bytes_unchecked()).is_ok() {
-                    let png = NSBitmapImageRep::imageRepWithData(&data)
-                        .filter(|rep| {
-                            let (w, h) = (rep.pixelsWide(), rep.pixelsHigh());
-                            w > 0 && h > 0 && (w as u64).saturating_mul(h as u64) <= MAX_PIXELS
-                        })
-                        .and_then(|rep| {
-                            let props = NSDictionary::<NSString, AnyObject>::new();
-                            rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props)
-                        });
-                    if let Some(png) = png {
-                        return image_from_png(png.to_vec()).map(Clip::Image);
-                    }
-                }
+            // A PNG, or the TIFF a screenshot or an image app's copy is: on
+            // offer, none of it read.
+            let image =
+                pb.types().is_some_and(|types| types.containsObject(NSPasteboardTypePNG) || types.containsObject(NSPasteboardTypeTIFF));
+            if image {
+                return Ok(Clip::Image);
             }
             Ok(Clip::Empty)
         }
@@ -669,104 +439,6 @@ mod tests {
 
     fn le32(v: u32) -> [u8; 4] {
         v.to_le_bytes()
-    }
-
-    /// A BITMAPINFOHEADER of `size` bytes for a `w`x`h` DIB.
-    fn info_header(size: u32, w: i32, h: i32, bits: u16, compression: u32) -> Vec<u8> {
-        let mut b = Vec::new();
-        b.extend(le32(size));
-        b.extend(w.to_le_bytes());
-        b.extend(h.to_le_bytes());
-        b.extend(1u16.to_le_bytes());
-        b.extend(bits.to_le_bytes());
-        b.extend(le32(compression));
-        b.extend([0; 20]);
-        b.resize(size as usize, 0);
-        b
-    }
-
-    #[test]
-    fn a_24_bit_bottom_up_dib_comes_out_top_first_and_opaque() {
-        // 2x2: bottom row blue, red; top row green, white. Rows pad to 8 bytes.
-        let mut dib = info_header(40, 2, 2, 24, 0);
-        dib.extend([0xFF, 0, 0, 0, 0, 0xFF, 0, 0]);
-        dib.extend([0, 0xFF, 0, 0xFF, 0xFF, 0xFF, 0, 0]);
-        let (w, h, rgba) = dib_to_rgba(&dib).unwrap();
-        assert_eq!((w, h), (2, 2));
-        assert_eq!(rgba, [0, 0xFF, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0xFF, 0, 0, 0xFF]);
-    }
-
-    #[test]
-    fn a_32_bit_dib_keeps_its_alpha_unless_it_has_none() {
-        // Top-down, one pixel half transparent red.
-        let mut dib = info_header(40, 1, -1, 32, 0);
-        dib.extend([0, 0, 0xFF, 0x80]);
-        assert_eq!(dib_to_rgba(&dib).unwrap().2, [0xFF, 0, 0, 0x80]);
-        // Alpha zero everywhere is a DIB that never set it.
-        let mut dib = info_header(40, 1, -1, 32, 0);
-        dib.extend([0, 0, 0xFF, 0]);
-        assert_eq!(dib_to_rgba(&dib).unwrap().2, [0xFF, 0, 0, 0xFF]);
-    }
-
-    #[test]
-    fn bit_fields_are_read_after_a_short_header_and_inside_a_v5_one() {
-        // 40 bytes and three masks after: RGB565-like in 32 bits, here 8-8-8.
-        let mut dib = info_header(40, 1, 1, 32, 3);
-        dib.extend(le32(0x0000_00FF));
-        dib.extend(le32(0x0000_FF00));
-        dib.extend(le32(0x00FF_0000));
-        dib.extend([0x11, 0x22, 0x33, 0x00]);
-        assert_eq!(dib_to_rgba(&dib).unwrap().2, [0x11, 0x22, 0x33, 0xFF]);
-        // A V5 header: masks at 40, alpha's among them.
-        let mut v5 = info_header(124, 1, 1, 32, 3);
-        v5[40..56].copy_from_slice(&[le32(0x00FF_0000), le32(0x0000_FF00), le32(0x0000_00FF), le32(0xFF00_0000)].concat());
-        v5.extend([0x33, 0x22, 0x11, 0x40]);
-        assert_eq!(dib_to_rgba(&v5).unwrap().2, [0x11, 0x22, 0x33, 0x40]);
-    }
-
-    #[test]
-    fn a_dib_that_lies_about_its_size_is_refused() {
-        let mut dib = info_header(40, 100, 100, 24, 0);
-        dib.extend([0; 16]);
-        assert!(dib_to_rgba(&dib).is_err());
-        assert!(dib_to_rgba(&info_header(40, 1, 1, 8, 0)).is_err());
-        assert!(dib_to_rgba(&[1, 2, 3]).is_err());
-        assert!(dib_to_rgba(&info_header(40, 0, 1, 24, 0)).is_err());
-    }
-
-    #[test]
-    fn narrow_channels_widen_to_full_range() {
-        assert_eq!(channel(0x1F, 0x1F), 0xFF);
-        assert_eq!(channel(0, 0x1F), 0);
-        assert_eq!(channel(0x7C00, 0x7C00), 0xFF);
-        assert_eq!(channel(0xFFFF, 0), 0);
-    }
-
-    #[test]
-    fn an_image_round_trips_through_png_with_its_size() {
-        let png = encode_png(2, 1, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
-        let image = image_from_png(png.clone()).unwrap();
-        assert_eq!((image.width, image.height), (2, 1));
-        let back = crate::desktop::tray::decode_png(&png).unwrap();
-        assert_eq!(back.pixels, [1, 2, 3, 4, 5, 6, 7, 8]);
-        assert!(image_from_png(b"GIF89a and more bytes than that".to_vec()).is_err());
-    }
-
-    /// A PNG whose header reads is taken only once all of it decodes: one cut
-    /// short, or with its image data damaged, is not.
-    #[test]
-    fn a_png_is_taken_only_when_all_of_it_decodes() {
-        let png = encode_png(64, 64, &[7; 64 * 64 * 4]).unwrap();
-        assert_eq!(png_decodes(&png), Ok((64, 64)));
-        let cut = &png[..png.len() / 2];
-        assert_eq!(png_size(cut), Ok((64, 64)));
-        assert!(png_decodes(cut).is_err());
-        assert!(image_from_png(cut.to_vec()).is_err());
-        // A byte of the image data changed: its chunk's checksum fails.
-        let idat = png.windows(4).position(|w| w == b"IDAT").unwrap();
-        let mut damaged = png.clone();
-        damaged[idat + 8] ^= 0xFF;
-        assert!(png_decodes(&damaged).is_err());
     }
 
     /// A DROPFILES of `names`, wide or not.
@@ -835,25 +507,16 @@ mod tests {
     #[test]
     fn a_path_that_cannot_be_typed_in_quotes_is_no_file() {
         for bad in ["C:\\a\"b.txt", "C:\\a\rb", "C:\\a\nb", "C:\\a\tb", "C:\\a\u{1b}[2J", "C:\\a\u{85}b"] {
-            assert!(!typeable_path(bad), "{bad:?}");
+            assert!(!typeable_path(bad, true), "{bad:?}");
             assert!(drop_files(&dropfiles(&[r"C:\fine.txt", bad], true), &latin1).is_err(), "{bad:?}");
         }
-        assert!(typeable_path(r"C:\Users\a b\c'd (1).png"));
-        assert!(!typeable_path(""));
-    }
-
-    #[test]
-    fn an_image_too_large_is_refused_before_it_is_allocated() {
-        // 32768 x 32768: within the old bounds, 4 GiB as RGBA.
-        let mut dib = info_header(40, 1 << 15, 1 << 15, 32, 0);
-        dib.extend([0; 64]);
-        assert!(dib_to_rgba(&dib).unwrap_err().contains("pixels"));
-        // At the limit it is the rows that are missing.
-        assert!(dib_to_rgba(&info_header(40, 8192, 8192, 32, 0)).unwrap_err().contains("rows"));
-        let mut png = encode_png(1, 1, &[0; 4]).unwrap();
-        png[16..20].copy_from_slice(&65536u32.to_be_bytes());
-        png[20..24].copy_from_slice(&65536u32.to_be_bytes());
-        assert!(image_from_png(png).unwrap_err().contains("pixels"));
+        assert!(typeable_path(r"C:\Users\a b\c'd (1).png", true));
+        assert!(!typeable_path("", true));
+        // POSIX's single quotes hold a double quote; a control character is
+        // still no path.
+        assert!(typeable_path("/Users/a/say \"hi\".png", false));
+        assert!(!typeable_path("/Users/a/x\ny.png", false));
+        assert!(!typeable_path("", false));
     }
 
     #[test]
@@ -873,67 +536,6 @@ mod tests {
         for wide in [true, false] {
             assert!(drop_files(&dropfiles(&[&over], wide), &latin1).unwrap_err().contains("longer than"), "wide: {wide}");
         }
-    }
-
-    /// A TIFF header and its first directory, `entries` of (tag, type, value).
-    fn tiff(little: bool, entries: &[(u16, u16, u32)]) -> Vec<u8> {
-        let u16b = |v: u16| if little { v.to_le_bytes() } else { v.to_be_bytes() };
-        let u32b = |v: u32| if little { v.to_le_bytes() } else { v.to_be_bytes() };
-        let mut b = if little { b"II".to_vec() } else { b"MM".to_vec() };
-        b.extend(u16b(42));
-        b.extend(u32b(8));
-        b.extend(u16b(entries.len() as u16));
-        for &(tag, kind, value) in entries {
-            b.extend(u16b(tag));
-            b.extend(u16b(kind));
-            b.extend(u32b(1));
-            if kind == 3 {
-                b.extend(u16b(value as u16));
-                b.extend([0, 0]);
-            } else {
-                b.extend(u32b(value));
-            }
-        }
-        b.extend([0; 4]);
-        b
-    }
-
-    #[test]
-    fn a_tiffs_size_is_read_from_its_header_before_anything_decodes_it() {
-        for little in [true, false] {
-            assert_eq!(tiff_size(&tiff(little, &[(256, 3, 640), (257, 4, 480), (258, 3, 8)])), Ok((640, 480)));
-            assert_eq!(tiff_size(&tiff(little, &[(257, 3, 2), (256, 4, 3)])), Ok((3, 2)));
-            // Over the pixel cap, though each side is within a u32.
-            assert!(tiff_size(&tiff(little, &[(256, 4, 1 << 16), (257, 4, 1 << 16)])).unwrap_err().contains("pixels"));
-            // No height, or only in a type that is no size.
-            assert!(tiff_size(&tiff(little, &[(256, 3, 10)])).unwrap_err().contains("no size"));
-            assert!(tiff_size(&tiff(little, &[(256, 3, 10), (257, 2, 10)])).unwrap_err().contains("no size"));
-            // A size given twice, which a decoder might read the other way.
-            assert!(tiff_size(&tiff(little, &[(256, 3, 10), (257, 3, 10), (256, 4, 1 << 20)])).unwrap_err().contains("twice"));
-            // A size of more than one value.
-            let mut two = tiff(little, &[(256, 3, 10), (257, 3, 10)]);
-            let count = 10 + 12 + 4;
-            two[count..count + 4].copy_from_slice(&if little { 2u32.to_le_bytes() } else { 2u32.to_be_bytes() });
-            assert!(tiff_size(&two).unwrap_err().contains("more than one value"));
-            // A directory that runs off the end.
-            let mut cut = tiff(little, &[(256, 3, 10), (257, 3, 10)]);
-            cut.truncate(20);
-            assert!(tiff_size(&cut).is_err());
-        }
-        assert!(tiff_size(b"GIF89a").is_err());
-        // BigTIFF (43) is not read here.
-        assert!(tiff_size(b"II\x2b\x00\x08\x00\x00\x00").is_err());
-        let mut far = tiff(true, &[(256, 3, 1), (257, 3, 1)]);
-        far[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(tiff_size(&far).is_err());
-    }
-
-    #[test]
-    fn a_pngs_size_is_read_from_its_header_alone() {
-        let png = encode_png(3, 2, &[0; 24]).unwrap();
-        assert_eq!(png_size(&png[..24]), Ok((3, 2)));
-        assert!(png_size(&png[..23]).is_err());
-        assert!(png_size(b"\x89PNG\r\n\x1a\n and no IHDR first").is_err());
     }
 
     #[test]

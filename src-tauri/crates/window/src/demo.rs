@@ -17,6 +17,8 @@ pub struct FakeHost {
     calls: Mutex<Vec<(String, Value)>>,
     sends: Mutex<Vec<(String, Value)>>,
     outputs: Mutex<HashMap<String, Arc<dyn OutputSink>>>,
+    /// Sends of a command it refuses yet, by name (`refuse`).
+    refusals: Mutex<HashMap<String, usize>>,
     /// Its desktop (desktop.rs `FakeDesktop`).
     pub desktop: crate::desktop::FakeDesktop,
 }
@@ -50,6 +52,12 @@ impl FakeHost {
         self.sends().into_iter().filter(|(c, _)| c == cmd).map(|(_, a)| a).collect()
     }
 
+    /// Refuses the next `times` sends of `cmd`, as a host whose line to the
+    /// core is full for a moment; none of them is kept.
+    pub fn refuse(&self, cmd: &str, times: usize) {
+        self.refusals.lock().unwrap().insert(cmd.to_owned(), times);
+    }
+
     /// Output for `session`, as a host's reader hands it over: false when no
     /// sink is routed or it is gone.
     pub fn output(&self, session: &str, data: &[u8]) -> bool {
@@ -66,6 +74,10 @@ impl Host for FakeHost {
     }
 
     fn send(&self, cmd: &str, args: Value) -> Result<(), String> {
+        if let Some(left) = self.refusals.lock().unwrap().get_mut(cmd).filter(|n| **n > 0) {
+            *left -= 1;
+            return Err(format!("{cmd} refused"));
+        }
         self.sends.lock().unwrap().push((cmd.to_owned(), args));
         Ok(())
     }

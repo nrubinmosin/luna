@@ -170,8 +170,11 @@ The test build opens terminals on new sessions with
 not touch the clipboard, `LUNA_TEST_DRIVE` names a file of keys the window
 presses (`keys ctrl-c enter`, `text words`, `focus 2`, `close`, one a line,
 read every 200 ms) and `LUNA_TEST_CLIPBOARD` a JSON file standing in for the
-clipboard (`{"text": ...}`, `{"files": [...]}` or `{"image": true}`). Other
-builds ignore all of them.
+clipboard (`{"text": ...}`, `{"files": [...]}` or `{"image": true}`; an image
+or nothing types `[test clipboard: image key]` rather than press the CLI's
+key, which would read the real clipboard). They are compiled into the test
+build alone (the `luna_test` cfg both build scripts set for
+`LUNA_FLAVOR=test`); a release has none of them.
 
 ## The native window
 

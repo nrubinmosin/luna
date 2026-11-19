@@ -13,6 +13,7 @@ mod board;
 #[cfg(any(test, feature = "shots"))]
 pub mod demo;
 pub mod desktop;
+#[cfg(luna_test)]
 mod drive;
 pub mod dto;
 mod font;
@@ -59,6 +60,7 @@ pub struct Options {
     pub terminals: Vec<SessionSpec>,
     /// A file of keys to press in the window (drive.rs): the test build's
     /// `LUNA_TEST_DRIVE`, for a smoke run that may use no global input.
+    #[cfg(luna_test)]
     pub drive_file: Option<std::path::PathBuf>,
     /// Called once the window is open, on its thread: what needs the window
     /// there starts here, so that a window that cannot open leaves nothing
@@ -86,7 +88,16 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
     let failed = Rc::new(RefCell::new(None));
     let failure = failed.clone();
     gpui_platform::application().run(move |cx: &mut App| {
-        let Options { title, theme, background, terminals, drive_file, on_open, on_quit } = options;
+        let Options {
+            title,
+            theme,
+            background,
+            terminals,
+            #[cfg(luna_test)]
+            drive_file,
+            on_open,
+            on_quit,
+        } = options;
         let opened = Rc::new(Cell::new(false));
         let (is_open, mut on_quit) = (opened.clone(), Some(on_quit));
         cx.on_app_quit(move |cx| {
@@ -117,9 +128,10 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
             desktop::initial(&*models.host, SIZE, MIN_SIZE, cx)
         };
         match open(&models, terminals, &title, bounds, background, cx) {
-            Ok((window, view)) => {
+            Ok((_window, _view)) => {
+                #[cfg(luna_test)]
                 if let Some(file) = drive_file {
-                    drive::start(file, window.into(), view, cx);
+                    drive::start(file, _window.into(), _view, cx);
                 }
                 opened.set(true);
                 on_open();
@@ -185,7 +197,7 @@ fn pump(models: Models, mut inbox: Inbox, cx: &mut App) {
 
 /// Pending once, woken at once: the task goes to the back of the thread's
 /// queue, behind what came in meanwhile.
-struct YieldNow(bool);
+pub(crate) struct YieldNow(pub(crate) bool);
 
 impl Future for YieldNow {
     type Output = ();

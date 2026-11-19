@@ -7,7 +7,7 @@ use crate::dto::{CoreState, LinkState, ThemePref};
 use crate::host::{Host, Message, cmd, event};
 use crate::term::TermPane;
 use crate::theme::Palette;
-use gpui::{App, AppContext, Context, Entity, WeakEntity};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, WeakEntity};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cell::RefCell;
@@ -21,6 +21,14 @@ pub struct CoreLink {
     /// a core being replaced (a restart, or one found again after it let the
     /// window go), not the first one being found.
     was_up: bool,
+    /// Counts the cores the panes' sessions were found in, as the page's
+    /// `epoch` does (core.store.ts): each `up` that is not the one taken last
+    /// starts a new one, and the panes start their sessions over in it.
+    epoch: u64,
+    /// The last `up` taken: its core's pid and its revision.
+    last_up: Option<(u32, u64)>,
+    /// A state other than `up` was taken since that one.
+    left: bool,
 }
 
 impl CoreLink {
@@ -32,24 +40,62 @@ impl CoreLink {
         self.was_up
     }
 
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     /// Takes a state the host reported, from a `core://state` event or as
     /// the answer to `core_state`, unless it is older than the one taken last
     /// (its `revision`): a `down` that lost a race to the `up` after it, or
     /// an answer asked before the event that came first. The views hear of it
-    /// only when what they show changed.
+    /// only when what they show changed; a new epoch is `NewEpoch`.
+    ///
+    /// An `up` begins a new epoch unless it is the one taken last: the same
+    /// core (pid) and revision, nothing else taken in between. The events in
+    /// between may never come: only the latest state waits in the inbox
+    /// (host.rs `event::LATEST`), so `up`, `starting`, `up` of another core
+    /// can arrive as the last `up` alone. corelink.rs sets a state other than
+    /// `up` before every `up`, so an `up` of a newer revision is a core
+    /// replaced or found again (`rejoin`, whose output meanwhile never came)
+    /// whatever came of the events between. A host that does not count
+    /// revisions (0) goes by the pid and the states it did tell.
     pub fn take(&mut self, link: CoreState, cx: &mut Context<Self>) {
         if link.revision < self.link.revision {
             return;
         }
         let was_up = self.was_up || link.state == LinkState::Up;
+        let epoch = self.epoch;
+        if link.state == LinkState::Up {
+            let now = (link.core.as_ref().map_or(0, |c| c.pid), link.revision);
+            let same = self
+                .last_up
+                .is_some_and(|(pid, revision)| !self.left && pid == now.0 && (revision == now.1 || revision == 0 || now.1 == 0));
+            if !same {
+                self.epoch += 1;
+            }
+            self.last_up = Some(now);
+            self.left = false;
+        } else if self.last_up.is_some() {
+            self.left = true;
+        }
         let changed = !link.shows_as(&self.link) || was_up != self.was_up;
         self.link = link;
         self.was_up = was_up;
         if changed {
             cx.notify();
         }
+        if epoch != self.epoch {
+            cx.emit(NewEpoch);
+        }
     }
 }
+
+/// A new epoch began (`CoreLink::take`): the panes start their sessions
+/// over. An event rather than a change to draw, so the views that show the
+/// link do not redraw for it.
+pub struct NewEpoch;
+
+impl EventEmitter<NewEpoch> for CoreLink {}
 
 /// The window's own furniture: for now the theme.
 pub struct Shell {
@@ -107,7 +153,7 @@ impl Models {
     pub fn new(host: Arc<dyn Host>, theme: ThemePref, system_dark: bool, cx: &mut App) -> Models {
         Models {
             host,
-            core: cx.new(|_| CoreLink { link: CoreState::default(), was_up: false }),
+            core: cx.new(|_| CoreLink { link: CoreState::default(), was_up: false, epoch: 0, last_up: None, left: false }),
             shell: cx.new(|_| Shell { pref: theme, system_dark }),
             panes: Rc::default(),
         }
@@ -115,9 +161,14 @@ impl Models {
 
     /// The panes showing `session`, the ones gone let go of.
     fn panes_of(&self, session: &str, cx: &App) -> Vec<Entity<TermPane>> {
+        self.all_panes().into_iter().filter(|p| p.read(cx).id() == session).collect()
+    }
+
+    /// Every pane open, the ones gone let go of.
+    fn all_panes(&self) -> Vec<Entity<TermPane>> {
         let mut panes = self.panes.borrow_mut();
         panes.retain(|p| p.upgrade().is_some());
-        panes.iter().filter_map(WeakEntity::upgrade).filter(|p| p.read(cx).id() == session).collect()
+        panes.iter().filter_map(WeakEntity::upgrade).collect()
     }
 
     /// Asks for the core's state, as the page does at start. Events keep
@@ -203,6 +254,13 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
             }
             Err(e) => log::warn!("{name}: {e}"),
         },
+        // Every session was closed for a shutdown of the PC that was taken
+        // back: each pane starts its own over, as after a core restart.
+        event::START_OVER => {
+            for pane in models.all_panes() {
+                pane.update(cx, |p, cx| p.start_over(cx));
+            }
+        }
         event::PTY_INPUT_REFUSED => match serde_json::from_value::<InputRefused>(payload) {
             Ok(refused) => {
                 for pane in models.panes_of(&refused.id, cx) {
