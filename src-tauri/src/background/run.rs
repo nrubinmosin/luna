@@ -462,9 +462,14 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
                 err_reader.await_last_words(&err_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
                 err_reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
-                // For the canary over a new CLI version's first sessions.
-                crate::cli::session_ended(&id, code.is_some_and(|c| c != 0), || {
-                    std::mem::take(&mut *said.lock().unwrap_or_else(|e| e.into_inner()))
+                // For the canary over a new CLI version's first sessions: the
+                // end of its stderr, and what its own stream said the turn
+                // failed on (a `result`, Codex's `turn.failed`), where a usage
+                // limit or a refused sign-in is said, read out by now. No exit
+                // code (a signal's end on Unix) is an error.
+                crate::cli::session_ended(&id, code != Some(0), || crate::cli::LastWords {
+                    said: std::mem::take(&mut *said.lock().unwrap_or_else(|e| e.into_inner())),
+                    failure: lock().entries.get(&id).and_then(|e| e.error.clone()),
                 });
                 turn_over(&id, code);
             })
@@ -480,6 +485,8 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
         crate::log::error("background", &format!("could not start {}: {e}", crate::agents::label(id)));
         format!("could not start {}: {e}", provider.as_str())
     })?;
+    // Up: the canary may count it (a spawn that failed never is).
+    crate::cli::session_running(id);
     // This turn's, for the window's "What Luna applied"; not under this
     // module's lock, which nothing may hold while it takes the registry's.
     crate::agents::set_applied(id, applied, &account, &dir);

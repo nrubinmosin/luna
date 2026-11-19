@@ -1,31 +1,40 @@
 ---
 name: cli-upgrade
-description: Bring Luna up to a new Claude Code or Codex CLI version — find what changed against the actual binary and its release notes (flags, hooks, headless stream events, transcript and rollout formats, the screen dialogs Luna parses, config keys), check the other CLI for the same thing, update fixtures and golden tests deliberately, record it in docs/cli-compatibility.md and run the live suite. Use it whenever a new claude or codex version is out or was just downloaded, a CLI update broke something in Luna (a dialog not recognized, a helper that never finishes, a missing title or transcript, a refused flag), or someone asks whether Luna supports CLI version X, even if they only say "codex 0.170 is out" or "claude updated and helpers hang".
+description: Bring Luna up to a new Claude Code or Codex CLI version — find what changed against the actual binary and its release notes (flags, hooks, headless stream events, transcript and rollout formats, the screen dialogs Luna parses, config keys), check the other CLI for the same thing, update fixtures and golden tests deliberately, record it in docs/cli-compatibility.md and run the live suite. Use it whenever a new claude or codex version is out or was just downloaded, a CLI update broke something in Luna (a dialog not recognized, a helper that never finishes, a missing title or transcript, a refused flag), someone asks whether Luna supports CLI version X, Luna rolled back from a new version, or an older version must be kept from running (a security fix: raise the floor), even if they only say "codex 0.170 is out" or "claude updated and helpers hang".
 ---
 
 # CLI upgrade
 
-Luna installs on its own the newest version on the known-good list compiled
-into each release (`src-tauri/cli-known-good.json`), and on the `latest`
-channel each new release once it passes an offline probe of its flags
-(ADR-0019). So a new version reaches most users only once this process has
-put it on the list, and reaches users on `latest` within hours whether or not
-Luna is ready for it. Luna depends on much more than flags: it reads the
-CLI's stream, transcripts, rollouts and even its screen, and each of those is
-pinned by a test against what one version did. The job is to find every place
-the new version differs, decide for each whether Luna must change, and leave
-the tests, and the list, saying the new truth.
+Luna installs each CLI's newest release on its own at its next check (as
+Luna's window starts, then every six hours while it runs), once it passes an
+offline probe of its flags; it rolls back by itself when two of a new
+version's first three sessions fail soon after starting, unless what they
+ended on reads as a sign-in, a usage limit or the network (ADR-0030,
+`src-tauri/src/cli.rs`, `cli/canary.rs`). A version turned away stays so only
+while the release channel names it, and only as long as the tree's record
+(`state.json`) is there. There is no list of checked versions to put a
+release on: by the time you run this, users may already be on it. So the work is catch-up, and fast: Luna depends on much
+more than flags. It reads the CLI's stream, transcripts, rollouts and even its
+screen, and each of those is pinned by a test against what one version did;
+the probe sees only flags, and the canary only a CLI that cannot start a
+session. The job is to find every place the new version differs, decide for
+each whether Luna must change, and leave the tests saying the new truth; and
+when an older version turns out to be unsafe, to raise the floor that keeps
+it from running.
 
 ## 1. Get the facts from the real thing
 
 - **The binary.** The test build's managed copy is the one to look at:
   `test-build/claude-cli/versions/<v>/claude.exe`,
-  `test-build/codex-cli/versions/<v>/bin/codex.exe` (`current` names the
-  version). The test build installs the known-good version like any Luna;
-  to get the new one, put that CLI on `latest` (Settings → CLIs, or the word
-  `latest` in `test-build/<cli>-cli/channel` before it starts) and start it
-  with `-Background`. A version that fails the offline probe is marked bad
-  in `bad.json` with why: that is already a finding.
+  `test-build/codex-cli/versions/<v>/bin/codex.exe` (`state.json` there
+  names the current one). The test build installs the newest release like
+  any Luna: start it with `-Background` (or "Check now" in Settings → CLIs)
+  and it fetches the new version. A version the probe found wrong is in
+  `state.json`'s `bad`, by `probe`, with the check it failed: that is already
+  a finding. One rolled back from is there too, by `rollback`; the log names
+  the sessions that failed and when they exited, not why, so to find what
+  they died of, start a session on that version and read its screen or its
+  stderr.
   Diff the `--help` of every command Luna launches (the launch files below
   say which: `claude`, `codex`, `codex exec` and so on) between the old and
   the new version; keep both outputs under `test-build/` as evidence.
@@ -48,7 +57,8 @@ the tests, and the list, saying the new truth.
 | Screen: dialogs, lists, composer, title | `pty/screen.rs`, `agents/ask.rs` | screen fixtures |
 | Trust prompts, defaults, models, limits | `*/trust.rs`, `*/defaults.rs`, `*/models.rs`, `*/limits.rs` | unit tests |
 | Version gates | `checks.rs` | unit tests |
-| Download and layout | `claude/cli.rs`, `codex/cli.rs`, `cli.rs` | unit tests |
+| Words a session dies of that are not the version's (a sign-in, a usage limit, the network, a worktree outside git) | `cli/canary.rs` `NOT_THE_VERSION`, `OUTSIDE_ANYWHERE` | canary tests, each line as the binary carries it; grep the new binary for every phrase (`grep -a -o`), as a reworded one makes the canary roll back a sound version |
+| Download, layout and the floor | `claude/cli.rs`, `codex/cli.rs`, `cli.rs` (`floor`) | unit tests |
 
 To see a format for real, produce it on a throwaway account
 (`test-build/accounts`, see the `live-test` skill) through the test build or
@@ -88,20 +98,21 @@ first"). Then:
 - `./scripts/gate.ps1`, then `./scripts/windows-tests.ps1 -Build -Run`.
 - The live suite on the new version (`live-test` skill): it is the only level
   that sees a CLI's real stream, MCP client and flags.
-- Once all three pass, add the version to the known-good list: its CLI's
-  `knownGood` in `src-tauri/cli-known-good.json`, in the same change as the
-  rest. That is what lets users on the default channel have it, with the next
-  Luna release. Raise `minSafe` only when an older version is found unsafe (a
-  security fix in the CLI), and say why in the commit: nothing below it runs
-  anywhere, rollbacks included. Where the new version's `--help` differs from
-  the newest fixture, add its own (`<cli>-<ver>-…-help.txt` in
-  `src-tauri/src/cli/testdata/`) beside the old ones, and point the probe's
-  test at it. A version not checked this way stays off the list, whatever
-  else changed.
+- Where the new version's `--help` differs from the newest fixture, add its
+  own (`<cli>-<ver>-…-help.txt` in `src-tauri/src/cli/testdata/`) beside the
+  old ones, and point the probe's test at it.
+- Raise the floor (`floor` in `src-tauri/src/cli.rs`, one version per CLI)
+  only when an older version is found unsafe, a security fix in the CLI
+  above all, in the same change, with the reason in the commit, in the
+  comment above `floor` and in `docs/cli-compatibility.md`, and the test
+  that holds the floor to its security fixes raised with it. Nothing below
+  it is downloaded, run or rolled back to anywhere, and a Luna release is the
+  only way it reaches users, so it is the one lever this process has over
+  which versions run. Never lower it.
 
 ## Report
 
 Per CLI: old → new version; each change found with its source (help diff,
 changelog line, observed output); what Luna changed or why nothing; tests and
-goldens touched and why; gate, Windows tests and live results; what went
-onto the known-good list (or why not), and `minSafe` if it moved.
+goldens touched and why; gate, Windows tests and live results; the floor, and
+why it moved if it did.

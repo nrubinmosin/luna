@@ -345,7 +345,7 @@ another program's and is left alone.
   `tauri.conf.json` → `plugins.updater.endpoints`); a release lights a chip and
   installs only on a click. A release whose `core_fingerprint` (a hash of
   what the core is compiled from: `src-tauri/src`, the manifest and lock, `build.rs`,
-  `cli-known-good.json` and the handoff's instructions in `resources/`; `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
+  and the system texts in `resources/` (the CLI floors are in `src/`); `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
   window. Any other stops the sessions (each asked to quit with its exit hooks,
   `stop_all_sessions` also stopping helper turns and then, once those turns are
   over or 15 s on, ending what every helper's turns left running,

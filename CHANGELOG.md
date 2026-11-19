@@ -8,6 +8,80 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Each CLI is kept at its newest release, and rolls back on its own: when
+  two of a new version's first three sessions fail soon after starting, Luna
+  goes back to the version before (once its files match their checksums),
+  says so in a desktop notice and the log, and skips the failed version while
+  it is the newest release. A session that ended on a sign-in, a usage limit,
+  or the network or the provider's service failing (by the error the CLI ended
+  on) does not count, nor one that never started. A rollback Luna was closed
+  before it made is made at its next start. A
+  version whose answers fail the offline check is skipped the same way; one
+  the check could not read to its end (a scanner holding the fresh download)
+  is asked again at the next check. Each Luna release names the oldest
+  version of each CLI it runs (Claude Code 2.1.325, Codex 0.167.0), compiled
+  in; nothing on the machine raises it any more, and Luna never steps down
+  from the version it runs ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+- What Luna keeps of each CLI's versions is one file, `state.json` at its
+  root, every change of it written whole under a lock, so the window and the
+  core changing it at once never leave it half made, and a crash leaves the
+  old record or the new (on Windows a power cut may undo the latest change).
+  A record lost or damaged is rebuilt from the installed versions whose files
+  still match their checksums; the versions it had turned away are lost with
+  it. 0.19's files (`current`, `previous`, `recorded`, `bad.json`,
+  `canary.json` and their locks) are read in at the first check and removed.
+- The library is the source of truth: a copy Luna laid into an account (or
+  keeps for a folder's sessions) that was changed or deleted there has the
+  library's written over it or put back the next time the library is laid
+  out, which is before every session start, and one no longer meant for its
+  place is taken out, changed there or not, on Claude Code and Codex alike.
+  So an edit made in an account to what Luna manages there (Claude Code's
+  `/memory` on the account's `CLAUDE.md`, skill-creator improving a skill in
+  place) is undone at the next session start: edit the library instead. What
+  a change there had made goes to Luna's backups for 30 days first, and the
+  log names each place and its backup. A file Luna did not write is still
+  left alone, and so is whatever a person or a tool adds inside a skill's
+  folder beside Luna's files (`__pycache__/`, `node_modules/`, a link); a
+  copy that changes while the pass is at it, or that Windows will not let it
+  replace, is put back as it was and waits for the next, and a start's pass
+  says in the log what it could not lay out. On the first 0.20 pass,
+  copies that waited under 0.19's Needs a look as changed there are written
+  over (their change in the backups) and those deleted there come back.
+  Copies 0.19 left in place as no longer wanted but changed there are yours
+  from now on: they stay, are never taken back, and the log names them once
+  ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+- The library's backups are kept only in Luna's own `library-backups`
+  folder: none is written through a link or junction there, and the 30-day
+  sweep takes out only Luna's own backups, never through a link. A Codex
+  plugin manifest in Luna's marketplace folder is taken out only where Luna
+  wrote it, and never through a link below the account's folder. Deleting a
+  skill from the library is refused where its folder or the library's
+  `skills` is a link, and its backup keeps every file.
+
+### Removed
+
+- The CLI channels (Known-good and Latest) and the known-good list
+  (`cli-known-good.json`), and the commands behind **Use**, **Mark bad**,
+  **Mark good**, **Clear bad**, **Unmark good**, **Roll back** and **Keep
+  it** in Settings → CLIs: until the new window comes, the old one still
+  shows those controls, and they only fail. What 0.19 kept for them at each
+  CLI's root (`channel`, `pinned`, `good.json`, `marks.lock`, `floor`,
+  `signed-floor`) is removed at the first check; its marks bad still hold
+  while the release channel names their version, and its watch over the
+  version you had (one you chose to keep) is not carried over.
+- The library's **Needs a look**, its differences and what settled it (take
+  into the library, put back, **Put all back**, **Take out**, **Keep**): until
+  the new window comes, the old one still shows the list for files Luna did
+  not write, and its buttons only fail, all but **Leave out**, which clears
+  such a place; **Sync all** lays the library out, though its confirmation
+  still says it replaces those files, which it no longer does. The bytes
+  0.19 kept of every copy for the differences (`library-blobs` in Luna's
+  data folder) are removed once, at the first save of 0.19's ledger. An
+  account's own instructions where none of the library's go can still be
+  taken into the library.
+
 ### Fixed
 
 - After an update, the new window no longer finds the old core still
@@ -15,12 +89,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   for the update now also ends what helpers' turns left running (a shell, a
   watcher, a build) on Windows, Claude Code's and Codex's alike, and the older
   version's core, stopped for that update, with nothing in it but such
-  leftovers is replaced at once, once it has said so again as it is stopped. A session started after the
-  stop (a helper sent text meanwhile) is still asked about. This holds for
-  updates from 0.20 on: the outgoing version stops the sessions, so an update
-  from 0.19 may still ask for a restart once when a helper left processes
-  running. While a core is being replaced, the panes wait for the new one
-  instead of failing.
+  leftovers is replaced at once, once it has said so again as it is
+  stopped. A session started after the stop (a helper sent text meanwhile)
+  is still asked about. This holds for updates from 0.20 on: the outgoing
+  version stops the sessions, so an update from 0.19 may still ask for a
+  restart once when a helper left processes running. While a core is being
+  replaced, the panes wait for the new one instead of failing.
 - Text sent to a helper whose turn was stopped before it began (by Stop, or
   by Luna for an update) is kept for its sender as undelivered rather than
   dropped.

@@ -207,6 +207,9 @@ fn run() {
     // What the sessions send the page goes to every window there is.
     crate::emit::install(broadcast);
     if refused.is_none() {
+        // A CLI rollback the last core went away in the middle of, finished
+        // before any session starts on the version it was rolling back from.
+        crate::cli::finish_rollbacks();
         // Here and not in the window: session_meta, which turns a Claude
         // transcript's tokens into a share of the window, runs in this process.
         crate::claude::context::refresh_soon();

@@ -285,9 +285,10 @@ pub(super) fn with_name(mut files: Files, name: &str) -> Files {
 /// The manifest of each folder's plugin in each Codex account: there while
 /// the plugin's `skills/` holds a copy — Codex loads a plugin by it — and
 /// gone, with the folders that leaves empty, once none does. Luna's own file
-/// in Luna's own marketplace folder: not a copy of anything, so neither noted
-/// nor asked about.
-pub(super) fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo]) {
+/// in Luna's own marketplace folder, not a copy of anything: the ledger
+/// notes each one Luna wrote (`Ledger::manifests`), and only those are taken
+/// out again, so a plugin someone else put in that folder keeps its own.
+pub(super) fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo], ledger: &mut Ledger) {
     let slugs: BTreeMap<String, &str> = folder_slugs(&lib.folders).into_iter().map(|(f, s)| (s, f.path.as_str())).collect();
     for a in accounts.iter().filter(|a| a.provider == Provider::Codex) {
         let market = codex_market_dir(a);
@@ -299,19 +300,26 @@ pub(super) fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo]) {
             let plugin = codex_plugin_dir(a, &slug);
             let manifest = plugin.join(".codex-plugin").join("plugin.json");
             // Luna's own folders, and none that leads elsewhere: through a
-            // link on the way the manifest would be written, or taken out,
-            // wherever that leads.
-            let way = [market.clone(), market.join(&slug), plugin.clone(), plugin.join(".codex-plugin"), manifest.clone()];
-            if let Some(link) = way.iter().find(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())) {
-                if link_is_news(link) {
-                    crate::log::warn("library", &format!("{} is a link — Luna leaves the plugin there alone", link.display()));
+            // link on the way down from the account's folder (`plugins`,
+            // `plugins/cache` too) the manifest would be written, or taken
+            // out, wherever that leads.
+            let linked = no_link_between(Path::new(&a.path), &manifest).err().or_else(|| {
+                std::fs::symlink_metadata(&manifest)
+                    .is_ok_and(|m| crate::boundary::is_link(&m))
+                    .then(|| format!("{} is a link", manifest.display()))
+            });
+            if let Some(why) = linked {
+                if link_is_news(&manifest) {
+                    crate::log::warn("library", &format!("Luna leaves the plugin at {} alone: {why}", plugin.display()));
                 }
                 continue;
             }
+            let id = ident(&manifest);
+            let noted = ledger.manifests.iter().find(|m| ident(Path::new(m)) == id).cloned();
             let holds = std::fs::read_dir(plugin.join("skills")).is_ok_and(|mut e| e.next().is_some());
             if holds {
-                // A folder no longer listed holds only copies changed since,
-                // left in place; its manifest stays as it was.
+                // A folder no longer listed holds only copies left in place;
+                // its manifest stays as it was.
                 let Some(path) = slugs.get(&slug) else { continue };
                 let manifest_json = serde_json::json!({
                     "name": slug,
@@ -322,10 +330,18 @@ pub(super) fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo]) {
                 if std::fs::read(&manifest).ok().as_deref() != Some(text.as_bytes()) {
                     if let Err(e) = write_copy(&manifest, text.as_bytes()) {
                         crate::log::warn("library", &format!("could not write {}: {e}", manifest.display()));
+                        continue;
                     }
                 }
+                if noted.is_none() {
+                    ledger.manifests.insert(manifest.to_string_lossy().into_owned());
+                }
             } else {
-                let _ = std::fs::remove_file(&manifest);
+                // Not Luna's: someone else's plugin, left as it is.
+                let Some(noted) = noted else { continue };
+                if std::fs::remove_file(&manifest).is_ok() || !manifest.exists() {
+                    ledger.manifests.remove(&noted);
+                }
                 for dir in [plugin.join("skills"), plugin.join(".codex-plugin"), plugin.clone(), market.join(&slug), market.clone()] {
                     let _ = std::fs::remove_dir(dir);
                 }
@@ -650,7 +666,7 @@ mod tests {
         };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
-        codex_manifests(&lib, &f.accounts);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
         assert!(f.account(0).join("skills/review/SKILL.md").is_file());
         assert!(!f.dirs.folders().join("asuri-app/work").exists(), "it has it as a whole already");
         assert!(f.dirs.folders().join("asuri-app/home/.claude/skills/review/SKILL.md").is_file());
@@ -666,9 +682,8 @@ mod tests {
         let mut lib = lib;
         lib.skills.clear();
         lib.folders[0].skills = BTreeMap::from([("review".into(), reach(&["claude/work"]))]);
-        let p = f.run(&lib, &mut ledger, true);
-        codex_manifests(&lib, &f.accounts);
-        assert!(p.kept.is_empty());
+        f.run(&lib, &mut ledger, true);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
         assert!(!f.account(0).join("skills/review").exists());
         assert!(f.dirs.folders().join("asuri-app/work/.claude/skills/review/SKILL.md").is_file());
         assert!(!f.dirs.folders().join("asuri-app/home/.claude/skills/review").exists());
@@ -800,28 +815,45 @@ mod tests {
         assert_eq!(slugs(&lib), ["app", "app-2"], "a bad one is made anew, past the one kept");
     }
 
-    /// A link on the way to a plugin's manifest: neither written through nor
-    /// taken out through.
-    #[cfg(unix)]
+    /// A link or junction on the way down from a Codex account's folder to a
+    /// plugin's manifest Luna wrote and noted, at the plugin's `.codex-plugin`
+    /// or at `plugins/cache` above all of Luna's plugins: the manifest is
+    /// neither written through it nor, once the folder's copies are gone,
+    /// taken out through it, and its note stays for a later pass.
     #[test]
     fn a_manifest_behind_a_link_is_left_alone() {
-        let f = Fixture::new("manifest-link");
-        f.skill("review", "v1");
-        let (_, folder) = repo_folder(&f, "repo", &["review"]);
-        let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
-        let elsewhere = f.base.join("elsewhere");
-        std::fs::create_dir_all(elsewhere.join("skills").join("x")).unwrap();
-        std::fs::write(elsewhere.join("skills").join("x").join("SKILL.md"), "x").unwrap();
-        let plugin = codex_plugin_dir(&f.accounts[1], "repo");
-        std::fs::create_dir_all(plugin.join("skills").join("review")).unwrap();
-        std::fs::write(plugin.join("skills").join("review").join("SKILL.md"), "v1").unwrap();
-        std::os::unix::fs::symlink(&elsewhere, plugin.join(".codex-plugin")).unwrap();
-        codex_manifests(&lib, &f.accounts);
-        assert!(!elsewhere.join("plugin.json").exists(), "not written through the link");
-        std::fs::remove_dir_all(plugin.join("skills")).unwrap();
-        std::fs::write(elsewhere.join("plugin.json"), "theirs").unwrap();
-        codex_manifests(&lib, &f.accounts);
-        assert_eq!(std::fs::read_to_string(elsewhere.join("plugin.json")).unwrap(), "theirs", "nor taken out through it");
+        type At = fn(&Path, &Path) -> PathBuf;
+        let ways: [(&str, At); 2] =
+            [("plugin", |plugin, _| plugin.join(".codex-plugin")), ("cache", |_, account| account.join("plugins").join("cache"))];
+        for (tag, at) in ways {
+            let f = Fixture::new(&format!("manifest-link-{tag}"));
+            f.skill("review", "v1");
+            let (_, folder) = repo_folder(&f, "repo", &["review"]);
+            let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
+            let mut ledger = Ledger::default();
+            f.run(&lib, &mut ledger, true);
+            codex_manifests(&lib, &f.accounts, &mut ledger);
+            let plugin = codex_plugin_dir(&f.accounts[1], "repo");
+            let manifest = plugin.join(".codex-plugin").join("plugin.json");
+            assert!(manifest.is_file() && ledger.manifests.contains(&*manifest.to_string_lossy()), "{tag}: noted as Luna's");
+
+            // That folder moved elsewhere, a link in its place, and what it
+            // leads to given someone else's manifest.
+            let link = at(&plugin, &f.account(1));
+            let elsewhere = f.base.join("elsewhere");
+            std::fs::rename(&link, &elsewhere).unwrap();
+            link_dir(&link, &elsewhere);
+            std::fs::write(&manifest, "theirs").unwrap();
+            codex_manifests(&lib, &f.accounts, &mut ledger);
+            assert_eq!(std::fs::read_to_string(&manifest).unwrap(), "theirs", "{tag}: not written through the link");
+
+            let none = LibrarySettings::default();
+            f.run(&none, &mut ledger, true);
+            codex_manifests(&none, &f.accounts, &mut ledger);
+            assert_eq!(std::fs::read_to_string(&manifest).unwrap(), "theirs", "{tag}: nor taken out through it");
+            assert!(ledger.manifests.contains(&*manifest.to_string_lossy()), "{tag}: still noted, for a later pass");
+            unlink_dir(&link);
+        }
     }
 
     #[test]
@@ -832,7 +864,7 @@ mod tests {
         let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
-        codex_manifests(&lib, &f.accounts);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
         let repo_s = repo.to_string_lossy().into_owned();
         let wait = f.dirs.folders().join("repo").join("work");
 
@@ -858,12 +890,38 @@ mod tests {
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &repo_s).args, codex);
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &wt.to_string_lossy()).args, codex);
         f.run(&empty, &mut ledger, true);
-        codex_manifests(&empty, &f.accounts);
+        codex_manifests(&empty, &f.accounts, &mut ledger);
         assert!(folder_args(&f.dirs, &empty, &f.accounts[1], &repo_s).args.is_empty(), "no plugin, nothing to turn on");
 
         let elsewhere = f.base.join("elsewhere").to_string_lossy().into_owned();
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[0], &elsewhere), SessionSkills::default());
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &elsewhere), SessionSkills::default());
+    }
+
+    /// Only a manifest the ledger says Luna wrote is taken out: a plugin
+    /// someone else put in Luna's marketplace folder, with no `skills/`,
+    /// keeps its own; Luna's goes once its folder's copies have.
+    #[test]
+    fn only_a_manifest_luna_wrote_is_taken_out() {
+        let f = Fixture::new("manifest-theirs");
+        f.skill("review", "v1");
+        let (_, folder) = repo_folder(&f, "repo", &["review"]);
+        let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let theirs = codex_plugin_dir(&f.accounts[1], "theirs").join(".codex-plugin").join("plugin.json");
+        write_file(&theirs, b"{}").unwrap();
+        codex_manifests(&lib, &f.accounts, &mut ledger);
+        let ours = codex_plugin_dir(&f.accounts[1], "repo").join(".codex-plugin").join("plugin.json");
+        assert!(ours.is_file() && ledger.manifests.contains(&*ours.to_string_lossy()));
+        assert!(theirs.is_file());
+
+        let none = LibrarySettings::default();
+        f.run(&none, &mut ledger, true);
+        codex_manifests(&none, &f.accounts, &mut ledger);
+        assert!(!ours.exists(), "Luna's, taken out");
+        assert!(ledger.manifests.is_empty());
+        assert_eq!(std::fs::read(&theirs).unwrap(), b"{}", "someone else's stays");
     }
 
     #[test]
@@ -888,7 +946,7 @@ mod tests {
         };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
-        codex_manifests(&lib, &f.accounts);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
         assert!(f.account(0).join("skills/review/SKILL.md").is_file(), "the account's copy stays where it is");
         assert!(f.dirs.folders().join("work/home/.claude/skills/notes/SKILL.md").is_file());
 
@@ -961,7 +1019,7 @@ mod tests {
         };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
-        codex_manifests(&lib, &f.accounts);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
         assert!(f.account(0).join("skills/review/SKILL.md").is_file());
         assert!(!f.account(2).join("skills/review").exists());
         assert!(f.dirs.folders().join("app/home/.claude/skills/review/SKILL.md").is_file());
@@ -1081,8 +1139,9 @@ mod tests {
         let inner =
             LibraryFolder { path: repo.join("web").to_string_lossy().into_owned(), skills: given(&["review"]), ..Default::default() };
         let mut lib = LibrarySettings { folders: vec![outer, inner], ..Default::default() };
-        f.run(&lib, &mut Ledger::default(), true);
-        codex_manifests(&lib, &f.accounts);
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
         assert!(f.dirs.folders().join("repo/work/.claude/skills/review/SKILL.md").is_file());
         assert!(!f.dirs.folders().join("web/work/.claude/skills/review").exists());
         assert!(!f.account(1).join("plugins/cache/luna/web").exists());
