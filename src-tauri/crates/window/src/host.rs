@@ -73,12 +73,41 @@ pub mod cmd {
     /// A session's PTY size: `{ id, cols, rows, pixelWidth, pixelHeight }`,
     /// the pixels those of the whole grid.
     pub const RESIZE_SESSION: &str = "resize_session";
+    /// The window's own state as the host keeps it, and on the first start
+    /// what 0.19's window kept: `{ saved, old, oldError }`, `saved` the last
+    /// `save_window_state` text read back, or null when there is none; then
+    /// `old` each key of the WebView's Local Storage as its text, or
+    /// `oldError` why it could not be read (both null when there was no such
+    /// store at all).
+    pub const WINDOW_STATE: &str = "window_state";
+    /// Keeps the window's state: `{ text }`, the whole of it, which replaces
+    /// what was kept. Sent, so the host has the states in the order they
+    /// were made; it writes the latest and lets an older one go.
+    pub const SAVE_WINDOW_STATE: &str = "save_window_state";
+    /// The accounts Luna knows: `[{ provider, name, path }]`.
+    pub const LIST_ACCOUNTS: &str = "list_accounts";
+    /// Every chat's session as the core sees it: `{ chats: [{ id,
+    /// accountPath }] }`, answered `[{ id, meta }]` (`SessionMetaDto`).
+    pub const SESSIONS_META: &str = "sessions_meta";
+    /// The CLI's title for a session not running: `{ provider, accountPath,
+    /// sessionId }`, answered `{ title, renamed }` or null.
+    pub const SAVED_TITLE: &str = "saved_title";
 
     /// Called, each one the host must answer (a test in luna_lib holds its
     /// dispatch to this list).
-    pub const ALL: &[&str] = &[CORE_STATE, CORE_RESTART, ENSURE_CLAUDE_SESSION, ENSURE_CODEX_SESSION, SESSION_MODES];
+    pub const ALL: &[&str] = &[
+        CORE_STATE,
+        CORE_RESTART,
+        ENSURE_CLAUDE_SESSION,
+        ENSURE_CODEX_SESSION,
+        SESSION_MODES,
+        WINDOW_STATE,
+        LIST_ACCOUNTS,
+        SESSIONS_META,
+        SAVED_TITLE,
+    ];
     /// Sent, each one the host must take (held so by the same test).
-    pub const SENT: &[&str] = &[SET_WINDOW_THEME, WRITE_SESSION, RESIZE_SESSION];
+    pub const SENT: &[&str] = &[SET_WINDOW_THEME, WRITE_SESSION, RESIZE_SESSION, SAVE_WINDOW_STATE];
 }
 
 /// The events the window listens to.
@@ -96,10 +125,13 @@ pub mod event {
     /// The core closed every session for a shutdown of the PC that was then
     /// taken back (power/machine.rs): `{ why }`. Every pane starts its over.
     pub const START_OVER: &str = "pty://start-over";
+    /// A desktop notification the core asks for: `{ title, body, chatId }`
+    /// (power/machine.rs), shown as the page showed it.
+    pub const NOTIFY: &str = "ui://notify";
 
     /// Every event the inbox takes; any other is dropped before it is queued
     /// (`wants`). A view that listens to a new event adds it here.
-    pub const ALL: &[&str] = &[CORE_STATE, PTY_EXIT, PTY_INPUT_REFUSED, START_OVER];
+    pub const ALL: &[&str] = &[CORE_STATE, PTY_EXIT, PTY_INPUT_REFUSED, START_OVER, NOTIFY];
     /// Of those, the ones where only the latest counts: one waits in the
     /// inbox at most, a newer replacing it, and where the payload carries a
     /// `revision`, an older one never replacing a newer (`Mailbox::event`).

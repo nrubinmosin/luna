@@ -91,6 +91,9 @@ semver = "1"
 # The tray icon decoded (desktop/tray.rs). The version tray-icon and muda
 # already link.
 png = "0.18"
+# The one import of 0.19's chat list (native/import.rs): a copy of the
+# WebView's Local Storage, which Chromium keeps in LevelDB, read in pure Rust.
+rusty-leveldb = "3"
 
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it

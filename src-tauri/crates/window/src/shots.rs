@@ -30,14 +30,17 @@ pub fn bench(out: PathBuf, secs: f64) {
         }
         gpui_component::init(cx);
         crate::term::bind_keys(cx);
+        crate::keys::bind(cx);
         let scene = demo::scenes().into_iter().find(|s| s.name == "term-selection").expect("the terminal scene");
         cx.spawn(async move |cx| {
             let summary = match open(&scene, cx) {
-                Ok(Opened { pane: Some(pane), host, .. }) => {
+                Ok(opened) => {
                     cx.background_executor().timer(Duration::from_millis(500)).await;
-                    crate::term::bench::run(pane, host, secs, cx).await
+                    match terminal(&opened, demo::DEMO_CHAT, cx) {
+                        Some(pane) => crate::term::bench::run(pane, opened.host, secs, cx).await,
+                        None => Err("the scene has no terminal".into()),
+                    }
                 }
-                Ok(_) => Err("the scene has no terminal".into()),
                 Err(e) => Err(e),
             };
             let written = summary.and_then(|s| {
@@ -69,6 +72,7 @@ pub fn run(out: PathBuf, only: String) {
         }
         gpui_component::init(cx);
         crate::term::bind_keys(cx);
+        crate::keys::bind(cx);
         let scenes: Vec<Scene> = demo::scenes().into_iter().filter(|s| only.is_empty() || s.name.contains(only.as_str())).collect();
         cx.spawn(async move |cx| {
             let (mut failed, mut previous) = (0, None);
@@ -82,9 +86,7 @@ pub fn run(out: PathBuf, only: String) {
                         if let Some(done) = previous.replace(window) {
                             let _ = done.update(cx, |_, window, _| window.remove_window());
                         }
-                        if let (Some(demo), Some(pane)) = (scene.terminal, opened.pane) {
-                            show(demo, &pane, &opened.host, &opened.models, window, cx).await;
-                        }
+                        show(scene, &opened, cx).await;
                         shoot(window, &file, cx).await
                     }
                     Err(e) => Err(e),
@@ -103,12 +105,17 @@ pub fn run(out: PathBuf, only: String) {
     });
 }
 
-/// A scene's open window, and what a terminal scene needs of it.
+/// A scene's open window, and what a scene needs of it.
 struct Opened {
     window: AnyWindowHandle,
-    pane: Option<Entity<TermPane>>,
+    view: Entity<root::LunaWindow>,
     host: Arc<FakeHost>,
     models: Models,
+}
+
+/// The terminal of chat `id`, once the board has made it.
+fn terminal(opened: &Opened, id: &str, cx: &mut AsyncApp) -> Option<Entity<TermPane>> {
+    cx.update(|cx| opened.view.read(cx).board.read(cx).terminal_of(id))
 }
 
 /// The scene's window, off screen and never activated, over its fake host.
@@ -122,6 +129,7 @@ fn open(scene: &Scene, cx: &mut AsyncApp) -> Result<Opened, String> {
         theme::apply_to_components(&models.shell.read(cx).palette(), cx);
         crate::pump(models.clone(), inbox, cx);
         models.ask_core_state(cx);
+        models.workspace.update(cx, |w, cx| w.load(cx));
         scene.tell(&models, cx);
         let bounds = offscreen::bounds(size(px(1000.), px(620.)), cx);
         let options = WindowOptions {
@@ -136,23 +144,44 @@ fn open(scene: &Scene, cx: &mut AsyncApp) -> Result<Opened, String> {
             inactive_frame_interval: None,
             ..Default::default()
         };
-        let terminals = scene.terminal.map(|_| vec![demo::session()]).unwrap_or_default();
-        let (window_models, mut pane) = (models.clone(), None);
+        let (window_models, mut root_view) = (models.clone(), None);
         let window = cx
             .open_window(options, |window, cx| {
-                let view = cx.new(|cx| root::LunaWindow::new(window_models, terminals, window, cx));
-                pane = view.read(cx).board.read(cx).panes.first().cloned();
+                let view = cx.new(|cx| root::LunaWindow::new(window_models, window, cx));
+                root_view = Some(view.clone());
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .map_err(|e| format!("{e:#}"))?;
-        Ok(Opened { window: window.into(), pane, host: fake, models })
+        Ok(Opened { window: window.into(), view: root_view.expect("the view was made"), host: fake, models })
     })
 }
 
-/// The demo session's output in a terminal scene, once its start answered,
-/// and the selection, the composition or the exit the scene shows.
-async fn show(demo: TermDemo, pane: &Entity<TermPane>, host: &FakeHost, models: &Models, window: AnyWindowHandle, cx: &mut AsyncApp) {
+/// What a scene shows once its window has laid out: a terminal scene's
+/// output, selection, composition or exit; the chats' sessions some text
+/// each; a pane's menu open.
+async fn show(scene: &Scene, opened: &Opened, cx: &mut AsyncApp) {
     cx.background_executor().timer(Duration::from_millis(300)).await;
+    let (host, models, window) = (&opened.host, &opened.models, opened.window);
+    if let Some(at) = scene.menu {
+        let board = cx.update(|cx| opened.view.read(cx).board.clone());
+        board.update(cx, |b, cx| {
+            b.menu = Some(at);
+            cx.notify();
+        });
+    }
+    if let Some(id) = scene.click {
+        models.workspace.update(cx, |w, cx| w.show_chat(id, cx));
+        cx.background_executor().timer(Duration::from_millis(200)).await;
+    }
+    let Some(demo) = scene.terminal else {
+        let shown = cx.update(|cx| models.workspace.read(cx).state.shown());
+        for id in shown {
+            host.output(&id, demo::term_output(TermDemo::Selection).as_bytes());
+        }
+        return;
+    };
+    let Some(pane) = terminal(opened, demo::DEMO_CHAT, cx) else { return };
+    let pane = &pane;
     if demo == TermDemo::Waiting {
         return;
     }

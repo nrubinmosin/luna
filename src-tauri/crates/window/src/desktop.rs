@@ -217,7 +217,8 @@ pub struct Offer {
     pub core_fingerprint: Option<String>,
 }
 
-/// The chat a notification's click asked to open, until a view takes it.
+/// The chat a notification's click asked to open, until the workspace
+/// takes it.
 #[derive(Default)]
 pub struct OpenChat(pub Option<String>);
 
@@ -643,7 +644,9 @@ mod tests {
         cx.run_until_parked();
         cx.update(|_, cx| {
             assert!(!cx.global::<Shown>().hidden);
-            assert_eq!(cx.global::<OpenChat>().0.as_deref(), Some("c1"));
+            // Asked for, and taken at once by the workspace (workspace.rs
+            // `open_chat`), which opens it when it is listed.
+            assert_eq!(cx.global::<OpenChat>().0, None);
             assert_eq!(cx.global::<UpdateProgress>().0, Some((10, Some(40))));
         });
     }

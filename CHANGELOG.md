@@ -44,9 +44,26 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   bracketed paste off as well as on, and keys typed while a paste reads the
   clipboard go after it. Output it cannot keep up with is dropped and said,
   never held without bound, and a synchronized update left open is drawn at
-  its deadline. The test build opens terminals with `--dev-open`; the board
-  opens them later. That, the test build's driver and stand-in clipboard are
-  compiled into the test build alone (the `luna_test` cfg).
+  its deadline. The test build's driver and stand-in clipboard are compiled
+  into the test build alone (the `luna_test` cfg).
+- The native window's chats and boards: the sidebar of the board's chats by
+  folder (fold a folder, rename, delete, status, draft and pane number per
+  row; pinned or collapsed to a strip), five fixed boards I-V with layouts 1
+  to 4, Clear board and Auto-tile on the title bar, each pane's title bar
+  (status, name, model and effort, account, context, the session id to copy)
+  and menu (rename, copy the id, move to or swap with another pane, take
+  off the board), the peek (a chat not on the board full size over it, To
+  board, Esc closes) and the window's keys (Ctrl+N, Ctrl+Shift+N,
+  Ctrl+Shift+1-4, Ctrl+1-4, Ctrl+Shift+W, Ctrl+Tab, Esc). Chats keep their
+  status, titles, context and drafts from `sessions_meta` every 4 s, rest
+  when their session exits, and notify when they start waiting. Nothing is
+  dragged. The window keeps its state in `window-state.json` in the data
+  folder, written as the page's storage was (at once after a quiet spell,
+  then at most every 500 ms; a chat added or deleted, its session, account
+  or board at once; on quit), and on its first start imports 0.19's chat
+  list once from a copy of the WebView's Local Storage (rusty-leveldb),
+  saying so in a line when it cannot. The test build's `--dev-open`
+  terminals are gone: the board opens chats.
 - `resize_session` takes the terminal's size in pixels too (`pixelWidth`,
   `pixelHeight`), which the native window sends and the core passes to the
   PTY.

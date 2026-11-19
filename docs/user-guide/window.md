@@ -1,10 +1,10 @@
 # The window and panes
 
 Luna 0.20 is moving to a native window, which Luna opens from now on. It has
-so far its title bar (Luna's name, the theme button, minimize, maximize and
-close; drag it to move the window, double-click it to maximize), the core
-banner and an empty board, in one font, Cascadia Mono, light, dark or as the
-system is. Like the window this page describes, it has Luna's tray icon
+its title bar (Luna's name, the board's controls, the theme button, minimize,
+maximize and close; drag it to move the window, double-click it to
+maximize), the core banner, the sidebar of chats and the board of panes
+(below), in one font, Cascadia Mono, light, dark or as the system is. Like the window this page describes, it has Luna's tray icon
 (Open, Restart window, Quit; a click opens the window), closes to the tray
 with the core and its sessions running, opens where you left it (on the same
 monitor, wherever that monitor is now; on another if it is gone), and is the
@@ -14,11 +14,75 @@ for the window this page describes, which still has everything else; Luna
 opens that one by itself where the native window cannot open (no usable
 graphics device).
 
+## The native window's chats and boards
+
+**Your chat list comes along.** The first time the native window starts, it
+reads the chat list the 0.19 window kept (from a copy of its storage; the
+original is left as it was): the chats, their folders, what sat in each
+group's panes, whether the sidebar was pinned, and the new-chat, delete and
+notification choices. Chat colors, handoff marks and the splits are not
+kept. Groups VI to X are gone: their chats are listed on board V. If the old
+list cannot be read, the window starts with an empty list and says so in a
+line under the title bar (OK hides it); sessions still running stay in the
+core. From then on the native window keeps its own list, in
+`window-state.json` beside Luna's settings, and the 0.19 list is never read
+again.
+
+**Title bar.** Five fixed boards, I to V (the 0.19 window's groups, no more
+added or removed), the layouts 1 to 4 (panes), **Clear board** (empties the
+board's panes, every chat stays listed), **Auto-tile** (on: a new chat with
+no free pane grows the board by one pane, up to four, and taking a chat off
+the board shrinks it), and the theme.
+
+**Sidebar.** The chats of the board on screen, by the folder they were
+started from; a folder's header folds it away or opens it. A row shows the
+chat's status as a colored square (green working, yellow waiting for you,
+blue busy in the background, plain resting), a draft left in its composer,
+and its pane's number, or, with one pane, its number in the list (what
+Ctrl+digit reaches). The selected chat's row has **Rename** and **Delete**.
+**<** collapses the sidebar to a strip of status squares, **>** pins it back;
+there is no slide-out on hover. **New chat** is at its top.
+
+**Panes.** Each pane's title bar shows the chat's status, a draft, its name,
+model and effort, account, how much of its context is used and **ID** (copies
+the session id). **...** opens its menu: Rename, Copy session id, Move to
+pane N, Swap with pane N and Take off the board; **_** takes the chat off the
+board. Nothing is dragged: chats and panes move only through these. A click
+on a pane puts the keyboard in it. A pane whose core is being found or
+replaced waits and says so; it never fails for it.
+
+**Peek.** A click on a chat that is not on the board opens it full size over
+the board, which stays as it was. **To board** seats it (a free pane, a new
+one by auto-tile, or else the pane you last worked in), the menu puts it in
+a pane of your choice, and **Close** or Esc puts the board back. A click on a
+chat that is on the board holds its pane up the same way; with one pane, the
+click shows the chat in it.
+
+**Keys.**
+
+| Keys | Action |
+| --- | --- |
+| Ctrl+N / Ctrl+Shift+N | new chat / quick chat |
+| Ctrl+Shift+1..4 | layout |
+| Ctrl+1..4 | the keyboard into that pane; with one pane, that chat of the list |
+| Ctrl+Shift+W | the next chat waiting for you |
+| Ctrl+Tab | the next board (Ctrl+Shift+Tab is Claude Code's) |
+| Esc | close the peek, a menu or a rename; otherwise it goes to the CLI |
+
+A key that means nothing at the moment (Ctrl+3 with two panes, Esc with
+nothing up) goes to the CLI as typed. Ctrl+C and Ctrl+V are the terminal's.
+
+**What changed from 0.19.** Five fixed boards instead of groups you add and
+remove; no drag and drop, no splits to drag, no Even out; no Alt glance, no
+peek by the mouse's Back button; the sidebar is pinned or collapsed, never
+slid out; no chat colors; Esc closes the peek. Notifications are the same: a
+chat that starts waiting for you, and what Luna's core announces; a click
+opens the chat.
+
 ## The native window's terminal
 
-The native window's terminal shows one chat's CLI and takes its input; the
-board does not open chats in it yet (the test build opens them by hand). What
-it does, and how it differs from the WebView window's terminal:
+Each chat's pane shows its CLI in the native window's terminal and takes its
+input. What it does, and how it differs from the WebView window's terminal:
 
 - **Copy:** select with the mouse (drag; a double-click takes a word, a
   triple-click a line). Ctrl+C over a selection copies it and clears it; with

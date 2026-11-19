@@ -1,7 +1,9 @@
-//! The small parts every view is built of: 1 px bevels and buttons in them.
+//! The small parts every view is built of: 1 px bevels and buttons in them,
+//! and a chat's status as a fill.
 
+use crate::state::Status;
 use crate::theme::Palette;
-use gpui::{Div, FontWeight, IntoElement, ParentElement, Styled, div, px};
+use gpui::{Div, FontWeight, Hsla, IntoElement, ParentElement, Styled, div, px};
 
 /// A 1 px raised (or sunken) bevel around `content`: lit on the top and left,
 /// shaded on the bottom and right, swapped when sunken.
@@ -32,4 +34,83 @@ pub fn button(p: &Palette, label: impl IntoElement) -> Div {
             .font_weight(FontWeight::BOLD)
             .child(label),
     )
+}
+
+/// A button's face pressed in: a choice that is on (a board, a layout).
+pub fn pressed(p: &Palette, label: impl IntoElement) -> Div {
+    bevel(
+        p,
+        false,
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .px(px(8.))
+            .h(px(18.))
+            .bg(p.well)
+            .text_color(p.text)
+            .font_weight(FontWeight::BOLD)
+            .child(label),
+    )
+}
+
+/// A button, raised or pressed in by `on`.
+pub fn toggle(p: &Palette, on: bool, label: impl IntoElement) -> Div {
+    if on { pressed(p, label) } else { button(p, label) }
+}
+
+/// A chat's status as a fill, saturated, with black text on it: working,
+/// waiting for the person, background; resting is the plain ground.
+pub fn status_fill(p: &Palette, status: Status) -> (Hsla, Hsla) {
+    match status {
+        Status::Working => (p.ok, p.on_status),
+        Status::Waiting => (p.attention, p.on_status),
+        Status::Background => (p.info, p.on_status),
+        Status::Resting => (p.surface, p.text_dim),
+    }
+}
+
+/// A chat's status as a small framed chip with its word.
+pub fn status_chip(p: &Palette, status: Status) -> Div {
+    let (bg, fg) = status_fill(p, status);
+    div()
+        .flex_none()
+        .px(px(4.))
+        .h(px(16.))
+        .flex()
+        .items_center()
+        .bg(bg)
+        .text_color(fg)
+        .border_1()
+        .border_color(p.frame)
+        .font_weight(FontWeight::BOLD)
+        .text_size(px(10.))
+        .child(status.word().to_uppercase())
+}
+
+/// A chat's status as a square, where a word does not fit.
+pub fn status_square(p: &Palette, status: Status) -> Div {
+    let (bg, _) = status_fill(p, status);
+    div().flex_none().w(px(10.)).h(px(10.)).bg(bg).border_1().border_color(p.frame)
+}
+
+/// A small framed tag: a draft, a pane's number.
+pub fn tag(p: &Palette, fill: Option<Hsla>, label: impl IntoElement) -> Div {
+    let (bg, fg) = match fill {
+        Some(fill) => (fill, p.on_status),
+        None => (p.surface, p.text),
+    };
+    div()
+        .flex_none()
+        .px(px(3.))
+        .h(px(16.))
+        .flex()
+        .items_center()
+        .bg(bg)
+        .text_color(fg)
+        .border_1()
+        .border_color(p.frame)
+        .text_size(px(10.))
+        .font_weight(FontWeight::BOLD)
+        .child(label)
 }

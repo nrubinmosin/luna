@@ -30,7 +30,7 @@ fn open(cx: &mut TestAppContext, theme: ThemePref, first: CoreState) -> Fixture<
     let (mailbox, inbox) = mailbox();
     let models = cx.update(|cx| crate::start(host.clone(), inbox, theme, cx));
     let window_models = models.clone();
-    let (view, cx) = cx.add_window_view(move |window, cx| LunaWindow::new(window_models, Vec::new(), window, cx));
+    let (view, cx) = cx.add_window_view(move |window, cx| LunaWindow::new(window_models, window, cx));
     cx.run_until_parked();
     Fixture { host, mailbox, models, view, cx, revision: 0 }
 }
@@ -280,8 +280,11 @@ fn the_host_contract_lists_what_the_window_names() {
     for c in [cmd::ENSURE_CLAUDE_SESSION, cmd::ENSURE_CODEX_SESSION, cmd::SESSION_MODES] {
         assert!(cmd::ALL.contains(&c), "{c}");
     }
-    assert_eq!(cmd::SENT, [cmd::SET_WINDOW_THEME, cmd::WRITE_SESSION, cmd::RESIZE_SESSION]);
-    for e in [event::CORE_STATE, event::PTY_EXIT, event::PTY_INPUT_REFUSED] {
+    assert_eq!(cmd::SENT, [cmd::SET_WINDOW_THEME, cmd::WRITE_SESSION, cmd::RESIZE_SESSION, cmd::SAVE_WINDOW_STATE]);
+    for c in [cmd::WINDOW_STATE, cmd::LIST_ACCOUNTS, cmd::SESSIONS_META, cmd::SAVED_TITLE] {
+        assert!(cmd::ALL.contains(&c), "{c}");
+    }
+    for e in [event::CORE_STATE, event::PTY_EXIT, event::PTY_INPUT_REFUSED, event::NOTIFY] {
         assert!(event::ALL.contains(&e), "{e}");
     }
     // A session's output goes to its sink, never the inbox.

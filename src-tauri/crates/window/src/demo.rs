@@ -105,6 +105,13 @@ pub struct Scene {
     pub then: Vec<CoreState>,
     /// A terminal on the board, and what it shows.
     pub terminal: Option<TermDemo>,
+    /// The host's `window_state` answer: what it kept of the window, or
+    /// what the import found.
+    pub kept: Value,
+    /// A pane's menu open.
+    pub menu: Option<crate::board::MenuAt>,
+    /// A chat's row clicked once the window is up (the peek is not kept).
+    pub click: Option<&'static str>,
 }
 
 /// What a scene's terminal shows.
@@ -130,6 +137,10 @@ impl Scene {
         let host = FakeHost::new();
         host.answer(cmd::CORE_STATE, serde_json::to_value(&self.core).unwrap());
         host.answer(cmd::ENSURE_CLAUDE_SESSION, attached("", 1));
+        host.answer(cmd::ENSURE_CODEX_SESSION, attached("", 1));
+        host.answer(cmd::WINDOW_STATE, self.kept.clone());
+        host.answer(cmd::LIST_ACCOUNTS, accounts());
+        host.answer(cmd::SESSIONS_META, looks());
         let (mailbox, inbox) = mailbox();
         (host, mailbox, inbox)
     }
@@ -149,9 +160,88 @@ pub fn attached(backlog: &str, generation: u64) -> Value {
     json!({ "backlog": backlog, "generation": generation })
 }
 
-/// The demo terminal's session: a Claude Code chat.
+/// The demo terminal's chat, a Claude Code one, and its session.
+pub const DEMO_CHAT: &str = "demo-1";
+
 pub fn session() -> SessionSpec {
-    SessionSpec { id: "demo-1".into(), provider: Provider::Claude, start: cmd::ENSURE_CLAUDE_SESSION, args: json!({ "id": "demo-1" }) }
+    SessionSpec { id: DEMO_CHAT.into(), provider: Provider::Claude, start: cmd::ENSURE_CLAUDE_SESSION, args: json!({ "id": DEMO_CHAT }) }
+}
+
+/// The demo's accounts, one of each CLI, as `list_accounts` answers.
+pub fn accounts() -> Value {
+    json!([
+        { "provider": "claude", "name": "work", "path": "C:\\accounts\\anthropic\\work" },
+        { "provider": "codex", "name": "personal", "path": "C:\\accounts\\openai\\personal" },
+    ])
+}
+
+/// What `sessions_meta` answers for the fixture's chats: one waiting with a
+/// draft, one working with messages held, one in the background, the rest
+/// not running.
+pub fn looks() -> Value {
+    let meta = |status: &str, context: f64, draft: bool, held: u64, title: &str| json!({ "status": status, "context": context, "draft": draft, "held": held, "title": title, "titleRenamed": false });
+    json!([
+        { "id": "c-parser", "meta": meta("waiting", 0.62, true, 0, "Parser fix") },
+        { "id": "c-codex", "meta": meta("busy", 0.31, false, 2, "Lexer tests") },
+        { "id": "c-notes", "meta": meta("background", 0.12, false, 0, "Notes") },
+        { "id": "c-site", "meta": meta("busy", 0.48, false, 0, "Landing page") },
+        { "id": DEMO_CHAT, "meta": meta("busy", 0.05, false, 0, "What the parser thread does") },
+    ])
+}
+
+/// The window's state from the synthetic 0.19 store, on board I in
+/// `layout`, its panes filled in tile order, the sidebar pinned or not.
+pub fn chats_state(layout: usize, pinned: bool) -> crate::state::WindowState {
+    let (mut state, _) = crate::import::from_storage(&crate::import::fixture()).expect("the fixture imports");
+    if let Some(c) = state.find_mut("c-old") {
+        c.board = 0;
+    }
+    state.board = 0;
+    state.auto_tile = true;
+    state.clear_board(0);
+    state.set_layout(layout);
+    for (i, id) in ["c-parser", "c-codex", "c-notes", "c-old"].iter().take(layout).enumerate() {
+        state.put(i, id);
+    }
+    state.active = Some("c-parser".into());
+    state.active_pane = 0;
+    state.sidebar.pinned = pinned;
+    state
+}
+
+/// The state a terminal scene keeps: the demo chat alone, in one pane.
+pub fn term_state() -> crate::state::WindowState {
+    let mut state = crate::state::WindowState::default();
+    let chat = crate::state::Chat {
+        id: DEMO_CHAT.into(),
+        name: "What the parser thread does".into(),
+        name_source: Some(crate::state::NameSource::Cli),
+        status: crate::state::Status::Working,
+        provider: Provider::Claude,
+        account: "work".into(),
+        board: 0,
+        worktree: false,
+        worktree_path: None,
+        session_id: Some("5f0c9a7e-0000-4000-8000-00000000d3e0".into()),
+        tools: false,
+        guard: false,
+        model: Some("Opus".into()),
+        effort: "high".into(),
+        perm: Some("Ask".into()),
+        approval: None,
+        sandbox: None,
+        read_only: false,
+        agent: None,
+        model_seen: None,
+    };
+    state.add_chat("C:\\work\\parser", chat, true, || "f-demo".into());
+    state.put(0, DEMO_CHAT);
+    state
+}
+
+/// A `window_state` answer holding `state`.
+pub fn kept(state: &crate::state::WindowState) -> Value {
+    json!({ "saved": serde_json::from_str::<Value>(&state.to_text()).expect("the state reads back") })
 }
 
 /// What the demo session prints for `demo`.
@@ -243,7 +333,9 @@ fn link(state: LinkState, core: Option<Core>, error: Option<&str>) -> CoreState 
 }
 
 /// Every scene, in both themes: the title bar over an empty board, the core
-/// banner in each state, and a terminal in each of its looks.
+/// banner in each state, a terminal in each of its looks, and the board with
+/// the fixture's chats: each layout, the sidebar collapsed, the peek, a
+/// pane's menu, and the notice of an import that failed.
 pub fn scenes() -> Vec<Scene> {
     let up = link(LinkState::Up, Some(core()), None);
     let older = Core { version: "0.19.0".into(), build: "a1b2c3d".into(), sessions: 3, ..core() };
@@ -258,11 +350,22 @@ pub fn scenes() -> Vec<Scene> {
             core: CoreState { revision: 1, ..core },
             then: then.into_iter().zip(2..).map(|(link, revision)| CoreState { revision, ..link }).collect(),
             terminal: None,
+            kept: kept(&crate::state::WindowState::default()),
+            menu: None,
+            click: None,
         };
         let term = |name, demo: TermDemo| Scene {
             terminal: Some(demo),
+            kept: kept(&term_state()),
             ..one(name, if demo == TermDemo::Waiting { link(LinkState::Starting, None, None) } else { up.clone() }, vec![])
         };
+        let chats = |name, state: crate::state::WindowState| Scene { kept: kept(&state), ..one(name, up.clone(), vec![]) };
+        let mut peek = chats("peek", chats_state(2, true));
+        peek.click = Some("c-notes");
+        let mut menu = chats("pane-menu", chats_state(2, true));
+        menu.menu = Some(crate::board::MenuAt::Pane(0));
+        let mut notice = one("import-notice", up.clone(), vec![]);
+        notice.kept = json!({ "saved": null, "old": null, "oldError": "the old window's store could not be copied: access denied" });
         out.extend([
             one("board", up.clone(), vec![]),
             one("core-starting", link(LinkState::Starting, None, None), vec![]),
@@ -280,6 +383,14 @@ pub fn scenes() -> Vec<Scene> {
             term("term-ime", TermDemo::Ime),
             term("term-exited", TermDemo::Exited),
             term("term-waiting", TermDemo::Waiting),
+            chats("chats-1", chats_state(1, true)),
+            chats("chats-2", chats_state(2, true)),
+            chats("chats-3", chats_state(3, true)),
+            chats("chats-4", chats_state(4, true)),
+            chats("sidebar-collapsed", chats_state(2, false)),
+            peek,
+            menu,
+            notice,
         ]);
     }
     out

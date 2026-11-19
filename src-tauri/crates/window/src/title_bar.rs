@@ -1,5 +1,7 @@
-//! The window's own title bar: Luna's name, the theme button and the window's
-//! buttons, on the title blue, the rest of it a handle to move the window by.
+//! The window's own title bar: Luna's name, the board's controls (the five
+//! boards, the four layouts, Clear board, Auto-tile), the theme button and
+//! the window's buttons, on the title blue, the rest of it a handle to move
+//! the window by.
 //!
 //! On Windows the parts are hit-test areas (`window_control_area`), so the
 //! system moves, maximizes on a double-click, minimizes and closes as it does
@@ -11,8 +13,9 @@
 
 use crate::dto::ThemePref;
 use crate::models::{Models, Shell};
+use crate::state::{BOARDS, board_label};
 use crate::theme::Palette;
-use crate::widgets::button;
+use crate::widgets::{button, toggle};
 use gpui::{
     Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Render,
     StatefulInteractiveElement, Styled, Window, WindowControlArea, div, px,
@@ -34,6 +37,16 @@ pub struct TitleBar {
 impl TitleBar {
     pub fn new(models: Models, cx: &mut Context<Self>) -> TitleBar {
         cx.observe(&models.shell, |_, _, cx| cx.notify()).detach();
+        // Only what the bar shows: a chat's status changing redraws none of it.
+        let mut shown = None;
+        cx.observe(&models.workspace, move |_, ws, cx| {
+            let s = &ws.read(cx).state;
+            let now = (s.board, s.layout(), s.auto_tile);
+            if shown.replace(now) != Some(now) {
+                cx.notify();
+            }
+        })
+        .detach();
         TitleBar { models, renders: 0 }
     }
 }
@@ -88,6 +101,43 @@ impl Render for TitleBar {
             },
         );
 
+        let state = &self.models.workspace.read(cx).state;
+        let (board, layout, auto_tile) = (state.board, state.layout(), state.auto_tile);
+        let ws = self.models.workspace.clone();
+        let boards = div().flex().flex_none().gap(px(2.)).children((0..BOARDS).map(|b| {
+            let ws = ws.clone();
+            div()
+                .id(("board", b))
+                .debug_selector(move || format!("board-{}", b + 1))
+                .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_board(b, cx)))
+                .child(toggle(&p, b == board, board_label(b)))
+        }));
+        let layouts = div().flex().flex_none().gap(px(2.)).children((1..=4).map(|n| {
+            let ws = ws.clone();
+            div()
+                .id(("layout", n))
+                .debug_selector(move || format!("layout-{n}"))
+                .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_layout(n, cx)))
+                .child(toggle(&p, n == layout, layout_glyph(n)))
+        }));
+        let clear = {
+            let ws = ws.clone();
+            div()
+                .id("clear-board")
+                .debug_selector(|| "clear-board".into())
+                .flex_none()
+                .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.clear_board(cx)))
+                .child(button(&p, "Clear board"))
+        };
+        let auto = {
+            let ws = ws.clone();
+            div()
+                .id("auto-tile")
+                .debug_selector(|| "auto-tile".into())
+                .flex_none()
+                .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_auto_tile(!auto_tile, cx)))
+                .child(toggle(&p, auto_tile, if auto_tile { "Auto-tile: on" } else { "Auto-tile: off" }))
+        };
         let models = self.models.clone();
         let theme = div()
             .id("theme")
@@ -96,8 +146,23 @@ impl Render for TitleBar {
             .on_click(move |_, _, cx| models.cycle_theme(cx))
             .child(button(&p, theme_label(pref)));
 
-        bar.child(name).child(drag).child(theme).children(window_buttons(&p))
+        bar.child(name)
+            .child(div().flex_none().child("Board"))
+            .child(boards)
+            .child(div().flex_none().pl(px(6.)).child("Panes"))
+            .child(layouts)
+            .child(div().w(px(6.)))
+            .child(clear)
+            .child(auto)
+            .child(drag)
+            .child(theme)
+            .children(window_buttons(&p))
     }
+}
+
+/// A layout's button: its number of panes.
+fn layout_glyph(n: usize) -> String {
+    n.to_string()
 }
 
 /// Minimize, maximize and close, except on macOS, whose own buttons stay.

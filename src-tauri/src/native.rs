@@ -15,18 +15,21 @@
 //!
 //! - The desktop's services (the tray, notifications, the clipboard,
 //!   pickers, the window's place, the updater) are native/desktop.rs's.
+//! - The window's own state (its chats, boards and sidebar) is kept in
+//!   `<data>/window-state.json` as the window sends it; on the first start,
+//!   with no such file, 0.19's chat list is read from a copy of the WebView's
+//!   Local Storage (native/import.rs) and handed to the window to import.
 //!
 //! Each call runs on a thread of its own, as `core_call` runs on a blocking
 //! one: the window waits for the answer on a task, never on its thread.
 
 mod desktop;
+mod import;
 
 use crate::corecmd::{self, Lane};
 use luna_window::{Answer, Host, Mailbox, OutputSink, ThemePref};
-#[cfg(luna_test)]
-use luna_window::{Provider, SessionSpec};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -39,6 +42,9 @@ type Command = fn(Value) -> Result<Value, String>;
 const OWN: &[(&str, Command)] = &[
     ("core_state", |_| serde_json::to_value(crate::corelink::core_state()).map_err(|e| e.to_string())),
     ("core_restart", core_restart),
+    ("window_state", window_state),
+    ("list_accounts", |_| serde_json::to_value(crate::accounts::list_accounts()?).map_err(|e| e.to_string())),
+    ("saved_title", saved_title),
     ("update_check", desktop::update_check),
     ("update_download", desktop::update_download),
     ("update_install", desktop::update_install),
@@ -46,7 +52,8 @@ const OWN: &[(&str, Command)] = &[
 
 /// Every command of the window's own it may send, by name: taken on the
 /// window's thread, so each hands its work over and returns at once.
-const OWN_SENT: &[(&str, Command)] = &[("set_window_theme", set_window_theme), ("tray_awake", desktop::tray_awake)];
+const OWN_SENT: &[(&str, Command)] =
+    &[("set_window_theme", set_window_theme), ("tray_awake", desktop::tray_awake), ("save_window_state", save_window_state)];
 
 /// `{ revision }`: the link's state the restart was offered on.
 fn core_restart(args: Value) -> Result<Value, String> {
@@ -276,6 +283,91 @@ impl<T: Send + 'static> Writer<T> {
     }
 }
 
+/// `{ provider, accountPath, sessionId }`: the CLI's title for a session
+/// that is not running, as the page's `saved_title` reads it. The account
+/// path is held to an account folder of Luna's before anything under it is
+/// read.
+fn saved_title(args: Value) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Args {
+        provider: crate::provider::Provider,
+        account_path: crate::boundary::OrEmpty<crate::boundary::AccountPath>,
+        session_id: String,
+    }
+    let Args { provider, account_path, session_id } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    let account_path = account_path.into_string();
+    if account_path.is_empty() {
+        return Ok(Value::Null);
+    }
+    let title = match provider {
+        crate::provider::Provider::Claude => crate::claude::session::saved_title(&account_path, &session_id),
+        crate::provider::Provider::Codex => crate::codex::session::thread_title(&account_path, &session_id),
+    };
+    serde_json::to_value(title).map_err(|e| e.to_string())
+}
+
+/// The window's own state, as it last sent it.
+fn state_file() -> PathBuf {
+    crate::paths::data_dir().join("window-state.json")
+}
+
+/// `{ saved, old, oldError }` (luna_window's `cmd::WINDOW_STATE`): the state
+/// kept, or, the first time, what 0.19's window kept. A kept file that does
+/// not read is put aside, so the window's first write does not take its
+/// place unseen, and the window starts empty: the import was done once.
+fn window_state(_: Value) -> Result<Value, String> {
+    let file = state_file();
+    match std::fs::read(&file) {
+        Ok(bytes) => {
+            return Ok(match serde_json::from_slice::<Value>(&bytes) {
+                Ok(saved) => json!({ "saved": saved }),
+                Err(e) => {
+                    let aside = file.with_extension("json.unreadable");
+                    let moved = std::fs::rename(&file, &aside)
+                        .map_or_else(|e| format!(", and stays: {e}"), |_| format!(", put aside as {}", aside.display()));
+                    crate::log::warn("window", &format!("the window's kept state does not read ({e}){moved}"));
+                    json!({ "saved": null })
+                }
+            });
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("cannot read the window's state: {e}")),
+    }
+    Ok(match import::read_webview_storage() {
+        Ok(Some(old)) => {
+            crate::log::info("window", &format!("read 0.19's Local Storage for the import: {} keys", old.len()));
+            json!({ "saved": null, "old": old })
+        }
+        Ok(None) => json!({ "saved": null }),
+        Err(why) => {
+            crate::log::warn("window", &format!("0.19's Local Storage could not be read: {why}"));
+            json!({ "saved": null, "oldError": why })
+        }
+    })
+}
+
+/// `{ text }`, sent on the window's thread: handed to the one writer
+/// (`state_writer`), so a later state is never overwritten by an earlier one.
+fn save_window_state(args: Value) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    struct Args {
+        text: String,
+    }
+    let Args { text } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    state_writer().put(text);
+    Ok(Value::Null)
+}
+
+fn write_state(text: &String) -> Result<(), String> {
+    crate::secret::write_private(&state_file(), text.as_bytes()).map_err(|e| format!("cannot keep the window's state: {e}"))
+}
+
+fn state_writer() -> &'static Arc<Writer<String>> {
+    static WRITER: OnceLock<Arc<Writer<String>>> = OnceLock::new();
+    WRITER.get_or_init(|| Writer::new("window-state", write_state))
+}
+
 /// gpui's and the window's own warnings and errors, into Luna's log.
 struct ToLunaLog;
 
@@ -323,15 +415,10 @@ pub(crate) fn run() -> Result<(), String> {
     ));
     let title = if crate::paths::is_test() { "Luna Test" } else { "Luna" };
     let services = mailbox.clone();
-    #[cfg(luna_test)]
-    let terminals = dev_terminals(std::env::args().skip(1));
-    #[cfg(not(luna_test))]
-    let terminals = Vec::new();
     let options = luna_window::Options {
         title: title.into(),
         theme: theme(),
         background: crate::background(),
-        terminals,
         #[cfg(luna_test)]
         drive_file: std::env::var_os(TEST_DRIVE).map(PathBuf::from),
         on_open: Box::new(move || start(services)),
@@ -340,6 +427,9 @@ pub(crate) fn run() -> Result<(), String> {
             desktop::stop();
             if !theme_writer().drain(THEME_DRAIN) {
                 crate::log::warn("window", "the theme chosen last was not written in time");
+            }
+            if !state_writer().drain(THEME_DRAIN) {
+                crate::log::warn("window", "the window's last state was not written in time");
             }
             // A Claude Code model ask may still be saving a renewed token;
             // its cleanup runs only while Luna does. Not as the Windows
@@ -364,60 +454,6 @@ pub(crate) fn run() -> Result<(), String> {
 /// test build alone.
 #[cfg(luna_test)]
 const TEST_DRIVE: &str = "LUNA_TEST_DRIVE";
-
-/// The test build's terminals on a session each, until the board has its own
-/// way to open one: `--dev-open claude=<account folder>` or
-/// `--dev-open codex=<account folder>`, as many as wanted, all in
-/// `--dev-folder <folder>`. Session ids are `dev-<provider>-<n>`, by the
-/// order given, so a window started again with the same arguments
-/// reattaches to the sessions the core still runs. The account must be one
-/// the test build lists (test-build/accounts); the core refuses any other.
-/// Compiled into the test build alone.
-#[cfg(luna_test)]
-fn dev_terminals(args: impl Iterator<Item = String>) -> Vec<SessionSpec> {
-    let (mut opens, mut folder) = (Vec::new(), None);
-    let mut args = args.peekable();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--dev-open" => opens.extend(args.next()),
-            "--dev-folder" => folder = args.next(),
-            _ => {}
-        }
-    }
-    let Some(folder) = folder else { return Vec::new() };
-    opens
-        .iter()
-        .enumerate()
-        .filter_map(|(n, open)| {
-            let (provider, account) = open.split_once('=')?;
-            Some(match provider {
-                "claude" => SessionSpec {
-                    id: format!("dev-claude-{}", n + 1),
-                    provider: Provider::Claude,
-                    start: luna_window::cmd::ENSURE_CLAUDE_SESSION,
-                    args: serde_json::json!({
-                        "id": format!("dev-claude-{}", n + 1), "folder": folder, "accountPath": account,
-                        "model": "sonnet", "effort": "", "permissionMode": "default", "worktree": false,
-                        "worktreeName": null, "resume": null, "tools": false, "readOnly": false, "agent": null,
-                        "guard": false, "handoff": null,
-                    }),
-                },
-                "codex" => SessionSpec {
-                    id: format!("dev-codex-{}", n + 1),
-                    provider: Provider::Codex,
-                    start: luna_window::cmd::ENSURE_CODEX_SESSION,
-                    args: serde_json::json!({
-                        "id": format!("dev-codex-{}", n + 1), "folder": folder, "accountPath": account,
-                        "model": null, "effort": "medium", "approval": "on-request", "sandbox": "read-only",
-                        "worktree": false, "resume": null, "login": false, "tools": false, "hooksUnasked": false,
-                        "guard": false, "handoff": null,
-                    }),
-                },
-                _ => return None,
-            })
-        })
-        .collect()
-}
 
 /// What runs beside the open window, from its thread.
 fn start(mailbox: Mailbox) {
@@ -480,7 +516,7 @@ mod tests {
         let registered: Vec<&str> =
             lib[start..start + lib[start..].find(']').unwrap()].split(',').filter_map(|e| e.trim().rsplit("::").next()).collect();
         // The page has the updater's from the plugin, not as commands of Luna's.
-        let native_only = ["set_window_theme", "update_check", "update_download", "update_install"];
+        let native_only = ["set_window_theme", "update_check", "update_download", "update_install", "window_state", "save_window_state"];
         for (cmd, _) in OWN.iter().chain(OWN_SENT) {
             let tauri = registered.contains(cmd);
             assert!(tauri != native_only.contains(cmd), "{cmd}: registered {tauri}");
@@ -619,34 +655,6 @@ mod tests {
         // as none.
         let older = json!({ "state": "up", "core": { "pid": 1, "version": "0.11.0", "build": "x", "fingerprint": "y", "started": 0 }, "error": null });
         assert_eq!(serde_json::from_value::<CoreState>(older).unwrap().core.unwrap().refused, None);
-    }
-
-    /// `--dev-open` makes a terminal per session asked for, each with the
-    /// arguments its start takes, and nothing without a folder.
-    #[cfg(luna_test)]
-    #[test]
-    fn dev_open_asks_for_each_session_as_the_page_would() {
-        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter();
-        let specs = dev_terminals(args(&[
-            "--dev-open",
-            "claude=/acc/a",
-            "--dev-folder",
-            "/work",
-            "--dev-open",
-            "codex=/acc/b",
-            "--dev-open",
-            "x=y",
-        ]));
-        assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["dev-claude-1", "dev-codex-2"]);
-        assert_eq!(specs[0].args["accountPath"], "/acc/a");
-        assert_eq!(specs[1].args["folder"], "/work");
-        assert_eq!(specs[1].start, "ensure_codex_session");
-        assert!(dev_terminals(args(&["--dev-open", "claude=/acc/a"])).is_empty());
-        // Every start names the arguments the core's dispatch reads.
-        for spec in &specs {
-            let err = corecmd::dispatch(spec.start, serde_json::json!({})).unwrap_err();
-            assert!(err.starts_with("bad arguments"), "{err}");
-        }
     }
 
     /// The theme's settings file takes what the window sends and gives back

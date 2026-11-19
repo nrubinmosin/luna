@@ -18,16 +18,24 @@ mod drive;
 pub mod dto;
 mod font;
 mod host;
+mod import;
+mod keys;
 mod models;
 mod offscreen;
+mod rename;
 mod root;
 #[cfg(feature = "shots")]
 mod shots;
+mod sidebar;
+pub mod state;
 mod term;
 mod theme;
 mod title_bar;
 mod widgets;
+pub mod workspace;
 
+#[cfg(test)]
+mod board_tests;
 #[cfg(test)]
 mod tests;
 
@@ -55,9 +63,6 @@ pub struct Options {
     /// Off every display, never activated, off the taskbar: the test build
     /// run in the background, out of the way of the person at the screen.
     pub background: bool,
-    /// Terminals to open on the board, side by side: the test build's
-    /// `--dev-open` (src/native.rs), until the board has its own way.
-    pub terminals: Vec<SessionSpec>,
     /// A file of keys to press in the window (drive.rs): the test build's
     /// `LUNA_TEST_DRIVE`, for a smoke run that may use no global input.
     #[cfg(luna_test)]
@@ -92,7 +97,6 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
             title,
             theme,
             background,
-            terminals,
             #[cfg(luna_test)]
             drive_file,
             on_open,
@@ -101,8 +105,9 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
         let opened = Rc::new(Cell::new(false));
         let (is_open, mut on_quit) = (opened.clone(), Some(on_quit));
         cx.on_app_quit(move |cx| {
-            // The window's last place reaches the host before its quit
-            // waits for what it was given.
+            // The window's last place and state reach the host before its
+            // quit waits for what it was given.
+            workspace::flush(cx);
             desktop::flush_all(cx);
             if is_open.get()
                 && let Some(f) = on_quit.take()
@@ -127,7 +132,7 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
         } else {
             desktop::initial(&*models.host, SIZE, MIN_SIZE, cx)
         };
-        match open(&models, terminals, &title, bounds, display, background, cx) {
+        match open(&models, &title, bounds, display, background, cx) {
             Ok((_window, _view)) => {
                 #[cfg(luna_test)]
                 if let Some(file) = drive_file {
@@ -153,6 +158,7 @@ pub(crate) fn start(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mu
     }
     gpui_component::init(cx);
     term::bind_keys(cx);
+    keys::bind(cx);
     let models = Models::new(host, theme, root::is_dark(cx.window_appearance()), cx);
     let mut dark = models.shell.read(cx).dark();
     theme::apply_to_components(&models.shell.read(cx).palette(), cx);
@@ -168,6 +174,7 @@ pub(crate) fn start(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mu
     .detach();
     pump(models.clone(), inbox, cx);
     models.ask_core_state(cx);
+    models.workspace.update(cx, |w, cx| w.load(cx));
     models
 }
 
@@ -214,7 +221,6 @@ impl Future for YieldNow {
 
 fn open(
     models: &Models,
-    terminals: Vec<SessionSpec>,
     title: &str,
     bounds: WindowBounds,
     display: Option<DisplayId>,
@@ -248,7 +254,7 @@ fn open(
         let keeper = (!background).then(|| desktop::Keeper::watch(models.host.clone(), window, cx));
         let host = models.host.clone();
         window.on_window_should_close(cx, move |window, cx| desktop::on_close(&host, keeper.as_ref(), window, cx));
-        let view = cx.new(|cx| root::LunaWindow::new(models, terminals, window, cx));
+        let view = cx.new(|cx| root::LunaWindow::new(models, window, cx));
         root = Some(view.clone());
         cx.new(|cx| Root::new(view, window, cx))
     })?;

@@ -163,13 +163,14 @@ takes and writes its frame times, latencies, lock waits and the grid's
 checksum against a headless replay (architecture/native-window.md,
 "Screenshots").
 
-The test build opens terminals on new sessions with
-`--dev-open claude=<account folder>` and `--dev-open codex=<account folder>`
-(as many as wanted) and `--dev-folder <folder>`; the accounts must be under
-`test-build/accounts`. For a smoke run that may use no global input and must
-not touch the clipboard, `LUNA_TEST_DRIVE` names a file of keys the window
-presses (`keys ctrl-c enter`, `text words`, `focus 2`, `close`, one a line,
-read every 200 ms) and `LUNA_TEST_CLIPBOARD` a JSON file standing in for the
+The test build's board shows the chats of its own `window-state.json` (or,
+on its first start, those its own data dir's 0.19 WebView store held); their
+accounts must be under `test-build/accounts`. For a smoke run that may use
+no global input and must not touch the clipboard, `LUNA_TEST_DRIVE` names a
+file of lines the window acts on (`keys ctrl-c enter`, `text words`,
+`focus 2`, `row 3`, `put 2 3`, `swap 1 2`, `unseat 1`, `toboard`, `dump`,
+`close`, one a line, read every 200 ms; `dump` writes the board's state into
+Luna's log) and `LUNA_TEST_CLIPBOARD` a JSON file standing in for the
 clipboard (`{"text": ...}`, `{"files": [...]}` or `{"image": true}`; an image
 or nothing types `[test clipboard: image key]` rather than press the CLI's
 key, which would read the real clipboard). They are compiled into the test

@@ -208,8 +208,9 @@ the log says.
 ## Models and views
 
 The state the host reports lives in GPUI entities (`models.rs`): `CoreLink`
-(the line to the core, from `core_state` at start and every `core://state`)
-and `Shell` (the theme: the choice and the window's appearance). The inbox's
+(the line to the core, from `core_state` at start and every `core://state`),
+`Shell` (the theme: the choice and the window's appearance) and `Workspace`
+(the chats and the boards, below). The inbox's
 task updates them on the window's thread; a model notifies only when what it
 holds changed.
 
@@ -223,15 +224,16 @@ on from it. Views observe the models they show:
 
 | View | Shows | Observes |
 | --- | --- | --- |
-| `root.rs` `LunaWindow` | the frame, the font | `Shell`, the window's appearance |
-| `title_bar.rs` | Luna's name, the theme button, minimize, maximize, close | `Shell` |
+| `root.rs` `LunaWindow` | the frame, the font, the import's notice; the window's keys | `Shell`, `Workspace`, the window's appearance |
+| `title_bar.rs` | Luna's name, boards I-V, layouts 1-4, Clear board, Auto-tile, the theme button, minimize, maximize, close | `Shell`; `Workspace`'s board, layout and auto-tile only |
 | `banner.rs` | the core banner | `CoreLink`, `Shell` |
-| `board.rs` | the board: the terminals it was opened with, side by side | `Shell` |
+| `sidebar.rs` | the board's chats by folder, or the collapsed strip | `Workspace`, `Shell` |
+| `board.rs` | the panes in their layout, their title bars and menus, the peek | `Workspace`, `Shell` |
 | `term/` `TermPane` | one session's terminal (below) | `CoreLink`, `Shell`; its parser |
 
-The title bar and the board are cached views (`Entity::cached`): a frame drawn
-for the banner reuses them, and they lay out again only when their own size
-changes. Frames come on demand (vendor/PATCHES.md, patch 3), so an idle window
+The title bar, the sidebar, the board and each terminal are cached views
+(`Entity::cached`): a frame drawn for the banner reuses them, and they lay
+out again only when their own size changes. Frames come on demand (vendor/PATCHES.md, patch 3), so an idle window
 draws nothing, and no timer runs in it.
 
 The title bar is the window's own (`appears_transparent`). On Windows its
@@ -245,6 +247,103 @@ The core banner says what the page's CoreBanner.tsx says, in its words, for
 helps (`core_restart`). While the core is being found, started or replaced
 (`starting`) it says the window is waiting for it, in a color of its own: that
 is never told as a failure. `up` has no banner.
+
+## Chats, boards and the window's state
+
+`Workspace` (`workspace.rs`) holds the window's state (`state.rs`
+`WindowState`) and what is only this run's beside it. The state is plain
+data with the rules that change it, ported from the page's stores
+(chats.store.ts, panes.store.ts) less what 0.20 cut:
+
+- **Chats and folders.** A folder is a path chats were started from, kept
+  when it empties (the new-chat dialog offers its `picked` ones). A chat has
+  its CLI, account, board (0-4), session id, worktree flag and path, tools,
+  guard, model, effort and permission or approval and sandbox, its name and
+  where the name came from (`NameSource`: user, a CLI rename, the CLI's title,
+  the opening prompt; `may_rename` keeps a name once settled), and its last
+  status (kept, so a window started again does not notify of a chat already
+  waiting). Context, drafts and held messages are this run's (`Live`).
+- **Boards.** Five, fixed. Each has its layout (1-4) and the panes of each of
+  its four layouts, each remembered apart, so 4 -> 1 -> 4 brings back what was
+  there. Layout 3 is pane 1 left, 2 and 3 stacked right; layout 4 is two by
+  two, row by row. Auto-tile fills and empties in `tile_order` (1 -> 2 opens
+  the right half, 2 -> 3 splits the right column, 3 -> 4 the left one), so a
+  growing board moves no chat but the one it must. Splits are even.
+- **Peek** (`Peek`, not kept): a pane of the board held up, or a chat with no
+  pane. `show_chat` is a row's click (one pane: the pane shows it; more: a
+  chat on the board is held up from its pane, one off it comes up over it,
+  the same row again puts it back), `open_chat` a notification's (never puts
+  back), `to_board` seats the peeked chat (`auto_place`, or else the pane last
+  worked in). Switching board or layout drops the peek and the active pane.
+- `put`, `swap` and `unseat` are the pane menu's moves; `evict` takes a
+  deleted chat off every layout of every board, auto-tile closing each gap.
+
+**Persistence.** The window writes no file: it sends its whole state as text
+(`save_window_state`, sent, so the host has the states in order), and the
+host's one writer (native.rs `Writer`) writes the latest to
+`<data>/window-state.json` (`secret::write_private`) and lets an older one
+go. `Saver` writes as the page's throttled storage did: a change after a
+quiet spell at once, then at most one write per 500 ms (`GAP`), the same
+text never twice; a change of the chats themselves (one added or deleted,
+its session id, account, board, folder or worktree path: `critical_key`) at
+once; what waits is written as the app quits (`workspace::flush`, before the
+host's writers drain). Nothing is written before the host's state has come.
+A kept file of another version starts the list empty; one that is not JSON
+is put aside by the host as `window-state.json.unreadable`.
+
+**Import.** With no `window-state.json`, `window_state` answers with what
+0.19's WebView window kept: the host copies the files of
+`<data>/webview/EBWebView/Default/Local Storage/leveldb` (all but `LOCK`;
+plain copies) into `<data>/import-0.19`, opens the copy with rusty-leveldb,
+takes the `luna.*` keys of the origin that has `luna.chats` (Tauri's
+`tauri.localhost` first), and removes the copy (native/import.rs). The
+store itself is never opened: opening a LevelDB recovers and writes, and a
+0.19 window may still have it open. Chromium's layout is a key
+`_<origin>\0<key>` whose key and value each start with an encoding byte (0
+UTF-16LE, 1 Latin-1). `import.rs` makes the state of `luna.chats` (zustand's
+`{ state, version }`, version 2), `luna.panes`, `luna.sidebar`,
+`luna.newchat`, `luna.delete` and `luna.notify`; groups past V go to board V
+(their panes are not kept), chats with no CLI or account are skipped, and
+cut fields (colors, handoff marks, account moves, Codex's hooks without
+asking, splits) are let go. The result is written at once, so the next start
+imports nothing. An import that fails (no store to copy, one that does not
+open, no `luna.chats`) starts empty, logs why and shows a one-line notice
+until OK; a data dir with no WebView store at all (0.19 never ran there) is
+no failure and says nothing.
+
+**Sessions.** Every `EVERY` (4 s), and once the core is up, the chats with a
+known account go to `sessions_meta` in one call, a round at a time: status
+(`Status::of`, the page's `mapStatus`), the CLI's title or else the opening
+prompt, context, draft and held, session id, a worktree path the CLI made,
+Codex's model. A chat with no live session rests; one with a session id and
+a name it may still lose has its saved title looked up once (`saved_title`).
+A chat turning to waiting is a desktop notification (`Host::notify`, the
+page's words and sound setting); so is the core's `ui://notify`. A click on
+one sends `ui://open-chat`, which `open_chat` takes (on the chat's board).
+`pty://exit` rests the chat and marks it ended. Nothing redraws when a round
+brings nothing new.
+
+**Terminals.** The board makes a chat's `TermPane` the first time the chat
+is shown, from `Workspace::spec_of` (the page's `startSession`: account path
+from `list_accounts`, Claude Code's worktree by name, `handoff` null), and
+keeps it while it is shown and for the three chats shown last (`WARM`). A
+chat shown again after its session ended gets a new one, which starts the
+session anew. A chat whose account is not listed, or before the accounts
+have come, says why instead of a terminal; a core being found or replaced is
+the terminal's own wait.
+
+**Keys** (`keys.rs`) are bound in the root's key context, an ancestor of
+every terminal's, so they work wherever the keyboard is; the terminal's own
+(Ctrl+C, Ctrl+V) are deeper. A key that means nothing at the moment calls
+`propagate` and goes on to the terminal: Ctrl+digit past the layout or the
+list, Esc with no menu, rename or peek to close.
+
+**Seams** (`workspace::Seams`) are where the next slices plug in: `new_chat`
+(the New chat button, Ctrl+N), `quick_chat` (Ctrl+Shift+N) and
+`delete_chat` (a row's Delete, with the delete dialog's "stop or keep its
+helpers"), which then call `Workspace::add_chat` and `remove_chat`. Unset,
+they log and do nothing. The tray's awake dot (`tray_awake`) needs the
+power state, not the chats: it is the status bar's.
 
 ## The terminal pane
 
@@ -424,13 +523,13 @@ light and dark, every colored entry at 5:1 or better on its ground (a test
 holds it); the selection is the window's own (white on navy, black on white).
 Links are plain text.
 
-**The test build** opens terminals with `--dev-open claude=<account>` or
-`--dev-open codex=<account>` (repeated) and `--dev-folder <folder>`, until
-the board has its own way (native.rs `dev_terminals`). A smoke run types
-through `LUNA_TEST_DRIVE` (`drive.rs`: a file of keys the window dispatches
-through gpui as if pressed, read every 200 ms while it is set, a line once
-its newline is written), since keys with modifiers cannot be posted to a
-window and global input is off limits. These, the test clipboard and the
+**The test build**'s smoke runs drive the window through
+`LUNA_TEST_DRIVE` (`drive.rs`: a file of lines the window acts on, read every
+200 ms while it is set, a line once its newline is written): keys dispatched
+through gpui as if pressed, since keys with modifiers cannot be posted to a
+window and global input is off limits, and the board's moves (`row`, `put`,
+`swap`, `unseat`, `toboard`) and `dump`, which writes the board's state into
+Luna's log. These, the test clipboard and the
 tray's test hook are compiled into the test build alone: both build scripts
 set the `luna_test` cfg for `LUNA_FLAVOR=test`, and a release has none of
 their code.

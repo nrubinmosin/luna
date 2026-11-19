@@ -7,6 +7,7 @@ use crate::dto::{CoreState, LinkState, ThemePref};
 use crate::host::{Host, Message, cmd, event};
 use crate::term::TermPane;
 use crate::theme::Palette;
+use crate::workspace::Workspace;
 use gpui::{App, AppContext, Context, Entity, EventEmitter, WeakEntity};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -143,6 +144,12 @@ pub struct Models {
     pub host: Arc<dyn Host>,
     pub core: Entity<CoreLink>,
     pub shell: Entity<Shell>,
+    /// The chats, the boards and the sidebar (workspace.rs).
+    pub workspace: Entity<Workspace>,
+    /// The window's own focus, where the keyboard is when no terminal has
+    /// it: the window's keys (keys.rs) are bound in its context, which a key
+    /// reaches only from something focused inside it.
+    pub home: gpui::FocusHandle,
     /// The terminal panes open, for the events about their sessions.
     pub(crate) panes: Rc<RefCell<Vec<WeakEntity<TermPane>>>>,
 }
@@ -151,12 +158,10 @@ impl Models {
     /// `theme` is the one the person chose last time; `system_dark` the
     /// system's appearance as the window starts.
     pub fn new(host: Arc<dyn Host>, theme: ThemePref, system_dark: bool, cx: &mut App) -> Models {
-        Models {
-            host,
-            core: cx.new(|_| CoreLink { link: CoreState::default(), was_up: false, epoch: 0, last_up: None, left: false }),
-            shell: cx.new(|_| Shell { pref: theme, system_dark }),
-            panes: Rc::default(),
-        }
+        let core = cx.new(|_| CoreLink { link: CoreState::default(), was_up: false, epoch: 0, last_up: None, left: false });
+        let workspace = cx.new(|cx| Workspace::new(host.clone(), core.clone(), cx));
+        let home = cx.focus_handle();
+        Models { host, core, shell: cx.new(|_| Shell { pref: theme, system_dark }), workspace, home, panes: Rc::default() }
     }
 
     /// The panes showing `session`, the ones gone let go of.
@@ -229,6 +234,17 @@ struct PtyExit {
     generation: u64,
 }
 
+/// `ui://notify`'s.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CoreNotice {
+    title: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    chat_id: Option<String>,
+}
+
 /// `pty://input-refused`'s.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -251,6 +267,8 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
                 for pane in models.panes_of(&exit.id, cx) {
                     pane.update(cx, |p, cx| p.on_exit(exit.generation, cx));
                 }
+                // The chat rests, and its pane starts it anew when shown again.
+                models.workspace.update(cx, |w, cx| w.on_exit(&exit.id, cx));
             }
             Err(e) => log::warn!("{name}: {e}"),
         },
@@ -267,6 +285,10 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
                     pane.update(cx, |p, cx| p.on_refused(refused.waiting_kb, cx));
                 }
             }
+            Err(e) => log::warn!("{name}: {e}"),
+        },
+        event::NOTIFY => match serde_json::from_value::<CoreNotice>(payload) {
+            Ok(n) => models.workspace.update(cx, |w, _| w.on_notice(n.title, n.body, n.chat_id)),
             Err(e) => log::warn!("{name}: {e}"),
         },
         _ => crate::desktop::on_event(name, &payload, cx),
