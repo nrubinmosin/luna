@@ -811,8 +811,10 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     overview_locked(true)
 }
 
-/// Skill `from` renamed `to` in the settings: its reach, its audience, and
-/// what each folder says of it.
+/// Skill `from` renamed `to` in the settings: its reach, its audience, what
+/// each folder says of it, and the places its copies are left out of
+/// (`skipped`: a skill's copy is `<...>/skills/<name>`), which follow the
+/// name as the person's word on where it goes.
 fn rename_skill(lib: &mut LibrarySettings, from: &str, to: &str) {
     if let Some(reach) = lib.skills.remove(from) {
         lib.skills.insert(to.to_string(), reach);
@@ -825,13 +827,53 @@ fn rename_skill(lib: &mut LibrarySettings, from: &str, to: &str) {
             f.skills.insert(to.to_string(), reach);
         }
     }
+    for place in &mut lib.skipped {
+        let p = Path::new(place.as_str());
+        let a_copy = p.file_name().is_some_and(|n| n == from) && p.parent().and_then(Path::file_name).is_some_and(|d| d == "skills");
+        if a_copy {
+            *place = p.with_file_name(to).to_string_lossy().into_owned();
+        }
+    }
 }
 
-/// Renames a skill: its folder, the `name:` of its SKILL.md where that named
-/// it, and what the settings say of it, all or none. Its copies go by the
-/// pass after: those of the old name, still as Luna wrote them, are taken
-/// out, and the new name's laid out. The native window's alone (native/panels.rs).
-pub fn library_rename_skill(from: String, to: String) -> Result<Overview, String> {
+/// What a skill's rename came to, once it had begun to change anything.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum Outcome {
+    /// Folder, SKILL.md and settings renamed.
+    Committed,
+    /// A step failed and everything done before it was undone: as it was.
+    RolledBack,
+    /// A step failed and undoing what was done failed too: `why` says what
+    /// is left where.
+    RollbackFailed,
+}
+
+/// A skill's rename as it went, with the overview after it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Renamed {
+    pub outcome: Outcome,
+    pub why: Option<String>,
+    pub overview: Option<Overview>,
+}
+
+/// The most of a SKILL.md a rename reads to rewrite its name.
+const SKILL_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Renames a skill: its folder, the `name` of its SKILL.md where that named
+/// it, and what the settings say of it. Refused, with nothing changed, where
+/// the skill's folder or anything in it is a link, a junction or not a plain
+/// file or folder (system.rs `inside`, `plain_tree`), where the new name is
+/// taken, and where SKILL.md names it and could not be made to name the new
+/// one. The folder moves without replacing (files.rs `rename_no_replace`):
+/// a folder of the new name made meanwhile fails the move. Then SKILL.md and
+/// the settings, each step undone if a later one fails (`RolledBack`); an
+/// undo that fails is said as such (`RollbackFailed`), with what is left
+/// where. Its copies go by the pass after: those of the old name, still as
+/// Luna wrote them, are taken out, and the new name's laid out. The native
+/// window's alone (native/panels.rs).
+pub fn library_rename_skill(from: String, to: String) -> Result<Renamed, String> {
     let to = to.trim().to_string();
     check_name(&from)?;
     check_name(&to)?;
@@ -840,34 +882,76 @@ pub fn library_rename_skill(from: String, to: String) -> Result<Overview, String
     }
     let _guard = lock()?;
     if from == to {
-        return overview_locked(false);
+        return Ok(Renamed { outcome: Outcome::Committed, why: None, overview: Some(overview_locked(false)?) });
     }
-    let dirs = Dirs::current();
-    let (old, new) = (dirs.skills().join(&from), dirs.skills().join(&to));
+    let (outcome, why) = rename_skill_in(&Dirs::current(), &from, &to, |change| crate::settings::update(|s| change(&mut s.library)))?;
+    match outcome {
+        Outcome::Committed => crate::log::info("library", &format!("skill {from} renamed {to}")),
+        Outcome::RolledBack => crate::log::warn("library", &format!("skill {from} not renamed {to}: {}", why.as_deref().unwrap_or(""))),
+        Outcome::RollbackFailed => {
+            crate::log::warn("library", &format!("skill {from} renamed {to} only partly: {}", why.as_deref().unwrap_or("")))
+        }
+    }
+    Ok(Renamed { outcome, why, overview: overview_locked(true).ok() })
+}
+
+/// The rename's steps under `dirs`, the settings changed by `settings`.
+/// Err: refused before anything changed.
+fn rename_skill_in(
+    dirs: &Dirs,
+    from: &str,
+    to: &str,
+    settings: impl FnOnce(&dyn Fn(&mut LibrarySettings)) -> Result<(), String>,
+) -> Result<(Outcome, Option<String>), String> {
+    let old = inside(&dirs.root, &["skills", from])?;
+    match std::fs::symlink_metadata(&old) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("The library has no skill named {from}")),
+        Err(e) => return Err(format!("{}: {e}", old.display())),
+        Ok(m) if crate::boundary::is_link(&m) || !m.is_dir() => {
+            return Err(format!("{} is a link or not a folder — Luna leaves it alone", old.display()));
+        }
+        Ok(_) => {}
+    }
+    plain_tree(&old)?;
+    let new = inside(&dirs.root, &["skills", to])?;
     if std::fs::symlink_metadata(&new).is_ok() {
         return Err(format!("The library already has a skill named {to}"));
     }
-    std::fs::rename(&old, &new).map_err(|e| format!("{}: {e}", old.display()))?;
-    let file = new.join(SKILL_FILE);
-    let was = std::fs::read_to_string(&file).ok();
-    let undo = |text: Option<&str>| {
-        if let Some(text) = text {
-            let _ = dirs.write(&file, text.as_bytes());
+    // Read as itself, before anything moves: a FIFO put in its place since
+    // `plain_tree` is refused, not waited on with the lock held.
+    let was = read_plain(&old.join(SKILL_FILE), SKILL_MAX_BYTES + 1)?;
+    let rewritten = match was.as_deref() {
+        None => None,
+        Some(bytes) if bytes.len() as u64 > SKILL_MAX_BYTES => {
+            return Err(format!("SKILL.md is over {} KB: nothing was renamed", SKILL_MAX_BYTES / 1024));
         }
-        let _ = std::fs::rename(&new, &old);
+        Some(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => renamed(text, from, to)?,
+            Err(_) => return Err("SKILL.md is not UTF-8 text: nothing was renamed".into()),
+        },
     };
-    if let Some(text) = was.as_deref().and_then(|t| renamed(t, &from, &to)) {
+    rename_no_replace(&old, &new).map_err(|e| format!("{} to {}: {e}", old.display(), new.display()))?;
+    let file = new.join(SKILL_FILE);
+    // Back as it was, as far as it goes: the file's old text, then the folder.
+    let undo = |text: bool| -> Result<(), String> {
+        if let (true, Some(bytes)) = (text, was.as_deref()) {
+            dirs.write(&file, bytes).map_err(|e| format!("SKILL.md is left saying {to}: {e}"))?;
+        }
+        rename_no_replace(&new, &old).map_err(|e| format!("the folder is left at {}: {e}", new.display()))
+    };
+    let failed = |e: String, text: bool| match undo(text) {
+        Ok(()) => Ok((Outcome::RolledBack, Some(e))),
+        Err(left) => Ok((Outcome::RollbackFailed, Some(format!("{e}; and undoing it failed: {left}")))),
+    };
+    if let Some(text) = &rewritten {
         if let Err(e) = dirs.write(&file, text.as_bytes()) {
-            undo(None);
-            return Err(e);
+            return failed(e, false);
         }
     }
-    if let Err(e) = crate::settings::update(|s| rename_skill(&mut s.library, &from, &to)) {
-        undo(was.as_deref());
-        return Err(e);
+    if let Err(e) = settings(&|lib| rename_skill(lib, from, to)) {
+        return failed(e, rewritten.is_some());
     }
-    crate::log::info("library", &format!("skill {from} renamed {to}"));
-    overview_locked(true)
+    Ok((Outcome::Committed, None))
 }
 
 /// New instructions, blank and going nowhere until written and picked for an
@@ -1075,6 +1159,79 @@ mod tests {
         std::fs::remove_file(f.dirs.instructions_file("fresh")).unwrap();
         let rev = Some(sha256_hex(b"made meanwhile"));
         assert!(still_as_read(&f.dirs, &new, &root, rev.as_deref(), false).unwrap().unwrap_err().0.contains("deleted"));
+    }
+
+    /// A rename moves the folder and the whole `name` of SKILL.md, folded
+    /// value and all, and its left-out places; refused with nothing changed
+    /// where the new name is taken, a link is in the skill, or the name
+    /// cannot be rewritten; undone where the settings fail.
+    #[test]
+    fn a_skill_is_renamed_whole_or_put_back() {
+        let f = Fixture::new("rename-skill");
+        let skill = |name: &str, text: &str| write_file(&f.dirs.skills().join(name).join(SKILL_FILE), text.as_bytes()).unwrap();
+        skill("review", "---\nname: >-\n  review\ndescription: Reviews.\n---\nBody\n");
+        let mut lib = LibrarySettings {
+            skills: skills(&["review"]),
+            skipped: vec![f.account(0).join("skills").join("review").to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let ok = |lib: &mut LibrarySettings| {
+            let mut held = std::mem::take(lib);
+            let out = rename_skill_in(&f.dirs, "review", "check", |change| {
+                change(&mut held);
+                Ok(())
+            });
+            *lib = held;
+            out
+        };
+        assert_eq!(ok(&mut lib).unwrap(), (Outcome::Committed, None));
+        let text = std::fs::read_to_string(f.dirs.skills().join("check").join(SKILL_FILE)).unwrap();
+        assert!(check_skill("check", &text).is_ok(), "{text}");
+        assert!(!text.contains("  review"), "the folded value's lines go: {text}");
+        assert!(!f.dirs.skills().join("review").exists());
+        assert!(lib.skills.contains_key("check"));
+        assert!(lib.skipped[0].ends_with("check"), "{:?}", lib.skipped);
+
+        // The settings fail: the file and the folder are put back.
+        let before = std::fs::read(f.dirs.skills().join("check").join(SKILL_FILE)).unwrap();
+        let out = rename_skill_in(&f.dirs, "check", "audit", |_| Err("no settings".into())).unwrap();
+        assert_eq!(out.0, Outcome::RolledBack);
+        assert_eq!(std::fs::read(f.dirs.skills().join("check").join(SKILL_FILE)).unwrap(), before);
+        assert!(!f.dirs.skills().join("audit").exists());
+
+        // Taken: refused, nothing moves.
+        skill("audit", "---\nname: audit\ndescription: Audits.\n---\n");
+        assert!(rename_skill_in(&f.dirs, "check", "audit", |_| Ok(())).unwrap_err().contains("already"));
+        // Two names in the front matter are rewritten together.
+        skill("twice", "---\nname: twice\ndescription: x\nname: twice\n---\n");
+        assert_eq!(rename_skill_in(&f.dirs, "twice", "once", |_| Ok(())).unwrap().0, Outcome::Committed);
+        let text = std::fs::read_to_string(f.dirs.skills().join("once").join(SKILL_FILE)).unwrap();
+        assert!(check_skill("once", &text).is_ok(), "{text}");
+        // A link inside the skill: refused before anything moves.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(f.account(0), f.dirs.skills().join("audit").join("out")).unwrap();
+            assert!(rename_skill_in(&f.dirs, "audit", "other", |_| Ok(())).unwrap_err().contains("link"));
+            assert!(f.dirs.skills().join("audit").is_dir());
+        }
+    }
+
+    /// The no-replace move fails on a name taken, file or folder, and leaves
+    /// both as they were.
+    #[test]
+    fn a_move_never_replaces_what_is_there() {
+        let f = Fixture::new("rename-no-replace");
+        let (a, b) = (f.base.join("a"), f.base.join("b"));
+        std::fs::create_dir_all(a.join("x")).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        assert!(rename_no_replace(&a, &b).is_err(), "an empty folder of the name is not replaced");
+        assert!(a.join("x").is_dir());
+        std::fs::remove_dir(&b).unwrap();
+        std::fs::write(&b, "file").unwrap();
+        assert!(rename_no_replace(&a, &b).is_err());
+        std::fs::remove_file(&b).unwrap();
+        rename_no_replace(&a, &b).unwrap();
+        assert!(b.join("x").is_dir() && !a.exists());
     }
 
     /// A FIFO at an instructions file's name holds neither the read nor a

@@ -84,6 +84,44 @@ pub(super) fn write_copy(path: &Path, bytes: &[u8]) -> Result<(), String> {
     })
 }
 
+/// `from` renamed `to` only where nothing is at `to`, the check and the move
+/// one step of the OS's: a name taken meanwhile fails the move rather than
+/// being replaced (Windows' `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`,
+/// Linux's `renameat2(RENAME_NOREPLACE)`, macOS's `renamex_np(RENAME_EXCL)`).
+/// A file system that cannot do it refuses the move.
+pub(super) fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use windows::core::HSTRING;
+        use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVE_FILE_FLAGS};
+        // SAFETY: both names are HSTRINGs alive through the call.
+        unsafe { MoveFileExW(&HSTRING::from(from.as_os_str()), &HSTRING::from(to.as_os_str()), MOVE_FILE_FLAGS(0)) }
+            .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 & 0xFFFF))
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+        let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+        // SAFETY: both are NUL-terminated strings alive through the call.
+        #[cfg(target_os = "linux")]
+        let moved = unsafe { libc::renameat2(libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE) };
+        // SAFETY: as above.
+        #[cfg(target_os = "macos")]
+        let moved = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+        if moved == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (from, to);
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no rename that refuses to replace on this system"))
+    }
+}
+
 /// Folders under `dir` that hold nothing any more, deepest first.
 pub(super) fn prune_empty(dir: &Path) {
     if let Ok(entries) = std::fs::read_dir(dir) {
