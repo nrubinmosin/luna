@@ -40,10 +40,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   are back; its exit and refused keys are said in the terminal, and it waits
   for a core being found or replaced and starts its chat over in the next
   one, or after the core's start-over (a shutdown of the PC called off).
-  Pasted text loses its control characters (but tabs and line breaks) with
+  A reattach to a core that numbers its output takes what came after the
+  backlog exactly, nothing twice and nothing missed, and says it is
+  reattaching; one that misses output, fails or takes past 15 s starts
+  over rather than take keys without the CLI's modes. Pasted text loses its
+  control characters (but tabs and line breaks), DEL among them, with
   bracketed paste off as well as on, and keys typed while a paste reads the
-  clipboard go after it. Output it cannot keep up with is dropped and said,
-  never held without bound, and a synchronized update left open is drawn at
+  clipboard go after it, encoded by the modes they go with; a clipboard
+  that does not answer in 5 s loses its paste, said in the terminal, and
+  what waits behind pastes is bounded. Output it cannot keep up with is
+  dropped and said, never held without bound, and a synchronized update left open is drawn at
   its deadline. The test build's driver and stand-in clipboard are compiled
   into the test build alone (the `luna_test` cfg).
 - The native window's chats and boards: the sidebar of the board's chats by
@@ -71,7 +77,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   program's queries (sizes, colors, device attributes): the core writes them
   straight to the PTY and does not count them as a person typing or as a
   draft. The native window's terminal sends its replies so; the page sends
-  none.
+  none. Only a write that is one such answer whole is taken for one;
+  anything else so marked goes as keys, held and counted as they are.
+- Each `pty://output` chunk carries `offset`, where its text starts in all
+  the session has sent, and a start that reattaches answers with
+  `backlogEnd`, the offset its backlog ends at, and `modes`, the session's
+  modes as of there (UTF-8 mouse, 1005, now kept among them): the native
+  window's terminal takes the output after the backlog exactly. The page
+  ignores them.
 
 - The desktop services the native window of 0.20 uses in place of
   Tauri's plugins (`src-tauri/src/desktop/`,

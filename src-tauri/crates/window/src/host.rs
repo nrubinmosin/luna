@@ -45,9 +45,11 @@ pub trait Host: crate::desktop::Desktop + Send + Sync + 'static {
 /// the thread that reads it to the sink, and the pane has the window draw once
 /// it has parsed (a `Mailbox::run_on_ui`, or a notify of its entity).
 pub trait OutputSink: Send + Sync + 'static {
-    /// The session's output, in the order it came. False once the pane is
-    /// gone: the host lets go of the sink.
-    fn bytes(&self, data: &[u8]) -> bool;
+    /// The session's output, in the order it came, and where its text starts
+    /// in all the session has sent (`pty://output`'s `offset`, UTF-8 bytes),
+    /// when the core says. False once the pane is gone: the host lets go of
+    /// the sink.
+    fn bytes(&self, data: &[u8], offset: Option<u64>) -> bool;
 }
 
 /// The commands the window names.

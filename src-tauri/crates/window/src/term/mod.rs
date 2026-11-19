@@ -12,15 +12,21 @@
 //!   replaced or found again under it (a new epoch, models.rs `CoreLink`)
 //!   and the core's own `pty://start-over` start it over, as the page's
 //!   `startOver` does. A reattach replays the core's backlog, wipes it and
-//!   puts the session's modes back before any live output, and takes no
-//!   input until then (`started`). Its exit and the input it refused are
-//!   said in the pane.
+//!   puts the session's modes back, then the output from the backlog's end
+//!   on, exactly, by the offsets the core numbers it with (`replay_at`;
+//!   from an older core, it drops what came meanwhile, `replay`). It says
+//!   it is reattaching, takes no input until the modes are parsed, and
+//!   starts over if output was missed, the modes cannot be read or it takes
+//!   past `REATTACH_WAIT`. Its exit and the input it refused are said in the
+//!   pane.
 //! - Keys (keys.rs), the mouse (mouse.rs), the IME, paste and drop
 //!   (paste.rs) go to the session as `write_session`, its size as
 //!   `resize_session` (io.rs); selection and scrollback stay in the pane.
-//!   What is typed while a paste waits for the clipboard goes after the
-//!   paste (`send_input`); replies to the program's queries go on a lane of
-//!   their own, not counted as typing (`Io::reply`).
+//!   What is typed while a paste waits for the clipboard (`CLIPBOARD_WAIT`
+//!   at most) goes after the paste, `QUEUE_MAX` of it at most, keys encoded
+//!   only as they go (`send_input`); replies to the program's queries go on
+//!   a lane of their own, not counted as typing, and are not held back with
+//!   the input (`Io::reply`).
 //! - It paints with element.rs, in the window's theme (colors.rs).
 
 mod boxdraw;
@@ -49,6 +55,7 @@ use alacritty_terminal::term::TermMode;
 use element::{Geom, Metrics, TermElement};
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
+use futures::future::Either;
 use gpui::prelude::*;
 use gpui::{
     App, Bounds, Context, DragMoveEvent, EntityInputHandler, ExternalPaths, FocusHandle, Focusable, KeyBinding, KeyDownEvent, MouseButton,
@@ -85,6 +92,19 @@ const RESIZE_RETRY: Duration = Duration::from_millis(250);
 /// The most of the parser's messages the window's thread takes in one turn.
 const UI_BATCH: usize = 64;
 
+/// How long a reattach may take to have its backlog and the session's modes
+/// parsed: past it, the pane starts the session over rather than take input
+/// with modes it does not know.
+const REATTACH_WAIT: Duration = Duration::from_secs(15);
+
+/// How long a paste waits for the clipboard: past it, the paste is dropped,
+/// said in the pane, and what waited behind it goes.
+const CLIPBOARD_WAIT: Duration = Duration::from_secs(5);
+
+/// The most input waiting behind pastes still reading the clipboard: past
+/// it, more is dropped, and said once.
+const QUEUE_MAX: usize = 256;
+
 /// The keys the pane takes before the session sees them, as the page's
 /// terminal has them (src/features/panes/terminal/keys.ts and the WebView's
 /// own clipboard keys): Ctrl+C copies a selection and is ^C without one;
@@ -115,13 +135,20 @@ pub struct SessionSpec {
     pub args: Value,
 }
 
-/// What a start answers (`Attached` in src/ipc/sessions.ts).
+/// What a start answers (`Attached` in src/ipc/sessions.ts, pty/spawn.rs
+/// `Attached`): from a core that numbers its output, also the text offset
+/// the backlog ends at and the session's modes as of there.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Attached {
     #[serde(default)]
     backlog: String,
     #[serde(default)]
     generation: u64,
+    #[serde(default)]
+    backlog_end: Option<u64>,
+    #[serde(default)]
+    modes: Option<String>,
 }
 
 /// Where the pane's session stands.
@@ -141,8 +168,28 @@ pub enum Phase {
 enum Queued {
     /// A paste: its clipboard once read, None if it could not be.
     Paste(u64, Option<Option<Clip>>),
-    /// Typed: keys, the IME, a drop.
+    /// Typed: the IME, a drop.
     Input(String),
+    /// A key, encoded as it goes, by the modes the program has then.
+    Key(HeldKey),
+}
+
+/// A key waiting behind a paste.
+struct HeldKey {
+    key: String,
+    key_char: Option<String>,
+    mods: Mods,
+    prefer_text: bool,
+}
+
+impl HeldKey {
+    fn of(k: &keys::Key) -> HeldKey {
+        HeldKey { key: k.key.to_owned(), key_char: k.key_char.map(str::to_owned), mods: k.mods, prefer_text: k.prefer_text }
+    }
+
+    fn key(&self) -> keys::Key<'_> {
+        keys::Key { key: &self.key, key_char: self.key_char.as_deref(), mods: self.mods, prefer_text: self.prefer_text }
+    }
 }
 
 struct Marked {
@@ -170,9 +217,18 @@ pub struct TermPane {
     ran: bool,
     /// Exits heard while the start was in flight, by spawn number.
     heard: Vec<u64>,
+    /// The start (`asked`) whose backlog and modes are on their way to the
+    /// parser: input waits for them, and the pane says it is reattaching.
+    attaching: Option<u64>,
+    /// The parser's number for the last hold (`Parser::hold`), which a gap
+    /// it tells of carries.
+    round: u64,
     marked: Option<Marked>,
     /// Input held behind a paste still reading the clipboard, in order.
     queue: VecDeque<Queued>,
+    /// Input past `QUEUE_MAX` was dropped and said, since the queue was
+    /// last empty.
+    queue_full: bool,
     /// Counts the pastes asked, to match a clipboard read to its place.
     pastes: u64,
     selecting: bool,
@@ -221,8 +277,11 @@ impl TermPane {
             asked: 0,
             ran: false,
             heard: Vec::new(),
+            attaching: None,
+            round: 0,
             marked: None,
             queue: VecDeque::new(),
+            queue_full: false,
             pastes: 0,
             selecting: false,
             pressed: [false; 3],
@@ -267,6 +326,8 @@ impl TermPane {
             (false, Phase::Starting | Phase::Live(_)) => {
                 self.phase = Phase::Waiting;
                 self.io.set_live(false);
+                self.attaching = None;
+                self.queue.clear();
                 cx.notify();
             }
             _ => cx.notify(),
@@ -282,8 +343,24 @@ impl TermPane {
         } else {
             self.phase = Phase::Waiting;
             self.io.set_live(false);
+            self.attaching = None;
+            self.queue.clear();
             cx.notify();
         }
+    }
+
+    /// The attach of start `asked` went wrong (`why`): the session is asked
+    /// for again, at once or once the core is up, rather than take input
+    /// with modes the pane does not know or output it missed.
+    fn start_again(&mut self, why: &str, cx: &mut Context<Self>) {
+        log::warn!("{} {}: {why}; starting it over", self.spec.start, self.spec.id);
+        self.start_over(cx);
+    }
+
+    /// Whether start `asked` is still the pane's, in the core it was asked
+    /// in: an answer or a completion of anything older is dropped.
+    fn current(&self, asked: u64, cx: &App) -> bool {
+        asked == self.asked && self.epoch == self.models.core.read(cx).epoch()
     }
 
     /// Asks the core for the session: started, or reattached if it runs. Its
@@ -295,6 +372,7 @@ impl TermPane {
         self.io.set_live(false);
         // Typed for the session before: none of it goes to this one.
         self.queue.clear();
+        self.attaching = None;
         self.phase = Phase::Starting;
         self.heard.clear();
         if self.ran {
@@ -302,7 +380,7 @@ impl TermPane {
             // does without it.
             self.parser.notice("\x1bc");
         }
-        self.parser.hold();
+        self.round = self.parser.hold();
         self.models.host.route_output(&self.spec.id, Some(self.parser.sink()));
         let answer = self.models.host.call(self.spec.start, self.spec.args.clone());
         let asked = self.asked;
@@ -315,11 +393,11 @@ impl TermPane {
     }
 
     fn started(&mut self, asked: u64, answer: Result<Value, String>, cx: &mut Context<Self>) {
-        if asked != self.asked || self.phase != Phase::Starting {
+        if !self.current(asked, cx) || self.phase != Phase::Starting {
             return;
         }
         let attached = answer.and_then(|v| serde_json::from_value::<Attached>(v).map_err(|e| e.to_string()));
-        let Attached { backlog, generation } = match attached {
+        let Attached { backlog, generation, backlog_end, modes } = match attached {
             Ok(a) => a,
             // The core went away under the start: it waits for the next.
             Err(_) if self.models.core.read(cx).link().state != LinkState::Up => {
@@ -346,54 +424,130 @@ impl TermPane {
             self.exited(cx);
             return;
         }
-        if backlog.is_empty() {
+        if backlog.is_empty() && backlog_end.unwrap_or(0) == 0 {
             // A fresh session: its PTY starts at a placeholder size, so this
-            // is its first real resize, and the CLI paints itself.
-            self.parser.attach(Vec::new(), true);
+            // is its first real resize, and the CLI paints itself. What it
+            // printed meanwhile is all there is, from its first byte on.
+            let whole = match backlog_end {
+                Some(end) => self.parser.attach_at(Vec::new(), Vec::new(), end),
+                None => {
+                    self.parser.attach(Vec::new(), true);
+                    true
+                }
+            };
+            if !whole {
+                self.start_again("output was missed while it started", cx);
+                return;
+            }
             self.io.set_live(true);
+            self.io.set_typing(true);
             cx.notify();
             return;
         }
-        self.replay(asked, backlog, cx);
+        match (backlog_end, modes) {
+            (Some(end), Some(modes)) => self.replay_at(asked, backlog, end, modes, cx),
+            _ => self.replay(asked, backlog, cx),
+        }
     }
 
     /// Reattached to a running session, as the page's `replayTail` does: the
     /// backlog is a tail whose start (the switch to the alternate screen, the
     /// modes the CLI set) was trimmed long ago, so it is replayed, then wiped,
-    /// the modes the core kept for the session put back, and the CLI asked to
-    /// paint its screen again. What came in since the start was asked is
-    /// dropped (`Parser::attach`): the repaint draws the screen whole. Keys
-    /// and pastes wait for the modes (bracketed paste above all): the session
-    /// takes input once they are parsed.
+    /// the modes as of its end put back, and the CLI asked to paint its
+    /// screen again. The core numbers its output, so what came from the
+    /// backlog's end on goes after, cut there: nothing twice, nothing missed,
+    /// and a query in it answered once (`Parser::attach_at`). So does an
+    /// escape the backlog ends inside of, whose rest is in that output. The
+    /// replies go from here; keys and pastes wait for the modes (bracketed
+    /// paste above all).
+    fn replay_at(&mut self, asked: u64, backlog: String, end: u64, modes: String, cx: &mut Context<Self>) {
+        let mut before = backlog.into_bytes();
+        let unfinished = before.split_off(parser::unfinished_escape(&before));
+        before.extend_from_slice(b"\x1bc");
+        before.extend_from_slice(modes.as_bytes());
+        if !self.parser.attach_at(before, unfinished, end) {
+            self.start_again("output was missed after the backlog", cx);
+            return;
+        }
+        self.begin_attach(asked, cx);
+        self.io.set_live(true);
+        self.await_replay(asked, cx);
+    }
+
+    /// `replay_at` from a core that does not number its output: the modes
+    /// are asked for apart, and what came in since the start was asked is
+    /// dropped (`Parser::attach`), as some of it is in the backlog already
+    /// and the modes may be newer than the rest; the repaint draws the
+    /// screen whole.
     fn replay(&mut self, asked: u64, backlog: String, cx: &mut Context<Self>) {
+        self.begin_attach(asked, cx);
         let modes = self.models.host.call(cmd::SESSION_MODES, json!({ "id": self.spec.id }));
         cx.spawn(async move |this, cx| {
-            let modes = modes.await.ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+            let modes = modes.await;
             let _ = this.update(cx, |this, cx| {
-                if asked != this.asked {
+                if !this.attaching_now(asked, cx) {
                     return;
                 }
+                let Some(modes) = modes.ok().and_then(|v| v.as_str().map(str::to_owned)) else {
+                    this.start_again("the session's modes could not be read", cx);
+                    return;
+                };
                 let mut before = backlog.into_bytes();
                 before.extend_from_slice(b"\x1bc");
                 before.extend_from_slice(modes.as_bytes());
                 this.parser.attach(before, false);
-                // Live once the parser has the modes: a key read against the
-                // Term before that would miss them.
-                let parsed = this.parser.parsed();
-                cx.spawn(async move |this, cx| {
-                    let _ = parsed.await;
-                    let _ = this.update(cx, |this, cx| {
-                        if asked == this.asked && this.phase != Phase::Ended {
-                            this.io.set_live(true);
-                            this.nudge_repaint(cx);
-                            cx.notify();
-                        }
-                    });
-                })
-                .detach();
+                this.io.set_live(true);
+                this.await_replay(asked, cx);
             });
         })
         .detach();
+    }
+
+    /// Start `asked` reattaches: the pane says so, takes no input until it
+    /// is through (`replayed`), and starts over if it is not within
+    /// `REATTACH_WAIT`.
+    fn begin_attach(&mut self, asked: u64, cx: &mut Context<Self>) {
+        self.attaching = Some(asked);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(REATTACH_WAIT).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.attaching_now(asked, cx) {
+                    this.start_again("the reattach did not finish in time", cx);
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Whether the reattach of start `asked` is still under way: not one
+    /// the pane has left since (another start, the core gone, the session
+    /// ended).
+    fn attaching_now(&self, asked: u64, cx: &App) -> bool {
+        self.attaching == Some(asked) && self.current(asked, cx) && matches!(self.phase, Phase::Live(_))
+    }
+
+    /// Once the parser has the replay and the modes, the reattach is through.
+    fn await_replay(&mut self, asked: u64, cx: &mut Context<Self>) {
+        let parsed = self.parser.parsed();
+        cx.spawn(async move |this, cx| {
+            let _ = parsed.await;
+            let _ = this.update(cx, |this, cx| this.replayed(asked, cx));
+        })
+        .detach();
+    }
+
+    /// The modes are parsed: input goes from here, a key read against the
+    /// Term before that would have missed them; the CLI is asked to paint
+    /// its screen again.
+    fn replayed(&mut self, asked: u64, cx: &mut Context<Self>) {
+        if !self.attaching_now(asked, cx) {
+            return;
+        }
+        self.attaching = None;
+        self.io.set_typing(true);
+        self.nudge_repaint(cx);
+        cx.notify();
     }
 
     /// Makes the CLI paint its screen again: it paints on input or on a
@@ -423,6 +577,8 @@ impl TermPane {
 
     fn exited(&mut self, cx: &mut Context<Self>) {
         self.io.set_live(false);
+        self.attaching = None;
+        self.queue.clear();
         self.phase = Phase::Ended;
         self.parser.notice("\r\n\x1b[2m[session exited]\x1b[0m\r\n");
         cx.notify();
@@ -438,9 +594,11 @@ impl TermPane {
     }
 
     fn on_msgs(&mut self, batch: Vec<UiMsg>, cx: &mut Context<Self>) {
-        let mut redraw = false;
+        let (mut redraw, mut gap) = (false, false);
         for msg in batch {
             match msg {
+                // Of this start's attach, and the session runs.
+                UiMsg::Gap(round) => gap |= round == self.round && matches!(self.phase, Phase::Live(_)),
                 UiMsg::Wake => {
                     self.parser.took_wake();
                     #[cfg(feature = "shots")]
@@ -476,7 +634,9 @@ impl TermPane {
                 }
             }
         }
-        if redraw {
+        if gap {
+            self.start_again("output was missed after the backlog", cx);
+        } else if redraw {
             cx.notify();
         }
     }
@@ -489,13 +649,46 @@ impl TermPane {
         *self.parser.term.lock().mode()
     }
 
-    /// Input for the session, from the keyboard, the IME or a drop: typed
-    /// now, or, while a paste waits for the clipboard, after it.
+    /// Input for the session, from the IME or a drop: typed now, or, while a
+    /// paste waits for the clipboard, after it; dropped while the session
+    /// takes none.
     fn send_input(&mut self, text: &str, cx: &mut Context<Self>) {
+        if !self.io.takes_input() {
+            return;
+        }
         if self.queue.is_empty() {
             self.type_in(text, cx);
         } else {
-            self.queue.push_back(Queued::Input(text.to_owned()));
+            self.enqueue(Queued::Input(text.to_owned()), cx);
+        }
+    }
+
+    /// `q` behind the pastes still reading the clipboard, up to `QUEUE_MAX`:
+    /// past it, dropped and said, once until the queue is empty again.
+    fn enqueue(&mut self, q: Queued, cx: &mut Context<Self>) -> bool {
+        if self.queue.is_empty() {
+            self.queue_full = false;
+        }
+        if self.queue.len() >= QUEUE_MAX {
+            if !self.queue_full {
+                self.queue_full = true;
+                let said = "[input dropped: too much typed while a paste waits]";
+                self.parser.notice(&format!("\r\n\x1b[31m{said}\x1b[0m\r\n"));
+                cx.notify();
+            }
+            return false;
+        }
+        self.queue.push_back(q);
+        true
+    }
+
+    /// The modes keys are encoded by, as the program has them now.
+    fn key_modes(&self) -> keys::Modes {
+        let mode = self.mode();
+        keys::Modes {
+            app_cursor: mode.contains(TermMode::APP_CURSOR),
+            app_keypad: mode.contains(TermMode::APP_KEYPAD),
+            newline: mode.contains(TermMode::LINE_FEED_NEW_LINE),
         }
     }
 
@@ -537,16 +730,22 @@ impl TermPane {
             cx.notify();
             return;
         }
-        let mode = self.mode();
-        let modes = keys::Modes {
-            app_cursor: mode.contains(TermMode::APP_CURSOR),
-            app_keypad: mode.contains(TermMode::APP_KEYPAD),
-            newline: mode.contains(TermMode::LINE_FEED_NEW_LINE),
-        };
         let key = keys::Key { key: &ks.key, key_char: ks.key_char.as_deref(), mods, prefer_text: ev.prefer_character_input };
-        if let Some(bytes) = keys::encode(&key, modes) {
-            self.send_input(&String::from_utf8_lossy(&bytes), cx);
-            cx.stop_propagation();
+        // Whether it is a key the terminal sends at all, whatever the modes.
+        if keys::encode(&key, keys::Modes::default()).is_none() {
+            return;
+        }
+        cx.stop_propagation();
+        // Encoded only by modes known: while the session takes no input (a
+        // reattach before its modes are parsed) the key goes nowhere, and
+        // behind a paste it waits as a key, encoded as it goes.
+        if !self.io.takes_input() {
+            return;
+        }
+        if !self.queue.is_empty() {
+            self.enqueue(Queued::Key(HeldKey::of(&key)), cx);
+        } else if let Some(bytes) = keys::encode(&key, self.key_modes()) {
+            self.type_in(&String::from_utf8_lossy(&bytes), cx);
         }
     }
 
@@ -585,31 +784,50 @@ impl TermPane {
     }
 
     /// What the host's clipboard holds, read off the window's thread, typed
-    /// in once it is there; what is typed meanwhile waits behind it.
+    /// in once it is there; what is typed meanwhile waits behind it. A read
+    /// not back within `CLIPBOARD_WAIT` is given up on: its answer, if it
+    /// ever comes, is dropped with it.
     fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.io.takes_input() {
+            return;
+        }
         self.pastes += 1;
         let id = self.pastes;
-        self.queue.push_back(Queued::Paste(id, None));
+        if !self.enqueue(Queued::Paste(id, None), cx) {
+            return;
+        }
         let read = self.models.host.read_clipboard();
+        let timer = Box::pin(cx.background_executor().timer(CLIPBOARD_WAIT));
         cx.spawn(async move |this, cx| {
-            let clip = read.await.inspect_err(|e| log::warn!("paste: {e}")).ok();
+            let clip = match futures::future::select(read, timer).await {
+                Either::Left((read, _)) => Some(read.inspect_err(|e| log::warn!("paste: {e}")).ok()),
+                Either::Right(_) => None,
+            };
             let _ = this.update(cx, |this, cx| this.pasted(id, clip, cx));
         })
         .detach();
     }
 
-    /// Paste `id`'s clipboard is read (None: it could not be, and the paste
-    /// types nothing): it, and what waited behind it up to the next paste
-    /// still reading, are typed in order. A paste from before the session's
-    /// last start is gone from the queue, and types nothing.
-    fn pasted(&mut self, id: u64, clip: Option<Clip>, cx: &mut Context<Self>) {
+    /// Paste `id`'s clipboard is read (Some(None): it could not be, and the
+    /// paste types nothing; None: it was not read in time, and the pane says
+    /// so): it, and what waited behind it up to the next paste still
+    /// reading, are typed in order, keys encoded by the modes the program
+    /// has now. A paste from before the session's last start is gone from
+    /// the queue, and types nothing.
+    fn pasted(&mut self, id: u64, read: Option<Option<Clip>>, cx: &mut Context<Self>) {
         let Some(slot) = self.queue.iter_mut().find_map(|q| match q {
             Queued::Paste(n, slot) if *n == id => Some(slot),
             _ => None,
         }) else {
             return;
         };
-        *slot = Some(clip);
+        let late = read.is_none();
+        *slot = Some(read.flatten());
+        if late {
+            let said = format!("[paste dropped: the clipboard did not answer in {} s]", CLIPBOARD_WAIT.as_secs());
+            self.parser.notice(&format!("\r\n\x1b[31m{said}\x1b[0m\r\n"));
+            cx.notify();
+        }
         while self.queue.front().is_some_and(|q| !matches!(q, Queued::Paste(_, None))) {
             match self.queue.pop_front() {
                 Some(Queued::Paste(_, Some(Some(clip)))) => {
@@ -618,6 +836,11 @@ impl TermPane {
                     }
                 }
                 Some(Queued::Input(text)) => self.type_in(&text, cx),
+                Some(Queued::Key(key)) => {
+                    if let Some(bytes) = keys::encode(&key.key(), self.key_modes()) {
+                        self.type_in(&String::from_utf8_lossy(&bytes), cx);
+                    }
+                }
                 _ => {}
             }
         }
@@ -820,6 +1043,7 @@ impl TermPane {
             (Phase::Waiting, LinkState::Starting) => Some("Waiting for Luna's core: the session starts once it is up."),
             (Phase::Waiting, _) => Some("Waiting for Luna's core: the session starts once it runs again."),
             (Phase::Starting, _) => Some("Starting the session..."),
+            (Phase::Live(_), _) if self.attaching.is_some() => Some("Reattaching to the session..."),
             _ => None,
         }
     }

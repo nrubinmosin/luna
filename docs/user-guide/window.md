@@ -92,9 +92,13 @@ input. What it does, and how it differs from the WebView window's terminal:
 - **Paste:** Ctrl+V, Ctrl+Shift+V or Shift+Insert (Cmd+V on macOS). Text goes
   in as a paste the CLI can tell from typing, without the control characters
   it may hold (all but tabs and line breaks), so a pasted text never acts as
-  keys. What you type while a paste is on its way goes in after it. While
-  the terminal is coming back to a running chat it takes no keys until it
-  has caught up.
+  keys. What you type while a paste is on its way goes in after it. If the
+  clipboard does not answer within 5 seconds the paste is dropped, the
+  terminal says `[paste dropped: …]`, and what you typed goes on. While
+  the terminal is coming back to a running chat it says
+  `Reattaching to the session...` and takes no keys until it has caught up;
+  if that takes too long, or output went missing on the way, it starts the
+  chat over.
 - **Files:** files copied in Explorer and pasted, or dropped on a terminal from
   outside the window, are typed in as their paths, each in quotes, the way
   the CLI attaches them. Unlike the WebView window, nothing is copied into

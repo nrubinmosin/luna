@@ -127,16 +127,17 @@ impl Outputs {
         !self.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
 
-    /// One `pty://output` payload, `{ id, data }`, to its session's sink. A
-    /// sink that says it is gone is let go of, unless another was routed in
-    /// its place meanwhile.
+    /// One `pty://output` payload, `{ id, data, offset }`, to its session's
+    /// sink. A sink that says it is gone is let go of, unless another was
+    /// routed in its place meanwhile.
     fn feed(&self, payload: &Value) {
         let (Some(id), Some(data)) = (payload.get("id").and_then(Value::as_str), payload.get("data").and_then(Value::as_str)) else {
             return;
         };
+        let offset = payload.get("offset").and_then(Value::as_u64);
         let sink = self.0.lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned();
         let Some(sink) = sink else { return };
-        if !sink.bytes(data.as_bytes()) {
+        if !sink.bytes(data.as_bytes(), offset) {
             let mut sinks = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if sinks.get(id).is_some_and(|s| Arc::ptr_eq(s, &sink)) {
                 sinks.remove(id);
@@ -543,11 +544,12 @@ mod tests {
         assert!(include_str!("pty/spawn.rs").contains(&format!("\"{output}\"")), "{output} is sent nowhere");
     }
 
-    struct Pane(Mutex<Vec<u8>>, bool);
+    struct Pane(Mutex<Vec<u8>>, bool, Mutex<Vec<Option<u64>>>);
 
     impl OutputSink for Pane {
-        fn bytes(&self, data: &[u8]) -> bool {
+        fn bytes(&self, data: &[u8], offset: Option<u64>) -> bool {
             self.0.lock().unwrap().extend_from_slice(data);
+            self.2.lock().unwrap().push(offset);
             self.1
         }
     }
@@ -561,15 +563,16 @@ mod tests {
         assert!(!wanted("agents://changed"));
         assert!(!wanted(luna_window::event::PTY_OUTPUT), "no sink routed");
         let outputs = Outputs::default();
-        let (a, b) = (Arc::new(Pane(Mutex::default(), true)), Arc::new(Pane(Mutex::default(), false)));
+        let (a, b) = (Arc::new(Pane(Mutex::default(), true, Mutex::default())), Arc::new(Pane(Mutex::default(), false, Mutex::default())));
         outputs.route("a", Some(a.clone()));
         outputs.route("b", Some(b.clone()));
         assert!(outputs.any());
-        outputs.feed(&json!({ "id": "a", "data": "hello " }));
+        outputs.feed(&json!({ "id": "a", "data": "hello ", "offset": 0 }));
         outputs.feed(&json!({ "id": "c", "data": "nobody's" }));
         outputs.feed(&json!({ "id": "a", "data": "world" }));
         outputs.feed(&json!({ "id": "a" }));
         assert_eq!(*a.0.lock().unwrap(), b"hello world");
+        assert_eq!(*a.2.lock().unwrap(), [Some(0), None], "the offset, where the core sent one");
         // A sink that says it is gone is let go of after its last chunk.
         outputs.feed(&json!({ "id": "b", "data": "x" }));
         outputs.feed(&json!({ "id": "b", "data": "y" }));

@@ -19,6 +19,9 @@ pub struct FakeHost {
     outputs: Mutex<HashMap<String, Arc<dyn OutputSink>>>,
     /// Sends of a command it refuses yet, by name (`refuse`).
     refusals: Mutex<HashMap<String, usize>>,
+    /// Calls of a command left unanswered until the test answers them
+    /// (`defer`, `resolve`), by name, oldest first.
+    deferred: Mutex<HashMap<String, Vec<futures::channel::oneshot::Sender<Result<Value, String>>>>>,
     /// Its desktop (desktop.rs `FakeDesktop`).
     pub desktop: crate::desktop::FakeDesktop,
 }
@@ -58,17 +61,40 @@ impl FakeHost {
         self.refusals.lock().unwrap().insert(cmd.to_owned(), times);
     }
 
+    /// Leaves the calls of `cmd` from now on unanswered until `resolve`.
+    pub fn defer(&self, cmd: &str) {
+        self.deferred.lock().unwrap().insert(cmd.to_owned(), Vec::new());
+    }
+
+    /// Answers the oldest call of `cmd` still unanswered: false when there
+    /// is none, or its caller has stopped waiting.
+    pub fn resolve(&self, cmd: &str, answer: Result<Value, String>) -> bool {
+        let waiting = self.deferred.lock().unwrap().get_mut(cmd).filter(|w| !w.is_empty()).map(|w| w.remove(0));
+        waiting.is_some_and(|tx| tx.send(answer).is_ok())
+    }
+
     /// Output for `session`, as a host's reader hands it over: false when no
     /// sink is routed or it is gone.
     pub fn output(&self, session: &str, data: &[u8]) -> bool {
+        self.output_at(session, data, None)
+    }
+
+    /// `output`, as a core that numbers its output sends it: the text starts
+    /// at `offset`.
+    pub fn output_at(&self, session: &str, data: &[u8], offset: Option<u64>) -> bool {
         let sink = self.outputs.lock().unwrap().get(session).cloned();
-        sink.is_some_and(|s| s.bytes(data))
+        sink.is_some_and(|s| s.bytes(data, offset))
     }
 }
 
 impl Host for FakeHost {
     fn call(&self, cmd: &str, args: Value) -> Answer {
         self.calls.lock().unwrap().push((cmd.to_owned(), args));
+        if let Some(waiting) = self.deferred.lock().unwrap().get_mut(cmd) {
+            let (tx, rx) = futures::channel::oneshot::channel();
+            waiting.push(tx);
+            return Box::pin(async move { rx.await.unwrap_or_else(|_| Err("no answer".into())) });
+        }
         let answer = self.answers.lock().unwrap().get(cmd).cloned().unwrap_or(Value::Null);
         Box::pin(async move { Ok(answer) })
     }
@@ -163,6 +189,13 @@ pub fn attached(backlog: &str, generation: u64) -> Value {
 /// The demo terminal's chat, a Claude Code one, and its session.
 pub const DEMO_CHAT: &str = "demo-1";
 
+/// `attached` from a core that numbers its output: the text offset the
+/// backlog ends at, and the modes as of there.
+pub fn attached_at(backlog: &str, generation: u64, end: u64, modes: &str) -> Value {
+    json!({ "backlog": backlog, "generation": generation, "backlogEnd": end, "modes": modes })
+}
+
+/// The demo chat's session.
 pub fn session() -> SessionSpec {
     SessionSpec { id: DEMO_CHAT.into(), provider: Provider::Claude, start: cmd::ENSURE_CLAUDE_SESSION, args: json!({ "id": DEMO_CHAT }) }
 }

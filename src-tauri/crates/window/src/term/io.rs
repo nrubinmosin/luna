@@ -3,7 +3,10 @@
 //! they are made. Only while the session runs, as the page's `ptySender`
 //! gates them: before its start answers, or after it exited, there is no
 //! session to take them, and a write would come back as "no such session".
-//! The size is kept meanwhile and sent once it runs.
+//! The size is kept meanwhile and sent once it runs. Input (keys, pastes,
+//! the mouse, focus) waits on a gate of its own besides (`set_typing`): a
+//! reattach takes none until the session's modes are parsed, while the
+//! replies to queries in what it replays already go.
 //!
 //! A size the host refused to hand over (the core's line was full for a
 //! moment) is not taken for sent: the pane is asked to try again
@@ -28,6 +31,8 @@ pub struct Io {
     host: Arc<dyn Host>,
     id: String,
     live: Cell<bool>,
+    /// Input goes, while live (`set_typing`).
+    typing: Cell<bool>,
     /// The size the pane last laid out at, and the last one the host took.
     size: Cell<Option<PtySize>>,
     sent: Cell<Option<PtySize>>,
@@ -37,13 +42,15 @@ pub struct Io {
 
 impl Io {
     pub fn new(host: Arc<dyn Host>, id: String, retry: UnboundedSender<()>) -> Io {
-        Io { host, id, live: Cell::new(false), size: Cell::new(None), sent: Cell::new(None), retry }
+        Io { host, id, live: Cell::new(false), typing: Cell::new(false), size: Cell::new(None), sent: Cell::new(None), retry }
     }
 
     /// The session runs (or no longer does). Coming alive sends the size the
-    /// pane is at, unless that was sent already.
+    /// pane is at, unless that was sent already; it takes no input until
+    /// `set_typing`.
     pub fn set_live(&self, live: bool) {
         self.live.set(live);
+        self.typing.set(false);
         if live {
             self.flush_size();
         } else {
@@ -52,14 +59,29 @@ impl Io {
         }
     }
 
-    /// Input for the session: dropped while it does not run.
+    /// The session, live, takes input (or no longer does): its modes, which
+    /// keys and pastes are encoded by, are known.
+    pub fn set_typing(&self, on: bool) {
+        self.typing.set(on && self.live.get());
+    }
+
+    /// Whether input goes now: anything typed meanwhile is dropped, not
+    /// encoded against modes not known yet.
+    pub fn takes_input(&self) -> bool {
+        self.live.get() && self.typing.get()
+    }
+
+    /// Input for the session: dropped while it takes none.
     pub fn write(&self, data: &str) {
-        self.write_as(data, false);
+        if self.takes_input() {
+            self.write_as(data, false);
+        }
     }
 
     /// A reply to the program's query (a size, a color, the device's
     /// attributes): sent with `reply`, so the core does not count it as a
-    /// person typing (pty/control.rs `write_session`).
+    /// person typing (pty/control.rs `write_session`); while the session
+    /// runs, input or not.
     pub fn reply(&self, data: &str) {
         self.write_as(data, true);
     }

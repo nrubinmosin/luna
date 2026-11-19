@@ -48,7 +48,7 @@ pub(crate) use start::{
 
 use crate::provider::Provider;
 use portable_pty::{ChildKiller, PtySize};
-use screen::{Drawn, Modes, Scrollback};
+use screen::{Drawn, Modes, Scrollback, Sent};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -253,6 +253,9 @@ struct Session {
     drawn: Arc<Mutex<Drawn>>,
     /// The terminal modes the CLI has switched, whole-session — see `Modes`.
     modes: Arc<Mutex<Modes>>,
+    /// How far its output has gone out as events (see `Sent`), for the
+    /// backlog a pane that attaches is given.
+    sent: Arc<Mutex<Sent>>,
     alive: Arc<AtomicBool>,
     /// When the child last wrote anything — Codex has no live status file, so
     /// a quiet screen mid-turn is how an approval prompt is told apart from

@@ -239,19 +239,19 @@ fn keypad(name: &str, m: Mods, modes: Modes) -> Option<Vec<u8>> {
 /// Text pasted into the terminal: line ends become CR (what Enter sends), and
 /// with bracketed paste (mode 2004) on, it is framed by CSI 200~ / CSI 201~.
 /// In both modes every control character but tab and the line ends is
-/// dropped, C0 and C1 alike: an ESC would end the paste early and type keys
-/// of its own (so would CSI's C1 form, U+009B), an ETX is the end of a paste
-/// to some shells (alacritty 0.17.0 filters both, event.rs `paste`), and a
-/// ^C or ^D in a paste would act as the key.
+/// dropped, C0, DEL and C1 alike: an ESC would end the paste early and type
+/// keys of its own (so would CSI's C1 form, U+009B), an ETX is the end of a
+/// paste to some shells (alacritty 0.17.0 filters both, event.rs `paste`), a
+/// ^C or ^D in a paste would act as the key, and a DEL as Backspace.
 pub fn paste(text: &str, bracketed: bool) -> String {
     let text = text.replace("\r\n", "\r").replace('\n', "\r");
     let clean: String = text.chars().filter(|&c| !pasted_control(c)).collect();
     if bracketed { format!("\x1b[200~{clean}\x1b[201~") } else { clean }
 }
 
-/// A character a paste leaves out: C0 but tab and CR, and C1.
+/// A character a paste leaves out: C0 but tab and CR, DEL, and C1.
 fn pasted_control(c: char) -> bool {
-    matches!(c, '\0'..='\x1f' | '\u{80}'..='\u{9f}') && !matches!(c, '\t' | '\r')
+    matches!(c, '\0'..='\x1f' | '\x7f' | '\u{80}'..='\u{9f}') && !matches!(c, '\t' | '\r')
 }
 
 #[cfg(test)]
@@ -388,8 +388,10 @@ mod tests {
         assert_eq!(paste("a\x03b", true), "\x1b[200~ab\x1b[201~");
         // Unframed too: no ESC to type keys, no ^C or ^D to act as them.
         assert_eq!(paste("a\x03b\x1b[2J\x04", false), "ab[2J");
-        // Tab and the line ends stay; the rest of C0 and all of C1 go.
-        assert_eq!(paste("a\tb\x00\x07\x08\x7f\u{85}\u{9b}31m\u{a0}c", false), "a\tb\x7f31m\u{a0}c");
+        // Tab and the line ends stay; the rest of C0, DEL (Backspace) and
+        // all of C1 go.
+        assert_eq!(paste("a\tb\x00\x07\x08\x7f\u{85}\u{9b}31m\u{a0}c", false), "a\tb31m\u{a0}c");
+        assert_eq!(paste("ab\x7f\x7fc", true), "\x1b[200~abc\x1b[201~");
         assert_eq!(paste("\u{9b}201~x", true), "\x1b[200~201~x\x1b[201~");
     }
 

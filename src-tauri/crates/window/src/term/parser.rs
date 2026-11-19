@@ -9,8 +9,14 @@
 //! never the parsing itself. Once it has parsed, the parser wakes the pane,
 //! once until the pane has drawn: an idle session wakes nothing.
 //!
-//! Until the session's start has answered, the sink holds what comes: a
-//! reattach drops it and parses the backlog in its place (`Parser::attach`).
+//! Until the session's start has answered, the sink holds what comes. A core
+//! that numbers its output (each chunk's text offset) answers with the offset
+//! its backlog ends at: the pane parses the backlog, then what was held from
+//! that offset on, cut there, and what comes after, nothing twice and nothing
+//! missed (`Parser::attach_at`); a chunk that starts past where the backlog
+//! ended means output was missed in between, and the pane starts over
+//! (`UiMsg::Gap`). From an older core, a reattach drops what was held and
+//! parses the backlog in its place (`Parser::attach`).
 //!
 //! Nothing here grows without bound, whatever the program writes (`Budget`):
 //! output held or queued for the parser past `OUTPUT_MAX` bytes, and replies
@@ -73,6 +79,10 @@ pub enum UiMsg {
     /// A reply to the program's query, and what it counts against
     /// `REPLIES_MAX` until the pane has taken it (`Parser::took_reply`).
     Reply(Event, usize),
+    /// Output was missed after the backlog of the attach `Parser::hold`
+    /// numbered so: what comes is held, not parsed, until the pane starts
+    /// over.
+    Gap(u64),
 }
 
 /// What is held or queued, and what was dropped since the pane last said so.
@@ -181,26 +191,102 @@ type OnParsed = Arc<std::sync::OnceLock<Box<dyn Fn(usize) + Send + Sync>>>;
 pub struct Sink {
     state: Mutex<SinkState>,
     budget: Arc<Budget>,
+    /// The pane's end, told of a gap (`UiMsg::Gap`).
+    tx: UnboundedSender<UiMsg>,
 }
 
 struct SinkState {
     jobs: Option<Sender<Job>>,
-    /// Output held until the start answers; None once it has.
-    held: Option<Vec<Vec<u8>>>,
+    /// Output held until the start answers, with its offsets; None once it
+    /// has.
+    held: Option<Vec<Held>>,
+    /// After an attach at an offset (`Parser::attach_at`), until output
+    /// reaches past it: where the backlog ended. Output before it is in the
+    /// backlog; output that starts after it means some was missed.
+    end: Option<u64>,
+    /// Counts the holds (`Parser::hold`), for a gap to say which attach it
+    /// broke.
+    round: u64,
+    /// Where the next chunk starts, by the last one's offset: the core sends
+    /// its output with none missing and none twice, so a chunk elsewhere is
+    /// said in the log.
+    next: Option<u64>,
+}
+
+/// A chunk of output held, and where its text starts in the session's, if
+/// the core said.
+struct Held {
+    data: Vec<u8>,
+    offset: Option<u64>,
+}
+
+/// Where a chunk of `len` bytes at offset `at` stands against a backlog
+/// that ended at `end`.
+#[derive(Debug, PartialEq, Eq)]
+enum Cut {
+    /// All of it is in the backlog.
+    Before,
+    /// It goes on from the backlog's end: from this byte of it.
+    From(usize),
+    /// It starts past the backlog's end: what came in between was missed.
+    Gap,
+}
+
+fn cut(end: u64, at: u64, len: usize) -> Cut {
+    if at > end {
+        Cut::Gap
+    } else if at + len as u64 <= end {
+        Cut::Before
+    } else {
+        Cut::From((end - at) as usize)
+    }
 }
 
 impl OutputSink for Sink {
-    fn bytes(&self, data: &[u8]) -> bool {
+    fn bytes(&self, data: &[u8], offset: Option<u64>) -> bool {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(jobs) = s.jobs.clone() else { return false };
+        if let Some(at) = offset {
+            if let Some(next) = s.next.filter(|n| *n != at) {
+                let what = if at > next { "missing" } else { "twice" };
+                log::warn!("terminal output: a chunk at {at} where {next} was next, some of it {what}");
+            }
+            s.next = Some(at + data.len() as u64);
+        }
         if !Budget::take(&self.budget.output, &self.budget.output_dropped, data.len(), OUTPUT_MAX) {
             return true;
         }
         if let Some(held) = s.held.as_mut() {
-            held.push(data.to_vec());
+            held.push(Held { data: data.to_vec(), offset });
             return true;
         }
-        jobs.send(Job::Live(data.to_vec())).is_ok()
+        let from = match (s.end, offset) {
+            (None, _) => 0,
+            (Some(_), None) => {
+                s.end = None;
+                0
+            }
+            (Some(end), Some(at)) => match cut(end, at, data.len()) {
+                Cut::Before => {
+                    Budget::release(&self.budget.output, data.len());
+                    return true;
+                }
+                Cut::From(i) => {
+                    s.end = None;
+                    Budget::release(&self.budget.output, i);
+                    i
+                }
+                // Nothing more is parsed until the pane starts over.
+                Cut::Gap => {
+                    Budget::release(&self.budget.output, data.len());
+                    s.end = None;
+                    s.held = Some(Vec::new());
+                    let _ = self.tx.unbounded_send(UiMsg::Gap(s.round));
+                    return true;
+                }
+            },
+        };
+        jobs.send(Job::Live(data[from..].to_vec())).is_ok()
     }
 }
 
@@ -215,7 +301,8 @@ impl Parser {
         let term = new_term(listener, cols, rows);
         let (jobs, work) = channel();
         let woken = Arc::new(AtomicBool::new(false));
-        let sink = Arc::new(Sink { state: Mutex::new(SinkState { jobs: Some(jobs.clone()), held: None }), budget: budget.clone() });
+        let state = SinkState { jobs: Some(jobs.clone()), held: None, end: None, round: 0, next: None };
+        let sink = Arc::new(Sink { state: Mutex::new(state), budget: budget.clone(), tx: tx.clone() });
         let thread = Thread { term: term.clone(), quiet, woken: woken.clone(), tx, on_parsed: OnParsed::default(), budget: budget.clone() };
         let on_parsed = thread.on_parsed.clone();
         let spawned = std::thread::Builder::new().name("luna-term-parser".into()).spawn(move || thread.run(work));
@@ -245,13 +332,69 @@ impl Parser {
         Budget::release(&self.budget.replies, cost);
     }
 
-    /// Holds the output that comes from now until `attach`, and drops any
-    /// held for a start that was never answered (its core went away).
-    pub fn hold(&self) {
+    /// Holds the output that comes from now until `attach` or `attach_at`,
+    /// and drops any held for a start that was never answered (its core
+    /// went away): the attach's number.
+    pub fn hold(&self) -> u64 {
         let mut s = self.sink.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(held) = s.held.replace(Vec::new()) {
-            Budget::release(&self.budget.output, held.iter().map(Vec::len).sum());
+            Budget::release(&self.budget.output, held.iter().map(|h| h.data.len()).sum());
         }
+        s.end = None;
+        s.next = None;
+        s.round += 1;
+        s.round
+    }
+
+    /// The session's start answered with a backlog that ends at text offset
+    /// `end`: `before` is parsed first, quiet (the backlog, with no query in
+    /// it answered again, and what the pane puts after it), then `live` (the
+    /// backlog's last escape, left unfinished, so the rest of it finds it
+    /// whole), then what was held from `end` on, cut there, and everything
+    /// after. False, with nothing parsed and output still held, when what
+    /// was held starts past `end`: some was missed, and the pane starts over.
+    pub fn attach_at(&self, before: Vec<u8>, live: Vec<u8>, end: u64) -> bool {
+        let mut s = self.sink.state.lock().unwrap_or_else(|e| e.into_inner());
+        let held = s.held.take().unwrap_or_default();
+        let total: usize = held.iter().map(|h| h.data.len()).sum();
+        let (mut kept, mut dropped, mut boundary) = (Vec::new(), 0, Some(end));
+        for Held { mut data, offset } in held {
+            match (boundary, offset) {
+                (None, _) => kept.push(data),
+                (Some(_), None) => {
+                    boundary = None;
+                    kept.push(data);
+                }
+                (Some(end), Some(at)) => match cut(end, at, data.len()) {
+                    Cut::Before => dropped += data.len(),
+                    Cut::From(i) => {
+                        boundary = None;
+                        dropped += i;
+                        data.drain(..i);
+                        kept.push(data);
+                    }
+                    Cut::Gap => {
+                        Budget::release(&self.budget.output, total);
+                        s.held = Some(Vec::new());
+                        return false;
+                    }
+                },
+            }
+        }
+        Budget::release(&self.budget.output, dropped);
+        log::info!("terminal attached at {end}: {dropped} bytes held were in the backlog, {} chunks go after it", kept.len());
+        s.end = boundary;
+        if !before.is_empty() {
+            let _ = self.jobs.send(Job::Quiet(before));
+        }
+        if !live.is_empty() {
+            self.budget.output.fetch_add(live.len(), Ordering::AcqRel);
+            let _ = self.jobs.send(Job::Live(live));
+        }
+        for chunk in kept {
+            let _ = self.jobs.send(Job::Live(chunk));
+        }
+        true
     }
 
     /// The session's start answered: `before` is parsed first (a backlog,
@@ -269,10 +412,10 @@ impl Parser {
         }
         if keep_held {
             for chunk in held {
-                let _ = self.jobs.send(Job::Live(chunk));
+                let _ = self.jobs.send(Job::Live(chunk.data));
             }
         } else {
-            Budget::release(&self.budget.output, held.iter().map(Vec::len).sum());
+            Budget::release(&self.budget.output, held.iter().map(|h| h.data.len()).sum());
         }
     }
 
@@ -491,6 +634,30 @@ impl OscCap {
     }
 }
 
+/// Where an escape sequence that `bytes` leaves unfinished starts (its ESC),
+/// or `bytes.len()` when every one is finished: a backlog taken between two
+/// reads of the CLI's output can end inside one, whose rest then comes in the
+/// next chunk. Unfinished: a lone ESC, a CSI with no final byte yet, an OSC
+/// with no BEL yet, a DCS, SOS, PM or APC (each ended only by ST, whose ESC
+/// would be the last), and ESC with intermediates and no final byte. CAN and
+/// SUB cancel one.
+pub fn unfinished_escape(bytes: &[u8]) -> usize {
+    let Some(i) = bytes.iter().rposition(|&b| b == 0x1b) else { return bytes.len() };
+    let rest = &bytes[i + 1..];
+    if rest.iter().any(|&b| matches!(b, 0x18 | 0x1a)) {
+        return bytes.len();
+    }
+    let finished = match rest.first() {
+        None => false,
+        Some(b'[') => rest[1..].iter().any(|b| (0x40..=0x7e).contains(b)),
+        Some(b']') => rest.contains(&0x07),
+        Some(b'P' | b'X' | b'^' | b'_') => false,
+        Some(0x20..=0x2f) => rest[1..].iter().any(|b| (0x30..=0x7e).contains(b)),
+        Some(_) => true,
+    };
+    if finished { bytes.len() } else { i }
+}
+
 /// The colors a program's color query (OSC 4/10/11) is answered with.
 pub fn answer_color(palette: &TermPalette, term: &Shared, index: usize) -> alacritty_terminal::vte::ansi::Rgb {
     palette.answer(index, term.lock().colors())
@@ -513,6 +680,35 @@ mod tests {
         assert!(out.ends_with(b"\x07after"));
         // Anything short passes as it is, borrowed.
         assert!(matches!(cap.cap(b"\x1b]8;;http://x\x1b\\link\x1b[1m"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn a_chunk_is_placed_against_the_backlogs_end() {
+        assert_eq!(cut(10, 0, 4), Cut::Before);
+        assert_eq!(cut(10, 6, 4), Cut::Before, "ends where the backlog does");
+        assert_eq!(cut(10, 8, 4), Cut::From(2));
+        assert_eq!(cut(10, 10, 4), Cut::From(0));
+        assert_eq!(cut(10, 11, 4), Cut::Gap);
+    }
+
+    #[test]
+    fn an_escape_left_unfinished_is_found_where_it_starts() {
+        for (bytes, at) in [
+            (&b"text"[..], 4),
+            (b"a\x1b[1m", 5),
+            (b"a\x1b[?20", 1),
+            (b"a\x1b", 1),
+            (b"a\x1b]0;tit", 1),
+            (b"a\x1b]0;title\x07b", 12),
+            (b"a\x1b]0;title\x1b\\", 12),
+            (b"a\x1bP1$r", 1),
+            (b"a\x1b(B", 4),
+            (b"a\x1b(", 1),
+            (b"a\x1bc", 3),
+            (b"a\x1b[12\x18", 6),
+        ] {
+            assert_eq!(unfinished_escape(bytes), at, "{:?}", String::from_utf8_lossy(bytes));
+        }
     }
 
     #[test]
