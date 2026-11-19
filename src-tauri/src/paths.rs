@@ -119,13 +119,17 @@ const OWN_NAMES: &[&str] = &[
     "luna.log.1",
     "luna.log.lock",
     "luna.run",
+    "luna.window.lock",
+    "luna.window.sock",
     "mcp",
     "media",
     "quota-told.json",
     "settings.json",
     "settings.json.lock",
     "tied-jobs",
+    "updates",
     "webview",
+    "window-state.json",
 ];
 
 /// Whether a top-level name in the data dir is Luna's: one of `OWN_NAMES`,

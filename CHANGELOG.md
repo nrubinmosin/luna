@@ -27,6 +27,29 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.
 
+- The desktop services the native window of 0.20 will use in place of
+  Tauri's plugins, not wired in yet (`src-tauri/src/desktop/`,
+  [desktop services](docs/architecture/desktop-services.md)): the tray, toasts
+  and macOS notifications that open their chat when clicked, one window per
+  data folder with a second launch bringing the first up, folder and file
+  pickers, a clipboard read that tells files, text and images apart, the
+  window's size and place kept in the data folder, and an updater that reads
+  the same `latest.json`, checks the same signature and runs the installer as
+  0.19's does, so 0.19 updates onto 0.20 and 0.20 onto later releases. The
+  updater takes only https and only an NSIS setup, stages it privately under
+  a name of its own in a data folder that is no link, keeps it open from its
+  last check until it has started, starts it by the path that handle
+  resolves to, and passes Luna's arguments on to the restart only whole.
+- An NSIS installer built without Tauri's bundler
+  (`./scripts/build-windows.ps1 -Installer -Native`), adapted from Tauri's
+  template (credited, its license among the third-party notices), installing
+  as today's in place over it, without the WebView2 bootstrap, and starting
+  Luna again after an update through the desktop's shell, with the arguments
+  it ran with as they stood, only where it would not run elevated (and not
+  at all where that cannot be told); the build holds the exe it installs to
+  x64; and `scripts/macos-app.sh`, which
+  assembles an unsigned `Luna.app` for a macOS runner.
+
 ### Changed
 
 - The window Luna opens by default, now the native one, has no tray icon,

@@ -1,4 +1,6 @@
-; Luna's own steps in the NSIS installer (tauri.conf.json → installerHooks).
+; Luna's own steps in the NSIS installer: Tauri's template takes them as its
+; hooks (tauri.conf.json → installerHooks), and installer.nsi, Luna's own
+; installer, inserts them at the same points.
 
 ; The install folder is also Luna's data folder wherever it is writable: the
 ; sessions' history (agents.jsonl), the log, settings, attachments, the
