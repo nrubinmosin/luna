@@ -36,7 +36,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the new name or leaving its `name` half rewritten, and saying whether it
   was done, undone, or left partly done. The editor's save is bound to the
   library and the file as they were read: the library's folder by its
-  identity on the drive, written through a handle held to it, so a link
+  identity on the drive, read and written through a handle held to it, so a link
   there retargeted or a folder made again gets nothing; a file changed on
   disk since is not overwritten unasked (Reload, Overwrite), and text not
   saved when the window goes (the tray's Quit or Restart window) is offered
@@ -48,7 +48,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   back, unwanted ones taken out, each backed up; files Luna did not write
   left alone) and says what it did. Deleting an account is bound to the
   folder its question named, removed through a handle held to it without
-  following a link or crossing into a mount, and warns of chats still set
+  following a link or crossing into a mount (on Unix, one on another
+  device), and warns of chats still set
   to it. The test
   build's `LUNA_TEST_DRIVE` file drives them in a smoke run without global
   input; no line of it answers the question for helpers above their caller.

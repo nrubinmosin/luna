@@ -242,6 +242,28 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// The accounts root moved (in Settings) between the question and the
+    /// deletion, seen under the lock: nothing is deleted, in the root asked
+    /// about or the one it is now.
+    #[test]
+    fn a_root_changed_under_the_lock_deletes_nothing() {
+        let base = std::env::temp_dir().join(format!("luna-accounts-root-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (root, moved) = (base.join("root"), base.join("moved"));
+        let work = |r: &Path| r.join(Provider::Claude.accounts_dir()).join("work");
+        for r in [&root, &moved] {
+            fs::create_dir_all(work(r)).unwrap();
+            fs::write(work(r).join("a.json"), "{}").unwrap();
+        }
+        let e = remove_under_root(moved.clone(), &root, &work(&root), None).unwrap_err();
+        assert!(e.contains("changed in Settings"), "{e}");
+        assert!(work(&root).join("a.json").is_file() && work(&moved).join("a.json").is_file());
+        // Unchanged, it goes, and only the one in the root asked about.
+        remove_under_root(root.clone(), &root, &work(&root), None).unwrap();
+        assert!(!work(&root).exists() && work(&moved).join("a.json").is_file());
+        let _ = fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn the_test_build_defaults_to_accounts_of_its_own() {
         let data = Path::new("/x/test-build");
@@ -335,16 +357,21 @@ fn delete_in(provider: Provider, name: &str, named: Option<(&str, &str)>) -> Res
         provider,
         &dir,
         name,
-        || {
-            // The root sampled above, looked at again under the lock the
-            // deletion goes under: Settings may have moved it meanwhile.
-            if accounts_root()? != root {
-                return Err("The accounts folder was changed in Settings meanwhile; nothing was deleted.".into());
-            }
-            remove_account_dir(&dir, &root, named.map(|(_, id)| id))
-        },
+        // The root sampled above, looked at again under the lock the deletion
+        // goes under: Settings may have moved it meanwhile.
+        || remove_under_root(accounts_root()?, &root, &dir, named.map(|(_, id)| id)),
         |library| crate::settings::update(|s| library(&mut s.library)),
     )
+}
+
+/// `remove_account_dir`, where `now` (the accounts root as it is looked up
+/// under the lock) is still the `root` the question was asked under; else
+/// nothing is deleted.
+fn remove_under_root(now: PathBuf, root: &Path, dir: &Path, id: Option<&str>) -> Result<(), String> {
+    if now != root {
+        return Err("The accounts folder was changed in Settings meanwhile; nothing was deleted.".into());
+    }
+    remove_account_dir(dir, root, id)
 }
 
 /// The provider's folder of the account folder `dir` under `root`, held:

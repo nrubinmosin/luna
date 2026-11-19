@@ -18,7 +18,10 @@
 //! `renameat` (`renameat2(RENAME_NOREPLACE)` on Linux, `renameatx_np`'s
 //! `RENAME_EXCL` on macOS, `linkat` elsewhere, where nothing may be
 //! replaced) and `unlinkat` on the descriptors; a removal never crosses into
-//! another device (`st_dev`), a mount inside the tree.
+//! another device (`st_dev`), a mount inside the tree. A mount is found by its
+//! device alone: a bind mount of another tree on the same device is not seen,
+//! and a removal descends into it. Luna ships no Linux build and bind mounts
+//! are rare on macOS, so no mount table is read for it (threat model, B5).
 
 use std::fs::File;
 use std::io;
@@ -701,7 +704,9 @@ mod sys {
     }
 
     /// Walks the tree `dir` is open on, each folder opened as itself and on
-    /// `top`'s device; removes what it walks where `remove`.
+    /// `top`'s device; removes what it walks where `remove`. Only a mount on
+    /// another device is refused: a bind mount on the same device looks like
+    /// any folder here (see the module's note).
     // `dev_t` and `ino_t` are u64 on Linux, narrower elsewhere.
     #[allow(clippy::unnecessary_cast)]
     fn walk(dir: &File, top: u64, remove: bool) -> io::Result<()> {

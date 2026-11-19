@@ -579,8 +579,8 @@ fn in_library_dir(dirs: &Dirs, path: &Path) -> Result<PathBuf, String> {
 
 /// Instructions, a skill's SKILL.md or a system skill's override, for the
 /// editor: where there is no override yet, Luna's own text to start one from.
-/// Opened as itself (system.rs `read_plain`): a link at it is refused, not
-/// followed, and a FIFO there holds nothing up.
+/// Opened as itself, relative to the held root (`read_held`): a link at it is
+/// refused, not followed, and a FIFO there holds nothing up.
 #[tauri::command(async)]
 pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
     if let Entry::System(name) = &entry {
@@ -590,44 +590,69 @@ pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
 }
 
 /// `entry`'s file with the identity of the library's folder it was read
-/// from, taken before the read and again after: a folder that changed
-/// meanwhile (a link there retargeted) fails the read rather than tying the
-/// text to a folder it did not come from.
+/// from: the root opened once and held, its identity taken from that handle,
+/// and the folders down to the file and the file opened relative to it (as
+/// the save walks them, no link or junction among them), so the text and the
+/// identity are of the same folder whatever a link at the root's path does
+/// meanwhile, even back to where it led.
 fn read_bound(dirs: &Dirs, entry: &Entry) -> Result<LibraryFile, String> {
-    let before = root_id(dirs)?;
-    let mut file = match entry {
-        Entry::System(name) => read_system(dirs, name)?,
-        _ => read_entry(dirs, entry)?,
+    read_held(dirs, entry, || {})
+}
+
+/// `read_bound`, with `held` called once the root is held and before anything
+/// is read through it: where a test moves the path from under the read.
+fn read_held(dirs: &Dirs, entry: &Entry, held: impl FnOnce()) -> Result<LibraryFile, String> {
+    use crate::held::Dir;
+    use std::io::Read;
+    let (folders, name) = place(entry, "")?;
+    let system = matches!(entry, Entry::System(_));
+    let mut path = dirs.root.clone();
+    path.extend(&folders);
+    path.push(&name);
+    let (shown, root) = (path.to_string_lossy().into_owned(), dirs.root.to_string_lossy().into_owned());
+    // Nothing there yet: an override starts from Luna's own text.
+    let start = |root_id: String| -> Result<LibraryFile, String> {
+        let text = match entry {
+            Entry::System(name) => luna_text(name)?.to_string(),
+            _ => String::new(),
+        };
+        Ok(LibraryFile { path: shown.clone(), text, exists: false, root: root.clone(), root_id, revision: None })
     };
-    if root_id(dirs)? != before {
-        return Err(format!("The library's folder {} changed while it was read; open the file again", dirs.root.display()));
-    }
-    file.root_id = before;
-    Ok(file)
-}
-
-/// The identity of the folder the library's root leads to (the root may be
-/// a link of the person's choosing); empty where nothing is there yet.
-fn root_id(dirs: &Dirs) -> Result<String, String> {
-    match crate::held::Dir::open_followed(&dirs.root) {
-        Ok(dir) => dir.id().map_err(|e| format!("{}: {e}", dirs.root.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(format!("{}: {e}", dirs.root.display())),
-    }
-}
-
-fn read_entry(dirs: &Dirs, entry: &Entry) -> Result<LibraryFile, String> {
-    let path = library_path(dirs, entry)?;
-    let (text, exists) = match read_plain(&path, EDIT_MAX_BYTES + 1)? {
-        Some(bytes) if bytes.len() as u64 > EDIT_MAX_BYTES => {
-            return Err(format!("{} is over {} KB, too large to open here", path.display(), EDIT_MAX_BYTES / 1024));
+    let at = |e: std::io::Error| format!("{}: {e}", dirs.root.display());
+    // The root as it leads (it may be a link of the person's choosing); none
+    // there is none read, the id empty.
+    let mut dir = match Dir::open_followed(&dirs.root) {
+        Ok(dir) => dir,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return start(String::new()),
+        Err(e) => return Err(at(e)),
+    };
+    let root_id = dir.id().map_err(at)?;
+    held();
+    let mut at_folder = dirs.root.clone();
+    for folder in &folders {
+        at_folder.push(folder);
+        match dir.child_dir(folder, false).map_err(|e| format!("{}: {e}", at_folder.display()))? {
+            Some(child) => dir = child,
+            None => return start(root_id),
         }
-        Some(bytes) => (String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", path.display()))?, true),
-        None => (String::new(), false),
-    };
-    let revision = exists.then(|| sha256_hex(text.as_bytes()));
-    let (path, root) = (path.to_string_lossy().into_owned(), dirs.root.to_string_lossy().into_owned());
-    Ok(LibraryFile { path, text, exists, root, revision, ..Default::default() })
+    }
+    let Some(file) = dir.open_file(&name).map_err(|e| format!("{shown}: {e}"))? else { return start(root_id) };
+    if system {
+        // The person's own file (system.rs `read_own_file`).
+        match crate::secret::own_file(&file) {
+            Ok(Ok(())) => {}
+            Ok(Err(why)) => return Err(format!("{shown} is not a file of yours ({why}); the override is your own")),
+            Err(e) => return Err(format!("{shown}: {e}")),
+        }
+    }
+    let mut bytes = Vec::new();
+    file.take(EDIT_MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("{shown}: {e}"))?;
+    if bytes.len() as u64 > EDIT_MAX_BYTES {
+        return Err(format!("{shown} is over {} KB, too large to open here", EDIT_MAX_BYTES / 1024));
+    }
+    let revision = Some(sha256_hex(&bytes));
+    let text = String::from_utf8(bytes).map_err(|_| format!("{shown} is not UTF-8 text"))?;
+    Ok(LibraryFile { path: shown, text, exists: true, root, root_id, revision })
 }
 
 /// What a save bound to its source came to: saved, with the revision now on
@@ -1251,12 +1276,12 @@ mod tests {
         // A skill's folder that is a link.
         link_dir(&f.dirs.skills().join("taken"), &elsewhere.join("taken"));
         let entry = Entry::Skill("taken".into());
-        assert!(read_entry(&f.dirs, &entry).err().unwrap().contains("link"));
+        assert!(read_bound(&f.dirs, &entry).err().unwrap().contains("link"));
         assert!(write_entry(&f.dirs, &entry, "mine").unwrap_err().contains("link"));
         assert_eq!(std::fs::read_to_string(elsewhere.join("taken").join(SKILL_FILE)).unwrap(), "theirs");
         // A plain one beside it still reads and saves.
         let review = Entry::Skill("review".into());
-        assert!(read_entry(&f.dirs, &review).unwrap().text.contains("v1"));
+        assert!(read_bound(&f.dirs, &review).unwrap().text.contains("v1"));
         write_entry(&f.dirs, &review, "v2").unwrap();
         // SKILL.md itself a link to a file: neither read nor replaced.
         #[cfg(unix)]
@@ -1264,7 +1289,7 @@ mod tests {
             let md = f.dirs.skills().join("review").join(SKILL_FILE);
             std::fs::remove_file(&md).unwrap();
             std::os::unix::fs::symlink(elsewhere.join("taken").join(SKILL_FILE), &md).unwrap();
-            assert!(read_entry(&f.dirs, &review).err().unwrap().contains("link"));
+            assert!(read_bound(&f.dirs, &review).err().unwrap().contains("link"));
             assert!(write_entry(&f.dirs, &review, "mine").unwrap_err().contains("link"));
             assert_eq!(std::fs::read_to_string(elsewhere.join("taken").join(SKILL_FILE)).unwrap(), "theirs");
         }
@@ -1368,6 +1393,44 @@ mod tests {
         let root = dirs.root.to_string_lossy().into_owned();
         save_held(&dirs, &entry, "mine", &root, &read.root_id, read.revision.as_deref(), false).unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(dirs.skills().join("review").join(SKILL_FILE)).unwrap(), "mine");
+    }
+
+    /// The library a link of the person's choosing, retargeted to another
+    /// library once the read holds the root (and, as a second case, back
+    /// again): the text and the identity are of the folder held, never of the
+    /// one the path leads to meanwhile.
+    #[test]
+    fn a_read_is_of_the_folder_held_whatever_the_path_does_meanwhile() {
+        use crate::held::Dir;
+        let f = Fixture::new("editor-read-retarget");
+        let (one, two, link) = (f.base.join("one"), f.base.join("two"), f.base.join("lib"));
+        for (lib, text) in [(&one, "from one"), (&two, "from two")] {
+            std::fs::create_dir_all(lib.join("skills").join("review")).unwrap();
+            std::fs::write(lib.join("skills").join("review").join(SKILL_FILE), text).unwrap();
+        }
+        let id_of = |p: &Path| Dir::open_followed(p).unwrap().id().unwrap();
+        let relink = |to: &Path| {
+            let _ = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
+            link_dir(&link, to);
+        };
+        link_dir(&link, &one);
+        let dirs = Dirs { root: link.clone(), data: f.dirs.data.clone() };
+        let entry = Entry::Skill("review".into());
+        let read = read_held(&dirs, &entry, || relink(&two)).unwrap();
+        assert_eq!((read.text.as_str(), read.root_id.as_str()), ("from one", id_of(&one).as_str()));
+        assert_eq!(read.revision, Some(sha256_hex(b"from one")));
+        // Away and back during the read: the same.
+        relink(&one);
+        let read = read_held(&dirs, &entry, || {
+            relink(&two);
+            relink(&one);
+        })
+        .unwrap();
+        assert_eq!((read.text.as_str(), read.root_id.as_str()), ("from one", id_of(&one).as_str()));
+        relink(&two);
+        let read = read_held(&dirs, &entry, || relink(&one)).unwrap();
+        assert_eq!((read.text.as_str(), read.root_id.as_str()), ("from two", id_of(&two).as_str()));
+        let _ = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
     }
 
     /// A save into a library that was not there when the file was read makes
@@ -1474,10 +1537,10 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let entry = Entry::Instructions("main".into());
-            let _ = tx.send((read_entry(&dirs, &entry).err(), write_entry(&dirs, &entry, "x").err()));
+            let _ = tx.send((read_bound(&dirs, &entry).err(), write_entry(&dirs, &entry, "x").err()));
         });
         let (read, write) = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("answered without waiting on a FIFO");
-        assert!(read.is_some_and(|e| e.contains("not a file")));
+        assert!(read.is_some_and(|e| e.contains("not a plain entry")));
         assert!(write.is_some_and(|e| e.contains("not a file")));
     }
 

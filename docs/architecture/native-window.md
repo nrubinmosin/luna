@@ -291,7 +291,9 @@ a plain string). These are the native window's alone (`NATIVE_ONLY`):
   writers' read, change and write one at a time).
 - `library_write_checked`, the editor's save. `library_read` answers the
   library's folder by path and by its identity on the drive, and the sha256
-  of what it read (`root`, `rootId`, `revision`), and the save writes only
+  of what it read (`root`, `rootId`, `revision`), the file read through the
+  root's handle held once (no link on the way), so the text and the identity
+  are of one folder whatever the path does meanwhile, and the save writes only
   into that folder, through a handle held to that identity, and over that
   revision, checked under the library's lock and again right before the
   file is replaced (docs/architecture/library.md): a file changed, made or
@@ -310,7 +312,8 @@ a plain string). These are the native window's alone (`NATIVE_ONLY`):
   of Luna's, no link, at most 8 MB, `secret::read_private`) and forgotten
   once saved, reloaded or thrown away. A forget names the draft's id
   (`{ draft: null, forget }`), decided in the order sent: throwing away a
-  draft on offer leaves one another editor has kept since. A window that
+  draft on offer leaves one another editor has kept since. A clear that
+  names no draft is refused and logged: only a named draft is cleared. A window that
   goes with it unsaved (the tray's Quit or Restart window, which ask nothing
   of the window, or a crash) leaves it there, and the library offers it at
   its next open (Restore, Throw away); restored, its save is held to the
@@ -334,7 +337,9 @@ a plain string). These are the native window's alone (`NATIVE_ONLY`):
   as themselves (any reparse point refused, on Unix on the root's device),
   the account's held to that identity, and it is emptied and removed
   through its handle (`src/held.rs` `remove_tree`), a link inside removed as
-  itself and a mount inside refused before anything goes; both are held to
+  itself and a mount on another device inside refused before anything goes
+  (on Unix a bind mount on the same device is not seen: threat model, B5);
+  both are held to
   `boundary::account_in` first (no link, inside the accounts root). The question
   says a chat still set to the account has nowhere to start: the window has
   no chats until the board comes, so it says so for any; with the board it

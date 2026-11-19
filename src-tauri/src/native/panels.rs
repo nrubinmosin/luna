@@ -325,12 +325,13 @@ fn kept_draft() -> Option<Draft> {
 
 /// What is kept after the window sends `draft` (kept, in place of any) or a
 /// forget of the draft `forget` names: a draft another editor kept since,
-/// under another id, stays.
+/// under another id, stays. A clear that names no draft leaves what is kept:
+/// only a named one is ever cleared.
 fn next_draft(kept: Option<Draft>, draft: Option<Draft>, forget: Option<&str>) -> Option<Draft> {
     match (draft, forget) {
         (Some(d), _) => Some(d),
         (None, Some(id)) => kept.filter(|k| k.id != id),
-        (None, None) => None,
+        (None, None) => kept,
     }
 }
 
@@ -346,6 +347,11 @@ fn set_library_draft(a: Value) -> Result<Value, String> {
         forget: Option<String>,
     }
     let A { draft, forget } = args(a)?;
+    if draft.is_none() && forget.is_none() {
+        let why = "a clear names no draft (`forget`); nothing was cleared";
+        crate::log::warn("window", &format!("the editor's draft: {why}"));
+        return Err(why.into());
+    }
     let mut state = draft_state();
     let kept = state.get_or_insert_with(|| read_draft(&draft_file()));
     let next = next_draft(kept.clone(), draft, forget.as_deref());
@@ -433,6 +439,15 @@ mod tests {
         assert_eq!(next_draft(Some(draft("old")), None, Some("old")), None);
         assert_eq!(next_draft(Some(draft("old")), Some(draft("new")), None), Some(draft("new")));
         assert_eq!(next_draft(None, None, Some("old")), None);
+    }
+
+    /// A clear that names no draft clears nothing, the one kept stays; the
+    /// command refuses it where it is sent.
+    #[test]
+    fn a_clear_without_an_id_is_refused() {
+        assert_eq!(next_draft(Some(draft("kept")), None, None), Some(draft("kept")));
+        let e = set_library_draft(json!({ "draft": null })).unwrap_err();
+        assert!(e.contains("names no draft"), "{e}");
     }
 
     /// The draft file is read only as a private plain file of Luna's: a link
