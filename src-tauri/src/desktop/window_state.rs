@@ -115,8 +115,7 @@ pub fn save_to(path: &Path, state: &WindowState) -> Result<(), String> {
     if std::fs::read(path).is_ok_and(|bytes| serde_json::from_slice::<WindowState>(&bytes).is_err()) {
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let aside = path.with_file_name(format!("window-state.unreadable-{secs}-{}.json", crate::secret::random_hex(3)));
-        std::fs::rename(path, &aside)
-            .map_err(|e| format!("{} is not a window's place and could not be put aside: {e}", path.display()))?;
+        std::fs::rename(path, &aside).map_err(|e| format!("{} is not a window's place and could not be put aside: {e}", path.display()))?;
         crate::log::warn("window", &format!("{} was not a window's place; put aside as {}", path.display(), aside.display()));
     }
     let text = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;

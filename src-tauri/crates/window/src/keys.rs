@@ -94,7 +94,7 @@ pub(crate) fn digit_key(ks: &Keystroke, down: impl Fn(u16) -> bool, names: impl 
     if !m.control || m.alt || m.platform || m.function {
         return None;
     }
-    let pressed = |vk: u16| down(vk) && names(vk).iter().any(|name| *name == ks.key);
+    let pressed = |vk: u16| down(vk) && names(vk).contains(&ks.key);
     let n = (1..=4u16).find(|n| pressed(VK_0 + n) || pressed(VK_NUMPAD0 + n))?;
     let n = usize::from(n);
     Some(if down(VK_SHIFT) { DigitKey::Layout(n) } else { DigitKey::Pane(n) })

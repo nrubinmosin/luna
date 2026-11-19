@@ -184,10 +184,8 @@ fn read(dir: &Path) -> Result<HashMap<String, String>, String> {
 /// first with a `luna.chats` at all (the import then says why it does not
 /// read), else the first with any keys.
 fn pick(mut by_origin: HashMap<String, HashMap<String, String>>) -> HashMap<String, String> {
-    let lists: Vec<(&str, (usize, usize))> = APP_ORIGINS
-        .iter()
-        .filter_map(|o| Some((*o, luna_window::chat_list_size(by_origin.get(*o)?.get("luna.chats")?)?)))
-        .collect();
+    let lists: Vec<(&str, (usize, usize))> =
+        APP_ORIGINS.iter().filter_map(|o| Some((*o, luna_window::chat_list_size(by_origin.get(*o)?.get("luna.chats")?)?))).collect();
     let best = lists.iter().fold(None::<(&str, (usize, usize))>, |best, &(o, size)| match best {
         Some((_, at)) if at >= size => best,
         _ => Some((o, size)),
@@ -197,7 +195,11 @@ fn pick(mut by_origin: HashMap<String, HashMap<String, String>>) -> HashMap<Stri
         let (chats, folders) = best.map_or((0, 0), |(_, size)| size);
         crate::log::warn(
             "window",
-            &format!("0.19's store holds {} chat lists ({}); importing the one of {chats} chats in {folders} folders", lists.len(), all.join(", ")),
+            &format!(
+                "0.19's store holds {} chat lists ({}); importing the one of {chats} chats in {folders} folders",
+                lists.len(),
+                all.join(", ")
+            ),
         );
     }
     let origin = best.map(|(o, _)| o).or_else(|| {
@@ -378,7 +380,11 @@ mod tests {
         let mut failed = 0;
         let got = retried(|| {
             failed += 1;
-            if failed < ATTEMPTS { Err(format!("cannot list the old window's store: try {failed}")) } else { Ok(failed) }
+            if failed < ATTEMPTS {
+                Err(format!("cannot list the old window's store: try {failed}"))
+            } else {
+                Ok(failed)
+            }
         });
         assert_eq!(got, Ok(ATTEMPTS));
         let mut tries = 0;

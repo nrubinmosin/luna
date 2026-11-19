@@ -258,10 +258,10 @@ fn a_quit_waits_for_the_list_and_one_not_saved_keeps_the_window(cx: &mut TestApp
     w.ws(|w, cx| w.set_layout(4, cx));
     w.host.defer(cmd::FLUSH_WINDOW_STATE);
     w.cx.update(|_, cx| cx.default_global::<crate::desktop::Shown>().hidden = true);
-    w.cx.update(|_, cx| crate::workspace::quit(cx));
+    w.cx.update(|_, cx| workspace::quit(cx));
     w.cx.run_until_parked();
     assert_eq!(w.saves().last().unwrap().layout(), 4, "what waited for the gap sent first");
-    w.cx.update(|_, cx| crate::workspace::quit(cx));
+    w.cx.update(|_, cx| workspace::quit(cx));
     w.cx.run_until_parked();
     assert_eq!(w.host.calls_of(cmd::FLUSH_WINDOW_STATE).len(), 1, "one quit under way");
     assert!(w.host.resolve(cmd::FLUSH_WINDOW_STATE, Err("cannot keep the chat list: disk full".into())));

@@ -631,7 +631,15 @@ mod tests {
         let registered: Vec<&str> =
             lib[start..start + lib[start..].find(']').unwrap()].split(',').filter_map(|e| e.trim().rsplit("::").next()).collect();
         // The page has the updater's from the plugin, not as commands of Luna's.
-        let native_only = ["set_window_theme", "update_check", "update_download", "update_install", "window_state", "save_window_state", "flush_window_state"];
+        let native_only = [
+            "set_window_theme",
+            "update_check",
+            "update_download",
+            "update_install",
+            "window_state",
+            "save_window_state",
+            "flush_window_state",
+        ];
         for (cmd, _) in OWN.iter().chain(OWN_SENT) {
             let tauri = registered.contains(cmd);
             assert!(tauri != native_only.contains(cmd), "{cmd}: registered {tauri}");
