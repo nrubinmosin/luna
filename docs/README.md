@@ -38,7 +38,8 @@
 - [Desktop services](architecture/desktop-services.md): the tray,
   notifications, single instance, pickers, clipboard, window state, updater,
   installer and macOS bundle the native window takes over from Tauri
-- [Frontend](architecture/frontend.md): layout, stores, IPC modules, styles
+- [Frontend](architecture/frontend.md): the window crate, its host boundary, state and
+  persistence, terminal, panels, test driver and shots; retiring the WebView
 - [The native window](architecture/native-window.md): the GPUI window crate, its
   host, models, theme and font, the mode switch, the screenshot harness
 - [CLI compatibility notes](cli-compatibility.md): observed Claude Code and Codex

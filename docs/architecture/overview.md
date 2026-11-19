@@ -19,11 +19,11 @@ Two principles shape everything else:
 | Layer | Choice |
 | --- | --- |
 | Shell | Tauri 2: Rust core + system WebView (WebView2 on Windows); the native window on GPUI (`crates/window`, [native-window.md](native-window.md)), the default from 0.20 |
-| UI | React 19, TypeScript, Vite; Zustand (+ `persist` in localStorage) for UI state |
-| Terminals | xterm.js + FitAddon (+ WebGL addon) |
-| Editor | CodeMirror 6, for account settings files and the library |
+| UI | GPUI (`gpui-pre`) with gpui-component, in the `luna-window` crate; the WebView window (until it is retired): React 19, TypeScript, Vite, Zustand |
+| Terminals | our own over `alacritty_terminal`; the WebView window: xterm.js + FitAddon (+ WebGL addon) |
+| Editor | gpui-component's, for the library's files; the WebView window: CodeMirror 6 |
 | pty | `portable-pty`: ConPTY on Windows, openpty on Unix |
-| Look | xp.css, redrawn from theme tokens |
+| Look | `theme.rs` (retro, high-contrast, static); the WebView window: xp.css, redrawn from theme tokens |
 
 ## Process model
 
@@ -195,7 +195,7 @@ the cache keeps what it read last and a write refuses (`settings.rs`).
 | Library | [library.md](library.md) | `library/` |
 | Power and lifecycle | [power-and-lifecycle.md](power-and-lifecycle.md) | `activity/`, `procs/`, `keeper/`, `power/`, `asking.rs`, `coreproc.rs`, `lifecycle.rs` |
 | Desktop services | [desktop-services.md](desktop-services.md) | `desktop/`, `windows/installer.nsi`, `scripts/macos-app.sh` |
-| Frontend | [frontend.md](frontend.md) | `src/` |
+| Frontend (the window) | [frontend.md](frontend.md) | `src-tauri/crates/window/`, `native.rs`, `native/`; `src/` (WebView window) |
 
 Smaller modules:
 
