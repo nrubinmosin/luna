@@ -44,6 +44,7 @@
 //! periodic check, the rollback. Where a version comes from is each
 //! provider's `Source` (`claude::cli`, `codex::cli`).
 
+pub(crate) mod authenticode;
 mod canary;
 mod choice;
 mod in_use;
