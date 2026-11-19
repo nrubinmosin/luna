@@ -21,6 +21,9 @@ struct Fixture<'a> {
     mailbox: Mailbox,
     view: Entity<LunaWindow>,
     cx: &'a mut VisualTestContext,
+    /// Calls made by the time the window had started: the status bar's own
+    /// first asks (the accounts' usage, the CLIs) are not the panels'.
+    started: usize,
 }
 
 fn open(cx: &mut TestAppContext) -> Fixture<'_> {
@@ -42,7 +45,8 @@ fn open_as(cx: &mut TestAppContext, first: impl FnOnce(&FakeHost)) -> Fixture<'_
     let models = cx.update(|cx| crate::start(host.clone(), inbox, ThemePref::Light, cx));
     let (view, cx) = cx.add_window_view(move |window, cx| LunaWindow::new(models, window, cx));
     cx.run_until_parked();
-    Fixture { host, mailbox, view, cx }
+    let started = host.calls().len();
+    Fixture { host, mailbox, view, cx, started }
 }
 
 impl Fixture<'_> {
@@ -77,8 +81,17 @@ impl Fixture<'_> {
         }
     }
 
+    /// The calls of `cmd`; of one the status bar asks too, only those since
+    /// the window started.
     fn calls(&self, cmd: &str) -> Vec<Value> {
-        self.host.calls_of(cmd)
+        let status = crate::status::cmd::CALLED.contains(&cmd);
+        let from = if status { self.started } else { 0 };
+        self.host.calls().into_iter().skip(from).filter(|(c, _)| c == cmd).map(|(_, a)| a).collect()
+    }
+
+    /// Every call that is not the status bar's own polling.
+    fn panel_calls(&self) -> usize {
+        self.host.calls().iter().filter(|(c, _)| !crate::status::cmd::CALLED.contains(&c.as_str())).count()
     }
 
     /// Esc, as the panel's key context takes it.
@@ -606,10 +619,10 @@ fn the_library_editor_is_still_while_left_alone(cx: &mut TestAppContext) {
     f.cx.executor().advance_clock(Duration::from_secs(60));
     f.cx.run_until_parked();
     assert_eq!(seen.get(), 0, "the editor notified while nothing happened");
-    let calls = f.host.calls().len();
+    let calls = f.panel_calls();
     f.cx.executor().advance_clock(Duration::from_secs(600));
     f.cx.run_until_parked();
-    assert_eq!(f.host.calls().len(), calls, "nothing asked of the host on its own");
+    assert_eq!(f.panel_calls(), calls, "nothing asked of the host on its own (the status bar's polling aside)");
 }
 
 #[gpui::test]
