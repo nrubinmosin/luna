@@ -973,9 +973,10 @@ impl Workspace {
         true
     }
 
-    /// The pane a click or a key put the keyboard in.
+    /// The pane a click or a key put the keyboard in. Not while the list is
+    /// frozen for an update: the chat that is active is written with it.
     pub fn set_active_pane(&mut self, pane: usize, cx: &mut Context<Self>) {
-        if self.state.active_pane != pane {
+        if !self.frozen && self.state.active_pane != pane {
             self.state.active_pane = pane;
             if let Some(id) = self.state.seat(pane) {
                 self.state.active = Some(id.to_owned());

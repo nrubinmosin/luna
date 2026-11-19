@@ -182,11 +182,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   reach, who holds the PC awake, and the tray's awake dot. A Settings button
   is at its right. The orphan line, "N orphan sessions: kill all", shows
   only while a session runs with no chat, and asks before it kills: it kills
-  only the sessions it asked about, looked at again first, and asks anew if
-  they changed. Nothing in them moves: the bar redraws only when what it
+  only the sessions it asked about, looked at again first (alone: a look
+  under way is let go of), and asks anew if they changed or the question was
+  ended meanwhile. Nothing in them moves: the bar redraws only when what it
   shows changes, and the one clock is the countdown's, a second at a time
-  while it runs. The core numbers its power states (`revision`), so the
-  window drops one older than the state it shows. The core is sent the
+  while it runs. The core numbers its power states (`revision`), and the
+  window stamps each with the core it came from, so it drops one older than
+  the state it shows or one of a core since replaced. The core is sent the
   accounts' usage for `luna_account_list`, as the WebView window sends it.
 
 ### Changed

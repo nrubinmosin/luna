@@ -168,7 +168,9 @@ another program's and is left alone.
   would send it again at every sample. Each state sent carries a `revision`,
   one more than the last, from 1 in each core run, and the commands' answers
   carry the revision of the state they leave: the native window drops a state
-  older than the one it shows (native-window.md, "The status bar").
+  older than the one it shows (native-window.md, "The status bar"). The
+  window's reader of the core's line stamps the state with the core it came
+  from, since the numbers begin again with each core.
 - **Keep awake:** `PowerSetRequest(SystemRequired)` with a reason visible in
   `powercfg /requests` while busy > 0, released 60 s after quiet. `waiting` does
   not hold the machine but blocks shutdown; stalled does neither. While the rule

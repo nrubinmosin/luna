@@ -101,6 +101,15 @@ pub fn actions() -> Vec<PowerAction> {
 /// same id is not the one the person said yes to.
 type Shown = Vec<(String, Option<u32>)>;
 
+/// A Kill all's first click: what the line showed, and a number no other
+/// confirmation has, so a look again that outlived its question (a scan
+/// answered meanwhile ended it) is told from the one now asked.
+#[derive(Clone, Debug)]
+struct Confirm {
+    id: u64,
+    shown: Shown,
+}
+
 fn shown(rows: &[Orphan]) -> Shown {
     rows.iter().map(|o| (o.id.clone(), o.pid)).collect()
 }
@@ -155,7 +164,12 @@ pub struct Vitals {
     rescan: bool,
     /// Kill all was clicked once: the sessions the line showed then, which
     /// the second click kills if they are still the ones there.
-    confirm: Option<Shown>,
+    confirm: Option<Confirm>,
+    /// The id the next confirmation takes.
+    confirms: u64,
+    /// The number of the look for orphans that may take its answer: one
+    /// asked before a Kill all's recheck began is let go of (`kill_all`).
+    scan_id: u64,
     /// The second click's look again is under way.
     killing: bool,
     popover: Option<Popover>,
@@ -219,6 +233,8 @@ impl Vitals {
             scanning: false,
             rescan: false,
             confirm: None,
+            confirms: 0,
+            scan_id: 0,
             killing: false,
             popover: None,
             arm: Arm::default(),
@@ -477,6 +493,12 @@ impl Vitals {
             self.usage_told = None;
             self.push_usage(cx);
             self.power_rev = 0;
+            // A Cancel that failed was for the old core's rule, and a yes to
+            // Kill all for the old core's sessions.
+            self.cancel_failed = None;
+            if self.confirm.take().is_some() {
+                self.notify(cx);
+            }
             if self.power_known {
                 self.power_known = false;
                 self.sync_tick(cx);
@@ -664,6 +686,12 @@ impl Vitals {
     pub fn on_event(&mut self, name: &str, payload: Value, cx: &mut Context<Self>) {
         match name {
             super::event::POWER_STATE => {
+                // One stamped with another core's `up` is a late state of a
+                // core since gone: the new core's states count from 1 again,
+                // so its revision alone would let it pass.
+                if super::event::core_of(&payload).is_some_and(|c| Some(c) != self.core.read(cx).up_revision()) {
+                    return;
+                }
                 self.take_power(payload, None, cx);
             }
             super::event::CLI_STATUS => match serde_json::from_value::<CliStatus>(payload) {
@@ -786,7 +814,9 @@ impl Vitals {
                     // A Cancel that did not reach the core leaves the rule
                     // armed there: said on the chip, with Retry, until the
                     // rule is seen disarmed.
-                    if command == cmd::DISARM_POWER_OFF {
+                    // Not one asked of a core since replaced or gone: that
+                    // rule is not the one on the chip.
+                    if command == cmd::DISARM_POWER_OFF && epoch == this.epoch && this.core_up(cx) {
                         this.cancel_failed = Some(e);
                         this.notify(cx);
                     }
@@ -1053,10 +1083,12 @@ impl Vitals {
         if std::mem::take(&mut self.update_stopped) {
             // The call is made as it is asked; what it answers changes nothing.
             drop(self.host.call(cmd::UPDATE_CALLED_OFF, json!({})));
+            // Every pane the stop asked to end, its exit come or not: the
+            // stop can return before the exits do. A late exit of the
+            // session before is told from the new one's by its generation
+            // (`TermPane::on_exit`).
             for pane in std::mem::take(&mut self.stopped_panes).iter().filter_map(WeakEntity::upgrade) {
-                if pane.read(cx).ended() {
-                    pane.update(cx, |p, cx| p.start_over(cx));
-                }
+                pane.update(cx, |p, cx| p.start_over(cx));
             }
         }
         self.workspace.update(cx, |w, cx| w.thaw(cx));
@@ -1080,19 +1112,26 @@ impl Vitals {
         if !self.core_up(cx) || !self.workspace.read(cx).loaded_yet() {
             return;
         }
-        if self.scanning {
+        // Nor beside a Kill all's recheck: two looks at once could end the
+        // question it is checking, or put back sessions it is killing.
+        if self.scanning || self.killing {
             self.rescan = true;
             return;
         }
         self.scanning = true;
         self.rescan = false;
+        self.scan_id += 1;
+        let (id, epoch) = (self.scan_id, self.epoch);
         let known = self.known_chats(cx);
         let answer = self.ask_orphans(&known, cx);
         self.scanned_for = Some(known);
-        let epoch = self.epoch;
         cx.spawn(async move |this, cx| {
             let rows = answer.await;
             let _ = this.update(cx, |this, cx| {
+                // Canceled by a Kill all's recheck, which has the line now.
+                if id != this.scan_id {
+                    return;
+                }
                 this.scanning = false;
                 if this.rescan {
                     return this.scan(cx);
@@ -1129,7 +1168,7 @@ impl Vitals {
         if rows == self.orphans {
             return;
         }
-        if self.confirm.as_ref().is_some_and(|c| *c != shown(&rows)) {
+        if self.confirm.as_ref().is_some_and(|c| c.shown != shown(&rows)) {
             self.confirm = None;
         }
         self.orphans = rows;
@@ -1138,27 +1177,47 @@ impl Vitals {
 
     /// The line's Kill all: it asks first, for the sessions shown; the
     /// second click looks again and kills those sessions only if they are
-    /// still the ones there and still nobody's.
+    /// still the ones there and still nobody's. A look under way is let go
+    /// of (its answer is not taken) and none starts beside the recheck, so
+    /// the recheck is the one look that speaks for the line.
     pub fn kill_all(&mut self, cx: &mut Context<Self>) {
         if self.orphans.is_empty() || self.killing {
             return;
         }
-        let Some(confirmed) = self.confirm.clone() else {
-            self.confirm = Some(shown(&self.orphans));
+        let Some(Confirm { id, shown: confirmed }) = self.confirm.clone() else {
+            self.confirms += 1;
+            self.confirm = Some(Confirm { id: self.confirms, shown: shown(&self.orphans) });
             return self.notify(cx);
         };
         self.killing = true;
+        self.scan_id += 1;
+        self.scanning = false;
+        self.rescan = false;
         let known = self.known_chats(cx);
         let answer = self.ask_orphans(&known, cx);
         cx.spawn(async move |this, cx| {
             let rows = answer.await;
-            let _ = this.update(cx, |this, cx| this.kill_confirmed(confirmed, rows, cx));
+            let _ = this.update(cx, |this, cx| this.kill_confirmed(id, confirmed, rows, cx));
         })
         .detach();
     }
 
-    fn kill_confirmed(&mut self, confirmed: Shown, rows: Result<Vec<Orphan>, String>, cx: &mut Context<Self>) {
+    /// The recheck's answer for confirmation `id`. Looks that came while it
+    /// was under way waited (`scan`) and go now.
+    fn kill_confirmed(&mut self, id: u64, confirmed: Shown, rows: Result<Vec<Orphan>, String>, cx: &mut Context<Self>) {
         self.killing = false;
+        self.settle_kill(id, confirmed, rows, cx);
+        if std::mem::take(&mut self.rescan) {
+            self.scan(cx);
+        }
+    }
+
+    fn settle_kill(&mut self, id: u64, confirmed: Shown, rows: Result<Vec<Orphan>, String>, cx: &mut Context<Self>) {
+        // The question is gone (the core went, say): the person's yes was
+        // to a question that no longer stands.
+        if self.confirm.as_ref().map(|c| c.id) != Some(id) {
+            return;
+        }
         let rows = match rows {
             Ok(rows) => rows,
             // Not known to be the same sessions: none is killed, and the

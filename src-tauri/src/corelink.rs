@@ -159,13 +159,15 @@ fn link() -> &'static Mutex<LinkState> {
 /// The link's new state, numbered after the one before it. Emitted outside
 /// the lock, so two set at once can reach the window in either order: the
 /// revision says which is the latest.
-fn set(mut state: LinkState) {
-    {
+fn set(mut state: LinkState) -> u64 {
+    let revision = {
         let mut link = link().lock().unwrap_or_else(|e| e.into_inner());
         state.revision = link.revision + 1;
         *link = state.clone();
-    }
+        state.revision
+    };
     crate::emit::to_ui("core://state", state);
+    revision
 }
 
 /// From setup, off the main thread: starting a core takes a moment.
@@ -193,7 +195,9 @@ fn connect() {
                 // to start the next: no core for this connection to stand for.
                 // Looked at under the lock every taking of the line holds, so a
                 // way back that took its time cannot land over a restart's.
-                {
+                // `up` is the link revision of this core's `up`, which its
+                // events are stamped with (`status::event::stamp`).
+                let up = {
                     let _taking = TAKING.lock().unwrap_or_else(|e| e.into_inner());
                     if GENERATION.load(Ordering::SeqCst) != generation || (rejoined && RESTARTING.load(Ordering::SeqCst)) {
                         return;
@@ -203,9 +207,9 @@ fn connect() {
                         set(LinkState { state: "starting", ..Default::default() });
                     }
                     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&conn));
-                    set(LinkState { state: "up", core: Some(core), error: None, ..Default::default() });
-                }
-                hold(stream, conn);
+                    set(LinkState { state: "up", core: Some(core), error: None, ..Default::default() })
+                };
+                hold(stream, conn, up);
                 {
                     let _taking = TAKING.lock().unwrap_or_else(|e| e.into_inner());
                     if GENERATION.load(Ordering::SeqCst) != generation || RESTARTING.load(Ordering::SeqCst) {
@@ -263,11 +267,16 @@ fn rejoin() -> Option<(Stream, Welcome)> {
 
 /// Reads the core's frames until its end of the connection closes: the core
 /// gone, or one that let this window go (`rejoin`).
-fn hold(mut stream: Stream, conn: Arc<Conn>) {
+///
+/// `up` is the link revision of the `up` that began this connection: the
+/// power rule's states carry it (`status::event::stamp`), so the window can
+/// tell a late state of a core since replaced from the new core's.
+fn hold(mut stream: Stream, conn: Arc<Conn>, up: u64) {
     while let Ok((kind, payload)) = ipc::read_frame(&mut stream) {
         match kind {
             ipc::EVENT => {
-                if let Ok(ev) = serde_json::from_slice::<Event>(&payload) {
+                if let Ok(mut ev) = serde_json::from_slice::<Event>(&payload) {
+                    luna_window::status::event::stamp(&ev.event, &mut ev.payload, up);
                     crate::emit::to_ui(&ev.event, ev.payload);
                 }
             }

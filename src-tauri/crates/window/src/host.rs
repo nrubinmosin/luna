@@ -226,9 +226,11 @@ impl Mailbox {
     }
 }
 
-/// A payload's `revision`; one without any is as old as can be.
-fn revision(payload: &Value) -> Option<u64> {
-    payload.get("revision").and_then(Value::as_u64)
+/// A payload's place in time: the core it was stamped with (a later core's
+/// states count from 1 again, `status::event::stamp`), then its `revision`.
+/// One without either is as old as can be.
+fn revision(payload: &Value) -> (Option<u64>, Option<u64>) {
+    (crate::status::event::core_of(payload), payload.get("revision").and_then(Value::as_u64))
 }
 
 /// The window's end, drained by one task on its thread (lib.rs `pump`).
@@ -322,6 +324,20 @@ mod tests {
         mailbox.event(event::CORE_STATE, at("down", 4));
         let got = events(futures::executor::block_on(inbox.next_batch(64)).unwrap());
         assert_eq!(got, vec![(event::CORE_STATE.into(), at("down", 4))]);
+    }
+
+    #[test]
+    fn a_state_of_a_core_since_replaced_does_not_outrank_the_new_cores() {
+        let (mailbox, mut inbox) = mailbox();
+        let at = |core: u64, revision: u64| json!({ "core": core, "revision": revision });
+        // The old core's state 50 waits; the new core's first state, numbered
+        // from 1 again, replaces it, and the old one's late state does not
+        // replace that.
+        mailbox.event(crate::status::event::POWER_STATE, at(1, 50));
+        mailbox.event(crate::status::event::POWER_STATE, at(3, 1));
+        mailbox.event(crate::status::event::POWER_STATE, at(1, 51));
+        let got = events(futures::executor::block_on(inbox.next_batch(64)).unwrap());
+        assert_eq!(got, vec![(crate::status::event::POWER_STATE.into(), at(3, 1))]);
     }
 
     #[test]

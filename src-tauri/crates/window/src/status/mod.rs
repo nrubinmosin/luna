@@ -35,7 +35,7 @@ mod tests;
 
 pub use bar::{HEIGHT, StatusBar};
 pub use orphan::OrphanLine;
-pub use vitals::{Arm, Popover, Vitals};
+pub use vitals::{Arm, Popover, SCAN_TIMEOUT, Vitals};
 
 /// Something done to the model by a demo scene (demo.rs) once the window is up.
 #[cfg(any(test, feature = "shots"))]
@@ -99,4 +99,26 @@ pub mod event {
     pub const ALL: &[&str] = &[POWER_STATE, CLI_STATUS];
     /// Of those, the ones where only the latest counts.
     pub const LATEST: &[&str] = &[POWER_STATE];
+
+    /// The key a core's event is stamped with where it is read off the line
+    /// (`stamp`): the link revision of the `up` that began the connection it
+    /// came on. The power rule's states are numbered from 1 in each core run,
+    /// so a state of a core since gone, still waiting in the inbox, cannot be
+    /// told from a new core's by its own revision alone.
+    pub const CORE: &str = "core";
+
+    /// Stamps a core's event with the link revision of its connection. Only
+    /// the events a core's numbering matters to (`LATEST`) are stamped.
+    pub fn stamp(name: &str, payload: &mut serde_json::Value, up: u64) {
+        if LATEST.contains(&name)
+            && let Some(object) = payload.as_object_mut()
+        {
+            object.insert(CORE.into(), up.into());
+        }
+    }
+
+    /// The core an event was stamped with; None for one that was not.
+    pub fn core_of(payload: &serde_json::Value) -> Option<u64> {
+        payload.get(CORE).and_then(serde_json::Value::as_u64)
+    }
 }

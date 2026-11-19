@@ -821,6 +821,46 @@ fn a_late_answer_cannot_put_back_a_canceled_countdown(cx: &mut TestAppContext) {
     assert_eq!(s.v(Vitals::countdown_left), Some(30));
 }
 
+/// `counting`, stamped as the native host stamps what it reads off the
+/// core's line: with the link revision of the core's `up`
+/// (`event::stamp`).
+fn counting_from(core: u64, ends: u64, revision: u64) -> Value {
+    let mut state = counting(ends, revision);
+    state["core"] = json!(core);
+    state
+}
+
+#[gpui::test]
+fn a_power_state_of_a_core_since_replaced_is_dropped_whatever_its_number(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    let now = s.clock.get();
+    s.tell(event::POWER_STATE, counting_from(1, now + 60_000, 3));
+    assert_eq!(s.v(Vitals::countdown_left), Some(60));
+    s.tell(host_event::CORE_STATE, down(2));
+    s.tell(host_event::CORE_STATE, up_again(3, "fedcba9876543210"));
+    assert_eq!(s.v(Vitals::countdown_left), None, "the new core says it has none");
+    // The old core's state, queued before it went, comes after the new
+    // core's numbering began again: higher than any the new core has sent.
+    s.tell(event::POWER_STATE, counting_from(1, now + 30_000, 9));
+    assert_eq!(s.v(Vitals::countdown_left), None);
+    s.tell(event::POWER_STATE, counting_from(3, now + 20_000, 1));
+    assert_eq!(s.v(Vitals::countdown_left), Some(20));
+}
+
+#[gpui::test]
+fn a_cancel_that_failed_in_a_core_since_replaced_says_nothing(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    let now = s.clock.get();
+    s.tell(event::POWER_STATE, counting_from(1, now + 60_000, 3));
+    s.host.defer(cmd::DISARM_POWER_OFF);
+    s.do_v(|v, cx| v.disarm_power_off(cx));
+    s.tell(host_event::CORE_STATE, down(2));
+    s.tell(host_event::CORE_STATE, up_again(3, "fedcba9876543210"));
+    assert!(s.host.resolve(cmd::DISARM_POWER_OFF, Err("the core stopped".into())));
+    s.cx.run_until_parked();
+    assert!(s.v(|v| v.cancel_failed().is_none()), "that rule is not the one on the chip");
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_cancel_that_fails_says_so_on_the_chip_and_retries(cx: &mut TestAppContext) {
@@ -906,6 +946,51 @@ fn a_kill_that_cannot_look_again_kills_nothing(cx: &mut TestAppContext) {
     s.cx.run_until_parked();
     assert!(s.host.calls_of(cmd::KILL_SESSION).is_empty());
     assert!(!s.v(Vitals::kill_asked) && s.drawn("orphans-kill-all"));
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_recheck_whose_question_was_ended_meanwhile_kills_nothing(cx: &mut TestAppContext) {
+    let row = json!([{ "id": "s-1", "provider": "claude", "pid": 11, "cwd": "C:\\w", "accountPath": "C:\\a" }]);
+    let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, row.clone()));
+    s.click("orphans-kill-all");
+    s.host.defer(cmd::ORPHAN_SESSIONS);
+    s.click("orphans-kill");
+    // Keep, while the look again is out: the person said yes to a question
+    // that is gone, and the same sessions answering changes none of it.
+    s.do_v(|v, cx| v.keep_orphans(cx));
+    assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(row.clone())));
+    s.cx.run_until_parked();
+    assert!(s.host.calls_of(cmd::KILL_SESSION).is_empty());
+    assert!(s.drawn("orphans-kill-all"), "asked again");
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_look_under_way_is_let_go_of_by_the_recheck_and_none_starts_beside_it(cx: &mut TestAppContext) {
+    let row = |id: &str, pid: u32| json!({ "id": id, "provider": "claude", "pid": pid, "cwd": "C:\\w", "accountPath": "C:\\a" });
+    let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 11)])));
+    s.click("orphans-kill-all");
+    let looks = |s: &S<'_>| s.host.calls_of(cmd::ORPHAN_SESSIONS).len();
+    // A look is out when the second click comes (the recheck goes beside it).
+    s.host.defer(cmd::ORPHAN_SESSIONS);
+    s.wait(super::vitals::ORPHANS_EVERY);
+    let before = looks(&s);
+    s.click("orphans-kill");
+    assert_eq!(looks(&s), before + 1, "the recheck is asked at once");
+    // The look under way answers with another set: let go of, it ends no
+    // question and shows nothing.
+    assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([row("s-9", 19)]))));
+    s.cx.run_until_parked();
+    assert!(s.v(Vitals::kill_asked));
+    assert_eq!(s.v(|v| v.orphans()[0].id.clone()), "s-1");
+    // The schedule's looks wait for the recheck, and go once it is done.
+    s.wait(super::vitals::ORPHANS_EVERY);
+    assert_eq!(looks(&s), before + 1);
+    assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([row("s-1", 11)]))));
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-1" })]);
+    assert_eq!(looks(&s), before + 2, "the look that waited");
 }
 
 // --------------------------------------------- update: save, stop, resume
@@ -1028,6 +1113,54 @@ fn cancel_starts_again_the_sessions_the_stop_ended(cx: &mut TestAppContext) {
     assert_eq!(starts(&s), before + panes.len(), "each pane starts its session again");
     assert!(panes.iter().all(|p| !p.read_with(s.cx, |p, _| p.ended())));
     assert!(!frozen(&mut s));
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn cancel_starts_again_the_sessions_whose_exit_has_not_come_yet(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(cmd::STOP_ALL_SESSIONS, Value::Null);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.look();
+    let panes: Vec<_> = s.models.panes.borrow().iter().filter_map(gpui::WeakEntity::upgrade).collect();
+    assert!(!panes.is_empty(), "the fixture shows sessions");
+    s.click("status-update");
+    s.click("update-install");
+    // The stop returned before any exit came.
+    assert!(panes.iter().all(|p| !p.read_with(s.cx, |p, _| p.ended())));
+    assert!(s.host.resolve(desktop::cmd::UPDATE_INSTALL, Err("unsaved: locked".into())));
+    s.cx.run_until_parked();
+    // The core numbers the new spawns again.
+    s.host.answer(host_cmd::ENSURE_CLAUDE_SESSION, demo::attached("", 2));
+    s.host.answer(host_cmd::ENSURE_CODEX_SESSION, demo::attached("", 2));
+    let starts = |s: &S<'_>| s.host.calls_of(host_cmd::ENSURE_CLAUDE_SESSION).len() + s.host.calls_of(host_cmd::ENSURE_CODEX_SESSION).len();
+    let before = starts(&s);
+    s.click("update-cancel");
+    assert_eq!(starts(&s), before + panes.len(), "each pane the stop asked to end starts again, its exit come or not");
+    // The exits of the sessions before come late: not the new ones' own.
+    for pane in &panes {
+        let id = pane.read_with(s.cx, |p, _| p.id().to_owned());
+        s.tell(host_event::PTY_EXIT, json!({ "id": id, "code": 0, "generation": 1 }));
+    }
+    assert!(panes.iter().all(|p| !p.read_with(s.cx, |p, _| p.ended())));
+    let id = panes[0].read_with(s.cx, |p, _| p.id().to_owned());
+    s.tell(host_event::PTY_EXIT, json!({ "id": id, "code": 0, "generation": 2 }));
+    assert!(panes[0].read_with(s.cx, |p, _| p.ended()), "the new session's own exit ends it");
+}
+
+#[gpui::test]
+fn a_click_on_a_pane_changes_nothing_while_the_list_is_frozen(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    assert_eq!(s.active().as_deref(), Some("c-parser"));
+    s.models.workspace.update(s.cx, |w, cx| w.freeze(cx));
+    s.models.workspace.update(s.cx, |w, cx| w.set_active_pane(1, cx));
+    assert_eq!(s.active().as_deref(), Some("c-parser"), "what is written for the install stays as it is");
+    s.models.workspace.update(s.cx, |w, cx| w.thaw(cx));
+    s.models.workspace.update(s.cx, |w, cx| w.set_active_pane(1, cx));
+    assert_eq!(s.active().as_deref(), Some("c-codex"));
 }
 
 // ------------------------------------------------------- usage: no redraws

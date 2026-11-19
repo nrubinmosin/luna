@@ -46,6 +46,12 @@ impl CoreLink {
         self.epoch
     }
 
+    /// The link revision of the `up` this epoch began with: what a core's
+    /// events are stamped with (`status::event::stamp`).
+    pub fn up_revision(&self) -> Option<u64> {
+        self.last_up.map(|(_, revision)| revision)
+    }
+
     /// Takes a state the host reported, from a `core://state` event or as
     /// the answer to `core_state`, unless it is older than the one taken last
     /// (its `revision`): a `down` that lost a race to the `up` after it, or

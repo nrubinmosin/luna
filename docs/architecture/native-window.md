@@ -537,9 +537,16 @@ to the core). A test holds the bar to no redraw through an hour of this.
 **The power rule is the core's, and only the newest word counts.** The core
 numbers each state it sends (`PowerState::revision`, from 1 in each core
 run); the model keeps the number of the state it shows and takes a state, an
-event or an answer, only from the core up now (an answer only if it was
-asked in the same core epoch) and only if its number is not lower: a reply
-that comes late cannot put back a countdown a newer state canceled. While
+event or an answer, only from the core up now and only if its number is not
+lower: a reply that comes late cannot put back a countdown a newer state
+canceled. An answer is taken only if it was asked in the same core epoch,
+and so is the failure of a Cancel. An event carries no epoch of its own, and
+its numbers begin again with a new core, so the reader of the core's line
+(`corelink::hold`) stamps each `power://state` with the link revision of
+the `up` that began its connection (`status::event::stamp`, key `core`): the
+model drops an event stamped with another core's, and the inbox's one
+waiting copy (`event::LATEST`) is replaced by the later by (core, revision),
+so an old core's state 50 neither outlives nor outranks the new core's 1. While
 the core is not up the rule is not known: the chip says `power: no core`,
 no countdown is shown or ticks, and the panel does not open; the core is
 asked again (`power_state`) as it comes back. A Cancel (`disarm_power_off`)
@@ -547,11 +554,17 @@ that fails is kept (`Vitals::cancel_failed`): the chip says `cancel failed`
 and its button is Retry, until a state without a rule comes.
 
 **What Kill all kills.** Its first click keeps the sessions shown (each id
-with its pid); a look that finds another set closes the question. The
-second click looks again (`orphan_sessions` with the chats known now) and
-kills only if the same sessions are there, each by `kill_session`, leaving
-out one whose id a chat took meanwhile; otherwise it shows what it found and
-asks again, and a look that fails kills nothing. `kill_session` takes an id
+with its pid) under a number of its own; a look that finds another set, Keep,
+or a new core closes the question. The second click looks again
+(`orphan_sessions` with the chats known now, one look at a time: a look
+under way is let go of, its answer not taken, and none starts beside the
+recheck, the schedule's waiting until it is done) and kills only if the
+question it was asked for, by its number, still stands and the same
+sessions are there, each by `kill_session`, leaving out one whose id a chat
+took meanwhile; otherwise it shows what it found and asks again, and a look
+that fails kills nothing. The host's request is given up after the same 20
+seconds as the window's wait (`corelink::request_within`), so a core that
+stopped answering leaves no thread waiting. `kill_session` takes an id
 alone and cannot tell a chat's session from an orphan, so the window makes
 that check; what is left is the moment between the look and the kill.
 
@@ -572,8 +585,9 @@ of the confirmation (`Vitals::install`) downloads the installer; where the
 release's `coreFingerprint` is not the running core's every session is
 stopped (`stop_all_sessions`, shown as "stopping sessions"). From before the
 stop the workspace is frozen (`Workspace::freeze`): the person's changes are
-refused and a notice says why, while what the sessions change is still
-written. The list is then written by the quit's rule
+refused (a click on a pane, which would change the chat written as the
+active one, included) and a notice says why, while what the sessions change
+is still written. The list is then written by the quit's rule
 (`Workspace::save_for_install`, `flush_window_state`: the `seq` the host says
 it wrote must be the latest sent, or it is flushed again), and only then is
 `update_install { reason, anyway }` asked. Luna ends as the install starts.
@@ -583,9 +597,11 @@ the bar's panel with the reason and three buttons, the list still frozen:
 Retry and Install anyway (`anyway: true`) go through it all again, the core
 up now looked at anew for whether the sessions must stop; Cancel, when the
 sessions were stopped for it, calls the update off (`update_called_off`) so
-that the core thaws the chats, starts again each pane whose session the stop
-ended (`TermPane::start_over`, resumed or reattached as after a core
-restart), thaws the list and puts the release back on offer. Any other
+that the core thaws the chats, starts again each pane the stop asked to end
+(`TermPane::start_over`, resumed or reattached as after a core restart),
+whether its exit has come or not, since the stop can return before the exits
+do, and the exit of the old session that comes late is told from the new
+one's by its generation (`TermPane::on_exit`), thaws the list and puts the release back on offer. Any other
 failure does the same and leaves an "update failed" chip whose click offers
 the install again. The tests hold each of these paths, the download and the
 stop included.

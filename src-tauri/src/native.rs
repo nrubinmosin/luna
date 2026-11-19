@@ -129,6 +129,11 @@ pub(crate) fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         Some(Lane::Call) if cmd == luna_window::cmd::SESSIONS_META => {
             crate::corelink::request_within(cmd.to_owned(), args, Some(luna_window::workspace::POLL_TIMEOUT))
         }
+        // The same for the status bar's look at the orphans, given up after
+        // `SCAN_TIMEOUT`.
+        Some(Lane::Call) if cmd == luna_window::status::cmd::ORPHAN_SESSIONS => {
+            crate::corelink::request_within(cmd.to_owned(), args, Some(luna_window::status::SCAN_TIMEOUT))
+        }
         Some(Lane::Call) => crate::corelink::request(cmd.to_owned(), args),
         Some(Lane::Send) => Err(format!("{cmd} is sent, not called")),
         None => match OWN.iter().find(|(c, _)| *c == cmd) {
