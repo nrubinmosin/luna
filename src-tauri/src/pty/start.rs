@@ -1251,8 +1251,7 @@ mod tests {
         const ID: &str = "golden-claude-login";
         const ACC: &str = "/golden/acc-claude-login";
         let r = Redact::for_chat(ID);
-        let s =
-            ClaudeAsk { folder: ACC.into(), account: ACC.into(), tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
+        let s = ClaudeAsk { folder: ACC.into(), account: ACC.into(), tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(
             s.args,
             strings(&[
