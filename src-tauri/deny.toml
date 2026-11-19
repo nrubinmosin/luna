@@ -38,6 +38,9 @@ ignore = [
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile: pulled in by the gpui-pre 0.3.12 / gpui-component 0.10.0 snapshot, pinned; revisit at the next snapshot upgrade. Expires 2027-02-19" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz: pulled in by the gpui-pre 0.3.12 / gpui-component 0.10.0 snapshot, pinned; revisit at the next snapshot upgrade. Expires 2027-02-19" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: pulled in by the gpui-pre 0.3.12 / gpui-component 0.10.0 snapshot, pinned; revisit at the next snapshot upgrade. Expires 2027-02-19" },
+    # chrono is reached only through gpui-base, gpui-component, gpui-pre and
+    # gpui-pre-scheduler; Luna's own code does not depend on it.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: pulled in by the gpui-pre 0.3.12 / gpui-component 0.10.0 snapshot, pinned; revisit at the next snapshot upgrade. Expires 2027-02-19" },
 ]
 
 [licenses]
