@@ -379,17 +379,20 @@ new line.
 **Mode when not given.** A spawn that names no mode (Claude: no
 `permissionMode`; Codex: no `sandbox`) is started with none
 (`background_spec`, `Spec::own_mode`): no `--permission-mode` for Claude Code,
-and for Codex no sandbox override, so the CLI runs in what its own settings
-say for that account and folder (Codex's own default where they say nothing,
-codex/defaults.rs). The helper's `settings` show what Luna read of them
-(`claude/defaults.rs`, `codex/defaults.rs` `flags`) with `modeFrom: "cli"`.
-Off Windows, a Codex `read-only` still takes Luna's profile denying its
-`core/` (`denies_core`), the same sandbox with a wall of Luna's own. A mode
-named is spelled exactly as the CLI takes it, and is not compared with the
-caller's: Luna ranks no modes (ADR-0030, amendment of 2026-11-20). Claude Code
-helpers start in `auto` and `dontAsk` too (`CLAUDE_MODES`: `claude -p
---permission-mode` takes both, 2.1.322); a Codex helper's approval is `never`
+which runs in what its settings say (shown as Luna read them,
+`claude/defaults.rs`). A Codex helper gets no sandbox override and its
+`settings` say `sandbox: "codex"`: Codex's own, from its config, a value Luna
+does not resolve or claim (`codex/defaults.rs` `OWN`), and it gets no deny of
+Luna's `core/` either. The exception is a config Luna cannot read: any layer
+Codex might read, trusted or not, that will not parse or names an approval,
+sandbox or profile Luna does not know makes it `read-only`, passed
+explicitly. Both carry `modeFrom: "cli"`. A mode named is spelled exactly as
+the CLI takes it, and is not compared with the caller's: Luna ranks no modes
+(ADR-0030, amendment of 2026-11-20). Claude Code helpers start in `auto` and
+`dontAsk` too (`CLAUDE_MODES`: `claude -p --permission-mode` takes both,
+2.1.322); a Codex helper's approval is `never` (`-c approval_policy="never"`)
 or `auto-review`, as nobody is there to ask.
+
 `account` may be a list of one provider's accounts: the first signed in with
 every window under 95%, else the one with most room; `accountChoice` says why.
 Only the windows the provider reported count, whatever their name: one it did

@@ -85,10 +85,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   theirs is left to send a notice.
 - A helper runs in the mode you name, spelled exactly. None named (no `permissionMode`; for
   Codex no `sandbox`), Luna passes none: the CLI's own settings for that account and folder
-  decide (`settings.modeFrom: "cli"`; the mode shown is what Luna read of them, and a Codex
-  sandbox it could not read goes as `read-only`). Codex naming
-  none runs `read-only`, or `workspace-write` in a folder it trusts. What a mode or sandbox lets
-  through is the CLI's own, not Luna's. No helper works in or above Luna's own folder.
+  decide (`settings.modeFrom: "cli"`). A Codex one shows `sandbox: "codex"`, Codex's own from
+  its config, not known to Luna; a config Luna cannot read makes it `read-only`, passed. What a
+  mode or sandbox lets through is the CLI's own, not Luna's. No helper works in or above Luna's
+  own folder.
 - Codex's `approval`: `never` (the default), or `auto-review`, a reviewer model answering what
   Codex would ask (workspace-write only). A helper has nobody to ask, so policies that ask a
   person are refused; Codex's sandbox is what holds it. Running the project's hooks past Codex's trust

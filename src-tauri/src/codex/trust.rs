@@ -112,29 +112,38 @@ impl Decisions {
         Decisions(saved)
     }
 
-    /// The decision saved under `dir`'s own key: trusted or not; None for none.
+    /// The decision saved under `dir`'s own key, or under another spelling of
+    /// the same folder (Codex looks a folder up canonical as well as written,
+    /// config/src/loader/mod.rs `normalized_project_trust_keys`): trusted or
+    /// not; None for none.
     fn at(&self, dir: &str) -> Option<bool> {
-        self.0.iter().rev().find(|(key, _)| same_project(key, dir)).map(|&(_, trusted)| trusted)
+        self.0.iter().rev().find(|(key, _)| same_project(key, dir) || crate::checkout::same_place(key, dir)).map(|&(_, trusted)| trusted)
+    }
+
+    /// Whether a folder from `root` down to `dir`, both included, is saved as
+    /// other than trusted.
+    pub(crate) fn untrusted_between(&self, root: &str, dir: &str) -> bool {
+        let root = std::path::Path::new(root);
+        std::path::Path::new(dir).ancestors().take_while(|d| d.starts_with(root)).any(|d| self.at(&d.to_string_lossy()) == Some(false))
     }
 
     /// Whether Codex trusts a project layer in `dir` (a folder from the
     /// project `root` down to the session's `folder`): the first decision saved
     /// for `dir`, for the root, for the repository the folder is in
-    /// (`checkout_of`), that one deciding (config/src/loader/mod.rs
+    /// (`repo_root_of`), that one deciding (config/src/loader/mod.rs
     /// `ProjectTrustContext::decision_for_dir`, used per layer by
     /// `discover_project_layers`).
     pub(crate) fn layer_trusted(&self, dir: &str, root: &str, folder: &str) -> bool {
-        [dir, root, &checkout_of(folder)].iter().find_map(|d| self.at(d)) == Some(true)
+        [dir, root, &repo_root_of(folder)].iter().find_map(|d| self.at(d)) == Some(true)
     }
+}
 
-    /// The session's own project as Codex picks its defaults by it: the
-    /// decision for `folder`, else for its repository (core/src/config/mod.rs,
-    /// `get_active_project` with the repository root;
-    /// config/src/config_toml.rs `get_active_project`). Some(true) trusted,
-    /// Some(false) marked otherwise (`untrusted`), None for no decision.
-    pub(crate) fn active(&self, folder: &str) -> Option<bool> {
-        self.at(folder).or_else(|| self.at(&checkout_of(folder)))
-    }
+/// The repository root Codex keys trust by (git-utils
+/// `resolve_root_git_project_for_trust`): a linked worktree's main
+/// repository, else the checkout `folder` is in.
+fn repo_root_of(folder: &str) -> String {
+    let checkout = checkout_of(folder);
+    crate::checkout::repo_of_linked(&checkout).unwrap_or(checkout)
 }
 
 /// The checkout `folder` is in, where Codex looks its trust up — a CLI-made

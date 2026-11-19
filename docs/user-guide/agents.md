@@ -184,13 +184,13 @@ tools.
   it runs in, and never in or above Luna's data folder. What a mode or a
   sandbox lets through is the CLI's own: Luna does not rank or compare them.
 - A spawn that names no mode passes none: the helper's CLI runs in what its
-  own settings say for that account and folder (a settings file's
-  `defaultMode`, `dontAsk` included; Codex's `sandbox_mode` or permission
-  profile, or Codex's own default, `read-only` or `workspace-write` in a
-  folder it trusts). The spawn's `settings` show what Luna read of them, with
-  `modeFrom: "cli"`. A Codex sandbox Luna could not read (a `config.toml`
-  that does not parse) is passed as `read-only`, so what it shows is what runs. A Claude Code helper may also run in `auto`, as a chat
-  may (Auto), or in `dontAsk`.
+  own settings say for that account and folder, with `modeFrom: "cli"` in its
+  `settings`. A Claude Code helper's shows the `defaultMode` Luna read
+  (`dontAsk` included); a Codex helper's says `sandbox: "codex"`, Codex's own
+  from its config, which Luna does not resolve. A Codex config Luna cannot
+  read (one that does not parse, or names a mode Luna does not know) makes
+  it `read-only`, passed. A Claude Code helper may also run in `auto`, as a
+  chat may (Auto), or in `dontAsk`.
 - A Codex helper never asks a person: its approval is `never` or `auto-review`,
   and one that asks (`on-request` and the like) is refused, as nobody is there.
 - `constraints` is text the helper and every session

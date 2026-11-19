@@ -291,30 +291,24 @@ files themselves and the dialog opens on what they say:
   managed file.
 - **Codex**: its system layer (`codex/config.rs` `system_layer`), the
   account's `config.toml`, then the project's `.codex/config.toml` layers
-  from its root down to the folder, found as Codex finds them, each read only
-  where Codex trusts it: the first decision saved for its folder, the project
-  root or the repository, a run's own `-c` trust counted (`codex/config.rs`
-  `trusted_project_layers`, `codex/trust.rs` `Decisions`). No model there: the
-  first model of the catalog (sorted by `priority`; source `codex`); no
-  effort: that model's `default_reasoning_level`. Codex always gets
-  `--model`. No approval or sandbox there: Codex's own defaults (source
-  `codex`: `on-request`; `read-only`, or `workspace-write` in a trusted
-  folder, 0.169.0), and a chat left on them gets no `--ask-for-approval` or
-  `--sandbox` (`left_to_codex`; off Windows a `read-only` one still takes
-  Luna's profile denying its `core/`). A sandbox may come of
-  `default_permissions`: a built-in profile as its mode, one of the user's
-  own as `profile`, by name, passed through with no sandbox flag. Where Luna
-  has to pick and cannot tell, it fails closed: a layer that will not read or
-  parse, or a value Luna does not know, gives `on-request` and `read-only`
-  (source `closed`), a value left unsaid beside one unknown too;
-  `on-failure` reads as `on-request`; `untrusted` as the last word refuses
-  the chat by name (`refuses_untrusted`), as 0.169.0 refuses it whatever the
-  flags; a `{ granular = … }` table is `granular`, and a chat in it is
-  started with the table as `-c approval_policy=…` (`granular_policy`), never
-  `--ask-for-approval`, which takes `on-request` and `never` only.
-  `launch_mode` puts what the window asks through the same reading, an
-  approval closed closing the sandbox with it.
-
+  from its root down to the folder, found as Codex finds them. The model and
+  effort come from those Codex trusts (the first decision saved for the
+  layer's folder, the project root or the repository, a run's own `-c` trust
+  counted, `codex/trust.rs` `Decisions`). No model there: the first model of
+  the catalog (sorted by `priority`; source `codex`); no effort: that model's
+  `default_reasoning_level`. Codex always gets `--model`. The approval and
+  the sandbox Luna does not resolve: they open on `codex`, Codex's own from
+  its config, for which a chat gets no `--ask-for-approval` or `--sandbox`
+  and Luna claims no value (no deny of its `core/` either). Only where a
+  layer Codex might read, trusted or not, will not read or parse, or names
+  an approval, a sandbox or a permission profile Luna does not know, do they
+  open closed, `on-request` and `read-only` (source `closed`), passed
+  explicitly. A config whose `untrusted` approval Codex surely reads refuses
+  the chat by name (`refuses_untrusted`); where a project layer might go over
+  it, the chat starts and Codex decides. `launch_mode` puts what the window
+  asks through the same reading, an approval closed closing the sandbox with
+  it; a `granular` or `profile` recorded by 0.20's first builds starts as
+  `codex`.
 Picking another Codex model moves the effort to that model's default unless the
 effort came from a file or was picked by hand (`draft.follow`). Picking another
 Claude model moves it to that model's default only where the model does not
@@ -490,8 +484,8 @@ live registry.
 ## The Codex sandbox on Windows
 
 - Without `windows.sandbox` Codex rejects or sends for approval every command
-  under `read-only`, `read-only-net` and `workspace-write`. Those modes, and a
-  permission profile of the user's own, get
+  under `read-only`, `read-only-net` and `workspace-write`. Those modes, and
+  Codex's own (`codex`), get
   `-c windows.sandbox="unelevated"` unless the account's `config.toml` names
   a `windows.sandbox` of its own (`config.rs` `windows_sandbox_set`), which
   then stands; a project's does not count (a restricted token per command: no

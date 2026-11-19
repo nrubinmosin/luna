@@ -222,22 +222,21 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `on-request`. A `granular` approval table is passed to Codex as it is,
   through `-c approval_policy=…`, since `--ask-for-approval` takes only
   `on-request` and `never`.
-- Where Codex's config names no approval or sandbox, the dialog shows Codex's
-  own defaults (`on-request`; `read-only`, or `workspace-write` in a folder
-  Codex trusts, as Codex 0.169.0 has them) and a chat left on them is started
-  without a flag for them, instead of on Luna's stock bypass. A permission
-  profile of the user's own (`default_permissions`) shows by its name and is
-  passed through, never overridden; Codex's built-in profiles read as the
-  sandbox each stands for. Codex's machine-wide `config.toml` is read under
-  the account's. A config whose approval is `untrusted`, which Codex 0.169
-  refuses to start on whatever flag is passed, stops a chat with an error
-  naming the key and the file, not a session that ends at once. Luna decides
-  which project layers Codex reads as Codex does: by the folder's, the project
-  root's, then the repository's trust, a helper's own trust for its run
-  counted. A helper whose spawn names no sandbox is started without one only
-  where that is Codex's own default; a sandbox Luna could not read is passed
-  as `read-only`, so the sandbox it reports is the one it runs in.
-- The Codex settings sync no longer copies the parent account's hook trust
+- Where nothing names a Codex approval or sandbox, a chat or a helper runs in
+  **Codex's own**, from its config: Luna passes no flag and does not claim to
+  know the mode, in the new-chat dialog, the title bar, `luna_session_list`
+  and `luna_session_get` alike (`codex`), instead of Luna's stock bypass. A
+  granular approval table or a permission profile in the config is Codex's
+  own too. Only a config Luna cannot read (one that does not parse, or names
+  an approval, sandbox or profile it does not know, in any layer Codex might
+  read) opens on `on-request` with `read-only`, passed explicitly. Codex's
+  machine-wide `config.toml` is read under the account's. A config whose
+  approval is `untrusted`, which Codex 0.169 refuses to start on whatever
+  flag is passed, stops a chat with an error naming the key and the file,
+  where Luna is sure Codex reads it. The project layers whose
+  `developer_instructions` Luna carries are those Codex trusts, a linked
+  worktree by its main repository, none at or below a folder marked
+  untrusted.- The Codex settings sync no longer copies the parent account's hook trust
   (`hooks.state`) into the other accounts, where it would have run hooks
   nobody there reviewed; each account keeps its own, also where the parent
   writes its hooks as one inline `hooks = { … }` table.

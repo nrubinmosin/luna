@@ -12,6 +12,8 @@ use crate::agents::admission::{plain_text, reaches_luna};
 use crate::agents::registry::{depth_of, descendants, is_descendant, reg, top_of, Registry, DEV_CALLER};
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
+#[cfg(test)]
+pub(crate) use crate::agents::spawn::background::background_spec_for_test;
 use crate::agents::spawn::background::spawn_background;
 use crate::agents::spawn::folder::{caller_worktree, Neighbor};
 use crate::agents::spawn::role::settle_role;

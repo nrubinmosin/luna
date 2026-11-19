@@ -1,38 +1,25 @@
 //! Where a new Codex chat's model, effort, approval and sandbox come from when
 //! nobody has said otherwise: Codex's own `config.toml` layers, its system one
 //! first (`config::system_layer`), then the account's, then the project's
-//! `.codex/config.toml` layers — which Codex only reads for a trusted folder,
-//! so neither does this.
+//! `.codex/config.toml` layers.
 //!
-//! Reading them is what makes the dialog show what a chat will run in, and
-//! the flags Luna passes agree with the files instead of fighting them.
+//! The model and its effort, which Luna always passes, are the last layer's
+//! that Codex trusts (codex/trust.rs `Decisions`), or where nothing is said
+//! what Codex itself would pick (`source: codex`): the first model of its
+//! catalog (codex/models.rs) at that model's default level.
 //!
-//! The model and its effort, where nothing is said, are what Codex itself
-//! would pick (`source: codex`): the first model of its catalog
-//! (codex/models.rs) at that model's default level, named so the dialog shows
-//! the model a chat really runs on. The approval and the sandbox, where the
-//! files name none, are Codex's own defaults (`source: codex`), and a chat
-//! left on them is started without a flag for them (`left_to_codex`): Codex
-//! 0.169.0 asks `on-request`, and runs `read-only`, or `workspace-write` in a
-//! folder it trusts (core/src/config/mod.rs, the approval's `unwrap_or_else`;
-//! config/src/config_toml.rs `derive_permission_profile`).
-//!
-//! A sandbox may also come of `default_permissions`: Codex's built-in
-//! profiles (`:read-only`, `:workspace`, `:danger-full-access`) read as the
-//! sandbox each stands for; any other is a profile of the user's own,
-//! `PROFILE`, shown by its name and passed through, never overridden. Of the
-//! two keys, the last layer to set either wins, and within one layer
-//! `default_permissions` (config/src/permission_config.rs
-//! `resolve_permission_config`).
-//!
-//! Where Luna has to pick and cannot tell what the files say — a layer that
-//! will not read or parse, a value it does not know — the approval and the
-//! sandbox are `on-request` and `read-only` (`source: closed`). Codex's
-//! `on-failure` is its alias of `on-request`; its `untrusted`, which 0.169.0
-//! refuses to start on ("no longer supported"), reads as a value Luna does
-//! not know, and a session is not started on it (`refuses_untrusted`); a `{
-//! granular = … }` table is `granular`, passed to Codex as it is
-//! (`granular_policy`).
+//! The approval and the sandbox Luna does not resolve: what Codex makes of its
+//! layers (which it trusts, which key wins, its own defaults) is Codex's. A
+//! chat or a helper that names neither runs in "Codex's own, from its config"
+//! (`OWN`, `source: codex`): Luna passes no flag for it and claims no value.
+//! The one thing Luna decides from the files is whether it can read them: a
+//! layer that will not read or parse, or one naming an approval, a sandbox or
+//! a permission profile Luna does not know (Codex's retired `untrusted`
+//! among them), in any layer Codex might read, trusted or not, makes them
+//! `on-request` and `read-only` (`source: closed`), passed explicitly. A
+//! session is also not started where the account's own `approval_policy` is
+//! `untrusted`, which Codex refuses whatever flag Luna passes
+//! (`refuses_untrusted`).
 
 use super::config;
 use super::models::CodexModel;
@@ -58,47 +45,28 @@ pub struct CodexDefaults {
     pub effort: Setting,
     pub approval: Setting,
     pub sandbox: Setting,
-    /// The name of the user's own permission profile the sandbox stands for
-    /// where it is `PROFILE`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
 }
 
 /// The effort a chat starts with when neither the files nor a model list say one.
 const STOCK_EFFORT: &str = "high";
 
-/// Codex's own approval and sandbox where the files name none (0.169.0; see
-/// the module's comment): the sandbox `workspace-write` in a folder Codex
-/// trusts.
-const CODEX_APPROVAL: &str = "on-request";
-const CODEX_SANDBOX: &str = "read-only";
-const CODEX_SANDBOX_TRUSTED: &str = "workspace-write";
-const CODEX: &str = "codex";
+/// Luna's word for an approval or a sandbox it leaves to Codex: "Codex's own,
+/// from its config". No flag goes for it, and Luna does not say what it is.
+pub(crate) const OWN: &str = "codex";
 
-/// Luna's word for a sandbox that is a permission profile of the user's own
-/// (`default_permissions = "<name>"`): Codex runs it as the files define it,
-/// and no `--sandbox` of Luna's goes over it.
-pub(crate) const PROFILE: &str = "profile";
-
-/// Codex's built-in permission profiles, each as the sandbox mode it stands
-/// for (0.169.0, protocol/src/models.rs `BUILT_IN_PERMISSION_PROFILE_*`).
-const BUILT_IN_PROFILES: [(&str, &str); 3] =
-    [(":read-only", "read-only"), (":workspace", "workspace-write"), (":danger-full-access", "danger-full-access")];
-
-/// What the approval and the sandbox are where Luna cannot tell what the files
-/// say: Codex asks before anything the sandbox would block, and the sandbox
-/// writes nothing.
+/// What the approval and the sandbox are where Luna cannot read the files:
+/// Codex asks before anything the sandbox would block, and the sandbox writes
+/// nothing. Passed explicitly.
 pub(crate) const CLOSED_APPROVAL: &str = "on-request";
 pub(crate) const CLOSED_SANDBOX: &str = "read-only";
 const CLOSED: &str = "closed";
 
-/// Luna's word for an `approval_policy = { granular = { … } }` table: Codex
-/// asks a person only for the kinds of request the table lets through and
-/// turns the rest down unasked. `--ask-for-approval` does not take it; it goes
-/// to Codex as `-c approval_policy=…` (`granular_policy`).
-pub(crate) const GRANULAR: &str = "granular";
-
 const SANDBOXES: [&str; 3] = ["read-only", "workspace-write", "danger-full-access"];
+
+/// Codex's built-in permission profiles (0.169.0, protocol/src/models.rs
+/// `BUILT_IN_PERMISSION_PROFILE_*`); any other name is a profile of the
+/// config's own.
+const BUILT_IN_PROFILES: [&str; 3] = [":read-only", ":workspace", ":danger-full-access"];
 
 /// The levels are per model and come off the CLI's model list, so any plain
 /// word passes.
@@ -107,125 +75,67 @@ fn effort_level(raw: &str) -> Option<String> {
     (!v.is_empty() && v.chars().all(|c| c.is_ascii_lowercase())).then_some(v)
 }
 
-/// What one layer says of a key: nothing, a value Luna knows, or one it does
-/// not (None).
-type Word = Option<Option<String>>;
-
-/// An `approval_policy` as Luna runs it: `on-request` (Codex's `on-failure` is
-/// its alias), `never`, or `granular` with the table as Codex will be given
-/// it; None for anything else, `untrusted` included.
-fn approval_of(item: &toml_edit::Item) -> Option<(String, Option<String>)> {
+/// An `approval_policy` Codex 0.169.0 runs: `on-request` (and its alias
+/// `on-failure`), `never`, or a `{ granular = … }` table with the fields
+/// `GranularApprovalConfig` takes — `sandbox_approval`, `rules` and
+/// `mcp_elicitations` required, `skill_approval` and `request_permissions`
+/// optional, all booleans. Not `untrusted`, which it refuses.
+fn approval_known(item: &toml_edit::Item) -> bool {
     if let Some(s) = item.as_str() {
-        return match s.trim().to_lowercase().as_str() {
-            "on-request" | "on-failure" => Some(("on-request".into(), None)),
-            "never" => Some(("never".into(), None)),
-            _ => None,
-        };
+        return matches!(s.trim().to_lowercase().as_str(), "on-request" | "on-failure" | "never");
     }
-    let table = item.as_table_like()?;
-    if table.len() != 1 {
-        return None;
-    }
-    granular_table(table.get("granular")?).map(|t| (GRANULAR.to_string(), Some(t)))
-}
-
-/// A `granular` table as `-c approval_policy=` takes it, rebuilt from the
-/// fields Codex 0.169.0 reads (`GranularApprovalConfig`): `sandbox_approval`,
-/// `rules` and `mcp_elicitations` it requires, `skill_approval` and
-/// `request_permissions` default to false. None if any is missing or not a
-/// boolean: Codex would refuse to start on it.
-fn granular_table(item: &toml_edit::Item) -> Option<String> {
-    let t = item.as_table_like()?;
-    let flag = |k: &str, required: bool| match t.get(k) {
-        Some(v) => v.as_bool(),
-        None => (!required).then_some(false),
+    let Some(table) = item.as_table_like() else { return false };
+    let Some(granular) = table.get("granular").and_then(|g| g.as_table_like()).filter(|_| table.len() == 1) else { return false };
+    let flag = |k: &str, required: bool| match granular.get(k) {
+        Some(v) => v.as_bool().is_some(),
+        None => !required,
     };
-    let fields = [
-        ("sandbox_approval", flag("sandbox_approval", true)?),
-        ("rules", flag("rules", true)?),
-        ("skill_approval", flag("skill_approval", false)?),
-        ("request_permissions", flag("request_permissions", false)?),
-        ("mcp_elicitations", flag("mcp_elicitations", true)?),
-    ];
-    let inner = fields.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",");
-    Some(format!("{{granular={{{inner}}}}}"))
+    flag("sandbox_approval", true)
+        && flag("rules", true)
+        && flag("mcp_elicitations", true)
+        && flag("skill_approval", false)
+        && flag("request_permissions", false)
 }
 
-fn sandbox_of(item: &toml_edit::Item) -> Option<String> {
-    let v = item.as_str()?.trim().to_lowercase();
-    SANDBOXES.contains(&v.as_str()).then_some(v)
+fn sandbox_known(item: &toml_edit::Item) -> bool {
+    item.as_str().is_some_and(|v| SANDBOXES.contains(&v.trim().to_lowercase().as_str()))
 }
 
-/// A `default_permissions` as a sandbox: a built-in profile as the mode it
-/// stands for, one of the user's own as `PROFILE` with its name; None for a
-/// built-in name Codex does not have, or a value that is not a name.
-fn permissions_of(item: &toml_edit::Item) -> (Option<String>, Option<String>) {
-    let Some(name) = item.as_str().map(str::trim).filter(|n| !n.is_empty()) else { return (None, None) };
-    if name.starts_with(':') {
-        return (BUILT_IN_PROFILES.iter().find(|(p, _)| *p == name).map(|(_, mode)| mode.to_string()), None);
-    }
-    (Some(PROFILE.to_string()), Some(name.to_string()))
+/// A `default_permissions`: a built-in profile Codex has, or a name of the
+/// config's own.
+fn permissions_known(item: &toml_edit::Item) -> bool {
+    item.as_str().map(str::trim).is_some_and(|n| !n.is_empty() && (!n.starts_with(':') || BUILT_IN_PROFILES.contains(&n)))
 }
 
-/// What the files say, as they say it: per key the last layer's word and its
-/// source, and whether a layer could not be read at all.
+/// Whether a layer names an approval, a sandbox or a profile Luna does not know.
+fn says_unknown(doc: &toml_edit::DocumentMut) -> bool {
+    doc.get("approval_policy").is_some_and(|i| !approval_known(i))
+        || doc.get("sandbox_mode").is_some_and(|i| !sandbox_known(i))
+        || doc.get("default_permissions").is_some_and(|i| !permissions_known(i))
+}
+
+/// What the files say: the model and effort of the layers Codex trusts, and
+/// whether any layer Codex might read could not be read or names a mode Luna
+/// does not know.
 #[derive(Default)]
 struct Said {
     model: Option<Setting>,
     effort: Option<Setting>,
-    approval: Option<(Word, String)>,
-    /// The table a `granular` approval stands for, from the layer that set it.
-    granular: Option<String>,
-    /// The file whose `approval_policy = "untrusted"` is the last word on it.
-    untrusted: Option<String>,
-    sandbox: Option<(Word, String)>,
-    /// The user's own profile the sandbox stands for, from the layer that set it.
-    profile: Option<String>,
-    /// Codex's decision for the session's own project (`Decisions::active`):
-    /// with any, its own sandbox is `workspace-write`; marked other than
-    /// trusted, its own approval is its internal `untrusted` policy.
-    active: Option<bool>,
-    unreadable: bool,
+    closed: bool,
 }
 
 fn take(source: &str, doc: &toml_edit::DocumentMut, key: &str) -> Option<Setting> {
     config::string_at(doc, key).map(|value| Setting { value, source: source.to_owned() })
 }
 
-/// One layer over the ones before it; `file`, its path, for what is refused.
-fn apply(out: &mut Said, source: &str, file: &str, doc: &toml_edit::DocumentMut) {
-    if let Some(s) = take(source, doc, "model") {
-        out.model = Some(s);
-    }
-    if let Some(s) = take(source, doc, "model_reasoning_effort") {
-        out.effort = Some(s);
-    }
-    if let Some(item) = doc.get("approval_policy") {
-        let read = approval_of(item);
-        out.granular = read.as_ref().and_then(|(_, t)| t.clone());
-        out.untrusted = item.as_str().is_some_and(|s| s.trim().eq_ignore_ascii_case("untrusted")).then(|| file.to_owned());
-        out.approval = Some((Some(read.map(|(v, _)| v)), source.to_owned()));
-    }
-    if let Some(item) = doc.get("sandbox_mode") {
-        out.sandbox = Some((Some(sandbox_of(item)), source.to_owned()));
-        out.profile = None;
-    }
-    // After `sandbox_mode`: within one layer it wins.
-    if let Some(item) = doc.get("default_permissions") {
-        let (sandbox, profile) = permissions_of(item);
-        out.sandbox = Some((Some(sandbox), source.to_owned()));
-        out.profile = profile;
-    }
-}
-
 /// Async and off to a blocking thread: with no catalog on disk the model
 /// list comes from the CLI, which takes seconds.
 ///
 /// That CLI runs with `CODEX_HOME` set to the account (`codex_models`), and
-/// a trusted folder's `.codex/config.toml` is read: both paths are checked
+/// a folder's `.codex/config.toml` layers are read: both paths are checked
 /// (boundary.rs). Either may be empty: no account gives Luna's own defaults
 /// without reading or running anything, and no folder leaves the project's
-/// file out.
+/// files out.
 #[tauri::command]
 pub async fn codex_defaults(account_path: OrEmpty<AccountPath>, folder: OrEmpty<AbsPath>) -> CodexDefaults {
     let (account_path, folder) = (account_path.into_string(), folder.into_string());
@@ -235,148 +145,140 @@ pub async fn codex_defaults(account_path: OrEmpty<AccountPath>, folder: OrEmpty<
     })
     .await
     // Nothing read is not nothing said: closed, not Codex's own.
-    .unwrap_or_else(|_| settle(Said { unreadable: true, ..Default::default() }, &[]))
+    .unwrap_or_else(|_| settle(Said { closed: true, ..Default::default() }, &[]))
 }
 
 fn resolve(account_path: &str, folder: &str, models: &[CodexModel]) -> CodexDefaults {
     settle(read(account_path, folder, false), models)
 }
 
-/// A mode the files settled on: the last layer's word where Luna knows it;
-/// `closed` where it does not, or where it said nothing beside a layer that
-/// could not be read or a mode Luna does not know; else Codex's own.
-fn mode(word: Option<(Word, String)>, wary: bool, own: &str, closed: &str) -> Setting {
-    match word {
-        Some((Some(Some(value)), source)) => Setting { value, source },
-        Some(_) => Setting { value: closed.to_owned(), source: CLOSED.to_owned() },
-        None if wary => Setting { value: closed.to_owned(), source: CLOSED.to_owned() },
-        None => Setting { value: own.to_owned(), source: CODEX.to_owned() },
-    }
-}
-
 fn settle(said: Said, models: &[CodexModel]) -> CodexDefaults {
-    let own_sandbox = if said.active.is_some() { CODEX_SANDBOX_TRUSTED } else { CODEX_SANDBOX };
-    let marked_untrusted = said.active == Some(false);
     let model = said
         .model
         .filter(|s| !s.value.trim().is_empty())
-        .or_else(|| models.first().map(|m| Setting { value: m.slug.clone(), source: "codex".to_owned() }));
+        .or_else(|| models.first().map(|m| Setting { value: m.slug.clone(), source: OWN.to_owned() }));
     let own_level = model
         .as_ref()
         .and_then(|m| models.iter().find(|l| l.slug == m.value))
         .and_then(|m| m.default_effort.as_deref())
         .and_then(effort_level);
     let effort = said.effort.and_then(|s| effort_level(&s.value).map(|value| Setting { value, source: s.source }));
-    let unknown = |w: &Option<(Word, String)>| matches!(w, Some((Some(None), _)));
-    let wary = said.unreadable || unknown(&said.approval) || unknown(&said.sandbox);
-    let (approval, sandbox) = if said.unreadable {
-        // A layer Luna could not read may say anything over the others.
-        (mode(None, true, CODEX_APPROVAL, CLOSED_APPROVAL), mode(None, true, own_sandbox, CLOSED_SANDBOX))
-    } else {
-        (mode(said.approval, wary, CODEX_APPROVAL, CLOSED_APPROVAL), mode(said.sandbox, wary, own_sandbox, CLOSED_SANDBOX))
+    let mode = |closed: &str| match said.closed {
+        true => Setting { value: closed.to_owned(), source: CLOSED.to_owned() },
+        false => Setting { value: OWN.to_owned(), source: OWN.to_owned() },
     };
-    // In a project marked untrusted Codex's own approval is its internal
-    // `untrusted` policy, which no flag of Luna's names: Luna picks, closed.
-    let approval = if marked_untrusted && approval.source == CODEX {
-        Setting { value: CLOSED_APPROVAL.to_owned(), source: CLOSED.to_owned() }
-    } else {
-        approval
-    };
-    let profile = said.profile.filter(|_| sandbox.value == PROFILE);
     CodexDefaults {
         effort: effort
-            .or_else(|| own_level.map(|value| Setting { value, source: CODEX.to_owned() }))
+            .or_else(|| own_level.map(|value| Setting { value, source: OWN.to_owned() }))
             .unwrap_or_else(|| Setting { value: STOCK_EFFORT.to_owned(), source: "stock".to_owned() }),
         model,
-        approval,
-        sandbox,
-        profile,
+        approval: mode(CLOSED_APPROVAL),
+        sandbox: mode(CLOSED_SANDBOX),
     }
 }
 
 /// What the layers say for a run of the account in `folder`: a chat's, or a
 /// `helper`'s, which Luna trusts its folder for (pty/start.rs `codex_trust`).
-/// The project layers are those Codex trusts, each by its own folder, the
-/// project root and the repository, the run's `-c` trust counted
-/// (codex/trust.rs `Decisions`).
+/// Every layer is looked at for what Luna cannot read; the model and effort
+/// are taken only from those Codex trusts (codex/trust.rs `Decisions`), as
+/// they are passed as flags.
 fn read(account_path: &str, folder: &str, helper: bool) -> Said {
     let mut out = Said::default();
     if account_path.is_empty() {
         return out;
     }
     let Ok(account_file) = config::account_file(account_path) else { return out };
-    let mut files = vec![("system", config::system_layer()), ("account", account_file)];
+    let mut files = vec![("system", config::system_layer(), true), ("account", account_file, true)];
     if !folder.is_empty() {
-        let trust = super::trust::Decisions::of(account_path, folder, helper);
-        out.active = trust.active(folder);
-        match config::trusted_project_layers(account_path, folder, &trust) {
-            Ok(layers) => files.extend(layers.into_iter().map(|f| ("project", f))),
-            Err(_) => out.unreadable = true,
+        match config::project_root_and_layers(account_path, folder) {
+            Ok((root, layers)) => {
+                let trust = super::trust::Decisions::of(account_path, folder, helper);
+                let root = root.to_string_lossy().into_owned();
+                for file in layers {
+                    let dir = config::layer_dir(&file);
+                    let trusted = trust.layer_trusted(&dir, &root, folder);
+                    files.push(("project", file, trusted));
+                }
+            }
+            Err(_) => out.closed = true,
         }
     }
-    for (source, file) in files {
+    for (source, file, trusted) in files {
         match config::read(&file) {
-            Ok(doc) => apply(&mut out, source, &file.to_string_lossy(), &doc),
-            Err(_) => out.unreadable = true,
+            Ok(doc) => {
+                out.closed |= says_unknown(&doc);
+                if trusted {
+                    if let Some(s) = take(source, &doc, "model") {
+                        out.model = Some(s);
+                    }
+                    if let Some(s) = take(source, &doc, "model_reasoning_effort") {
+                        out.effort = Some(s);
+                    }
+                }
+            }
+            Err(_) => out.closed = true,
         }
     }
     out
 }
 
-/// A session is not started where the files' last word on the approval is
-/// `untrusted`: Codex 0.169.0 refuses to start on it, as a value of the
-/// config, whatever flag Luna passes (core/src/config/mod.rs
-/// `UnsupportedUntrustedApprovalPolicyError`). Said here, naming the file,
-/// rather than as a session that ends at once.
+/// A chat is not started where Codex 0.169.0 would refuse it: its effective
+/// `approval_policy` is `untrusted`, refused whatever `-a` Luna passes
+/// (core/src/config/mod.rs `UnsupportedUntrustedApprovalPolicyError`). Said
+/// here, naming the file, rather than as a session that ends at once. Only
+/// where Luna is sure: the last word on the approval among the system's, the
+/// account's and the project layers Codex trusts is `untrusted`, and no layer
+/// Luna takes for untrusted, or cannot read, names one, which Codex might
+/// read all the same. Unsure, it starts, and Codex decides.
 pub(crate) fn refuses_untrusted(account_path: &str, folder: &str) -> Result<(), String> {
-    match read(account_path, folder, false).untrusted {
-        Some(file) => Err(format!(
+    let Ok(account_file) = config::account_file(account_path) else { return Ok(()) };
+    let mut files = vec![(config::system_layer(), true), (account_file, true)];
+    if !folder.is_empty() {
+        let Ok((root, layers)) = config::project_root_and_layers(account_path, folder) else { return Ok(()) };
+        let trust = super::trust::Decisions::of(account_path, folder, false);
+        let root = root.to_string_lossy().into_owned();
+        files.extend(layers.into_iter().map(|f| {
+            let trusted = trust.layer_trusted(&config::layer_dir(&f), &root, folder);
+            (f, trusted)
+        }));
+    }
+    let mut last: Option<(bool, String)> = None;
+    for (file, trusted) in files {
+        let Ok(doc) = config::read(&file) else { return Ok(()) };
+        let Some(item) = doc.get("approval_policy") else { continue };
+        if !trusted {
+            // A layer Luna takes for untrusted that names an approval: Codex
+            // may read it, and then its word goes.
+            return Ok(());
+        }
+        let untrusted = item.as_str().is_some_and(|s| s.trim().eq_ignore_ascii_case("untrusted"));
+        last = Some((untrusted, file.to_string_lossy().into_owned()));
+    }
+    match last {
+        Some((true, file)) => Err(format!(
             "{file} sets approval_policy = \"untrusted\", which Codex no longer supports: it refuses to start with \
              \"approval_policy = \\\"untrusted\\\" is no longer supported; remove this setting\". Remove the key there, or \
              set on-request or never"
         )),
-        None => Ok(()),
-    }
-}
-
-/// What of a chat's `approval` and `sandbox` Luna leaves to Codex, passing no
-/// flag for it, as the files stand now: one they name none of, still what
-/// Codex would settle on by itself (`source: codex`), and a profile of the
-/// user's own (`PROFILE`) the files still name. (approval, sandbox).
-pub(crate) fn left_to_codex(account_path: &str, folder: &str, approval: &str, sandbox: &str) -> (bool, bool) {
-    let d = resolve(account_path, folder, &[]);
-    let own = |s: &Setting, v: &str| s.source == CODEX && s.value == v;
-    (own(&d.approval, approval), own(&d.sandbox, sandbox) || (sandbox == PROFILE && d.profile.is_some()))
-}
-
-/// The `approval_policy` table a chat whose approval is `granular` is started
-/// with, as the files say it now; None if they no longer say one, and the
-/// chat then starts in `CLOSED_APPROVAL` (pty/start.rs).
-pub(crate) fn granular_policy(account_path: &str, folder: &str) -> Option<String> {
-    let said = read(account_path, folder, false);
-    if said.unreadable {
-        return None;
-    }
-    match said.approval {
-        Some((Some(Some(v)), _)) if v == GRANULAR => said.granular,
-        _ => None,
+        _ => Ok(()),
     }
 }
 
 /// An approval and a sandbox as a chat is started in: what Luna runs as it
-/// is, anything else as it would read in the files — `on-failure` as
-/// `on-request`, a value it does not know (`untrusted` included) closed. An
-/// approval closed closes the sandbox with it, as a layer saying what Luna
-/// does not know does (`settle`).
+/// is, `on-failure` as `on-request`, and a `granular` or `profile` a chat of
+/// 0.20's first builds recorded as Codex's own; anything else closed, both
+/// together, as a layer Luna cannot read closes both.
 pub(crate) fn launch_mode(approval: &str, sandbox: &str) -> (String, String) {
     use super::launch::{AUTO_REVIEW, READ_ONLY_NET};
     let approval = match approval.trim().to_lowercase().as_str() {
-        a @ ("on-request" | "never" | AUTO_REVIEW | GRANULAR) => Some(a.to_string()),
+        a @ ("on-request" | "never" | AUTO_REVIEW | OWN) => Some(a.to_string()),
         "on-failure" => Some("on-request".to_string()),
+        "granular" => Some(OWN.to_string()),
         _ => None,
     };
     let sandbox = match sandbox.trim().to_lowercase().as_str() {
-        s @ ("read-only" | READ_ONLY_NET | "workspace-write" | "danger-full-access" | PROFILE) => Some(s.to_string()),
+        s @ ("read-only" | READ_ONLY_NET | "workspace-write" | "danger-full-access" | OWN) => Some(s.to_string()),
+        "profile" => Some(OWN.to_string()),
         _ => None,
     };
     match approval {
@@ -385,11 +287,11 @@ pub(crate) fn launch_mode(approval: &str, sandbox: &str) -> (String, String) {
     }
 }
 
-/// What the files settle on for a helper of this account in this folder (its
-/// folder trusted for its run), for `luna_account_get` and a helper spawned
-/// without a mode — off the model list as far as it is known without asking
-/// the CLI. `approvalFrom` and `sandboxFrom` say whose: `codex` for Codex's
-/// own defaults, which alone a helper is started without a flag for.
+/// What a helper of this account in this folder starts with when its spawn
+/// names nothing (its folder trusted for its run), for `luna_account_get` and
+/// the spawn — off the model list as far as it is known without asking the
+/// CLI. The approval and the sandbox are `codex` (Codex's own, no flag) or
+/// closed (`approvalFrom`, `sandboxFrom` say which).
 pub fn flags(account_path: &str, folder: &str) -> serde_json::Value {
     let d = settle(read(account_path, folder, true), &super::models::models_known(account_path));
     serde_json::json!({
@@ -399,7 +301,6 @@ pub fn flags(account_path: &str, folder: &str) -> serde_json::Value {
         "approvalFrom": d.approval.source,
         "sandbox": d.sandbox.value,
         "sandboxFrom": d.sandbox.source,
-        "profile": d.profile,
     })
 }
 
@@ -423,164 +324,90 @@ mod tests {
         (d.approval.value.as_str(), d.approval.source.as_str(), d.sandbox.value.as_str(), d.sandbox.source.as_str())
     }
 
+    const OWN_PAIR: (&str, &str, &str, &str) = (OWN, OWN, OWN, OWN);
+    const CLOSED_PAIR: (&str, &str, &str, &str) = ("on-request", "closed", "read-only", "closed");
+
+    /// Whatever the files name that Luna can read, the approval and the
+    /// sandbox are Codex's own: Luna claims no value and passes no flag.
     #[test]
-    fn project_wins_only_when_trusted() {
-        let root = root("defaults");
-        let account = root.join("account");
-        let folder = root.join("project");
-        write(
-            &account.join("config.toml"),
-            "model = \"gpt-5-codex\"\nmodel_reasoning_effort = \"xhigh\"\napproval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n",
-        );
-        write(&folder.join(".codex").join("config.toml"), "model = \"gpt-5-mini\"\nsandbox_mode = \"read-only\"\n");
-        let acc = account.to_string_lossy().into_owned();
-        let dir = folder.to_string_lossy().into_owned();
-
-        let d = resolve(&acc, &dir, &[]);
-        assert_eq!(d.model.as_ref().unwrap().value, "gpt-5-codex");
-        assert_eq!(d.model.as_ref().unwrap().source, "account");
-        assert_eq!(pair(&d), ("never", "account", "danger-full-access", "account"), "an untrusted project's layer is not read");
-
-        super::super::trust::codex_trust_folder(acc.clone(), dir.clone()).unwrap();
-        let d = resolve(&acc, &dir, &[]);
-        let model = d.model.as_ref().unwrap();
-        assert_eq!(model.value, "gpt-5-mini");
-        assert_eq!(model.source, "project");
-        assert_eq!(d.effort.value, "xhigh");
-        assert_eq!(pair(&d), ("never", "account", "read-only", "project"), "the project's sandbox over the account's");
-
-        // The project saying something Luna does not know closes the pair,
-        // over what the account says.
-        write(&folder.join(".codex").join("config.toml"), "sandbox_mode = \"wide-open\"\n");
-        assert_eq!(pair(&resolve(&acc, &dir, &[])), ("never", "account", "read-only", "closed"));
-        // A project layer that will not parse may say anything: closed, both.
-        write(&folder.join(".codex").join("config.toml"), "approval_policy = [never\n");
-        assert_eq!(pair(&resolve(&acc, &dir, &[])), ("on-request", "closed", "read-only", "closed"));
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn nothing_said_is_codexs_own_and_nothing_known_is_closed() {
-        let root = root("stock");
+    fn what_luna_can_read_is_codexs_own_and_claims_no_value() {
+        let root = root("own-modes");
         let account = root.join("account");
         let acc = account.to_string_lossy().into_owned();
-        // No file at all, or one that says neither: Codex's own.
         std::fs::create_dir_all(&account).unwrap();
-        assert_eq!(pair(&resolve(&acc, "", &[])), (CODEX_APPROVAL, "codex", CODEX_SANDBOX, "codex"));
-        write(&account.join("config.toml"), "model_reasoning_effort = \"High\"\n");
+        assert_eq!(pair(&resolve(&acc, "", &[])), OWN_PAIR, "no file");
+        for config in [
+            "model_reasoning_effort = \"High\"\n",
+            "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n",
+            "approval_policy = \"On-Failure\"\nsandbox_mode = \"workspace-write\"\n",
+            "approval_policy = { granular = { sandbox_approval = true, rules = false, mcp_elicitations = true } }\n",
+            "[approval_policy.granular]\nsandbox_approval = false\nrules = true\nmcp_elicitations = false\n",
+            "default_permissions = \":workspace\"\n",
+            "default_permissions = \"locked-down\"\n",
+        ] {
+            write(&account.join("config.toml"), config);
+            assert_eq!(pair(&resolve(&acc, "", &[])), OWN_PAIR, "{config}");
+        }
         let d = resolve(&acc, "", &[]);
         assert!(d.model.is_none(), "no model list, no model");
-        assert_eq!((d.effort.value.as_str(), d.effort.source.as_str()), ("high", "account"));
-        assert_eq!(pair(&d), (CODEX_APPROVAL, "codex", CODEX_SANDBOX, "codex"));
-        let none = resolve("", "", &[]);
-        assert_eq!(none.effort.source, "stock");
-
-        // Each approval: as Codex reads it, or closed. A value Luna does not
-        // know closes the sandbox the file leaves unsaid too.
-        for (policy, want) in [
-            ("\"never\"", ("never", "account", CODEX_SANDBOX, "codex")),
-            ("\"on-request\"", ("on-request", "account", CODEX_SANDBOX, "codex")),
-            ("\"On-Failure\"", ("on-request", "account", CODEX_SANDBOX, "codex")),
-            ("\"untrusted\"", ("on-request", "closed", "read-only", "closed")),
-            ("\"sometimes\"", ("on-request", "closed", "read-only", "closed")),
-            ("3", ("on-request", "closed", "read-only", "closed")),
-            (
-                "{ granular = { sandbox_approval = true, rules = false, mcp_elicitations = true } }",
-                ("granular", "account", CODEX_SANDBOX, "codex"),
-            ),
-            ("{ granular = { sandbox_approval = true } }", ("on-request", "closed", "read-only", "closed")),
-            (
-                "{ granular = { sandbox_approval = \"yes\", rules = true, mcp_elicitations = true } }",
-                ("on-request", "closed", "read-only", "closed"),
-            ),
-            ("{ other = true }", ("on-request", "closed", "read-only", "closed")),
-        ] {
-            write(&account.join("config.toml"), &format!("approval_policy = {policy}\n"));
-            assert_eq!(pair(&resolve(&acc, "", &[])), want, "{policy}");
-        }
-        // The table as a table of its own, too.
-        write(
-            &account.join("config.toml"),
-            "[approval_policy.granular]\nsandbox_approval = false\nrules = true\nmcp_elicitations = false\n",
-        );
-        assert_eq!(pair(&resolve(&acc, "", &[])), ("granular", "account", CODEX_SANDBOX, "codex"));
-        assert_eq!(
-            granular_policy(&acc, "").as_deref(),
-            Some("{granular={sandbox_approval=false,rules=true,skill_approval=false,request_permissions=false,mcp_elicitations=false}}")
-        );
-        // Each sandbox: Codex's three, or closed, the approval with it.
-        for (sandbox, want) in [
-            ("read-only", ("never", "account", "read-only", "account")),
-            ("workspace-write", ("never", "account", "workspace-write", "account")),
-            ("danger-full-access", ("never", "account", "danger-full-access", "account")),
-            ("read-only-net", ("never", "account", "read-only", "closed")),
-            ("everything", ("never", "account", "read-only", "closed")),
-        ] {
-            write(&account.join("config.toml"), &format!("approval_policy = \"never\"\nsandbox_mode = \"{sandbox}\"\n"));
-            assert_eq!(pair(&resolve(&acc, "", &[])), want, "{sandbox}");
-        }
-        write(&account.join("config.toml"), "sandbox_mode = \"everything\"\n");
-        assert_eq!(pair(&resolve(&acc, "", &[])), ("on-request", "closed", "read-only", "closed"), "the unsaid approval closed too");
+        assert_eq!(resolve("", "", &[]).effort.source, "stock");
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Any layer naming a mode Luna does not know, or that will not read,
+    /// closes both, passed explicitly: `untrusted` among them.
     #[test]
-    fn a_config_luna_cannot_read_is_closed_never_codexs_own() {
-        let root = root("unread");
+    fn what_luna_cannot_read_is_closed_both() {
+        let root = root("closed-modes");
         let account = root.join("account");
         let acc = account.to_string_lossy().into_owned();
-        // Malformed TOML, after the explicit bypass it might have said.
-        write(&account.join("config.toml"), "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n[broken\n");
-        assert_eq!(pair(&resolve(&acc, "", &[])), ("on-request", "closed", "read-only", "closed"));
-        assert_eq!(granular_policy(&acc, ""), None);
+        for config in [
+            "approval_policy = \"untrusted\"\n",
+            "approval_policy = \"sometimes\"\n",
+            "approval_policy = 3\n",
+            "approval_policy = { granular = { sandbox_approval = true } }\n",
+            "approval_policy = { other = true }\n",
+            "sandbox_mode = \"read-only-net\"\n",
+            "sandbox_mode = \"everything\"\n",
+            "default_permissions = \":everything\"\n",
+            "default_permissions = 3\n",
+            "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n[broken\n",
+        ] {
+            write(&account.join("config.toml"), config);
+            assert_eq!(pair(&resolve(&acc, "", &[])), CLOSED_PAIR, "{config}");
+        }
         // A file that cannot be read: here a folder where the file should be.
         let _ = std::fs::remove_file(account.join("config.toml"));
         std::fs::create_dir_all(account.join("config.toml")).unwrap();
-        assert_eq!(pair(&resolve(&acc, "", &[])), ("on-request", "closed", "read-only", "closed"));
+        assert_eq!(pair(&resolve(&acc, "", &[])), CLOSED_PAIR);
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A project layer counts for closing whether or not Codex trusts it:
+    /// the closed fallback does not depend on Luna's reading of trust. The
+    /// model comes only from layers Codex trusts, as it is passed.
     #[test]
-    fn a_trusted_projects_layers_go_over_the_account_from_its_root_down() {
+    fn every_project_layer_counts_for_closing_and_trusted_ones_for_the_model() {
         let root = root("layers");
         let (account, repo) = (root.join("account"), root.join("repo"));
         let sub = repo.join("app");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
-        write(&account.join("config.toml"), "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n");
-        write(&repo.join(".codex").join("config.toml"), "approval_policy = \"on-failure\"\n");
+        write(&account.join("config.toml"), "model = \"gpt-acc\"\n");
+        write(&repo.join(".codex").join("config.toml"), "model = \"gpt-repo\"\n");
         write(&sub.join(".codex").join("config.toml"), "sandbox_mode = \"workspace-write\"\n");
         let (acc, dir) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
-        let repo_dir = repo.to_string_lossy().into_owned();
-        // The repository trusted: every layer from its root down is read.
-        super::super::trust::codex_trust_folder(acc.clone(), repo_dir.clone()).unwrap();
-        assert!(super::super::trust::codex_folder_trusted(acc.clone(), dir.clone()).unwrap(), "the folder under it too");
         let d = resolve(&acc, &dir, &[]);
-        assert_eq!(pair(&d), ("on-request", "project", "workspace-write", "project"));
-        // Only the folder trusted, not the root: Codex reads the folder's own
-        // layer and not the root's (each layer by its own folder, then the root).
-        write(&account.join("config.toml"), "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n");
-        super::super::trust::codex_trust_folder(acc.clone(), dir.clone()).unwrap();
-        assert!(!super::super::trust::codex_folder_trusted(acc.clone(), repo_dir.clone()).unwrap());
-        assert_eq!(pair(&resolve(&acc, &dir, &[])), ("never", "account", "workspace-write", "project"));
-        // So an `untrusted` in the root's layer refuses nothing there.
-        write(&repo.join(".codex").join("config.toml"), "approval_policy = \"untrusted\"\n");
-        assert_eq!(refuses_untrusted(&acc, &dir), Ok(()));
-        // The root trusted and the account's approval `untrusted` under a
-        // repository saying `on-request`: no refusal, as Codex reads the root's.
-        write(&account.join("config.toml"), "approval_policy = \"untrusted\"\n");
-        super::super::trust::codex_trust_folder(acc.clone(), repo_dir.clone()).unwrap();
-        write(&repo.join(".codex").join("config.toml"), "approval_policy = \"on-request\"\n");
-        assert_eq!(refuses_untrusted(&acc, &dir), Ok(()));
-        assert!(refuses_untrusted(&acc, &root.join("elsewhere").to_string_lossy()).is_err());
-        // The deepest layer's granular table is the one passed on.
-        write(
-            &sub.join(".codex").join("config.toml"),
-            "approval_policy = { granular = { sandbox_approval = true, rules = true, mcp_elicitations = false } }\n",
-        );
-        assert_eq!(pair(&resolve(&acc, &dir, &[])).0, "granular");
-        assert!(granular_policy(&acc, &dir).unwrap().contains("mcp_elicitations=false"));
+        assert_eq!((d.model.as_ref().unwrap().value.as_str(), pair(&d)), ("gpt-acc", OWN_PAIR), "untrusted: the account's model");
+        super::super::trust::codex_trust_folder(acc.clone(), repo.to_string_lossy().into_owned()).unwrap();
+        let d = resolve(&acc, &dir, &[]);
+        assert_eq!((d.model.as_ref().unwrap().value.as_str(), pair(&d)), ("gpt-repo", OWN_PAIR), "the repository trusted");
+        // An untrusted folder's layer naming what Luna does not know.
+        let other = root.join("other");
+        write(&other.join(".codex").join("config.toml"), "sandbox_mode = \"wide-open\"\n");
+        assert_eq!(pair(&resolve(&acc, &other.to_string_lossy(), &[])), CLOSED_PAIR);
+        write(&other.join(".codex").join("config.toml"), "approval_policy = [never\n");
+        assert_eq!(pair(&resolve(&acc, &other.to_string_lossy(), &[])), CLOSED_PAIR);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -589,8 +416,9 @@ mod tests {
         for (asked, want) in [
             (("never", "danger-full-access"), ("never", "danger-full-access")),
             (("On-Failure", "workspace-write"), ("on-request", "workspace-write")),
-            (("granular", "read-only"), ("granular", "read-only")),
-            (("never", "profile"), ("never", "profile")),
+            ((OWN, OWN), (OWN, OWN)),
+            (("never", OWN), ("never", OWN)),
+            (("granular", "profile"), (OWN, OWN)),
             (("auto-review", "whatever"), ("auto-review", "read-only")),
             // An approval Luna does not know closes the sandbox with it.
             (("untrusted", "read-only-net"), ("on-request", "read-only")),
@@ -602,79 +430,38 @@ mod tests {
         }
     }
 
-    /// Codex's `default_permissions`: a built-in profile is the mode it stands
-    /// for, one of the user's own is passed through by name; the last layer to
-    /// name either key wins, and within one layer the profile.
+    /// `untrusted` refuses a chat only where Luna is sure Codex reads it as
+    /// the last word: the account's, with no project layer naming another;
+    /// a project layer that may go over it, read or not, lets Codex decide.
     #[test]
-    fn a_permission_profile_is_its_mode_or_passed_through_by_name() {
-        let root = root("profiles");
-        let account = root.join("account");
-        let acc = account.to_string_lossy().into_owned();
-        let sandbox = |d: &CodexDefaults| (d.sandbox.value.clone(), d.sandbox.source.clone(), d.profile.clone());
-        let s = |v: &str, src: &str, p: Option<&str>| (v.to_string(), src.to_string(), p.map(str::to_owned));
-        for (config, want) in [
-            ("default_permissions = \":read-only\"\n", s("read-only", "account", None)),
-            ("default_permissions = \":workspace\"\n", s("workspace-write", "account", None)),
-            ("default_permissions = \":danger-full-access\"\n", s("danger-full-access", "account", None)),
-            ("default_permissions = \"locked-down\"\n", s(PROFILE, "account", Some("locked-down"))),
-            ("sandbox_mode = \"danger-full-access\"\ndefault_permissions = \"mine\"\n", s(PROFILE, "account", Some("mine"))),
-            ("default_permissions = \":everything\"\n", s("read-only", "closed", None)),
-            ("default_permissions = 3\n", s("read-only", "closed", None)),
-        ] {
-            write(&account.join("config.toml"), config);
-            assert_eq!(sandbox(&resolve(&acc, "", &[])), want, "{config}");
-        }
-        // A profile left as the files name it is Codex's to run: no flag.
-        write(&account.join("config.toml"), "default_permissions = \"mine\"\n");
-        assert_eq!(left_to_codex(&acc, "", "on-request", PROFILE), (true, true));
-        assert_eq!(left_to_codex(&acc, "", "never", "read-only"), (false, false));
-        // A trusted project's sandbox_mode over the account's profile.
-        let folder = root.join("project");
-        write(&folder.join(".codex").join("config.toml"), "sandbox_mode = \"workspace-write\"\n");
-        let dir = folder.to_string_lossy().into_owned();
-        super::super::trust::codex_trust_folder(acc.clone(), dir.clone()).unwrap();
-        assert_eq!(sandbox(&resolve(&acc, &dir, &[])), s("workspace-write", "project", None));
-        assert_eq!(left_to_codex(&acc, &dir, "on-request", PROFILE), (true, false), "named no more");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// Nothing named: Codex's own, on-request, and read-only or, in a folder
-    /// it trusts, workspace-write; left to Codex, so no flag passes for them.
-    #[test]
-    fn nothing_named_is_left_to_codex() {
-        let root = root("left-to-codex");
-        let (account, folder) = (root.join("account"), root.join("project"));
-        std::fs::create_dir_all(&folder).unwrap();
-        write(&account.join("config.toml"), "model = \"m\"\n");
-        let (acc, dir) = (account.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
-        assert_eq!(pair(&resolve(&acc, &dir, &[])), ("on-request", "codex", "read-only", "codex"));
-        assert_eq!(left_to_codex(&acc, &dir, "on-request", "read-only"), (true, true));
-        assert_eq!(left_to_codex(&acc, &dir, "never", "workspace-write"), (false, false), "changed in the dialog: passed");
-        super::super::trust::codex_trust_folder(acc.clone(), dir.clone()).unwrap();
-        assert_eq!(pair(&resolve(&acc, &dir, &[])), ("on-request", "codex", "workspace-write", "codex"));
-        // Named, it is passed as named.
-        write(&account.join("config.toml"), "approval_policy = \"on-request\"\n");
-        super::super::trust::codex_trust_folder(acc.clone(), dir.clone()).unwrap();
-        assert_eq!(left_to_codex(&acc, &dir, "on-request", "workspace-write"), (false, true));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// `untrusted`, which Codex refuses to start on as a value of the config
-    /// whatever the flags, refuses the session by the key and the file; a
-    /// later layer naming another approval lets it start.
-    #[test]
-    fn an_untrusted_approval_is_refused_naming_the_key() {
+    fn an_untrusted_approval_is_refused_only_where_codex_surely_reads_it() {
         let root = root("untrusted");
-        let (account, folder) = (root.join("account"), root.join("project"));
-        let (acc, dir) = (account.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
+        let (account, repo) = (root.join("account"), root.join("repo"));
+        let sub = repo.join("app");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(&sub).unwrap();
+        let (acc, dir) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
         write(&account.join("config.toml"), "approval_policy = \"untrusted\"\n");
         let e = refuses_untrusted(&acc, "").unwrap_err();
         assert!(e.contains("approval_policy = \"untrusted\"") && e.contains("no longer supported") && e.contains("config.toml"), "{e}");
-        write(&folder.join(".codex").join("config.toml"), "approval_policy = \"never\"\n");
+        assert!(refuses_untrusted(&acc, &dir).is_err(), "no project layer names one");
+        // The repository's layer names another, untrusted by Luna's reading:
+        // Codex may read it, so the chat starts.
+        write(&repo.join(".codex").join("config.toml"), "approval_policy = \"on-request\"\n");
+        assert_eq!(refuses_untrusted(&acc, &dir), Ok(()));
+        // Trusted, by the repository: it goes over the account's.
+        super::super::trust::codex_trust_folder(acc.clone(), repo.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(refuses_untrusted(&acc, &dir), Ok(()));
+        // The repository's own `untrusted`, trusted, over an account saying never.
+        write(&account.join("config.toml"), "approval_policy = \"never\"\n");
+        super::super::trust::codex_trust_folder(acc.clone(), repo.to_string_lossy().into_owned()).unwrap();
+        write(&repo.join(".codex").join("config.toml"), "approval_policy = \"untrusted\"\n");
+        assert!(refuses_untrusted(&acc, &dir).is_err());
+        // Only the folder trusted, not the root: Codex skips the root's layer.
+        write(&account.join("config.toml"), "approval_policy = \"never\"\n");
         super::super::trust::codex_trust_folder(acc.clone(), dir.clone()).unwrap();
         assert_eq!(refuses_untrusted(&acc, &dir), Ok(()));
-        write(&account.join("config.toml"), "approval_policy = \"never\"\n");
-        assert_eq!(refuses_untrusted(&acc, ""), Ok(()));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -161,20 +161,28 @@ pub(crate) fn project_root_and_layers(account_path: &str, folder: &str) -> Resul
     Ok((root.unwrap_or(folder).to_path_buf(), layers))
 }
 
-/// The project layers a run of `account_path` in `folder` reads, each kept
-/// only where Codex trusts its folder (`super::trust::Decisions::layer_trusted`).
-pub(crate) fn trusted_project_layers(account_path: &str, folder: &str, trust: &super::trust::Decisions) -> Result<Vec<PathBuf>, String> {
+/// The folder a project layer's `.codex/config.toml` is in.
+pub(crate) fn layer_dir(file: &Path) -> String {
+    file.parent().and_then(Path::parent).map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// The project layers whose `developer_instructions` a run of `account_path`
+/// in `folder` reads: those Codex trusts (`super::trust::Decisions`), and
+/// none at or below a folder saved as untrusted, which Luna leaves out where
+/// unsure: a layer left out loses its text from Luna's `-c`, one put in would
+/// bring back text Codex skipped.
+fn instruction_layers(account_path: &str, folder: &str, helper: bool) -> Result<Vec<PathBuf>, String> {
     let (root, layers) = project_root_and_layers(account_path, folder)?;
+    let trust = super::trust::Decisions::of(account_path, folder, helper);
     let root = root.to_string_lossy().into_owned();
     Ok(layers
         .into_iter()
         .filter(|file| {
-            let dir = file.parent().and_then(Path::parent).map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
-            trust.layer_trusted(&dir, &root, folder)
+            let dir = layer_dir(file);
+            trust.layer_trusted(&dir, &root, folder) && !trust.untrusted_between(&root, &dir)
         })
         .collect())
 }
-
 /// What Codex's own config stack sets `developer_instructions` to for a
 /// session on `account_path` in `folder`, and what Luna could not be sure of.
 #[derive(Debug, Default, PartialEq)]
@@ -198,8 +206,9 @@ fn managed_layers(account_path: &str) -> Vec<PathBuf> {
 /// `developer_instructions` as Codex's config stack sets it, which a `-c` of
 /// Luna's replaces whole (a higher layer's string takes a lower one's place,
 /// codex-rs/config): the system layer (`system_layer`), the
-/// account's `config.toml`, the project's layers where the run trusts the
-/// project (`project_trusted`), each later one's value over the earlier. No
+/// account's `config.toml`, the project's layers the run trusts
+/// (`instruction_layers`; `helper`: a helper's, its folder trusted for its
+/// run), each later one's value over the earlier. No
 /// profile: 0.167.2 refuses to start on a `profile = "<name>"` in a config
 /// (`[profiles.<name>]` is legacy), and a `--profile`, which Luna never
 /// passes, is a user layer (`<name>.config.toml`) below the `-c`
@@ -207,14 +216,12 @@ fn managed_layers(account_path: &str) -> Vec<PathBuf> {
 /// A managed layer comes above the `-c` itself:
 /// one that sets the key, or one Luna cannot read, is said in `unsure`, and
 /// the session is started all the same (ADR-0026).
-pub fn developer_instructions_in(account_path: &str, folder: &str, project_trusted: bool) -> StackInstructions {
+pub fn developer_instructions_in(account_path: &str, folder: &str, helper: bool) -> StackInstructions {
     let mut out = StackInstructions::default();
     let mut files = vec![system_layer(), Path::new(account_path).join("config.toml")];
-    if project_trusted {
-        match project_layers(account_path, folder) {
-            Ok(layers) => files.extend(layers),
-            Err(e) => out.unsure.push(format!("{e}: the project's developer_instructions not read")),
-        }
+    match instruction_layers(account_path, folder, helper) {
+        Ok(layers) => files.extend(layers),
+        Err(e) => out.unsure.push(format!("{e}: the project's developer_instructions not read")),
     }
     for file in files {
         match std::fs::read_to_string(&file) {
@@ -501,6 +508,45 @@ mod tests {
         assert!(v.unsure.len() == 1 && v.unsure[0].contains("does not parse"), "{:?}", v.unsure);
         std::fs::write(account.join("managed_config.toml"), "developer_instructions = \"IT's.\"\n").unwrap();
         assert!(value(false).unsure.iter().any(|u| u.contains("above the command line's")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A folder saved as untrusted keeps its own layer, and those below it,
+    /// out of what Luna's `-c developer_instructions` carries, though the
+    /// repository above it is trusted; a linked worktree goes by its main
+    /// repository's trust, as Codex resolves it.
+    #[test]
+    fn instructions_skip_layers_at_or_below_an_untrusted_folder_and_follow_the_main_repository() {
+        let root = std::env::temp_dir().join(format!("luna-codex-devinstr-untrusted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (account, repo) = (root.join("account"), root.join("repo"));
+        let (mid, deep) = (repo.join("mid"), repo.join("mid").join("deep"));
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        for (dir, text) in [(&repo, "The repository's."), (&mid, "The middle's."), (&deep, "The deep one's.")] {
+            std::fs::create_dir_all(dir.join(".codex")).unwrap();
+            std::fs::write(dir.join(".codex").join("config.toml"), format!("developer_instructions = \"{text}\"\n")).unwrap();
+        }
+        std::fs::create_dir_all(&account).unwrap();
+        let key = |p: &Path| toml_edit::Value::from(p.to_string_lossy().into_owned()).to_string();
+        std::fs::write(
+            account.join("config.toml"),
+            format!("[projects.{}]\ntrust_level = \"trusted\"\n[projects.{}]\ntrust_level = \"untrusted\"\n", key(&repo), key(&mid)),
+        )
+        .unwrap();
+        let a = account.to_string_lossy().into_owned();
+        let value = |folder: &Path| developer_instructions_in(&a, &folder.to_string_lossy(), false).value;
+        assert_eq!(value(&deep).as_deref(), Some("The repository's."), "the middle and below it left out");
+        assert_eq!(value(&repo).as_deref(), Some("The repository's."));
+
+        // A linked worktree of the trusted repository: trusted by it.
+        let wt = root.join("wt");
+        let gitdir = repo.join(".git").join("worktrees").join("wt");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::create_dir_all(wt.join(".codex")).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.to_string_lossy())).unwrap();
+        std::fs::write(wt.join(".codex").join("config.toml"), "developer_instructions = \"The worktree's.\"\n").unwrap();
+        assert_eq!(value(&wt).as_deref(), Some("The worktree's."));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

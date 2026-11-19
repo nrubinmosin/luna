@@ -5,8 +5,9 @@ import { call } from './core';
  *  an effort that is the model's own default in Claude Code's catalog. */
 export type ClaudeDefaultSource = 'account' | 'project' | 'project-local' | 'managed' | 'model' | 'stock';
 /** `codex`: what Codex itself would pick — the first model of its catalog,
- *  at that model's own reasoning level; its own approval and sandbox where
- *  the files name none, which the core then passes no flag for. `system`:
+ *  at that model's own reasoning level; for the approval and sandbox, Codex's
+ *  own from its config (value `codex`), which the core passes no flag for and
+ *  does not resolve. `system`:
  *  Codex's machine-wide config.toml. `closed`: Luna could not read a layer,
  *  or does not know the value, and takes `on-request` and `read-only`
  *  (codex/defaults.rs). */
@@ -47,8 +48,6 @@ export interface CodexDefaultsDto {
   effort: SettingDto<CodexDefaultSource> | null;
   approval: SettingDto<CodexDefaultSource> | null;
   sandbox: SettingDto<CodexDefaultSource> | null;
-  /** The name of the user's own permission profile where `sandbox` is `profile`. */
-  profile?: string;
 }
 
 /** The same out of Codex's `config.toml` — the machine's, the account's, then

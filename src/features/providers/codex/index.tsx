@@ -23,6 +23,8 @@ import {
   codexApprovalFromSetting,
   codexEffortFromSetting,
   codexModeHint,
+  codexModeLabel,
+  CODEX_OWN_LABEL,
   codexSandboxFromSetting
 } from '../../../shared/types';
 import { codexDefaults, codexModels, type CodexDefaultSource, type CodexModelDto } from '../../../ipc/defaults';
@@ -49,8 +51,8 @@ export const SOURCE_LABELS: Record<Exclude<CodexDefaultSource, 'stock'>, string>
   closed: 'Luna’s safe choice: a config.toml it could not read, or a value it does not know'
 };
 
-/** A chat left on Codex's own approval or sandbox gets no flag for it (codex/defaults.rs left_to_codex). */
-const leftToCodex = (s: { source: CodexDefaultSource }) => (s.source === 'codex' ? ': Luna passes nothing for it' : '');
+/** Where the approval or sandbox is Codex's own: no flag goes, and Luna does not claim to know it. */
+const OWN_NOTE = 'Codex’s own, from its config: Luna passes nothing for it';
 
 export const settingsNote =
   'Opens on this account’s Codex config.toml; anything changed here applies to this chat only';
@@ -84,21 +86,20 @@ export async function settingsDefaults(
   const approval = dto?.approval ? codexApprovalFromSetting(dto.approval.value) : null;
   if (approval && dto?.approval) {
     values.approval = approval;
-    if (dto.approval.source !== 'stock') from.approval = SOURCE_LABELS[dto.approval.source] + leftToCodex(dto.approval);
+    if (dto.approval.source !== 'stock')
+      from.approval = approval === 'codex' ? OWN_NOTE : SOURCE_LABELS[dto.approval.source];
   }
   const sandbox = dto?.sandbox ? codexSandboxFromSetting(dto.sandbox.value) : null;
   if (sandbox && dto?.sandbox) {
     values.sandbox = sandbox;
-    if (dto.sandbox.source !== 'stock') {
-      const profile = sandbox === 'profile' && dto.profile ? `: permission profile “${dto.profile}”` : '';
-      from.sandbox = SOURCE_LABELS[dto.sandbox.source] + profile + leftToCodex(dto.sandbox);
-    }
+    if (dto.sandbox.source !== 'stock')
+      from.sandbox = sandbox === 'codex' ? OWN_NOTE : SOURCE_LABELS[dto.sandbox.source];
   }
   return { values, from };
 }
 
 export const describe = (field: keyof CodexSettings, value: CodexSettings[keyof CodexSettings]) =>
-  field === 'model' ? (value ? String(value) : DEFAULT_MODEL_LABEL) : String(value);
+  field === 'model' ? (value ? String(value) : DEFAULT_MODEL_LABEL) : codexModeLabel(String(value));
 
 // ----------------------------------------------------------------- trust --
 
@@ -194,14 +195,10 @@ export function Fields({
   // `--approve-for-me` brings its own sandbox: Codex takes no `--sandbox`
   // with it.
   const autoReview = settings.approval === 'auto-review';
-  // A granular table is offered only where the files set one: Luna passes
-  // it on as they say it, and cannot make one up.
-  const approvals: CodexApproval[] =
-    draft.resolved.approval === 'granular' ? [...CODEX_APPROVALS, 'granular'] : CODEX_APPROVALS;
-  // Likewise a permission profile of the user's own: passed through as the
-  // files name it.
-  const sandboxes: CodexSandbox[] =
-    draft.resolved.sandbox === 'profile' ? [...CODEX_SANDBOXES, 'profile'] : CODEX_SANDBOXES;
+  // `codex` leaves either to Codex's own config, a granular table or a
+  // permission profile of its own among it: Luna passes nothing for it.
+  const approvals: CodexApproval[] = CODEX_APPROVALS;
+  const sandboxes: CodexSandbox[] = CODEX_SANDBOXES;
   const pickApproval = (a: CodexApproval) => {
     pick('approval', a);
     if (a === 'auto-review') pick('sandbox', AUTO_REVIEW_SANDBOX);
@@ -255,7 +252,7 @@ export function Fields({
                     onChange={() => pickApproval(a)}
                   />
                   <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>
-                    {a}
+                    {codexModeLabel(a)}
                   </label>
                 </div>
               );
@@ -281,7 +278,7 @@ export function Fields({
                     onChange={() => pick('sandbox', s)}
                   />
                   <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>
-                    {s}
+                    {codexModeLabel(s)}
                   </label>
                 </div>
               );
@@ -332,9 +329,11 @@ export function Meta({ chat }: { chat: CodexChat }) {
       ) : (
         <span
           className="pchip opt-2"
-          title={`Approval: ${chat.approval} — ${CODEX_APPROVAL_HINTS[chat.approval]}\nSandbox: ${chat.sandbox} — ${CODEX_SANDBOX_HINTS[chat.sandbox]}`}
+          title={`Approval: ${codexModeLabel(chat.approval)} — ${CODEX_APPROVAL_HINTS[chat.approval]}\nSandbox: ${codexModeLabel(chat.sandbox)} — ${CODEX_SANDBOX_HINTS[chat.sandbox]}`}
         >
-          {chat.approval} · {chat.sandbox}
+          {chat.approval === 'codex' && chat.sandbox === 'codex'
+            ? CODEX_OWN_LABEL
+            : `${codexModeLabel(chat.approval)} · ${codexModeLabel(chat.sandbox)}`}
         </span>
       )}
     </>
