@@ -22,14 +22,17 @@ use std::sync::Arc;
 /// query (its size, a color, the device's attributes), which the native
 /// window's terminal sends itself: it goes straight to the PTY, neither held
 /// with a person's keys nor counted as their typing (`typed_ago_ms`,
-/// `has_draft`), which an OSC color reply would otherwise count as text. The
-/// page never sends it: xterm.js's replies take the keys' path as before.
+/// `has_draft`), which an OSC color reply would otherwise count as text. Only
+/// a write that is one such answer whole (`terminal_reply`) is taken for one;
+/// anything else so labeled takes the keys' path, held and counted as keys
+/// are. The page never sends it: xterm.js's replies take the keys' path as
+/// before.
 #[tauri::command]
 pub fn write_session(id: String, data: String, reply: Option<bool>) -> Result<(), String> {
     let state = manager();
     let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let s = sessions.get(&id).ok_or("no such session")?;
-    if reply == Some(true) {
+    if reply == Some(true) && terminal_reply(&data) {
         return s.input_tx.send(Input::Bytes(data.into_bytes()));
     }
     if let Some(held) = s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
@@ -37,6 +40,64 @@ pub fn write_session(id: String, data: String, reply: Option<bool>) -> Result<()
         return Ok(());
     }
     take_keys(s, data)
+}
+
+/// The longest terminal answer taken as one (`terminal_reply`): a color is 26
+/// bytes, a size report 20 or so.
+const REPLY_MAX: usize = 64;
+
+/// Whether `data` is one answer a terminal makes to its program's query, whole,
+/// and nothing else: what alacritty_terminal 0.26 answers (src/term/mod.rs),
+/// the device's attributes (`CSI ? 6 c`, `CSI > 0 ; v ; 1 c`), its status and
+/// the cursor's place (`CSI 0 n`, `CSI r ; c R`), a mode's state
+/// (`CSI ? m ; s $ y`), the keyboard protocol's flags (`CSI ? f u`), the text
+/// area's size (`CSI 4|8 ; h ; w t`), a color (`OSC 4|10..19 ; ... rgb:...`
+/// ended by BEL or ST), and the focus coming and going (`CSI I`, `CSI O`);
+/// and a DCS status answer (`DCS 0|1 $|+ r ... ST`). Keys never take these
+/// shapes but for an F3 with modifiers, which shares the cursor's; a paste
+/// is framed, or has no ESC.
+pub(super) fn terminal_reply(data: &str) -> bool {
+    if data.len() > REPLY_MAX {
+        return false;
+    }
+    if let Some(csi) = data.strip_prefix("\x1b[") {
+        if matches!(csi, "I" | "O") {
+            return true;
+        }
+        let (prefix, rest) = match csi.as_bytes().first() {
+            Some(c @ (b'?' | b'>')) => (Some(*c), &csi[1..]),
+            _ => (None, csi),
+        };
+        let Some(last) = rest.bytes().last().filter(u8::is_ascii) else { return false };
+        let body = &rest[..rest.len() - 1];
+        let body = body.strip_suffix('$').filter(|_| last == b'y').unwrap_or(body);
+        let params = !body.is_empty() && body.bytes().all(|c| c.is_ascii_digit() || c == b';');
+        return params
+            && matches!(
+                (prefix, last),
+                (Some(b'?' | b'>'), b'c') | (None | Some(b'?'), b'n' | b'y') | (None, b'R' | b't') | (Some(b'?'), b'u')
+            );
+    }
+    if let Some(osc) = data.strip_prefix("\x1b]") {
+        let Some(body) = osc.strip_suffix('\x07').or_else(|| osc.strip_suffix("\x1b\\")) else { return false };
+        let (number, rest) = body.split_once(';').unwrap_or((body, ""));
+        let colored = match number.parse::<u8>() {
+            Ok(4) => rest.split_once(';').is_some_and(|(i, c)| i.bytes().all(|b| b.is_ascii_digit()) && c.starts_with("rgb:")),
+            Ok(10..=19) => rest.starts_with("rgb:"),
+            _ => false,
+        };
+        return colored && rest.bytes().all(|b| b.is_ascii_graphic());
+    }
+    if let Some(dcs) = data.strip_prefix("\x1bP") {
+        let Some(body) = dcs.strip_suffix("\x1b\\") else { return false };
+        let b = body.as_bytes();
+        return b.len() >= 3
+            && matches!(b[0], b'0' | b'1')
+            && matches!(b[1], b'$' | b'+')
+            && b[2] == b'r'
+            && b.iter().all(|c| c.is_ascii_graphic());
+    }
+    false
 }
 
 /// A person's keys into the session, noted for `typed_ago_ms` and
@@ -1281,6 +1342,85 @@ mod tests {
             crate::corecmd::dispatch("write_session", serde_json::json!({ "id": id, "data": data })).unwrap();
         }
         let (typed, draft, _) = counts();
+        assert!(typed > 0 && draft > 0, "{:?}", counts());
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+
+    /// What alacritty_terminal answers, and the focus reports, are taken
+    /// for answers; keys, a paste, a query, an answer with more after it or
+    /// cut short, another OSC, and anything past the bound are not.
+    #[test]
+    fn only_a_terminal_answer_whole_is_taken_for_one() {
+        let long = format!("\x1b[{}t", "1;".repeat(40));
+        for yes in [
+            "\x1b[?6c",
+            "\x1b[>0;2600;1c",
+            "\x1b[0n",
+            "\x1b[12;40R",
+            "\x1b[?2004;1$y",
+            "\x1b[4;2$y",
+            "\x1b[?0u",
+            "\x1b[4;600;800t",
+            "\x1b[8;30;100t",
+            "\x1b]11;rgb:ffff/ffff/ffff\x1b\\",
+            "\x1b]4;1;rgb:cdcd/0000/0000\x07",
+            "\x1b[I",
+            "\x1b[O",
+            "\x1bP1$r0m\x1b\\",
+        ] {
+            assert!(terminal_reply(yes), "{yes:?}");
+        }
+        for no in [
+            "",
+            "hello",
+            "\x1b",
+            "\x1b[A",
+            "\x1b[1;5D",
+            "\x1b[15~",
+            "\x1b[200~x\x1b[201~",
+            "\x1b[<0;3;4M",
+            "\x1b[13u",
+            "\x1b[c",
+            "\x1b[$y",
+            "\x1b[?6cx",
+            "x\x1b[?6c",
+            "\x1b[?6c\x1b[?6c",
+            "\x1b[\u{e9}",
+            "\x1b]11;rgb:ffff/ffff/ffff",
+            "\x1b]11;rgb:ff ff\x07",
+            "\x1b]0;title\x07",
+            "\x1b]52;c;aGk=\x07",
+            "\x1bPq#0;2;0;0;0\x1b\\",
+            long.as_str(),
+        ] {
+            assert!(!terminal_reply(no), "{no:?}");
+        }
+    }
+
+    /// Input labeled a reply that is no terminal answer takes the keys'
+    /// path: held while Luna holds the keys, and counted as typing and a
+    /// draft once let through; a real answer still goes past the hold,
+    /// counted as nothing.
+    #[test]
+    fn input_labeled_a_reply_is_held_and_counted_as_keys() {
+        let id = "dl-not-a-reply";
+        let quit = fake_session(id, "/nowhere", PROMPT);
+        let write = |data: &str| crate::corecmd::dispatch("write_session", serde_json::json!({ "id": id, "data": data, "reply": true }));
+        let counts = || {
+            let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = &sessions[id];
+            (s.typed_ms.load(Ordering::Relaxed), s.draft.load(Ordering::Relaxed))
+        };
+        let held = || manager().sessions.lock().unwrap_or_else(|e| e.into_inner())[id].held_keys.lock().unwrap().clone();
+        let hold = manager().hold_keys(id).expect("a hold");
+        write("abc").unwrap();
+        write("\x1b[?6c").unwrap();
+        assert_eq!(held(), Some(vec!["abc".to_string()]), "the answer went past the hold, the text did not");
+        assert_eq!(counts(), (0, 0));
+        drop(hold);
+        assert_eq!(held(), None);
+        let (typed, draft) = counts();
         assert!(typed > 0 && draft > 0, "{:?}", counts());
         quit.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);

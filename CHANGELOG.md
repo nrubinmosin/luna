@@ -54,7 +54,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   program's queries (sizes, colors, device attributes): the core writes them
   straight to the PTY and does not count them as a person typing or as a
   draft. The native window's terminal sends its replies so; the page sends
-  none.
+  none. Only a write that is one such answer whole is taken for one;
+  anything else so marked goes as keys, held and counted as they are.
 - Each `pty://output` chunk carries `offset`, where its text starts in all
   the session has sent, and a start that reattaches answers with
   `backlogEnd`, the offset its backlog ends at, and `modes`, the session's
