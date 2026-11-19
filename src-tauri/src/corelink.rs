@@ -944,6 +944,10 @@ mod tests {
         assert_eq!(verdict(&at("999.0.0"), false, false), Verdict::Foreign, "a newer version");
         assert_eq!(verdict(&at("0.0.1"), false, false), Verdict::ReplaceLeftOnly, "an older version");
         assert_eq!(verdict(&at("0.0.1"), false, true), Verdict::Foreign, "protocol 1, which says no such thing");
+        // By semver's order: a beta is older than its release, so a beta's core
+        // is the released window's to replace, and not the other way round.
+        assert!(crate::cli::version_cmp("0.20.0-beta.1", "0.20.0").is_lt());
+        assert!(crate::cli::version_cmp("0.20.0", "0.20.0-beta.1").is_gt());
         assert_eq!(verdict(&Welcome { left_only: 2, ..core(env!("LUNA_CORE_FP"), 2, None) }, false, false), Verdict::Attach);
         assert_eq!(verdict(&Welcome { left_only: 1, ..core(env!("LUNA_CORE_FP"), 1, None) }, true, false), Verdict::Elevated);
         let older: Welcome = serde_json::from_value(serde_json::json!({
