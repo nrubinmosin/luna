@@ -15,19 +15,9 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   saved_title: 5000,
   ensure_claude_session: 30_000,
   ensure_codex_session: 30_000,
-  // Hashes every file of the version again: Codex's are half a gigabyte.
-  cli_use_version: 20_000,
-  // Reads every account's files, and looks twice at a blank one.
-  recommendations: 5000,
-  apply_recommendation: 5000,
-  // Both give the CLI a moment to quit on its own before killing it; deleting
-  // then waits for the worktree to come free.
+  // Both give the CLI a moment to quit on its own before killing it.
   kill_session: 5000,
   delete_session: 20_000,
-  orphan_worktrees: 10_000,
-  remove_orphan_worktrees: 30_000,
-  // Reads a transcript's ends and asks git, each bounded; 30 s in all.
-  move_prepare: 35_000,
   // An update's install waits for a Claude Code model ask's grace and sweep
   // first, up to 12 s (claude/models.rs `wait_for_asks_before_install`).
   note_exit: 13_000
@@ -64,30 +54,10 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'arm_power_off',
   'disarm_power_off',
   'rename_account',
-  'orphan_worktrees',
-  'remove_orphan_worktrees',
   'sync_settings_now',
-  'recommendations',
-  'apply_recommendation',
-  'dismiss_recommendation',
-  'apply_recommended',
   'codex_folder_trusted',
   'codex_trust_folder',
-  'claude_trust_folder',
-  'applied_by_luna',
-  'set_auto_handoff',
-  'handoff_now',
-  'handoff_file',
-  'handoff_transcript',
-  'move_prepare',
-  'move_confirm',
-  'move_step',
-  'move_cancel',
-  'move_list',
-  'move_ask',
-  'move_preview',
-  'move_build_from_records',
-  'move_facts'
+  'claude_trust_folder'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
 

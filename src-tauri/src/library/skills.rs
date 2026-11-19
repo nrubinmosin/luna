@@ -95,6 +95,44 @@ pub(super) fn check_skill(name: &str, text: &str) -> Result<String, String> {
     Ok(description)
 }
 
+/// SKILL.md's text with its front matter's `name` made `to`, where it said
+/// `from` (quoted, folded or literal): every `name:` key of the front matter
+/// becomes one plain line, the lines its value went on over dropped, and
+/// what comes of it is read again and must say `to`. Ok(None) where the
+/// front matter says another name or does not read: the folder alone is
+/// renamed then, and the check says what the file says. Err where it says
+/// `from` and could not be made to say `to`: nothing is renamed then.
+pub(super) fn renamed(text: &str, from: &str, to: &str) -> Result<Option<String>, String> {
+    if front_matter(text).ok().and_then(|(n, _)| n).as_deref() != Some(from) {
+        return Ok(None);
+    }
+    let mut out = String::with_capacity(text.len() + to.len());
+    // Inside the front matter; in a `name:` value that goes on over lines.
+    let (mut inside, mut in_name) = (false, false);
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        let bare = line.trim_end_matches(['\r', '\n']);
+        if i == 0 {
+            inside = true;
+        } else if inside && bare.trim_end() == "---" {
+            inside = false;
+            in_name = false;
+        } else if inside && in_name && (line.starts_with([' ', '\t']) || bare.trim().is_empty()) {
+            continue;
+        } else if inside {
+            in_name = !line.starts_with([' ', '\t']) && line.split_once(':').is_some_and(|(k, _)| k.trim() == "name");
+            if in_name {
+                out.push_str(&format!("name: {to}{}", &line[bare.len()..]));
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    match front_matter(&out) {
+        Ok((Some(n), _)) if n == to => Ok(Some(out)),
+        _ => Err(format!("SKILL.md's name could not be made {to}; nothing was renamed")),
+    }
+}
+
 /// Every skill in the library, by name, with its files when it is fit to be
 /// laid out. A `skills/` that will not list is an error, not an empty one: a
 /// skill missed reads as taken out of the library, and its copies with it.
@@ -117,8 +155,6 @@ pub(super) fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
             let text = f.get(SKILL_FILE).ok_or("There is no SKILL.md")?;
             check_skill(&name, &String::from_utf8_lossy(text))
         });
-        // Fit or not, a system skill's name is laid out nowhere (system.rs).
-        let checked = if reserved(&name) { Err(reserved_why(&name)) } else { checked };
         let (description, problem) = match &checked {
             Ok(d) => (d.clone(), None),
             Err(e) => (String::new(), Some(e.clone())),
@@ -277,6 +313,22 @@ mod tests {
         assert!(ok("---\nname: other\ndescription: x\n---\n").unwrap_err().contains("other"));
         assert!(ok("---\nname: review\n---\n").unwrap_err().contains("description"));
         assert!(check_skill("Bad Name", "---\nname: Bad Name\ndescription: x\n---\n").is_err());
+    }
+
+    #[test]
+    fn a_rename_rewrites_the_front_matters_name_and_nothing_else() {
+        let text = "---\r\nname: \"review\"\r\ndescription: name: review\r\n---\r\nname: review\r\n";
+        let got = renamed(text, "review", "audit").unwrap().unwrap();
+        assert_eq!(got, "---\r\nname: audit\r\ndescription: name: review\r\n---\r\nname: review\r\n");
+        assert_eq!(check_skill("audit", &got).unwrap(), "name: review");
+        // Folded or literal: the lines the value went on over go with it.
+        for text in ["---\nname: >\n  review\ndescription: x\n---\n", "---\nname: |-\n  review\n\ndescription: x\n---\n"] {
+            let got = renamed(text, "review", "audit").unwrap().unwrap();
+            assert_eq!(got, "---\nname: audit\ndescription: x\n---\n", "{text:?}");
+        }
+        // A file that names another skill, or none, is left to the check.
+        assert_eq!(renamed("---\nname: other\ndescription: x\n---\n", "review", "audit"), Ok(None));
+        assert_eq!(renamed("no front matter", "review", "audit"), Ok(None));
     }
 
     #[test]

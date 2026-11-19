@@ -1,7 +1,23 @@
 # ADR-0019: CLI channels and rollback
 
-- **Status:** Accepted
+- **Status:** Superseded in part by [ADR-0030](0030-scope-of-0-20.md) (channels, known-good list, pins and marks)
 - **Date:** 2026-11-09
+
+> **Note (0.20).** ADR-0030 keeps the offline probe, the previous version
+> kept on disk, the in-use locks and the canary's counting, and cuts the
+> rest: there is one way a version is chosen, the newest the CLI's release
+> pointer names, never a step down from what runs. The floor is compiled
+> into the Luna release per provider (`cli.rs` `floor`, what `minSafe` was)
+> and rises only with a release; the local floor that rose as versions
+> became current, the known-good list (`cli-known-good.json`), the channels,
+> "Use", the marks by hand and `good.json` are gone. The canary now rolls
+> back on its own to the previous version and turns the failed one away
+> while the release pointer names it, as a probe's verdict does; a probe that
+> could not run says nothing. What this ADR kept in several files at the
+> root (`current`, `previous`, `bad.json`, `canary.json`) is one record,
+> `state.json`, written whole at every change; the `floor` files of then are
+> removed, not carried over, the floor being the release's. How it works now:
+> [providers](../architecture/providers.md#cli-binaries).
 
 ## Context
 

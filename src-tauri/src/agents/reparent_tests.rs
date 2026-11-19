@@ -642,16 +642,16 @@ fn a_chats_delete_spares_a_helper_moved_to_another_chat_meanwhile() {
     helper(&k, &a, Provider::Claude);
     move_helper(&h, &b).unwrap();
     for id in [&h, &g] {
-        let e = delete_by_user(id, false, false, false, Some(&a)).unwrap_err();
+        let e = delete_by_user(id, false, Some(&a)).unwrap_err();
         assert!(e.contains(&format!("no longer under chat {a}")) && e.contains(&format!("chat \"Release\" ({b}) now")), "{e}");
         assert!(crate::background::has(id) && reg().lock().unwrap().known.contains_key(id.as_str()), "nothing was touched");
     }
     // Its chat gone first: the helper it left has no chat, and goes.
     forget(&a);
-    delete_by_user(&k, false, false, false, Some(&a)).unwrap();
+    delete_by_user(&k, false, Some(&a)).unwrap();
     assert!(!reg().lock().unwrap().known.contains_key(&k));
     // From the helper list, with no chat named: as before.
-    delete_by_user(&g, false, false, false, None).unwrap();
+    delete_by_user(&g, false, None).unwrap();
     clean(&[&h, &b]);
 }
 

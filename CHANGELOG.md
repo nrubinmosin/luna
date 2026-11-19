@@ -23,6 +23,60 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   crate with Luna's three patches (`src-tauri/vendor/`). Where the native
   window cannot open (no usable GPU device), Luna opens the WebView window
   instead.
+- The native window's library, settings and accounts windows, in-app over
+  the main one ([native window](docs/architecture/native-window.md#panels)):
+  the library's entries, whom each is meant for and whose sessions it is
+  for, folders and Luna's system texts, with gpui-component's editor
+  (Markdown highlighted, a steady caret) for their files; Settings' sound,
+  accounts folder, new chats, helpers, trusted folders, the CLIs' version
+  and Check, and Luna's update confirmed with its version and notes;
+  the accounts with their limits, added, renamed, deleted, and the parent
+  whose settings the others copy. A skill can now be renamed
+  (`library_rename_skill`): without following a link, replacing a folder of
+  the new name or leaving its `name` half rewritten, and saying whether it
+  was done, undone, or left partly done. The editor's save is bound to the
+  library and the file as they were read: the library's folder by its
+  identity on the drive, read and written through a handle held to it, so a link
+  there retargeted or a folder made again gets nothing; a file changed on
+  disk since is not overwritten unasked (Reload, Overwrite), and text not
+  saved when the window goes (the tray's Quit or Restart window) is offered
+  at the next open, read back only as a private file of Luna's; throwing it
+  away leaves text typed since. A save whose layout after fails says it was
+  saved. Every
+  way the editor's text is replaced asks first. Sync is the core's pass
+  (Luna's own copies written over or put back, unwanted ones taken out, a
+  changed one backed up first; files Luna did not write left alone), and
+  says how many copies it wrote and took out, how many places it left
+  alone, and each it could not write or take out, with why; the pass's
+  answer now lists what it wrote, took out and could not take out. Deleting an account is bound to the
+  folder its question named, removed through a handle held to it without
+  following a link or crossing into a mount (on Unix, one on another
+  device), and names the chats still set to it. Rename takes the chats on
+  the account along. Sign in on a signed-out account runs the CLI's login
+  (`claude`, or `codex login`) in a terminal over the accounts window, which
+  closes with the CLI and ends its session. The title bar's Menu opens
+  the library and the accounts, the status bar's Settings button the settings
+  (and its Background count the helpers' popover), and what Settings keeps for new chats reaches the
+  window's workspace. The test
+  build's `LUNA_TEST_DRIVE` file drives them in a smoke run without global
+  input; no line of it answers the question for helpers above their caller.
+- The native window's dialogs ([native window](docs/architecture/native-window.md#dialogs)):
+  **New chat** (Ctrl+N and the button: folder with a picker, account, model,
+  effort, the CLI's modes, Luna's tools, trust, and a worktree box only for a
+  folder in git, all opening on what the CLI's own settings and Settings'
+  new-chat defaults say), **quick chat** (Ctrl+Shift+N, the dialog's own path
+  in one step, handing over to the dialog for trust or a failure), **delete
+  chat** (asks first, with "stop or keep its helpers", each box a yes of its
+  own; a worktree the CLI made stays on disk), the **helpers popover** (a chat's helpers: watch one
+  as plain text, open it as a chat, stop it, delete it) and a **crash
+  screen** at start when the run before ended without closing itself, with
+  the panic or exit code, where the log is and Restart window (the panic hook
+  and the exit watcher now keep what they saw in the run's record). The wait
+  guard, Codex's hooks box, keeping a start for a folder, auto-handoff,
+  removing a worktree and moving a helper to another chat are cut with the
+  rest of ADR-0030's list: the window's chats keep no guard, a start sends
+  no guard, handoff or hooks argument, and the new-chat dialog offers the
+  worktree box from the folder check's `inGit`.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.
@@ -211,6 +265,205 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   components and what they bring); the license texts their packages leave
   out are kept in `third-party-licenses/`, and the vendored GPUI platform
   crate's own are read from `src-tauri/vendor/`.
+
+- Each CLI is kept at its newest release, and rolls back on its own: when
+  two of a new version's first three sessions fail soon after starting, Luna
+  goes back to the version before (once its files match their checksums),
+  says so in a desktop notice and the log, and skips the failed version while
+  it is the newest release. A session that ended on a sign-in, a usage limit,
+  or the network or the provider's service failing (by the error the CLI ended
+  on) does not count, nor one that never started. A rollback Luna was closed
+  before it made is made at its next start. A
+  version whose answers fail the offline check is skipped the same way; one
+  the check could not read to its end (a scanner holding the fresh download)
+  is asked again at the next check. Each Luna release names the oldest
+  version of each CLI it runs (Claude Code 2.1.325, Codex 0.167.0), compiled
+  in; nothing on the machine raises it any more, and Luna never steps down
+  from the version it runs ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+- What Luna keeps of each CLI's versions is one file, `state.json` at its
+  root, every change of it written whole under a lock, so the window and the
+  core changing it at once never leave it half made, and a crash leaves the
+  old record or the new (on Windows a power cut may undo the latest change).
+  A record lost or damaged is rebuilt from the installed versions whose files
+  still match their checksums; the versions it had turned away are lost with
+  it. 0.19's files (`current`, `previous`, `recorded`, `bad.json`,
+  `canary.json` and their locks) are read in at the first check and removed.
+- The library is the source of truth: a copy Luna laid into an account (or
+  keeps for a folder's sessions) that was changed or deleted there has the
+  library's written over it or put back the next time the library is laid
+  out, which is before every session start, and one no longer meant for its
+  place is taken out, changed there or not, on Claude Code and Codex alike.
+  So an edit made in an account to what Luna manages there (Claude Code's
+  `/memory` on the account's `CLAUDE.md`, skill-creator improving a skill in
+  place) is undone at the next session start: edit the library instead. What
+  a change there had made goes to Luna's backups for 30 days first, and the
+  log names each place and its backup. A file Luna did not write is still
+  left alone, and so is whatever a person or a tool adds inside a skill's
+  folder beside Luna's files (`__pycache__/`, `node_modules/`, a link); a
+  copy that changes while the pass is at it, or that Windows will not let it
+  replace, is put back as it was and waits for the next, and a start's pass
+  says in the log what it could not lay out. On the first 0.20 pass,
+  copies that waited under 0.19's Needs a look as changed there are written
+  over (their change in the backups) and those deleted there come back.
+  Copies 0.19 left in place as no longer wanted but changed there are yours
+  from now on: they stay, are never taken back, and the log names them once
+  ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+- The library's backups are kept only in Luna's own `library-backups`
+  folder: none is written through a link or junction there, and the 30-day
+  sweep takes out only Luna's own backups, never through a link. A Codex
+  plugin manifest in Luna's marketplace folder is taken out only where Luna
+  wrote it, and never through a link below the account's folder. Deleting a
+  skill from the library is refused where its folder or the library's
+  `skills` is a link, and its backup keeps every file.
+- What a CLI needs inside Luna is passed at every start and never written into
+  an account. Claude Code chats and logins get `tui: "fullscreen"` in the
+  `--settings` Luna passes and `CLAUDE_CODE_NO_FLICKER=1`, which holds the
+  renderer even after the CLI gave up on it once; Codex chats get
+  `-c tui.notifications=false` and `-c tui.copy_on_select="never"` beside the
+  update check they already had. The fullscreen variable is taken out of the
+  environment of every CLI process Luna starts and given back to Claude Code
+  chats and logins alone, so a core started from a fullscreen chat's shell
+  does not hand it to helpers. Claude Code's copy-on-select is **not** set by
+  Luna: Claude Code 2.1.325 reads it from the global config (`.claude.json`)
+  alone, which Luna must not write and no start can reach, so it stays as the
+  account has it (on unless you turned it off in the CLI). What 0.19's recommendations wrote into accounts stays there
+  ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+
+- Development: the gate a change passes is CI on GitHub, which runs on every
+  branch the operator's mirror pushes (`slice/*`, `gpui/*`, `core/*`,
+  `iteration/*`); the local scripts are for the test build, the live tests and
+  narrow checks, since Docker builds on one PC share a lock. New
+  `scripts/ci-wait.ps1` waits for the CI run of a commit and prints how it
+  ended, with the failed jobs, their steps and the tail of their logs (exit
+  0 passed, 1 failed, 2 timed out, 3 no `gh`); its tests are a step of the
+  gate.
+
+### Removed
+
+- The wait guard on both CLIs, the **Wait guard** box and its Settings default:
+  a shell command that followed a file (`tail -f`, `Get-Content -Wait`) with no
+  `timeout` is no longer refused before it runs, and the helpers' rule about it
+  is gone from the guide. The hub no longer answers `/guard`.
+- **Codex hooks without asking** (`--dangerously-bypass-hook-trust`), its
+  per-folder choice, its box and Settings default, and the check that
+  recommended it: Luna passes no bypass in any Codex start, so Codex asks for
+  the trust of a project's hooks as it would started by hand, and a helper goes
+  without them. Luna gave Codex no other hook, so nothing else depends on it.
+- The account recommendations (the dialog, the window and the status-bar chip),
+  Applied settings (**What Luna applied** and the ledger of Luna's writes into
+  accounts) and the account config editor: the old window still shows these
+  controls until the new one comes, and they only fail. Account files open in
+  any editor. 0.19's `applied-ledger.json` is removed at the window's start;
+  its settings keys for hooks without asking and the dismissed recommendations
+  are passed over and dropped at the next write of `settings.json`. Settings
+  sync between accounts stays.
+
+- The CLI channels (Known-good and Latest) and the known-good list
+  (`cli-known-good.json`), and the commands behind **Use**, **Mark bad**,
+  **Mark good**, **Clear bad**, **Unmark good**, **Roll back** and **Keep
+  it** in Settings → CLIs: until the new window comes, the old one still
+  shows those controls, and they only fail. What 0.19 kept for them at each
+  CLI's root (`channel`, `pinned`, `good.json`, `marks.lock`, `floor`,
+  `signed-floor`) is removed at the first check; its marks bad still hold
+  while the release channel names their version, and its watch over the
+  version you had (one you chose to keep) is not carried over.
+- Handoff, entirely ([ADR-0030](docs/adr/0030-scope-of-0-20.md)): auto-handoff
+  and **Hand off now** for chats, moving a chat to another account, and
+  auto-handoff for leads, on Claude Code and Codex alike. The
+  `luna_session_handoff` tool is gone, and with it the `session-handoff`
+  system skill (Library → System texts keeps the role texts and notes), its
+  override and **Make it the override…**; a library skill of that name is
+  now a skill like any other. The CLIs' own compaction stays, and so do the
+  notices about a helper's context (`budgetPct`, "(context N%)", the line
+  past 85%), which now always advise a fresh helper. A chat no longer starts
+  with Luna's handoff folder added, and a lead no longer with its drafts
+  folder. Settings, chats and helpers saved by 0.19 still load: their
+  handoff fields are passed over and left out on the next write, and a
+  chat's auto-handoff threshold no longer shows in `luna_session_list`.
+  In the chats' and helpers' files 0.19 left, the lines its handoff and
+  moves queued, in the forms it wrote them, are dropped rather than typed:
+  a chat's asks, lapses and failure lines (a continuation among them), a
+  lead's ask and failure, and the line a notice to a lead's parent added of
+  leads that handed off (the rest of that notice still goes). A lead 0.19
+  left between its two conversations goes on in the one it was leaving,
+  without the fresh one's opening. A first prompt, or a Codex thread's
+  generated title, that is 0.19's handoff or move opening is not taken as
+  a chat's name. The `handoffs` folder 0.19 left in Luna's data folder is
+  not read any more, delete it if you like; its `drafts` folders, which
+  Codex's sandbox had given an access entry of its own, are removed at
+  start where no link or junction is at the data folder, above it or on
+  the way down to them, and otherwise left and named in the log. What the
+  handoff skill left in the library's `system/` folder (its override, and
+  one set aside by an interrupted **Make it the override…**, which may hold
+  your own skill), whatever the case of its name, is named in the log at
+  start and among the library's folders set aside, and left for you to
+  move or delete. Until the new window comes, the old one still shows
+  Auto-handoff, **Hand off now**, **Move to another account…** and the move
+  hint after a usage limit, and they only fail.
+- The library's **Needs a look**, its differences and what settled it (take
+  into the library, put back, **Put all back**, **Take out**, **Keep**): until
+  the new window comes, the old one still shows the list for files Luna did
+  not write, and its buttons only fail, all but **Leave out**, which clears
+  such a place; **Sync all** lays the library out, though its confirmation
+  still says it replaces those files, which it no longer does. The bytes
+  0.19 kept of every copy for the differences (`library-blobs` in Luna's
+  data folder) are removed once, at the first save of 0.19's ledger. An
+  account's own instructions where none of the library's go can still be
+  taken into the library.
+- Worktree management ([ADR-0030](docs/adr/0030-scope-of-0-20.md)): Luna
+  creates, inspects and removes no worktree. Gone are the Worktrees window on
+  the title bar and its sweep of worktrees no chat uses, the delete dialog's
+  box that took a chat's worktree and its branch with it and its second box for
+  a helper's unsaved work, the status bar's **worktree kept**, Settings →
+  Chats → Worktrees (fetch origin before Claude Code makes a worktree, delete
+  worktrees by default: Luna fetches nothing now), a helper's worktree (the
+  `worktree` argument of `luna_session_spawn`, `worktreePending`, the queue that
+  made helpers' worktrees one at a time, the `worktreeLeft` notices), the
+  `dropWorktree` and `force` arguments of `luna_session_delete`, and the
+  `worktree`, `branch`, `sha`, `lastCommit` and `status` fields of
+  `luna_session_list` and `luna_session_get`. A call that
+  still passes `worktree` to `luna_session_spawn`, or `dropWorktree` to
+  `luna_session_delete`, is refused, saying that Luna does not create or remove
+  worktrees: create one yourself with `git worktree add`, pass it as `folder`
+  and remove it when you are done.
+  A chat's **Git worktree** box stays, now only for a folder in a git
+  repository: it passes `--worktree` to Claude Code or Codex, which make the
+  worktree, and Luna does not remove it, with its chat or otherwise. Worktrees
+  0.19 made stay on disk as they are, yours now: list them with `git worktree
+  list` and remove what you do not need with `git worktree remove`. Settings,
+  chats and helpers saved by 0.19 still load: the worktree fields in them are
+  passed over. `luna_guide_get` now also says that implementers and reviewers that must
+  outlive a turn are Luna helpers, never a CLI's own background subagents,
+  which end with the caller's turn process.
+
+### Fixed
+
+- After an update, the new window no longer finds the old core still
+  counting a session and waits for you to restart it: stopping the sessions
+  for the update now also ends what helpers' turns left running (a shell, a
+  watcher, a build) on Windows, Claude Code's and Codex's alike, and the older
+  version's core, stopped for that update, with nothing in it but such
+  leftovers is replaced at once, once it has said so again as it is
+  stopped. A session started after the stop (a helper sent text meanwhile)
+  is still asked about. This holds for updates from 0.20 on: the outgoing
+  version stops the sessions, so an update from 0.19 may still ask for a
+  restart once when a helper left processes running. While a core is being
+  replaced, the panes wait for the new one instead of failing.
+- Text sent to a helper whose turn was stopped before it began (by Stop, or
+  by Luna for an update) is kept for its sender as undelivered rather than
+  dropped.
+
+### Security
+
+- The library's editor no longer reads or saves through a link: a skill's
+  SKILL.md and an instructions file are reached from the library's folder
+  with no link or junction on the way and inside the library once resolved,
+  opened without following a link or waiting on a FIFO, and saved over
+  nothing but a plain file; new skills and instructions likewise. A `skills/`
+  planted as a junction to an account's folder could lead a save there.
+- Deleting an account no longer follows a junction: the account's folder and
+  its provider's folder must be no link and lie inside the accounts root, or
+  nothing is deleted.
 
 ## [0.19.0] - 2026-11-18
 

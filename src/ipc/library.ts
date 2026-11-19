@@ -95,9 +95,9 @@ export interface LibraryOverviewDto {
   foundInstructions: { dest: string; target: LibraryTarget }[];
   /** Codex accounts whose AGENTS.override.md hides the AGENTS.md Luna writes. */
   overridden: string[];
-  /** Copies no longer wanted, left in place because they had changed since Luna wrote them: each until it is
-   *  taken out or kept. */
-  kept: KeptCopyDto[];
+  /** Copies no longer wanted, left in place because they had changed since Luna wrote them. The core no longer
+   *  sends it (ADR-0030: a pass takes them out), and this window goes with 0.20. */
+  kept?: KeptCopyDto[];
   /** The system skills as each is served now: Luna's own text, your override of it, or an override that will
    *  not do (library/system.rs). */
   system: SystemSkillState[];
@@ -141,18 +141,17 @@ export const librarySetFolderSkill = (path: string, skill: string, accounts: Rea
 export const librarySetFolderInstructions = (path: string, account: string, inherit: boolean, name: string | null) =>
   call<LibraryOverviewDto>('library_set_folder_instructions', { path, account, inherit, name });
 export const librarySkip = (dest: string, on: boolean) => call<LibraryOverviewDto>('library_skip', { dest, on });
-/** `take`: the copy there becomes the library's; otherwise the library's goes back there. */
+/** Needs a look and its differences left the core with ADR-0030: a pass makes every copy of Luna's the
+ *  library's and leaves anyone else's file alone. This window goes with 0.20, so what was only for them is
+ *  refused; an account's own instructions where none go are still taken in. */
+const removed = <T>(): Promise<T> => Promise.reject(new Error('no longer part of Luna (ADR-0030)'));
 export const libraryResolve = (dest: string, take: boolean) =>
-  call<LibraryOverviewDto>('library_resolve', { dest, take });
-/** The library's copy back at each of `dests`, then a pass; places left out stay out. Over what is there only at
- *  the places in `replace`, elsewhere only where nothing is. */
-export const libraryPutBack = (dests: string[], replace: string[]) =>
-  call<LibraryOverviewDto>('library_put_back', { dests, replace });
-/** Settles copies left in place as no longer wanted: `takeOut` backs each up and removes it, otherwise Luna
- *  forgets it and it stays as yours. */
-export const libraryKept = (dests: string[], takeOut: boolean) =>
-  call<LibraryOverviewDto>('library_kept', { dests, takeOut });
-export const libraryDiff = (dest: string) => call<FileDiffDto[]>('library_diff', { dest }, []);
+  take ? call<LibraryOverviewDto>('library_take_in', { dest }) : removed<LibraryOverviewDto>();
+/** A pass, which now puts the library's copy back wherever Luna's was deleted or changed. */
+export const libraryPutBack: (dests: string[], replace: string[]) => Promise<LibraryOverviewDto> = () =>
+  call<LibraryOverviewDto>('library_sync', {});
+export const libraryKept: (dests: string[], takeOut: boolean) => Promise<LibraryOverviewDto> = removed;
+export const libraryDiff: (dest: string) => Promise<FileDiffDto[]> = removed;
 /** A skill's SKILL.md or instructions, by name. */
 export type LibraryEntry = { skill: string } | { instructions: string };
 /** The file the editor has open: a library entry, or a system skill's override (`exists` false: none yet, and
@@ -177,8 +176,9 @@ export interface SystemCompareDto {
 export const librarySystemCompare = (name: string) => call<SystemCompareDto>('library_system_compare', { name });
 /** Back to Luna's own: the override goes to Luna's backups. */
 export const librarySystemReset = (name: string) => call<LibraryOverviewDto>('library_system_reset', { name });
-/** A library skill of a system skill's name becomes its override, its folder moved there. */
-export const librarySystemAdopt = (skill: string) => call<LibraryOverviewDto>('library_system_adopt', { skill });
+/** Gone with the handoff's system skill (ADR-0030): no system text is a skill to adopt. */
+export const librarySystemAdopt = (skill: string): Promise<LibraryOverviewDto> =>
+  Promise.reject(new Error(`${skill} is no system skill`));
 export const libraryNewSkill = (name: string) => call<LibraryOverviewDto>('library_new_skill', { name });
 export const libraryDeleteSkill = (name: string) => call<LibraryOverviewDto>('library_delete_skill', { name });
 export const libraryNewInstructions = (name: string) => call<LibraryOverviewDto>('library_new_instructions', { name });

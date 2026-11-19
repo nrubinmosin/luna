@@ -59,13 +59,9 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
                     None => found.skipped += 1,
                 }
             }
-            let start = f.get("start").and_then(|s| {
-                Some(FolderStart {
-                    worktree: s.get("worktree")?.as_bool()?,
-                    tools: s.get("tools")?.as_bool()?,
-                    guard: s.get("guard").and_then(Value::as_bool),
-                })
-            });
+            let start = f
+                .get("start")
+                .and_then(|s| Some(FolderStart { worktree: s.get("worktree")?.as_bool()?, tools: s.get("tools")?.as_bool()? }));
             // Stored before folders said who launched there: as the page's
             // merge decides it.
             let picked = f.get("picked").and_then(Value::as_bool).unwrap_or_else(|| {
@@ -106,10 +102,6 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
             .and_then(|a| Some(AccountRef { provider: provider(a.get("provider")?)?, name: a.get("name")?.as_str()?.to_owned() }));
         p.worktree = s.get("worktree").and_then(Value::as_bool).unwrap_or(p.worktree);
         p.tools = s.get("tools").and_then(Value::as_bool).unwrap_or(p.tools);
-        p.guard = s.get("guard").and_then(Value::as_bool).unwrap_or(p.guard);
-    }
-    if let Some(drop) = stored(old, "luna.delete").and_then(|s| s.get("dropWorktree").and_then(Value::as_bool)) {
-        state.delete.drop_worktree = drop;
     }
     if let Some(sound) = stored(old, "luna.notify").and_then(|s| s.get("sound").and_then(Value::as_bool)) {
         state.notify.sound = sound;
@@ -187,7 +179,6 @@ fn chat(c: &Value) -> Option<Chat> {
         worktree_path: str_of(c, "worktreePath").filter(|s| !s.is_empty()),
         session_id,
         tools: flag("tools"),
-        guard: flag("guard"),
         model: str_of(c, "model"),
         effort: str_of(c, "effort").unwrap_or_default(),
         perm: (provider == Provider::Claude).then(|| str_of(c, "perm")).flatten(),
@@ -265,7 +256,6 @@ mod tests {
         assert!(!state.auto_tile);
         assert!(!state.sidebar.pinned);
         assert!(!state.notify.sound);
-        assert!(!state.delete.drop_worktree);
         assert_eq!(state.new_chat.last_folder.as_deref(), Some("C:\\work\\parser"));
         assert_eq!(state.new_chat.last_account, Some(AccountRef { provider: Provider::Claude, name: "work".into() }));
         // A folder stored before `picked`, with a person's chat in it.

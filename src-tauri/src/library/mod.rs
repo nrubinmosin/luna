@@ -18,14 +18,13 @@
 //! from an account that has it as a whole, or an outer folder gives, is
 //! hidden by the CLI at the session's start, the copy staying where it is.
 //!
-//! The library is the source and a destination holds a copy. Luna remembers
-//! what it wrote where (`<data>/library-state.json`, the bytes themselves in
-//! `library-blobs/` for "since Luna wrote it" differences), so it touches only
-//! its own copies: anything else at a destination is left alone, a copy
-//! changed or deleted there is never silently replaced — the window asks
-//! whether to take it into the library or put the library's back, and the
-//! side that loses goes to `library-backups/` first — and a copy no longer
-//! wanted goes only while it is still exactly what Luna wrote.
+//! The library is the source of truth and a destination holds a copy. Luna
+//! remembers what it wrote where (`<data>/library-state.json`), so it touches
+//! only its own copies: anything else at a destination is left alone, while
+//! a copy of Luna's is made the library's again — written over where it was
+//! changed there, put back where it was deleted, taken out where it is no
+//! longer wanted — what a change there had made going to `library-backups/`
+//! first.
 //!
 //! This module holds what all of it shares: the library's folders, the
 //! ledger of what Luna wrote, and the lock a pass runs under. The rest is
@@ -40,7 +39,7 @@
 //!   default for it, the library's entries for it and its constraints,
 //!   composed for each CLI.
 //! - `skills`: the library's skills and instructions files, read and checked.
-//! - `files`: a copy's files on disk, and the blobs and backups kept of them.
+//! - `files`: a copy's files on disk, and the backups kept of them.
 //! - `folders`: the folders the user names: where their skills wait, and what
 //!   a session started in one is given.
 //! - `pass`: one pass over every copy the library wants, laying it out or
@@ -218,7 +217,7 @@ fn instructions_name(provider: Provider) -> &'static str {
 /// The library's own folders and files, and Luna's notes beside it.
 struct Dirs {
     root: PathBuf,
-    /// `library-state.json`, `library-blobs/`, `library-backups/` live here.
+    /// `library-state.json`, `library-backups/` live here.
     data: PathBuf,
 }
 
@@ -243,7 +242,10 @@ impl Dirs {
     fn ledger(&self) -> PathBuf {
         self.data.join("library-state.json")
     }
-    fn blobs(&self) -> PathBuf {
+    /// Where 0.19 kept the bytes of every copy it wrote, for the window's
+    /// differences: read by nothing now, and taken out at the first save of
+    /// a ledger 0.19 wrote (`Ledger::older`).
+    fn old_blobs(&self) -> PathBuf {
         self.data.join("library-blobs")
     }
     fn backups(&self) -> PathBuf {
@@ -261,47 +263,44 @@ impl Dirs {
     }
 }
 
-/// What the library has written into the account folder `account_path`, by
-/// destination, as its ledger says: what the window lists as the library's
-/// layout among what Luna applied to a chat on that account (applied.rs).
-pub fn laid_out_in(account_path: &str) -> Vec<String> {
-    let sep = if cfg!(windows) { '\\' } else { '/' };
-    let under = format!("{}{sep}", crate::paths::path_key(account_path));
-    Ledger::load(&Dirs::current()).written.into_keys().filter(|dest| crate::paths::path_key(dest).starts_with(&under)).collect()
-}
-
 /// What Luna last wrote at each destination, file by file.
 #[derive(Serialize, Deserialize, Default)]
 struct Ledger {
+    /// What the ledger's file is laid out as: `LEDGER_FORMAT` since 0.20,
+    /// none (0) before.
+    #[serde(default, serialize_with = "this_format")]
+    format: u32,
     written: BTreeMap<String, Hashes>,
-    /// The instructions copies Luna wrote with a line before them saying whose
-    /// they are (audience.rs `worded`), by destination, with the audience it
-    /// named: only that line, and only there, comes off when such a copy is
-    /// taken into the library.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    worded: BTreeMap<String, Audience>,
-    /// Luna's copies no longer wanted that were changed where they lie, left
-    /// there (pass.rs), by destination, with what Luna last wrote there: shown
-    /// under Needs a look until the window takes one out or keeps it as the
-    /// user's own, the file goes, the place is wanted again or left out.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    kept: BTreeMap<String, Hashes>,
+    /// Places Luna is never to adopt, by destination: the copies 0.19 left
+    /// where they lay as no longer wanted but changed there (its `kept`),
+    /// the person's own from 0.20 on even where they come to hold the
+    /// library's very bytes. One goes once nothing is there.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    disowned: BTreeSet<String>,
+    /// The manifests Luna wrote for a listed folder's plugin in a Codex
+    /// account (folders.rs `codex_manifests`), by path: only these does it
+    /// take out again.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    manifests: BTreeSet<String>,
+    /// 0.19's `kept`, as it read: moved into `disowned` at the load, and
+    /// named in the log once the ledger is saved without it. (0.19's
+    /// `worded`, the line it wrote into each copy for a copy taken back into
+    /// the library, is not read.)
+    #[serde(default, rename = "kept", skip_serializing)]
+    left_by_0_19: BTreeMap<String, serde::de::IgnoredAny>,
+    /// Read from a file an earlier Luna wrote (`format` 0): its save is the
+    /// 0.19 migration's, which takes `library-blobs/` out.
+    #[serde(skip)]
+    older: bool,
 }
 
+/// The ledger's layout since 0.20 (`Ledger::format`).
+const LEDGER_FORMAT: u32 = 1;
+
 impl Ledger {
-    /// What Luna has now written at `key`: these files, said for `banner`'s
-    /// sessions alone where that is not every session's.
-    fn wrote(&mut self, key: &str, hashes: Hashes, banner: Audience) {
+    /// What Luna has now written at `key`: these files.
+    fn wrote(&mut self, key: &str, hashes: Hashes) {
         self.written.insert(key.to_string(), hashes);
-        match banner.is_every() {
-            true => self.worded.remove(key),
-            false => self.worded.insert(key.to_string(), banner),
-        };
-    }
-    /// Luna's note of `key` gone, files and line alike.
-    fn forget(&mut self, key: &str) -> Option<Hashes> {
-        self.worded.remove(key);
-        self.written.remove(key)
     }
     /// Every note of a place under the folder `from` now under `to`, which it
     /// was renamed to: kept under the spelling a pass will go by, a change of
@@ -317,17 +316,23 @@ impl Ledger {
             map.extend(values);
         }
         rekey(&mut self.written, &new);
-        rekey(&mut self.worded, &new);
-        rekey(&mut self.kept, &new);
+        for set in [&mut self.disowned, &mut self.manifests] {
+            let moving: Vec<(String, String)> = set.iter().filter_map(|k| Some((k.clone(), new(k)?))).collect();
+            for (old, new) in moving {
+                set.remove(&old);
+                set.insert(new);
+            }
+        }
     }
     /// Every note of a place under `dir` gone, as the folder is; whether there
     /// was any.
     fn dropped(&mut self, dir: &Path) -> bool {
-        let before = self.written.len() + self.worded.len() + self.kept.len();
+        let count = |l: &Ledger| l.written.len() + l.disowned.len() + l.manifests.len();
+        let before = count(self);
         self.written.retain(|k, _| !within(Path::new(k), dir));
-        self.worded.retain(|k, _| !within(Path::new(k), dir));
-        self.kept.retain(|k, _| !within(Path::new(k), dir));
-        before != self.written.len() + self.worded.len() + self.kept.len()
+        self.disowned.retain(|k| !within(Path::new(k), dir));
+        self.manifests.retain(|k| !within(Path::new(k), dir));
+        before != count(self)
     }
 }
 
@@ -352,7 +357,27 @@ fn moved_under(place: &str, from: &Path, to: &Path) -> Option<String> {
 
 impl Ledger {
     fn load(dirs: &Dirs) -> Ledger {
-        std::fs::read_to_string(dirs.ledger()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        std::fs::read(dirs.ledger()).ok().and_then(|bytes| Ledger::parse(&bytes).ok()).unwrap_or_default()
+    }
+    /// The ledger in `bytes`, as every reader takes it: one an earlier Luna
+    /// wrote brought up to this one's (0.19's `kept` into `disowned`, its
+    /// blobs to go at the save, `older`), whichever way it is read.
+    fn parse(bytes: &[u8]) -> Result<Ledger, serde_json::Error> {
+        let mut ledger: Ledger = serde_json::from_slice(bytes)?;
+        ledger.older = ledger.format == 0;
+        ledger.disowned.extend(ledger.left_by_0_19.keys().cloned());
+        Ok(ledger)
+    }
+    /// What the log says of 0.19's kept copies at the save that drops its
+    /// record of them.
+    fn left_by_0_19_line(&self) -> Option<String> {
+        let left: Vec<&str> = self.left_by_0_19.keys().map(String::as_str).collect();
+        (!left.is_empty()).then(|| {
+            format!(
+                "copies an earlier Luna left in place, no longer wanted but changed there, are the person's own now and stay: {}",
+                left.join(", ")
+            )
+        })
     }
     fn save(&self, dirs: &Dirs) -> Result<(), String> {
         #[cfg(test)]
@@ -362,6 +387,18 @@ impl Ledger {
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         // Luna's own, in the data dir: private like the rest of it, where
         // `write_file` is for the copies in account folders.
-        crate::secret::write_private(&dirs.ledger(), text.as_bytes()).map_err(|e| format!("{}: {e}", dirs.ledger().display()))
+        crate::secret::write_private(&dirs.ledger(), text.as_bytes()).map_err(|e| format!("{}: {e}", dirs.ledger().display()))?;
+        if let Some(line) = self.left_by_0_19_line() {
+            crate::log::info("library", &line);
+        }
+        if self.older {
+            drop_old_blobs(dirs);
+        }
+        Ok(())
     }
+}
+
+/// `Ledger::format` as every save writes it: this Luna's.
+fn this_format<S: serde::Serializer>(_: &u32, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u32(LEDGER_FORMAT)
 }

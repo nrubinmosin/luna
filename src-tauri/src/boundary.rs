@@ -9,16 +9,16 @@
 //! disk: no link or junction between the accounts root and it, and the
 //! folder the system resolves it to is that very one under the root as the
 //! system resolves the root. What lies under a checked path is the commands'
-//! own business (worktree removal keeps its own checks, worktree/paths.rs).
+//! own business.
 //! The look on disk comes before the command opens the path again, a race a
 //! same-user process could win (threat model R6).
 //!
-//! A file a less trusted side put somewhere for Luna to read (a session's
-//! handoff, the library's override of the handoff's instructions) is opened
-//! as itself, never through a link at its name, and without waiting on a FIFO
-//! (`open_no_follow`, `is_link`). A folder something is written into, moved
-//! out of or given to a CLI is checked from a folder Luna trusts down, each
-//! step before the next (`walk_down`, `private_chain`).
+//! A file a less trusted side put somewhere for Luna to read (the library's
+//! override of a system text) is opened as itself, never through a link at
+//! its name, and without waiting on a FIFO (`open_no_follow`, `is_link`). A
+//! folder something is written into, moved out of or given to a CLI is
+//! checked from a folder Luna trusts down, each step before the next
+//! (`walk_down`, `private_chain`).
 
 use crate::provider::Provider;
 use serde::{Deserialize, Deserializer};
@@ -217,8 +217,8 @@ pub fn private_chain(top: &Path, below: &[&str]) -> Result<PathBuf, String> {
     walk_down(top, below, |d, _| crate::secret::private_dir(d).map_err(|e| format!("{} is no private folder of Luna's: {e}", d.display())))
 }
 /// The file at `path` itself, for reading a file someone other than Luna put
-/// there (a session's handoff, the library's override of the handoff's
-/// instructions): a link there opened as the link (and then refused by its
+/// there (the library's override of a system text): a link there opened as
+/// the link (and then refused by its
 /// metadata, `is_link`) rather than followed. On Unix without waiting: a FIFO
 /// put at the name blocks an open for reading until a writer comes, and is
 /// then refused by the handle's metadata like any other thing that is not a

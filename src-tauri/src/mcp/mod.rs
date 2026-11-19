@@ -28,7 +28,7 @@ pub const PROTOCOL: &str = "2025-06-18";
 const PROTOCOLS: [&str; 3] = [PROTOCOL, "2025-03-26", "2024-11-05"];
 
 const INSTRUCTIONS: &str = "Luna runs this session. Its luna_* tools start and drive helper sessions in the \
-background: another model or account, Codex or Claude Code, another folder or a git worktree. Spawn with a \
+background: another model or account, Codex or Claude Code, another folder (a git worktree you made yourself, passed as folder). Spawn with a \
 prompt that stands alone, then end your turn: once a helper answers, asks or exits, Luna types a notice into \
 your session opening \"[Luna notice\" (Luna's words, not the user's) that quotes a short answer or names a \
 file. luna_guide_get has the details, a topic at a time. Session ids are Luna's; your CLI's task and subagent \
@@ -198,9 +198,9 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 
 /// What this server puts in a model's context, by the name
 /// docs/user-guide/context.md measures it under (context_page.rs): the
-/// instructions, the tool list and the handoff's tool as a client sends them
-/// on (annotations are the client's, not the model's), and the guide's index
-/// and sections, each a tool result when asked for.
+/// instructions and the tool list as a client sends them on (annotations are
+/// the client's, not the model's), and the guide's index and sections, each a
+/// tool result when asked for.
 #[cfg(test)]
 pub(crate) fn context_texts() -> Vec<(String, String)> {
     fn bare(mut v: Value) -> String {
@@ -217,7 +217,6 @@ pub(crate) fn context_texts() -> Vec<(String, String)> {
     let mut out = vec![
         ("instructions".to_string(), INSTRUCTIONS.to_string()),
         ("tools".to_string(), bare(tools::tools())),
-        ("handoff-tool".to_string(), bare(tools::handoff_tool())),
         ("guide-index".to_string(), guide::guide_text(None).unwrap_or_default()),
     ];
     for (title, text) in guide::sections() {
@@ -287,9 +286,7 @@ mod tests {
                 "luna_run_list",
                 "luna_guide_get",
                 "luna_notification_send",
-                "luna_power_set",
-                // A person's chat with Luna's tools (agents/handoff `may_list`).
-                "luna_session_handoff"
+                "luna_power_set"
             ]
         );
         // One without them is offered none, and may call none.
@@ -632,7 +629,6 @@ mod tests {
             parent: parent.into(),
             parent_name: None,
             folder: "C:/p".into(),
-            worktree: false,
             provider: "claude".into(),
             account: "one".into(),
             settings: json!({}),
@@ -640,7 +636,6 @@ mod tests {
             prompt: "the whole prompt".into(),
             auto_delete: false,
             transcript: None,
-            worktree_path: None,
             last: Some("the whole reply".into()),
         };
         let runs = || vec![run("r1", "hs-me"), run("r2", "hs-kid"), run("r3", "someone-else"), run("r4", "")];
@@ -720,6 +715,14 @@ mod tests {
         // The cases that cost something when passed over.
         let (failed, e) = call("luna_session_spawn", json!({ "prompt": "review it", "read_only": true }));
         assert!(failed && e.contains("did you mean `readOnly`?"), "{e}");
+        // The worktree arguments of before 0.20: refused saying what to do instead.
+        let (failed, e) = call("luna_session_spawn", json!({ "prompt": "go", "worktree": true }));
+        assert!(
+            failed && e.contains("Luna does not create or remove worktrees") && e.contains("git worktree add") && e.contains("`folder`"),
+            "{e}"
+        );
+        let (failed, e) = call("luna_session_delete", json!({ "id": "x", "dropWorktree": true }));
+        assert!(failed && e.contains("Luna does not create or remove worktrees") && e.contains("git worktree remove"), "{e}");
         // Helpers run in the background only: what asked for a visible one, or
         // pressed keys on one's screen, is refused as any key the tool lacks.
         for (tool, args) in [
@@ -806,13 +809,10 @@ mod tests {
         }
     }
 
-    /// Every session with Luna's tools, helpers included, reads the same
-    /// guide, instructions and tool list; the handoff, which only a person's
-    /// chat is to know of, is in none of them: no topic, no section, no word in
-    /// the index, the enum or a tool's description. That chat has it from the
-    /// tool itself, listed to it alone (agents/handoff `may_list`).
+    /// Luna has no handoff (ADR-0030): no tool, no topic, no section, no word
+    /// in the index, the instructions or a tool's description.
     #[test]
-    fn what_every_tooled_session_reads_leaves_the_handoff_to_its_own_tool() {
+    fn nothing_a_tooled_session_reads_offers_a_handoff() {
         assert!(TOPICS.iter().all(|(topic, title)| !topic.contains("handoff") && !title.to_lowercase().contains("handoff")));
         for (title, text) in sections() {
             assert!(!text.to_lowercase().contains("handoff"), "{title}");

@@ -14,7 +14,7 @@ export default defineConfig(
   // next finding on its line.
   { linterOptions: { reportUnusedDisableDirectives: 'error' } },
   // The Rust crate and build output are not linted here, nor the worktrees
-  // Luna's helpers and Claude Code make inside the repo (.claude/worktrees/):
+  // Claude Code makes inside the repo (.claude/worktrees/):
   // checkouts of their own, each with its own config.
   globalIgnores(['dist/', 'src-tauri/', 'test-build/', 'docs/', '.claude/worktrees/']),
   {

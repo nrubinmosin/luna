@@ -22,12 +22,17 @@
 //!   the first start, with no such file, 0.19's chat list is read from a
 //!   copy of the WebView's Local Storage (native/import.rs) and handed to
 //!   the window to import.
+//! - The library, settings and accounts panels' are native/panels.rs's, the
+//!   dialogs' (new chat, quick chat, delete chat, the helpers popover and the
+//!   crash screen) native/dialogs.rs's.
 //!
 //! Each call runs on a thread of its own, as `core_call` runs on a blocking
 //! one: the window waits for the answer on a task, never on its thread.
 
 mod desktop;
+mod dialogs;
 mod import;
+mod panels;
 mod state_file;
 
 use crate::corecmd::{self, Lane};
@@ -54,60 +59,12 @@ const OWN: &[(&str, Command)] = &[
     ("update_check", desktop::update_check),
     ("update_download", desktop::update_download),
     ("update_install", desktop::update_install),
-    // The status bar's: the accounts' usage and the CLIs, which are the
-    // window process's own (the core runs the sessions and the power rule).
-    ("account_limits", account_limits),
-    ("codex_limits", codex_limits),
-    ("cli_status", cli_status),
-    ("cli_update_now", cli_update_now),
 ];
 
 /// Every command of the window's own it may send, by name: taken on the
 /// window's thread, so each hands its work over and returns at once.
 const OWN_SENT: &[(&str, Command)] =
     &[("set_window_theme", set_window_theme), ("tray_awake", desktop::tray_awake), ("save_window_state", save_window_state)];
-
-/// `{ accountPath, force }`: an account's usage, as the page asks for it
-/// (the path is checked as an account's).
-fn limits<T: Serialize>(
-    args: Value,
-    ask: impl FnOnce(crate::boundary::AccountPath, Option<bool>) -> Result<T, String>,
-) -> Result<Value, String> {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Args {
-        account_path: crate::boundary::AccountPath,
-        force: Option<bool>,
-    }
-    let Args { account_path, force } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
-    serde_json::to_value(ask(account_path, force)?).map_err(|e| e.to_string())
-}
-
-fn account_limits(args: Value) -> Result<Value, String> {
-    limits(args, |path, force| tauri::async_runtime::block_on(crate::claude::limits::account_limits(path, force)))
-}
-
-fn codex_limits(args: Value) -> Result<Value, String> {
-    limits(args, |path, force| tauri::async_runtime::block_on(crate::codex::limits::codex_limits(path, force)))
-}
-
-/// `{ provider }` of the CLI commands.
-fn cli_provider(args: Value) -> Result<crate::provider::Provider, String> {
-    #[derive(Deserialize)]
-    struct Args {
-        provider: crate::provider::Provider,
-    }
-    serde_json::from_value::<Args>(args).map(|a| a.provider).map_err(|e| format!("bad arguments: {e}"))
-}
-
-fn cli_status(args: Value) -> Result<Value, String> {
-    serde_json::to_value(crate::cli::cli_status(cli_provider(args)?)).map_err(|e| e.to_string())
-}
-
-fn cli_update_now(args: Value) -> Result<Value, String> {
-    crate::cli::cli_update_now(cli_provider(args)?);
-    Ok(Value::Null)
-}
 
 /// `{ revision }`: the link's state the restart was offered on.
 fn core_restart(args: Value) -> Result<Value, String> {
@@ -136,7 +93,7 @@ pub(crate) fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         }
         Some(Lane::Call) => crate::corelink::request(cmd.to_owned(), args),
         Some(Lane::Send) => Err(format!("{cmd} is sent, not called")),
-        None => match OWN.iter().find(|(c, _)| *c == cmd) {
+        None => match OWN.iter().chain(panels::OWN).chain(dialogs::OWN).find(|(c, _)| *c == cmd) {
             Some((_, f)) => f(args),
             None => Err(format!("the window has no command {cmd}")),
         },
@@ -160,7 +117,7 @@ impl Host for NativeHost {
     }
 
     fn send(&self, cmd: &str, args: Value) -> Result<(), String> {
-        match OWN_SENT.iter().find(|(c, _)| *c == cmd) {
+        match OWN_SENT.iter().chain(panels::OWN_SENT).find(|(c, _)| *c == cmd) {
             Some((_, f)) => f(args).map(drop),
             None => crate::corelink::core_send(cmd.to_owned(), args),
         }
@@ -229,6 +186,9 @@ fn wanted(event: &str) -> bool {
 #[serde(rename_all = "camelCase", default)]
 struct WindowSettings {
     theme: ThemePref,
+    /// Beside it, what the page keeps in its local storage (panels.rs).
+    #[serde(flatten)]
+    prefs: panels::WindowPrefs,
 }
 
 fn settings_file() -> PathBuf {
@@ -258,10 +218,18 @@ fn set_window_theme(args: Value) -> Result<Value, String> {
 }
 
 fn write_theme(theme: &ThemePref) -> Result<(), String> {
+    update_settings(|s| s.theme = *theme).map_err(|e| format!("cannot keep the theme: {e}"))
+}
+
+/// `window.json` read, changed and written whole, one change at a time: the
+/// theme's writer and the preferences' each run on a thread of their own.
+fn update_settings(change: impl FnOnce(&mut WindowSettings)) -> Result<(), String> {
+    static ONE: Mutex<()> = Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let mut settings = read_settings();
-    settings.theme = *theme;
+    change(&mut settings);
     let json = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
-    crate::secret::write_private(&settings_file(), &json).map_err(|e| format!("cannot keep the theme: {e}"))
+    crate::secret::write_private(&settings_file(), &json).map_err(|e| e.to_string())
 }
 
 fn theme_writer() -> &'static Arc<Writer<ThemePref>> {
@@ -499,12 +467,15 @@ static WRITTEN_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Flushes what the window's writers hold, as an update's setup is about to
 /// close Luna (the installer's Restart Manager ends it): the chat list, the
-/// theme and the window's place, each tried, the first failure said.
+/// theme, the window's place, the preferences and the library editor's draft,
+/// each tried, the first failure said.
 fn flush_for_install() -> Result<(), String> {
     let chats = state_writer().flush(QUIT_FLUSH).map_err(|e| format!("the chat list: {e}"));
     let theme = theme_writer().flush(THEME_DRAIN).map_err(|e| format!("the theme: {e}"));
     let place = desktop::flush_placement(THEME_DRAIN).map_err(|e| format!("the window's place: {e}"));
-    chats.and(theme).and(place)
+    let prefs = panels::prefs_writer().flush(panels::PREFS_DRAIN).map_err(|e| format!("the preferences: {e}"));
+    let draft = panels::draft_writer().flush(panels::PREFS_DRAIN).map_err(|e| format!("the library editor's draft: {e}"));
+    chats.and(theme).and(place).and(prefs).and(draft)
 }
 
 /// One state the window sent, by its number (`seq`).
@@ -595,6 +566,9 @@ pub(crate) fn run() -> Result<(), String> {
         env!("LUNA_BUILD"),
         env!("LUNA_CORE_FP")
     ));
+    // What the crash screen says of the run before, read before this one's
+    // record replaces it.
+    crate::lifecycle::find_previous();
     let title = if crate::paths::is_test() { "Luna Test" } else { "Luna" };
     let services = mailbox.clone();
     let options = luna_window::Options {
@@ -618,6 +592,12 @@ pub(crate) fn run() -> Result<(), String> {
             if let Err(why) = state_writer().flush(THEME_DRAIN) {
                 crate::log::error("window", &format!("the chat list's last change was not saved: {why}"));
             }
+            if let Err(why) = panels::prefs_writer().flush(panels::PREFS_DRAIN) {
+                crate::log::warn("window", &format!("the preferences changed last were not written: {why}"));
+            }
+            if let Err(why) = panels::draft_writer().flush(panels::PREFS_DRAIN) {
+                crate::log::warn("window", &format!("the library editor's draft was not written: {why}"));
+            }
             // A Claude Code model ask may still be saving a renewed token;
             // its cleanup runs only while Luna does. Not as the Windows
             // session ends as a whole, which ends the ask with everything
@@ -636,8 +616,8 @@ pub(crate) fn run() -> Result<(), String> {
     ran
 }
 
-/// The test build's driver: a file of keys a smoke script has the window
-/// press (luna_window's drive.rs), as no global input may. Compiled into the
+/// The test build's driver: a file of lines a smoke script has the window
+/// act on (luna_window's drive.rs), as no global input may. Compiled into the
 /// test build alone.
 #[cfg(luna_test)]
 const TEST_DRIVE: &str = "LUNA_TEST_DRIVE";
@@ -660,6 +640,7 @@ fn start(mailbox: Mailbox) {
     // The previous run's end is reported before the heartbeat starts; it
     // pings the window's thread through its inbox.
     crate::lifecycle::start(Box::new(move |f| mailbox.run_on_ui(f)));
+    crate::applied::drop_0_19_ledger();
     // The sessions, the hooks' listener, the agents and power all run in the
     // core (coreproc.rs); the window finds or starts it.
     crate::corelink::start();
@@ -678,17 +659,28 @@ mod tests {
     /// sends a taker, and none of the window's own shadows one of the core's.
     #[test]
     fn every_command_the_window_names_is_dispatched() {
-        for cmd in luna_window::cmd::ALL.iter().chain(luna_window::desktop::cmd::CALLED).chain(luna_window::status::cmd::CALLED) {
-            let own = OWN.iter().any(|(c, _)| c == cmd);
+        for cmd in luna_window::cmd::ALL
+            .iter()
+            .chain(luna_window::desktop::cmd::CALLED)
+            .chain(luna_window::status::cmd::CALLED)
+            .chain(luna_window::panels::cmd::CALLED)
+            .chain(luna_window::dialogs::cmd::CALLED)
+        {
+            let own = OWN.iter().chain(panels::OWN).chain(dialogs::OWN).any(|(c, _)| c == cmd);
             assert!(own || corecmd::lane(cmd) == Some(Lane::Call), "{cmd} has no answer in native.rs");
         }
-        for cmd in luna_window::cmd::SENT.iter().chain(luna_window::desktop::cmd::SENT) {
-            let own = OWN_SENT.iter().any(|(c, _)| c == cmd);
+        for cmd in luna_window::cmd::SENT.iter().chain(luna_window::desktop::cmd::SENT).chain(luna_window::panels::cmd::SENT) {
+            let own = OWN_SENT.iter().chain(panels::OWN_SENT).any(|(c, _)| c == cmd);
             assert!(own || corecmd::lane(cmd) == Some(Lane::Send), "{cmd} has no taker in native.rs");
         }
-        for (cmd, _) in OWN.iter().chain(OWN_SENT) {
+        for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).chain(dialogs::OWN) {
             assert!(corecmd::lane(cmd).is_none(), "{cmd} is the core's");
         }
+        // One name, one answer.
+        let mut names: Vec<&str> =
+            OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).chain(dialogs::OWN).map(|(c, _)| *c).collect();
+        names.sort_unstable();
+        assert!(names.windows(2).all(|w| w[0] != w[1]), "a name twice: {names:?}");
         assert!(dispatch("nope", Value::Null).unwrap_err().contains("no command"));
         assert!(dispatch("write_session", json!({})).unwrap_err().contains("sent, not called"));
     }
@@ -712,9 +704,12 @@ mod tests {
             "save_window_state",
             "flush_window_state",
         ];
-        for (cmd, _) in OWN.iter().chain(OWN_SENT) {
+        for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).chain(dialogs::OWN) {
             let tauri = registered.contains(cmd);
-            assert!(tauri != native_only.contains(cmd), "{cmd}: registered {tauri}");
+            assert!(
+                tauri != (native_only.contains(cmd) || panels::NATIVE_ONLY.contains(cmd) || dialogs::NATIVE_ONLY.contains(cmd)),
+                "{cmd}: registered {tauri}"
+            );
         }
     }
 
@@ -741,6 +736,10 @@ mod tests {
         assert_eq!(luna_window::status::event::ALL, [luna_window::status::event::POWER_STATE, luna_window::status::event::CLI_STATUS]);
         assert!(include_str!("power/mod.rs").contains(&format!("\"{}\"", luna_window::status::event::POWER_STATE)));
         assert!(include_str!("cli.rs").contains(&format!("\"{}\"", luna_window::status::event::CLI_STATUS)));
+        // The panels', where they are sent.
+        for event in luna_window::panels::event::ALL {
+            assert!(include_str!("cli.rs").contains(&format!("\"{event}\"")), "{event} is sent nowhere");
+        }
         let output = luna_window::event::PTY_OUTPUT;
         assert!(include_str!("pty/spawn.rs").contains(&format!("\"{output}\"")), "{output} is sent nowhere");
     }
@@ -888,6 +887,8 @@ mod tests {
             fingerprint: "0011223344556677".into(),
             started: 1_763_500_000_000,
             sessions: 3,
+            left_only: 0,
+            stopped_for_update: false,
             refused: Some("elevated".into()),
         };
         for (state, seen) in [

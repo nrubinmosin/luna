@@ -176,7 +176,7 @@ impl Models {
     }
 
     /// The panes showing `session`, the ones gone let go of.
-    fn panes_of(&self, session: &str, cx: &App) -> Vec<Entity<TermPane>> {
+    pub(crate) fn panes_of(&self, session: &str, cx: &App) -> Vec<Entity<TermPane>> {
         self.all_panes().into_iter().filter(|p| p.read(cx).id() == session).collect()
     }
 
@@ -243,6 +243,9 @@ struct PtyExit {
     id: String,
     #[serde(default)]
     generation: u64,
+    /// The CLI's exit code; none when the host could not read it.
+    #[serde(default)]
+    code: Option<u32>,
 }
 
 /// `window://state-saved`'s.
@@ -293,7 +296,7 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
                 // workspace (term/ `TermPane::exited`): an older one's, come
                 // late, rests nothing.
                 for pane in panes {
-                    pane.update(cx, |p, cx| p.on_exit(exit.generation, cx));
+                    pane.update(cx, |p, cx| p.on_exit(exit.generation, exit.code, cx));
                 }
             }
             Err(e) => log::warn!("{name}: {e}"),
@@ -321,7 +324,15 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
             Ok(n) => models.workspace.update(cx, |w, _| w.on_notice(n.title, n.body, n.chat_id)),
             Err(e) => log::warn!("{name}: {e}"),
         },
-        n if crate::status::event::ALL.contains(&n) => models.status.update(cx, |s, cx| s.on_event(n, payload, cx)),
+        // `cli://status` is the panels' too (their Settings shows each CLI's
+        // update pass): both are told.
+        n if crate::status::event::ALL.contains(&n) => {
+            if crate::panels::event::ALL.contains(&n) {
+                crate::panels::on_event(n, &payload, cx);
+            }
+            models.status.update(cx, |s, cx| s.on_event(n, payload, cx))
+        }
+        _ if crate::panels::event::ALL.contains(&name) => crate::panels::on_event(name, &payload, cx),
         _ => crate::desktop::on_event(name, &payload, cx),
     }
 }

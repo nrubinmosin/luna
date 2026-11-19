@@ -127,9 +127,6 @@ pub struct Chat {
     /// Luna's MCP tools attached.
     #[serde(default)]
     pub tools: bool,
-    /// The guard against endless waits.
-    #[serde(default)]
-    pub guard: bool,
     /// Claude Code: a family's label (`Opus`) or a full id. Codex: its model,
     /// none for Codex's own default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,8 +173,6 @@ impl Chat {
 pub struct FolderStart {
     pub worktree: bool,
     pub tools: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub guard: Option<bool>,
 }
 
 /// A folder chats were launched from, kept whether anything is in it or not:
@@ -305,25 +300,11 @@ pub struct NewChatPrefs {
     pub last_account: Option<AccountRef>,
     pub worktree: bool,
     pub tools: bool,
-    pub guard: bool,
 }
 
 impl Default for NewChatPrefs {
     fn default() -> NewChatPrefs {
-        NewChatPrefs { last_folder: None, last_account: None, worktree: true, tools: false, guard: false }
-    }
-}
-
-/// What the delete dialog keeps: where its worktree box starts.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct DeletePrefs {
-    pub drop_worktree: bool,
-}
-
-impl Default for DeletePrefs {
-    fn default() -> DeletePrefs {
-        DeletePrefs { drop_worktree: true }
+        NewChatPrefs { last_folder: None, last_account: None, worktree: true, tools: false }
     }
 }
 
@@ -391,8 +372,6 @@ pub struct WindowState {
     pub sidebar: Sidebar,
     #[serde(default)]
     pub new_chat: NewChatPrefs,
-    #[serde(default)]
-    pub delete: DeletePrefs,
     #[serde(default)]
     pub notify: NotifyPrefs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -548,7 +527,6 @@ impl Default for WindowState {
             auto_tile: true,
             sidebar: Sidebar::default(),
             new_chat: NewChatPrefs::default(),
-            delete: DeletePrefs::default(),
             notify: NotifyPrefs::default(),
             imported: None,
             peek: None,
@@ -610,7 +588,6 @@ impl WindowState {
         state.auto_tile = setting(obj, "autoTile", &mut lost).unwrap_or(true);
         state.sidebar = setting(obj, "sidebar", &mut lost).unwrap_or_default();
         state.new_chat = setting(obj, "newChat", &mut lost).unwrap_or_default();
-        state.delete = setting(obj, "delete", &mut lost).unwrap_or_default();
         state.notify = setting(obj, "notify", &mut lost).unwrap_or_default();
         state.imported = setting(obj, "imported", &mut lost);
         // `tidy` keeps a chat listed twice once: the others are counted.
@@ -666,6 +643,24 @@ impl WindowState {
 
     pub fn find(&self, id: &str) -> Option<&Chat> {
         self.chats().find(|c| c.id == id)
+    }
+
+    /// The chats set to an account.
+    pub fn chats_on<'a>(&'a self, provider: Provider, account: &'a str) -> impl Iterator<Item = &'a Chat> + 'a {
+        self.chats().filter(move |c| c.provider == provider && c.account == account)
+    }
+
+    /// An account was renamed: every chat on it follows (the page's
+    /// `renameAccount`). Whether any did.
+    pub fn rename_account(&mut self, provider: Provider, from: &str, to: &str) -> bool {
+        let mut any = false;
+        for c in self.folders.iter_mut().flat_map(|f| f.chats.iter_mut()) {
+            if c.provider == provider && c.account == from {
+                c.account = to.to_owned();
+                any = true;
+            }
+        }
+        any
     }
 
     pub fn find_mut(&mut self, id: &str) -> Option<&mut Chat> {
@@ -1115,7 +1110,6 @@ mod tests {
             worktree_path: None,
             session_id: None,
             tools: false,
-            guard: false,
             model: Some("Opus".into()),
             effort: "high".into(),
             perm: Some("Ask".into()),

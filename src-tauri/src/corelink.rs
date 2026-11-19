@@ -35,6 +35,26 @@ use std::time::Duration;
 const START_WAIT: Duration = Duration::from_secs(10);
 /// How long a core asked to stop gets: its sessions' grace and then some.
 const STOP_WAIT: Duration = Duration::from_secs(30);
+/// How long a connect to a core's endpoint gets.
+const CONNECT_WAIT: Duration = Duration::from_secs(2);
+/// How long a core gets to answer a hello.
+const HELLO_WAIT: Duration = Duration::from_secs(5);
+/// What a core that would not stop in `STOP_WAIT` is allowed for its kill
+/// (`pty::kill_tree`, its whole tree, which gives `taskkill` 5 s).
+const KILL_SLACK: Duration = Duration::from_secs(5);
+/// How long a request waits for a core while one is found or started, and
+/// while the one running is replaced (a restart, or another build's after an
+/// update): a budget for a hello to the old one, its stop and kill, the new
+/// one's start and a hello to it, 7 + 30 + 5 + 10 + 7 = 59 s. Not a bound:
+/// each step's timeout is per read or per call (a hello's answer read in
+/// frames, a launch), so a slow replacement can take longer, and a request
+/// waiting then fails as with no core. The old core's stop asks its sessions to
+/// quit within `pty::GRACE` (10 s) inside `STOP_WAIT`; an update's
+/// `stop_all_sessions` runs in the old window before the install, outside
+/// this wait.
+const LINK_WAIT: Duration = Duration::from_secs(
+    2 * (CONNECT_WAIT.as_secs() + HELLO_WAIT.as_secs()) + STOP_WAIT.as_secs() + KILL_SLACK.as_secs() + START_WAIT.as_secs(),
+);
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -324,6 +344,12 @@ enum Verdict {
     /// Stopped and replaced at once: another build's with no session, or an
     /// elevated one with none.
     Replace,
+    /// An older version's, its sessions stopped for an update
+    /// (`Welcome::stopped_for_update`), whose sessions are all what idle
+    /// helpers' turns left (`Welcome::left_only`), as that stop leaves it: replaced at
+    /// once if it says so still as it is asked to stop (`stop_if_left_only`),
+    /// else left as `Foreign`.
+    ReplaceLeftOnly,
     /// Run as administrator, with sessions: left until the person says to
     /// restart it, never worked with. Their CLIs run elevated.
     Elevated,
@@ -342,11 +368,23 @@ fn verdict(core: &Welcome, elevated: bool, v1: bool) -> Verdict {
     if elevated || core.refused.is_some() {
         return if core.sessions > 0 { Verdict::Elevated } else { Verdict::Replace };
     }
-    match (!v1 && core.fingerprint == env!("LUNA_CORE_FP"), core.sessions > 0) {
-        (true, _) => Verdict::Attach,
-        (false, true) => Verdict::Foreign,
-        (false, false) => Verdict::Replace,
+    if !v1 && core.fingerprint == env!("LUNA_CORE_FP") {
+        return Verdict::Attach;
     }
+    if core.sessions == 0 {
+        return Verdict::Replace;
+    }
+    // What idle helpers' turns left is no work of the person's to ask about
+    // when this window is the update of that core: one of an older version
+    // whose sessions were stopped for an update, a stop the person agreed to,
+    // which ended what it could; the core's going ends the rest. Not a core
+    // left by an install by hand beside it, nor a newer version's, nor the same
+    // version's built otherwise (a dev build). A pane or a turn is work.
+    let older = crate::cli::version_cmp(&core.version, env!("CARGO_PKG_VERSION")).is_lt();
+    if !v1 && older && core.stopped_for_update && core.sessions == core.left_only {
+        return Verdict::ReplaceLeftOnly;
+    }
+    Verdict::Foreign
 }
 
 /// An elevated core that this window can neither talk to nor stop: only one
@@ -479,6 +517,21 @@ fn meet(found: &Found, elevated: bool) -> Met {
             }
             Met::Replaced
         }
+        Verdict::ReplaceLeftOnly => {
+            let Line::Current(stream) = line else { return Met::Done(Attached::Foreign(core)) };
+            crate::log::warn(
+                "core",
+                &format!(
+                    "the running core is an older version's (build {}, core {}) with only what helpers' turns left running; replacing it",
+                    core.build, core.fingerprint
+                ),
+            );
+            if stop_if_left_only(stream, found.pid()) {
+                Met::Replaced
+            } else {
+                Met::Done(Attached::Foreign(core))
+            }
+        }
     }
 }
 
@@ -491,7 +544,7 @@ fn discover() -> Option<Found> {
 /// anyone else (one who took it while it was free) learns nothing, and the
 /// window opens it for identification only, so it can act as nobody.
 fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
-    let mut stream = Stream::connect(&found.endpoint, Duration::from_secs(2))?;
+    let mut stream = Stream::connect(&found.endpoint, CONNECT_WAIT)?;
     let server = stream.server_pid()?;
     if server != found.pid {
         return Err(io::Error::new(
@@ -499,7 +552,7 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
             format!("the core's endpoint is served by pid {server}, not by the core's pid {}", found.pid),
         ));
     }
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(HELLO_WAIT))?;
     let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into() })?;
     ipc::send(&mut stream, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args })?;
     let res: Res = ipc::recv(&mut stream, ipc::RES)?;
@@ -517,8 +570,22 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
 /// there well past their grace is killed with everything it started, the
 /// sessions' CLIs among them: stopping must leave nothing of Luna running.
 /// The core's endpoint, or a protocol-1 core's socket (v1.rs).
-fn stop<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32) {
-    let _ = ipc::send(&mut stream, ipc::REQ, &Req { id: 2, cmd: "shutdown".into(), args: Value::Null });
+fn stop<S: Read + Write + crate::endpoint::Timeouts>(stream: S, pid: u32) {
+    stop_as(stream, pid, Value::Null);
+}
+
+/// `stop`, but only if the core still holds nothing but what helpers' turns
+/// left (`Verdict::ReplaceLeftOnly`): it looks again as it is asked, and
+/// refuses with a pane or a helper's turn in it (coreproc.rs `left_only_now`).
+/// Says whether it went; one that refused is left running, untouched.
+fn stop_if_left_only<S: Read + Write + crate::endpoint::Timeouts>(stream: S, pid: u32) -> bool {
+    stop_as(stream, pid, serde_json::json!({ "ifLeftOnly": true }))
+}
+
+/// Asks the core to stop with `args` and, unless it refuses, waits for it to
+/// be gone, as `stop` does. Says whether it went.
+fn stop_as<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32, args: Value) -> bool {
+    let _ = ipc::send(&mut stream, ipc::REQ, &Req { id: 2, cmd: "shutdown".into(), args });
     let deadline = std::time::Instant::now() + STOP_WAIT;
     let gone = loop {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -526,6 +593,13 @@ fn stop<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32) {
             break false;
         }
         match ipc::read_frame(&mut stream) {
+            Ok((ipc::RES, payload)) => {
+                let refused = serde_json::from_slice::<Res>(&payload).ok().filter(|res| res.id == 2).and_then(|res| res.err);
+                if let Some(why) = refused {
+                    crate::log::info("core", &format!("the core (pid {pid}) would not stop: {why}"));
+                    return false;
+                }
+            }
             Ok(_) => {}
             Err(e) => break !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut),
         }
@@ -534,6 +608,7 @@ fn stop<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32) {
         crate::log::warn("core", &format!("the core (pid {pid}) did not stop within {}s; killing it", STOP_WAIT.as_secs()));
         crate::pty::kill_tree(Some(pid));
     }
+    true
 }
 
 /// Asks the core a command and waits for the answer.
@@ -549,8 +624,9 @@ pub(crate) fn request(cmd: String, args: Value) -> Result<Value, String> {
 pub(crate) fn request_within(cmd: String, args: Value, within: Option<Duration>) -> Result<Value, String> {
     let started = std::time::Instant::now();
     // The panes ask for their sessions as soon as the page is up, which can be
-    // before the core is: while it is being found or started, they wait.
-    let deadline = started + within.map_or(START_WAIT * 2, |w| w.min(START_WAIT * 2));
+    // before the core is: while it is being found, started or replaced, they
+    // wait rather than fail.
+    let deadline = started + within.map_or(LINK_WAIT, |w| w.min(LINK_WAIT));
     let conn = loop {
         if let Some(conn) = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             break conn;
@@ -900,6 +976,8 @@ mod tests {
             fingerprint: fingerprint.into(),
             started: 0,
             sessions,
+            left_only: 0,
+            stopped_for_update: false,
             refused: refused.map(String::from),
         }
     }
@@ -933,6 +1011,77 @@ mod tests {
         assert_eq!(verdict(&core(ours, 2, None), false, false), Verdict::Attach);
         assert_eq!(verdict(&core("0000000000000000", 2, None), false, false), Verdict::Foreign);
         assert_eq!(verdict(&core("0000000000000000", 0, None), false, false), Verdict::Replace);
+    }
+
+    /// After an update, the old core may have nothing in it but what idle
+    /// helpers' turns left running (their CLI Claude Code's or Codex's alike):
+    /// replaced as one with no sessions, its going ending those jobs. A pane or
+    /// a helper's turn beside them is work to ask about, and so is any session
+    /// of a core older than the count, which does not say what is left only.
+    #[test]
+    fn a_core_of_an_older_version_with_only_helpers_leftovers_is_replaced() {
+        let other = |sessions, left_only| Welcome { left_only, stopped_for_update: true, ..core("0000000000000000", sessions, None) };
+        assert_eq!(verdict(&other(2, 2), false, false), Verdict::ReplaceLeftOnly, "leftovers only");
+        // No update stopped it: one left running by an install by hand beside it.
+        assert_eq!(verdict(&Welcome { stopped_for_update: false, ..other(2, 2) }, false, false), Verdict::Foreign, "no update");
+        assert_eq!(verdict(&other(3, 2), false, false), Verdict::Foreign, "a turn or a pane beside them");
+        // Only the update of that core: not a newer version's, nor the same
+        // version's built otherwise (a dev build), which nothing here stopped.
+        let at = |version: &str| Welcome { version: version.into(), ..other(2, 2) };
+        assert_eq!(verdict(&at(env!("CARGO_PKG_VERSION")), false, false), Verdict::Foreign, "same version");
+        assert_eq!(verdict(&at("999.0.0"), false, false), Verdict::Foreign, "a newer version");
+        assert_eq!(verdict(&at("0.0.1"), false, false), Verdict::ReplaceLeftOnly, "an older version");
+        assert_eq!(verdict(&at("0.0.1"), false, true), Verdict::Foreign, "protocol 1, which says no such thing");
+        // By semver's order: a beta is older than its release, so a beta's core
+        // is the released window's to replace, and not the other way round.
+        assert!(crate::cli::version_cmp("0.20.0-beta.1", "0.20.0").is_lt());
+        assert!(crate::cli::version_cmp("0.20.0", "0.20.0-beta.1").is_gt());
+        assert_eq!(verdict(&Welcome { left_only: 2, ..core(env!("LUNA_CORE_FP"), 2, None) }, false, false), Verdict::Attach);
+        assert_eq!(verdict(&Welcome { left_only: 1, ..core(env!("LUNA_CORE_FP"), 1, None) }, true, false), Verdict::Elevated);
+        let older: Welcome = serde_json::from_value(serde_json::json!({
+            "pid": 1, "version": "0.19.0", "build": "b", "fingerprint": "0000000000000000", "started": 0, "sessions": 1
+        }))
+        .unwrap();
+        assert_eq!((older.left_only, older.stopped_for_update), (0, false));
+        assert_eq!(verdict(&older, false, false), Verdict::Foreign, "an older core's session is asked about, as ever");
+    }
+
+    /// A core asked to stop only if it holds nothing but what helpers' turns
+    /// left looks again: one that refuses (a pane or a turn since its hello)
+    /// is left running, not killed, and the window treats it as `Foreign`;
+    /// one that agrees goes as any stop.
+    #[test]
+    fn a_core_that_refuses_a_stop_if_left_only_is_left_running() {
+        let fake_core = |refuse: bool| {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let heard = std::thread::spawn(move || {
+                let (mut s, _) = listener.accept().unwrap();
+                let req: Req = ipc::recv(&mut s, ipc::REQ).unwrap();
+                let res = if refuse {
+                    Res { id: req.id, ok: None, err: Some("the core has a session or a helper in a turn now".into()) }
+                } else {
+                    Res { id: req.id, ok: Some(Value::Null), err: None }
+                };
+                ipc::send(&mut s, ipc::RES, &res).unwrap();
+                if refuse {
+                    // Still there: the window must not wait on it to go.
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                req
+            });
+            (std::net::TcpStream::connect(("127.0.0.1", port)).unwrap(), heard)
+        };
+        let (stream, heard) = fake_core(true);
+        let started = std::time::Instant::now();
+        // A pid no process has: were it killed, nothing would be.
+        assert!(!stop_if_left_only(stream, u32::MAX - 7), "refused");
+        assert!(started.elapsed() < Duration::from_secs(2), "not waited on to go");
+        let req = heard.join().unwrap();
+        assert_eq!((req.cmd.as_str(), &req.args), ("shutdown", &serde_json::json!({ "ifLeftOnly": true })));
+        let (stream, heard) = fake_core(false);
+        assert!(stop_if_left_only(stream, u32::MAX - 7), "gone");
+        heard.join().unwrap();
     }
 
     /// A core of protocol 1 is another build's whatever it says of itself:

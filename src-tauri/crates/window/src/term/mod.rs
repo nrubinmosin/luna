@@ -58,9 +58,9 @@ use futures::channel::mpsc::UnboundedReceiver;
 use futures::future::Either;
 use gpui::prelude::*;
 use gpui::{
-    App, Bounds, Context, DragMoveEvent, EntityInputHandler, ExternalPaths, FocusHandle, Focusable, KeyBinding, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollEvent, SharedString, Subscription, Task, UTF16Selection, Window,
-    actions, div, point, px, size,
+    App, Bounds, Context, DragMoveEvent, EntityInputHandler, EventEmitter, ExternalPaths, FocusHandle, Focusable, KeyBinding, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollEvent, SharedString, Subscription, Task,
+    UTF16Selection, Window, actions, div, point, px, size,
 };
 use io::Io;
 use keys::Mods;
@@ -164,6 +164,15 @@ pub enum Phase {
     Ended,
 }
 
+/// A pane's session ended: told to whoever shows the pane for more than a
+/// chat's own (the sign-in window closes on it). `code` is the CLI's exit
+/// code, none when the host could not read it.
+pub struct Exited {
+    pub code: Option<u32>,
+}
+
+impl EventEmitter<Exited> for TermPane {}
+
 /// Input waiting behind a paste whose clipboard has not been read yet.
 enum Queued {
     /// A paste: its clipboard once read, None if it could not be.
@@ -217,6 +226,8 @@ pub struct TermPane {
     ran: bool,
     /// Exits heard while the start was in flight, by spawn number.
     heard: Vec<u64>,
+    /// The code of the last exit heard, for the one `exited` tells of.
+    exit_code: Option<u32>,
     /// The start (`asked`) whose backlog and modes are on their way to the
     /// parser: input waits for them, and the pane says it is reattaching.
     attaching: Option<u64>,
@@ -281,6 +292,7 @@ impl TermPane {
             asked: 0,
             ran: false,
             heard: Vec::new(),
+            exit_code: None,
             attaching: None,
             round: 0,
             marked: None,
@@ -307,8 +319,7 @@ impl TermPane {
         &self.spec.id
     }
 
-    #[cfg(test)]
-    pub fn phase(&self) -> Phase {
+    pub(crate) fn phase(&self) -> Phase {
         self.phase
     }
 
@@ -590,7 +601,8 @@ impl TermPane {
     }
 
     /// `pty://exit` for this session.
-    pub(crate) fn on_exit(&mut self, generation: u64, cx: &mut Context<Self>) {
+    pub(crate) fn on_exit(&mut self, generation: u64, code: Option<u32>, cx: &mut Context<Self>) {
+        self.exit_code = code;
         match self.phase {
             Phase::Starting => self.heard.push(generation),
             Phase::Live(g) if g == generation => self.exited(cx),
@@ -608,6 +620,7 @@ impl TermPane {
         self.parser.notice("\r\n\x1b[2m[session exited]\x1b[0m\r\n");
         let id = self.spec.id.clone();
         self.models.workspace.update(cx, |w, cx| w.on_exit(&id, cx));
+        cx.emit(Exited { code: self.exit_code.take() });
         cx.notify();
     }
 

@@ -5,8 +5,11 @@ Release 0.20 moves Luna's window from Tauri + WebView2 + React to GPUI
 by surface; until it has them all, the WebView window
 ([frontend.md](frontend.md)) is still in the exe, behind a flag. So far the
 native window has its title bar, the theme switch, the core banner, an
-empty board, and the desktop services: tray, close to tray, single
-instance, notifications, window state and the updater's backend.
+empty board, the desktop services (tray, close to tray, single instance,
+notifications, window state and the updater's backend), three in-app
+windows over the main one (the library, settings and the accounts,
+[Panels](#panels)) and its dialogs (new chat, quick chat, delete chat, the
+helpers popover and the crash screen, [Dialogs](#dialogs)).
 
 ## Which window starts
 
@@ -102,10 +105,12 @@ state as corelink serializes it to the window's DTO (`dto.rs`), the output
 routing and the theme's writer.
 
 What the native window keeps between runs is in `<data>/window.json`
-(the theme), written by the host; the core's `settings.json` is not the
-window's. One thread writes it (native.rs `Writer`): each choice replaces one
-not written yet, an earlier one is never written after a later one, and
-quitting waits up to 2 s for the last.
+(the theme, the notification sound and the new chat's boxes), written by the
+host; the core's `settings.json` is not the window's. One thread writes the
+theme and one the preferences (native.rs `Writer`): each choice replaces one
+not written yet, an earlier one is never written after a later one, the two
+read, change and write the file one at a time, and quitting waits up to 2 s
+for the last of each.
 
 ## Desktop services
 
@@ -224,13 +229,14 @@ on from it. Views observe the models they show:
 | View | Shows | Observes |
 | --- | --- | --- |
 | `root.rs` `LunaWindow` | the frame, the font, the import's notice; the window's keys | `Shell`, `Workspace`, the window's appearance |
-| `title_bar.rs` | Luna's name, boards I-V, layouts 1-4, Clear board, Auto-tile, the theme button, minimize, maximize, close | `Shell`; `Workspace`'s board, layout and auto-tile only |
+| `title_bar.rs` | Luna's name, boards I-V, layouts 1-4, Clear board, Auto-tile, the Menu (Library, Accounts: panels below), the theme button, minimize, maximize, close | `Shell`; `Workspace`'s board, layout and auto-tile only |
 | `banner.rs` | the core banner | `CoreLink`, `Shell` |
 | `sidebar.rs` | the board's chats by folder, or the collapsed strip | `Workspace`, `Shell` |
 | `board.rs` | the panes in their layout, their title bars and menus, the peek | `Workspace`, `Shell` |
 | `status/bar.rs` `StatusBar` | counts, accounts with meters, the update, CLI and power chips, Settings, and the panels over them (below) | `Vitals`, `Shell` |
 | `status/orphan.rs` `OrphanLine` | the orphan line | `Vitals` (its count and asking only), `Shell` |
 | `term/` `TermPane` | one session's terminal (below) | `CoreLink`, `Shell`; its parser |
+| `panels/` `PanelLayer` | the library, settings or accounts window up, over a scrim | `Shell`; each panel what it shows |
 
 The title bar, the sidebar, the board, the status bar and each terminal are cached views
 (`Entity::cached`): a frame drawn for the banner reuses them, and they lay
@@ -259,7 +265,7 @@ data with the rules that change it, ported from the page's stores
 - **Chats and folders.** A folder is a path chats were started from, kept
   when it empties (the new-chat dialog offers its `picked` ones). A chat has
   its CLI, account, board (0-4), session id, worktree flag and path, tools,
-  guard, model, effort and permission or approval and sandbox, its name and
+  model, effort and permission or approval and sandbox, its name and
   where the name came from (`NameSource`: user, a CLI rename, the CLI's title,
   the opening prompt; `may_rename` keeps a name once settled), and its last
   status (kept, so a window started again does not notify of a chat already
@@ -427,7 +433,7 @@ Ctrl+Shift+W finds nothing. Nothing redraws when a round brings nothing new.
 
 **Terminals.** The board makes a chat's `TermPane` the first time the chat
 is shown, from `Workspace::spec_of` (the page's `startSession`: account path
-from `list_accounts`, Claude Code's worktree by name, `handoff` null), and
+from `list_accounts`, Claude Code's worktree by name), and
 keeps it while it is shown and for the three chats shown last (`WARM`). A
 chat shown again after its session ended gets a new one, which starts the
 session anew and takes the keyboard (the board reconciles its terminals
@@ -501,12 +507,12 @@ black text; a count with nothing in it is a plain sunken reading.
 
 | Surface | From the host | Does |
 | --- | --- | --- |
-| Counts | the chats' status in `Workspace` (`shown_status`: none while the core is not up) | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background calls `Seams::helpers` |
+| Counts | the chats' status in `Workspace` (`shown_status`: none while the core is not up) | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background opens the helpers popover for every chat (`Seams::helpers`, plugged by `DialogLayer`) |
 | Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset |
 | Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { reason, anyway }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation (`Seams::update_confirm`, else a panel of the bar's own) |
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
 | Power | `power_state` each time the core comes up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel (Retry after one that failed); "power: no core" while the core is out of reach |
-| Settings | none | a button that calls `Seams::settings` |
+| Settings | none | a button that opens the settings panel (`Seams::settings`, plugged by `PanelLayer`) |
 | Orphans | `orphan_sessions { known }` every 30 s while the core is up (the timer runs only then), on a change of the chat list and when the core comes up, one look at a time and given up after 20 s; `kill_session` | "N orphan sessions: kill all", which asks once before it kills, and kills only the sessions it asked about |
 
 The commands are in `status::cmd` and the events in `status::event`
@@ -607,10 +613,14 @@ the install again. The tests hold each of these paths, the download and the
 stop included.
 
 **Seams** (`Workspace::seams`, plugged by the slices that own the thing
-behind them): `settings` (the Settings button), `helpers` (the Background
-count), `update_confirm` (the chip's confirmation, which calls
-`Vitals::install` on its yes). Until one is plugged, what calls for it is
-logged and does nothing, except the update, whose panel is the bar's own.
+behind them): `settings` (the Settings button; `PanelLayer` opens the settings
+panel), `helpers` (the Background count; `DialogLayer` opens the helpers
+popover for every chat), `update_confirm` (the chip's confirmation, which
+calls `Vitals::install` on its yes). Nothing plugs `update_confirm`: the
+settings panel's own Luna-update question downloads and installs by itself,
+without the freeze, the stop and the write the bar's install does, so the
+chip keeps the bar's own panel. Where a seam is not plugged, what calls for
+it is logged and does nothing.
 
 **The power panel** (`bar.rs`): the keep-awake switch, the actions offered
 (restart on Windows only), how long quiet (1, 2, 5, 10, 30 minutes), whether
@@ -839,6 +849,278 @@ tray's test hook are compiled into the test build alone: both build scripts
 set the `luna_test` cfg for `LUNA_FLAVOR=test`, and a release has none of
 their code.
 
+## Panels
+
+The library, settings and accounts windows are in-app windows, as the page's
+dialogs are: one at a time, on a layer over the whole window (root.rs
+`panels`, `panels/mod.rs` `PanelLayer`) that takes every click and hover
+while one is up (`occlude`), framed like a window of the period with a title
+bar and a close box. Esc (the `LunaPanel` key context's `Close`) closes it,
+unless a question, a drop-down list or a rename is open, which goes first,
+or the library's editor holds text not saved, which asks once. Every way
+the editor's text is replaced or closed goes through that one question
+(`LibraryPanel::guard`, `Next`): picking another entry, a rename, Delete...,
+Back to Luna's..., Make it the override..., Add folder..., the library's
+folder changed or set back to Luna's own (which then leaves nothing picked
+and nothing in the editor), restoring a draft, and Esc. The editor takes no
+input until its file is read. The title bar's Menu lists Library and Accounts and opens
+one with `panels::open`, which the demo scenes and the test build's driver
+(below) call too; Settings is the status bar's button, as the page has it.
+They are in a menu, not buttons, for the bar's width: with the Menu it
+needed about 930 px (measured in the shots at 1000), a little over the
+smallest window's 900, which the status bar taking the theme button and
+Settings is to bring back under. The layer
+starts below the title bar, so the window's own buttons and the Menu stay
+in reach, and the Menu switches panels.
+
+Each is a module of its own and asks the host for what the page's dialog
+asks, by the same command and arguments (`panels::cmd`, held by native.rs's
+dispatch test as `cmd::ALL` is):
+
+| Module | Shows | Commands |
+| --- | --- | --- |
+| `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`, the page's ReachPicker), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*`, `set_library_draft` (sent) |
+| `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, what the automatic rollback turned away; no version is chosen here, ADR-0030), Updates (Luna's, confirmed with its version and notes; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, the updater's |
+| `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `ensure_*_session` and `kill_session` for the login |
+
+The host answers them in native/panels.rs over the Tauri commands' own
+functions, each path argument read through boundary.rs's `AbsPath`,
+`AccountPath` or `OrEmpty` (stricter than the Tauri command where that takes
+a plain string). These are the native window's alone (`NATIVE_ONLY`):
+
+- `app_version`, Luna's version (the window crate has its own).
+- `window_prefs` and `set_window_prefs`, its own preferences (the
+  notification sound and how the new-chat dialog's boxes start), which the
+  page keeps in its local storage and the native window in `window.json`
+  beside its theme, through a writer of its own (`update_settings` keeps the
+  writers' read, change and write one at a time).
+- `library_write_checked`, the editor's save. `library_read` answers the
+  library's folder by path and by its identity on the drive, and the sha256
+  of what it read (`root`, `rootId`, `revision`), the file read through the
+  root's handle held once (no link on the way), so the text and the identity
+  are of one folder whatever the path does meanwhile, and the save writes only
+  into that folder, through a handle held to that identity, and over that
+  revision, checked under the library's lock and again right before the
+  file is replaced (docs/architecture/library.md): a file changed, made or
+  deleted on disk since, or a library folder changed meanwhile (another
+  path, a link retargeted, a folder made again), writes nothing and answers
+  `conflict`. A save that went through but whose layout after failed
+  answers `layoutError`, and the editor says it was saved and why the
+  layout failed.
+  The editor keeps the text and offers Reload (the file as it is now) and
+  Overwrite (the same save, `force`, which lets a changed file go but never
+  another library). The page's `library_write` is unbound, as before.
+- `library_draft` and `set_library_draft` (sent): the editor's text not
+  saved, with what it was read from and the id of the editor that keeps
+  it, kept as it changes in `<data>/library-draft.json` (private, one
+  writer, drained as the app quits; read back only as a private plain file
+  of Luna's, no link, at most 8 MB, `secret::read_private`) and forgotten
+  once saved, reloaded or thrown away. A forget names the draft's id
+  (`{ draft: null, forget }`), decided in the order sent: throwing away a
+  draft on offer leaves one another editor has kept since. A clear that
+  names no draft is refused and logged: only a named draft is cleared. A window that
+  goes with it unsaved (the tray's Quit or Restart window, which ask nothing
+  of the window, or a crash) leaves it there, and the library offers it at
+  its next open (Restore, Throw away); restored, its save is held to the
+  revision the draft was read from. The last keys before a crash may be
+  missing from it.
+- `library_rename_skill`: a skill's folder, the `name` of its SKILL.md and
+  what the settings say of it (reach, audience, folders, and its left-out
+  places). Refused with nothing changed where the skill's folder or anything
+  in it is a link, a junction or not a plain file or folder, where the new
+  name is taken, and where SKILL.md names the skill but its `name` (quoted,
+  folded or literal) cannot be rewritten to read as the new one. The folder
+  moves without replacing (a folder of the new name made meanwhile fails the
+  move), then SKILL.md, then the settings; a step that fails undoes those
+  before it. It answers `committed`, `rolledBack` (as it was) or
+  `rollbackFailed` (with what is left where), and the window says which.
+- `account_identity` and `delete_account_checked`: Delete... names the
+  account's folder by its path and its identity on the drive (volume serial
+  and file id, or device and inode), and the yes deletes only that folder:
+  under the library's lock the accounts root in Settings is checked to be
+  the one asked about, the provider's folder and the account's are opened
+  as themselves (any reparse point refused, on Unix on the root's device),
+  the account's held to that identity, and it is emptied and removed
+  through its handle (`src/held.rs` `remove_tree`), a link inside removed as
+  itself and a mount on another device inside refused before anything goes
+  (on Unix a bind mount on the same device is not seen: threat model, B5);
+  both are held to
+  `boundary::account_in` first (no link, inside the accounts root). The question
+  names the chats set to the account (`Workspace::chats_on`, up to five and
+  how many more), which have nowhere to start once it is gone.
+
+`set_helpers_above_caller` takes `confirmed`: the page's Tauri command asks
+the person in a message box of the system's, which a script in the page
+could open but not answer; the native window has no page, and asks in its
+own question, whose Turn on click is the only way `confirmed` is sent. The
+test build's driver has no line that answers it (below), and must not get
+one: a driver line is input no person gave.
+
+Sync is one acting pass of the core's (`library_sync`), the same as runs
+before every session's start, as ADR-0030 has it: Luna's own copies are
+written over with the library's or put back, those no longer wanted taken
+out, a changed one backed up first, and a place holding a file Luna did not
+write is left alone (library.md). The overview it answers carries what the
+pass did (`written`, `removed`, `notRemoved`; empty on a look), and the
+window says from it how many copies it wrote and took out, how many places
+it left alone (`taken`), and, a line each with why, every copy it could not
+write (`failed`, or `behind`/`missing` still: saved there while the pass was
+at it) or take out. "Every copy Luna manages holds what the library says"
+only when there is no such line.
+
+**What the panels hand the window's other parts.** The preferences Settings
+writes (`window_prefs`) are the workspace's too (`Workspace::prefs`,
+`new_chat_start`): asked for at start, replaced as Settings changes them, so
+the new-chat dialog starts its boxes from them in a folder with no start of
+its own. A rename of an account renames it in every chat set to it
+(`WindowState::rename_account`, as the page's store does), and a rename,
+a new or a deleted account, or a new accounts folder, has the workspace list
+the accounts again (the chats' sessions start on what it lists).
+
+**Signing in** (`accounts/login.rs`): Sign in, offered on an account whose
+limits say signed out or could not be read, opens a window over the Accounts
+one with a `TermPane` on the account's login session, as the page's
+LoginModal.tsx runs it: `ensure_claude_session` of a bare `claude` (model
+`sonnet`, permission `default`) or `ensure_codex_session` with `login: true`,
+both in the account's folder on the account's own (`accountPath`), under the
+id `login:<cli>:<name>`. The pane tells when its session exits (`Exited`,
+with the CLI's exit code, which `pty://exit` carries): the window closes on
+a code of 0 (or none readable) and the account list and the account's
+limits are asked again; any other code leaves the window up with what the
+CLI said until it is closed. Closing it ends the session (`kill_session`),
+once its start has been answered (a kill sent sooner finds no session), and
+not at all for one that exited. The id is the account's, so a window opened
+on it while the last one's kill is unanswered waits (`Ending`, a global) and
+starts its own once it is gone: it would attach to the very process being
+killed. Esc goes to the CLI while the terminal has the keyboard (the layer's
+`Close` propagates), and closes the window otherwise.
+
+A CLI's pass comes as `cli://status` (`panels::event`), which the inbox takes
+and hands to the settings window while it is up. Long work is said in words
+(Syncing..., Checking..., Downloading 0.171.0: 50%), never spun, and a time
+(a check's, a limit's reset) is said as the clock time it falls on, so that
+nothing counts down: the panels run no timer. The library's editor checks a
+SKILL.md or a system text 250 ms after the last key, then nothing more.
+
+The test build's driver (`drive.rs`, compiled in under `luna_test` alone):
+`LUNA_TEST_DRIVE=<file>` names a file of lines the window reads every
+200 ms and acts on through gpui's own dispatch, keys typed into it
+(`keys ctrl-s`, `text ...`) and the panels' own lines (`panel library`,
+`select skill review`, `new instructions <name>`, `rename skill <from>
+<to>`, `save`, `reload`, `overwrite`, `restore`, `source <folder>|default`,
+`sync`, `page clis`, `setting sound off`, `cli-check claude`, `add-account
+claude <name>`, `delete <n>`, `signin <n>` (the nth account's login
+terminal), `yes` for the library's and the accounts' questions;
+`panels::drive`), so a smoke run drives the background window
+with no global input. No line answers a question of Settings': helpers above
+their caller take a person's click, and so does Luna's update.
+
+## Dialogs
+
+New chat, quick chat, delete chat, the helpers popover and the crash screen
+are in-app too (`dialogs/`, `dialogs/mod.rs` `DialogLayer`, root.rs
+`dialogs`, over the panels' layer): one at a time, over a scrim that takes
+every click (`occlude`), in the `LunaDialog` key context, where Esc closes
+the dialog (a list open, a helper being watched, a chat being made goes
+first) and Enter does what its main button does. A dialog plugs into the
+window through `Workspace::seams` (workspace.rs): the New chat button and
+Ctrl+N, Ctrl+Shift+N and a chat's Delete, set when the layer is made. When
+it closes, the keyboard goes back to the terminal it belongs in.
+
+- **New chat** (`new_chat.rs`, the page's NewChatDialog). Folder (the ones a
+  person launched in, a picker for others, remembered once browsed to, Forget
+  for one holding no chats), account (which says the CLI), Luna's tools, a
+  worktree box, trust, then the CLI's own settings: model, effort and
+  permission mode for Claude Code, model, reasoning effort, approval and
+  sandbox for Codex. It opens on the folder and account of the last chat
+  made, with the boxes as the folder's own start says, else as Settings'
+  new-chat defaults (`Workspace::start_in`). Model, effort and modes open on
+  what the CLI's own files say for the account in that folder, asked of the
+  core as the page asked (`claude_defaults`, `codex_defaults`, the models
+  `claude_models`, `codex_models`; choice.rs resolves them, the page's
+  `settingsDefaults` ported): effort follows the model (Claude Code keeps it
+  per model; a model that takes none runs with none, a level the model lacks
+  moves to its own default), a value changed here is for this chat only and
+  stays through another account or folder, and a line under each says which
+  file it came from. The worktree box shows only where a worktree can be
+  made: the dialog asks `chat_folder_check` as the start would ask it, whose
+  answer is the folder's refusal and whether it is in git (`inGit`); outside
+  git there is no box. It is a flag the CLI is given; Luna makes no worktree. A
+  folder the account has not trusted shows the trust box, unticked: Luna
+  writes the CLI's own mark (`claude_trust_folder`, `codex_trust_folder`)
+  only if it was ticked, before the chat exists, and Claude Code with a
+  worktree on is held until it is ticked or the box turned off. Create waits
+  for every answer (settings, trust, the folder's check) and goes through
+  create.rs, the one path of the dialog, the quick chat and a helper opened
+  as a chat: the folder is checked once more as the start would, trust
+  written, the chat named `chat N`, listed and seated
+  (`Workspace::add_chat`), and the folder and account remembered. A refusal
+  or a failed write is said in the dialog and nothing is made. Cut from the
+  page's dialog: the wait guard, Codex's hooks box, keeping a start for the
+  folder and the auto-handoff (ADR-0030); the start asks for none of them.
+- **Quick chat** (create.rs `quick_chat`, Ctrl+Shift+N): today's one-step
+  creation. The folder and account of the chat on screen (the peek, the
+  active pane, the active chat), else the last chat's, else the first folder
+  a person launched in; the files' settings; the folder's start. It opens the
+  new-chat dialog instead where it has nothing to go on, where the folder is
+  not trusted in the account (whether to trust is the person's to say) or
+  where creating fails, so the reason has a place to be said.
+- **Delete chat** (`delete.rs`, the page's DeleteChatDialog): the question
+  every Delete goes through, the sidebar row's and a pane's menu's. It says
+  what goes and what stays (the transcript), lists the chat's helpers
+  (`background_helpers`, hanging from the chat through helpers, as the page
+  lists them) with what each is doing that a delete would cut off
+  (`background_at_stake`), and has the boxes "also delete its helpers" (left
+  alone, they answer to no chat and delete themselves once idle) and "also
+  stop the ones still working". Each box is a yes of its own; the core holds
+  the same line (`agents/teardown.rs`). Delete sends `background_delete` for
+  the helpers chosen (`stopWorking`, `ofChat` the chat), `delete_session` for
+  the chat (`{ id }`: the session and its attachments) and takes the row off
+  every board (`Workspace::remove_chat`). Luna removes no worktree
+  (ADR-0030): a chat's that its CLI made stays on disk, and the dialog says
+  so. Passing a helper to another chat is cut.
+- **Helpers popover** (`helpers.rs`, the page's BackgroundChip and
+  HelperView): `dialogs::open_helpers(chat, window, cx)` is its entry point,
+  for the status bar's Background count: a chat's helpers (its helpers'
+  helpers with them), or all of them with no chat. Working and Idle tabs, the
+  asking ones first; each row says its state, setup, last activity, task and
+  what it asks, and has **Watch** (its conversation as plain text,
+  read-only, tailed through `background_transcript` from a cursor, every
+  second while a turn runs and every five between), **Open as chat**
+  (after a question: `background_promote`, a row with the helper's own id
+  made through create.rs and listed, the core told it is made with
+  `background_promoted` and retried as the page retries, then seated; a row
+  that could not be made tells the core why and the helper stays its
+  agent's; one the core gave up on is let go), **Stop** (`background_kill`)
+  and **Delete** (`background_delete`). The list is asked of the core when
+  the popover opens and every 2 s while it is up: the page was sent every
+  change, the window looks only while someone does. Moving a helper and
+  handing a chat's context off are cut.
+- **Crash screen** (`crash.rs`): when the window starts and the run before
+  did not end by itself, it says so, with the reason, when it was last alive
+  and where the log is, and offers Restart window (the tray's: a new window,
+  the core and its sessions left alone) and Continue. A render that panics
+  cannot be caught (gpui offers no way), so the next start is how it is known:
+  the panic hook (log.rs) keeps the panic's text and place in the run's
+  record (lifecycle.rs `note_panic`), and the exit watcher writes the exit
+  code it read (`ended`, a kill told from a crash by its code); the next
+  start's `begin` finds a record that never said goodbye and keeps what the
+  two saw, or else what it knows (the freeze, the PC going down), for
+  `crash_report`. A person killing Luna in Task Manager shows the same screen,
+  with the watcher's words for it.
+
+The host answers the dialogs' commands as the panels' (`dialogs::cmd::CALLED`,
+native/dialogs.rs): the defaults, models, trust read and folder check are the
+page's own functions with their paths held to boundary.rs, the sessions' and
+helpers' commands are the core's, and `crash_report` and `restart_window` are
+the native window's alone. The test build's driver takes lines for them
+(`dialog new-chat`, `newchat folder <path>`, `newchat account <n>`, `newchat
+create`, `dialog quick`, `dialog delete <n or id>`, `deletechat yes`, `dialog
+helpers <n or id>`, `helpers watch|stop|delete|open <id>`, `dialog crash`,
+`dialogs`; `dialogs::drive`), so a smoke run drives the background window
+with no global input; no native picker is opened by a line, `newchat folder`
+stands for the folder the picker would return.
+
 ## Theme and font
 
 Two palettes (`theme.rs`): retro, high-contrast, 1 px bevels, black frames,
@@ -873,7 +1155,11 @@ window is upstream's. gpui's cap of 30 frames a second for an inactive window is
 feature) and runs it: every scene of `demo.rs` opened in turn, off screen,
 over a fake host, and its frame rendered to a PNG with
 `Window::render_to_image`, into `test-build/shots/gpui/<scene>-<theme>.png`.
-A shot with nothing drawn fails it. `render_to_image` is behind gpui's test
+A scene of a panel opens it and runs driver lines in it (`Scene::drive`) on
+the fixtures in `panels/demo.rs`, and the dialogs' (`dialog-*`) the same on
+`dialogs/demo.rs`; `accounts-signin` opens the login terminal
+(`Scene::output` prints the CLI's screen into it) and `accounts-delete` names
+the fixture's chats. A shot with nothing drawn fails it. `render_to_image` is behind gpui's test
 support, which is why the harness is an exe of its own: the app's exe never
 carries it. A new surface adds its scenes to `demo.rs` (or its own module's, as
 `status/demo.rs` does: `Scene` carries the host's extra answers and failures,
@@ -915,7 +1201,17 @@ The crate's tests run the window on GPUI's test platform over the fake host
 them redraw, a state older than the one shown is dropped, nothing redraws
 while nothing happens, the theme button goes round and the host is sent each
 choice, system follows the appearance, the banner's wording per state, and
-Restart asks the host for the state shown. desktop.rs's tests hold a
+Restart asks the host for the state shown. `panels/tests.rs` holds each
+panel's controls to the commands and arguments the page sends (the editor's
+load, dirty state, check, save bound to its source and failed save, a
+conflict's Reload and Overwrite, the draft kept and offered, every
+transition that replaces the editor asking first, a skill rename's three
+outcomes, Sync's report; new, rename and delete; reach,
+audience and each account's instructions; folders; system texts' compare,
+reset and adopt; every settings row; a CLI's Check and its pass;
+an update installed only once confirmed; the accounts' add, rename, delete,
+limits and settings sync), Esc's order, and an editor left alone that neither
+notifies nor asks the host anything. desktop.rs's tests hold a
 notification and its click's request and event, the close to the tray (the
 place kept, the window not closed; closed without a tray), the place kept
 once after a burst of resizes, and the bounds the window opens with.
@@ -944,6 +1240,21 @@ gone with the core), a refresh that moves only the time drawing nothing, and
 the whole bar not redrawing through an hour of idle polls. `usage.rs`, `power.rs` and
 `updates.rs` have unit tests of their own (instants, the cadence, the fit,
 the chip's words).
+
+`dialogs/tests.rs` holds the dialogs to the commands and arguments the page
+sends: the new-chat dialog opening on what the account's files say and
+creating through the one path (the flag the CLI is given, the folder
+remembered, no trust written unasked and written before the chat when
+ticked, Claude Code with a worktree held for it, a refusal keeping Create
+shut, no worktree box where none can be made), effort following the model, a
+changed value surviving another folder while the boxes start afresh, a Codex
+account and auto-review's sandbox; the quick chat made at once, handing
+over to the dialog for trust or a failure; delete asking first, keeping the
+helpers unless told, each box its own yes; the popover's list, watch, stop,
+delete and open as chat (and a row that could not be made); and the crash
+screen at start. Their pure rules (`dialogs/choice.rs`, `rows.rs`) have unit
+tests of their own, and lifecycle.rs's hold what the crash screen says of a
+panic and an exit code.
 
 The terminal's tests (`term/tests.rs`) drive a pane through gpui's own
 dispatch and the input handler its element registers, over the fake host, its

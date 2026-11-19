@@ -84,7 +84,7 @@ pub fn codex_folder_trusted(account_path: String, folder: String) -> Result<bool
 /// The checkout `folder` is in, where Codex looks its trust up — a CLI-made
 /// worktree's project first — or the folder itself outside git.
 fn checkout_of(folder: &str) -> String {
-    let project = crate::worktree::project_of(folder).unwrap_or_else(|| folder.to_string());
+    let project = crate::checkout::project_of(folder).unwrap_or_else(|| folder.to_string());
     let mut dir = std::path::Path::new(&project);
     loop {
         if dir.join(".git").exists() {
@@ -105,7 +105,7 @@ pub fn trust_override(folder: &str) -> [String; 2] {
 
 /// `trust_override` when `folder` is under a folder trusted on this machine.
 pub fn root_override(folder: &str) -> Option<[String; 2]> {
-    let project = crate::worktree::project_of(folder).unwrap_or_else(|| folder.to_string());
+    let project = crate::checkout::project_of(folder).unwrap_or_else(|| folder.to_string());
     under_root(&project, &crate::settings::get().codex_trusted_roots).then(|| trust_override(folder))
 }
 
@@ -152,7 +152,7 @@ pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), St
         }
         return Ok(());
     };
-    let editing = crate::account_settings::editing()?;
+    let _editing = crate::account_settings::editing()?;
     let mut doc = config::read(&path)?;
     if trusted_in(&doc, &folder) {
         return Ok(());
@@ -180,7 +180,6 @@ pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), St
     entry.as_table_like_mut().ok_or("project entry is not a table")?.insert("trust_level", toml_edit::value("trusted"));
 
     config::write(&path, &doc)?;
-    crate::applied::record(&editing, &account_path, crate::applied::Item::TrustWritten, &folder);
     Ok(())
 }
 

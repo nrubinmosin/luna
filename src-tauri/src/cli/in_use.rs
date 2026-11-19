@@ -24,6 +24,7 @@ pub(super) const DIR: &str = "in-use";
 
 /// A process started from a version directory; dropped once it has exited.
 #[must_use]
+#[derive(Debug)]
 pub struct InUse {
     _lock: fs::File,
 }

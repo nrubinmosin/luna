@@ -1,5 +1,7 @@
 //! The window's own title bar: Luna's name, the board's controls (the five
-//! boards, the four layouts, Clear board, Auto-tile), the theme button and
+//! boards, the four layouts, Clear board, Auto-tile), the buttons that open
+//! the library and the accounts windows (panels/, in one Menu: Settings is
+//! the status bar's), the theme button and
 //! the window's buttons, on the title blue, the rest of it a handle to move
 //! the window by.
 //!
@@ -13,12 +15,13 @@
 
 use crate::dto::ThemePref;
 use crate::models::{Models, Shell};
+use crate::panels::{self, Panel};
 use crate::state::{BOARDS, board_label};
 use crate::theme::Palette;
 use crate::widgets::{button, toggle};
 use gpui::{
-    Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Render,
-    StatefulInteractiveElement, Styled, Window, WindowControlArea, div, px,
+    Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window, WindowControlArea, deferred, div, px,
 };
 
 /// Its height, fixed: the view is cached at this size (root.rs).
@@ -32,6 +35,8 @@ pub struct TitleBar {
     models: Models,
     /// Times rendered, for the tests that hold renders to what changed.
     pub(crate) renders: usize,
+    /// The Menu's list is open.
+    menu: bool,
 }
 
 impl TitleBar {
@@ -47,7 +52,7 @@ impl TitleBar {
             }
         })
         .detach();
-        TitleBar { models, renders: 0 }
+        TitleBar { models, renders: 0, menu: false }
     }
 }
 
@@ -146,6 +151,8 @@ impl Render for TitleBar {
             .on_click(move |_, _, cx| models.cycle_theme(cx))
             .child(button(&p, theme_label(pref)));
 
+        let panels = self.panels_menu(&p, cx);
+
         bar.child(name)
             .child(div().flex_none().child("Board"))
             .child(boards)
@@ -155,8 +162,62 @@ impl Render for TitleBar {
             .child(clear)
             .child(auto)
             .child(drag)
+            .child(panels)
             .child(theme)
             .children(window_buttons(&p))
+    }
+}
+
+impl TitleBar {
+    /// The Menu: Library and Accounts. Settings is the status bar's, where
+    /// the page keeps it.
+    fn panels_menu(&self, p: &Palette, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let rows =
+            [("library", Panel::Library, "Library"), ("accounts", Panel::Accounts, "Accounts")]
+                .map(|(key, panel, label)| {
+                    div()
+                        .id(SharedString::from(format!("title-{key}")))
+                        .debug_selector(move || format!("title-{key}"))
+                        .px(px(8.))
+                        .py(px(2.))
+                        .bg(p.surface)
+                        .text_color(p.text)
+                        .whitespace_nowrap()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu = false;
+                            cx.notify();
+                            panels::open(panel, window, cx);
+                        }))
+                        .child(label)
+                });
+        let list = div()
+            .id("title-menu-list")
+            .absolute()
+            .top(px(22.))
+            .right(px(0.))
+            .flex()
+            .flex_col()
+            .py(px(2.))
+            .bg(p.surface)
+            .border_1()
+            .border_color(p.hi)
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.menu = false;
+                cx.notify();
+            }))
+            .children(rows);
+        div()
+            .id("title-menu")
+            .debug_selector(|| "title-menu".into())
+            .relative()
+            .flex_none()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.menu = !this.menu;
+                cx.notify();
+            }))
+            .child(button(p, "Menu"))
+            .children(self.menu.then(|| deferred(list).with_priority(1)))
     }
 }
 

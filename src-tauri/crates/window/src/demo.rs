@@ -11,16 +11,20 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+type Responder = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
+
 #[derive(Default)]
 pub struct FakeHost {
     answers: Mutex<HashMap<String, Value>>,
-    /// Commands that answer with an error, by name (`fail`).
     failures: Mutex<HashMap<String, String>>,
     calls: Mutex<Vec<(String, Value)>>,
     sends: Mutex<Vec<(String, Value)>>,
     outputs: Mutex<HashMap<String, Arc<dyn OutputSink>>>,
     /// Sends of a command it refuses yet, by name (`refuse`).
     refusals: Mutex<HashMap<String, usize>>,
+    /// Answers worked out from a call's arguments (`respond`), asked before
+    /// the fixed ones.
+    responders: Mutex<HashMap<String, Responder>>,
     /// Calls of a command left unanswered until the test answers them
     /// (`defer`, `resolve`), by name, oldest first.
     deferred: Mutex<HashMap<String, Vec<futures::channel::oneshot::Sender<Result<Value, String>>>>>,
@@ -38,9 +42,19 @@ impl FakeHost {
         self.answers.lock().unwrap().insert(cmd.to_owned(), value);
     }
 
-    /// Makes `cmd` answer with an error from now on.
-    pub fn fail(&self, cmd: &str, why: &str) {
-        self.failures.lock().unwrap().insert(cmd.to_owned(), why.to_owned());
+    /// What `cmd` answers from now on, worked out from the arguments of each
+    /// call.
+    pub fn respond(&self, cmd: &str, f: impl Fn(&Value) -> Value + Send + Sync + 'static) {
+        self.responders.lock().unwrap().insert(cmd.to_owned(), Arc::new(f));
+    }
+
+    /// `cmd` fails with `why` from now on; None answers it again.
+    pub fn fail(&self, cmd: &str, why: Option<&str>) {
+        let mut failures = self.failures.lock().unwrap();
+        match why {
+            Some(why) => failures.insert(cmd.to_owned(), why.to_owned()),
+            None => failures.remove(cmd),
+        };
     }
 
     /// Every call so far, in order.
@@ -96,16 +110,20 @@ impl FakeHost {
 
 impl Host for FakeHost {
     fn call(&self, cmd: &str, args: Value) -> Answer {
-        self.calls.lock().unwrap().push((cmd.to_owned(), args));
+        self.calls.lock().unwrap().push((cmd.to_owned(), args.clone()));
+        if let Some(why) = self.failures.lock().unwrap().get(cmd).cloned() {
+            return Box::pin(async move { Err(why) });
+        }
         if let Some(waiting) = self.deferred.lock().unwrap().get_mut(cmd) {
             let (tx, rx) = futures::channel::oneshot::channel();
             waiting.push(tx);
             return Box::pin(async move { rx.await.unwrap_or_else(|_| Err("no answer".into())) });
         }
-        if let Some(why) = self.failures.lock().unwrap().get(cmd).cloned() {
-            return Box::pin(async move { Err(why) });
-        }
-        let mut answer = self.answers.lock().unwrap().get(cmd).cloned().unwrap_or(Value::Null);
+        let responder = self.responders.lock().unwrap().get(cmd).cloned();
+        let mut answer = match responder {
+            Some(f) => f(&args),
+            None => self.answers.lock().unwrap().get(cmd).cloned().unwrap_or(Value::Null),
+        };
         if cmd == cmd::FLUSH_WINDOW_STATE && answer.is_null() {
             // As the real host: it wrote every state it was sent.
             let seq = self.sends_of(cmd::SAVE_WINDOW_STATE).iter().filter_map(|a| a["seq"].as_u64()).max().unwrap_or(0);
@@ -161,6 +179,12 @@ pub struct Scene {
     pub events: Vec<(&'static str, Value)>,
     /// Something done to the status bar's model once the window is up.
     pub act: Option<crate::status::Act>,
+    /// Then the driver's lines, one after another (panels/mod.rs `drive`):
+    /// the panel opened and what is done in it.
+    pub drive: Vec<&'static str>,
+    /// What a session prints once the driver's lines are done: its id, and
+    /// the text (the sign-in terminal's CLI).
+    pub output: Option<(&'static str, String)>,
 }
 
 /// What a scene's terminal shows.
@@ -184,11 +208,20 @@ impl Scene {
     /// The host, and the inbox it feeds.
     pub fn host(&self) -> (Arc<FakeHost>, Mailbox, Inbox) {
         let host = FakeHost::new();
+        crate::panels::demo::answer_all(&host);
+        crate::dialogs::demo::answer_all(&host);
+        if self.name == "dialog-new-chat-untrusted" {
+            host.answer(crate::dialogs::cmd::CLAUDE_FOLDER_TRUSTED, json!(false));
+        }
         host.answer(cmd::CORE_STATE, serde_json::to_value(&self.core).unwrap());
         host.answer(cmd::ENSURE_CLAUDE_SESSION, attached("", 1));
         host.answer(cmd::ENSURE_CODEX_SESSION, attached("", 1));
         host.answer(cmd::WINDOW_STATE, self.kept.clone());
         host.answer(cmd::LIST_ACCOUNTS, accounts());
+        if !self.drive.is_empty() {
+            // The panels' scenes list the panels' accounts.
+            host.answer(cmd::LIST_ACCOUNTS, crate::panels::demo::accounts());
+        }
         host.answer(cmd::SESSIONS_META, looks());
         // The core's power rule, idle, as a core that is up says it.
         host.answer(crate::status::cmd::POWER_STATE, serde_json::to_value(crate::status::dto::PowerState::default()).unwrap());
@@ -196,7 +229,7 @@ impl Scene {
             host.answer(command, answer.clone());
         }
         for (command, why) in &self.failures {
-            host.fail(command, why);
+            host.fail(command, Some(why));
         }
         let (mailbox, inbox) = mailbox();
         (host, mailbox, inbox)
@@ -291,7 +324,6 @@ pub fn term_state() -> crate::state::WindowState {
         worktree_path: None,
         session_id: Some("5f0c9a7e-0000-4000-8000-00000000d3e0".into()),
         tools: false,
-        guard: false,
         model: Some("Opus".into()),
         effort: "high".into(),
         perm: Some("Ask".into()),
@@ -309,6 +341,22 @@ pub fn term_state() -> crate::state::WindowState {
 /// A `window_state` answer holding `state`.
 pub fn kept(state: &crate::state::WindowState) -> Value {
     json!({ "saved": serde_json::from_str::<Value>(&state.to_text()).expect("the state reads back") })
+}
+
+/// What Codex's login prints in the sign-in window.
+pub fn login_output() -> String {
+    let lines = [
+        "\x1b[1mWelcome to Codex\x1b[0m",
+        "",
+        "  Sign in with ChatGPT to use it as part of your paid plan",
+        "  or connect an API key for usage-based billing",
+        "",
+        "\x1b[36m> 1. Sign in with ChatGPT\x1b[0m",
+        "  2. Provide your own API key",
+        "",
+        "  Press Enter to continue",
+    ];
+    lines.iter().map(|l| format!("{l}\r\n")).collect()
 }
 
 /// What the demo session prints for `demo`.
@@ -400,9 +448,9 @@ fn link(state: LinkState, core: Option<Core>, error: Option<&str>) -> CoreState 
 }
 
 /// Every scene, in both themes: the title bar over an empty board, the core
-/// banner in each state, a terminal in each of its looks, and the board with
-/// the fixture's chats: each layout, the sidebar collapsed, the peek, a
-/// pane's menu, and the notice of an import that failed.
+/// banner in each state, a terminal in each of its looks, the board with
+/// the fixture's chats (each layout, the sidebar collapsed, the peek, a
+/// pane's menu, and the notice of an import that failed), and the panels.
 pub fn scenes() -> Vec<Scene> {
     let up = link(LinkState::Up, Some(core()), None);
     let older = Core { version: "0.19.0".into(), build: "a1b2c3d".into(), sessions: 3, ..core() };
@@ -424,6 +472,8 @@ pub fn scenes() -> Vec<Scene> {
             failures: Vec::new(),
             events: Vec::new(),
             act: None,
+            drive: Vec::new(),
+            output: None,
         };
         let term = |name, demo: TermDemo| Scene {
             terminal: Some(demo),
@@ -480,6 +530,17 @@ pub fn scenes() -> Vec<Scene> {
             aside,
         ]);
         out.extend(crate::status::demo::scenes(theme));
+        for (name, drive) in crate::panels::demo::scenes().into_iter().chain(crate::dialogs::demo::scenes()) {
+            let mut scene = Scene { drive, ..one(name, up.clone(), vec![]) };
+            match name {
+                // Chats on the account the question names.
+                "accounts-delete" => scene.kept = kept(&chats_state(2, true)),
+                n if n.starts_with("dialog-") => scene.kept = kept(&chats_state(2, true)),
+                "accounts-signin" => scene.output = Some(("login:codex:main", login_output())),
+                _ => {}
+            }
+            out.push(scene);
+        }
     }
     out
 }

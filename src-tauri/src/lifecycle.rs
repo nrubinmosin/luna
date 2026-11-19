@@ -46,6 +46,13 @@ struct Run {
     answered: u64,
     /// Set by `exiting`; a run that ends without it was ended from outside.
     exit: Option<String>,
+    /// The last panic the run's hook saw (`note_panic`), for the crash screen
+    /// the next start shows.
+    #[serde(default)]
+    panic: Option<String>,
+    /// How the watcher saw the process end, when it did not say why itself.
+    #[serde(default)]
+    ended: Option<String>,
 }
 
 static RUN: Mutex<Option<Run>> = Mutex::new(None);
@@ -138,6 +145,7 @@ pub fn start_core() {
 }
 
 fn begin(ping: Option<Ping>) {
+    find_previous();
     if let Some(prev) = read() {
         if prev.exit.is_none() && prev.pid != std::process::id() {
             crate::log::warn("app", &describe_unannounced(&prev, booted_ms()));
@@ -145,7 +153,7 @@ fn begin(ping: Option<Ping>) {
     }
     let now = now_ms();
     ANSWERED.store(now, Ordering::Relaxed);
-    let run = Run { pid: std::process::id(), started: now, alive: now, answered: now, exit: None };
+    let run = Run { pid: std::process::id(), started: now, alive: now, answered: now, ..Run::default() };
     save(&run);
     *RUN.lock().unwrap_or_else(|e| e.into_inner()) = Some(run);
 
@@ -157,6 +165,64 @@ fn begin(ping: Option<Ping>) {
         watcher::spawn();
     });
     std::thread::spawn(move || heartbeat(ping));
+}
+
+/// How the run before this one ended, when it did not say why itself: what
+/// the native window's crash screen shows (`previous_crash`).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Crash {
+    /// A panic's text and place, how the watcher saw the process end, or what
+    /// the record knows of it.
+    pub reason: String,
+    /// When it was last alive, on the wall clock.
+    pub at: String,
+    /// Where the log is.
+    pub log: String,
+}
+
+/// What the crash screen says of a run that ended without closing itself: the
+/// panic its hook saw and how the watcher saw it end, else what the record
+/// itself knows (`said`).
+fn crash_reason(prev: &Run, said: String) -> String {
+    let seen: Vec<String> = [prev.panic.as_ref().map(|p| format!("a panic: {p}")), prev.ended.clone()].into_iter().flatten().collect();
+    if seen.is_empty() {
+        said
+    } else {
+        seen.join("; ")
+    }
+}
+
+static PREVIOUS: std::sync::OnceLock<Option<Crash>> = std::sync::OnceLock::new();
+
+/// Reads the record of the run before this one, once, and keeps what the
+/// crash screen says of it if it ended without closing itself. Called before
+/// the window opens, which asks for it as it comes up: `begin` rewrites the
+/// record for this run, and runs only once the window is open.
+pub fn find_previous() {
+    PREVIOUS.get_or_init(|| {
+        if std::env::var_os("LUNA_DEV_TOKEN").is_some() || is_core() {
+            return None;
+        }
+        let prev = read().filter(|p| p.exit.is_none() && p.pid != std::process::id())?;
+        let said = describe_unannounced(&prev, booted_ms());
+        Some(Crash { reason: crash_reason(&prev, said), at: clock(prev.alive), log: crate::log::path().to_string_lossy().into_owned() })
+    });
+}
+
+/// The run before this one, if it ended without closing itself.
+pub fn previous_crash() -> Option<Crash> {
+    PREVIOUS.get().cloned().flatten()
+}
+
+/// A panic's text, kept in the run's record for the next start to show. The
+/// panic hook calls it, from whichever thread panicked: the record's lock is
+/// only tried, so a panic that struck while it was held cannot wait on itself.
+pub fn note_panic(text: &str) {
+    let Ok(mut guard) = RUN.try_lock() else { return };
+    if let Some(run) = guard.as_mut() {
+        run.panic = Some(text.chars().take(600).collect());
+        save(run);
+    }
 }
 
 fn describe_unannounced(prev: &Run, booted: Option<u64>) -> String {
@@ -564,6 +630,12 @@ mod watcher {
         if said && code == 0 {
             return;
         }
+        if !said {
+            if let Some(mut run) = super::read().filter(|r| r.pid == pid) {
+                run.ended = Some(format!("ended with exit code {code:#x}: {}", meaning(code)));
+                super::save(&run);
+            }
+        }
         let mut line = format!("{} (pid {pid}) ended with exit code {code:#x}: {}", super::who(), meaning(code));
         // SAFETY: a plain metric query.
         if unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) } != 0 {
@@ -644,7 +716,7 @@ mod tests {
     use super::*;
 
     fn run(alive: u64, answered: u64) -> Run {
-        Run { pid: 7, started: 0, alive, answered, exit: None }
+        Run { pid: 7, started: 0, alive, answered, ..Run::default() }
     }
 
     #[test]
@@ -653,6 +725,19 @@ mod tests {
         assert!(s.contains("frozen"), "{s}");
         let s = describe_unannounced(&run(100_000, 95_000), Some(0));
         assert!(!s.contains("frozen"), "{s}");
+    }
+
+    #[test]
+    fn the_crash_screen_says_what_the_hook_and_the_watcher_saw() {
+        let said = || describe_unannounced(&run(100_000, 100_000), None);
+        assert_eq!(crash_reason(&run(1, 1), "nothing saw".into()), "nothing saw");
+        let panicked = Run { panic: Some("index out of bounds at src/board.rs:9".into()), ..run(1, 1) };
+        assert_eq!(crash_reason(&panicked, said()), "a panic: index out of bounds at src/board.rs:9");
+        let both = Run { ended: Some("ended with exit code 0x65: a panic on the main thread".into()), ..panicked };
+        assert_eq!(
+            crash_reason(&both, said()),
+            "a panic: index out of bounds at src/board.rs:9; ended with exit code 0x65: a panic on the main thread"
+        );
     }
 
     /// One way out at a time: a second claim is refused while the first

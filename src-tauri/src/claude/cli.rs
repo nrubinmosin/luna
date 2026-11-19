@@ -32,8 +32,8 @@ fn platform() -> &'static str {
 }
 
 /// The `latest` pointer is not signed: what it names is held to the floor
-/// (cli.rs `update_in`), which keeps a bucket in other hands from offering an
-/// old signed release with its known flaws.
+/// (cli.rs `floor`, `choice::plan`), which keeps a bucket in other hands from
+/// offering an old signed release with its known flaws.
 fn latest(agent: &Agent) -> Result<String, String> {
     let text = agent
         .get(&format!("{RELEASES}/{CHANNEL}"))
@@ -45,12 +45,11 @@ fn latest(agent: &Agent) -> Result<String, String> {
 }
 
 /// The manifest fetched for `version`, taken only if `version` is not below
-/// the floor (cli.rs) or `min_safe`, its signature holds, and it names
-/// `version` itself (a signed manifest of another release served under this
-/// one's URLs is a relabel). Gives the exe's sha256 and size. The floor moves
-/// only once a version becomes current, not here.
-fn accept_manifest(root: &Path, min_safe: &str, bytes: &[u8], sig: &[u8], version: &str) -> Result<(String, Option<u64>), String> {
-    crate::cli::at_or_above_floor_in(root, min_safe, version)?;
+/// the floor (cli.rs `floor`), its signature holds, and it names `version`
+/// itself (a signed manifest of another release served under this one's URLs
+/// is a relabel). Gives the exe's sha256 and size.
+fn accept_manifest(floor: &str, bytes: &[u8], sig: &[u8], version: &str) -> Result<(String, Option<u64>), String> {
+    crate::cli::at_or_above(floor, version)?;
     super::manifest_sig::verify(bytes, sig)?;
     let manifest: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| format!("manifest: {e}"))?;
     let signed_for = manifest["version"].as_str().unwrap_or_default();
@@ -79,7 +78,7 @@ fn get_small(agent: &Agent, url: &str, what: &str) -> Result<Vec<u8>, String> {
 fn expected(agent: &Agent, version: &str) -> Result<(String, Option<u64>), String> {
     let bytes = get_small(agent, &format!("{RELEASES}/{version}/manifest.json"), "manifest")?;
     let sig = get_small(agent, &format!("{RELEASES}/{version}/manifest.json.sig"), "manifest signature")?;
-    accept_manifest(&crate::cli::root(Provider::Claude), crate::cli::min_safe(Provider::Claude), &bytes, &sig, version)
+    accept_manifest(crate::cli::floor(Provider::Claude), &bytes, &sig, version)
 }
 
 /// Downloads `version` into `dir`, verifying the sha256 from the manifest
@@ -111,52 +110,28 @@ fn fetch(agent: &Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     // A real release's signed manifest (see manifest_sig.rs).
     const MANIFEST: &[u8] = include_bytes!("testdata/manifest-2.1.319.json");
     const SIG: &[u8] = include_bytes!("testdata/manifest-2.1.319.json.sig");
-    /// A minimum the fixture's release meets, whatever the shipped list's is.
-    const MIN: &str = "2.1.319";
-
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("luna-claude-floor-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    /// A floor the fixture's release meets, whatever this Luna's is.
+    const FLOOR: &str = "2.1.319";
 
     #[test]
     fn a_signed_manifest_served_under_another_version_is_refused() {
-        let root = scratch("relabel");
-        let refused = accept_manifest(&root, MIN, MANIFEST, SIG, "2.1.320").unwrap_err();
+        let refused = accept_manifest(FLOOR, MANIFEST, SIG, "2.1.320").unwrap_err();
         assert!(refused.contains("signed for \"2.1.319\""), "{refused}");
 
-        let (checksum, size) = accept_manifest(&root, MIN, MANIFEST, SIG, "2.1.319").unwrap();
+        let (checksum, size) = accept_manifest(FLOOR, MANIFEST, SIG, "2.1.319").unwrap();
         assert_eq!(checksum.len(), 64);
         assert!(size.is_some());
-        assert_eq!(fs::read_dir(&root).unwrap().count(), 0, "a manifest taken moves no floor: a version does, once current");
-        let _ = fs::remove_dir_all(&root);
     }
 
-    /// The floor as Claude Code's tree had it before it rose on switch
-    /// (`signed-floor`) still holds a signed release below it out.
+    /// A Luna whose floor is above a release takes no manifest of it, signed
+    /// or not: the pointer cannot bring it back.
     #[test]
     fn a_signed_release_below_the_floor_is_refused() {
-        let root = scratch("replay");
-        fs::write(root.join("signed-floor"), "2.1.330").unwrap();
-        let refused = accept_manifest(&root, MIN, MANIFEST, SIG, "2.1.319").unwrap_err();
-        assert!(refused.contains("refusing 2.1.319: older than 2.1.330"), "{refused}");
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    /// A Luna whose `minSafe` is above a release takes no manifest of it,
-    /// signed or not, on a fresh tree: the pointer cannot bring it back.
-    #[test]
-    fn a_signed_release_below_min_safe_is_refused() {
-        let root = scratch("min-safe");
-        let refused = accept_manifest(&root, "2.1.325", MANIFEST, SIG, "2.1.319").unwrap_err();
+        let refused = accept_manifest("2.1.325", MANIFEST, SIG, "2.1.319").unwrap_err();
         assert!(refused.contains("refusing 2.1.319: older than 2.1.325"), "{refused}");
-        let _ = fs::remove_dir_all(&root);
     }
 }

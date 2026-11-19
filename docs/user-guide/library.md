@@ -18,8 +18,8 @@ each name has a copy button, to name a skill or instructions in a chat.
   per account in the window). Where several take an account in, the one naming
   it wins over one for its CLI, and that over one for every account, so `main`
   for everyone and `work` for the work account just works.
-- An account that already has its own file keeps it until you take it into the
-  library or replace it; one that gets nothing from the library can have its own
+- An account that already has its own file keeps it: Luna never writes over a
+  file it did not write. One that gets nothing from the library can have its own
   taken in as new instructions named after it. The single `instructions.md` of
   earlier versions becomes `instructions/main.md`.
 - A Codex account with an `AGENTS.override.md` reads that instead of
@@ -68,8 +68,8 @@ one off. At least one stays on.
   is not for it. Claude Code leaves the file out of a lead or helper
   (`claudeMdExcludes`). Turning any other role on for such a file takes it out
   of the accounts; from then on it goes per session.
-- **What Luna applied** for a session lists what the audience gave it or kept
-  from it. Where it could not keep something out it says so: a Codex copy
+- A session's start records what the audience gave it or kept from it
+  (`library.audience`). Where it could not keep something out it says so: a Codex copy
   changed there, left out or not yet written does not say whose it is; and in
   the rare project whose folder name Claude Code's matcher would confuse with
   the account's, the account's `CLAUDE.md` is read after all.
@@ -78,7 +78,7 @@ one off. At least one stays on.
 
 Beside its account's instructions file, every session Luna starts is told of
 its role in layers of its own, at the level of an instructions file, which
-outweighs a note on a prompt and survives a compaction and a handoff:
+outweighs a note on a prompt and survives a compaction:
 
 1. what Luna says of its role, a [system text](#system-texts) you may change:
    nothing for a chat, unless you write something; for a lead or a helper,
@@ -142,32 +142,51 @@ skills to each.
 
 ## Copies and changes
 
-The library is the original and every place holds a copy. Luna remembers what it
-wrote where, so it touches only its own copies: anything else stays, and a copy
-no longer wanted goes only while it is still exactly what Luna wrote.
+The library is the source of truth and every place holds a copy. Luna remembers
+what it wrote where, and only that makes a copy Luna's: anything else in a
+place, a file of yours or of a CLI's that Luna did not write, stays as it is,
+and the library's copy does not go there while it is. Such a place says so in
+the window; it clears once the file is gone (the library's copy then goes
+there) or once you leave the place out.
 
-A copy changed or deleted where it lies (by hand, or by a model improving a skill
-in place) is never silently replaced: it shows under **Needs a look**, and as a
-chip on the status bar, with its differences. Take it into the library and it
-becomes every copy's; put the library's back; or leave that place out. The side
-replaced is kept in Luna's backups for 30 days.
+Luna's own copies always end up as the library has them. One changed where it
+lies has the library's written over it the next time the library is laid out,
+which is before every session Luna starts; one deleted there is put back; one
+no longer meant for its place (a skill un-ticked for an account, say) is taken
+out, changed there or not. What a change there had made is kept in Luna's
+backups (`library-backups` in its data folder) for 30 days, and Luna's log names
+each place written over or taken out and where its backup is.
 
-A copy no longer meant for its place (a skill un-ticked for an account, say)
-goes, but only while it is still exactly what Luna wrote. One changed there
-since stays, and waits under Needs a look, "no longer meant for it, changed
-there", with its differences from what Luna wrote: **Take out** removes it,
-kept in Luna's backups for 30 days; **Keep** leaves it as your own file, and
-Luna forgets it was ever its copy. Picked for that place again, it is Luna's
-changed copy there once more; deleted, or changed back to just what Luna
-wrote, it no longer waits.
+**Edit in the library, not in an account.** An edit made inside an account to
+something Luna laid out there is undone at the next session start, a backup of
+it kept for 30 days: Claude Code's `/memory` on the account's `CLAUDE.md`, a
+model improving a skill in place with skill-creator, a hand edit of an
+account's `AGENTS.md` or `skills/<name>/SKILL.md`. Make the change in the
+library's own file (the editor here, or the file under the library's folder)
+and every copy follows. A place left out is no longer Luna's: whatever is there
+stays.
 
-With several copies deleted, **Put all back** above the list puts the library's
-back in each of them; the changed ones still wait there. **Sync all**, at the
-top of the window, makes every account hold what the library says: deleted
-copies put back, changed ones replaced and those no longer meant for their
-place taken out, after a confirmation that counts them. It goes by what the grids pick and leaves the places left out as they
-are; a copy that cannot be laid out (a skill whose `SKILL.md` does not do) stays
-under Needs a look.
+In a skill's folder only the files Luna wrote are Luna's. Anything a person or
+a tool adds beside them (a `__pycache__/`, a `node_modules/`, a `.DS_Store`, a
+file of your own) is not looked at, backed up or removed; when the skill is no
+longer meant for that place, Luna's files go and the folder stays with the
+rest in it. A copy that changes while the library is being laid out (a CLI
+saving it at that moment) is left until the next time.
+
+A copy an earlier Luna laid into one of the library's folders itself, changed
+there since, is that folder's own and stays. An account Luna does not list for
+the moment keeps its copies as they are until it is back.
+
+**From 0.19.** The first time 0.20 lays the library out, every copy that waited
+under 0.19's Needs a look as changed there has the library's written over it
+(the change in the backups), and every one deleted there comes back. Copies
+0.19 kept in place as no longer wanted but changed there are yours from 0.20 on:
+they stay where they are, Luna never takes them back even if they come to hold
+just what the library has, and the log names them once.
+
+**Sync all**, at the top of the window, lays the library out at once. A copy
+that cannot be laid out (a skill whose `SKILL.md` does not do) stays as it is
+until it can.
 
 ## When it is laid out
 
@@ -196,19 +215,9 @@ which you may override, each with one file for every session it is served to:
   plain text, at most 1,000 characters, with no brackets (the note goes inside
   brackets of its own). Luna remembers every note it has served, so none ever
   shows in what a session was asked, after an update or a change of yours.
-- **`session-handoff`**, described below.
 
 What stays Luna's own and is not a text you can change: its tools' schemas and
 refusals, the facts of its guide, the tag a note opens on.
-
-### The handoff's skill
-
-**`session-handoff`** is what a chat with Luna tools is given
-when it writes its [handoff](chats.md#handoff), or a move's document (under
-the move's own rules). Luna serves it only to such chats, through their
-`luna_session_handoff` tool, once they are asked for a handoff or a move's
-document; it is never put into an account or a folder, and no helper or other
-session sees it.
 
 The window's **System texts** section, below your skills and set apart from
 them, has each system text on a row of its own: what it is, whose text is
@@ -219,19 +228,16 @@ one of them, each checked as its kind is.
 
 - **Luna's own** is built in, of its version: the row says which, and the
   first 12 characters of the text's SHA-256.
-- **Edit** opens the editor on your override, `system/session-handoff/SKILL.md`
-  in the library; where there is none yet it starts from Luna's text, and
-  saving makes it yours. It needs front matter with `name: session-handoff` and
-  a `description`, then the text, at most 64 KB; the editor checks it as you
-  type, as Luna checks it before serving it. The row then says **Yours**, with
-  its path and hash. Only that file is read and served; files beside it in its
-  folder are not, though the text may name them: the chat is told where they
-  are.
-- **Yours is broken** when it does not do (no front matter, another name, no
-  description, nothing past the front matter, a link, a file not of your own making, too large): it is saved
-  all the same, but Luna's own is served in its place, and the row and the
-  chat's **What Luna applied** panel say why. A file over 64 KB is not saved
-  from the editor at all.
+- **Edit** opens the editor on your override, `system/<name>/TEXT.md` in the
+  library; where there is none yet it starts from Luna's text, and saving
+  makes it yours. The editor checks it as you type, as Luna checks it before
+  serving it. The row then says **Yours**, with its path and hash. Only that
+  file is read and served.
+- **Yours is broken** when it does not do (too large, not UTF-8 text, a note
+  of more than one line or with a bracket, a link, a file not of your own
+  making): it is saved all the same, but Luna's own is served in its place,
+  and the row says why. A file over its cap is not saved from the editor at
+  all.
 - **Compare with Luna's** shows your text against Luna's own, line by line:
   after an update, what Luna's own has that yours lacks.
 - **Back to Luna's** asks first, then moves your override's folder into Luna's
@@ -239,14 +245,57 @@ one of them, each checked as its kind is.
   are on another drive than the library, it is copied there and checked; if a
   save changed it meanwhile, it is kept aside in `system/` instead, not served,
   and the section names where, for you to move or delete.
-- A skill named `session-handoff` among your skills is not the override, and
-  it is laid out nowhere: in every account and folder it would tell every
-  session of the handoff. Its row says so and offers **Make it the override…**,
-  which asks first and then moves its folder, `SKILL.md` and all beside it, to
-  `system/session-handoff`; an override already there goes to the backups. A
-  copy of it laid out by an earlier Luna is taken out, unless changed there
-  since. No new skill takes the name.
-- A `session-handoff` skill in a project's `.claude/skills` or `.agents/skills`
-  or an account's `skills/` is not the override either: Luna never serves those
-  for a handoff, though the CLI may list them to the model. The chat's panel
-  warns of one in its folder or account.
+## In the native window
+
+Release 0.20's native window has the library as a window over the main one
+(the title bar's Menu, Library), laid out as a list and the entry picked
+rather than as one grid:
+
+- **Across the top:** the library's folder with Open, Change… and Default
+  (with unsaved text in the editor, either asks first; the new folder opens
+  with nothing picked), and Sync, which lays the library out now, as Sync
+  all does ([above](#copies-and-changes)): Luna's own copies are written
+  over with the library's or put back, those no longer wanted taken out, a
+  changed one backed up first, and a file Luna did not write is left alone.
+  It says how many copies it wrote and took out, how many places it left
+  alone as not Luna's, and each copy it could not write or take out, with
+  why (Syncing…, Synced, or why it failed).
+- **On the left:** the instructions (and "(no instructions)", the accounts
+  that get none), the skills, Luna's system texts and the folders, each with
+  a field and New, or Add folder…. An entry that will not do is marked `!`, a
+  system text of yours `yours`, a folder that is not there `gone`.
+- **On the right, the entry picked:** Rename and Delete… (a skill can be
+  renamed too: its folder, its SKILL.md's `name` and everything the library
+  says of it follow, and its copies under the old name go; a rename that
+  fails partway is undone, and if even that fails the window says what is
+  left where); whom it is meant
+  for (the same ticks as before); whose sessions it is for (Chats, Leads,
+  Helpers); for instructions, which instructions each account gets, one at
+  most; for a skill, which accounts' sessions get it in each folder; for a
+  folder, the instructions its sessions on each Claude Code account get in
+  place of the account's; for a system text, Compare with Luna's (Luna's own
+  text shown beside yours, no diff) and Back to Luna's….
+- **Under it, the editor:** the entry's file, Markdown highlighted, with Save
+  (Ctrl+S, Cmd+S on macOS). A SKILL.md or a system text is checked a moment
+  after you stop typing and saved even when it does not do yet. Anything that
+  would replace or close the editor with unsaved text asks first: picking
+  another entry, a rename, Delete…, Back to Luna's…, Add folder…, another
+  library folder, closing the window. If the file was changed on disk since
+  you opened it (by another editor, say), Save writes nothing and keeps your
+  text: Reload takes the file as it is now, Overwrite saves yours over it.
+  If the library's folder is no longer the one the file was read from (a
+  link there now leads elsewhere, or the folder was made again), nothing is
+  saved, Overwrite included: Reload reads the file from the folder there
+  now. If the save went through but laying the library out after failed,
+  the line under the editor says it was saved and why laying it out did not
+  go.
+  Unsaved text is kept as you type, so if Luna quits or the window restarts
+  from the tray with it unsaved, the library offers it the next time it
+  opens: Restore or Throw away. Throw away forgets only that text, never
+  text you have typed since in another file.
+
+Not in it any more, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it:
+"Needs a look" and its diffs, choosing copy by copy what to put back, keep
+or leave out, and taking an account's own file into the library.
+The library is the source of truth: what Luna manages in an account is what
+the library says.

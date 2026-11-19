@@ -20,7 +20,6 @@ whose package no longer ships.
 | `crates/accesskit_consumer`, `crates/accesskit_windows` | MIT OR Apache-2.0 | the same three of AccessKit/accesskit at c88605b96d04 |
 | `crates/alloc-stdlib` | BSD-3-Clause | `LICENSE` of dropbox/rust-alloc-no-stdlib at 0a81fd6928ea |
 | `crates/anes` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of qwandor/anes-rs (formerly zrzka/anes-rs) at 378ac7461eca |
-| `crates/logos` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of maciejhirsz/logos at fba6c4d4255b |
 | `crates/lyon`, `crates/lyon_geom`, `crates/lyon_path` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of nical/lyon at 56219c95c658 |
 | `crates/lyon_algorithms`, `crates/lyon_tessellation` | MIT OR Apache-2.0 | the same two of nical/lyon at 994526f2766c |
 | `crates/mac` | MIT/Apache-2.0 | reem/rust-mac keeps no license file; its README says "MIT/Apache-2.0, like rust itself". `LICENSE-APACHE` is that of rust-lang/rust at 1.100.0, verbatim (it names no copyright holder); `LICENSE-MIT` is the MIT text of rust-lang/rust at 1.100.0 with its copyright line made the crate's own: "Jonathan Reem", the author `Cargo.toml` names in mac 0.1.1 as published (the version Cargo.lock pins), no year being given anywhere |
@@ -31,7 +30,8 @@ whose package no longer ships.
 | `crates/selectors` | MPL-2.0 | the license's text from mozilla.org (servo/stylo, its repository, keeps none) |
 | `crates/svg_fmt` | MIT/Apache-2.0 | `LICENSE` of nical/rust_debug at 93f414cd572b |
 | `crates/taffy` | MIT | `LICENSE` of DioxusLabs/taffy at eb6450694f33 |
-| `crates/taplo` | MIT | `LICENSE` of tamasfe/taplo at 08f343be02ce |
+| `crates/tree-sitter-json` | MIT | `LICENSE` of tree-sitter/tree-sitter-json at ee35a6ebefce |
+| `crates/tree-sitter-md` | MIT | `LICENSE` of tree-sitter-grammars/tree-sitter-markdown at 41ff24a6c775 |
 | `crates/zune-core` | MIT OR Apache-2.0 OR Zlib | `LICENSE.md`, `LICENSE-ZLIB` of etemesi254/zune-image at f8fbb123d5ed |
 | `crates/zune-inflate` | MIT OR Apache-2.0 OR Zlib | the same two of etemesi254/zune-image at 69502ce83fdf |
 | `crates/zune-jpeg` | MIT OR Apache-2.0 OR Zlib | the same two of etemesi254/zune-image at fa2c767a01d7 |

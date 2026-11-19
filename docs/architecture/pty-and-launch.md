@@ -9,8 +9,8 @@ How a session is started, what it is started with, and how its terminal is run.
   environment, disk or Luna state, and log, write, register or mint nothing).
 - Settle a start under the chat's spawn gate (`pty/start.rs`; a helper's turn in
   `background/command.rs` through the same functions): the MCP token and
-  registration, the settings, MCP and instructions files, the worktree and the
-  library pass, what the sandbox and guard take from this machine; then spawn in
+  registration, the settings, MCP and instructions files, and the
+  library pass, what the sandbox takes from this machine; then spawn in
   a pty (`pty/spawn.rs`).
 - Keep the scrollback, answer terminal queries, read the screen, and write
   input the way each CLI needs it.
@@ -18,10 +18,10 @@ How a session is started, what it is started with, and how its terminal is run.
   beside the arguments ([ADR-0016](../adr/0016-luna-is-a-runtime.md)), `Launch`
   carries them, and `pty::spawn` hands them to the registry
   (`agents::set_applied`) once the process runs; a helper's turn does the same
-  in `background/run.rs`. The core answers `applied_by_luna(chat_id)` with the
-  latest, and the trust writes of the chat's folder from
-  `<data>/applied-ledger.json` and the library's layout in its account,
-  saying when that part may be short (`incomplete`).
+  in `background/run.rs`. The goldens check that every flag, `-c` key and
+  variable of a start is named by an item (`Redact::assert_shown`). No window
+  or core command shows them: 0.20 cut "What Luna applied" and its ledger of
+  account writes.
 - Finish a process's spec in one place, `pty::finish_spec`: `TERM` for a
   pane's CLI, the folder it starts in, and the variables it goes without
   (`removed_env`), each as applied. `Launch::finished` runs it before the
@@ -38,10 +38,9 @@ How a session is started, what it is started with, and how its terminal is run.
 | `pty/screen.rs` | the screen drawn (`vt100`) and kept per session (`Drawn`), composer and draft, terminal modes and title, Codex key events on Windows; `SessionMeta` |
 | `pty/probe.rs` | `ActivityProbe::working_dir()`, `sessions_meta` (every chat's look, one call a tick) by provider, tails, sweep of hook and MCP files |
 | `stamped.rs` | what is read off a file, kept while its length and change time stand (`ByStamp`) |
-| `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and guard, the helper's system prompt line and settings (`claude_helper_args`, `HelperSettings`, used by `background/command.rs`) |
-| `codex/launch.rs` | Codex's arguments and environment, approval and sandbox overrides, `read-only-net`, the guard, Luna's MCP server |
-| `guard.rs` | the PreToolUse guard against waits that never end |
-| `applied.rs` | the items Luna may apply, each with its class and why; the ledger of account writes; `applied_by_luna` |
+| `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and `tui`, the helper's system prompt line and settings (`claude_helper_args`, `HelperSettings`, used by `background/command.rs`) |
+| `codex/launch.rs` | Codex's arguments and environment, approval and sandbox overrides, `read-only-net`, `TUI_SETTINGS`, Luna's MCP server |
+| `applied.rs` | the items Luna may apply, each with its class and why |
 | `golden.rs` | placeholders that make launch golden tests stable |
 
 ## Command lines
@@ -59,14 +58,19 @@ claude --model <alias|id> --effort <a level of the model's, or ultracode>
 ```
 
 `cwd` is the chat's folder; `CLAUDE_CONFIG_DIR` is the account folder;
-`DISABLE_AUTOUPDATER=1`. `<chat>` here and in every other file or folder named
-for a session (`mcp/`, `hooks/<chat>/`, `media/`, `handoffs/`, a note's name)
+`DISABLE_AUTOUPDATER=1`; `CLAUDE_CODE_NO_FLICKER=1`, which asks for the
+fullscreen renderer above the CLI's own `fullscreenAutoDisabled` (the settings
+file's `tui: "fullscreen"` says the same, below that); every CLI process Luna
+starts first loses it from what it inherits (`pty/spawn.rs` `removed_env`), so
+a core started from a fullscreen chat's shell does not hand it to helpers, and
+only a Claude Code chat or login is given it again. `<chat>` here and in every other file or folder named
+for a session (`mcp/`, `hooks/<chat>/`, `media/`, a note's name)
 is the id as `paths::id_file_name` spells it: Luna's own ids as they are, any
 other byte as `.` and two hex digits, so the login pane's
 `login:<provider>:<name>` could never make a name Windows refuses. A login
 session (its folder the account folder) is no chat and writes no file at all:
-no hooks, tools, notes, handoff or library, and its one setting, the
-core-folder deny, goes inline as `--settings {"permissions":{…}}`. A worktree chat whose worktree is known resumes from
+no hooks, tools, notes or library, and its one setting, the
+core-folder deny and `tui`, goes inline as `--settings {"permissions":{…},"tui":"fullscreen"}`. A worktree chat whose worktree is known resumes from
 the project folder as `--worktree <name> --resume <uuid>` rather than starting
 inside the worktree, because Claude Code removes a clean worktree on exit and,
 given the name, makes it again with the same name and branch. `--resume` is
@@ -77,10 +81,14 @@ passed only when the transcript exists; otherwise the chat starts afresh.
 ```
 codex [resume <uuid>] -C <cwd> --no-daemon [--worktree] --model <m>
       -c model_reasoning_effort="<e>" -a <on-request|never> -s <sandbox> [-c …]
-      -c check_for_update_on_startup=false -c tui.terminal_title=["thread-id"]
+      -c check_for_update_on_startup=false -c tui.notifications=false
+      -c tui.copy_on_select="never" -c tui.terminal_title=["thread-id"]
 ```
 
-`CODEX_HOME` is the account folder. A helper adds `-c approvals_reviewer="user"`
+`CODEX_HOME` is the account folder. The three `tui`/update `-c`s are what a
+Codex TUI is told at every start instead of a line in the account's
+`config.toml` (keys seen in 0.169.0); a helper's `exec` has no TUI and takes
+the update check alone. A helper adds `-c approvals_reviewer="user"`
 and its folder's trust for the run; a person's chat gets neither, so its
 account's or project's reviewer stands and an untrusted folder shows Codex's
 own trust screen. `never` + `danger-full-access` becomes
@@ -94,30 +102,26 @@ shared server (which the `-c` overrides rule out anyway). Codex refuses
 
 The core does not start a folder that does not exist: portable-pty would
 silently substitute the user's profile. Before anything of a start is made
-(files, token, registration, the library pass, origin's fetch), `pty/folder.rs`
-`folder_check` refuses only where Luna can be sure the CLI could not start: a
-folder that is not there, and a start that passes `--worktree` (Claude Code:
-any, by name too; Codex: a new session) in a folder with no `.git` in it or
-above it, which both CLIs exit on at once. Codex makes its worktree with git
-alone. Claude Code also makes one through a `WorktreeCreate` hook, so for it
-Luna reads the account's `settings.json` and the project's
-`.claude/settings.json` and `settings.local.json`: a hook named there lets the
-start go. With none, Luna looks for a source of hooks it does not read: a
-plugin enabled in those files, the account's server-managed settings (its
-`remote-settings.json`), the machine's managed settings folder
-(`managed-settings.json`, `managed-settings.d`), Windows' `SOFTWARE\Policies\ClaudeCode`
-key (the machine's or the user's), Anthropic's macOS managed preferences. If
-any is there the start goes ahead and the dialog only warns, the CLI left to
-decide (and its exit, if it gives up, is no canary failure); if none is, the
-start is refused. The settings files are read as a project controls them: a
-regular file of at most 1 MiB, a link followed only to one, a FIFO or device at
-the name given up on without a wait (`read_settings`); a file there that could not be read, and a place of settings that could not be looked at (a registry look failing other than "not found"), counts as a source that may hold a hook: a warning, not a refusal. The refusal is the
-start's error, which the pane shows as `[failed to start session: …]`. The same
-check answers the new-chat dialog (`chat_folder_check`, off the window's thread,
-asked for every folder, account and worktree box; its refusal disables Create,
-its warning does not; `createChat` asks again before it writes trust) and
-refuses a helper's spawn (`agents/spawn`). A login runs in its account folder
-and is not checked.
+(files, token, registration, the library pass), `pty/folder.rs` `folder_check`
+refuses only where Luna can be sure the CLI could not start: a folder that is
+not there, and a start that passes `--worktree` (Claude Code: any, by name too;
+Codex: a new session) in a folder with no `.git` in it or above it, which both
+CLIs exit on at once (Claude Code 2.1.319, Codex 0.167.0). Claude Code also makes
+a worktree outside git through a `WorktreeCreate` hook; Luna does not look for
+one and offers no worktree there. The refusal is the start's error, which the pane
+shows as `[failed to start session: …]`. The same check answers the new-chat
+dialog (`chat_folder_check`, off the window's thread, asked for every folder):
+its refusal disables Create, and its `inGit` decides whether the Git worktree
+box is offered at all, so a folder outside git is never asked for one;
+`createChat` asks again before it writes trust. It refuses a helper's spawn
+(`agents/spawn`) in a folder that is not there. A login runs in its account
+folder and is not checked.
+
+The box is a flag for the CLI and nothing more: Luna does not fetch origin
+first, does not make the worktree, does not look at it afterwards and does not
+remove it, with its chat or otherwise. Claude Code 2.1.325 takes
+`-w, --worktree [name]`, Codex 0.169.0 `--worktree`; both are in the box's
+tooltip, which says Luna does not remove the result.
 
 ## Golden tests
 
@@ -134,8 +138,8 @@ The goldens run the real start, not the builders alone.
   description, and reads back the settings, MCP and instructions files written
   for it, and what it applied (`Started::applied`, placeholders in). Cases:
   chats, permission modes, resume only with a transcript, worktrees by name,
-  login, the guard only when asked for, chats with tools (guard, Luna's MCP,
-  role; none of a helper's items), a `windows.sandbox` of the user's kept, Codex
+  login, no guard or hook-trust bypass in any start, chats with tools (Luna's
+  MCP, role; none of a helper's items), a `windows.sandbox` of the user's kept, Codex
   approval / sandbox pairs, library folders (skills, instructions, plugins,
   hidden skills, the other added folders' memory left out).
 - **Headless** (`background/command.rs`, `golden_headless_*`): a helper turn's
@@ -147,7 +151,7 @@ The goldens run the real start, not the builders alone.
 - **Redaction is strict** (`golden.rs` `Redact`): only what changes per run is
   replaced, and each placeholder is first checked to be what it stands for. The
   hub's URLs, the data-dir files and the notes folder become `<hook-url>`,
-  `<guard-url>`, `<mcp-url>`, `<settings-file>`, `<mcp-file>`,
+  `<mcp-url>`, `<settings-file>`, `<mcp-file>`,
   `<instructions-dir>`, `<notes-dir>`; `LUNA_MCP_TOKEN` becomes `<token>` only
   once it is the token the registry knows this session by; a sandbox's `PATH`
   becomes `<sandbox-path>` only if it is this process's minus the Store's app
@@ -161,7 +165,7 @@ The goldens run the real start, not the builders alone.
 
 Any change to a launch path shows up as a reviewed diff of the expected values.
 
-## Hooks and the guard
+## Hooks
 
 Every Claude Code session but a login starts with a `--settings` file adding hooks that post
 to the hub with `curl.exe` (elsewhere `curl`). Hooks print nothing: Claude Code
@@ -175,18 +179,11 @@ skills folders, the user's `permissions.additionalDirectories`
 (`claude/launch.rs` `memory_excludes`), each unless it lies above or below the
 folder worked in.
 
-The **guard** (`guard.rs`) is a PreToolUse hook on `Bash|PowerShell|Monitor` for
-a chat whose person ticked "Wait guard" in the new-chat dialog (`Chat.guard`,
-passed as `guard` to `ensure_*`) and for every helper; for Codex `-c hooks.PreToolUse=[…]` on its
-shell (Codex calls it `Bash`), only where hooks run unasked. It posts to
-`/guard/<id>/<secret>`, which denies a command that follows a file
-(`tail -f/-F/--follow`, `Get-Content -Wait`; quotes, comments, heredocs and
-`bash -c` parsed as a shell would) with no `timeout N` in front of it, with
-`permissionDecision: "deny"` and what to do instead; anything else gets an empty
-204. A tool's own `timeout` is no deadline (Claude Code moves the call to the
-background). With the hub down the call goes ahead. Codex runs a hook through
-the user's shell (PowerShell on Windows, where a bare `@-` does not parse), so
-the command quotes `"@-"` and calls curl by full path.
+A Claude Code helper's settings file holds no hooks (its stream says it all);
+Codex gets none of Luna's, and Luna never passes `--dangerously-bypass-hook-trust`,
+so Codex asks for the trust of the hooks a project brings as it would started by
+hand. The wait guard Luna had until 0.19 (a PreToolUse hook refusing `tail -f`
+without a deadline) is gone with the bypass it needed on Codex.
 
 ## Scrollback and terminal state
 
@@ -283,16 +280,9 @@ the command quotes `"@-"` and calls curl by full path.
   A start of a deleted chat waits for the delete and is refused ("this chat
   was deleted"): the window never gives a chat id out twice, and a pane that
   had not let go would otherwise bring back a session the delete had just
-  cleared. Whether the worktree is shared is asked once the deleted session
-  has quit, and the worktree is held from that question to the end of its
-  removal (`worktree::removing`); a start or a helper on its way into a
-  worktree holds its way in (`worktree::entering`) until it is listed where
-  that question looks, so the delete keeps a worktree one is entering, and
-  one entering a worktree being removed is refused, saying so. A Claude Code
-  chat started into a worktree by name runs in the project folder, and its
-  registry says where it went only once the CLI is up: its session keeps
-  that worktree (`Session::enters`) from the start, for the sharing check
-  and the orphan sweep (`live_cwds`).
+  cleared. A worktree the chat ran in is left as it is: Luna removes none.
+  Claude Code answers the quit in a worktree with "keep or remove?", and
+  `shut_down` answers Enter, Keep.
 - A session's exit goes by its chat id, with its spawn number. Whoever takes
   a session out of the map (a delete, a kill, a start over a session that
   exited by itself) waits under the gate, up to 5 s (`READER_WAIT`), for its

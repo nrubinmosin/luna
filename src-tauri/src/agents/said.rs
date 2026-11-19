@@ -544,17 +544,16 @@ mod tests {
         assert!(lost.re_of(0).is_none() && !answer_text(&lost).starts_with("Re "));
     }
 
-    /// A lead that handed off answers in a fresh conversation (handoff/lead.rs),
-    /// whose transcript holds none of the requests made before: what it says
-    /// there is the newest of those's, under its number, up to a request sent
-    /// since.
+    /// A transcript that holds none of the requests made before (a
+    /// conversation that began afresh): what it says there is the newest of
+    /// those's, under its number, up to a request sent since.
     #[test]
-    fn answers_in_a_leads_fresh_conversation_keep_the_numbers_of_requests_before_it() {
+    fn answers_in_a_fresh_conversation_keep_the_numbers_of_requests_before_it() {
         let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
         let q = |n: u32, head: &str| Request { n, key: None, head: request_head(head) };
         let said = said_of(vec![
-            m("user", "[Luna handoff 1, not typed by the user] This is a new conversation of session x, a lead."),
-            m("assistant", "Picked up from the handoff."),
+            m("user", "This is a new conversation of session x, a lead."),
+            m("assistant", "Picked up where it stood."),
             m("assistant", "Lane 2 is green."),
             m("user", "[From session p via Luna] And the third ask"),
             m("assistant", "Third: done."),

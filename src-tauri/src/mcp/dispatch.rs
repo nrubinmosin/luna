@@ -62,7 +62,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "agent",
         "approval",
         "folder",
-        "worktree",
         "tools",
         "autoDelete",
         "budgetTokens",
@@ -80,7 +79,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "screen",
         "interrupt",
         "scope",
-        "dropWorktree",
         "group",
         "state",
         "q",
@@ -92,7 +90,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "ids",
         "mode",
         "resumeOnRestart",
-        "force",
         "action",
         "quietSec",
         "drain",
@@ -127,8 +124,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
             "acked",
             "already",
             "nextCursor",
-            "worktreeRemoved",
-            "worktreeLeft",
             "scheduled",
             "n",
         ];
@@ -164,12 +159,6 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             "{name} is gone since Luna 0.11; the tools now: {}. luna_guide_get says which does what.",
             names().join(", ")
         ));
-    }
-    // The handoff's tool is no tool at all to a session it is not listed to:
-    // refused as one there is not, before its arguments are looked at, so the
-    // refusal says nothing of it (agents/handoff `may_list`).
-    if name == "luna_session_handoff" && !agents::handoff::may_list(caller) {
-        return failure(unknown_tool(name));
     }
     if let Err(e) = arguments_fit(name, a) {
         return failure(e);
@@ -428,17 +417,6 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
         "luna_power_set" => persons_chat_only(caller, name).and_then(|()| {
             crate::power::arm_for_agent(caller, a["action"].as_str().unwrap_or(""), a["quietSec"].as_u64(), a["drain"].as_bool())
         }),
-        // The caller's own chat, by its token: there is no other to name.
-        "luna_session_handoff" => match a["file"].as_str().map(str::trim).filter(|f| !f.is_empty()) {
-            Some(file) => agents::handoff(caller, file),
-            // How to write it: plain text to read, the guide's way.
-            None => {
-                return match agents::handoff::instructions(caller) {
-                    Ok(text) => json!({ "content": [{ "type": "text", "text": text }] }),
-                    Err(e) => failure(e),
-                };
-            }
-        },
         _ => Err(unknown_tool(name)),
     };
     match out {
@@ -563,9 +541,8 @@ fn delete(caller: &str, a: &Value) -> Result<Value, String> {
     if ids.is_empty() {
         return Err("ids is empty".into());
     }
-    let (drop, force) = (a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false));
     let one = |id: &str| -> Result<Value, String> {
-        match agents::delete(caller, id, drop, force) {
+        match agents::delete(caller, id) {
             Ok(r) => Ok(json!(r)),
             Err(_) if gone_already(caller, id) => Ok(json!({ "id": id, "already": "deleted" })),
             Err(e) => Err(e),

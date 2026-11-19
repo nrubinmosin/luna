@@ -8,11 +8,13 @@
 //! updated by one task that drains the inbox; views observe them, and frames
 //! are drawn on demand, so an idle window draws nothing.
 
+mod accounts;
 mod banner;
 mod board;
 #[cfg(any(test, feature = "shots"))]
 pub mod demo;
 pub mod desktop;
+pub mod dialogs;
 #[cfg(luna_test)]
 mod drive;
 pub mod dto;
@@ -20,10 +22,13 @@ mod font;
 mod host;
 mod import;
 mod keys;
+mod library;
 mod models;
 mod offscreen;
+pub mod panels;
 mod rename;
 mod root;
+mod settings;
 #[cfg(feature = "shots")]
 mod shots;
 mod sidebar;
@@ -65,7 +70,7 @@ pub struct Options {
     /// Off every display, never activated, off the taskbar: the test build
     /// run in the background, out of the way of the person at the screen.
     pub background: bool,
-    /// A file of keys to press in the window (drive.rs): the test build's
+    /// A file of lines the window acts on (drive.rs): the test build's
     /// `LUNA_TEST_DRIVE`, for a smoke run that may use no global input.
     #[cfg(luna_test)]
     pub drive_file: Option<std::path::PathBuf>,
@@ -165,6 +170,8 @@ pub(crate) fn start(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mu
     gpui_component::init(cx);
     term::bind_keys(cx);
     keys::bind(cx);
+    panels::bind_keys(cx);
+    dialogs::bind_keys(cx);
     let models = Models::new(host, theme, root::is_dark(cx.window_appearance()), cx);
     let mut dark = models.shell.read(cx).dark();
     theme::apply_to_components(&models.shell.read(cx).palette(), cx);

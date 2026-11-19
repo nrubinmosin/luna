@@ -6,9 +6,9 @@ pub(super) mod lines;
 pub(super) mod usage;
 
 use crate::agents::ask::live;
-use crate::agents::delivery::{still_starting, type_text, TypingInto, NO_LONGER_STANDS};
+use crate::agents::delivery::{still_starting, type_text, TypingInto};
 use crate::agents::held::DRAFT_ALERT_MS;
-use crate::agents::lost::{take_undelivered, worktrees_left_line};
+use crate::agents::lost::take_undelivered;
 use crate::agents::notifier::lines::{
     count_notice, is_wake, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
     BREAKER_WINDOW_MS,
@@ -450,34 +450,6 @@ pub(super) fn notifier() {
                 news.entry(caller.clone()).or_default().push(line.clone());
             }
         }
-        // Looked at with the registry let go: a move's state is under the
-        // handoff records' lock, taken before the registry's where both are.
-        let withheld: Vec<(String, String)> = news
-            .iter()
-            .flat_map(|(caller, lines)| lines.iter().map(move |line| (caller, line)))
-            .filter(|(caller, line)| crate::agents::handoff::withheld(caller, line))
-            .map(|(caller, line)| (caller.clone(), line.clone()))
-            .collect();
-        if !withheld.is_empty() {
-            for (caller, line) in &withheld {
-                if !crate::agents::handoff::taken_late(caller, line) {
-                    crate::log::info(
-                        "agents",
-                        &format!(
-                            "handoff notice to {} dropped: a move of it is under way, or the ask it came with is closed",
-                            label(caller)
-                        ),
-                    );
-                }
-                if let Some(lines) = news.get_mut(caller) {
-                    lines.retain(|l| l != line);
-                }
-            }
-            news.retain(|_, lines| !lines.is_empty());
-            reg().lock().unwrap_or_else(|e| e.into_inner()).news.retain(|queued| !withheld.contains(queued));
-            crate::agents::save_chats();
-        }
-        placed_now(&mut news);
         for caller in news.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
@@ -496,19 +468,6 @@ pub(super) fn notifier() {
                 .collect()
         };
         for caller in places.keys() {
-            by_caller.entry(caller.clone()).or_default();
-        }
-        // Leads under a session that went on in a fresh conversation: a line
-        // that rides as well (handoff/lead.rs `handed_off`).
-        let mut handed: HashMap<String, crate::agents::handoff::HandedOff> = {
-            let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            r.handed_off
-                .iter()
-                .filter(|(caller, _)| r.known.get(*caller).is_some_and(|k| !k.waiting))
-                .map(|(caller, h)| (caller.clone(), h.clone()))
-                .collect()
-        };
-        for caller in handed.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
         idle_looks.retain(|c, _| by_caller.contains_key(c));
@@ -558,10 +517,6 @@ pub(super) fn notifier() {
                     Some((Some(mut line), how)) => {
                         // Where its context stands, past its level (`budget_news`).
                         line.push_str(&context_rider(id));
-                        // Told once, with whatever is told first.
-                        if k.parent.as_deref() == Some(caller.as_str()) {
-                            line.push_str(&worktrees_left_line(id));
-                        }
                         if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) {
                             line.push_str(&format!(
                                 " Luna stops telling you of its turns and jobs now ({BREAKER_NOTICES} notices in {} minutes); its prompts and questions still come, and a person typing into either chat lifts this.",
@@ -608,27 +563,18 @@ pub(super) fn notifier() {
             }
             let quota_lines = quota.remove(&caller).unwrap_or_default();
             lines.extend(quota_lines.iter().map(|n| n.line.clone()));
-            // Each with the words it is typed in now, which deliver_notice
-            // looks at again where it goes in (handoff `as_told`).
-            let mut news_lines: Vec<(String, String)> = news
-                .remove(&caller)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|line| (crate::agents::handoff::as_told(&caller, &line), line))
-                .collect();
-            lines.extend(news_lines.iter().map(|(told, _)| told.clone()));
+            let mut news_lines: Vec<String> = news.remove(&caller).unwrap_or_default();
+            lines.extend(news_lines.iter().cloned());
             let spawn_lines = spawns.remove(&caller).unwrap_or_default();
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
             let breaches = budget.remove(&caller).unwrap_or_default();
             let refused = places.remove(&caller);
-            let handed_off = handed.remove(&caller);
             let mut budget_lines = Vec::new();
             if let Some(oldest) = riders
                 .iter()
                 .filter_map(|(_, _, how, _)| rides_since(how))
                 .chain(breaches.iter().map(|n| n.since))
                 .chain(refused.as_ref().map(|p| p.since))
-                .chain(handed_off.as_ref().map(|h| h.since))
                 .min()
             {
                 if riders_go(!lines.is_empty(), riders.len() == items.len(), oldest, now_ms(), crate::activity::summary().busy) {
@@ -641,11 +587,7 @@ pub(super) fn notifier() {
                     // Told once it is in, as a queued line is (`deliver_notice`).
                     if let Some(line) = refused.map(|p| p.line()) {
                         lines.push(line.clone());
-                        news_lines.push((line.clone(), line));
-                    }
-                    if let Some(line) = handed_off.map(|h| h.line()) {
-                        lines.push(line.clone());
-                        news_lines.push((line.clone(), line));
+                        news_lines.push(line);
                     }
                 }
             }
@@ -686,11 +628,9 @@ pub(super) fn notifier() {
 }
 
 /// Whether a notice for `caller` waits, whatever it says: the last one is
-/// still going in, and starts a turn of its own; or a handoff of it is under
-/// way, and what is said now goes to the new conversation once its prompt is
-/// in (agents/handoff).
+/// still going in, and starts a turn of its own.
 pub(in crate::agents) fn notice_waits(caller: &str) -> bool {
-    TypingInto::under_way(caller) || crate::agents::handoff::holds_text(caller)
+    TypingInto::under_way(caller)
 }
 
 /// A debt a notice was put together on has become another since (`Owed::rev`), or
@@ -703,10 +643,9 @@ fn debts_moved(caller: &str, told: &[(String, Settled, Owed)]) -> bool {
 }
 
 /// The one exclusion between text going into a session and what changes whose
-/// it is or which conversation it is on: by session, those a notice is going
-/// into or telling of now (and those held sends and sends are typing into,
-/// `going_into`), and those being handed over to the person (agents/handover.rs)
-/// or having a handoff scheduled (agents/handoff). Either waits for the other,
+/// it is: by session, those a notice is going into or telling of now (and
+/// those held sends and sends are typing into, `going_into`), and those being
+/// handed over to the person (agents/handover.rs). Either waits for the other,
 /// so neither lands between a notice's last look at its debts and its text
 /// going in.
 #[derive(Default)]
@@ -722,8 +661,7 @@ fn gate() -> &'static (std::sync::Mutex<Gate>, std::sync::Condvar) {
 
 /// A notice's hold on its caller and the sessions it tells of, from its last
 /// look at their debts until its text is in (`tell_of`), or text's hold on the
-/// session it is typed into (`going_into`): a handover or a handoff of any of
-/// them waits.
+/// session it is typed into (`going_into`): a handover of any of them waits.
 pub(in crate::agents) struct Telling(Vec<String>);
 
 impl Drop for Telling {
@@ -743,17 +681,12 @@ impl Drop for Telling {
 }
 
 /// The hold a notice to `caller` about `told` goes in under, if it still may: none
-/// of its sessions is being handed over, its caller has no handoff scheduled or
-/// being scheduled, and its debts are as it found them. All of it is looked at
-/// under the gate, so a handover or a handoff either waits for this notice or
-/// is in place before it, and it goes nowhere.
+/// of its sessions, its caller included, is being handed over, and its debts
+/// are as it found them. All of it is looked at under the gate, so a handover
+/// either waits for this notice or is in place before it, and it goes nowhere.
 pub(in crate::agents) fn tell_of(caller: &str, told: &[(String, Settled, Owed)]) -> Option<Telling> {
     let mut g = gate().0.lock().unwrap_or_else(|e| e.into_inner());
-    if told.iter().any(|(id, ..)| g.handing.contains(id))
-        || g.handing.contains(caller)
-        || crate::agents::handoff::holds_text(caller)
-        || debts_moved(caller, told)
-    {
+    if told.iter().any(|(id, ..)| g.handing.contains(id)) || g.handing.contains(caller) || debts_moved(caller, told) {
         return None;
     }
     let mut ids: Vec<String> = told.iter().map(|(id, ..)| id.clone()).collect();
@@ -765,12 +698,11 @@ pub(in crate::agents) fn tell_of(caller: &str, told: &[(String, Settled, Owed)])
 }
 
 /// The hold text other than a notice goes into session `id` under (a held
-/// send, a send), if it still may: nothing is handing `id` over and no handoff
-/// of it is scheduled or being scheduled, looked at under the gate, so a
-/// handoff scheduled now waits for this text to be in.
+/// send, a send), if it still may: nothing is handing `id` over, looked at
+/// under the gate, so a handover started now waits for this text to be in.
 pub(in crate::agents) fn going_into(id: &str) -> Option<Telling> {
     let mut g = gate().0.lock().unwrap_or_else(|e| e.into_inner());
-    if g.handing.contains(id) || crate::agents::handoff::holds_text(id) {
+    if g.handing.contains(id) {
         return None;
     }
     *g.telling.entry(id.to_string()).or_default() += 1;
@@ -832,8 +764,8 @@ struct Notice {
     quota_lines: Vec<QuotaNews>,
     /// The spawns cut off by a core going.
     spawn_lines: Vec<(u64, String)>,
-    /// The queued lines, as typed and as queued.
-    news_lines: Vec<(String, String)>,
+    /// The queued lines.
+    news_lines: Vec<String>,
     /// The budgets passed.
     budget_lines: Vec<BudgetNews>,
     /// How long it waited for company (`hold_for_company`), for the log: what
@@ -877,42 +809,6 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
         crate::log::info("agents", &format!("notice to {} not typed: what it told of changed as it was about to go in", label(caller)));
         return;
     };
-    // A queued line says what it was put together to say only while the
-    // conversation it is for is still the chat's (a handoff's continuation,
-    // handoff `as_told`), and a handoff's notice goes in only with no move of
-    // the chat under way, a threshold notice only while the ask it was queued
-    // with is open, auto-handoff on, and the chat on the conversation it asks
-    // (handoff `withheld`, `notice_here`): else the next look puts it in
-    // other words, or drops it. Looked at here and again once the person's
-    // keys are held (`type_text`), right before the text goes in: a `/clear`
-    // or `/new` of theirs between the two would otherwise take the
-    // continuation into a conversation that never asked for it.
-    let stands = || {
-        news_lines.iter().all(|(told, line)| {
-            !crate::agents::handoff::withheld(caller, line)
-                && crate::agents::handoff::notice_here(caller, line)
-                && crate::agents::handoff::as_told(caller, line) == *told
-        })
-    };
-    // A `/clear` or `/new` the person sent just before their keys were held
-    // is on its way to a CLI that has not acted on it yet, and the
-    // conversation still reads as the old one. So a line bound to its
-    // conversation, a continuation or a threshold notice (handoff
-    // `keyed_to_conversation`), also goes in only with no key of theirs since this look,
-    // nor within the quiet the look before it asked for (`ready_for_notice`),
-    // which covers the stretch up to here: otherwise nothing goes in, and
-    // the next look sees where their keys took the chat.
-    let bound = news_lines.iter().any(|(_, line)| crate::agents::handoff::keyed_to_conversation(line));
-    let keys_at = pty.typed_at_ms(caller);
-    let no_keys_since = || pty.typed_at_ms(caller) == keys_at && pty.typed_ago_ms(caller).is_none_or(|ms| ms >= TYPING_QUIET_MS);
-    let stands_held = || stands() && (!bound || no_keys_since());
-    if !stands() {
-        crate::log::info(
-            "agents",
-            &format!("notice to {} not typed: a queued line's conversation or move changed as it was about to go in", label(caller)),
-        );
-        return;
-    }
     #[cfg(test)]
     tests::between_check_and_typing(caller);
     // The turn it starts: the next, or for a background caller that has begun
@@ -935,7 +831,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             Err(e) => (Err(e), 0),
         }
     } else {
-        (type_text(pty, caller, text, before.map(|t| t.turn), baseline, &stands_held), baseline + 1)
+        (type_text(pty, caller, text, before.map(|t| t.turn), baseline), baseline + 1)
     };
     // In, or not to be: a handover waiting on it goes ahead.
     drop(telling);
@@ -992,21 +888,16 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
                 .filter(|(_, how, _)| matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited))
                 .map(|(id, _, _)| id.clone())
                 .collect();
-            let told_left: Vec<String> =
-                settled.iter().map(|(id, _, _)| id.clone()).filter(|id| parent_of(id).as_deref() == Some(caller)).collect();
             let mut stopped = Vec::new();
             // Read before the registry's lock: where each helper's turns stand.
             let ended: HashMap<String, u32> =
                 settled.iter().filter_map(|(id, _, _)| Some((id.clone(), crate::activity::turn_state(id)?.turns_ended))).collect();
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            for id in &told_left {
-                r.worktrees_left.remove(id);
-            }
             // A turn it did not start stays unmarked: at worst the caller hears
             // of a turn once too often, never misses one.
             if started && !joined {
                 let told_of: Vec<String> = settled.iter().map(|(id, _, _)| id.clone()).collect();
-                let wake = news_lines.iter().any(|(_, line)| is_wake(line));
+                let wake = news_lines.iter().any(|line| is_wake(line));
                 notice_turn(&mut r, caller, turn, &told_of, wake);
             }
             for (id, how, told) in settled {
@@ -1020,7 +911,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             for n in quota_lines {
                 r.quota_told.insert(n.key, n.told);
             }
-            r.news.retain(|(c, line)| !(c == caller && news_lines.iter().any(|(_, queued)| queued == line)));
+            r.news.retain(|(c, line)| !(c == caller && news_lines.contains(line)));
             places_told(&mut r, caller, &news_lines);
             // Told: not to be told again by a core after this one.
             let told_news = !news_lines.is_empty();
@@ -1041,57 +932,22 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));
             }
-            if !told_lost.is_empty() || !told_left.is_empty() || told_news || told_spawns || told_budgets {
+            if !told_lost.is_empty() || told_news || told_spawns || told_budgets {
                 crate::background::save();
             }
             for id in stopped {
                 breaker_tripped(caller, &id);
             }
         }
-        Err(e) if e == NO_LONGER_STANDS => crate::log::info(
-            "agents",
-            &format!(
-                "notice to {} not typed: a queued line's conversation or move changed, or the person typed, as their keys were held",
-                label(caller)
-            ),
-        ),
         Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(caller))),
     }
 }
 
-/// The queued lines of each caller's notice, `news`, put together now: a
-/// threshold notice its chat cannot be asked in now (the conversation it asks
-/// not known, or another: handoff `notice_here`) is left out of this one and
-/// stays queued, so it holds up nothing else the notice says (a helper's
-/// answer); the beat closes its ask once the chat is found elsewhere, and
-/// the next look takes it once it is placed. Whether one still stands where
-/// it goes in is looked at there again (`deliver_notice`).
-pub(in crate::agents) fn placed_now(news: &mut HashMap<String, Vec<String>>) {
-    for (caller, lines) in news.iter_mut() {
-        lines.retain(|line| crate::agents::handoff::notice_here(caller, line));
-    }
-    news.retain(|_, lines| !lines.is_empty());
-}
-
 /// The refusals for want of places a notice that went into `caller` told it of
-/// (`news_lines`, as typed and as queued), gone with it. A refusal since the
-/// line was put together makes another line, told next.
-/// So too the leads it was told went on in a fresh conversation.
-fn places_told(r: &mut Registry, caller: &str, news_lines: &[(String, String)]) {
-    r.places_refused.retain(|c, p| !(c == caller && news_lines.iter().any(|(_, queued)| *queued == p.line())));
-    r.handed_off.retain(|c, h| !(c == caller && news_lines.iter().any(|(_, queued)| *queued == h.line())));
-}
-
-/// A notice of the queued lines `news_lines` (as typed, as queued) typed into
-/// `caller` as the notifier would, `between` run after its first look and
-/// before its text goes in (`tests::between_check_and_typing`): for the tests
-/// of what a queued line may say where.
-#[cfg(test)]
-pub(in crate::agents) fn deliver_news_for_test(caller: &str, news_lines: Vec<(String, String)>, between: Box<dyn FnOnce() + Send>) {
-    tests::run_between(caller, between);
-    let text = format!("{NOTICE_TAG} {}", news_lines.iter().map(|(told, _)| told.as_str()).collect::<Vec<_>>().join(" "));
-    let notice = Notice { news_lines, ..Notice::default() };
-    deliver_notice(crate::pty::manager(), caller, &text, notice);
+/// (`news_lines`), gone with it. A refusal since the line was put together
+/// makes another line, told next.
+fn places_told(r: &mut Registry, caller: &str, news_lines: &[String]) {
+    r.places_refused.retain(|c, p| !(c == caller && news_lines.iter().any(|queued| *queued == p.line())));
 }
 
 /// A notice that went into `caller` (`text`) settles what it told of `id`.
@@ -1520,12 +1376,12 @@ mod tests {
         assert!(told.contains("pt-lead"), "{told}");
         // Another refused while that line went in: not what was told.
         refuse("pt-other");
-        places_told(&mut reg().lock().unwrap(), "pt-top", &[(told.clone(), told.clone())]);
+        places_told(&mut reg().lock().unwrap(), "pt-top", std::slice::from_ref(&told));
         let next = line().expect("told next");
         assert!(next.contains("pt-lead, pt-other"), "{next}");
-        places_told(&mut reg().lock().unwrap(), "pt-other", &[(next.clone(), next.clone())]);
+        places_told(&mut reg().lock().unwrap(), "pt-other", std::slice::from_ref(&next));
         assert!(line().is_some(), "another chat's notice tells this one nothing");
-        places_told(&mut reg().lock().unwrap(), "pt-top", &[(next.clone(), next)]);
+        places_told(&mut reg().lock().unwrap(), "pt-top", &[next]);
         assert_eq!(line(), None, "told once");
         // A refusal after that is a new one.
         refuse("pt-lead");
@@ -1601,7 +1457,7 @@ mod tests {
     /// marked as one on a notice: its parent hears of that turn as ever.
     #[test]
     fn a_lead_kept_up_by_its_own_background_work_hears_of_its_helper_on_stdin() {
-        let (a, id) = ("ln-lead", "ln-helper");
+        let (a, id) = ("ln-stdin-lead", "ln-stdin-helper");
         register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({ "background": true }));
         register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, serde_json::json!({ "background": true }));
         crate::background::test_helper(a, "C:\\acc", None, true);

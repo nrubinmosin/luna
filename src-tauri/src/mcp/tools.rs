@@ -55,13 +55,13 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_get",
-            "description": "One session whole: its row with settings, folder, cwd, transcript, worktree, branch, sha, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask (another's ask: scope all); a helper's worktree: lastCommit, status.",
+            "description": "One session whole: its row with settings, folder, cwd, transcript, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask (another's ask: scope all).",
             "inputSchema": s(json!({ "id": string, "scope": scope }), &["id"]),
             "annotations": reads
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: your mode or nearest below (modeFrom), else the account's defaults (luna_account_get).",
+            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: your mode or nearest below (modeFrom), else the account's defaults (luna_account_get). Luna does not create or remove worktrees; for isolation create one yourself with `git worktree add`, pass it as `folder`, remove it when done.",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,
@@ -74,7 +74,6 @@ pub(super) fn tools() -> Value {
                 "readOnly": { "type": "boolean", "description": "claude: no edit tools, Bash still writes; codex: read-only sandbox" },
                 "agent": { "type": "string", "description": "claude: its --agent" },
                 "folder": { "type": "string", "description": "default: yours" },
-                "worktree": { "type": "boolean", "description": "its own git worktree" },
                 "name": string,
                 "tools": { "type": "boolean", "description": "these tools too (one level)" },
                 "autoDelete": { "type": "boolean", "description": "default true: deleted 30 min after its answer reached you" },
@@ -126,8 +125,8 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_delete",
-            "description": "Stop and remove your helpers, id or ids; one gone already answers already. dropWorktree: its worktree and worktree-* branch too, unless another session is in it; refused if that loses work, unless force.",
-            "inputSchema": s(json!({ "id": string, "ids": strings, "dropWorktree": flag, "force": flag, "requestKey": key }), &[]),
+            "description": "Stop and remove your helpers, id or ids; one gone already answers already. Luna removes no worktree: one you made for a helper is yours to remove.",
+            "inputSchema": s(json!({ "id": string, "ids": strings, "requestKey": key }), &[]),
             "annotations": ends
         },
         {
@@ -189,21 +188,6 @@ pub(super) fn names() -> Vec<String> {
     tools().as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect()
 }
 
-/// The tool a person's chat with Luna's tools, and a lead while auto-handoff
-/// for leads is on, is offered besides the rest (agents/handoff `may_list`).
-/// No target: it acts on the caller's own session, the one its token is. It
-/// answers only while that session is asked for a handoff: without `file` how
-/// to write it, the procedure included (facts.rs `how_to`); with one it hands
-/// off.
-pub(super) fn handoff_tool() -> Value {
-    json!({
-        "name": "luna_session_handoff",
-        "description": "Go on in a fresh conversation of this session from a handoff you write, once a notice from Luna asks for one; unasked it refuses. Without file: how to write it, and where. With file (Markdown, absolute path): Luna takes it and switches once your turn ends.",
-        "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } }, "required": [] },
-        "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false }
-    })
-}
-
 /// What a background Claude Code helper's CLI calls before a tool runs and
 /// with every `AskUserQuestion` (`--permission-prompt-tool`): never the
 /// model's to call, and offered only to such a helper.
@@ -220,16 +204,12 @@ fn permission_tool() -> Value {
     })
 }
 
-/// The tools a caller is offered: Luna's own when it was given them, the
-/// handoff when it is a person's chat with them, and the permission handler
-/// when it is a background Claude Code helper. Nothing of Codex calls that
-/// one: a Codex helper's model would only see a tool it must not use.
+/// The tools a caller is offered: Luna's own when it was given them, and the
+/// permission handler when it is a background Claude Code helper. Nothing of
+/// Codex calls that one: a Codex helper's model would only see a tool it must
+/// not use.
 pub(super) fn tools_for(caller: &str) -> Value {
     let mut list: Vec<Value> = if agents::has_tools(caller) { tools().as_array().cloned().unwrap_or_default() } else { Vec::new() };
-    if agents::handoff::may_list(caller) {
-        list.push(handoff_tool());
-        agents::handoff::listed(caller);
-    }
     if crate::background::asks_through_luna(caller) {
         list.push(permission_tool());
     }

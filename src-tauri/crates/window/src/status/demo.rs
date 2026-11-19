@@ -86,6 +86,8 @@ fn base(name: &'static str, theme: ThemePref) -> Scene {
         failures: Vec::new(),
         events: Vec::new(),
         act: None,
+        drive: Vec::new(),
+        output: None,
     }
 }
 

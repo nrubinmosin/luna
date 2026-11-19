@@ -10,7 +10,7 @@ mod asking;
 mod background;
 mod backlog;
 mod boundary;
-mod checks;
+mod checkout;
 mod claude;
 mod cli;
 mod codex;
@@ -28,7 +28,7 @@ mod endpoint;
 mod fingerprint;
 #[cfg(test)]
 mod golden;
-mod guard;
+mod held;
 mod http;
 mod hub;
 mod ipc;
@@ -55,7 +55,6 @@ mod stamped;
 mod sysmenu;
 mod throttle;
 mod watchdog;
-mod worktree;
 
 /// The transcript readers as pure functions of a file's bytes, for the fuzz
 /// targets in fuzz/: the one way into the crate from outside it.
@@ -185,14 +184,9 @@ fn with_dot(base: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
 macro_rules! app_handler {
     () => {
         tauri::generate_handler![
-            account_settings::recommended_settings,
             account_settings::settings_sync_state,
             account_settings::set_settings_parent,
             account_settings::set_settings_sync_on_start,
-            account_settings::read_account_config,
-            account_settings::check_account_config,
-            account_settings::format_account_config,
-            account_settings::write_account_config,
             accounts::list_accounts,
             accounts::create_account,
             accounts::delete_account,
@@ -204,25 +198,15 @@ macro_rules! app_handler {
             agents::spawn::set_max_helpers,
             agents::spawn::set_helper_context_pct,
             agents::spawn::set_helper_mode,
-            agents::spawn::set_lead_handoff,
             cli::cli_status,
             cli::cli_update_now,
             cli::cli_versions,
-            cli::cli_use_version,
-            cli::cli_set_channel,
-            cli::cli_mark_bad,
-            cli::cli_mark_good,
-            cli::cli_clear_mark,
-            cli::cli_canary_dismiss,
             claude::defaults::claude_defaults,
             claude::models::claude_models,
             claude::limits::account_limits,
             claude::trust::claude_folder_trusted,
             pty::folder::chat_folder_check,
             codex::defaults::codex_defaults,
-            codex::hooks::codex_hooks_start,
-            codex::hooks::set_codex_hooks_default,
-            codex::hooks::keep_codex_hooks,
             codex::limits::codex_limits,
             codex::models::codex_models,
             codex::trust::codex_trusted_roots,
@@ -237,17 +221,13 @@ macro_rules! app_handler {
             library::library_set_folder_skill,
             library::library_set_folder_instructions,
             library::library_skip,
-            library::library_resolve,
-            library::library_put_back,
-            library::library_kept,
-            library::library_diff,
+            library::library_take_in,
             library::library_read,
             library::library_write,
             library::library_check_skill,
             library::library_check_system,
             library::library_system_compare,
             library::library_system_reset,
-            library::library_system_adopt,
             library::library_new_skill,
             library::library_delete_skill,
             library::library_new_instructions,
@@ -267,11 +247,8 @@ macro_rules! app_handler {
             settings::get_accounts_root,
             settings::set_accounts_root,
             watchdog::ui_heartbeat,
-            worktree::fetch_before_worktree,
-            worktree::set_fetch_before_worktree,
             asking::waiting_marker,
             asking::set_waiting_marker,
-            worktree::inspect_worktrees,
         ]
     };
 }
@@ -377,6 +354,7 @@ fn run_webview() {
             // The previous run's end is reported before anything new is logged.
             let handle = app.handle().clone();
             lifecycle::start(Box::new(move |f| handle.run_on_main_thread(f).is_ok()));
+            applied::drop_0_19_ledger();
             // The sessions, the hooks' listener, the agents, activity and power
             // all run in the core (coreproc.rs); the window finds or starts it.
             corelink::start();

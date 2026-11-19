@@ -7,8 +7,8 @@ own, and lets sessions orchestrate other sessions through an MCP server.
 Two principles shape everything else:
 
 - **Session state lives in the CLI.** Luna multiplexes terminals, folders and
-  accounts; transcripts, titles, status and worktrees are the CLIs' own and are
-  read from their files ([ADR-0001](../adr/0001-session-state-lives-in-the-cli.md)).
+  accounts; transcripts, titles, status and worktrees are the CLIs' own (Luna makes,
+  inspects and removes no worktree) and are read from their files ([ADR-0001](../adr/0001-session-state-lives-in-the-cli.md)).
 - **Two providers, two layers.** `claude/` and `codex/` each describe their CLI
   in its own words; only mechanics are shared
   ([ADR-0005](../adr/0005-two-providers-as-independent-layers.md),
@@ -19,11 +19,11 @@ Two principles shape everything else:
 | Layer | Choice |
 | --- | --- |
 | Shell | Tauri 2: Rust core + system WebView (WebView2 on Windows); the native window on GPUI (`crates/window`, [native-window.md](native-window.md)), the default from 0.20 |
-| UI | React 19, TypeScript, Vite; Zustand (+ `persist` in localStorage) for UI state |
-| Terminals | xterm.js + FitAddon (+ WebGL addon) |
-| Editor | CodeMirror 6, for account settings files and the library |
+| UI | GPUI (`gpui-pre`) with gpui-component, in the `luna-window` crate; the WebView window (until it is retired): React 19, TypeScript, Vite, Zustand |
+| Terminals | our own over `alacritty_terminal`; the WebView window: xterm.js + FitAddon (+ WebGL addon) |
+| Editor | gpui-component's, for the library's files; the WebView window: CodeMirror 6 |
 | pty | `portable-pty`: ConPTY on Windows, openpty on Unix |
-| Look | xp.css, redrawn from theme tokens |
+| Look | `theme.rs` (retro, high-contrast, static); the WebView window: xp.css, redrawn from theme tokens |
 
 ## Process model
 
@@ -35,7 +35,7 @@ Two principles shape everything else:
 | **Exit watcher** | `--watch-exit <pid>`: logs how the previous process ended | `lifecycle.rs` |
 | **Keeper** (off Windows) | `--keep-ties`: ends a dead core's helper jobs | `keeper/` |
 
-The core owns the pty manager, the **hub** (loopback HTTP for hooks, the guard
+The core owns the pty manager, the **hub** (loopback HTTP for hooks
 and MCP), the agents registry and notifier, activity sampling, power, and
 background helpers. One core per data dir (`core.lock`); it listens on an
 endpoint of its own, a named pipe on Windows and a socket in `<data>/core/`
@@ -56,7 +56,7 @@ flowchart LR
     CC["corecmd.rs<br/>command dispatch"]
     PTY["pty/<br/>sessions + scrollback"]
     BG["background/<br/>headless helpers"]
-    HUB["hub.rs<br/>/hook /guard /mcp"]
+    HUB["hub.rs<br/>/hook /mcp"]
     AG["agents/ + mcp.rs<br/>registry, notifier"]
     ACT["activity/ + procs/<br/>busy / waiting / idle"]
     PW["power/"]
@@ -130,7 +130,7 @@ sequenceDiagram
   R->>B: start: spec, first turn's prompt
   B->>S: one headless run (claude -p / codex exec), prompt on stdin
   R->>R: owe_from: record the caller's debt for the answer
-  R-->>H: result: id, settings, sameFolder, worktree
+  R-->>H: result: id, settings, sameFolder
   H-->>A: tool result
   Note over A: caller may end its turn
   S-->>B: turn ends (its event stream)
@@ -177,7 +177,7 @@ and the helper goes on as its parent's.
 | Helpers, their queues and ties | core | `<data>/helpers.json` |
 | What agents are owed by the person's chats, held sends, spawns under way, untold lines | core | `<data>/chat-ties.json` |
 | Spawn history | core | `<data>/agents.jsonl` |
-| Library ledger | core and window | `<data>/library-state.json`, `library-blobs/` |
+| Library ledger | core and window | `<data>/library-state.json` |
 | Log | both | `<data>/luna.log` |
 
 A settings file that will not read or parse is an error, never the defaults:
@@ -189,14 +189,13 @@ the cache keeps what it read last and a write refuses (`settings.rs`).
 | --- | --- | --- |
 | Agents and MCP tools | [agents.md](agents.md) | `agents/`, `mcp.rs`, `hub.rs`, `agentlog.rs` |
 | Background helpers | [background-helpers.md](background-helpers.md) | `background/`, `agents/persist.rs`, `agents/resume.rs` |
-| pty and launch | [pty-and-launch.md](pty-and-launch.md) | `pty/`, `claude/launch.rs`, `codex/launch.rs`, `guard.rs`, `golden.rs` |
+| pty and launch | [pty-and-launch.md](pty-and-launch.md) | `pty/`, `claude/launch.rs`, `codex/launch.rs`, `golden.rs` |
 | Providers | [providers.md](providers.md) | `claude/`, `codex/`, `cli.rs`, `provider.rs` |
 | Accounts and account files | [accounts.md](accounts.md) | `accounts.rs`, `account_settings/`, `checks.rs`, `account_use.rs` |
 | Library | [library.md](library.md) | `library/` |
-| Worktrees | [worktrees.md](worktrees.md) | `worktree/` |
 | Power and lifecycle | [power-and-lifecycle.md](power-and-lifecycle.md) | `activity/`, `procs/`, `keeper/`, `power/`, `asking.rs`, `coreproc.rs`, `lifecycle.rs` |
 | Desktop services | [desktop-services.md](desktop-services.md) | `desktop/`, `windows/installer.nsi`, `scripts/macos-app.sh` |
-| Frontend | [frontend.md](frontend.md) | `src/` |
+| Frontend (the window) | [frontend.md](frontend.md) | `src-tauri/crates/window/`, `native.rs`, `native/`; `src/` (WebView window) |
 
 Smaller modules:
 

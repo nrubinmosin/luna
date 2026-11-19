@@ -66,20 +66,15 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   // trust included, as its start would refuse it. A helper opened as a chat
   // goes on in the folder it already ran in.
   if (!spec.fromHelper && accountPath) {
-    const { refusal } = await chatFolderCheck(
-      spec.provider,
-      accountPath,
-      spec.folder,
-      spec.worktree && !spec.inWorktree
-    );
+    const { refusal } = await chatFolderCheck(spec.folder, spec.worktree && !spec.inWorktree);
     if (refusal) throw new Error(refusal);
   }
   if (spec.trust && !spec.fromHelper && accountPath && !(await p.folderTrusted(accountPath, spec.folder))) {
     await p.trustFolder(accountPath, spec.folder);
   }
 
-  // Both CLIs make their own worktree from `--worktree`; its path is learned
-  // from the session once it runs (useSessionWatch).
+  // Both CLIs make their own worktree from `--worktree` and Luna removes none;
+  // its path is learned from the session once it runs (useSessionWatch).
   const worktreePath: string | null = spec.inWorktree ?? null;
 
   const { folders } = useChats.getState();

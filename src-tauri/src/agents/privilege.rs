@@ -459,7 +459,7 @@ fn confirm_above<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
 
 /// The setting, changed to `on` where that keeps the cap or `confirm` (the
 /// person, in the window) agrees to lifting it; as it was otherwise.
-fn set_above(on: bool, confirm: impl FnOnce() -> bool) -> Result<bool, String> {
+pub(crate) fn set_above(on: bool, confirm: impl FnOnce() -> bool) -> Result<bool, String> {
     static GATE: AboveGate = AboveGate::new();
     GATE.set(on, helpers_above_caller, |v| crate::settings::update(|s| s.helpers_above_caller = v), confirm)
 }

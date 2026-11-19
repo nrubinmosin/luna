@@ -14,17 +14,15 @@ use std::path::{Path, PathBuf};
 /// What the core is compiled from beside `src/`, `Cargo.toml` and
 /// `Cargo.lock`, relative to the crate: build.rs itself, and the files an
 /// `include_str!` or `include_bytes!` outside a test reaches outside `src/` —
-/// the CLI policy, whose `minSafe` a release may raise alone (cli/known_good.rs),
-/// and the system texts Luna serves: the handoff's instructions, its roles'
-/// defaults and notes (library/system.rs).
+/// the system texts Luna serves: its roles' defaults and notes
+/// (library/system.rs). The CLI floors, which a release may raise alone, are in
+/// `src/` (cli.rs `floor`).
 /// What `tauri::generate_context!` compiles in (`tauri.conf.json`,
 /// `capabilities/`, `permissions/`, `icons/`, the frontend) is the window's: the
 /// core never builds a Tauri app (lib.rs `run`, coreproc.rs). So is the tray's
 /// icon in `icons/` (desktop/tray.rs): the core never makes a tray.
 pub const INPUTS: &[&str] = &[
     "build.rs",
-    "cli-known-good.json",
-    "resources/skills/session-handoff/SKILL.md",
     "resources/system/role-chat.md",
     "resources/system/role-lead.md",
     "resources/system/role-helper.md",
@@ -95,23 +93,23 @@ mod tests {
         dir
     }
 
-    /// A release that changes only the CLI policy (`cli-known-good.json`, its
-    /// `minSafe`) is a new core: a window of it must not attach to the old
-    /// one, which would go on enforcing the old policy.
+    /// A release that changes only the CLI policy (a floor in cli.rs) is a
+    /// new core: a window of it must not attach to the old one, which would
+    /// go on enforcing the old policy.
     #[test]
     fn a_policy_only_change_is_a_new_core() {
         let root = scratch("policy");
         for (f, text) in [
             ("src/lib.rs", "fn main() {}\n"),
+            ("src/cli.rs", "const CLAUDE_FLOOR: &str = \"2.1.300\";\n"),
             ("build.rs", "fn main() {}\n"),
             ("Cargo.toml", "[package]\nname = \"luna\"\nversion = \"1.0.0\"\n"),
             ("Cargo.lock", "[[package]]\nname = \"luna\"\nversion = \"1.0.0\"\n"),
-            ("cli-known-good.json", "{\"claude\":{\"minSafe\":\"2.1.300\"}}\n"),
         ] {
             std::fs::write(root.join(f), text).unwrap();
         }
         let before = core_fingerprint(&root, "");
-        std::fs::write(root.join("cli-known-good.json"), "{\"claude\":{\"minSafe\":\"2.1.319\"}}\n").unwrap();
+        std::fs::write(root.join("src/cli.rs"), "const CLAUDE_FLOOR: &str = \"2.1.319\";\n").unwrap();
         assert_ne!(core_fingerprint(&root, ""), before, "the policy is compiled in");
         // A version bump alone is not.
         let after = core_fingerprint(&root, "");
@@ -202,7 +200,7 @@ mod tests {
                 }
             }
         }
-        assert!(!outside.is_empty(), "the scan found nothing: cli-known-good.json at least is compiled in");
+        assert!(!outside.is_empty(), "the scan found nothing: the role texts at least are compiled in");
         // The window's icons are no input of the core's (INPUTS).
         for f in outside.iter().filter(|f| !f.starts_with("icons/")) {
             assert!(INPUTS.contains(&f.as_str()), "{f} is compiled into the core but not in fingerprint::INPUTS");

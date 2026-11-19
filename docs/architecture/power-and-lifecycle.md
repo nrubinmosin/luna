@@ -271,8 +271,28 @@ another program's and is left alone.
   `core.json` whose pid is dead, runs restarts one at a time. Before it says
   anything it checks that the endpoint's server is the pid `core.json` names. A
   core of another build with no sessions is replaced at once; with sessions only
-  on a button. A `core.json` with a token is a core of Luna 0.11 or before
-  (protocol 1, `corelink/v1.rs`): the window says hello on its loopback port
+  on a button. A core of an older version whose sessions were stopped for an
+  update (`Welcome.stopped_for_update`: `Stop::Update` neither called off nor
+  lapsed) and are all helpers between turns counted only for what their turns
+  left running (`Welcome.left_only`, read with the count under one lock,
+  `background::running_counts`) is replaced too (`Verdict::ReplaceLeftOnly`):
+  the person agreed to that stop, and the core's going ends those jobs. One no
+  update stopped (left running by a newer Luna installed by hand beside it, say)
+  is asked about as ever. It is asked to stop only so (`ifLeftOnly`,
+  coreproc.rs `left_only_now`): it looks again, closing helper turns off under
+  the registry's lock as it looks, and refuses with a pane or a helper in a
+  turn, which leaves it running for the window to ask about. A pane or a
+  helper's turn is work to ask about; so is any session of a newer version's
+  core or one of the same version built otherwise (a dev build), and of a core
+  older than the field (0.19 and before), which says none are left only. While a core is
+  being found, started or replaced (a restart, or another build's), the page's
+  calls wait for it rather than fail, for a budget of the old core's stop and
+  the new one's start (`LINK_WAIT`, 59 s, the sum in its comment; a budget, not
+  a bound, as each step's timeout is per read or per call, `taskkill` given
+  5 s, `pty::KILL_WAIT`); with no core coming (`down`, `mismatch`,
+  `elevated`) they fail at once. A `core.json`
+  with a token is a core of Luna 0.11 or before (protocol 1,
+  `corelink/v1.rs`): the window says hello on its loopback port
   with that token, to learn its session count, and stops it if it has none;
   nothing else is ever sent it. `luna --stop-core` (the uninstaller's) goes
   through the endpoint like a window, or a protocol-1 core's port.
@@ -335,10 +355,28 @@ another program's and is left alone.
   `tauri.conf.json` → `plugins.updater.endpoints`); a release lights a chip and
   installs only on a click. A release whose `core_fingerprint` (a hash of
   what the core is compiled from: `src-tauri/src`, the manifest and lock, `build.rs`,
-  `cli-known-good.json` and the handoff's instructions in `resources/`; `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
+  and the system texts in `resources/` (the CLI floors are in `src/`); `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
   window. Any other stops the sessions (each asked to quit with its exit hooks,
-  `stop_all_sessions` also stopping helper turns) and the chats resume from
-  their transcripts. The chats' ties stay frozen from that stop until the
+  `stop_all_sessions` also stopping helper turns and then, once those turns are
+  over or 15 s on, ending what every helper's turns left running,
+  `background::stop_for_update`; a turn still not over then is left as it is,
+  its job untouched, as its end may start what was queued behind it in that
+  same job) and the chats resume from their transcripts. What a helper's turns
+  left counts as a session (`background::running`, in `Welcome.sessions`), and
+  as left only (`Welcome.left_only`), which the updated window replaces the old
+  core over all the same (above), its going ending them: what a turn that
+  ended late left among them. On Linux and macOS a job lists nothing
+  (`procs/unix.rs`): what helpers' turns left is neither seen, counted nor ended
+  here, and a core that leaves lets go of its keeper's ties (keeper/), so it
+  runs on after the old core. Nothing
+  keeps turns from starting meanwhile: one started by text sent during the
+  stop, which the stop neither waits for nor touches (it knows its own by
+  `Run::claim`), is a session the updated window asks about, and text queued
+  behind a turn the stop ended before it began is kept as undelivered
+  (`run_turn`). It is the outgoing core's code that stops the sessions and
+  answers the hello: an update from 0.19 runs 0.19's `stop_all_sessions` and
+  says no `left_only`, and may still ask for a restart once when a helper left
+  processes running. The chats' ties stay frozen from that stop until the
   installer ends the process, until the window says the install failed
   (`update_called_off`; said while the stop is still under way, it takes
   effect as the stop returns), or until 10 minutes after the stop returned
@@ -359,8 +397,8 @@ another program's and is left alone.
 and INFO events only: session start / exit / delete, helper turns, one line per
 MCP call (caller, tool, target, outcome, duration, steering arguments, never
 text), notices, the awake hold (INFO; the countdown and what fires it are
-WARN). A helper turn's line gives the CLI's arguments with the chat's hook and
-guard URLs, which carry its secret, as `<hook-url>` and `<guard-url>`, and the
+WARN). A helper turn's line gives the CLI's arguments with the chat's hook
+URL, which carries its secret, as `<hook-url>`, and the
 helper's identity line as its length (`background/run.rs` `args_for_log`).
 Sessions are named by id and chat name (`agents::label`). Every line names the version; each launch opens with a
 `START` line. The page's own lines (`append_log`) go to a writer thread of the

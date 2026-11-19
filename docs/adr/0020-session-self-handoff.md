@@ -1,8 +1,6 @@
 # ADR-0020: Hand a chat over to a fresh conversation in place, on its own word
 
-- **Status:** Accepted; how the chat is told to write its handoff, and that
-  only it is told, is [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md);
-  the opt-in amended by [ADR-0024](0024-handoff-on-request.md)
+- **Status:** Superseded by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-11-09
 
 ## Context

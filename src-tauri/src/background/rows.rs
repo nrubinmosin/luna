@@ -19,7 +19,6 @@ pub struct Row {
     pub account: String,
     pub model: Option<String>,
     pub effort: String,
-    pub worktree: bool,
     pub started_ms: u64,
     /// While a turn runs, when it started.
     pub turn_started_ms: Option<u64>,
@@ -74,7 +73,6 @@ pub fn background_helpers() -> Vec<Row> {
                 account: std::path::Path::new(&spec.account_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 model: spec.model,
                 effort: spec.effort,
-                worktree: spec.worktree,
                 started_ms,
                 turn_started_ms,
                 left_running,
@@ -244,11 +242,6 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         if e.moving {
             return Err("it is being moved to another chat; open it once that is through".into());
         }
-        // Its handoff would start a conversation the person's chat does not
-        // have, or resume one it has let go of (switch.rs).
-        if let Some(s) = &e.switch {
-            return Err(format!("it is handing off to a fresh conversation (handoff {}); open it once that is through", s.n));
-        }
         e.promoting = true;
         e.promoting_since = crate::throttle::now_ms();
         (e.spec.clone(), e.cwd.clone(), e.session.clone())
@@ -261,8 +254,8 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
     Ok(Promoted {
         provider: spec.provider,
         account_path: spec.account_path.clone(),
-        folder: crate::worktree::project_of(&spec.folder).unwrap_or_else(|| spec.folder.clone()),
-        worktree_path: worktree_path.or_else(|| crate::worktree::project_of(&spec.folder).map(|_| spec.folder.clone())),
+        folder: crate::checkout::project_of(&spec.folder).unwrap_or_else(|| spec.folder.clone()),
+        worktree_path: worktree_path.or_else(|| crate::checkout::project_of(&spec.folder).map(|_| spec.folder.clone())),
         session_id: session,
         name: crate::agents::chat_name(&id),
         settings: crate::agents::settings_of(&id),
@@ -376,26 +369,13 @@ pub fn background_kill(id: String) {
     kill(&id);
 }
 
-/// The person's Delete. A helper at work goes only with `stop_working`, and a
-/// worktree holding unsaved work only with `drop_unsaved`: each is a yes of its
-/// own, which a box ticked for the chat above it is not (agents/teardown.rs).
+/// The person's Delete. A helper at work goes only with `stop_working`, a yes of
+/// its own, which a box ticked for the chat above it is not (agents/teardown.rs).
 /// `of_chat`, from a chat's Delete dialog: refused if the helper hangs from
 /// another chat by now.
 #[tauri::command]
-pub fn background_delete(
-    id: String,
-    drop_worktree: Option<bool>,
-    stop_working: Option<bool>,
-    drop_unsaved: Option<bool>,
-    of_chat: Option<String>,
-) -> Result<crate::agents::UserDeleted, String> {
-    crate::agents::delete_by_user(
-        &id,
-        drop_worktree.unwrap_or(true),
-        stop_working.unwrap_or(false),
-        drop_unsaved.unwrap_or(false),
-        of_chat.as_deref(),
-    )
+pub fn background_delete(id: String, stop_working: Option<bool>, of_chat: Option<String>) -> Result<(), String> {
+    crate::agents::delete_by_user(&id, stop_working.unwrap_or(false), of_chat.as_deref())
 }
 
 /// The person moves the helper, with the helpers under it, to chat `to`: from
@@ -485,8 +465,6 @@ pub fn background_transcript(id: String, since: Option<u64>, file: Option<String
 /// `background_transcript` of a file: at most VIEW_SCAN of it read into memory,
 /// its complete lines no longer than VIEW_LINE given to the transcript readers
 /// that work on bytes (`luna_lib::transcripts`), the newest VIEW_MESSAGES kept.
-/// Also the window's view of a conversation a chat's handoff left
-/// (agents/handoff `handoff_transcript`).
 pub(crate) fn view_of(path: &std::path::Path, provider: Provider, since: u64, running: bool) -> Transcript {
     let len = std::fs::metadata(path).map_or(0, |m| m.len());
     // A cursor past the end is one into a file since cut short or written anew.
@@ -544,18 +522,14 @@ pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
     use crate::activity::Turn;
     let r = lock();
     let e = r.entries.get(id)?;
-    // A lead between the turn that wrote its handoff and its fresh start is
-    // at work: its caller is owed what the fresh conversation says, not the
-    // turn that handed off (switch.rs).
     let turn = match &e.run {
         Some(_) if !e.held.is_empty() => Turn::Waiting,
         Some(_) => Turn::Busy,
-        None if e.switch_waits() => Turn::Busy,
         None => Turn::Idle,
     };
     Some(crate::activity::TurnState {
         turn,
-        busy: e.run.is_some() || e.switch_waits(),
+        busy: e.run.is_some(),
         turns_ended: e.turns_ended,
         children_busy: e.run.is_none() && e.left_running,
     })

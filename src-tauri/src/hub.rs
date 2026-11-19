@@ -2,8 +2,7 @@
 //! post to. It is how Luna learns the exact moment a Claude Code turn starts,
 //! ends, or stops for a permission — without polling the registry and without
 //! a word reaching the model (the hook commands print nothing, and nothing
-//! silent costs context). One hook speaks: the guard's (`/guard`, guard.rs),
-//! which refuses a shell call that would wait forever, and says why.
+//! silent costs context).
 //!
 //! Loopback only, on a port picked at start; every request carries its chat's
 //! secret, derived from a key minted for this run, so a stray local process
@@ -55,7 +54,7 @@ const DRAIN_DEADLINE: Duration = Duration::from_millis(200);
 const HEADERS_MAX: usize = 64;
 /// A hook's stdin: a small JSON object.
 const HOOK_BODY_MAX: usize = 64 * 1024;
-/// An MCP call or the shell call the guard is asked about.
+/// An MCP call.
 const BODY_MAX: usize = 4 * 1024 * 1024;
 
 /// How many connections each stage holds at once. Separate lanes, because an
@@ -65,7 +64,7 @@ const BODY_MAX: usize = 4 * 1024 * 1024;
 struct Limits {
     /// Connections still sending their head: nobody known yet.
     unknown: usize,
-    /// Hooks and the guard, past their secret.
+    /// Hooks, past their secret.
     hooks: usize,
     /// MCP calls, past their token: a `wait` per helper waited on, with room.
     mcp: usize,
@@ -102,14 +101,7 @@ pub fn hook_url(chat_id: &str) -> Option<String> {
     Some(format!("http://127.0.0.1:{}/hook/{}/{}", l.port, chat_id, chat_secret(&l.key, chat_id)))
 }
 
-/// The URL a session's guard hook posts a shell call to (guard.rs), or None
-/// while the listener is off.
-pub fn guard_url(chat_id: &str) -> Option<String> {
-    let l = LISTENER.get()?;
-    Some(format!("http://127.0.0.1:{}/guard/{}/{}", l.port, chat_id, chat_secret(&l.key, chat_id)))
-}
-
-/// The secret of one chat's hook and guard URLs: HMAC-SHA256 of its id under
+/// The secret of one chat's hook URL: HMAC-SHA256 of its id under
 /// the run's key, 128 bits of it. One chat's URL, which its own session can
 /// read, says nothing of another's.
 fn chat_secret(key: &str, chat_id: &str) -> String {
@@ -149,7 +141,6 @@ fn serve(listener: TcpListener, limits: Limits) {
 /// What a request asks for, known from its head.
 enum Route {
     Hook(String),
-    Guard,
     Mcp(String),
 }
 
@@ -174,7 +165,7 @@ fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, hea
     };
     let lane = match route {
         Route::Mcp(_) => mcp,
-        Route::Hook(_) | Route::Guard => hooks,
+        Route::Hook(_) => hooks,
     };
     let Some(_busy) = lane.take() else {
         answer(stream, 503, None);
@@ -200,10 +191,6 @@ fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, hea
             Some(v) => (200, Some(v.to_string())),
             None => (202, None),
         },
-        Route::Guard => match crate::guard::decision(&body) {
-            Some(decision) => (200, Some(decision)),
-            None => (204, None),
-        },
         Route::Hook(chat_id) => (on_hook(&chat_id, &body), None),
     };
     answer(stream, status, json.as_deref());
@@ -227,18 +214,17 @@ fn route(head: &Head) -> Result<Route, (u16, Option<String>)> {
             None => Err((401, Some(r#"{"error":"unknown or expired session token"}"#.into()))),
         };
     }
-    let guard = path.starts_with("/guard/");
     if !post {
         return Err((405, None));
     }
-    let (chat_id, secret) = parse_path(path, if guard { "/guard/" } else { "/hook/" }).ok_or((404, None))?;
+    let (chat_id, secret) = parse_path(path, "/hook/").ok_or((404, None))?;
     let Some(l) = LISTENER.get() else { return Err((503, None)) };
     // The secret of the chat the path names, so it is that chat's events or
-    // none: the guard's too, though it answers for no chat in particular.
+    // none.
     if !crate::secret::same(secret, &chat_secret(&l.key, chat_id)) {
         return Err((403, None));
     }
-    Ok(if guard { Route::Guard } else { Route::Hook(chat_id.to_string()) })
+    Ok(Route::Hook(chat_id.to_string()))
 }
 
 /// A hook's post: its stdin, forwarded as the body.
@@ -392,8 +378,7 @@ mod tests {
         assert_eq!(parse_path("/hook/abc", "/hook/"), None);
         assert_eq!(parse_path("/hook//s", "/hook/"), None);
         assert_eq!(parse_path("/other/abc/s", "/hook/"), None);
-        assert_eq!(parse_path("/guard/abc/s3cr3t", "/guard/"), Some(("abc", "s3cr3t")));
-        assert_eq!(parse_path("/guard/abc/s3cr3t", "/hook/"), None);
+        assert_eq!(parse_path("/guard/abc/s3cr3t", "/hook/"), None, "only /hook/ paths are hooks'");
     }
 
     fn head(raw: &str) -> io::Result<Head> {
@@ -504,7 +489,7 @@ mod live {
         let (base, _secret) = url.rsplit_once('/').unwrap();
         let bad = format!("{base}/nope");
         assert_eq!(post_to(&bad, "{}"), Some(403));
-        // Its own secret is no key to another chat, the guard's door included.
+        // Its own secret is no key to another chat.
         let (_, own) = url.rsplit_once('/').unwrap();
         let other = hook_url("chat-hub-other").unwrap();
         assert_ne!(other.rsplit_once('/').unwrap().1, own);
@@ -512,8 +497,6 @@ mod live {
         let stop = r#"{"hook_event_name":"Stop"}"#;
         assert_eq!(post_to(&forged, stop), Some(403));
         assert_eq!(crate::activity::hook_turn("chat-hub-other"), None, "nothing reached the tracker as that chat");
-        let guard = guard_url("chat-hub-other").unwrap().replace(other.rsplit_once('/').unwrap().1, own);
-        assert_eq!(post_to(&guard, "{}"), Some(403));
         assert_eq!(post_to(&other, stop), Some(204), "its own secret lets it in");
         assert_eq!(post("not json"), Some(400));
         assert_eq!(status(http.get(&url).call()), Some(405));

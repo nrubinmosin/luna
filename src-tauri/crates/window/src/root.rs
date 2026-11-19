@@ -8,9 +8,11 @@
 
 use crate::banner::Banner;
 use crate::board::Board;
+use crate::dialogs::DialogLayer;
 use crate::font::FAMILY;
 use crate::keys::{self, CONTEXT};
 use crate::models::Models;
+use crate::panels::PanelLayer;
 use crate::sidebar::{STRIP, Sidebar};
 use crate::status::{self, OrphanLine, StatusBar};
 use crate::theme::TEXT_SIZE;
@@ -30,6 +32,10 @@ pub struct LunaWindow {
     pub(crate) board: Entity<Board>,
     pub(crate) orphans: Entity<OrphanLine>,
     pub(crate) status_bar: Entity<StatusBar>,
+    /// The library, settings and accounts windows, over all of it.
+    pub(crate) panels: Entity<PanelLayer>,
+    /// The new-chat, delete, helpers and crash dialogs, over the panels.
+    pub(crate) dialogs: Entity<DialogLayer>,
 }
 
 /// Dark, as GPUI names the system's appearances.
@@ -58,11 +64,13 @@ impl LunaWindow {
             board: cx.new(|cx| Board::new(models.clone(), window, cx)),
             orphans: cx.new(|cx| OrphanLine::new(models.clone(), cx)),
             status_bar: cx.new(|cx| StatusBar::new(models.clone(), cx)),
+            panels: cx.new(|cx| PanelLayer::new(models.clone(), cx)),
+            dialogs: cx.new(|cx| DialogLayer::new(models.clone(), window, cx)),
             models,
         }
     }
 
-    #[cfg(luna_test)]
+    #[cfg(any(test, luna_test))]
     pub(crate) fn models(&self) -> &Models {
         &self.models
     }
@@ -139,6 +147,7 @@ impl Render for LunaWindow {
             .on_action(cx.listener(|this, _: &keys::ClosePeek, window, cx| this.escape(false, window, cx)))
             .on_action(cx.listener(|this, _: &keys::ForceClosePeek, window, cx| this.escape(true, window, cx)))
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .font_family(FAMILY)
@@ -161,6 +170,8 @@ impl Render for LunaWindow {
             )
             .child(self.orphans.clone())
             .child(self.status_bar.clone().cached(status))
+            .child(self.panels.clone())
+            .child(self.dialogs.clone())
     }
 }
 

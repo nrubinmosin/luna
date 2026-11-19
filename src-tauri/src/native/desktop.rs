@@ -100,6 +100,13 @@ fn restart() {
     crate::lifecycle::restart(|| std::env::current_exe().map_err(|e| e.to_string()), false, quit_app);
 }
 
+/// The crash screen's Restart window, the tray's own: a new window, the core
+/// left alone. Does nothing while another way out holds the exit.
+pub(super) fn restart_window(_: Value) -> Result<Value, String> {
+    restart();
+    Ok(Value::Null)
+}
+
 /// The tray's Quit: the sessions, the core and the window.
 fn quit() {
     crate::lifecycle::quit(

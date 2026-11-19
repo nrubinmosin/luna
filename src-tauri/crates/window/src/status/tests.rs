@@ -192,7 +192,7 @@ fn the_counts_follow_the_chats_and_go_with_the_core(cx: &mut TestAppContext) {
 
 #[cfg(debug_assertions)]
 #[gpui::test]
-fn waiting_goes_to_the_next_waiting_chat_and_background_to_its_seam(cx: &mut TestAppContext) {
+fn waiting_goes_to_the_next_waiting_chat_and_background_and_settings_open_theirs(cx: &mut TestAppContext) {
     let mut s = open(cx);
     s.look();
     s.models.workspace.update(s.cx, |w, cx| w.show_chat("c-codex", cx));
@@ -201,17 +201,34 @@ fn waiting_goes_to_the_next_waiting_chat_and_background_to_its_seam(cx: &mut Tes
     s.click("status-waiting");
     assert_eq!(s.active().as_deref(), Some("c-parser"), "the one chat that waits, as Ctrl+Shift+W goes to it");
 
-    // The seams are the panels': nothing happens (and nothing breaks) until
-    // they are plugged in.
+    // The dialogs' layer plugs the Background count into the helpers'
+    // popover (all chats' helpers), the panels' the Settings button into
+    // the settings panel.
+    let open = |s: &mut S<'_>| {
+        let dialog = s.view.read_with(s.cx, |v, cx| v.dialogs.read(cx).shown());
+        let panel = s.view.read_with(s.cx, |v, cx| v.panels.read(cx).shown());
+        (dialog, panel)
+    };
+    assert_eq!(open(&mut s), (None, None));
     s.click("status-background");
+    assert_eq!(open(&mut s), (Some("helpers"), None));
+    s.cx.dispatch_action(crate::dialogs::Close);
+    s.cx.run_until_parked();
     s.click("status-settings");
+    assert_eq!(open(&mut s), (None, Some(crate::panels::Panel::Settings)));
+}
+
+/// A seam plugged by something else is the one called.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_seam_replaced_is_the_one_the_buttons_call(cx: &mut TestAppContext) {
+    let mut s = open(cx);
     let (helpers, settings) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
     let (h, st) = (helpers.clone(), settings.clone());
     s.models.workspace.update(s.cx, |w, _| {
         w.seams.helpers = Some(Rc::new(move |_: &mut Window, _: &mut App| h.set(h.get() + 1)));
         w.seams.settings = Some(Rc::new(move |_: &mut Window, _: &mut App| st.set(st.get() + 1)));
     });
-    s.cx.run_until_parked();
     s.click("status-background");
     s.click("status-settings");
     s.click("status-settings");

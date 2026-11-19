@@ -19,9 +19,9 @@ graphics device).
 **Your chat list comes along.** The first time the native window starts, it
 reads the chat list the 0.19 window kept (from a copy of its storage; the
 original is left as it was): the chats, their folders, what sat in each
-group's panes, whether the sidebar was pinned, and the new-chat, delete and
-notification choices. Chat colors, handoff marks and the splits are not
-kept. Groups VI to X are gone: their chats are listed on board V. If the old
+group's panes, whether the sidebar was pinned, and the new-chat and
+notification choices. Chat colors, handoff marks, the wait guard, the delete
+dialog's worktree box and the splits are not kept. Groups VI to X are gone: their chats are listed on board V. If the old
 list cannot be read, the window starts with an empty list and says so in a
 line under the title bar: **Retry** tries again, OK hides the line, and the
 next start tries again too, for as long as the list stays empty. Sessions
@@ -287,7 +287,7 @@ Runs the width of the window: how many chats are working, how many waiting (a
 click goes to the next one), how many have work going on in the background
 (named on hover), every account with every limit window (how full,
 and how long until it resets; a click opens the Accounts window), then
-Recommendations, power, settings and help. Short of room, each account keeps its
+power, settings and help. Short of room, each account keeps its
 name and its fullest window. There is no clock; the taskbar has one.
 
 ## Keyboard and mouse
