@@ -495,6 +495,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         handing: false,
         observed: s.observed,
     };
+    take_legacy_stop(&mut e.observed);
     if s.running {
         note(&mut e, "Luna's core went mid-turn and stopped the turn");
         e.error = Some("Luna's core restarted mid-turn and stopped the turn".into());
@@ -526,100 +527,112 @@ pub fn cut_short(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short)
 }
 
-/// Whether its CLI stopped what its last turn left in the background, its time
-/// for it up (run.rs `stops_background`), whoever has been told: what the tests
-/// look at; a notice asks `background_stopped_for` its caller.
+/// Whether some loss of its background work is still to be told to someone:
+/// what the tests look at; a notice asks `untold_losses` for its caller.
 #[cfg(test)]
 pub fn background_stopped(id: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| e.observed.background_stopped)
+    lock().entries.get(id).is_some_and(|e| e.observed.losses.iter().any(|l| l.owed.iter().any(|c| !l.told.contains(c))))
 }
 
-/// Whether what `caller` is told of it is to say that its CLI stopped its
-/// background work: a caller it owed an answer when that came (`stop_owed`),
-/// not yet told.
+/// The losses of its background work `caller` is to hear of: those it was
+/// owed an answer at, not yet told, oldest first.
+pub fn untold_losses(id: &str, caller: &str) -> Vec<Loss> {
+    let r = lock();
+    let Some(e) = r.entries.get(id) else { return Vec::new() };
+    e.observed.losses.iter().filter(|l| l.owed.iter().any(|c| c == caller) && !l.told.iter().any(|c| c == caller)).cloned().collect()
+}
+
+/// Whether what `caller` is told of it is to say that background work of its
+/// was cut off (`untold_losses`): what the tests look at.
+#[cfg(test)]
 pub fn background_stopped_for(id: &str, caller: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| {
-        let o = &e.observed;
-        o.background_stopped && o.stop_owed.iter().any(|c| c == caller) && !o.stop_told.iter().any(|c| c == caller)
-    })
+    !untold_losses(id, caller).is_empty()
 }
 
-/// What stopped its background work, as last recorded: its cause, how the
-/// process went where that did it (`Observed::stop_by`), and the subagents it
-/// names (`Observed::stop_subagents`).
-pub fn background_stop(id: &str) -> (StopCause, Option<LostBy>, Vec<String>) {
-    lock().entries.get(id).map(|e| (e.observed.stop_cause, e.observed.stop_by, e.observed.stop_subagents.clone())).unwrap_or_default()
-}
-
-/// Records that the end of turn `turn` stopped background work, `names` the
+/// Records that the end of turn `turn` cut background work off, `names` the
 /// subagents it took, with `callers` (those owed an answer then) to hear of
-/// it. A stop some caller has yet to hear of is not lost to it: the two add
-/// up, names and callers, and a caller told of the earlier one is owed this
-/// one too; the line says the latest cause.
-pub(super) fn record_stop(o: &mut Observed, turn: u32, cause: StopCause, by: Option<LostBy>, names: Vec<String>, callers: Vec<String>) {
-    if !o.background_stopped {
-        o.stop_subagents.clear();
-        o.stop_owed.clear();
-        o.stop_told.clear();
-    }
-    o.stopped_turn = turn;
-    o.stop_cause = cause;
-    o.stop_by = by;
-    o.stop_subagents.extend(names);
-    add_owed(o, callers);
-}
-
-/// `callers` are to hear of the stop recorded, those told of it already
-/// again: it may have grown since (`record_stop`).
-pub(super) fn add_owed(o: &mut Observed, callers: Vec<String>) {
-    for c in callers {
-        o.stop_told.retain(|t| *t != c);
-        if !o.stop_owed.contains(&c) {
-            o.stop_owed.push(c);
+/// it. Said again of the same turn (the CLI's word on stderr, then the names
+/// at its end) it is the same loss, named further. Losses everyone owed has
+/// heard of go.
+pub(super) fn record_loss(o: &mut Observed, turn: u32, cause: StopCause, by: Option<LostBy>, names: Vec<String>, callers: Vec<String>) {
+    o.losses.retain(|l| l.turn == turn || l.owed.iter().any(|c| !l.told.contains(c)));
+    let at = match o.losses.iter().position(|l| l.turn == turn) {
+        Some(at) => at,
+        None => {
+            o.losses.push(Loss { turn, cause, by, ..Loss::default() });
+            o.losses.len() - 1
+        }
+    };
+    let loss = &mut o.losses[at];
+    for name in names {
+        if name.is_empty() || !loss.names.contains(&name) {
+            loss.names.push(name);
         }
     }
-    o.background_stopped = o.stop_owed.iter().any(|c| !o.stop_told.contains(c));
+    for c in callers {
+        if !loss.owed.contains(&c) {
+            loss.owed.push(c);
+        }
+    }
 }
 
-/// Whom the stop at the end of turn `turn` concerns: `callers`, those `id`
-/// owed an answer as its CLI said it (agents `callers_owed`), beside those of
-/// an earlier stop not yet told (`record_stop`). A stop since, or one already
-/// done with, is left as it is; with nobody owed there is nobody to tell.
+/// Whom the loss at the end of turn `turn` concerns: `callers`, those `id`
+/// owed an answer as its CLI said it (agents `callers_owed`).
 pub fn stop_owed_to(id: &str, turn: u32, callers: Vec<String>) {
     let mut r = lock();
-    let Some(o) = r.entries.get_mut(id).map(|e| &mut e.observed).filter(|o| o.background_stopped && o.stopped_turn == turn) else {
-        return;
-    };
-    add_owed(o, callers);
+    let Some(loss) = r.entries.get_mut(id).and_then(|e| e.observed.losses.iter_mut().find(|l| l.turn == turn)) else { return };
+    for c in callers {
+        if !loss.owed.contains(&c) {
+            loss.owed.push(c);
+        }
+    }
 }
 
-/// It has been said to `caller`, whose debt it settled: not again, by this core
-/// or the next (the notifier saves). Once each caller it concerns that is
-/// still owed (`owed`) has had it, it is done with. The turn of the stop when
-/// this is what marked `caller` told, for `background_stop_untold`.
-pub fn background_stop_told(id: &str, caller: &str, owed: &[String]) -> Option<u32> {
+/// The losses of `turns` have been said to `caller`, in what settled its
+/// debt: not again, by this core or the next (the notifier saves). A loss
+/// each caller it concerns that is still owed (`owed`) has had is done
+/// with. Returns the turns this marked, for `losses_untold`.
+pub fn losses_told(id: &str, caller: &str, turns: &[u32], owed: &[String]) -> Vec<u32> {
     let mut r = lock();
-    let o = &mut r.entries.get_mut(id)?.observed;
-    if !o.stop_owed.iter().any(|c| c == caller) || o.stop_told.iter().any(|c| c == caller) {
-        return None;
+    let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
+    let mut marked = Vec::new();
+    for l in e.observed.losses.iter_mut().filter(|l| turns.contains(&l.turn)) {
+        if l.owed.iter().any(|c| c == caller) && !l.told.iter().any(|c| c == caller) {
+            l.told.push(caller.to_string());
+            marked.push(l.turn);
+        }
     }
-    o.stop_told.push(caller.to_string());
-    if o.stop_owed.iter().filter(|c| owed.contains(c)).all(|c| o.stop_told.contains(c)) {
-        o.background_stopped = false;
+    // A caller no longer owed that was never told is no longer to be: once
+    // every caller left has had it, the loss says nothing more, though an
+    // undo may still take a caller's telling back.
+    for l in e.observed.losses.iter_mut().filter(|l| turns.contains(&l.turn)) {
+        l.owed.retain(|c| owed.contains(c) || l.told.contains(c));
     }
-    Some(o.stopped_turn)
+    marked
 }
 
-/// Takes back what `background_stop_told` marked: the reply that said it to
-/// `caller` never reached it. That caller alone, and of that stop (`turn`)
-/// alone: another caller told meanwhile stays told, and a stop since is
-/// another matter.
-pub fn background_stop_untold(id: &str, caller: &str, turn: u32) {
+/// Takes back what `losses_told` marked: the reply that said them to
+/// `caller` never reached it. That caller alone, and those losses alone.
+pub fn losses_untold(id: &str, caller: &str, turns: &[u32]) {
     let mut r = lock();
-    let Some(o) = r.entries.get_mut(id).map(|e| &mut e.observed).filter(|o| o.stopped_turn == turn) else { return };
-    if let Some(at) = o.stop_told.iter().position(|c| c == caller) {
-        o.stop_told.remove(at);
-        o.background_stopped = true;
+    let Some(e) = r.entries.get_mut(id) else { return };
+    for l in e.observed.losses.iter_mut().filter(|l| turns.contains(&l.turn)) {
+        l.told.retain(|c| c != caller);
+    }
+}
+
+/// A stop 0.19 saved as one, read back as a loss with no names.
+pub(super) fn take_legacy_stop(o: &mut Observed) {
+    if std::mem::take(&mut o.background_stopped) && !o.losses.iter().any(|l| l.turn == o.stopped_turn) {
+        let loss = Loss {
+            turn: o.stopped_turn,
+            cause: o.stop_cause,
+            by: None,
+            names: Vec::new(),
+            owed: std::mem::take(&mut o.stop_owed),
+            told: std::mem::take(&mut o.stop_told),
+        };
+        o.losses.push(loss);
     }
 }
 
@@ -656,9 +669,39 @@ mod tests {
             (e.turns_ended, e.observed.model.as_deref(), e.observed.turn_ended_ms, e.observed.answered),
             (3, Some("claude-haiku-5-5"), 7, true)
         );
-        assert!(!e.observed.background_stopped, "saved before it was kept: nothing stopped");
+        assert!(e.observed.losses.is_empty(), "saved before it was kept: nothing stopped");
         let json = serde_json::to_value(&e.observed).unwrap();
         assert!(json.get("spend").is_none() && json.get("unreported").is_none(), "and is written without them");
+    }
+
+    /// A stop 0.19 saved, still to be told to one of its callers, comes back
+    /// as a loss with no names; and what is written now is no stop to 0.19,
+    /// whose `stopCause` knows only `ceiling` and `turnEnd`.
+    #[test]
+    fn a_stop_saved_by_0_19_comes_back_and_0_19_reads_what_is_saved_now() {
+        let mut o: Observed = serde_json::from_value(json!({
+            "backgroundStopped": true, "stoppedTurn": 4, "stopOwed": ["a", "b"], "stopTold": ["a"], "stopCause": "turnEnd"
+        }))
+        .unwrap();
+        take_legacy_stop(&mut o);
+        assert_eq!(
+            o.losses,
+            [Loss {
+                turn: 4,
+                cause: StopCause::TurnEnd,
+                by: None,
+                names: Vec::new(),
+                owed: vec!["a".into(), "b".into()],
+                told: vec!["a".into()]
+            }]
+        );
+        o.losses[0].by = Some(LostBy::Stopped);
+        let saved = serde_json::to_value(&o).unwrap();
+        for old in ["backgroundStopped", "stoppedTurn", "stopOwed", "stopTold", "stopCause"] {
+            assert!(saved.get(old).is_none(), "{old}: {saved}");
+        }
+        let later: Loss = serde_json::from_value(json!({ "turn": 1, "cause": "someday", "by": "otherwise" })).unwrap();
+        assert_eq!((later.cause, later.by), (StopCause::Ceiling, Some(LostBy::Exited)), "values a later Luna adds");
     }
 
     #[test]

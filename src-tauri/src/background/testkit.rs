@@ -222,10 +222,18 @@ pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
 pub(crate) fn background_stopped_for_test(id: &str, owed: &[&str]) {
     let mut r = lock();
     let e = r.entries.get_mut(id).expect("a test helper");
-    e.observed.background_stopped = true;
-    e.observed.stopped_turn = e.turns_ended;
-    e.observed.stop_owed = owed.iter().map(|c| c.to_string()).collect();
-    e.observed.stop_told.clear();
+    let owed = owed.iter().map(|c| c.to_string()).collect();
+    record_loss(&mut e.observed, e.turns_ended, StopCause::Ceiling, None, Vec::new(), owed);
+}
+
+/// A test helper whose turn `turn` took the subagents `names` with it, with
+/// `owed` owed an answer then.
+#[cfg(test)]
+pub(crate) fn loss_for_test(id: &str, turn: u32, owed: &[&str], names: &[&str]) {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    let (owed, names) = (owed.iter().map(|c| c.to_string()).collect(), names.iter().map(|n| n.to_string()).collect());
+    record_loss(&mut e.observed, turn, StopCause::Ceiling, Some(LostBy::Exited), names, owed);
 }
 
 /// A line on a test helper's turn's stderr, as its reader takes it.

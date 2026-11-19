@@ -278,14 +278,11 @@ pub(super) fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
         e.observed.event_ms = crate::throttle::now_ms();
         if stops_background(line) {
             // Of this turn, which ends when the process does; whom it
-            // concerns comes below (`stop_owed_to`). Every subagent not done
-            // by now is the CLI's to stop.
+            // concerns comes below (`stop_owed_to`), which subagents it took
+            // at that end (`turn_over`), once all of its stdout is read: a
+            // subagent's end still on its way there is not undone by this.
             let turn = e.turns_ended + 1;
-            record_stop(&mut e.observed, turn, StopCause::Ceiling, None, Vec::new(), Vec::new());
-            e.observed.background_stopped = true;
-            if let Some(run) = e.run.as_mut() {
-                cut_unfinished(run);
-            }
+            record_loss(&mut e.observed, turn, StopCause::Ceiling, None, Vec::new(), Vec::new());
             stopped = Some(turn);
         }
         note(e, &format!("stderr: {}", one_line(line)));
@@ -708,14 +705,15 @@ mod tests {
         lock().entries.insert(id.into(), entry(Provider::Claude));
         let reader = OutReader::default();
         assert!(take_stderr(id, &reader, b"some warning"));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 0);
+        let turns = || lock().entries[id].observed.losses.iter().map(|l| l.turn).collect::<Vec<_>>();
+        assert!(turns().is_empty());
         assert!(take_stderr(id, &reader, said.as_bytes()));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 1, "the stop of the turn under way");
+        assert_eq!(turns(), [1], "the stop of the turn under way");
         assert!(!background_stopped(id), "nobody was owed anything of it: nobody to tell");
         lock().entries.get_mut(id).unwrap().turns_ended = 1;
         reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(take_stderr(id, &reader, said.as_bytes()));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 1, "said after its turn is over: not this helper's");
+        assert_eq!(turns(), [1], "said after its turn is over: not this helper's");
         lock().entries.remove(id);
     }
 

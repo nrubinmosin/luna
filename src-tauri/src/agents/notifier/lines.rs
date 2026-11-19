@@ -578,7 +578,7 @@ pub(in crate::agents) fn notice_line(
             if said_since(pty, id, k.provider, w.cursor).is_empty() {
                 let earlier = if replies.is_empty() { String::new() } else { format!(" Its turns since you asked ended{reply}.") };
                 return Some((
-                    Some(format!("{who} seems stuck: its delegates had finished and Luna told it so, but it ended its turn on that without a word.{earlier}{lost}")),
+                    Some(format!("{who} seems stuck: its delegates had finished and Luna told it so, but it ended its turn on that without a word.{earlier}{stopped}{lost}")),
                     Settled::Answered,
                 ));
             }
@@ -685,33 +685,41 @@ fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option
 /// nothing for any other. Without it, the end of those subagents reads as a
 /// job that finished and said nothing.
 fn background_stopped(id: &str, caller: &str) -> String {
-    background_stopped_line(id, caller).unwrap_or_default()
+    background_stopped_line(id, caller).map(|(line, _)| line).unwrap_or_default()
 }
 
-/// See `background_stopped`: the line, by what stopped the work and which
-/// subagents it took. A notice that went in with it acknowledges it for its
-/// caller (notifier `ack_background_stop`), as does a reply handed over by a
-/// wait, read or report (owed.rs `hand_over`, `background_stopped_note`).
-pub(in crate::agents) fn background_stopped_line(id: &str, caller: &str) -> Option<String> {
-    use crate::background::StopCause;
-    if !crate::background::background_stopped_for(id, caller) {
+/// See `background_stopped`: a line for each loss `caller` has yet to hear
+/// of, oldest first, each by its own cause, and the turns of those losses.
+/// A notice that went in with a loss's line acknowledges that loss for its
+/// caller (notifier `ack_background_stop`); a reply of a wait, read or
+/// report, the turns it carried (owed.rs `background_stopped_note`,
+/// `hand_over_said`).
+pub(in crate::agents) fn background_stopped_line(id: &str, caller: &str) -> Option<(String, Vec<u32>)> {
+    let losses = crate::background::untold_losses(id, caller);
+    if losses.is_empty() {
         return None;
     }
-    let (cause, by, names) = crate::background::background_stop(id);
-    let kind = if cause == StopCause::TurnEnd { "subagent" } else { "background subagent" };
-    Some(match (cause, by) {
+    Some((losses.iter().map(loss_line).collect(), losses.iter().map(|l| l.turn).collect()))
+}
+
+/// One loss's line: by what stopped the work and which subagents it took.
+pub(in crate::agents) fn loss_line(l: &crate::background::Loss) -> String {
+    use crate::background::{LostBy, StopCause};
+    let kind = if l.cause == StopCause::TurnEnd { "subagent" } else { "background subagent" };
+    let names = &l.names;
+    match (l.cause, l.by) {
         // Saved by a core before subagents were counted.
         (StopCause::TurnEnd, _) if names.is_empty() => SUBAGENTS_INTERRUPTED.to_string(),
         (StopCause::Ceiling, _) if names.is_empty() => BACKGROUND_STOPPED.to_string(),
         // Luna stopped the turn, at its caller's word or for its own going:
         // that they were cut is all there is to say, nothing on how to work.
-        (_, Some(crate::background::LostBy::Stopped)) => format!(" {}.", subagents_lost(kind, &names)),
-        (StopCause::TurnEnd, _) => format!(" {}. {LOST_GOES_ON_CODEX}", subagents_lost(kind, &names)),
+        (_, Some(LostBy::Stopped)) => format!(" {}.", subagents_lost(kind, names)),
+        (StopCause::TurnEnd, _) => format!(" {}. {LOST_GOES_ON_CODEX}", subagents_lost(kind, names)),
         (StopCause::Ceiling, None) => {
-            format!(" {}: its CLI stopped them, out of time to wait for them. {LOST_GOES_ON}", subagents_lost(kind, &names))
+            format!(" {}: its CLI stopped them, out of time to wait for them. {LOST_GOES_ON}", subagents_lost(kind, names))
         }
-        (StopCause::Ceiling, Some(_)) => format!(" {}. {LOST_GOES_ON}", subagents_lost(kind, &names)),
-    })
+        (StopCause::Ceiling, Some(_)) => format!(" {}. {LOST_GOES_ON}", subagents_lost(kind, names)),
+    }
 }
 
 /// "2 background subagents ("a", "b") ended with its turn without finishing;
@@ -1403,12 +1411,12 @@ mod tests {
         };
         assert!(text.contains("Its CLI stopped the subagents"), "{text}");
         // Who has had it is kept across cores too; once everyone it concerns has, it is done.
-        crate::background::background_stop_told("bs-s", "bs-c", &["bs-c".to_string(), "bs-other".to_string()]);
+        crate::background::losses_told("bs-s", "bs-c", &[3], &["bs-c".to_string(), "bs-other".to_string()]);
         crate::background::restart_for_test("bs-s");
         let told = notice_line(pty, "bs-c", "Your helper", "bs-s", &known, stood).and_then(|(t, _)| t).unwrap_or_default();
         assert!(!told.contains("Its CLI stopped"), "said to this caller already: {told}");
         assert!(crate::background::background_stopped_for("bs-s", "bs-other"));
-        crate::background::background_stop_told("bs-s", "bs-other", &["bs-other".to_string()]);
+        crate::background::losses_told("bs-s", "bs-other", &[3], &["bs-other".to_string()]);
         assert!(!crate::background::background_stopped("bs-s"));
         crate::background::gone_for_test("bs-s");
         forget("bs-s");
@@ -1442,7 +1450,7 @@ mod tests {
         assert!(text.starts_with("Your helper finished its turn") && text.contains(lost), "{text}");
         assert!(!text.contains("Implement slice C") && !text.contains(NOTHING_RUNNING), "{text}");
         // What a wait or a report hands over says it the same way.
-        let note = crate::agents::owed::background_stopped_note(caller, id).expect("still to be said");
+        let note = crate::agents::owed::background_stopped_note(caller, id).0.expect("still to be said");
         assert!(note.starts_with(lost), "{note}");
         // The notice that said it is the caller's acknowledgment; one that did not is none.
         let settle = |text: &str| {
@@ -2005,10 +2013,13 @@ mod tests {
             panic!("its turn on the wake")
         };
         assert!(done.contains("finished its turn with 2 messages since you asked") && done.contains("DONE: the ping ran clean"), "{done}");
-        // One that says nothing: stuck, said once, as it settles the debt.
+        // One that says nothing: stuck, said once, as it settles the debt,
+        // with the background work its CLI cut off, which that settles too.
         std::fs::write(&path, &interim).unwrap();
+        crate::background::background_stopped_for_test(id, &[top]);
         let Some((Some(stuck), Settled::Answered)) = look(top, id, &known) else { panic!("its parent hears") };
         assert!(stuck.contains("seems stuck") && stuck.contains("Progress: the ping runs."), "{stuck}");
+        assert!(stuck.contains(BACKGROUND_STOPPED), "{stuck}");
         assert!(!reg().lock().unwrap().owed.contains_key(&(top.to_string(), id.to_string())), "settled");
         // Stopped by the breaker, it is not woken, and its parent hears as before.
         let told = Owed { held_to: Some(interim.len() as u64), ..Owed::pending(1, 0) };

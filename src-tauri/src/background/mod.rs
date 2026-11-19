@@ -332,7 +332,9 @@ pub fn uses_account(account_path: &str) -> bool {
 /// The core is leaving: every turn in progress is stopped with its process
 /// tree, and none starts after.
 pub fn stop_all() {
+    let stopped: Vec<String> = lock().entries.iter().filter(|(_, e)| e.run.is_some()).map(|(id, _)| id.clone()).collect();
     stop_turns(true);
+    keep_unrecorded_ends(&stopped, STOP_RECORD_WAIT);
     save();
     // A core that takes the helpers up again has no job of theirs to see
     // what is left by: it goes with this one, but for programs with a window
@@ -346,6 +348,49 @@ pub fn stop_all() {
     // As the ties now stand: none.
     for e in lock().entries.values_mut() {
         e.tied = false;
+    }
+}
+
+/// How long a core that leaves waits for the turns it stopped to be recorded
+/// as over (`keep_unrecorded_ends`).
+const STOP_RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Waits up to `wait` for each turn of `ids` the core stopped to be recorded as over
+/// by its reader (`turn_over`), which names the background subagents it took
+/// for whoever is owed an answer. Whatever is still unrecorded then, its
+/// Claude Code subagents known so far not done are kept as lost to Luna's
+/// stop, the turn's end that the next core counts (persist.rs `taken_up`):
+/// its callers hear of them with its cut-short notice. A Codex turn's are
+/// read from its rollouts only at `turn_over`, so one this cuts off names
+/// none.
+fn keep_unrecorded_ends(ids: &[String], wait: std::time::Duration) {
+    let unrecorded =
+        || -> Vec<String> { ids.iter().filter(|id| lock().entries.get(*id).is_some_and(|e| e.run.is_some())).cloned().collect() };
+    let deadline = std::time::Instant::now() + wait;
+    while std::time::Instant::now() < deadline && !unrecorded().is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let lost: Vec<(String, Vec<String>)> = unrecorded()
+        .into_iter()
+        .filter_map(|id| {
+            let names = unfinished_subagents(lock().entries.get(&id)?.run.as_ref()?);
+            Some((id, names))
+        })
+        .filter(|(_, names)| !names.is_empty())
+        .collect();
+    for (id, names) in lost {
+        // The registry's lock goes before this one.
+        let callers = crate::agents::callers_owed(&id);
+        let mut r = lock();
+        let Some(e) = r.entries.get_mut(&id) else { continue };
+        let Some(run) = e.run.as_mut() else { continue };
+        run.subagents.clear();
+        crate::log::info(
+            "background",
+            &format!("{}: its turn's end went unrecorded as the core left; kept as lost: {}", crate::agents::label(&id), names.join("; ")),
+        );
+        let turn = e.turns_ended + 1;
+        record_loss(&mut e.observed, turn, StopCause::Ceiling, Some(LostBy::Stopped), names, callers);
     }
 }
 
@@ -664,5 +709,37 @@ mod tests {
         settle_stopped(&mut e, &|_| panic!("Codex has no such lines"));
         assert_eq!(e.undelivered, ["flying"]);
         assert!(!e.undelivered[0].maybe_reached);
+    }
+
+    /// A core that leaves records, for a turn it stopped whose end its reader
+    /// has not recorded within the wait, the background subagents known not
+    /// done as lost to Luna's stop, at the turn the next core counts; a turn
+    /// whose reader got there first, or another helper's, is left alone.
+    #[test]
+    fn a_turn_stopped_as_the_core_leaves_keeps_its_unfinished_subagents() {
+        let (id, other) = ("unrecorded", "unrecorded-other");
+        for h in [id, other] {
+            lock().entries.insert(h.into(), entry(Provider::Claude));
+            lock().entries.get_mut(h).unwrap().run = Some(Run::claimed(None, 0));
+            let started = serde_json::json!({ "type": "system", "subtype": "task_started", "task_id": "t1", "run_id": "r1",
+                "description": "Implement slice A", "is_backgrounded": true, "task_type": "local_agent" });
+            claude_event_for_test(h, &started);
+        }
+        let at = std::time::Instant::now();
+        keep_unrecorded_ends(&[id.to_string()], std::time::Duration::from_millis(200));
+        assert!(at.elapsed() >= std::time::Duration::from_millis(200), "waited for its reader");
+        let losses = |h: &str| lock().entries[h].observed.losses.clone();
+        assert_eq!(losses(id).len(), 1);
+        assert_eq!(
+            (losses(id)[0].turn, losses(id)[0].by, losses(id)[0].names.clone()),
+            (1, Some(LostBy::Stopped), vec!["Implement slice A".to_string()])
+        );
+        assert!(losses(other).is_empty(), "not one this core stopped");
+        // Its reader, late: the same turn, named once.
+        turn_over(id, None);
+        assert_eq!(losses(id).iter().map(|l| l.names.len()).collect::<Vec<_>>(), [1]);
+        for h in [id, other] {
+            lock().entries.remove(h);
+        }
     }
 }

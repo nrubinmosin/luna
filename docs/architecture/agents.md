@@ -673,7 +673,9 @@ turn, stopped on a prompt (once per stop) or exited.
   ("1 subagent ended with its turn …"), named where their rollout names
   them. After Luna's own stop of the turn the line says only that they
   were cut and their work is not done, with no advice on how to work.
-  Losses of turns a caller has yet to hear of add up into one line.
+  Each turn's loss is its own, with its own cause: a caller hears each it
+  has yet to hear of, once, a woken lead's "seems stuck" line included,
+  and a reply acknowledges those it said, never one recorded since.
   Claude Code's own stop with none named, and a Codex stop an older
   core saved uncounted, keep their own lines (`BACKGROUND_STOPPED`,
   `SUBAGENTS_INTERRUPTED`).
