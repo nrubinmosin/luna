@@ -64,9 +64,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `--settings` Luna passes and `CLAUDE_CODE_NO_FLICKER=1`, which holds the
   renderer even after the CLI gave up on it once; Codex chats get
   `-c tui.notifications=false` and `-c tui.copy_on_select="never"` beside the
-  update check they already had. Claude Code's copy-on-select is read from
-  `.claude.json` alone, which no start can reach, so Luna leaves it as the
-  account has it. What 0.19's recommendations wrote into accounts stays there
+  update check they already had. The fullscreen variable is taken out of the
+  environment of every CLI process Luna starts and given back to Claude Code
+  chats and logins alone, so a core started from a fullscreen chat's shell
+  does not hand it to helpers. Claude Code's copy-on-select is **not** set by
+  Luna: Claude Code 2.1.325 reads it from the global config (`.claude.json`)
+  alone, which Luna must not write and no start can reach, so it stays as the
+  account has it (on unless you turned it off in the CLI). What 0.19's recommendations wrote into accounts stays there
   ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
 
 ### Removed

@@ -60,7 +60,10 @@ claude --model <alias|id> --effort <a level of the model's, or ultracode>
 `cwd` is the chat's folder; `CLAUDE_CONFIG_DIR` is the account folder;
 `DISABLE_AUTOUPDATER=1`; `CLAUDE_CODE_NO_FLICKER=1`, which asks for the
 fullscreen renderer above the CLI's own `fullscreenAutoDisabled` (the settings
-file's `tui: "fullscreen"` says the same, below that). `<chat>` here and in every other file or folder named
+file's `tui: "fullscreen"` says the same, below that); every CLI process Luna
+starts first loses it from what it inherits (`pty/spawn.rs` `removed_env`), so
+a core started from a fullscreen chat's shell does not hand it to helpers, and
+only a Claude Code chat or login is given it again. `<chat>` here and in every other file or folder named
 for a session (`mcp/`, `hooks/<chat>/`, `media/`, `handoffs/`, a note's name)
 is the id as `paths::id_file_name` spells it: Luna's own ids as they are, any
 other byte as `.` and two hex digits, so the login pane's

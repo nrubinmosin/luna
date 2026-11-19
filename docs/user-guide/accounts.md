@@ -70,14 +70,17 @@ afterwards.
   `--settings`, and `CLAUDE_CODE_NO_FLICKER=1`. The renderer draws on the
   alternate screen with its own scrollback, and the variable holds it even after
   the CLI gave up on it once (`fullscreenAutoDisabled` in `.claude.json`, which
-  the variable outranks). Claude Code's copy-on-select is read from
-  `.claude.json` alone, which no start can reach, so it stays as the account has it
-  (on unless you turned it off in the CLI).
+  the variable outranks). Luna does not set Claude Code's copy-on-select: 2.1.325
+  reads it from `.claude.json` alone, which Luna must not write and no start can
+  reach, so it stays as the account has it (on unless you turned it off in the
+  CLI).
 - **Codex chats:** `-c check_for_update_on_startup=false` (Luna updates the CLI
   itself), `-c tui.notifications=false` (Luna says when a chat is waiting) and
   `-c tui.copy_on_select="never"`.
 - **Helpers:** they have no screen, so nothing of the above but Codex's update
-  check, which every start has.
+  check, which every start has. Luna also takes `CLAUDE_CODE_NO_FLICKER` out of
+  what a helper inherits, so a Luna started from a fullscreen chat's shell does
+  not pass it on.
 
 Luna's earlier versions could write such settings into an account from a
 Recommendations window. What they wrote stays where it is: delete a key from the

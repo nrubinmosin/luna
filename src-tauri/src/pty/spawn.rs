@@ -747,12 +747,16 @@ pub(crate) fn clean_env(cmd: &mut Command) {
 
 /// The variables a CLI process starts without, though this one has them: the
 /// inherited session's (`INHERITED_SESSION_VARS`), and NO_COLOR only when it
-/// came with such a session — set by hand, it stays.
+/// came with such a session — set by hand, it stays. The fullscreen switch
+/// always goes: a core started from a fullscreen Claude chat's shell has it
+/// from that chat, and a helper or any other CLI would draw fullscreen on it.
+/// A Claude chat is given it again after this (`claude/launch.rs`).
 pub(crate) fn removed_env() -> Vec<&'static str> {
     let mut out = INHERITED_SESSION_VARS.to_vec();
     if INHERITED_SESSION_VARS.iter().any(|k| std::env::var_os(k).is_some()) {
         out.push("NO_COLOR");
     }
+    out.push(crate::claude::launch::NO_FLICKER_ENV);
     out
 }
 
@@ -935,5 +939,17 @@ mod tests {
             assert!(INHERITED_SESSION_VARS.contains(&k), "{k}");
         }
         assert!(!INHERITED_SESSION_VARS.contains(&"CODEX_HOME"), "a person's to set, and Luna sets its own for Codex");
+    }
+
+    /// A core started from a fullscreen Claude chat's shell has the chat's
+    /// switch; a helper or a model probe started from it must not.
+    #[test]
+    fn the_fullscreen_switch_is_taken_off_every_cli_process() {
+        assert!(removed_env().contains(&"CLAUDE_CODE_NO_FLICKER"));
+        let mut cmd = Command::new("claude");
+        cmd.env("CLAUDE_CODE_NO_FLICKER", "1");
+        clean_env(&mut cmd);
+        let got = cmd.get_envs().find(|(k, _)| *k == "CLAUDE_CODE_NO_FLICKER").map(|(_, v)| v.map(|v| v.to_owned()));
+        assert_eq!(got, Some(None), "removed from the child's environment, not left set");
     }
 }
